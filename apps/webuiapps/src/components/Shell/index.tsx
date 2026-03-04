@@ -12,6 +12,8 @@ import {
   Shield,
   Newspaper,
   Radio,
+  Video,
+  VideoOff,
   type LucideIcon,
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
@@ -49,16 +51,36 @@ const DESKTOP_APPS = getDesktopApps().map((app) => ({
   IconComp: ICON_MAP[app.icon] || Circle,
 }));
 
-const DEFAULT_WALLPAPER =
+const VIDEO_WALLPAPER =
+  'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1609284623_1772622757413_1.mp4';
+
+const STATIC_WALLPAPER =
   'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/437110625_1772619481913_Aoi_default_Commander_Room.jpg';
+
+function isVideoUrl(url: string): boolean {
+  try {
+    const pathname = new URL(url).pathname.toLowerCase();
+    return /\.(mp4|webm|mov|ogg)$/.test(pathname);
+  } catch {
+    return false;
+  }
+}
 
 const Shell: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(false);
   const [reportEnabled, setReportEnabled] = useState(true);
   const [lang, setLang] = useState<'en' | 'zh'>('en');
+  const [liveWallpaper, setLiveWallpaper] = useState(true);
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [wallpaper, setWallpaper] = useState(DEFAULT_WALLPAPER);
+  const [wallpaper, setWallpaper] = useState(VIDEO_WALLPAPER);
   const windows = useWindows();
+
+  const activeWallpaper = liveWallpaper
+    ? wallpaper
+    : isVideoUrl(wallpaper)
+      ? STATIC_WALLPAPER
+      : wallpaper;
+  const showVideo = liveWallpaper && isVideoUrl(wallpaper);
 
   const handleToggleReport = useCallback(() => {
     setReportEnabled((prev) => {
@@ -84,15 +106,18 @@ const Shell: React.FC = () => {
     <div
       className={styles.shell}
       style={
-        wallpaper
+        activeWallpaper && !showVideo
           ? {
-              backgroundImage: `url(${wallpaper})`,
+              backgroundImage: `url(${activeWallpaper})`,
               backgroundSize: 'cover',
               backgroundPosition: 'center',
             }
           : undefined
       }
     >
+      {showVideo && (
+        <video className={styles.videoBg} src={wallpaper} autoPlay loop muted playsInline />
+      )}
       {/* Desktop with app icons */}
       <div className={styles.desktop}>
         <div className={styles.iconGrid}>
@@ -125,6 +150,14 @@ const Shell: React.FC = () => {
 
       {/* Chat Panel */}
       {chatOpen && <ChatPanel onClose={() => setChatOpen(false)} />}
+
+      <button
+        className={`${styles.liveWallpaperToggle} ${chatOpen ? styles.chatOpen : ''} ${liveWallpaper ? styles.liveOn : styles.liveOff}`}
+        onClick={() => setLiveWallpaper((prev) => !prev)}
+        title={liveWallpaper ? 'Live wallpaper: ON' : 'Live wallpaper: OFF'}
+      >
+        {liveWallpaper ? <Video size={16} /> : <VideoOff size={16} />}
+      </button>
 
       <button
         className={`${styles.langToggle} ${chatOpen ? styles.chatOpen : ''}`}
