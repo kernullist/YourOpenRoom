@@ -4,6 +4,7 @@
  */
 
 import * as idb from './indexedDbStorage';
+import { logger } from './logger';
 
 /**
  * Extract valid JSON string from LLM output.
@@ -79,7 +80,7 @@ function extractJson(raw: string): string {
   }
 
   // 4. Cannot extract, return raw content
-  console.warn('[fileTools] extractJson: could not extract valid JSON, using raw content');
+  logger.warn('fileTools', 'extractJson: could not extract valid JSON, using raw content');
   return trimmed;
 }
 

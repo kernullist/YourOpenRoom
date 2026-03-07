@@ -94,3 +94,9 @@ coverage/
 
 # Logs
 *.log.idea/
+apps/*/logs/
+nohup.out
+
+# Docs (local planning & notes)
+docs/
+.worktrees/

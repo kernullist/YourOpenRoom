@@ -10,9 +10,19 @@
     "build:test": "NODE_ENV=test vite build",
     "build": "NODE_ENV=production vite build",
     "build:analyze": "NODE_ENV=production ANALYZE=analyze vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
     "framer-motion": "^12.34.0"
+  },
+  "devDependencies": {
+    "@vitest/coverage-istanbul": "^1.6.1",
+    "@vitest/coverage-v8": "^1.6.1",
+    "happy-dom": "^14.0.0",
+    "jsdom": "^25.0.0",
+    "vitest": "^1.6.1"
   }
 }

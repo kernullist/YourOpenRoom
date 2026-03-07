@@ -6,6 +6,82 @@ import { resolve } from 'path';
 import { visualizer } from 'rollup-plugin-visualizer';
 import autoprefixer from 'autoprefixer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
+import * as fs from 'fs';
+import * as os from 'os';
+import { join } from 'path';
+import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
+
+const LLM_CONFIG_FILE = resolve(os.homedir(), '.openroom', 'config.json');
+
+/** LLM config persistence plugin — reads/writes config to ~/.openroom/config.json */
+function llmConfigPlugin(): Plugin {
+  return {
+    name: 'llm-config',
+    configureServer(server) {
+      server.middlewares.use('/api/llm-config', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method === 'GET') {
+          try {
+            if (fs.existsSync(LLM_CONFIG_FILE)) {
+              const content = fs.readFileSync(LLM_CONFIG_FILE, 'utf-8');
+              res.writeHead(200);
+              res.end(content);
+            } else {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'No config file found' }));
+            }
+          } catch (err) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: String(err) }));
+          }
+          return;
+        }
+
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            try {
+              const body = Buffer.concat(chunks).toString();
+              // Validate JSON before writing
+              JSON.parse(body);
+              fs.mkdirSync(resolve(os.homedir(), '.openroom'), { recursive: true });
+              fs.writeFileSync(LLM_CONFIG_FILE, body, 'utf-8');
+              res.writeHead(200);
+              res.end(JSON.stringify({ ok: true }));
+            } catch (err) {
+              res.writeHead(500);
+              res.end(JSON.stringify({ error: String(err) }));
+            }
+          });
+          return;
+        }
+
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+      });
+    },
+  };
+}
+
+/** Debug log plugin — writes browser logs to logs/debug-*.log */
+function logServerPlugin(): Plugin {
+  return {
+    name: 'log-server',
+    configureServer(server) {
+      const logDir = join(__dirname, 'logs');
+      const logFile = join(logDir, generateLogFileName());
+      const middleware = createLogMiddleware(logFile, fs);
+
+      server.middlewares.use('/api/log', middleware);
+
+      server.httpServer?.once('listening', () => {
+        console.log(`\n  [DebugLog] Writing to: ${logFile}\n`);
+      });
+    },
+  };
+}
 
 /** LLM API proxy plugin — resolves browser CORS restrictions */
 function llmProxyPlugin(): Plugin {
@@ -97,6 +173,8 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   };
   const skipLegacy = env.VITE_SKIP_LEGACY === 'true';
   const plugins: PluginOption[] = [
+    llmConfigPlugin(),
+    logServerPlugin(),
     llmProxyPlugin(),
     react(),
     ...(skipLegacy

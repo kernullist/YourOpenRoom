@@ -3,6 +3,7 @@ import { Settings, X } from 'lucide-react';
 import {
   chat,
   loadConfig,
+  loadConfigSync,
   saveConfig,
   getDefaultConfig,
   type LLMConfig,
@@ -27,6 +28,7 @@ import {
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { dispatchAgentAction, onUserAction } from '@/lib/vibeContainerMock';
 import { getFileToolDefinitions, isFileTool, executeFileTool } from '@/lib/fileTools';
+import { logger } from '@/lib/logger';
 import {
   getImageGenToolDefinitions,
   isImageGenTool,
@@ -69,9 +71,16 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
-  const [config, setConfig] = useState<LLMConfig | null>(loadConfig);
+  // Init from localStorage immediately (sync), then override from local file if available
+  const [config, setConfig] = useState<LLMConfig | null>(loadConfigSync);
   const [imageGenConfig, setImageGenConfig] = useState<ImageGenConfig | null>(loadImageGenConfig);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    loadConfig().then((fileConfig) => {
+      if (fileConfig) setConfig(fileConfig);
+    });
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -111,7 +120,7 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
       try {
         await runConversation(newHistory, cfg);
       } catch (err) {
-        console.error('[ChatPanel] User action error:', err);
+        logger.error('ChatPanel', 'User action error:', err);
       } finally {
         setLoading(false);
       }
@@ -134,20 +143,20 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
         };
         action_result?: string;
       };
-      console.info('[ChatPanel] onUserAction received:', evt);
+      logger.info('ChatPanel', 'onUserAction received:', evt);
       // Ignore action_result callbacks (result callbacks triggered by Agent)
       if (evt.action_result !== undefined) {
-        console.info('[ChatPanel] Ignored: action_result event');
+        logger.info('ChatPanel', 'Ignored: action_result event');
         return;
       }
       const action = evt.app_action;
       if (!action) {
-        console.info('[ChatPanel] Ignored: no app_action');
+        logger.info('ChatPanel', 'Ignored: no app_action');
         return;
       }
       // Ignore actions triggered by Agent (trigger_by=2)
       if (action.trigger_by === 2) {
-        console.info('[ChatPanel] Ignored: Agent triggered');
+        logger.info('ChatPanel', 'Ignored: Agent triggered');
         return;
       }
 
@@ -185,7 +194,7 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
     try {
       await runConversation(newHistory, config);
     } catch (err) {
-      console.error('[ChatPanel] Error:', err);
+      logger.error('ChatPanel', 'Error:', err);
       addMessage({
         id: String(Date.now()),
         role: 'assistant',
@@ -197,8 +206,9 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
   }, [input, loading, config, chatHistory, addMessage]);
 
   const runConversation = async (history: ChatMessage[], cfg: LLMConfig) => {
-    console.info(
-      '[ChatPanel] runConversation called, history length:',
+    logger.info(
+      'ChatPanel',
+      'runConversation called, history length:',
       history.length,
       'provider:',
       cfg.provider,
@@ -212,7 +222,7 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
       ...getFileToolDefinitions(),
       ...(hasImageGen ? getImageGenToolDefinitions() : []),
     ];
-    console.info('[ToolLog] ChatPanel: tools passed to chat(), count=', tools.length);
+    logger.info('ToolLog', 'ChatPanel: tools passed to chat(), count=', tools.length);
     const fullMessages: ChatMessage[] = [
       { role: 'system', content: buildSystemPrompt(hasImageGen) },
       ...history,
@@ -222,21 +232,22 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
     let iterations = 0;
     const maxIterations = 10;
 
-    console.info('[ChatDebug] === START conversation ===');
-    console.info('[ChatDebug] messages sent to LLM:', JSON.stringify(currentMessages, null, 2));
-    console.info(
-      '[ChatDebug] tools:',
+    logger.info('ChatDebug', '=== START conversation ===');
+    logger.info('ChatDebug', 'messages sent to LLM:', JSON.stringify(currentMessages, null, 2));
+    logger.info(
+      'ChatDebug',
+      'tools:',
       tools.map((t) => (t as { function: { name: string } }).function.name),
     );
 
     while (iterations < maxIterations) {
       iterations++;
-      console.info(`[ChatDebug] --- iteration ${iterations} ---`);
-      console.info('[ChatDebug] messages count:', currentMessages.length);
+      logger.info('ChatDebug', `--- iteration ${iterations} ---`);
+      logger.info('ChatDebug', 'messages count:', currentMessages.length);
       const response = await chat(currentMessages, tools, cfg);
 
-      console.info('[ChatDebug] LLM response content:', response.content);
-      console.info('[ChatDebug] LLM toolCalls:', JSON.stringify(response.toolCalls, null, 2));
+      logger.info('ChatDebug', 'LLM response content:', response.content);
+      logger.info('ChatDebug', 'LLM toolCalls:', JSON.stringify(response.toolCalls, null, 2));
 
       if (response.toolCalls.length === 0) {
         // No tool calls, just text response
@@ -268,14 +279,15 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
       }
 
       // Execute each tool call
-      console.info(
-        '[ToolLog] ChatPanel: executing toolCalls count=',
+      logger.info(
+        'ToolLog',
+        'ChatPanel: executing toolCalls count=',
         response.toolCalls.length,
         'names=',
         response.toolCalls.map((tc) => tc.function.name),
       );
       for (const tc of response.toolCalls) {
-        console.info('[ToolLog] ChatPanel: processing tool name=', tc.function.name);
+        logger.info('ToolLog', 'ChatPanel: processing tool name=', tc.function.name);
         let params: Record<string, string> = {};
         try {
           params = JSON.parse(tc.function.arguments);
@@ -286,7 +298,7 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
         // list_apps tool
         if (tc.function.name === 'list_apps') {
           const result = executeListApps();
-          console.info('[ChatDebug] list_apps result:', result);
+          logger.info('ChatDebug', 'list_apps result:', result);
           currentMessages = [
             ...currentMessages,
             { role: 'tool', content: result, tool_call_id: tc.id },
@@ -303,8 +315,9 @@ const ChatPanel: React.FC<{ onClose: () => void; visible?: boolean }> = ({
           });
           try {
             const result = await executeFileTool(tc.function.name, params);
-            console.info(
-              `[ChatDebug] ${tc.function.name}(${JSON.stringify(params)}) result:`,
+            logger.info(
+              'ChatDebug',
+              `${tc.function.name}(${JSON.stringify(params)}) result:`,
               result.slice(0, 500),
             );
             currentMessages = [

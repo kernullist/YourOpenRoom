@@ -7,6 +7,7 @@
 
 import i18next from 'i18next';
 import * as idb from './indexedDbStorage';
+import { logger } from './logger';
 import { isReportUserActionsEnabled } from './action';
 
 // ============ AppLifecycle Enum ============
@@ -281,13 +282,13 @@ const mockManager = {
 
   // Agent messages
   sendAgentMessage: (event: unknown) => {
-    console.info('[MockVibe] sendAgentMessage:', event);
+    logger.info('MockVibe', 'sendAgentMessage:', event);
     // When the toggle is off, discard user-triggered actions (keep Agent's action_result callbacks)
     if (!isReportUserActionsEnabled()) {
       const evt = event as { action_result?: string; app_action?: { trigger_by?: number } };
       // Events without action_result are user-initiated reports; discard them
       if (evt.action_result === undefined) {
-        console.info('[MockVibe] sendAgentMessage: blocked by reportUserActions=false');
+        logger.info('MockVibe', 'sendAgentMessage: blocked by reportUserActions=false');
         return;
       }
     }

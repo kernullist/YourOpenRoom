@@ -18,6 +18,8 @@ export interface ImageGenResult {
   mimeType: string;
 }
 
+import { logger } from './logger';
+
 const CONFIG_KEY = 'webuiapps-imagegen-config';
 
 const DEFAULT_CONFIGS: Record<ImageGenProvider, Omit<ImageGenConfig, 'apiKey'>> = {
@@ -73,8 +75,9 @@ export async function generateImage(
   prompt: string,
   config: ImageGenConfig,
 ): Promise<ImageGenResult> {
-  console.info(
-    '[ImageGen] generateImage called, provider:',
+  logger.info(
+    'ImageGen',
+    'generateImage called, provider:',
     config.provider,
     'model:',
     config.model,
