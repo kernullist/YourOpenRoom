@@ -356,6 +356,38 @@
   cursor: pointer;
 }
 
+.modelSelectorWrapper {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+
+  .select {
+    flex: 1;
+  }
+
+  .fieldInput {
+    flex: 1;
+  }
+}
+
+.manualToggleBtn {
+  padding: 6px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.6);
+  transition: all 0.2s;
+
+  &:hover {
+    background: #282a2a;
+    color: rgba(255, 255, 255, 0.9);
+  }
+}
+
 .settingsActions {
   display: flex;
   gap: 8px;

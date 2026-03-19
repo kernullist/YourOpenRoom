@@ -14,10 +14,10 @@ import {
   loadConfigSync,
   saveConfig,
   chat,
-  type LLMConfig,
   type ChatMessage,
   type ToolDef,
 } from '../llmClient';
+import type { LLMConfig } from '../llmModels';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -98,37 +98,50 @@ describe('getDefaultConfig()', () => {
   it('returns correct defaults for openai', () => {
     const cfg = getDefaultConfig('openai');
     expect(cfg.provider).toBe('openai');
-    expect(cfg.baseUrl).toBe('https://api.openai.com');
-    expect(cfg.model).toBe('gpt-5.3-chat-latest');
+    expect(cfg.baseUrl).toBe('https://api.openai.com/v1');
+    expect(cfg.model).toBe('gpt-5.4');
     expect('apiKey' in cfg).toBe(false);
   });
 
   it('returns correct defaults for anthropic', () => {
     const cfg = getDefaultConfig('anthropic');
     expect(cfg.provider).toBe('anthropic');
-    expect(cfg.baseUrl).toBe('https://api.anthropic.com');
-    expect(cfg.model).toBe('claude-opus-4-6');
+    expect(cfg.baseUrl).toBe('https://api.anthropic.com/v1');
+    expect(cfg.model).toBe('claude-sonnet-4-6');
   });
 
   it('returns correct defaults for deepseek', () => {
     const cfg = getDefaultConfig('deepseek');
     expect(cfg.provider).toBe('deepseek');
-    expect(cfg.baseUrl).toBe('https://api.deepseek.com');
+    expect(cfg.baseUrl).toBe('https://api.deepseek.com/v1');
     expect(cfg.model).toBe('deepseek-chat');
   });
 
   it('returns correct defaults for minimax', () => {
     const cfg = getDefaultConfig('minimax');
     expect(cfg.provider).toBe('minimax');
-    expect(cfg.baseUrl).toBe('https://api.minimax.io/anthropic');
+    expect(cfg.baseUrl).toBe('https://api.minimax.io/anthropic/v1');
     expect(cfg.model).toBe('MiniMax-M2.5');
   });
 
-  it('returns the same stable reference for the same provider', () => {
-    // getDefaultConfig returns a direct reference to the internal constant (by design)
+  it('returns correct defaults for z.ai', () => {
+    const cfg = getDefaultConfig('z.ai');
+    expect(cfg.provider).toBe('z.ai');
+    expect(cfg.baseUrl).toBe('https://api.z.ai/api/coding/paas/v4');
+    expect(cfg.model).toBe('glm-5');
+  });
+
+  it('returns correct defaults for kimi', () => {
+    const cfg = getDefaultConfig('kimi');
+    expect(cfg.provider).toBe('kimi');
+    expect(cfg.baseUrl).toBe('https://api.moonshot.cn/v1');
+    expect(cfg.model).toBe('kimi-k2-5');
+  });
+
+  it('returns consistent values for the same provider', () => {
     const a = getDefaultConfig('openai');
     const b = getDefaultConfig('openai');
-    expect(a).toBe(b);
+    expect(a).toStrictEqual(b);
   });
 });
 
