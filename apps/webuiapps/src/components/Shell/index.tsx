@@ -88,7 +88,7 @@ const Shell: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(true);
   const [reportEnabled, setReportEnabled] = useState(true);
   const [lang, setLang] = useState<'en' | 'zh'>('en');
-  const [liveWallpaper, setLiveWallpaper] = useState(true);
+  const [liveWallpaper, setLiveWallpaper] = useState(false);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractResult | null>(null);
@@ -110,84 +110,88 @@ const Shell: React.FC = () => {
     setExtractResult(null);
   }, []);
 
-  const generateMod = useCallback(
-    async (character: Manifest['character']): Promise<string | undefined> => {
-      const llmConfig = await loadConfig();
-      if (!llmConfig) {
-        logger.warn('Shell', 'No LLM config available, skipping mod generation');
-        return;
-      }
+  const generateMod = useCallback(async (character: Manifest['character']): Promise<string> => {
+    const llmConfig = await loadConfig();
+    if (!llmConfig) {
+      throw new Error(
+        'No LLM configuration found. Please open Settings (gear icon) and configure your LLM API key first.',
+      );
+    }
 
-      const prompt = buildModPrompt([], JSON.stringify({ character, apps: [] }));
-      logger.info('Shell', 'Mod generation prompt built, length:', prompt.length);
+    const prompt = buildModPrompt([], JSON.stringify({ character, apps: [] }));
+    logger.info('Shell', 'Mod generation prompt built, length:', prompt.length);
 
-      setModGenerating(true);
+    setModGenerating(true);
+    try {
+      const response = await chat([{ role: 'user', content: prompt }], [], llmConfig);
+      logger.info('Shell', 'Mod generation LLM response length:', response.content.length);
+
+      let jsonStr = response.content.trim();
+      const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
+      if (fenceMatch) jsonStr = fenceMatch[1].trim();
+
+      let modJson: Record<string, unknown>;
       try {
-        const response = await chat([{ role: 'user', content: prompt }], [], llmConfig);
-        logger.info('Shell', 'Mod generation LLM response length:', response.content.length);
-
-        // Strip markdown fences if present
-        let jsonStr = response.content.trim();
-        const fenceMatch = jsonStr.match(/```(?:json)?\s*([\s\S]*?)```/);
-        if (fenceMatch) jsonStr = fenceMatch[1].trim();
-
-        const modJson = JSON.parse(jsonStr);
-        const modId = generateModId();
-        const modConfig: ModConfig = {
-          id: modId,
-          mod_name: modJson.name || modJson.identifier || 'Generated Mod',
-          mod_name_en: modJson.name || modJson.identifier || 'Generated Mod',
-          mod_description: modJson.description || '',
-          display_desc: modJson.display_desc || '',
-          prologue: modJson.prologue || '',
-          opening_rec_replies: Array.isArray(modJson.opening_rec_replies)
-            ? modJson.opening_rec_replies.map((r: string) => ({ reply_text: r }))
-            : [],
-          stage_count: Array.isArray(modJson.stages) ? modJson.stages.length : 0,
-          stages: Array.isArray(modJson.stages)
-            ? Object.fromEntries(
-                modJson.stages.map(
-                  (
-                    s: {
-                      name: string;
-                      description: string;
-                      targets: Array<{ id: number; description: string }>;
-                    },
-                    i: number,
-                  ) => [
-                    i,
-                    {
-                      stage_index: i,
-                      stage_name: s.name || `Stage ${i + 1}`,
-                      stage_description: s.description || '',
-                      stage_targets: Object.fromEntries(
-                        (s.targets || []).map((t) => [t.id, t.description]),
-                      ),
-                    },
-                  ],
-                ),
-              )
-            : {},
-        };
-
-        const collection = loadModCollectionSync() ?? DEFAULT_MOD_COLLECTION;
-        const updated = setActiveMod(addMod(collection, modConfig), modId);
-        await saveModCollection(updated);
-        logger.info('Shell', 'Mod saved successfully:', modId, modConfig.mod_name);
-        return modId;
-      } catch (err) {
-        logger.error('Shell', 'Mod generation failed:', err);
-      } finally {
-        setModGenerating(false);
+        modJson = JSON.parse(jsonStr);
+      } catch {
+        throw new Error('LLM returned invalid JSON. Try again or use a different model.');
       }
-    },
-    [],
-  );
+
+      const modId = generateModId();
+      const modConfig: ModConfig = {
+        id: modId,
+        mod_name: (modJson.name as string) || (modJson.identifier as string) || 'Generated Mod',
+        mod_name_en: (modJson.name as string) || (modJson.identifier as string) || 'Generated Mod',
+        mod_description: (modJson.description as string) || '',
+        display_desc: (modJson.display_desc as string) || '',
+        prologue: (modJson.prologue as string) || '',
+        opening_rec_replies: Array.isArray(modJson.opening_rec_replies)
+          ? (modJson.opening_rec_replies as string[]).map((r) => ({ reply_text: r }))
+          : [],
+        stage_count: Array.isArray(modJson.stages) ? modJson.stages.length : 0,
+        stages: Array.isArray(modJson.stages)
+          ? Object.fromEntries(
+              (
+                modJson.stages as Array<{
+                  name: string;
+                  description: string;
+                  targets: Array<{ id: number; description: string }>;
+                }>
+              ).map((s, i) => [
+                i,
+                {
+                  stage_index: i,
+                  stage_name: s.name || `Stage ${i + 1}`,
+                  stage_description: s.description || '',
+                  stage_targets: Object.fromEntries(
+                    (s.targets || []).map((t) => [t.id, t.description]),
+                  ),
+                },
+              ]),
+            )
+          : {},
+      };
+
+      const collection = loadModCollectionSync() ?? DEFAULT_MOD_COLLECTION;
+      const updated = setActiveMod(addMod(collection, modConfig), modId);
+      await saveModCollection(updated);
+      logger.info('Shell', 'Mod saved successfully:', modId, modConfig.mod_name);
+      return modId;
+    } catch (err) {
+      logger.error('Shell', 'Mod generation failed:', err);
+      throw err;
+    } finally {
+      setModGenerating(false);
+    }
+  }, []);
+
+  const [modGenError, setModGenError] = useState<string | null>(null);
 
   const handleUploadSubmit = useCallback(async () => {
     if (!uploadedFile) return;
     setExtracting(true);
     setExtractResult(null);
+    setModGenError(null);
     try {
       const result = await extractCard(uploadedFile);
       setExtractResult(result);
@@ -196,16 +200,13 @@ const Shell: React.FC = () => {
         setUploadedFile(null);
         setUploadOpen(false);
         setExtractResult(null);
-        setExtracting(false);
-
-        // Directly generate mod from character data (skip app extraction)
+        // extracting will be cleared in finally; generateMod shows its own modGenerating overlay
         const modId = await generateMod(result.manifest.character);
-        if (modId) {
-          // Store mod ID so ChatPanel auto-opens mod editor after reload
-          sessionStorage.setItem('openroom_edit_mod_id', modId);
-          window.location.reload();
-        }
+        window.dispatchEvent(new CustomEvent('open-mod-editor', { detail: { modId } }));
       }
+    } catch (err) {
+      logger.error('Shell', 'Upload submit error:', err);
+      setModGenError(err instanceof Error ? err.message : String(err));
     } finally {
       setExtracting(false);
     }
@@ -422,6 +423,21 @@ const Shell: React.FC = () => {
           <div className={styles.analyzingCard}>
             <div className={styles.analyzingSpinner} />
             <span>Generating mod...</span>
+          </div>
+        </div>
+      )}
+
+      {/* Mod generation error toast */}
+      {modGenError && !modGenerating && (
+        <div className={styles.uploadOverlay} onClick={() => setModGenError(null)}>
+          <div className={styles.uploadModal} onClick={(e) => e.stopPropagation()}>
+            <p className={styles.uploadError}>{modGenError}</p>
+            <button
+              className={`${styles.uploadSubmitBtn} ${styles.active}`}
+              onClick={() => setModGenError(null)}
+            >
+              OK
+            </button>
           </div>
         </div>
       )}

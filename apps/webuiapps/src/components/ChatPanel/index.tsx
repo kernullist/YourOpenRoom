@@ -428,14 +428,17 @@ const ChatPanel: React.FC<{
   const [initialEditModId, setInitialEditModId] = useState<string | undefined>();
   const [currentEmotion, setCurrentEmotion] = useState<string | undefined>();
 
-  // Auto-open mod editor if redirected from card import
+  // Open mod editor when triggered from Shell (e.g. after card import mod generation)
   useEffect(() => {
-    const editModId = sessionStorage.getItem('openroom_edit_mod_id');
-    if (editModId) {
-      sessionStorage.removeItem('openroom_edit_mod_id');
-      setInitialEditModId(editModId);
-      setShowModPanel(true);
-    }
+    const handler = (e: Event) => {
+      const modId = (e as CustomEvent<{ modId: string }>).detail?.modId;
+      if (modId) {
+        setInitialEditModId(modId);
+        setShowModPanel(true);
+      }
+    };
+    window.addEventListener('open-mod-editor', handler);
+    return () => window.removeEventListener('open-mod-editor', handler);
   }, []);
 
   // Memories loaded for SP injection

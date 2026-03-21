@@ -261,7 +261,9 @@ function detectInputType(fileName: string, buffer: ArrayBuffer): 'png' | 'charx'
 
 // ── Card entry conversion ──────────────────────────────────────────
 
-function loadEntriesFromCard(card: Record<string, unknown>): InternalEntry[] {
+function loadEntriesFromCard(
+  card: Record<string, unknown>,
+): { entry: InternalEntry; index: number }[] {
   const data = (card['data'] || {}) as Record<string, unknown>;
   const charBook = (data['character_book'] || null) as Record<string, unknown> | null;
   if (!charBook) return [];
@@ -273,16 +275,18 @@ function loadEntriesFromCard(card: Record<string, unknown>): InternalEntry[] {
   if (!rawEntries) return [];
 
   return (rawEntries as Record<string, unknown>[]).map((entry, i) => ({
-    key: (entry['keys'] as string[]) || [],
-    keysecondary: (entry['secondary_keys'] as string[]) || [],
-    comment: (entry['comment'] as string) || (entry['name'] as string) || '',
-    content: (entry['content'] as string) || '',
-    constant: (entry['constant'] as boolean) || false,
-    selective: entry['selective'] !== undefined ? (entry['selective'] as boolean) : true,
-    disable: !(entry['enabled'] !== undefined ? (entry['enabled'] as boolean) : true),
-    order: (entry['insertion_order'] as number) || 100,
-    position: ((entry['extensions'] as Record<string, unknown>)?.['position'] as number) || 0,
-    _index: (entry['id'] as number) ?? i,
+    index: (entry['id'] as number) ?? i,
+    entry: {
+      key: (entry['keys'] as string[]) || [],
+      keysecondary: (entry['secondary_keys'] as string[]) || [],
+      comment: (entry['comment'] as string) || (entry['name'] as string) || '',
+      content: (entry['content'] as string) || '',
+      constant: (entry['constant'] as boolean) || false,
+      selective: entry['selective'] !== undefined ? (entry['selective'] as boolean) : true,
+      disable: !(entry['enabled'] !== undefined ? (entry['enabled'] as boolean) : true),
+      order: (entry['insertion_order'] as number) || 100,
+      position: ((entry['extensions'] as Record<string, unknown>)?.['position'] as number) || 0,
+    },
   }));
 }
 
@@ -469,7 +473,10 @@ function extractAppsFromEntries(entries: Record<string, InternalEntry>): AppEntr
 
     const id = commentToId(comment);
     if (!id) {
-      console.warn(`Warning: Empty app ID from comment "${comment}" at index ${index}, skipping.`);
+      logger.warn(
+        'extractApps',
+        `Empty app ID from comment "${comment}" at index ${index}, skipping.`,
+      );
       continue;
     }
 
@@ -977,11 +984,9 @@ export async function extractCard(file: File): Promise<ExtractResult> {
     // Convert entries
     const converted = loadEntriesFromCard(card);
     const entries: Record<string, InternalEntry> = {};
-    converted.forEach((e, i) => {
-      const idx = (e as unknown as Record<string, unknown>)['_index'] ?? i;
-      delete (e as unknown as Record<string, unknown>)['_index'];
-      entries[String(idx)] = e;
-    });
+    for (const { entry, index } of converted) {
+      entries[String(index)] = entry;
+    }
 
     // Extract apps and lore
     const apps = extractAppsFromEntries(entries);
