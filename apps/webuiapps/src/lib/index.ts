@@ -77,3 +77,15 @@ export type { VibeInfo } from './vibeInfo';
 // ============ Utilities ============
 export { generateId } from './generateId';
 export { normalizePath, getFileName, getParentPath, getDirPath } from './path';
+
+// ============ Card Extractor ============
+export { extractCard, consolidateApps } from './cardExtractor';
+export type {
+  ExtractResult,
+  Manifest,
+  AppEntry,
+  LoreEntry,
+  RegexScript,
+  TagSchema,
+  CharacterInfo,
+} from './cardExtractor';

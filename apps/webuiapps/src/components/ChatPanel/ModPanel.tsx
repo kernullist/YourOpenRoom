@@ -16,11 +16,12 @@ interface ModPanelProps {
   collection: ModCollection;
   onSave: (collection: ModCollection) => void;
   onClose: () => void;
+  initialEditId?: string;
 }
 
-const ModPanel: React.FC<ModPanelProps> = ({ collection, onSave, onClose }) => {
+const ModPanel: React.FC<ModPanelProps> = ({ collection, onSave, onClose, initialEditId }) => {
   const [col, setCol] = useState<ModCollection>(() => ({ ...collection }));
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(initialEditId ?? null);
 
   const mods = getModList(col);
   const activeId = col.activeId;

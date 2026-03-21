@@ -260,6 +260,8 @@ export async function saveModCollection(collection: ModCollection): Promise<void
   } catch {
     // ignore
   }
+  // Notify other components (e.g. ChatPanel) about the change
+  window.dispatchEvent(new CustomEvent('mod-collection-changed', { detail: collection }));
 }
 
 // ---------------------------------------------------------------------------
