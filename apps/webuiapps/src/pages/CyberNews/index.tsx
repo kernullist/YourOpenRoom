@@ -10,7 +10,6 @@ import {
   createAppFileApi,
   batchConcurrent,
   type CharacterAppAction,
-  ActionTriggerBy,
 } from '@/lib';
 import './i18n';
 import { Newspaper, ArrowLeft, AlertTriangle } from 'lucide-react';
@@ -754,26 +753,20 @@ const CyberNews: React.FC = () => {
       setCurrentView(tab);
       setSelectedArticleId(null);
       saveState({ currentView: tab, selectedArticleId: null });
-      reportAction(APP_ID, 'FILTER_NEWS', { view: tab });
     },
     [saveState],
   );
 
   const handleFilterNews = useCallback((cat: ArticleCategory | null) => {
     setNewsFilter(cat);
-    reportAction(APP_ID, 'FILTER_NEWS', { category: cat || 'all' });
   }, []);
 
-  const handleViewArticle = useCallback((articleId: string, fromAgent = false) => {
+  const handleViewArticle = useCallback((articleId: string, _fromAgent = false) => {
     setSelectedArticleId(articleId);
-    if (!fromAgent) {
-      reportAction(APP_ID, 'VIEW_ARTICLE', { articleId });
-    }
   }, []);
 
   const handleBackToFeed = useCallback(() => {
     setSelectedArticleId(null);
-    reportAction(APP_ID, 'VIEW_ARTICLE', { articleId: '' }, ActionTriggerBy.User);
   }, []);
 
   const handleSelectCase = useCallback(
