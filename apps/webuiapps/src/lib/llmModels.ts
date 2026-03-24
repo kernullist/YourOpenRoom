@@ -1,4 +1,11 @@
-export type LLMProvider = 'openai' | 'anthropic' | 'deepseek' | 'minimax' | 'z.ai' | 'kimi';
+export type LLMProvider =
+  | 'openai'
+  | 'anthropic'
+  | 'deepseek'
+  | 'minimax'
+  | 'z.ai'
+  | 'kimi'
+  | 'openrouter';
 
 export type ModelCategory = 'flagship' | 'general' | 'coding' | 'lightweight' | 'thinking';
 
@@ -114,6 +121,23 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
       { id: 'kimi-k2', name: 'Kimi K2', category: 'flagship' },
       { id: 'kimi-k2-thinking', name: 'Kimi K2 Thinking', category: 'thinking' },
       { id: 'kimi-k2-turbo', name: 'Kimi K2 Turbo', category: 'general' },
+    ],
+  },
+
+  openrouter: {
+    displayName: 'OpenRouter',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    defaultModel: 'minimax/MiniMax-M2.5',
+    models: [
+      { id: 'minimax/MiniMax-M2.5', name: 'MiniMax M2.5', category: 'flagship' },
+      { id: 'minimax/MiniMax-M2.5-highspeed', name: 'MiniMax M2.5 Highspeed', category: 'general' },
+      { id: 'minimax/MiniMax-M2.7', name: 'MiniMax M2.7', category: 'flagship' },
+      { id: 'minimax/MiniMax-M2.7-highspeed', name: 'MiniMax M2.7 Highspeed', category: 'general' },
+      { id: 'minimax/MiniMax-M2.1', name: 'MiniMax M2.1', category: 'coding' },
+      { id: 'anthropic/claude-sonnet-4-6', name: 'Claude Sonnet 4.6', category: 'general' },
+      { id: 'openai/gpt-5.4', name: 'GPT-5.4', category: 'flagship' },
+      { id: 'deepseek/deepseek-chat', name: 'DeepSeek Chat', category: 'general' },
+      { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', category: 'flagship' },
     ],
   },
 };

@@ -1290,6 +1290,7 @@ const SettingsModal: React.FC<{
             <option value="minimax">MiniMax</option>
             <option value="z.ai">Z.ai</option>
             <option value="kimi">Kimi</option>
+            <option value="openrouter">OpenRouter</option>
           </select>
         </div>
 

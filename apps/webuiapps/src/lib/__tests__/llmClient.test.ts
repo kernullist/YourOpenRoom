@@ -135,6 +135,13 @@ describe('getDefaultProviderConfig()', () => {
     expect(cfg.model).toBe('kimi-k2-5');
   });
 
+  it('returns correct defaults for openrouter', () => {
+    const cfg = getDefaultProviderConfig('openrouter');
+    expect(cfg.provider).toBe('openrouter');
+    expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1');
+    expect(cfg.model).toBe('minimax/MiniMax-M2.5');
+  });
+
   it('returns consistent values for the same provider', () => {
     const a = getDefaultProviderConfig('openai');
     const b = getDefaultProviderConfig('openai');
