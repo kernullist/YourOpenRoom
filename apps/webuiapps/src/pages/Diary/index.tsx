@@ -79,6 +79,7 @@ interface DiaryEntry {
 
 interface AppState {
   selectedDate: string | null;
+  selectedEntryId?: string | null;
 }
 
 // ============ SVG Hand-drawn Decoration Components ============
@@ -698,6 +699,8 @@ const Diary: React.FC = () => {
   const [calendarCollapsed, setCalendarCollapsed] = useState(true);
   const containerRef = useRef<HTMLDivElement>(null);
   const titleTextareaRef = useRef<HTMLTextAreaElement>(null);
+  const entriesRef = useRef<DiaryEntry[]>([]);
+  const selectedEntryIdRef = useRef<string | null>(null);
 
   // --- Derived State ---
   const isCompact = containerWidth < COMPACT_BREAKPOINT;
@@ -731,6 +734,14 @@ const Diary: React.FC = () => {
     () => [...entries].sort((a, b) => b.createdAt - a.createdAt),
     [entries],
   );
+
+  useEffect(() => {
+    entriesRef.current = entries;
+  }, [entries]);
+
+  useEffect(() => {
+    selectedEntryIdRef.current = selectedEntryId;
+  }, [selectedEntryId]);
 
   const calendarDays = useMemo((): (Date | null)[] => {
     const year = currentMonth.getFullYear();
@@ -842,17 +853,24 @@ const Diary: React.FC = () => {
   // --- Business Logic ---
   const handleSelectDate = useCallback(
     (date: string, entryId?: string) => {
-      if (date === selectedDate && !entryId && !isCompact) return;
+      const fallbackEntryId =
+        entryId ||
+        entriesByDate
+          .get(date)
+          ?.slice()
+          .sort((a, b) => b.createdAt - a.createdAt)[0]?.id ||
+        null;
+      if (date === selectedDate && fallbackEntryId === selectedEntryId && !isCompact) return;
       setDirection(date > selectedDate ? 1 : -1);
       setSelectedDate(date);
-      setSelectedEntryId(entryId || null);
+      setSelectedEntryId(fallbackEntryId);
       setIsEditing(false);
       setShowMoodPicker(false);
       setShowWeatherPicker(false);
       if (isCompact) setCompactView('editor');
-      saveState({ selectedDate: date });
+      saveState({ selectedDate: date, selectedEntryId: fallbackEntryId });
     },
-    [selectedDate, isCompact, saveState],
+    [selectedDate, selectedEntryId, isCompact, saveState, entriesByDate],
   );
 
   const handleCreateEntry = useCallback(
@@ -885,7 +903,7 @@ const Diary: React.FC = () => {
       } catch (error) {
         console.error('[Diary] Failed to sync new entry:', error);
       }
-      saveState({ selectedDate: entryDate });
+      saveState({ selectedDate: entryDate, selectedEntryId: id });
       reportAction(APP_ID, 'CREATE_ENTRY', { entryId: id, date: entryDate, ...(opts || {}) });
       return id;
     },
@@ -921,6 +939,23 @@ const Diary: React.FC = () => {
     [getByPath, updateNode, syncToCloud],
   );
 
+  const flushPendingEntrySave = useCallback(async () => {
+    const entryId = selectedEntryIdRef.current;
+    if (!entryId) return;
+
+    const latestEntry = entriesRef.current.find((entry) => entry.id === entryId);
+    if (!latestEntry) return;
+
+    const filePath = getEntryFilePath(entryId);
+    fsSaveFile(filePath, latestEntry);
+    try {
+      await syncToCloud(filePath, latestEntry);
+      console.info('[Diary] Flushed pending entry save on teardown', { entryId, filePath });
+    } catch (error) {
+      console.error('[Diary] Failed to flush pending entry save:', error);
+    }
+  }, [fsSaveFile, syncToCloud]);
+
   const handleDeleteEntry = useCallback(
     async (entryId: string) => {
       const filePath = getEntryFilePath(entryId);
@@ -934,9 +969,10 @@ const Diary: React.FC = () => {
       } catch (error) {
         console.error('[Diary] Failed to delete entry:', error);
       }
+      saveState({ selectedDate, selectedEntryId: null });
       reportAction(APP_ID, 'DELETE_ENTRY', { entryId });
     },
-    [removeByPath, deleteFromCloud, isCompact],
+    [removeByPath, deleteFromCloud, isCompact, saveState, selectedDate],
   );
 
   const handleMoodChange = useCallback(
@@ -1121,6 +1157,14 @@ const Diary: React.FC = () => {
         const savedState = loadState();
         if (savedState?.selectedDate) {
           setSelectedDate(savedState.selectedDate);
+          if (savedState.selectedEntryId) {
+            setSelectedEntryId(savedState.selectedEntryId);
+          } else {
+            const candidate = loaded
+              .filter((entry) => entry.date === savedState.selectedDate)
+              .sort((a, b) => b.createdAt - a.createdAt)[0];
+            setSelectedEntryId(candidate?.id || null);
+          }
           const parts = savedState.selectedDate.split('-');
           setCurrentMonth(new Date(parseInt(parts[0]), parseInt(parts[1]) - 1, 1));
         }
@@ -1135,10 +1179,13 @@ const Diary: React.FC = () => {
     };
     init();
     return () => {
+      if (titleSaveTimerRef.current) clearTimeout(titleSaveTimerRef.current);
+      if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
+      void flushPendingEntrySave();
       reportLifecycle(AppLifecycle.UNLOADING);
       reportLifecycle(AppLifecycle.DESTROYED);
     };
-  }, []);
+  }, [flushPendingEntrySave]);
 
   // ============ Render Helpers ============
 

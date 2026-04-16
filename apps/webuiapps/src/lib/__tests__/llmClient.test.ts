@@ -290,15 +290,87 @@ describe('saveConfig()', () => {
   });
 
   it('includes imageGen when provided', async () => {
-    const mockFetch = vi.fn().mockResolvedValueOnce({ ok: true } as Response);
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
     globalThis.fetch = mockFetch;
 
     const igConfig = { provider: 'openai' as const, apiKey: 'k', baseUrl: 'u', model: 'm' };
     await saveConfig(MOCK_OPENAI_CONFIG, igConfig);
 
-    const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
     expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
     expect(body.imageGen).toEqual(igConfig);
+  });
+
+  it('preserves kira config when saving LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            kira: { workRootDirectory: 'F:/workspace/agent-root' },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
+    expect(body.kira).toEqual({ workRootDirectory: 'F:/workspace/agent-root' });
+  });
+
+  it('preserves kira worker and reviewer model settings when saving LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            kira: {
+              workRootDirectory: 'F:/workspace/agent-root',
+              projectDefaults: {
+                autoCommit: true,
+              },
+              workerLlm: {
+                model: 'openai/gpt-5.4',
+              },
+              reviewerLlm: {
+                provider: 'anthropic',
+                model: 'claude-sonnet-4.6',
+              },
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
+    expect(body.kira).toEqual({
+      workRootDirectory: 'F:/workspace/agent-root',
+      projectDefaults: {
+        autoCommit: true,
+      },
+      workerLlm: {
+        model: 'openai/gpt-5.4',
+      },
+      reviewerLlm: {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4.6',
+      },
+    });
   });
 
   it('does not throw when POST request fails silently', async () => {

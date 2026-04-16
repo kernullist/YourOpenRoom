@@ -68,13 +68,27 @@ export async function saveChatHistory(
   };
 
   try {
-    await fetch(apiUrl(sessionPath, 'chat.json'), {
+    const url = apiUrl(sessionPath, 'chat.json');
+    console.info('[ChatHistory] Saving chat history', {
+      sessionPath,
+      url,
+      messageCount: messages.length,
+      historyCount: chatHistory.length,
+    });
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('[ChatHistory] Failed to save chat history', {
+        status: res.status,
+        body: text,
+      });
+    }
   } catch {
-    // Silently ignore
+    console.error('[ChatHistory] Failed to save chat history due to network/API error');
   }
 }
 

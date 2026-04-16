@@ -8,14 +8,493 @@ import autoprefixer from 'autoprefixer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import * as fs from 'fs';
 import * as os from 'os';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
+import { kiraAutomationPlugin } from './src/lib/kiraAutomationPlugin';
 
 const LLM_CONFIG_FILE = resolve(os.homedir(), '.openroom', 'config.json');
 const SESSIONS_DIR = resolve(os.homedir(), '.openroom', 'sessions');
 const CHARACTERS_FILE = resolve(os.homedir(), '.openroom', 'characters.json');
 const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
+
+function readPersistedConfigFile(): Record<string, unknown> {
+  try {
+    if (!fs.existsSync(LLM_CONFIG_FILE)) return {};
+    const raw = fs.readFileSync(LLM_CONFIG_FILE, 'utf-8');
+    const parsed = JSON.parse(raw);
+    return typeof parsed === 'object' && parsed !== null ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function getAlbumPhotoDirectory(): string | null {
+  const config = readPersistedConfigFile();
+  const album = config.album as { photoDirectory?: string } | undefined;
+  const dir = album?.photoDirectory?.trim();
+  return dir ? dir : null;
+}
+
+function getKiraWorkRootDirectory(): string | null {
+  const config = readPersistedConfigFile();
+  const kira = config.kira as { workRootDirectory?: string } | undefined;
+  const dir = kira?.workRootDirectory?.trim();
+  return dir ? dir : null;
+}
+
+function getTavilyConfig(): { apiKey: string; baseUrl: string } | null {
+  const config = readPersistedConfigFile();
+  const tavily = config.tavily as { apiKey?: string; baseUrl?: string } | undefined;
+  const apiKey = tavily?.apiKey?.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: tavily?.baseUrl?.trim() || 'https://api.tavily.com/search',
+  };
+}
+
+function albumFolderPlugin(): Plugin {
+  const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.avif']);
+  const MIME_TYPES: Record<string, string> = {
+    '.png': 'image/png',
+    '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.gif': 'image/gif',
+    '.webp': 'image/webp',
+    '.bmp': 'image/bmp',
+    '.avif': 'image/avif',
+  };
+
+  const walkImages = (rootDir: string, currentDir: string): Array<{ relativePath: string; absolutePath: string }> => {
+    const entries = fs.readdirSync(currentDir, { withFileTypes: true });
+    const files: Array<{ relativePath: string; absolutePath: string }> = [];
+
+    for (const entry of entries) {
+      const absolutePath = join(currentDir, entry.name);
+      if (entry.isDirectory()) {
+        files.push(...walkImages(rootDir, absolutePath));
+        continue;
+      }
+
+      const ext = absolutePath.slice(absolutePath.lastIndexOf('.')).toLowerCase();
+      if (!IMAGE_EXTENSIONS.has(ext)) continue;
+      const relativePath = absolutePath.slice(rootDir.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+      files.push({ relativePath, absolutePath });
+    }
+
+    return files;
+  };
+
+  return {
+    name: 'album-folder',
+    configureServer(server) {
+      server.middlewares.use('/api/album-files', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method !== 'GET') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const rootDir = getAlbumPhotoDirectory();
+          if (!rootDir) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ configured: false, files: [] }));
+            return;
+          }
+
+          const resolvedRoot = resolve(rootDir);
+          if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ configured: true, exists: false, files: [] }));
+            return;
+          }
+
+          const files = walkImages(resolvedRoot, resolvedRoot)
+            .map(({ relativePath, absolutePath }) => {
+              const stat = fs.statSync(absolutePath);
+              return {
+                id: relativePath,
+                name: relativePath.split('/').pop() || relativePath,
+                src: `/api/album-file?path=${encodeURIComponent(relativePath)}`,
+                createdAt: stat.mtimeMs,
+              };
+            })
+            .sort((a, b) => b.createdAt - a.createdAt);
+
+          res.writeHead(200);
+          res.end(JSON.stringify({ configured: true, exists: true, files }));
+        } catch (err) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
+
+      server.middlewares.use('/api/album-file', (req, res) => {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const rootDir = getAlbumPhotoDirectory();
+          const url = new URL(req.url || '', 'http://localhost');
+          const relPath = url.searchParams.get('path') || '';
+          if (!rootDir || !relPath) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'File not found' }));
+            return;
+          }
+
+          const resolvedRoot = resolve(rootDir);
+          const candidatePath = resolve(resolvedRoot, relPath);
+          const rootPrefix = resolvedRoot.endsWith('\\') || resolvedRoot.endsWith('/')
+            ? resolvedRoot
+            : `${resolvedRoot}${os.platform() === 'win32' ? '\\' : '/'}`;
+          if (candidatePath !== resolvedRoot && !candidatePath.startsWith(rootPrefix)) {
+            res.writeHead(403, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Forbidden path' }));
+            return;
+          }
+
+          if (!fs.existsSync(candidatePath) || !fs.statSync(candidatePath).isFile()) {
+            res.writeHead(404, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'File not found' }));
+            return;
+          }
+
+          const ext = candidatePath.slice(candidatePath.lastIndexOf('.')).toLowerCase();
+          res.writeHead(200, { 'Content-Type': MIME_TYPES[ext] || 'application/octet-stream' });
+          res.end(fs.readFileSync(candidatePath));
+        } catch (err) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
+    },
+  };
+}
+
+function kiraConfigPlugin(): Plugin {
+  return {
+    name: 'kira-config',
+    configureServer(server) {
+      server.middlewares.use('/api/kira-config', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method !== 'GET') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const workRootDirectory = getKiraWorkRootDirectory();
+          if (!workRootDirectory) {
+            res.writeHead(200);
+            res.end(JSON.stringify({ configured: false, projects: [] }));
+            return;
+          }
+
+          const resolvedRoot = resolve(workRootDirectory);
+          const exists = fs.existsSync(resolvedRoot) && fs.statSync(resolvedRoot).isDirectory();
+
+          const projects = exists
+            ? fs
+                .readdirSync(resolvedRoot, { withFileTypes: true })
+                .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+                .map((entry) => ({
+                  name: entry.name,
+                  path: resolve(resolvedRoot, entry.name),
+                }))
+                .sort((a, b) => a.name.localeCompare(b.name))
+            : [];
+
+          res.writeHead(200);
+          res.end(
+            JSON.stringify({
+              configured: true,
+              exists,
+              workRootDirectory: resolvedRoot,
+              projects,
+            }),
+          );
+        } catch (err) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: String(err) }));
+        }
+      });
+    },
+  };
+}
+
+function browserReaderProxyPlugin(): Plugin {
+  const FETCH_TIMEOUT_MS = 10000;
+  const injectBaseHref = (html: string, finalUrl: string): string => {
+    const cleaned = html.replace(
+      /<meta[^>]+http-equiv=["']Content-Security-Policy["'][^>]*>/gi,
+      '',
+    );
+    const baseTag = `<base href="${finalUrl}">`;
+    if (/<head[^>]*>/i.test(cleaned)) {
+      return cleaned.replace(/<head([^>]*)>/i, `<head$1>${baseTag}`);
+    }
+    return `${baseTag}${cleaned}`;
+  };
+
+  return {
+    name: 'browser-reader-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/browser-reader', async (req, res) => {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const url = new URL(req.url || '', 'http://localhost');
+          const targetRaw = url.searchParams.get('url') || '';
+          if (!targetRaw) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing url parameter' }));
+            return;
+          }
+
+          const target = new URL(targetRaw);
+          if (!['http:', 'https:'].includes(target.protocol)) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Only http and https URLs are supported' }));
+            return;
+          }
+
+          const controller = new AbortController();
+          const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+          const fetchRes = await fetch(target.toString(), {
+            redirect: 'follow',
+            signal: controller.signal,
+            headers: {
+              'user-agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
+              accept: 'text/html,application/xhtml+xml',
+            },
+          }).finally(() => clearTimeout(timer));
+
+          const contentType = fetchRes.headers.get('content-type') || 'text/html; charset=utf-8';
+          if (!contentType.toLowerCase().includes('text/html')) {
+            res.writeHead(415, { 'Content-Type': 'application/json' });
+            res.end(
+              JSON.stringify({
+                error: `Unsupported content type: ${contentType}`,
+                finalUrl: fetchRes.url,
+              }),
+            );
+            return;
+          }
+
+          const html = await fetchRes.text();
+          const finalUrl = fetchRes.url || target.toString();
+          res.writeHead(fetchRes.status, {
+            'Content-Type': 'text/html; charset=utf-8',
+            'X-Final-Url': finalUrl,
+          });
+          res.end(injectBaseHref(html, finalUrl));
+        } catch (err) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+      });
+    },
+  };
+}
+
+function youtubeSearchPlugin(): Plugin {
+  const extractInitialData = (html: string): Record<string, unknown> | null => {
+    const patterns = [
+      /var ytInitialData\s*=\s*(\{[\s\S]*?\});<\/script>/,
+      /window\[['"]ytInitialData['"]\]\s*=\s*(\{[\s\S]*?\});<\/script>/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = html.match(pattern);
+      if (!match?.[1]) continue;
+      try {
+        return JSON.parse(match[1]) as Record<string, unknown>;
+      } catch {
+        continue;
+      }
+    }
+    return null;
+  };
+
+  const asText = (value: unknown): string => {
+    if (!value) return '';
+    if (typeof value === 'string') return value;
+    if (typeof value === 'object' && value !== null) {
+      const obj = value as { simpleText?: string; runs?: Array<{ text?: string }> };
+      if (typeof obj.simpleText === 'string') return obj.simpleText;
+      if (Array.isArray(obj.runs)) {
+        return obj.runs.map((run) => run.text || '').join('');
+      }
+    }
+    return '';
+  };
+
+  type SearchResult = {
+    id: string;
+    title: string;
+    channel: string;
+    duration: string;
+    views: string;
+    published: string;
+    thumbnail: string;
+    url: string;
+  };
+
+  const collectVideoRenderers = (node: unknown, acc: Array<Record<string, unknown>>) => {
+    if (!node) return;
+    if (Array.isArray(node)) {
+      for (const item of node) collectVideoRenderers(item, acc);
+      return;
+    }
+    if (typeof node !== 'object') return;
+    const obj = node as Record<string, unknown>;
+    if (obj.videoRenderer && typeof obj.videoRenderer === 'object') {
+      acc.push(obj.videoRenderer as Record<string, unknown>);
+    }
+    for (const value of Object.values(obj)) {
+      collectVideoRenderers(value, acc);
+    }
+  };
+
+  const normalizeResults = (items: Array<Record<string, unknown>>): SearchResult[] =>
+    items
+      .map((item) => {
+        const videoId = typeof item.videoId === 'string' ? item.videoId : '';
+        if (!videoId) return null;
+        const thumbList =
+          ((item.thumbnail as { thumbnails?: Array<{ url?: string }> } | undefined)?.thumbnails ?? []);
+        return {
+          id: videoId,
+          title: asText(item.title),
+          channel: asText(
+            (item.ownerText as Record<string, unknown> | undefined) ??
+              (item.longBylineText as Record<string, unknown> | undefined),
+          ),
+          duration: asText(item.lengthText),
+          views: asText(item.viewCountText),
+          published: asText(item.publishedTimeText),
+          thumbnail: thumbList[thumbList.length - 1]?.url || '',
+          url: `https://www.youtube.com/watch?v=${videoId}`,
+        };
+      })
+      .filter((item): item is SearchResult => item !== null && !!item.title)
+      .slice(0, 24);
+
+  return {
+    name: 'youtube-search',
+    configureServer(server) {
+      server.middlewares.use('/api/youtube-search', async (req, res) => {
+        if (req.method !== 'GET') {
+          res.writeHead(405, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const url = new URL(req.url || '', 'http://localhost');
+          const query = (url.searchParams.get('query') || '').trim();
+          if (!query) {
+            res.writeHead(400, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Missing query parameter' }));
+            return;
+          }
+
+          const targetUrl = `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}&hl=en`;
+          const fetchRes = await fetch(targetUrl, {
+            headers: {
+              'user-agent':
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123 Safari/537.36',
+              accept: 'text/html,application/xhtml+xml',
+              'accept-language': 'en-US,en;q=0.9',
+            },
+          });
+
+          const html = await fetchRes.text();
+          const initialData = extractInitialData(html);
+          if (!initialData) {
+            res.writeHead(502, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: 'Failed to parse YouTube results' }));
+            return;
+          }
+
+          const renderers: Array<Record<string, unknown>> = [];
+          collectVideoRenderers(initialData, renderers);
+          const results = normalizeResults(renderers);
+
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ query, results }));
+        } catch (err) {
+          res.writeHead(502, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+        }
+      });
+    },
+  };
+}
+
+function tavilyProxyPlugin(): Plugin {
+  return {
+    name: 'tavily-proxy',
+    configureServer(server) {
+      server.middlewares.use('/api/tavily-search', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        const tavily = getTavilyConfig();
+        if (!tavily) {
+          res.writeHead(400);
+          res.end(JSON.stringify({ error: 'Missing tavily.apiKey in config.json' }));
+          return;
+        }
+
+        const chunks: Buffer[] = [];
+        req.on('data', (chunk: Buffer) => chunks.push(chunk));
+        req.on('end', async () => {
+          try {
+            const body = Buffer.concat(chunks).toString() || '{}';
+            const parsed = JSON.parse(body) as Record<string, unknown>;
+            const response = await fetch(tavily.baseUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${tavily.apiKey}`,
+              },
+              body: JSON.stringify({
+                ...parsed,
+                include_answer: 'basic',
+                include_favicon: true,
+              }),
+            });
+
+            const text = await response.text();
+            res.writeHead(response.status);
+            res.end(text);
+          } catch (err) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          }
+        });
+      });
+    },
+  };
+}
 
 /** LLM config persistence plugin — reads/writes config to ~/.openroom/config.json */
 function llmConfigPlugin(): Plugin {
@@ -84,6 +563,11 @@ function sessionDataPlugin(): Plugin {
         const url = new URL(req.url || '', 'http://localhost');
         const relPath = url.searchParams.get('path') || '';
         const action = url.searchParams.get('action') || '';
+        console.info('[SessionData] Request received', {
+          method: req.method,
+          relPath,
+          action,
+        });
 
         if (!relPath) {
           res.writeHead(400);
@@ -158,7 +642,7 @@ function sessionDataPlugin(): Plugin {
           req.on('end', () => {
             try {
               const buf = Buffer.concat(chunks);
-              const dir = filePath.substring(0, filePath.lastIndexOf('/'));
+              const dir = dirname(filePath);
               fs.mkdirSync(dir, { recursive: true });
               const ct = (req.headers['content-type'] || '').toLowerCase();
               if (
@@ -170,9 +654,22 @@ function sessionDataPlugin(): Plugin {
               } else {
                 fs.writeFileSync(filePath, buf.toString(), 'utf-8');
               }
+              if (safePath.includes('/memory/') || safePath.endsWith('/chat/chat.json')) {
+                console.info('[SessionData] Wrote file', {
+                  path: safePath,
+                  contentType: ct || 'text/plain',
+                  bytes: buf.length,
+                  preview: buf.toString('utf-8').slice(0, 200),
+                });
+              }
               res.writeHead(200);
               res.end(JSON.stringify({ ok: true }));
             } catch (err) {
+              console.error('[SessionData] Failed to write file', {
+                path: safePath,
+                filePath,
+                error: String(err),
+              });
               res.writeHead(500);
               res.end(JSON.stringify({ error: String(err) }));
             }
@@ -269,6 +766,12 @@ function llmProxyPlugin(): Plugin {
         req.on('end', async () => {
           try {
             const body = Buffer.concat(chunks).toString();
+            let parsedBody: Record<string, unknown> | null = null;
+            try {
+              parsedBody = JSON.parse(body) as Record<string, unknown>;
+            } catch {
+              // ignore non-JSON bodies
+            }
             const headers: Record<string, string> = {};
             // Forward all headers except host/connection/internal ones
             const skipKeys = new Set(['host', 'connection', 'content-length', 'x-llm-target-url']);
@@ -282,34 +785,44 @@ function llmProxyPlugin(): Plugin {
               }
             }
 
+            console.info('[LLM Proxy] Request', {
+              method: req.method || 'POST',
+              targetUrl,
+              model: parsedBody?.model,
+              messageCount: Array.isArray(parsedBody?.messages) ? parsedBody?.messages.length : null,
+              toolCount: Array.isArray(parsedBody?.tools) ? parsedBody?.tools.length : null,
+            });
+
             const fetchRes = await fetch(targetUrl, {
               method: req.method || 'POST',
               headers,
               body,
             });
 
+            console.info('[LLM Proxy] Response status', {
+              targetUrl,
+              status: fetchRes.status,
+              ok: fetchRes.ok,
+              contentType: fetchRes.headers.get('content-type'),
+              contentLength: fetchRes.headers.get('content-length'),
+              contentEncoding: fetchRes.headers.get('content-encoding'),
+            });
+            const bytes = Buffer.from(await fetchRes.arrayBuffer());
+            const text = bytes.toString('utf8');
+            console.info('[LLM Proxy] Response byte length', bytes.length);
+            console.info(
+              '[LLM Proxy] Response body preview (json)',
+              JSON.stringify(text.slice(0, 500)),
+            );
             res.writeHead(fetchRes.status, {
               'Content-Type': fetchRes.headers.get('Content-Type') || 'application/json',
-              'Transfer-Encoding': 'chunked',
             });
-
-            if (fetchRes.body) {
-              const reader = (fetchRes.body as ReadableStream<Uint8Array>).getReader();
-              const pump = async () => {
-                let done = false;
-                while (!done) {
-                  const result = await reader.read();
-                  done = result.done;
-                  if (!done) res.write(result.value);
-                }
-                res.end();
-              };
-              pump().catch(() => res.end());
-            } else {
-              const text = await fetchRes.text();
-              res.end(text);
-            }
+            res.end(bytes);
           } catch (err: unknown) {
+            console.error('[LLM Proxy] Request failed', {
+              targetUrl,
+              error: err instanceof Error ? err.message : String(err),
+            });
             res.writeHead(502, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
           }
@@ -362,8 +875,58 @@ function jsonFilePlugin(name: string, apiPath: string, filePath: string): Plugin
           return;
         }
 
+        if (req.method === 'DELETE') {
+          try {
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+            res.writeHead(200);
+            res.end(JSON.stringify({ ok: true }));
+          } catch (err) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: String(err) }));
+          }
+          return;
+        }
+
         res.writeHead(405);
         res.end(JSON.stringify({ error: 'Method not allowed' }));
+      });
+    },
+  };
+}
+
+function openroomResetPlugin(): Plugin {
+  return {
+    name: 'openroom-reset',
+    configureServer(server) {
+      server.middlewares.use('/api/openroom-reset', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method !== 'DELETE') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        try {
+          const targets = [LLM_CONFIG_FILE, CHARACTERS_FILE, MODS_FILE];
+          for (const filePath of targets) {
+            if (fs.existsSync(filePath)) {
+              fs.unlinkSync(filePath);
+            }
+          }
+
+          if (fs.existsSync(SESSIONS_DIR)) {
+            fs.rmSync(SESSIONS_DIR, { recursive: true, force: true });
+          }
+
+          res.writeHead(200);
+          res.end(JSON.stringify({ ok: true }));
+        } catch (err) {
+          res.writeHead(500);
+          res.end(JSON.stringify({ error: String(err) }));
+        }
       });
     },
   };
@@ -394,6 +957,17 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   const plugins: PluginOption[] = [
     llmConfigPlugin(),
     sessionDataPlugin(),
+    albumFolderPlugin(),
+    kiraConfigPlugin(),
+    kiraAutomationPlugin({
+      configFile: LLM_CONFIG_FILE,
+      sessionsDir: SESSIONS_DIR,
+      getWorkRootDirectory: getKiraWorkRootDirectory,
+    }),
+    browserReaderProxyPlugin(),
+    youtubeSearchPlugin(),
+    tavilyProxyPlugin(),
+    openroomResetPlugin(),
     logServerPlugin(),
     llmProxyPlugin(),
     jsonFilePlugin('characters', '/api/characters', CHARACTERS_FILE),

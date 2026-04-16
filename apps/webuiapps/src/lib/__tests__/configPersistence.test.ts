@@ -32,6 +32,22 @@ const MOCK_IMAGEGEN_CONFIG: ImageGenConfig = {
 const MOCK_PERSISTED: PersistedConfig = {
   llm: MOCK_LLM_CONFIG,
   imageGen: MOCK_IMAGEGEN_CONFIG,
+  kira: {
+    workRootDirectory: 'F:/workspace/project-root',
+    projectDefaults: {
+      autoCommit: true,
+    },
+    workerLlm: {
+      model: 'openai/gpt-5.4',
+    },
+    reviewerLlm: {
+      provider: 'anthropic',
+      model: 'claude-sonnet-4.6',
+    },
+  },
+  app: {
+    title: 'My Room',
+  },
 };
 
 // ─── Setup / Teardown ───────────────────────────────────────────────────────────
@@ -58,10 +74,15 @@ describe('loadPersistedConfig()', () => {
     expect(result).toEqual(MOCK_PERSISTED);
     expect(result?.llm).toEqual(MOCK_LLM_CONFIG);
     expect(result?.imageGen).toEqual(MOCK_IMAGEGEN_CONFIG);
+    expect(result?.kira?.workRootDirectory).toBe('F:/workspace/project-root');
+    expect(result?.kira?.projectDefaults?.autoCommit).toBe(true);
+    expect(result?.kira?.workerLlm?.model).toBe('openai/gpt-5.4');
+    expect(result?.kira?.reviewerLlm?.provider).toBe('anthropic');
+    expect(result?.kira?.reviewerLlm?.model).toBe('claude-sonnet-4.6');
   });
 
   it('returns { llm } only when imageGen is absent', async () => {
-    const withoutImageGen = { llm: MOCK_LLM_CONFIG };
+    const withoutImageGen = { llm: MOCK_LLM_CONFIG, app: { title: 'My Room' } };
     globalThis.fetch = vi.fn().mockResolvedValueOnce({
       ok: true,
       json: () => Promise.resolve(withoutImageGen),
@@ -71,6 +92,7 @@ describe('loadPersistedConfig()', () => {
 
     expect(result?.llm).toEqual(MOCK_LLM_CONFIG);
     expect(result?.imageGen).toBeUndefined();
+    expect(result?.app?.title).toBe('My Room');
   });
 
   it('migrates legacy flat LLMConfig format to { llm } wrapper', async () => {
@@ -137,6 +159,20 @@ describe('savePersistedConfig()', () => {
     const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
     expect(body.llm).toEqual(MOCK_LLM_CONFIG);
     expect(body.imageGen).toEqual(MOCK_IMAGEGEN_CONFIG);
+    expect(body.kira).toEqual({
+      workRootDirectory: 'F:/workspace/project-root',
+      projectDefaults: {
+        autoCommit: true,
+      },
+      workerLlm: {
+        model: 'openai/gpt-5.4',
+      },
+      reviewerLlm: {
+        provider: 'anthropic',
+        model: 'claude-sonnet-4.6',
+      },
+    });
+    expect(body.app).toEqual({ title: 'My Room' });
   });
 
   it('omits imageGen when not provided', async () => {

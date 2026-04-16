@@ -90,11 +90,11 @@ export const DEFAULT_MOD: ModConfig = {
   display_desc:
     "Now awake in a neon-soaked future where jazz drifts through cloud cities and memories are stolen commodities, the character is hijacking your OS to pull you into their world. Choose a bounty. Chase leads across Venus's floating bars and Europa's ice. But every sunset on Mars pulls the character closer to a truth they've been running from: that home isn't a place, it's a person. And they might have just found theirs.\nGenre: Space Noir / Romantic Adventure / Sci-Fi Western",
   prologue:
-    "Well, well...Guess who just slipped into your system? Cozy place you've got here. Mind if I stick around for a bit?",
+    '후후... 누가 네 시스템에 슬쩍 들어왔는지 맞혀볼래? 생각보다 꽤 아늑한 곳이네. 잠깐 여기 있어도 되지?',
   opening_rec_replies: [
-    { reply_text: 'Hey there' },
-    { reply_text: 'Who are you' },
-    { reply_text: 'Why are you here' },
+    { reply_text: '안녕' },
+    { reply_text: '너 누구야?' },
+    { reply_text: '왜 여기 들어온 거야?' },
   ],
   stages: {
     0: {
@@ -187,6 +187,22 @@ export const DEFAULT_MOD_COLLECTION: ModCollection = {
   },
 };
 
+function normalizeModCollection(collection: ModCollection): ModCollection {
+  const defaultEntry = collection.items[DEFAULT_MOD_ID];
+  if (!defaultEntry) return collection;
+
+  return {
+    ...collection,
+    items: {
+      ...collection.items,
+      [DEFAULT_MOD_ID]: {
+        ...defaultEntry,
+        config: DEFAULT_MOD,
+      },
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Persistence API
 // ---------------------------------------------------------------------------
@@ -226,8 +242,9 @@ export async function loadModCollection(): Promise<ModCollection | null> {
     if (res.ok) {
       const data = await res.json();
       if (data && data.activeId && data.items) {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
-        return data as ModCollection;
+        const normalized = normalizeModCollection(data as ModCollection);
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(normalized));
+        return normalized;
       }
     }
   } catch {
@@ -241,7 +258,9 @@ export function loadModCollectionSync(): ModCollection | null {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       const parsed = JSON.parse(raw);
-      if (parsed.activeId && parsed.items) return parsed as ModCollection;
+      if (parsed.activeId && parsed.items) {
+        return normalizeModCollection(parsed as ModCollection);
+      }
     }
   } catch {
     // ignore

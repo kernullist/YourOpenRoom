@@ -5,7 +5,7 @@ import { cleanNil } from '@/utils/nil';
 const Shell = lazy(() => import('@/components/Shell'));
 const Home = lazy(() => import('@/pages/Home'));
 const Twitter = lazy(() => import('@/pages/Twitter'));
-const MusicApp = lazy(() => import('@/pages/MusicApp'));
+const YouTube = lazy(() => import('@/pages/MusicApp'));
 const Diary = lazy(() => import('@/pages/Diary'));
 const Album = lazy(() => import('@/pages/Album'));
 const FreeCell = lazy(() => import('@/pages/FreeCell'));
@@ -14,6 +14,10 @@ const Gomoku = lazy(() => import('@/pages/Gomoku'));
 const Chess = lazy(() => import('@/pages/Chess'));
 const EvidenceVault = lazy(() => import('@/pages/EvidenceVault'));
 const CyberNews = lazy(() => import('@/pages/CyberNews'));
+const Calendar = lazy(() => import('@/pages/Calendar'));
+const Notes = lazy(() => import('@/pages/Notes'));
+const BrowserReader = lazy(() => import('@/pages/BrowserReader'));
+const Kira = lazy(() => import('@/pages/Kira'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -34,10 +38,10 @@ const routerList: RouteObject[] = [
     ),
   },
   {
-    path: '/musicPlayer',
+    path: '/youtube',
     element: (
       <React.Suspense>
-        <MusicApp />
+        <YouTube />
       </React.Suspense>
     ),
   },
@@ -102,6 +106,38 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <CyberNews />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/calendar',
+    element: (
+      <React.Suspense>
+        <Calendar />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/notes',
+    element: (
+      <React.Suspense>
+        <Notes />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/browser',
+    element: (
+      <React.Suspense>
+        <BrowserReader />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/kira',
+    element: (
+      <React.Suspense>
+        <Kira />
       </React.Suspense>
     ),
   },

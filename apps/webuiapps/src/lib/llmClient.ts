@@ -23,10 +23,12 @@ export async function loadConfig(): Promise<LLMConfig | null> {
 
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
   } catch {
     return null;
   }
+
+  return null;
 }
 
 export async function saveConfig(
@@ -35,11 +37,18 @@ export async function saveConfig(
 ): Promise<void> {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
+  const existing = await loadPersistedConfig();
   const persisted: import('./configPersistence').PersistedConfig = {
     llm: config,
+    ...(existing?.album ? { album: existing.album } : {}),
+    ...(existing?.kira ? { kira: existing.kira } : {}),
+    ...(existing?.app ? { app: existing.app } : {}),
+    ...(existing?.tavily ? { tavily: existing.tavily } : {}),
   };
   if (imageGenConfig) {
     persisted.imageGen = imageGenConfig;
+  } else if (existing?.imageGen) {
+    persisted.imageGen = existing.imageGen;
   }
 
   await savePersistedConfig(persisted);
@@ -48,10 +57,12 @@ export async function saveConfig(
 export function loadConfigSync(): LLMConfig | null {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
-    return raw ? JSON.parse(raw) : null;
+    if (raw) return JSON.parse(raw);
   } catch {
     return null;
   }
+
+  return null;
 }
 
 export interface ChatMessage {
@@ -192,6 +203,12 @@ export async function chat(
   tools: ToolDef[],
   config: LLMConfig,
 ): Promise<LLMResponse> {
+  console.info('[LLM] chat() start', {
+    provider: config.provider,
+    model: config.model,
+    messageCount: messages.length,
+    toolCount: tools.length,
+  });
   logger.info(
     'LLM',
     'chat() called, provider:',
@@ -215,6 +232,7 @@ async function chatOpenAI(
   const body: Record<string, unknown> = {
     model: config.model,
     messages,
+    stream: false,
   };
   if (tools.length > 0) {
     body.tools = tools;
@@ -222,6 +240,12 @@ async function chatOpenAI(
 
   const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
   const toolNames = Array.isArray(tools) ? tools.map((t) => t.function?.name).filter(Boolean) : [];
+  console.info('[LLM] OpenAI-compatible request', {
+    targetUrl,
+    model: config.model,
+    messageCount: messages.length,
+    toolNames,
+  });
   logger.info('ToolLog', 'LLM Request: toolCount=', tools.length, 'toolNames=', toolNames);
   logger.info('LLM', 'Request:', {
     targetUrl,
@@ -237,17 +261,32 @@ async function chatOpenAI(
   if (config.apiKey.trim()) {
     headers.Authorization = `Bearer ${config.apiKey}`;
   }
-  const res = await fetch('/api/llm-proxy', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch('/api/llm-proxy', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error('[LLM] OpenAI-compatible request failed before response', err);
+    throw err;
+  }
 
+  console.info('[LLM] OpenAI-compatible response received', {
+    status: res.status,
+    ok: res.ok,
+  });
   logger.info('LLM', 'Response status:', res.status);
   const text = await res.text();
+  console.info('[LLM] OpenAI-compatible response body preview', text.slice(0, 500));
   logger.info('LLM', 'Response body:', text.slice(0, 500));
 
   if (!res.ok) {
+    console.error('[LLM] OpenAI-compatible response error', {
+      status: res.status,
+      bodyPreview: text.slice(0, 500),
+    });
     throw new Error(`LLM API error ${res.status}: ${text}`);
   }
 
@@ -258,6 +297,13 @@ async function chatOpenAI(
   const calledNames = toolCalls
     .map((tc: { function?: { name?: string } }) => tc.function?.name)
     .filter(Boolean);
+  console.info('[LLM] OpenAI-compatible parsed response', {
+    contentPreview: (
+      choice?.tool_calls?.length ? stripThinkTags(choice?.content || '') : parsedInline.content
+    ).slice(0, 200),
+    toolCallCount: toolCalls.length,
+    calledNames,
+  });
   logger.info(
     'ToolLog',
     'LLM Response: toolCalls count=',
@@ -326,6 +372,12 @@ async function chatAnthropic(
   if (anthropicTools.length > 0) body.tools = anthropicTools;
 
   const anthropicToolNames = anthropicTools.map((t) => t.name).filter(Boolean);
+  console.info('[LLM] Anthropic-compatible request', {
+    targetUrl: joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl)),
+    model: config.model,
+    messageCount: anthropicMessages.length,
+    toolNames: anthropicToolNames,
+  });
   logger.info(
     'ToolLog',
     'Anthropic Request: toolCount=',
@@ -349,20 +401,38 @@ async function chatAnthropic(
   if (config.apiKey.trim()) {
     headers['x-api-key'] = config.apiKey;
   }
-  const res = await fetch('/api/llm-proxy', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
+  let res: Response;
+  try {
+    res = await fetch('/api/llm-proxy', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+  } catch (err) {
+    console.error('[LLM] Anthropic-compatible request failed before response', err);
+    throw err;
+  }
 
+  console.info('[LLM] Anthropic-compatible response received', {
+    status: res.status,
+    ok: res.ok,
+  });
   logger.info('LLM', 'Anthropic Response status:', res.status);
   if (!res.ok) {
     const text = await res.text();
+    console.error('[LLM] Anthropic-compatible response error', {
+      status: res.status,
+      bodyPreview: text.slice(0, 500),
+    });
     logger.error('LLM', 'Anthropic Error body:', text.slice(0, 500));
     throw new Error(`Anthropic API error ${res.status}: ${text}`);
   }
 
   const data = await res.json();
+  console.info(
+    '[LLM] Anthropic-compatible response body preview',
+    JSON.stringify(data).slice(0, 500),
+  );
   logger.info('LLM', 'Anthropic Response data:', JSON.stringify(data).slice(0, 500));
   let content = '';
   const toolCalls: ToolCall[] = [];
@@ -383,6 +453,11 @@ async function chatAnthropic(
   }
 
   const calledNames = toolCalls.map((tc) => tc.function.name).filter(Boolean);
+  console.info('[LLM] Anthropic-compatible parsed response', {
+    contentPreview: stripThinkTags(content).slice(0, 200),
+    toolCallCount: toolCalls.length,
+    calledNames,
+  });
   logger.info(
     'ToolLog',
     'Anthropic Response: toolCalls count=',

@@ -1,6 +1,6 @@
 app_id: 3
-app_name: musicPlayer
-app_display_name: 音乐播放器
+app_name: youtube
+app_display_name: YouTube
 version: "1.0.0"
 description: >
   音乐播放器应用。歌曲存储在 songs/，播放列表存储在 playlists/，state.json 保存播放进度和模式。

@@ -1,0 +1,254 @@
+.calendar {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 32%),
+    linear-gradient(135deg, #07131d 0%, #0d1b2a 45%, #132238 100%);
+  color: #e5eef8;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  border-right: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(7, 19, 29, 0.54);
+  backdrop-filter: blur(18px);
+}
+
+.sidebarHeader,
+.sectionHeader,
+.editorHeader,
+.eventCardTop,
+.eventCardBottom,
+.actions,
+.row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.section {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.section h2,
+.heading {
+  margin: 0;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+
+.heading {
+  font-size: 28px;
+  line-height: 1.05;
+}
+
+.eventList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.eventCard {
+  width: 100%;
+  padding: 14px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(15, 23, 42, 0.75);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    border-color 0.16s ease,
+    box-shadow 0.16s ease;
+}
+
+.eventCard:hover,
+.eventCardActive {
+  transform: translateY(-1px);
+  border-color: rgba(125, 211, 252, 0.65);
+  box-shadow: 0 18px 34px rgba(8, 15, 29, 0.28);
+}
+
+.eventTitle {
+  display: block;
+  margin: 10px 0 8px;
+  font-size: 15px;
+}
+
+.eventNotes {
+  margin: 0;
+  color: #bfd2e7;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.eventTime,
+.reminderMeta,
+.empty,
+.sectionHeader span {
+  color: #94a3b8;
+  font-size: 12px;
+}
+
+.statusBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.statussoon {
+  background: rgba(251, 191, 36, 0.16);
+  color: #facc15;
+}
+
+.statusupcoming {
+  background: rgba(56, 189, 248, 0.16);
+  color: #7dd3fc;
+}
+
+.statuspast {
+  background: rgba(248, 113, 113, 0.16);
+  color: #fca5a5;
+}
+
+.checkRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #dbe7f4;
+}
+
+.editor {
+  padding: 24px;
+  overflow: auto;
+}
+
+.editorCard {
+  max-width: 760px;
+  padding: 24px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, 0.94), rgba(15, 23, 42, 0.82)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.1), transparent 40%);
+  box-shadow: 0 24px 60px rgba(2, 6, 23, 0.32);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.field span {
+  font-size: 13px;
+  color: #cbd5e1;
+}
+
+.field input,
+.field select,
+.field textarea {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  border-radius: 14px;
+  background: rgba(15, 23, 42, 0.76);
+  color: #f8fafc;
+  padding: 12px 14px;
+  font: inherit;
+  resize: vertical;
+}
+
+.field input:focus,
+.field select:focus,
+.field textarea:focus {
+  outline: none;
+  border-color: rgba(125, 211, 252, 0.72);
+  box-shadow: 0 0 0 4px rgba(56, 189, 248, 0.14);
+}
+
+.primaryButton,
+.secondaryButton,
+.newButton,
+.deleteButton {
+  border: 0;
+  border-radius: 999px;
+  padding: 10px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.primaryButton,
+.newButton {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #02111d;
+  font-weight: 700;
+}
+
+.secondaryButton {
+  background: rgba(148, 163, 184, 0.16);
+  color: #e2e8f0;
+}
+
+.deleteButton {
+  background: rgba(248, 113, 113, 0.12);
+  color: #fda4af;
+}
+
+.loading,
+.empty {
+  display: grid;
+  place-items: center;
+  min-height: 120px;
+  border-radius: 20px;
+  border: 1px dashed rgba(148, 163, 184, 0.22);
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.errorBox {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(239, 68, 68, 0.12);
+  color: #fecaca;
+}
+
+@media (max-width: 900px) {
+  .calendar {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.18);
+  }
+
+  .row,
+  .actions,
+  .editorHeader {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}

@@ -125,13 +125,27 @@ export async function saveMemory(
   };
 
   try {
-    await fetch(memoryApiUrl(sessionPath, `${entry.id}.json`), {
+    const url = memoryApiUrl(sessionPath, `${entry.id}.json`);
+    console.info('[Memory] Saving memory', {
+      sessionPath,
+      url,
+      category: entry.category,
+      content: entry.content,
+    });
+    const res = await fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(entry),
     });
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('[Memory] Failed to save memory', {
+        status: res.status,
+        body: text,
+      });
+    }
   } catch {
-    // silently ignore
+    console.error('[Memory] Failed to save memory due to network/API error');
   }
 
   return entry;

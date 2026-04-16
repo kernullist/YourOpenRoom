@@ -1,7 +1,8 @@
 /**
  * Unified config persistence for ~/.openroom/config.json
  *
- * The persisted format is: { llm: LLMConfig, imageGen?: ImageGenConfig }
+ * The persisted format is:
+ * { llm: LLMConfig, imageGen?: ImageGenConfig, album?: AlbumConfig, kira?: KiraConfig, app?: AppConfig, tavily?: TavilyConfig }
  * Legacy files that contain a flat LLMConfig (with top-level "provider") are
  * automatically migrated on read.
  */
@@ -9,9 +10,41 @@
 import type { LLMConfig } from './llmModels';
 import type { ImageGenConfig } from './imageGenClient';
 
+export interface AlbumConfig {
+  photoDirectory?: string;
+}
+
+export interface KiraRoleLlmConfig extends Partial<LLMConfig> {}
+
+export interface KiraProjectDefaults {
+  autoCommit?: boolean;
+}
+
+export interface KiraConfig {
+  workRootDirectory?: string;
+  workerModel?: string;
+  reviewerModel?: string;
+  workerLlm?: KiraRoleLlmConfig;
+  reviewerLlm?: KiraRoleLlmConfig;
+  projectDefaults?: KiraProjectDefaults;
+}
+
+export interface AppConfig {
+  title?: string;
+}
+
+export interface TavilyConfig {
+  apiKey: string;
+  baseUrl?: string;
+}
+
 export interface PersistedConfig {
   llm: LLMConfig;
   imageGen?: ImageGenConfig;
+  album?: AlbumConfig;
+  kira?: KiraConfig;
+  app?: AppConfig;
+  tavily?: TavilyConfig;
 }
 
 const CONFIG_API = '/api/llm-config';

@@ -1,129 +1,60 @@
-# MusicApp Data Guide
+# YouTube App Data Guide
 
 ## Folder Structure
 
 ```text
-apps/musicPlayer/data/
-├── songs/
-│   ├── {id}.json
-│   └── ...
-├── playlists/
-│   ├── {id}.json
-│   └── ...
+/
 └── state.json
 ```
 
-## File Definitions
+## State File `/state.json`
 
-### Songs `/songs/`
+This app is a YouTube search launcher. It does not maintain song or playlist files. Everything it needs is stored in `state.json`.
 
-Song data collection, one JSON file per song. File name is `{id}.json`, written by the App or Agent upon creation.
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| searchQuery | string | `""` | Current search keyword |
+| recentSearches | SearchEntry[] | `[]` | Recent YouTube searches |
+| favoriteTopics | string[] | pre-seeded list | Saved one-click topics |
+| sidebarOpen | boolean | `false` | Whether the left saved-topics sidebar is expanded |
 
-#### Song File `{id}.json`
+### SearchEntry
 
-| Field      | Type   | Required | Description                              |
-| ---------- | ------ | -------- | ---------------------------------------- |
-| id         | string | Yes      | Unique song identifier, e.g. `song-001`  |
-| title      | string | Yes      | Song title                               |
-| artist     | string | Yes      | Artist name                              |
-| album      | string | Yes      | Album name                               |
-| duration   | number | Yes      | Duration in seconds                      |
-| coverColor | string | Yes      | Cover color (hex, e.g. `#6366F1`)        |
-| createdAt  | number | Yes      | Creation timestamp (milliseconds)        |
-| audioUrl   | string | Yes      | Audio file URL                           |
+| Field | Type | Description |
+| --- | --- | --- |
+| id | string | Unique search entry ID |
+| query | string | Search query text |
+| createdAt | number | Timestamp in milliseconds |
 
-```json
-{
-  "id": "song-001",
-  "title": "Midnight Dreams",
-  "artist": "Luna Echo",
-  "album": "Starlight Sessions",
-  "duration": 234,
-  "coverColor": "#6366F1",
-  "createdAt": 1707350400000,
-  "audioUrl": "/music/midnight-dreams.mp3"
-}
-```
-
-### Playlists `/playlists/`
-
-Playlist data collection, one JSON file per playlist. File name is `{id}.json`.
-
-#### Playlist File `{id}.json`
-
-| Field     | Type     | Required | Description                                  |
-| --------- | -------- | -------- | -------------------------------------------- |
-| id        | string   | Yes      | Unique playlist identifier, e.g. `playlist-001` |
-| name      | string   | Yes      | Playlist name                                |
-| songIds   | string[] | Yes      | List of song IDs                             |
-| createdAt | number   | Yes      | Creation timestamp (milliseconds)            |
+Example:
 
 ```json
 {
-  "id": "playlist-001",
-  "name": "Chill Vibes",
-  "songIds": ["song-001", "song-002", "song-005"],
-  "createdAt": 1707350400000
+  "searchQuery": "IVE I AM",
+  "recentSearches": [
+    {
+      "id": "search_1776200000000",
+      "query": "IVE I AM",
+      "createdAt": 1776200000000
+    }
+  ],
+  "favoriteTopics": ["lofi hip hop", "deep focus music", "IVE I AM"],
+  "sidebarOpen": false
 }
 ```
 
-### State File `/state.json`
+## Agent Workflow
 
-Runtime state file for session recovery and cross-device state synchronization. The App reads this file on startup to restore the previous state, and periodically saves during runtime.
+For normal operation:
 
-| Field            | Type           | Default     | Description                                        |
-| ---------------- | -------------- | ----------- | -------------------------------------------------- |
-| currentView      | string         | "all-songs" | Current view (`"all-songs"` \| `"playlist"`)       |
-| activePlaylistId | string \| null | null        | Currently selected playlist ID                     |
-| player           | object         | -           | Player state object (see below)                    |
-| searchQuery      | string         | ""          | Current search keyword                             |
+1. Read `meta.yaml`
+2. Read this guide
+3. Use `OPEN_SEARCH` with the exact song, artist, or topic query
+4. Use `OPEN_VIDEO` when you already have a direct YouTube watch URL
+5. Optionally use `OPEN_HOME` to open the YouTube home page
 
-#### Player State (nested in `player`)
+Notes:
 
-| Field                  | Type           | Default      | Description                                                  |
-| ---------------------- | -------------- | ------------ | ------------------------------------------------------------ |
-| currentSongId          | string \| null | null         | Currently playing song ID                                    |
-| currentPlaylistContext | string \| null | null         | Playlist ID of current playback context                      |
-| isPlaying              | boolean        | false        | Whether audio is currently playing                           |
-| currentTime            | number         | 0            | Current playback position in seconds                         |
-| volume                 | number         | 0.7          | Volume level (0.0 - 1.0)                                    |
-| playMode               | string         | "sequential" | Play mode (`"sequential"` \| `"repeat-one"` \| `"shuffle"`) |
-
-```json
-{
-  "currentView": "all-songs",
-  "activePlaylistId": null,
-  "player": {
-    "currentSongId": null,
-    "currentPlaylistContext": null,
-    "isPlaying": false,
-    "currentTime": 0,
-    "volume": 0.7,
-    "playMode": "sequential"
-  },
-  "searchQuery": ""
-}
-```
-
-## Data Synchronization
-
-### Agent Creates Data
-
-1. Agent writes song/playlist JSON files to the corresponding NAS directory (`/songs/{id}.json` or `/playlists/{id}.json`)
-2. Agent sends a data mutation Action (e.g. `CREATE_SONG`, `CREATE_PLAYLIST`)
-3. App receives the Action and calls the corresponding Repo's `refresh()` method to pull latest data from cloud
-4. UI automatically updates to display new data
-
-### User Creates Data
-
-1. User performs an operation in the App (e.g. create playlist, add song to playlist)
-2. App writes data to cloud (`syncToCloud`)
-3. App calls `reportAction` to report the user operation (e.g. `reportAction('CREATE_PLAYLIST', { playlistId: '...' })`)
-
-### Startup Recovery
-
-1. App starts, reports `DOM_READY` lifecycle event
-2. Calls `initFromCloud()` to pull all data from NAS (songs, playlists, state.json)
-3. Reads `state.json`, restores `currentView`, `activePlaylistId`, `player` and other state to memory
-4. UI rendering completes, reports `READY` lifecycle event
-5. App enters ready state and begins accepting Agent Actions
+- If the user agrees to play a recommended song, search the full artist + song title together.
+- If you already have a concrete YouTube link, prefer `OPEN_VIDEO` over a fresh search.
+- The app itself manages recent searches and saved topics in `state.json`.

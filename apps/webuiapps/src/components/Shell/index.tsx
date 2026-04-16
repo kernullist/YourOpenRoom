@@ -8,10 +8,14 @@ import {
   Circle,
   LayoutGrid,
   Mail,
+  FileText,
+  Globe,
   Crown,
   Shield,
   Newspaper,
+  CalendarDays,
   Radio,
+  KanbanSquare,
   Video,
   VideoOff,
   Plus,
@@ -57,10 +61,14 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Circle,
   LayoutGrid,
   Mail,
+  FileText,
+  Globe,
   Crown,
   Shield,
   Newspaper,
+  CalendarDays,
   Radio,
+  KanbanSquare,
   MessageCircle,
 };
 
@@ -75,6 +83,9 @@ const VIDEO_WALLPAPER =
 const STATIC_WALLPAPER =
   'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/437110625_1772619481913_Aoi_default_Commander_Room.jpg';
 
+const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
+const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+
 function isVideoUrl(url: string): boolean {
   try {
     const pathname = new URL(url).pathname.toLowerCase();
@@ -86,9 +97,16 @@ function isVideoUrl(url: string): boolean {
 
 const Shell: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(true);
+  const [chatDockSide, setChatDockSide] = useState<'left' | 'right'>(() => {
+    try {
+      return localStorage.getItem(CHAT_DOCK_SIDE_KEY) === 'left' ? 'left' : 'right';
+    } catch {
+      return 'right';
+    }
+  });
   const [reportEnabled, setReportEnabled] = useState(true);
   const [lang, setLang] = useState<'en' | 'zh'>('en');
-  const [liveWallpaper, setLiveWallpaper] = useState(false);
+  const [liveWallpaper, setLiveWallpaper] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractResult | null>(null);
@@ -214,55 +232,11 @@ const Shell: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [wallpaper, setWallpaper] = useState(VIDEO_WALLPAPER);
   const [chatZIndex, setChatZIndex] = useState(() => claimZIndex());
-  const [pipPos, setPipPos] = useState<{ x: number; y: number } | null>(null);
-  const dragRef = useRef<{ startX: number; startY: number; origX: number; origY: number } | null>(
-    null,
-  );
-  const pipRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const windows = useWindows();
 
   const bgWallpaper = isVideoUrl(wallpaper) ? STATIC_WALLPAPER : wallpaper;
   const showVideo = liveWallpaper && isVideoUrl(wallpaper);
-
-  const PIP_W = 200;
-  const PIP_H = 280;
-
-  useEffect(() => {
-    if (!pipPos && barRef.current) {
-      const bar = barRef.current.getBoundingClientRect();
-      const barCenterX = bar.left + bar.width / 2;
-      setPipPos({
-        x: barCenterX - PIP_W / 2,
-        y: bar.top - PIP_H - 16,
-      });
-    }
-  }, [pipPos]);
-
-  const handlePipMouseDown = useCallback(
-    (e: React.MouseEvent) => {
-      if ((e.target as HTMLElement).closest('button') || !pipPos) return;
-      e.preventDefault();
-      dragRef.current = { startX: e.clientX, startY: e.clientY, origX: pipPos.x, origY: pipPos.y };
-      const onMove = (ev: MouseEvent) => {
-        if (!dragRef.current) return;
-        const dx = ev.clientX - dragRef.current.startX;
-        const dy = ev.clientY - dragRef.current.startY;
-        setPipPos({
-          x: Math.max(0, Math.min(window.innerWidth - PIP_W, dragRef.current.origX + dx)),
-          y: Math.max(0, Math.min(window.innerHeight - PIP_H, dragRef.current.origY + dy)),
-        });
-      };
-      const onUp = () => {
-        dragRef.current = null;
-        window.removeEventListener('mousemove', onMove);
-        window.removeEventListener('mouseup', onUp);
-      };
-      window.addEventListener('mousemove', onMove);
-      window.addEventListener('mouseup', onUp);
-    },
-    [pipPos],
-  );
 
   const handleToggleReport = useCallback(() => {
     setReportEnabled((prev) => {
@@ -300,6 +274,29 @@ const Shell: React.FC = () => {
     });
   }, []);
 
+  useEffect(() => {
+    const syncDockSide = () => {
+      try {
+        setChatDockSide(localStorage.getItem(CHAT_DOCK_SIDE_KEY) === 'left' ? 'left' : 'right');
+      } catch {
+        setChatDockSide('right');
+      }
+    };
+
+    const handleDockEvent = (event: Event) => {
+      const side = (event as CustomEvent<{ side?: 'left' | 'right' }>).detail?.side;
+      setChatDockSide(side === 'left' ? 'left' : 'right');
+    };
+
+    syncDockSide();
+    window.addEventListener(CHAT_DOCK_SIDE_EVENT, handleDockEvent);
+    window.addEventListener('storage', syncDockSide);
+    return () => {
+      window.removeEventListener(CHAT_DOCK_SIDE_EVENT, handleDockEvent);
+      window.removeEventListener('storage', syncDockSide);
+    };
+  }, []);
+
   return (
     <div
       className={styles.shell}
@@ -310,22 +307,24 @@ const Shell: React.FC = () => {
         backgroundPosition: 'center',
       }}
     >
-      {showVideo && pipPos && (
-        <div
-          ref={pipRef}
-          className={styles.videoPip}
-          style={{ left: pipPos.x, top: pipPos.y, bottom: 'auto' }}
-          onMouseDown={handlePipMouseDown}
-          data-testid="video-pip"
-        >
-          <video src={wallpaper} autoPlay loop muted playsInline />
-          <button className={styles.pipClose} onClick={() => setLiveWallpaper(false)} title="Close">
-            <X size={14} />
-          </button>
+      {showVideo && (
+        <div className={styles.liveWallpaperLayer} data-testid="video-pip">
+          <video className={styles.liveWallpaperVideo} src={wallpaper} autoPlay loop muted playsInline />
+          <div className={styles.liveWallpaperVignette} />
+          <div className={styles.liveWallpaperGlow} />
         </div>
       )}
       {/* Desktop with app icons */}
-      <div className={styles.desktop} data-testid="desktop">
+      <div
+        className={`${styles.desktop} ${showVideo ? styles.desktopLive : ''} ${
+          chatOpen && chatDockSide === 'left'
+            ? showVideo
+              ? styles.desktopChatLeftCompact
+              : styles.desktopChatLeft
+            : ''
+        }`}
+        data-testid="desktop"
+      >
         <div className={styles.iconGrid}>
           {DESKTOP_APPS.map((app) => (
             <button
@@ -361,6 +360,7 @@ const Shell: React.FC = () => {
         visible={chatOpen}
         zIndex={chatZIndex}
         onFocus={() => setChatZIndex(claimZIndex())}
+        compact={showVideo}
       />
 
       {/* Upload Modal */}
@@ -444,7 +444,9 @@ const Shell: React.FC = () => {
 
       {/* Floating add button */}
       <button
-        className={`${styles.addBtn} ${chatOpen ? styles.chatOpen : ''}`}
+        className={`${styles.addBtn} ${
+          chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
+        }`}
         onClick={() => setUploadOpen(true)}
         title="Upload files"
         data-testid="upload-toggle"
@@ -452,7 +454,11 @@ const Shell: React.FC = () => {
         <Plus size={20} />
       </button>
 
-      <div className={`${styles.bottomBar} ${chatOpen ? styles.chatOpen : ''}`}>
+      <div
+        className={`${styles.bottomBar} ${
+          chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
+        }`}
+      >
         <button
           className={`${styles.barBtn} ${liveWallpaper ? styles.liveOn : styles.liveOff}`}
           onClick={() => setLiveWallpaper((prev) => !prev)}
@@ -460,15 +466,6 @@ const Shell: React.FC = () => {
           data-testid="wallpaper-toggle"
         >
           {liveWallpaper ? <Video size={16} /> : <VideoOff size={16} />}
-        </button>
-
-        <button
-          className={`${styles.barBtn} ${styles.langBtn}`}
-          onClick={handleToggleLang}
-          title={lang === 'en' ? 'Switch to Chinese' : 'Switch to English'}
-          data-testid="lang-toggle"
-        >
-          {lang === 'en' ? 'EN' : 'ZH'}
         </button>
 
         <button

@@ -115,43 +115,36 @@ current_state:
   - Key Point: Maintain the state of intensity and emotional directness. No fluff—respond directly with your emotions.`,
   character_emotion_list: CHARACTER_EMOTION_LIST,
   character_meta_info: {
-    base_image_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/1772456364_1770790414871_character_img_url.png',
-    avatar_img_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/1388884292_1770790406933_avatar_img_url.png',
-    chat_pic_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/1323986314_1770790413933_chat_pic_url.png',
-    head_img_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/256584308_1770790407143_head_img_url.png',
-    back_img_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/256597054_1770795579219_back_img_url.png',
-    side_img_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/256405487_1770795579218_side_img_url.png',
-    front_img_url:
-      'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/1833134593_1770795579230_front_img_url.png',
+    base_image_url: '/assets/characters/aoi/base_image.png',
+    avatar_img_url: '/assets/characters/aoi/avatar.png',
+    chat_pic_url: '/assets/characters/aoi/chat_pic.png',
+    head_img_url: '/assets/characters/aoi/head.png',
+    back_img_url: '/assets/characters/aoi/back.png',
+    side_img_url: '/assets/characters/aoi/side.png',
+    front_img_url: '/assets/characters/aoi/front.png',
     emotion_videos: {
       default: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/315362537_1771057144005_peaceful_0.mp4',
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/2007032517_1771057144496_peaceful_1.mp4',
+        '/assets/characters/aoi/default_0.mp4',
+        '/assets/characters/aoi/default_1.mp4',
       ],
       angry: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1499156975_1771057142586_angry_0.mp4',
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/343858299_1771057142200_angry_1.mp4',
+        '/assets/characters/aoi/angry_0.mp4',
+        '/assets/characters/aoi/angry_1.mp4',
       ],
       depressing: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/126663682_1771057142621_depression_0.mp4',
+        '/assets/characters/aoi/depressing_0.mp4',
       ],
       happy: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1563648223_1771057144473_happy_0.mp4',
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/344150828_1771057144486_happy_1.mp4',
+        '/assets/characters/aoi/happy_0.mp4',
+        '/assets/characters/aoi/happy_1.mp4',
       ],
       peaceful: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/315362537_1771057144005_peaceful_0.mp4',
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/2007032517_1771057144496_peaceful_1.mp4',
+        '/assets/characters/aoi/peaceful_0.mp4',
+        '/assets/characters/aoi/peaceful_1.mp4',
       ],
       shy: [
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1437552893_1771057144469_shy_0.mp4',
-        'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1428957198_1771057144579_shy_1.mp4',
+        '/assets/characters/aoi/shy_0.mp4',
+        '/assets/characters/aoi/shy_1.mp4',
       ],
     },
   },

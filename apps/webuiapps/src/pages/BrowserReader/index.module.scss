@@ -1,0 +1,522 @@
+.browserReader {
+  display: grid;
+  grid-template-columns: 300px minmax(0, 1.3fr) 320px;
+  height: 100%;
+  background:
+    radial-gradient(circle at 18% 14%, rgba(56, 189, 248, 0.16), transparent 22%),
+    radial-gradient(circle at 86% 14%, rgba(251, 191, 36, 0.16), transparent 20%),
+    linear-gradient(135deg, #08111b 0%, #0b1725 40%, #122033 100%);
+  color: #e6eef8;
+}
+
+.sidebarClosed {
+  grid-template-columns: minmax(0, 1.3fr) 320px;
+}
+
+.sidebar,
+.workspace,
+.inspector {
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 22px 18px;
+  border-right: 1px solid rgba(148, 163, 184, 0.12);
+  background: rgba(5, 11, 20, 0.58);
+  backdrop-filter: blur(18px);
+}
+
+.sidebarHidden {
+  display: none;
+}
+
+.kicker {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #7dd3fc;
+}
+
+.sidebarIntro h1,
+.readerHero h2,
+.inspectorCard h2 {
+  margin: 0;
+}
+
+.sidebarIntro p:last-child,
+.readerHero p {
+  color: #a8b8cc;
+  line-height: 1.6;
+}
+
+.sidebarSection {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+.sidebarHeader,
+.toolbar,
+.toolbarActions,
+.metaGrid {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.sidebarHeader h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.sidebarHeader button,
+.toolbarActions button,
+.addressForm button {
+  border: 0;
+  border-radius: 999px;
+  cursor: pointer;
+  font: inherit;
+}
+
+.sidebarHeader button,
+.toolbarActions button {
+  padding: 9px 12px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #d8e5f3;
+}
+
+.sidebarList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: auto;
+}
+
+.linkCard,
+.linkCardMuted,
+.emptyBlock,
+.summaryCard,
+.inspectorCard {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 20px;
+}
+
+.linkCard,
+.linkCardMuted {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px;
+  text-align: left;
+  background: rgba(10, 20, 34, 0.76);
+  color: inherit;
+  cursor: pointer;
+}
+
+.linkCard strong,
+.linkCardMuted strong {
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.linkCard span,
+.linkCardMuted span,
+.summaryCard span,
+.metaGrid span {
+  color: #8ea2b8;
+  font-size: 12px;
+}
+
+.linkCardMuted {
+  opacity: 0.84;
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  min-width: 0;
+}
+
+.addressForm {
+  display: flex;
+  gap: 10px;
+  flex: 1;
+}
+
+.addressForm input {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(9, 18, 31, 0.82);
+  color: #eef6ff;
+  padding: 12px 16px;
+  font: inherit;
+}
+
+.addressForm button {
+  padding: 11px 16px;
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #031018;
+  font-weight: 700;
+}
+
+.toolbarActions {
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.sidebarToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: 999px;
+  padding: 11px 14px;
+  background: rgba(148, 163, 184, 0.12);
+  color: #d8e5f3;
+  cursor: pointer;
+  font: inherit;
+}
+
+.toolbarActive {
+  background: rgba(56, 189, 248, 0.18) !important;
+  color: #7dd3fc !important;
+}
+
+.stage {
+  flex: 1;
+  min-height: 0;
+}
+
+.browserPane,
+.readerPane {
+  height: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 28px;
+  overflow: hidden;
+  background: rgba(7, 14, 24, 0.74);
+  box-shadow: 0 28px 50px rgba(3, 8, 16, 0.34);
+}
+
+.browserNotice {
+  padding: 12px 16px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  color: #a8b8cc;
+  font-size: 13px;
+}
+
+.browserFrame {
+  width: 100%;
+  height: calc(100% - 48px);
+  border: 0;
+  background: #fff;
+}
+
+.googlePane {
+  height: 100%;
+  overflow: auto;
+  padding: 24px;
+}
+
+.googleCard {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 28px;
+  background:
+    linear-gradient(180deg, rgba(9, 18, 31, 0.92), rgba(9, 18, 31, 0.74)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.08), transparent 40%);
+  box-shadow: 0 24px 48px rgba(3, 8, 16, 0.24);
+}
+
+.googleCard h2 {
+  margin: 0 0 10px;
+}
+
+.googleCard p {
+  margin: 0 0 16px;
+  color: #c9d7e6;
+  line-height: 1.65;
+}
+
+.googleSearchRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.googleSearchRow input {
+  width: 100%;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 18px;
+  background: rgba(9, 18, 31, 0.82);
+  color: #eef6ff;
+  padding: 12px 16px;
+  font: inherit;
+}
+
+.googleResults {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.googleFallbackNote {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(56, 189, 248, 0.12);
+  color: #bfe9ff;
+  line-height: 1.6;
+}
+
+.googleResultCard {
+  border: 1px solid rgba(148, 163, 184, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 16px 18px;
+  text-align: left;
+  color: inherit;
+  cursor: pointer;
+}
+
+.googleResultHost {
+  display: block;
+  margin-bottom: 6px;
+  color: #7dd3fc;
+  font-size: 12px;
+}
+
+.googleResultTitle {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 17px;
+  line-height: 1.4;
+}
+
+.googleResultSnippet {
+  margin: 0;
+  color: #c9d7e6;
+  line-height: 1.65;
+}
+
+.googleEmpty {
+  padding: 16px;
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.03);
+  color: #c9d7e6;
+}
+
+.blockedPane {
+  height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+}
+
+.blockedCard {
+  width: min(560px, 100%);
+  padding: 28px;
+  border: 1px solid rgba(148, 163, 184, 0.14);
+  border-radius: 26px;
+  background:
+    linear-gradient(180deg, rgba(9, 18, 31, 0.92), rgba(9, 18, 31, 0.76)),
+    linear-gradient(135deg, rgba(56, 189, 248, 0.08), transparent 40%);
+  box-shadow: 0 24px 48px rgba(3, 8, 16, 0.24);
+}
+
+.blockedCard h2 {
+  margin: 0 0 10px;
+}
+
+.blockedCard p {
+  margin: 0 0 14px;
+  color: #c9d7e6;
+  line-height: 1.65;
+}
+
+.blockedUrl {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.04);
+  color: #8ea2b8;
+  word-break: break-all;
+}
+
+.blockedActions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.primaryAction,
+.secondaryAction {
+  border: 0;
+  border-radius: 999px;
+  padding: 11px 16px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.primaryAction {
+  background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+  color: #031018;
+  font-weight: 700;
+}
+
+.secondaryAction {
+  background: rgba(148, 163, 184, 0.14);
+  color: #e6eef8;
+}
+
+.readerPane {
+  overflow: auto;
+}
+
+.readerHero {
+  padding: 24px 24px 18px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.1);
+}
+
+.readerHero a {
+  color: #7dd3fc;
+  text-decoration: none;
+  word-break: break-all;
+}
+
+.readerBody {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 22px 24px 32px;
+}
+
+.blockheading h3 {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.3;
+}
+
+.blockparagraph p,
+.blockquote p,
+.blocklist p {
+  margin: 0;
+  color: #dbe7f4;
+  line-height: 1.72;
+}
+
+.blockquote {
+  padding-left: 14px;
+  border-left: 3px solid rgba(125, 211, 252, 0.42);
+}
+
+.blocklist p::before {
+  content: '• ';
+  color: #7dd3fc;
+}
+
+.inspector {
+  padding: 20px 20px 20px 0;
+}
+
+.inspectorCard {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  height: 100%;
+  padding: 22px;
+  background: rgba(5, 11, 20, 0.62);
+  box-shadow: 0 24px 46px rgba(3, 8, 16, 0.28);
+}
+
+.metaGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.metaGrid strong {
+  display: block;
+  margin-top: 8px;
+  color: #f7fbff;
+}
+
+.summaryCard,
+.emptyBlock,
+.loadingState,
+.errorBox,
+.flashBox {
+  padding: 16px;
+  background: rgba(9, 18, 31, 0.76);
+}
+
+.summaryCard p,
+.emptyBlock,
+.loadingState {
+  margin: 8px 0 0;
+  color: #dbe7f4;
+  line-height: 1.6;
+}
+
+.errorBox {
+  color: #fecaca;
+  background: rgba(127, 29, 29, 0.32);
+}
+
+.flashBox {
+  color: #cffafe;
+  background: rgba(8, 145, 178, 0.24);
+}
+
+@media (max-width: 1200px) {
+  .browserReader {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+
+  .sidebarClosed {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .inspector {
+    grid-column: 1 / -1;
+    padding: 0 20px 20px;
+  }
+}
+
+@media (max-width: 860px) {
+  .browserReader {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.12);
+  }
+
+  .workspace,
+  .inspector,
+  .sidebar {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .toolbar {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .toolbarActions {
+    justify-content: flex-start;
+  }
+}

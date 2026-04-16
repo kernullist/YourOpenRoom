@@ -1,0 +1,140 @@
+const en = {
+  kicker: 'Agent Work Grid',
+  title: 'Kira',
+  subtitle:
+    'A lightweight task room for execution-ready tasks and the comments that keep orchestration aligned.',
+  stats: {
+    todo: 'Todo',
+    works: 'Works',
+    done: 'Done',
+    review: 'In review',
+    blocked: 'Blocked',
+  },
+  actions: {
+    createTask: 'Create Task',
+    aoiTakeCare: 'Aoi Will Take Care of It',
+    save: 'Save',
+    delete: 'Delete',
+    preview: 'Preview',
+    write: 'Write',
+    addComment: 'Add comment',
+    continue: 'Continue',
+    notNow: 'Not now',
+    useSavedAnalysis: 'Use Saved Analysis',
+    analyzeAgain: 'Analyze Again',
+    close: 'Close',
+  },
+  sections: {
+    workRoot: 'Work Root',
+    projects: 'Projects',
+    boardEyebrow: 'Execution board',
+    boardAllTitle: 'All tasks',
+    boardSubtitle: 'Track the current project work queue and open any card to edit details.',
+    details: 'Task detail',
+    detailCopy:
+      'Write the markdown brief here, then let comments handle short handoff and review notes.',
+    comments: 'Comments',
+    discoveryEyebrow: 'Aoi analysis',
+    discoveryTitle: 'Aoi Project Discovery',
+    discoverySubtitle:
+      'Aoi reads the active project, finds candidate feature and bug tasks, and can turn them into todo works.',
+    discoveryLog: 'Live progress',
+    discoveryFindings: 'Candidate tasks',
+  },
+  fields: {
+    title: 'Title',
+    description: 'Description',
+    status: 'Status',
+    assignee: 'Assignee',
+    commentAuthor: 'Author',
+    commentBody: 'Comment',
+  },
+  placeholders: {
+    workTitle: 'Implement work detail sync',
+    workDescription:
+      '# Brief\n\nDescribe the implementation target, constraints, acceptance criteria, and rollout notes.',
+    assignee: 'backend-agent-1, reviewer, or leave blank',
+    commentAuthor: 'You, orchestrator, reviewer...',
+    commentBody: 'Short note, review remark, or handoff update.',
+  },
+  drafts: {
+    task: 'Task draft',
+    editTask: 'Editing task',
+  },
+  status: {
+    todo: 'Todo',
+    in_progress: 'In Progress',
+    in_review: 'In Review',
+    blocked: 'Blocked',
+    done: 'Done',
+  },
+  board: {
+    emptyAll: 'No tasks yet. Create the first implementation-sized work item to get started.',
+    comments: '{{count}} comments',
+    unassigned: 'Unassigned',
+    queued: 'Queued',
+    running: 'Running',
+    reviewPending: 'Needs review',
+  },
+  comments: {
+    empty: 'No comments yet.',
+    hint: 'Keep comments lightweight so the main brief stays in markdown.',
+    saveFirst: 'Save the task first, then add comments.',
+    defaultAuthor: 'Operator',
+  },
+  root: {
+    ready: 'Ready',
+    missing: 'Missing folder',
+    unconfigured: 'Not configured',
+    noProjects: 'No projects',
+    readyHint:
+      'Sub-agents can treat implementation paths in Kira work items as relative to this local execution root.',
+    missingHint: 'The configured Kira work root folder could not be found on this machine.',
+    unconfiguredHint:
+      'Set kira.workRootDirectory in your config.json so Kira knows which local folder to treat as the execution root.',
+    noProjectsHint:
+      'Kira can see the work root, but there are no first-level project folders under it yet.',
+    activeProject: 'Active project',
+    activeProjectHint:
+      'Pick the local project Kira should treat as the current execution target for planning and agent handoff.',
+  },
+  messages: {
+    loading: 'Loading Kira...',
+    previewEmpty: 'Nothing to preview yet.',
+    markdownHint:
+      'Use markdown for implementation briefs, acceptance criteria, rollout steps, and reviewer notes.',
+    syncHint:
+      'Kira uses the same local/cloud file layer as the other OpenRoom apps, so agents can write files first and refresh the UI after.',
+    validationTitle: 'Add a title before saving.',
+    discoveryIdle: 'Ask Aoi to inspect the current project and suggest work items.',
+    discoveryRunning: 'Aoi is reading the current project and saving discovery notes.',
+    discoveryReady: 'Aoi finished the analysis and is waiting for your confirmation.',
+    discoveryCreating: 'Aoi is creating todo works from the saved findings.',
+    discoveryCreated: 'Todo works were created from Aoi’s saved findings.',
+    discoveryCreatedHint:
+      'The board has been refreshed. Aoi can reuse the saved analysis the next time you run this.',
+    discoveryErrored: 'Aoi could not finish the discovery run.',
+    discoveryStored: 'The findings were saved and can be reused the next time you run this.',
+    discoveryExistingFound: 'A saved analysis already exists for this project.',
+    discoveryExistingReady: 'A saved project analysis is ready to use.',
+    discoveryExistingPrompt:
+      'Aoi already has {{count}} saved candidate tasks for this project. Do you want to reuse them or run a fresh analysis?',
+    discoveryUsingSaved: 'Loaded the saved analysis. You can continue from these existing findings.',
+    discoveryNoFindings: 'Aoi did not find any actionable tasks this time.',
+    discoveryProjectRequired: 'Pick an active project before asking Aoi to analyze it.',
+    discoverySessionMissing: 'Aoi could not determine the current session path.',
+    discoveryContinuePrompt:
+      'Aoi found {{count}} candidate tasks. Do you want to turn them into todo works now?',
+    discoveryAnalyzingTitle: 'Analyzing the active project',
+    discoveryAnalyzingHint:
+      'Aoi is mapping the structure, tracing risky paths, and shaping concrete implementation tasks.',
+    discoveryLiveLabel: 'Live',
+    discoverySavedLabel: 'Saved',
+    discoverySnapshotLabel: 'Saved snapshot',
+    discoveryStepMap: 'Map project surface',
+    discoveryStepInspect: 'Inspect code paths',
+    discoveryStepShape: 'Shape next tasks',
+  },
+};
+
+export default en;

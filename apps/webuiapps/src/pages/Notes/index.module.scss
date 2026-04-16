@@ -1,0 +1,394 @@
+.notesApp {
+  display: grid;
+  grid-template-columns: 280px minmax(0, 1.15fr) minmax(360px, 0.95fr);
+  height: 100%;
+  background:
+    radial-gradient(circle at top left, rgba(245, 158, 11, 0.18), transparent 26%),
+    radial-gradient(circle at 85% 14%, rgba(20, 184, 166, 0.18), transparent 22%),
+    linear-gradient(135deg, #f5efe6 0%, #f8f3ea 34%, #f1e6d6 100%);
+  color: #2f2419;
+  font-family: Aptos, "Segoe UI Variable Display", "Trebuchet MS", sans-serif;
+}
+
+.sidebar,
+.canvas,
+.editorPanel {
+  min-height: 0;
+}
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 24px 20px;
+  border-right: 1px solid rgba(102, 71, 36, 0.12);
+  background: rgba(255, 250, 242, 0.84);
+  backdrop-filter: blur(14px);
+}
+
+.brandBlock h1,
+.canvasHeader h2,
+.editorHeader h2,
+.railHeader h3 {
+  margin: 0;
+}
+
+.kicker {
+  margin: 0 0 8px;
+  font-size: 11px;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: #8b6f4e;
+}
+
+.brandCopy {
+  margin: 10px 0 0;
+  color: #735b44;
+  line-height: 1.5;
+}
+
+.statGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.statCard {
+  padding: 14px;
+  border: 1px solid rgba(102, 71, 36, 0.1);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.statCard span,
+.searchBox span,
+.field span,
+.bottomBar span,
+.noteUpdated,
+.resultCount {
+  font-size: 12px;
+  color: #8b6f4e;
+}
+
+.statCard strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 28px;
+}
+
+.searchBox,
+.field,
+.fieldGrow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.searchBox input,
+.field input,
+.fieldGrow textarea {
+  width: 100%;
+  border: 1px solid rgba(102, 71, 36, 0.14);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.76);
+  color: #2f2419;
+  padding: 12px 14px;
+  font: inherit;
+}
+
+.fieldGrow {
+  height: 100%;
+}
+
+.fieldGrow textarea {
+  flex: 1;
+  min-height: 300px;
+  resize: none;
+  line-height: 1.7;
+}
+
+.searchBox input:focus,
+.field input:focus,
+.fieldGrow textarea:focus {
+  outline: none;
+  border-color: rgba(20, 184, 166, 0.5);
+  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.12);
+}
+
+.filterBlock {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.filterHeader,
+.canvasHeader,
+.railHeader,
+.editorHeader,
+.bottomBar,
+.noteCardHeader,
+.editorActions,
+.noteMetaGroup {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.filterHeader h2 {
+  margin: 0;
+  font-size: 15px;
+}
+
+.filterHeader button,
+.editorActions button {
+  border: 0;
+  background: transparent;
+  color: #8b6f4e;
+  cursor: pointer;
+  font: inherit;
+}
+
+.tagCloud {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tagCloud button,
+.createButton,
+.saveButton {
+  border: 0;
+  border-radius: 999px;
+  font: inherit;
+  cursor: pointer;
+}
+
+.tagCloud button {
+  padding: 8px 12px;
+  background: rgba(255, 255, 255, 0.72);
+  color: #5b4736;
+}
+
+.tagActive {
+  background: #2f2419 !important;
+  color: #f8f3ea !important;
+}
+
+.createButton,
+.saveButton {
+  padding: 12px 16px;
+  background: linear-gradient(135deg, #c97f19, #f59e0b);
+  color: #fff8ec;
+  font-weight: 700;
+  box-shadow: 0 14px 26px rgba(201, 127, 25, 0.18);
+}
+
+.canvas {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  padding: 26px 22px;
+  overflow: auto;
+}
+
+.pinRail,
+.listSection,
+.editorCard {
+  border: 1px solid rgba(102, 71, 36, 0.1);
+  border-radius: 28px;
+  background: rgba(255, 251, 245, 0.72);
+  box-shadow: 0 24px 40px rgba(102, 71, 36, 0.09);
+}
+
+.pinRail,
+.listSection {
+  padding: 18px;
+}
+
+.pinScroller,
+.noteGrid {
+  display: grid;
+  gap: 14px;
+}
+
+.pinScroller {
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.noteGrid {
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+}
+
+.noteCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(102, 71, 36, 0.1);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 241, 230, 0.88)),
+    linear-gradient(135deg, rgba(20, 184, 166, 0.08), transparent 40%);
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 0.16s ease,
+    box-shadow 0.16s ease,
+    border-color 0.16s ease;
+}
+
+.noteCard:hover,
+.noteCardActive {
+  transform: translateY(-2px);
+  border-color: rgba(20, 184, 166, 0.35);
+  box-shadow: 0 16px 26px rgba(47, 36, 25, 0.08);
+}
+
+.noteCardTitle {
+  font-size: 18px;
+  line-height: 1.25;
+}
+
+.noteExcerpt {
+  margin: 0;
+  color: #624d3c;
+  line-height: 1.55;
+  font-size: 14px;
+}
+
+.noteTags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  color: #8b6f4e;
+  font-size: 12px;
+}
+
+.pillAccent {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 9px;
+  border-radius: 999px;
+  background: rgba(201, 127, 25, 0.14);
+  color: #9a5d08;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.editorPanel {
+  padding: 18px 22px 22px 0;
+}
+
+.editorCard {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  padding: 22px;
+}
+
+.editorActions {
+  flex-wrap: wrap;
+}
+
+.editorSurface {
+  flex: 1;
+  min-height: 0;
+  margin: 8px 0 16px;
+}
+
+.previewPane {
+  height: 100%;
+  overflow: auto;
+  border: 1px solid rgba(102, 71, 36, 0.1);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.7);
+  padding: 18px 20px;
+  line-height: 1.7;
+}
+
+.previewPane :global(h1),
+.previewPane :global(h2),
+.previewPane :global(h3) {
+  margin-top: 0;
+  color: #2f2419;
+}
+
+.previewPane :global(code) {
+  background: rgba(47, 36, 25, 0.08);
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.previewPane :global(pre) {
+  background: rgba(47, 36, 25, 0.08);
+  padding: 12px;
+  border-radius: 14px;
+  overflow: auto;
+}
+
+.previewEmpty,
+.emptyState,
+.loading {
+  display: grid;
+  place-items: center;
+  min-height: 180px;
+  border: 1px dashed rgba(102, 71, 36, 0.18);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.56);
+  color: #8b6f4e;
+  text-align: center;
+}
+
+.emptyState {
+  padding: 32px;
+}
+
+.emptyState p {
+  margin: 8px 0 0;
+  max-width: 28ch;
+  line-height: 1.6;
+}
+
+.errorBox {
+  padding: 12px 14px;
+  border-radius: 16px;
+  background: rgba(183, 28, 28, 0.08);
+  color: #a12d2d;
+}
+
+@media (max-width: 1180px) {
+  .notesApp {
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .editorPanel {
+    grid-column: 1 / -1;
+    padding: 0 22px 22px;
+  }
+}
+
+@media (max-width: 860px) {
+  .notesApp {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebar {
+    border-right: 0;
+    border-bottom: 1px solid rgba(102, 71, 36, 0.12);
+  }
+
+  .editorPanel {
+    padding: 0 22px 22px;
+  }
+
+  .canvas,
+  .sidebar,
+  .editorPanel {
+    padding-left: 18px;
+    padding-right: 18px;
+  }
+}

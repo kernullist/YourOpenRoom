@@ -1,0 +1,60 @@
+app_id: 17
+app_name: browser
+app_display_name: Browser
+version: "1.0.0"
+description: >
+  Browser / Reader app. It can open a URL directly, keep bookmarks and browsing history in JSON files,
+  and provide a cleaner reader mode for extracted article text.
+displayDesc: >
+  A web intake tool for opening pages, switching into reader mode, bookmarking links, and clipping them into notes.
+
+actions:
+  - type: OPEN_URL
+    name: Open URL
+    description: >
+      Navigate the app to a specific URL without modifying storage first.
+    params:
+      - name: url
+        type: string
+        description: A full http or https URL
+        required: true
+
+  - type: SET_VIEW_MODE
+    name: Set View Mode
+    description: >
+      Switch between browse mode and reader mode.
+    params:
+      - name: mode
+        type: string
+        description: Either "browse" or "reader"
+        required: true
+
+  - type: CREATE_BOOKMARK
+    name: Create Bookmark
+    description: >
+      After the Agent writes a bookmark JSON file under /bookmarks/{id}.json, dispatch this action so the frontend refreshes.
+    params:
+      - name: filePath
+        type: string
+        description: Bookmark file path
+        required: true
+      - name: focusId
+        type: string
+        description: Optional bookmark ID to focus later
+        required: false
+
+  - type: DELETE_BOOKMARK
+    name: Delete Bookmark
+    description: >
+      After the Agent deletes a bookmark file, dispatch this action so the frontend refreshes.
+    params:
+      - name: bookmarkId
+        type: string
+        description: Bookmark ID that was deleted
+        required: true
+
+  - type: REFRESH_DATA
+    name: Refresh Data
+    description: >
+      Reload bookmarks, history, and state.json from storage.
+    params: []

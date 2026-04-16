@@ -1,0 +1,102 @@
+app_id: 18
+app_name: kira
+app_display_name: Kira
+version: "1.0.0"
+description: >
+  Lightweight task management app for implementation-sized works. Each work has a status,
+  markdown brief, optional assignee, and lightweight comments. Supports file-based CRUD sync
+  actions so an Agent can write task files first and then refresh the UI.
+displayDesc: >
+  A compact orchestration board for project-scoped works, markdown briefs, and simple comments.
+
+actions:
+  - type: CREATE_WORK
+    name: Create Work
+    description: >
+      After the Agent writes a new work JSON file to /works/{id}.json, dispatch this action so the frontend refreshes.
+    params:
+      - name: filePath
+        type: string
+        description: The work file path, e.g. /works/api-sync.json
+        required: true
+      - name: focusId
+        type: string
+        description: Work ID to focus after refresh
+        required: false
+
+  - type: UPDATE_WORK
+    name: Update Work
+    description: >
+      After the Agent updates a work JSON file, dispatch this action so the frontend refreshes.
+    params:
+      - name: filePath
+        type: string
+        description: The updated work file path
+        required: true
+      - name: focusId
+        type: string
+        description: Work ID to focus after refresh
+        required: false
+
+  - type: DELETE_WORK
+    name: Delete Work
+    description: >
+      After the Agent deletes a work file, dispatch this action so the frontend refreshes.
+    params:
+      - name: workId
+        type: string
+        description: Work ID that was deleted
+        required: true
+
+  - type: CREATE_COMMENT
+    name: Create Comment
+    description: >
+      After the Agent writes a new comment JSON file to /comments/{id}.json, dispatch this action so the frontend refreshes.
+    params:
+      - name: commentId
+        type: string
+        description: Comment ID that was created
+        required: true
+      - name: taskId
+        type: string
+        description: Related work ID to keep focused after refresh
+        required: false
+      - name: focusType
+        type: string
+        description: Focus task type after refresh
+        required: false
+        enum: [work]
+
+  - type: DELETE_COMMENT
+    name: Delete Comment
+    description: >
+      After the Agent deletes a comment file, dispatch this action so the frontend refreshes.
+    params:
+      - name: commentId
+        type: string
+        description: Comment ID that was deleted
+        required: true
+      - name: taskId
+        type: string
+        description: Related work ID to keep focused after refresh
+        required: false
+      - name: focusType
+        type: string
+        description: Focus task type after refresh
+        required: false
+        enum: [work]
+
+  - type: REFRESH_KIRA
+    name: Refresh Kira
+    description: >
+      Reload works, comments, and optional focus state from storage.
+    params:
+      - name: focusId
+        type: string
+        description: Task ID to focus after refresh
+        required: false
+      - name: focusType
+        type: string
+        description: Focus task type after refresh
+        required: false
+        enum: [work]

@@ -212,6 +212,44 @@ cp apps/webuiapps/.env.example apps/webuiapps/.env
 
 All optional. The app runs fine without any of them.
 
+Example `~/.openroom/config.json`:
+
+```json
+{
+  "llm": {
+    "provider": "openrouter",
+    "apiKey": "YOUR_API_KEY",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "anthropic/claude-sonnet-4.6"
+  },
+  "album": {
+    "photoDirectory": "C:\\Users\\your-name\\Pictures"
+  },
+  "kira": {
+    "workRootDirectory": "C:\\Users\\your-name\\workspace\\your-project",
+    "projectDefaults": {
+      "autoCommit": true
+    },
+    "workerLlm": {
+      "model": "openai/gpt-5.4-mini"
+    },
+    "reviewerLlm": {
+      "model": "openai/gpt-5.4"
+    }
+  },
+  "tavily": {
+    "apiKey": "tvly-YOUR_API_KEY"
+  },
+  "app": {
+    "title": "My OpenRoom"
+  }
+}
+```
+
+The same sample is also available at [`docs/config.example.json`](./docs/config.example.json).
+
+LLM, Album, Kira, Tavily, and app title settings are now managed from `~/.openroom/config.json`. `.env` is no longer used for LLM defaults.
+
 ## Contributing
 
 We'd love your help. Whether it's fixing a bug, building a new app, or improving docs — check out [CONTRIBUTING.md](./CONTRIBUTING.md) to get started.

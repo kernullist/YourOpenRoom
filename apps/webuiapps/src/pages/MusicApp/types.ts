@@ -11,7 +11,9 @@ export interface Song {
   duration: number; // seconds
   coverColor: string; // hex color
   createdAt: number;
-  audioUrl: string;
+  audioUrl?: string;
+  youtubeUrl?: string;
+  youtubeVideoId?: string;
 }
 
 export interface Playlist {

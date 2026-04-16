@@ -1,5 +1,5 @@
 /**
- * MusicApp constants
+ * YouTube app constants
  *
  * Actions represent methods the Agent can invoke on the App, divided into three categories:
  * - Operation Actions: directly execute App methods (e.g., play, pause), refresh related Repo and retry on data mismatch
@@ -8,7 +8,7 @@
  */
 
 export const APP_ID = 3;
-export const APP_NAME = 'musicPlayer';
+export const APP_NAME = 'youtube';
 
 // File paths
 export const SONGS_DIR = '/songs';

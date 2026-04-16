@@ -1,20 +1,32 @@
 .panel {
   position: fixed;
-  right: 0;
   top: 0;
-  width: 640px;
+  width: 960px;
   height: 100vh;
   background: #1c1d20;
-  border-left: 1px solid rgba(255, 255, 255, 0.06);
   display: flex;
   flex-direction: row;
+}
+
+.dockRight {
+  right: 0;
+  border-left: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.dockLeft {
+  left: 0;
+  border-right: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.compact {
+  width: 420px;
 }
 
 /* ---- Left: Character Avatar ---- */
 
 .avatarSide {
-  width: 280px;
-  min-width: 280px;
+  width: 560px;
+  min-width: 560px;
   height: 100%;
   position: relative;
   overflow: hidden;
@@ -170,6 +182,45 @@
 .emotion {
   color: #faea5f;
   font-style: italic;
+}
+
+.messageLink {
+  display: inline;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #7dd3fc;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+
+  &:hover {
+    color: #bae6fd;
+  }
+}
+
+.messageLinkGroup {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.messageLinkInlineAction {
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(125, 211, 252, 0.25);
+  background: rgba(125, 211, 252, 0.08);
+  color: #bae6fd;
+  cursor: pointer;
+  font-size: 11px;
+  line-height: 1.4;
+
+  &:hover {
+    background: rgba(125, 211, 252, 0.16);
+  }
 }
 
 .toolInfo {
@@ -398,6 +449,17 @@
   background: #282a2a;
   color: rgba(255, 255, 255, 0.75);
   border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.dangerBtn {
+  margin-right: auto;
+  background: rgba(239, 68, 68, 0.16);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.32);
   border-radius: 6px;
   padding: 8px 16px;
   cursor: pointer;
