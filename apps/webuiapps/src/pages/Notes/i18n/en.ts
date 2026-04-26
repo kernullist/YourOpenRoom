@@ -32,7 +32,7 @@ const en = {
   body: 'Body',
   bodyPlaceholder: 'Write in Markdown. Headings, lists, checkboxes, code fences and links all work.',
   previewEmpty: 'Nothing to preview yet.',
-  syncHint: 'Notes sync through the same local/cloud file layer used by the rest of OpenRoom.',
+  syncHint: 'Notes sync through the same local/cloud file layer used by the rest of Your Room.',
   saveNote: 'Save note',
   saveChanges: 'Save changes',
   validation: 'Add a title or some body content before saving.',

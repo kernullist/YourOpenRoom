@@ -83,6 +83,19 @@
   color: rgba(255, 255, 255, 0.9);
 }
 
+.ttsStatusPill {
+  display: inline-flex;
+  align-items: center;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(250, 234, 95, 0.12);
+  border: 1px solid rgba(250, 234, 95, 0.22);
+  color: rgba(250, 234, 95, 0.9);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .headerActions {
   display: flex;
   align-items: center;
@@ -360,17 +373,95 @@
   background: #1c1d20;
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 12px;
-  padding: 24px;
-  width: 400px;
+  padding: 18px;
+  width: 440px;
   max-width: 90vw;
-  max-height: 80vh;
-  overflow-y: auto;
+  max-height: 76vh;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.settingsHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settingsHeading {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.settingsSubtitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.5);
 }
 
 .settingsTitle {
   font-size: 16px;
   font-weight: 600;
-  margin-bottom: 16px;
+  margin-bottom: 0;
+}
+
+.settingsTabs {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+
+.settingsTab {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: rgba(255, 255, 255, 0.68);
+  border-radius: 999px;
+  padding: 8px 12px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+
+  &:hover {
+    color: rgba(255, 255, 255, 0.9);
+  }
+}
+
+.settingsTabActive {
+  background: rgba(250, 234, 95, 0.16);
+  border-color: rgba(250, 234, 95, 0.34);
+  color: #faea5f;
+}
+
+.settingsBody {
+  min-height: 0;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.settingsSection {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.settingsSectionCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.settingsSectionTitle {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .field {
@@ -513,4 +604,93 @@
   font-size: 11px;
   color: rgba(250, 234, 95, 0.7);
   margin-top: 4px;
+}
+
+.promptBudgetCard {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 14px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.promptBudgetGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.promptBudgetMetric {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.04);
+
+  strong {
+    font-size: 16px;
+    color: rgba(255, 255, 255, 0.92);
+  }
+}
+
+.promptBudgetLabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: rgba(255, 255, 255, 0.46);
+}
+
+.promptBudgetSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.promptBudgetSectionTitle {
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.72);
+  font-weight: 600;
+}
+
+.promptBudgetList {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.03);
+    color: rgba(255, 255, 255, 0.82);
+  }
+}
+
+.promptBudgetLog {
+  max-height: 180px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.24);
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(255, 255, 255, 0.7);
+
+  div {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
 }

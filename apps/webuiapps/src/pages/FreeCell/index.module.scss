@@ -1,4 +1,5 @@
 // FreeCell solitaire styles
+@use 'sass:color';
 
 // ============ Variables ============
 $felt: #277833;
@@ -295,7 +296,7 @@ $text-light: rgba(255, 255, 255, 0.9);
   transition: background 0.2s;
 
   &:hover {
-    background: darken($felt, 6%);
+    background: color.adjust($felt, $lightness: -6%);
   }
 }
 

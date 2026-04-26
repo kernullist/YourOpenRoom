@@ -188,6 +188,26 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#ff8f3d',
     defaultSize: { width: 1320, height: 780 },
   },
+  {
+    appId: 19,
+    appName: 'openvscode',
+    route: '/ide',
+    displayName: "Aoi's IDE",
+    sourceDir: 'OpenVSCode',
+    icon: 'Code2',
+    color: '#38bdf8',
+    defaultSize: { width: 1360, height: 820 },
+  },
+  {
+    appId: 20,
+    appName: 'peanalyzer',
+    route: '/peanalyzer',
+    displayName: 'PE Analyst',
+    sourceDir: 'PeAnalyzer',
+    icon: 'FileArchive',
+    color: '#0f766e',
+    defaultSize: { width: 1320, height: 820 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

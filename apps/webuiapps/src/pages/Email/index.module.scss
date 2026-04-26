@@ -1,30 +1,22 @@
-// Email page styles
-// Dark theme - dark background, blue accent
-
-// Color scheme - Dark theme
 $email-blue: #58a6ff;
 $email-blue-hover: #79c0ff;
-$email-blue-light: rgba(88, 166, 255, 0.12);
+$email-blue-light: rgba(88, 166, 255, 0.14);
+$success-green: #34d399;
+$warning-red: #f87171;
 
 $bg-primary: #0d1117;
 $bg-secondary: #161b22;
+$bg-elevated: #111826;
 $bg-hover: rgba(255, 255, 255, 0.06);
-$bg-selected: rgba(88, 166, 255, 0.1);
+$bg-selected: rgba(88, 166, 255, 0.12);
 
 $border-color: #30363d;
 $border-light: #21262d;
 
 $text-primary: #e6edf3;
-$text-secondary: #8b949e;
+$text-secondary: #9ba6b2;
 $text-muted: #6e7681;
 
-$star-color: #e3b341;
-$star-bg: rgba(227, 179, 65, 0.15);
-$delete-color: #f85149;
-$delete-bg: rgba(248, 81, 73, 0.12);
-$read-dot: #58a6ff;
-
-// Global container
 .email {
   height: 100%;
   width: 100%;
@@ -32,57 +24,161 @@ $read-dot: #58a6ff;
   flex-direction: column;
   background: $bg-primary;
   color: $text-primary;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
   overflow: hidden;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
 }
 
-// Back button (used in detail view)
-.backBtn {
+.topBar {
   display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid $border-light;
+  background: linear-gradient(180deg, rgba(17, 24, 38, 0.96), rgba(13, 17, 23, 0.96));
+}
+
+.topBarCopy {
+  min-width: 0;
+}
+
+.topBarTitle {
+  font-size: 16px;
+  font-weight: 700;
+}
+
+.topBarStatus {
+  margin-top: 4px;
+  font-size: 12px;
+  color: $text-secondary;
+}
+
+.topBarActions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.toolbarButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid $border-color;
+  background: $bg-secondary;
+  color: $text-primary;
+  border-radius: 12px;
+  padding: 9px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+
+  &:hover:not(:disabled) {
+    background: $bg-hover;
+    border-color: $email-blue;
+    color: $email-blue-hover;
+  }
+
+  &:disabled {
+    opacity: 0.55;
+    cursor: not-allowed;
+  }
+}
+
+.toolbarButtonIcon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.inlineIconButton {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
   width: 36px;
   height: 36px;
+  border-radius: 50%;
+  border: 1px solid $border-color;
   background: transparent;
-  border: none;
   color: $text-secondary;
   cursor: pointer;
-  border-radius: 50%;
-  transition: background-color 0.15s;
 
   &:hover {
     background: $bg-hover;
+    color: $email-blue;
   }
 }
 
-// Folder tabs
+.starred {
+  color: #eab308;
+}
+
+.errorBanner {
+  padding: 10px 18px;
+  background: rgba(248, 113, 113, 0.14);
+  border-bottom: 1px solid rgba(248, 113, 113, 0.2);
+  color: #fecaca;
+  font-size: 13px;
+}
+
+.centerStage {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+}
+
+.emptyCard {
+  width: min(460px, 100%);
+  padding: 28px;
+  border-radius: 20px;
+  border: 1px solid $border-color;
+  background: linear-gradient(180deg, rgba(22, 27, 34, 0.98), rgba(13, 17, 23, 0.98));
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.28);
+
+  p {
+    margin: 10px 0 0;
+    color: $text-secondary;
+    line-height: 1.6;
+  }
+}
+
+.emptyHeadline {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.emptyActions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 20px;
+}
+
 .folderTabs {
   display: flex;
-  padding: 0 16px;
+  gap: 8px;
+  padding: 12px 18px 0;
   border-bottom: 1px solid $border-light;
   background: $bg-primary;
-  flex-shrink: 0;
   overflow-x: auto;
-
-  &::-webkit-scrollbar {
-    display: none;
-  }
 }
 
 .folderTab {
-  display: flex;
+  display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 10px 16px;
+  gap: 8px;
+  padding: 10px 14px;
+  border: 1px solid transparent;
+  border-radius: 14px 14px 0 0;
   background: transparent;
-  border: none;
-  border-bottom: 2px solid transparent;
   color: $text-secondary;
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 600;
   cursor: pointer;
-  white-space: nowrap;
-  transition: all 0.15s;
+  transition: background-color 0.15s ease, color 0.15s ease;
 
   &:hover {
     color: $email-blue;
@@ -90,49 +186,37 @@ $read-dot: #58a6ff;
   }
 
   &.active {
-    color: $email-blue;
-    border-bottom-color: $email-blue;
-  }
-}
-
-.folderIcon {
-  display: flex;
-  align-items: center;
-
-  svg {
-    width: 16px;
-    height: 16px;
+    color: $text-primary;
+    background: $bg-secondary;
+    border-color: $border-light;
+    border-bottom-color: $bg-secondary;
   }
 }
 
 .folderBadge {
-  font-size: 11px;
-  font-weight: 600;
+  min-width: 20px;
+  padding: 2px 6px;
+  border-radius: 999px;
   background: $email-blue;
   color: #fff;
-  border-radius: 10px;
-  padding: 1px 6px;
-  min-width: 18px;
+  font-size: 11px;
   text-align: center;
 }
 
-// Email list
 .emailList {
   flex: 1;
   overflow-y: auto;
-  overflow-x: hidden;
 }
 
-// Email item
 .emailItem {
   display: flex;
   align-items: center;
-  padding: 8px 16px;
+  gap: 12px;
+  min-height: 64px;
+  padding: 10px 18px;
   border-bottom: 1px solid $border-light;
   cursor: pointer;
-  transition: background-color 0.15s;
-  gap: 12px;
-  min-height: 52px;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 
   &:hover {
     background: $bg-hover;
@@ -145,56 +229,37 @@ $read-dot: #58a6ff;
   }
 
   &.unread {
-    background: $bg-secondary;
-
-    .emailSender,
-    .emailSubject {
-      font-weight: 700;
-      color: $text-primary;
-    }
+    background: rgba(22, 27, 34, 0.95);
   }
 }
 
-.unreadDot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: $read-dot;
-  flex-shrink: 0;
-}
-
+.unreadDot,
 .readPlaceholder {
   width: 8px;
   height: 8px;
   flex-shrink: 0;
 }
 
-.emailStarBtn {
-  display: flex;
+.unreadDot {
+  border-radius: 50%;
+  background: $email-blue;
+}
+
+.emailStarBtn,
+.emailDeleteBtn {
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
+  width: 32px;
+  height: 32px;
   border: none;
+  border-radius: 50%;
+  background: transparent;
   color: $text-muted;
   cursor: pointer;
-  border-radius: 50%;
-  flex-shrink: 0;
-  transition: all 0.15s;
 
   &:hover {
-    background: $star-bg;
-    color: $star-color;
-  }
-
-  &.starred {
-    color: $star-color;
-  }
-
-  svg {
-    width: 16px;
-    height: 16px;
+    background: $bg-hover;
   }
 }
 
@@ -203,7 +268,7 @@ $read-dot: #58a6ff;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 3px;
 }
 
 .emailTopRow {
@@ -213,84 +278,47 @@ $read-dot: #58a6ff;
   gap: 8px;
 }
 
-.emailSender {
-  font-size: 14px;
-  font-weight: 500;
-  color: $text-primary;
-  white-space: nowrap;
+.emailSender,
+.emailSubject {
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
+  white-space: nowrap;
+}
+
+.emailSender {
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .emailTime {
   font-size: 12px;
   color: $text-muted;
-  white-space: nowrap;
   flex-shrink: 0;
 }
 
 .emailBottomRow {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
 }
 
 .emailSubject {
   font-size: 13px;
-  color: $text-primary;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
   font-weight: 500;
 }
 
-.emailSeparator {
-  color: $text-muted;
-  font-size: 13px;
-  flex-shrink: 0;
-}
-
+.emailSeparator,
 .emailPreview {
   font-size: 13px;
   color: $text-secondary;
-  white-space: nowrap;
+}
+
+.emailPreview {
   overflow: hidden;
   text-overflow: ellipsis;
-  flex: 1;
+  white-space: nowrap;
 }
 
-.emailDeleteBtn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 28px;
-  height: 28px;
-  background: transparent;
-  border: none;
-  color: $text-muted;
-  cursor: pointer;
-  border-radius: 50%;
-  flex-shrink: 0;
-  opacity: 0;
-  transition: all 0.15s;
-
-  .emailItem:hover & {
-    opacity: 1;
-  }
-
-  &:hover {
-    background: $delete-bg;
-    color: $delete-color;
-  }
-
-  svg {
-    width: 16px;
-    height: 16px;
-  }
-}
-
-// ============ Email Detail View ============
 .detailView {
   flex: 1;
   display: flex;
@@ -301,45 +329,39 @@ $read-dot: #58a6ff;
 .detailToolbar {
   display: flex;
   align-items: center;
-  padding: 8px 16px;
+  gap: 10px;
+  padding: 12px 18px;
   border-bottom: 1px solid $border-light;
-  flex-shrink: 0;
-  gap: 8px;
 }
 
 .detailHeader {
-  padding: 16px 20px;
+  padding: 18px 22px;
   border-bottom: 1px solid $border-light;
-  flex-shrink: 0;
 }
 
 .detailSubject {
-  font-size: 20px;
-  font-weight: 600;
-  color: $text-primary;
-  margin: 0 0 12px;
-  line-height: 1.4;
-  word-break: break-word;
+  margin: 0 0 16px;
+  font-size: 22px;
+  line-height: 1.35;
 }
 
 .detailMeta {
   display: flex;
   align-items: flex-start;
-  gap: 12px;
+  gap: 14px;
 }
 
 .detailAvatar {
-  width: 40px;
-  height: 40px;
+  width: 42px;
+  height: 42px;
   border-radius: 50%;
-  background: $email-blue-light;
   display: flex;
   align-items: center;
   justify-content: center;
+  background: $email-blue-light;
+  color: $email-blue-hover;
   font-size: 18px;
-  font-weight: 600;
-  color: $email-blue;
-  flex-shrink: 0;
+  font-weight: 700;
 }
 
 .detailSenderInfo {
@@ -351,103 +373,169 @@ $read-dot: #58a6ff;
   display: flex;
   align-items: center;
   gap: 8px;
+  flex-wrap: wrap;
 }
 
 .detailSenderName {
   font-size: 14px;
-  font-weight: 600;
-  color: $text-primary;
+  font-weight: 700;
 }
 
-.detailSenderAddress {
-  font-size: 13px;
-  color: $text-secondary;
-}
-
-.detailRecipients {
-  font-size: 13px;
-  color: $text-secondary;
-  margin-top: 2px;
-}
-
+.detailSenderAddress,
+.detailRecipients,
+.detailAccount,
 .detailTime {
-  font-size: 12px;
-  color: $text-muted;
-  white-space: nowrap;
-  flex-shrink: 0;
-  margin-top: 2px;
+  font-size: 13px;
+  color: $text-secondary;
+}
+
+.detailRecipients,
+.detailAccount {
+  margin-top: 4px;
 }
 
 .detailBody {
   flex: 1;
-  padding: 20px;
+  padding: 22px;
   overflow-y: auto;
-  font-size: 14px;
-  line-height: 1.7;
-  color: $text-primary;
-  word-break: break-word;
   white-space: pre-wrap;
+  line-height: 1.75;
+  font-size: 14px;
 }
 
-.readOnlyNotice {
+.attachmentStrip {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding: 12px 22px 18px;
+  border-top: 1px solid $border-light;
+  background: $bg-secondary;
+}
+
+.attachmentLabel {
+  color: $text-secondary;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.attachmentChip {
+  display: inline-flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: rgba(88, 166, 255, 0.12);
+  color: $email-blue-hover;
+  font-size: 12px;
+}
+
+.modalOverlay {
+  position: absolute;
+  inset: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 10px 20px;
-  background: $bg-secondary;
-  border-top: 1px solid $border-light;
-  flex-shrink: 0;
-
-  svg {
-    width: 16px;
-    height: 16px;
-    color: $text-muted;
-    flex-shrink: 0;
-  }
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.45);
+  backdrop-filter: blur(10px);
+  z-index: 20;
 }
 
-.noticeText {
+.modalCard {
+  width: min(640px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+  border-radius: 22px;
+  border: 1px solid $border-color;
+  background: $bg-elevated;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
+  padding: 22px;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.modalTitle {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.modalSubtitle {
+  margin-top: 4px;
   font-size: 13px;
   color: $text-secondary;
 }
 
-// ============ Empty State ============
-.emptyState {
+.modalField {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  margin-top: 18px;
+
+  span {
+    font-size: 13px;
+    font-weight: 600;
+    color: $text-secondary;
+  }
+}
+
+.fieldInput,
+.messageInput {
+  width: 100%;
+  border: 1px solid $border-color;
+  border-radius: 14px;
+  background: $bg-secondary;
+  color: $text-primary;
+  font-size: 14px;
+  padding: 12px 14px;
+  outline: none;
+
+  &:focus {
+    border-color: $email-blue;
+    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.16);
+  }
+}
+
+.messageInput {
+  min-height: 220px;
+  resize: vertical;
+  line-height: 1.65;
+}
+
+.modalActions {
+  display: flex;
+  gap: 12px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  margin-top: 22px;
+}
+
+.connectedBadge {
+  margin-top: 18px;
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(52, 211, 153, 0.12);
+  color: #bbf7d0;
+  font-size: 13px;
+}
+
+.emptyState {
+  display: flex;
+  flex: 1;
   align-items: center;
   justify-content: center;
-  flex: 1;
-  padding: 48px 32px;
+  padding: 48px 24px;
+  color: $text-secondary;
   text-align: center;
-
-  p {
-    font-size: 14px;
-    margin: 8px 0 0;
-    color: $text-secondary;
-    line-height: 1.5;
-  }
 }
 
-.emptyIcon {
-  color: $text-muted;
-  margin-bottom: 8px;
-
-  svg {
-    width: 48px;
-    height: 48px;
-  }
-}
-
-// Loading state
-.spinner {
-  width: 24px;
-  height: 24px;
-  border: 3px solid $border-color;
-  border-top-color: $email-blue;
-  border-radius: 50%;
-  animation: spin 0.8s linear infinite;
-  margin: 0 auto;
+.spin {
+  animation: spin 0.9s linear infinite;
 }
 
 @keyframes spin {
@@ -456,25 +544,28 @@ $read-dot: #58a6ff;
   }
 }
 
-// Responsive design
-@media (max-width: 480px) {
-  .folderTabs {
-    padding: 0 12px;
+@media (max-width: 860px) {
+  .topBar,
+  .detailToolbar,
+  .detailHeader,
+  .detailBody,
+  .attachmentStrip {
+    padding-left: 16px;
+    padding-right: 16px;
   }
 
-  .emailItem {
-    padding: 8px 12px;
+  .topBar {
+    flex-direction: column;
+    align-items: stretch;
   }
 
-  .detailHeader {
-    padding: 12px 16px;
+  .topBarActions,
+  .modalActions,
+  .emptyActions {
+    justify-content: stretch;
   }
 
-  .detailBody {
-    padding: 16px;
-  }
-
-  .detailSubject {
-    font-size: 18px;
+  .toolbarButton {
+    justify-content: center;
   }
 }

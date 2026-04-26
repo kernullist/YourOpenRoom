@@ -10,6 +10,7 @@
 
 import JSZip from 'jszip';
 import { logger } from './logger';
+import { chat, loadConfig } from './llmClient';
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -802,7 +803,6 @@ export async function consolidateApps(
     'apps:',
     apps.map((a) => a.id),
   );
-  const { loadConfig, chat } = await import('./llmClient');
   const config = await loadConfig();
   if (!config) {
     logger.warn('consolidateApps', 'No LLM config found, skipping consolidation');

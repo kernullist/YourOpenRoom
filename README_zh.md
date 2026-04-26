@@ -1,217 +1,347 @@
-# VibeApps
+# YourOpenRoom
 
-中文 | [English](./README.md)
+中文 | [English](./README.md) | [한국어](./README_ko.md)
 
-> 想象一个运行在浏览器里的桌面系统 —— 而且有个 AI 知道怎么操作上面的每一个应用。
+> 一个从 OpenRoom 演化出来的分叉项目：现在的重点是本地优先的浏览器桌面、AI 可操作应用，以及真实工作区自动化。
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-**[官网](https://www.openroom.ai)** · **[X / Twitter](https://x.com/openroom_ai_)**
+**[仓库](https://github.com/kernullist/YourOpenRoom)** · **[Issues](https://github.com/kernullist/YourOpenRoom/issues)** · **[原始上游](https://github.com/MiniMax-AI/OpenRoom)**
 
+## 这个仓库现在是什么
 
-## 这是什么？
+YourOpenRoom 最初来自 MiniMax OpenRoom，但当前代码已经明显偏离了最初的演示定位。
 
-VibeApps 把完整的桌面体验搬进了浏览器 —— 可以拖拽、缩放的窗口，可以并排打开的应用，一切都裹在简洁的类 macOS 界面里。但真正让它不一样的，是内置的那个 **AI Agent**。
+现在它主要由三层组成：
 
-不用翻菜单、找按钮，直接告诉它你想做什么：
+- **浏览器桌面壳层**：可拖拽窗口、桌面图标、浮动聊天面板、本地状态。
+- **Agent 运行时**：AI 可以通过 `meta.yaml` action、应用状态接口和文件工具直接操作内置应用。
+- **本地项目自动化**：围绕 **Kira** 与 **Aoi's IDE** 的真实工作区搜索、编辑、诊断、语义重构、检查点和自动化实现/审查循环。
 
-> *"来点爵士乐"* —— 音乐应用开始播放。
->
-> *"帮我写一篇今天爬山的日记"* —— 日记本打开，新条目已经写好。
->
-> *"下一盘棋吧"* —— 棋盘已经摆好。
+当前真正可运行的主应用在 `apps/webuiapps`。
 
-Agent 不只是打开应用 —— 它真的在**操作**它们。它读取数据、触发动作、更新状态，所有交互都通过一套结构化的 Action 系统完成。
+## 当前代码里已经落地的能力
 
-所有数据都存在浏览器本地。没有后端、不用注册、开箱即用。你的数据留在 IndexedDB 里，完全属于你自己。
+- 独立浏览器桌面：窗口系统、聊天面板、桌面图标、壁纸切换、Kira 自动化提醒。
+- 聊天面板内置：
+  - OpenAI-compatible / Anthropic-compatible LLM 配置
+  - 可选轻量 dialog model
+  - 记住用户偏好的称呼/名字
+  - 回复语言模式（`match-user` / `english`）
+  - 长期记忆保存
+  - 图像生成
+  - Tavily 实时网页搜索
+  - prompt budget 与 tool inspector
+- 会话级应用数据保存在 `~/.openroom/sessions/...`。
+- 开源独立模式使用本地 `@gui/vibe-container` mock，而不是原始 iframe 容器。
+- 通过 Vite middleware 提供本地后端接口：Gmail OAuth、网页阅读提取、YouTube 搜索、RSS 网络安全新闻、相册目录读取、Tavily 代理、OpenVSCode 工作区工具、Kira 自动化、配置保存、会话文件存储。
+- 通过 Vite middleware 提供本地后端接口：Gmail OAuth、网页阅读提取、YouTube 搜索、RSS 网络安全新闻、相册目录读取、Tavily 代理、OpenVSCode 工作区工具、PE Analyst 的 IDA / PE 分析桥接、Kira 自动化、配置保存、会话文件存储。
+- 上游的人设/mod 体系仍然保留：角色、mod、情绪媒体、上传生成 mod、记忆注入都还在当前桌面里。
 
 ## 内置应用
 
-开箱即有一整套应用，随时可以探索：
+| 应用 | 当前实际功能 |
+| --- | --- |
+| `Twitter` | 本地社交流，支持发帖、点赞、评论，数据保存在应用存储里 |
+| `YouTube` | YouTube 搜索、最近搜索、收藏主题、播放列表、队列播放和弹层播放器 |
+| `Diary` | Markdown 日记，支持心情/天气元数据、日历切换和手写风格渲染 |
+| `Album` | 基于 `album.photoDirectory` 的本地相册浏览器 |
+| `FreeCell` | 持久化 FreeCell 游戏 |
+| `Email` | 真实 Gmail OAuth 同步、收件箱/已发送/草稿/垃圾箱、回复、保存草稿、归档、加星、恢复、删除 |
+| `Chess` | 完整规则国际象棋、3D 棋盘、本地存档与 Agent 回合同步 |
+| `Evidence Vault` | 用于浏览结构化“证据档案”文件的本地资料库应用 |
+| `CyberNews` | 基于 RSS 的实时网络安全新闻流，外加 case-board 调查视图 |
+| `Calendar` | 本地事件和提醒规划器 |
+| `Notes` | 支持标签、置顶、过滤、预览的本地 Markdown 笔记 |
+| `Browser Reader` | 内嵌浏览、reader 提取、书签/历史、Google 搜索结果回退 UI、保存到 Notes |
+| `Kira` | 项目工作看板，管理 work item、评论、discovery 分析和自动化交接 |
+| `Aoi's IDE` | 本地工作区文件树/编辑器，以及搜索、符号、引用、rename preview/apply、安全命令等接口 |
+| `PE Analyst` | 面向 PE 的分析工作台，支持 `ida_pro_mcp` 的当前 IDB 模式、上传样本的 pre-scan / headless 流程，以及 findings/imports/sections/strings/functions 视图 |
 
-| 应用 | 说明 |
-|------|------|
-| 🎵 Music | 完整的播放器，支持播放列表、播放控制和专辑封面 |
-| ♟️ Chess | 经典国际象棋，完整规则判定 |
-| ⚫ Gomoku | 五子棋 —— 规则简单，策略深远 |
-| 🃏 FreeCell | 靠实力说话的空当接龙 |
-| 📧 Email | 收件箱、已发送、草稿箱，熟悉的邮件体验 |
-| 📔 Diary | 带心情标记的个人日记，记录你的每一天 |
-| 🐦 Twitter | 一个你能完全掌控的社交信息流 |
-| 📷 Album | 浏览和管理你的照片集 |
-| 📰 CyberNews | 精选新闻聚合，保持信息灵通 |
+## PE Analyst 与 IDA MCP
 
-每个应用都与 AI Agent 深度集成 —— 你可以用自然语言和它们中的任何一个互动。
+`PE Analyst` 目前支持两种工作方式：
+
+- **Current IDB 模式**
+  - 最适合 `ida_pro_mcp`
+  - 直接把当前在 IDA Pro 中打开的 IDB 作为数据源
+  - 不需要上传文件，也可以查看函数列表、伪代码、反汇编和 xref
+- **样本上传模式**
+  - 适用于内置 PE pre-scan 和 headless 后端流程
+  - 上传的 PE 样本会进入本地缓存，分析元数据会保存在会话应用存储中
+
+当前后端会自动识别两类 MCP 风格：
+
+- `ida_pro_mcp`
+  - 通常由 IDA 插件暴露为 `http://127.0.0.1:13337/mcp`
+- `ida-headless-mcp`
+  - 通常作为独立 HTTP MCP 服务运行，例如 `http://127.0.0.1:17300/`
+
+## 聊天面板里的 Agent 工具
+
+当前聊天面板已经不是只会调用 `app_action`：
+
+- **应用运行时工具**
+  - `list_apps`、`app_action`、`get_app_state`、`get_app_schema`
+  - `file_read`、`file_write`、`file_patch`、`file_list`、`file_delete`
+- **网页/内容工具**
+  - `search_web`
+  - `read_url`
+  - `generate_image`
+- **工作区与 IDE 工具**
+  - `workspace_search`
+  - `ide_search`
+  - `find_references`
+  - `list_exports`
+  - `peek_definition`
+  - `rename_preview`
+  - `apply_semantic_rename`
+  - `run_command`
+  - `structured_diagnostics`
+- **安全与恢复工具**
+  - `preview_changes`
+  - `undo_last_action`
+  - `workspace_checkpoint`
+  - `autofix_diagnostics`
+  - `background_watch`
+
+安全约束也已经写进当前实现：
+
+- 应用 JSON 写入会尽量做 schema 校验
+- 语义 rename 必须先 preview，再带签名 apply
+- 工作区命令只允许只读 `git`、`node`、`npm`、`pnpm` 安全模式
+- Kira 会自己重跑验证命令，不直接相信 agent 的自报结果
+
+## Kira 与 Aoi's IDE
+
+这个分叉项目最重要的变化之一，就是把重点放在真实本地项目，而不只是内置应用交互。
+
+### Kira
+
+Kira 会在应用存储中保存 work item 和 comment，并且支持对配置好的本地项目做 discovery。
+`apps/webuiapps/vite.config.ts` 中的自动化插件还可以：
+
+1. 扫描待处理任务
+2. 规划目标文件和验证命令
+3. 跑 worker / reviewer 循环
+4. 重新执行验证
+5. 根据项目设置阻断、重试或自动提交
+
+### Aoi's IDE
+
+Aoi's IDE 前端是一个内置文件树和编辑器，但真正强的是 `/api/openvscode/*` 这组接口：
+
+- 工作区目录浏览与文件读写删除
+- 文本搜索
+- 符号搜索
+- 引用查询
+- export 列表
+- definition peek
+- semantic rename preview / apply
+- 安全命令执行
+
+只要本地项目是 TypeScript/JavaScript，很多语义功能会直接走本地 TypeScript language service。
+
+## 提示词生成应用工作流
+
+原仓库里的提示词生成应用流程还在：
+
+- 入口在 `.claude/commands/vibe.md`
+- 阶段定义在 `.claude/workflow/`
+- `apps/webuiapps/vite.config.ts` 中的 `appGeneratorPlugin` 负责把生成结果接回运行时
+
+只是它已经不是这个分叉项目唯一的重点。现在更核心的是“AI 桌面 + 本地工作区自动化”。
 
 ## 快速开始
 
-### 前置条件
+### 依赖
 
-| 工具 | 版本 | 检查 | 安装 |
-|------|------|------|------|
-| **Node.js** | 18+ | `node -v` | [nodejs.org](https://nodejs.org/) |
-| **pnpm** | 9+ | `pnpm -v` | `npm install -g pnpm@9` |
+| 工具 | 版本 |
+| --- | --- |
+| Node.js | 18+ |
+| pnpm | 9+ |
 
-> **国内用户？** 取消 `.npmrc` 中的镜像注释行，通过 npmmirror 加速下载。
-
-### 60 秒跑起来
+### 本地运行
 
 ```bash
-# 克隆并进入项目
-git clone https://github.com/MiniMax-AI/OpenRoom.git
-cd OpenRoom
-
-# 安装依赖
+git clone https://github.com/kernullist/YourOpenRoom.git
+cd YourOpenRoom
 pnpm install
-
-# （可选）配置环境变量
 cp apps/webuiapps/.env.example apps/webuiapps/.env
-
-# 启动
 pnpm dev
 ```
 
-打开 `http://localhost:3000` —— 你会看到一个带应用图标的桌面。**双击**即可打开任意应用。
+打开 `http://localhost:3000`。
 
-### 认识 AI Agent（浏览器内聊天）
+### 重要说明
 
-点击右下角的**聊天图标**，一个面板会滑出来 —— 这就是你的 Agent。
+`pnpm dev` 才是完整本地运行栈。
 
-自然地输入：*"播放下一首歌"*、*"看看我的邮件"*、*"开一局新棋"*。Agent 会自动判断该找哪个应用、执行什么操作，然后帮你搞定。
+当前很多能力都依赖 Vite middleware，本地开发服务会同时提供：
 
-> **提示：** 需要配置 LLM API Key，在聊天面板的设置中完成。
->
-> 这个聊天面板用来**使用**已有的应用。想要**创建**新应用？请看下方的 [Vibe 工作流](#用一句话创造新应用) —— 那是在 Claude Code CLI 中运行的。
+- Gmail OAuth / Sync
+- Browser Reader 代理
+- CyberNews 实时 RSS 聚合
+- YouTube 搜索解析
+- 相册目录读取
+- Tavily 代理
+- Kira 自动化接口
+- OpenVSCode 工作区接口
+- 配置与会话持久化
 
-## 用一句话创造新应用
+所以 `pnpm build` 虽然可以产出前端包，但如果你要部署成完整产品，还需要自己补齐这些后端接口。
 
-这才是最有意思的部分。通过 **Vibe 工作流**，你只需要描述想要什么，就能生成一个完整的、可以直接使用的应用。不用写模板代码、不用搭脚手架 —— [Claude Code](https://docs.anthropic.com/en/docs/claude-code) 会处理一切。
+## 配置
 
-> **注意区分：** Vibe 工作流运行在 **Claude Code（CLI 终端）** 中，不是浏览器里的聊天面板。浏览器里的聊天面板用来操作已有应用；创建新应用是在你的开发环境中进行的。
+运行时配置读取自 `~/.openroom/config.json`。
 
-### 从零创建
+同步示例也放在 [`docs/config.example.json`](./docs/config.example.json)。
 
-```bash
-/vibe WeatherApp 做一个天气仪表盘，展示 5 天天气预报和温度曲线图
+```json
+{
+  "llm": {
+    "provider": "openrouter",
+    "apiKey": "YOUR_API_KEY",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "anthropic/claude-sonnet-4.6"
+  },
+  "dialogLlm": {
+    "provider": "openrouter",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "openai/gpt-5-mini"
+  },
+  "userProfile": {
+    "displayName": "Minji"
+  },
+  "conversationPreferences": {
+    "responseLanguageMode": "match-user"
+  },
+  "imageGen": {
+    "provider": "openai",
+    "apiKey": "YOUR_IMAGE_API_KEY",
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-image-1"
+  },
+  "album": {
+    "photoDirectory": "C:\\Users\\your-name\\Pictures"
+  },
+  "kira": {
+    "workRootDirectory": "C:\\Users\\your-name\\workspace",
+    "projectDefaults": {
+      "autoCommit": true
+    },
+    "workerLlm": {
+      "model": "openai/gpt-5.4-mini"
+    },
+    "reviewerLlm": {
+      "model": "openai/gpt-5.4"
+    }
+  },
+  "openvscode": {
+    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
+  },
+  "tavily": {
+    "apiKey": "tvly-YOUR_API_KEY"
+  },
+  "gmail": {
+    "clientId": "YOUR_GOOGLE_OAUTH_DESKTOP_CLIENT_ID",
+    "clientSecret": "OPTIONAL_GOOGLE_CLIENT_SECRET"
+  },
+  "idaPe": {
+    "mode": "prescan-only",
+    "backendUrl": "http://127.0.0.1:17300/"
+  },
+  "app": {
+    "title": "YourOpenRoom"
+  }
+}
 ```
 
-背后，工作流会依次走过 **6 个阶段** —— 每一步都建立在前一步的基础上：
+说明：
 
+- `openvscode.workspacePath` 指向 Aoi's IDE 与 IDE 工具实际操作的本地项目目录
+- 如果不配置 `openvscode.workspacePath`，当前代码默认回退到仓库根目录
+- `gmail.clientId` 必须是 Google OAuth **Desktop App** client ID
+- `dialogLlm` 启用时至少需要 `baseUrl` 和 `model`
+- `userProfile.displayName` 可以让聊天面板跨重启记住应该怎么称呼用户
+- `conversationPreferences.responseLanguageMode` 支持 `match-user` 和 `english`
+- 当 `conversationPreferences.responseLanguageMode` 为 `english` 时，普通回复、提醒消息和新播种的开场 prologue/建议回复都会使用英文
+- `imageGen` 是聊天面板图像生成工具的可选配置
+- `idaPe.mode` 支持 `prescan-only` 和 `mcp-http`
+- `idaPe.backendUrl` 可以配置为 `ida_pro_mcp` 的 `http://127.0.0.1:13337/mcp`，
+  或 `ida-headless-mcp` 的 `http://127.0.0.1:17300/`
+
+## 本地数据目录
+
+独立模式会把数据写到 `~/.openroom/`：
+
+```text
+~/.openroom/
+├── config.json
+├── characters.json
+├── mods.json
+└── sessions/
+    └── <session-path>/
+        ├── apps/
+        │   ├── notes/data/
+        │   ├── email/data/
+        │   ├── kira/data/
+        │   ├── peanalyzer/data/
+        │   └── ...
+        ├── chat/
+        └── memory/
 ```
-需求分析    →  到底要做什么？
-架构设计    →  组件、数据模型、状态结构
-任务规划    →  拆成可执行的开发任务
-代码生成    →  写出 React + TypeScript 代码
-资源生成    →  生成图标和图片素材
-项目集成    →  注册应用，让它出现在桌面上
-```
 
-完成后，你的新应用就上线了 —— 自带 AI Agent 集成。
+## 仓库结构
 
-### 迭代现有应用
-
-已经有了一个应用，想加点东西？描述你的需求就行：
-
-```bash
-/vibe MusicApp 添加一个歌词面板，播放时显示同步歌词
-```
-
-这会触发一个聚焦的 **4 阶段变更工作流**：影响分析 → 任务规划 → 代码实现 → 验证检查。
-
-### 续跑与重跑
-
-```bash
-# 从中断处继续
-/vibe MyApp
-
-# 跳到指定阶段
-/vibe MyApp --from=04-codegen
-```
-
-## 项目架构
-
-### 目录结构
-
-```
-OpenRoom/
-├── apps/webuiapps/              # 桌面主应用
-│   └── src/
-│       ├── components/          # Shell、窗口管理、聊天面板
-│       ├── lib/                 # 核心 SDK — 文件 API、Action、应用注册表
-│       ├── pages/               # 每个应用的所在地
-│       └── routers/             # 路由定义
+```text
+YourOpenRoom/
+├── apps/
+│   └── webuiapps/          # 主浏览器桌面运行时
 ├── packages/
-│   └── vibe-container/          # iframe 通信 SDK（开源模式为 stub）
-├── .claude/                     # AI 工作流引擎
-│   ├── commands/vibe.md         # 工作流入口
-│   ├── workflow/                # 阶段定义与规则
-│   └── rules/                   # 代码生成约束
-└── .github/workflows/           # CI 流水线
+│   └── vibe-container/     # 共享类型 + 独立模式 stub
+├── .claude/                # 提示词生成应用工作流
+├── docs/                   # 配置示例和补充文档
+└── e2e/                    # Playwright 场景
 ```
 
-> **关于 `vibe-container`：** 在开源独立版中，真实的 iframe SDK 被本地 mock（`src/lib/vibeContainerMock.ts`）替代，使用 IndexedDB 存储数据、本地事件总线处理 Agent 通信。`packages/vibe-container/` 下的包提供类型定义和客户端 SDK 接口。详见其 [README](./packages/vibe-container/README.md)。
+`apps/webuiapps/src/` 里最重要的部分：
 
-### 应用的解剖结构
+- `components/`：桌面壳层、聊天面板、窗口组件
+- `pages/`：内置应用
+- `lib/`：运行时 glue code、LLM 客户端、工具、应用注册、IDE/Kira/Gmail 等逻辑
+- `routers/`：Standalone 模式路由定义
 
-每个应用遵循统一的结构 —— 一致、可预测、容易上手：
+## 开发命令
 
-```
-pages/MusicApp/
-├── components/         # UI 组件
-├── data/               # 种子数据（JSON）
-├── store/              # 状态管理（Context + Reducer）
-├── actions/            # AI Agent 与这个应用的对话方式
-│   └── constants.ts    # APP_ID + Action 类型定义
-├── i18n/               # 翻译文件（en.ts + zh.ts）
-├── meta/               # Vibe 工作流的元数据
-│   ├── meta_cn/        # guide.md + meta.yaml（中文）
-│   └── meta_en/        # guide.md + meta.yaml（英文）
-├── index.tsx           # 入口
-├── types.ts            # TypeScript 类型定义
-└── index.module.scss   # 局部样式
-```
-
-## 开发
-
-| 命令 | 说明 |
-|------|------|
-| `pnpm dev` | 启动开发服务器 → `http://localhost:3000` |
-| `pnpm build` | 生产构建 |
+| 命令 | 用途 |
+| --- | --- |
+| `pnpm dev` | 启动桌面和本地 middleware API |
+| `pnpm build` | 构建前端包 |
+| `pnpm clean` | 清理 Turborepo 产物 |
 | `pnpm run lint` | Lint + 自动修复 |
-| `pnpm run pretty` | Prettier 格式化 |
-| `pnpm clean` | 清除构建产物 |
+| `pnpm run pretty` | 代码格式化 |
+| `pnpm --filter @openroom/webuiapps test` | 运行桌面应用的 Vitest 单测 |
+| `pnpm --filter @openroom/webuiapps test:coverage` | 运行覆盖率测试 |
+| `pnpm test:e2e` | 运行 Playwright E2E |
 
 ## 技术栈
 
-| | |
-|---|---|
-| **框架** | React 18 + TypeScript + Vite |
-| **样式** | Tailwind CSS + CSS Modules + Design Tokens |
-| **图标** | Lucide React |
-| **状态管理** | React Context + Reducer |
-| **存储** | IndexedDB（单机）/ Cloud NAS（生产） |
-| **国际化** | i18next + react-i18next |
-| **工程化** | pnpm workspaces + Turborepo |
-| **CI** | GitHub Actions |
+| 领域 | 当前实现 |
+| --- | --- |
+| UI | React 18、TypeScript、React Router、Vite |
+| 样式 | SCSS + CSS Modules |
+| 动效 | Framer Motion |
+| 应用运行时 | 本地 `@gui/vibe-container` mock、session-data middleware、基于 `meta.yaml` 的 app action |
+| 本地工具链 | 文件系统 API、TypeScript language service、安全命令执行、结构化诊断 |
+| 外部集成 | Gmail OAuth、Tavily、图像生成、RSS 聚合、YouTube 搜索解析 |
+| Monorepo | pnpm workspaces、Turborepo |
+| 测试 | Vitest、Playwright |
 
-## 环境变量
+## 贡献
 
-```bash
-cp apps/webuiapps/.env.example apps/webuiapps/.env
-```
+欢迎提交 issue、文档修正、工具改进、应用修改和工作流升级。先看 [CONTRIBUTING.md](./CONTRIBUTING.md)。
 
-| 变量 | 必须 | 说明 |
-|------|------|------|
-| `CDN_PREFIX` | 否 | 静态资源 CDN 前缀 |
-| `VITE_RUM_SITE` | 否 | RUM 监控端点 |
-| `VITE_RUM_CLIENT_TOKEN` | 否 | RUM 客户端 Token |
+## License
 
-全部可选。不配置也能正常运行。
-
-## 参与贡献
-
-无论是修 bug、做新应用，还是改文档 —— 我们都欢迎。看看 [CONTRIBUTING.md](./CONTRIBUTING.md) 了解如何开始。
-
-## 许可证
-
-[MIT](LICENSE) — Copyright (c) 2025 MiniMax
+[MIT](./LICENSE)

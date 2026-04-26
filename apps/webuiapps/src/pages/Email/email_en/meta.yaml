@@ -1,54 +1,142 @@
 app_id: 11
 app_name: email
 app_display_name: Email
-version: "1.0.0"
+version: "2.0.0"
 description: >
-  Email app. Emails stored as fine-grained files in emails/ directory, each email as an independent JSON file.
-  Users can only browse, read, star, and delete; composing/replying/sending is handled by Agent.
-  Supports COMPOSE_EMAIL/DELETE_EMAIL/MARK_READ mutation actions.
-  This file only defines actions dispatched from Agent to frontend. User local operations are handled and reported by frontend code.
+  Gmail-backed email client. The frontend reads cached email JSON files under emails/, while Gmail OAuth,
+  sync, send, draft, read-state, star, archive, and trash operations are performed through the frontend's
+  Gmail bridge APIs.
 displayDesc: >
-  A smart email client — browse and manage emails effortlessly while AI assists with composing and replying.
-
-# ============================================================
-# The following actions are only for Agent → Frontend command dispatch.
-# Before dispatching these actions, the Agent should have already completed
-# file writes/modifications/deletions on the cloud.
-# The purpose of dispatching actions is to notify the frontend to sync the latest data and refresh the UI.
-# ============================================================
+  A real Gmail-connected mail client with inbox sync, compose, drafts, reply, starring, archive, and trash.
 
 actions:
-  - type: COMPOSE_EMAIL
-    name: Compose Email
+  - type: SYNC_EMAIL
+    name: Sync Email
     description: >
-      After the Agent has written an email file (/emails/{id}.json) on the cloud, this action is dispatched to notify the frontend to sync.
-      Upon receiving it, the frontend fetches the file from the cloud, updates the local file tree and UI. No local file creation is needed.
-      The email file should contain a complete Email JSON structure, including from, to, cc, subject, content,
-      timestamp, isRead, isStarred, folder, and other fields.
+      Trigger a Gmail sync through the Email app so the local cache refreshes from the connected Gmail account.
     params:
-      - name: filePath
+      - name: focusId
         type: string
-        description: The email file path written by the Agent, e.g., /emails/{id}.json
-        required: true
+        description: Optional email ID to focus after sync.
+        required: false
+      - name: folder
+        type: string
+        description: Optional folder to open after sync.
+        required: false
+        enum: [inbox, sent, drafts, trash]
 
-  - type: DELETE_EMAIL
-    name: Delete Email
+  - type: SEND_EMAIL
+    name: Send Email
     description: >
-      After the Agent has deleted an email file on the cloud, this action is dispatched to notify the frontend to sync.
-      Upon receiving it, the frontend removes the email from the local file tree and refreshes the UI.
+      Send a real Gmail message through the connected account, then refresh the Email app cache.
     params:
-      - name: emailId
+      - name: to
         type: string
-        description: The ID of the email to delete (corresponds to the filename without the .json extension)
+        description: Comma-separated To recipients.
         required: true
+      - name: cc
+        type: string
+        description: Optional comma-separated Cc recipients.
+        required: false
+      - name: subject
+        type: string
+        description: Subject line.
+        required: false
+      - name: content
+        type: string
+        description: Plain-text message body.
+        required: true
+      - name: threadId
+        type: string
+        description: Optional Gmail thread ID for replies.
+        required: false
+      - name: internetMessageId
+        type: string
+        description: Optional In-Reply-To message ID header when replying.
+        required: false
+      - name: references
+        type: string
+        description: Optional References header when replying.
+        required: false
+      - name: draftId
+        type: string
+        description: Optional Gmail draft ID to update and send.
+        required: false
+
+  - type: SAVE_DRAFT
+    name: Save Draft
+    description: >
+      Create or update a real Gmail draft through the connected account.
+    params:
+      - name: to
+        type: string
+        description: Optional comma-separated To recipients.
+        required: false
+      - name: cc
+        type: string
+        description: Optional comma-separated Cc recipients.
+        required: false
+      - name: subject
+        type: string
+        description: Subject line.
+        required: false
+      - name: content
+        type: string
+        description: Plain-text draft body.
+        required: true
+      - name: threadId
+        type: string
+        description: Optional Gmail thread ID for reply drafts.
+        required: false
+      - name: internetMessageId
+        type: string
+        description: Optional In-Reply-To message ID header.
+        required: false
+      - name: references
+        type: string
+        description: Optional References header.
+        required: false
+      - name: draftId
+        type: string
+        description: Optional Gmail draft ID to update.
+        required: false
 
   - type: MARK_READ
     name: Mark as Read
     description: >
-      After the Agent has updated the email file on the cloud (isRead set to true), this action is dispatched to notify the frontend to sync.
-      Upon receiving it, the frontend re-reads the email file from the cloud and refreshes the UI.
+      Remove the UNREAD label from an email in Gmail and refresh that cached record.
     params:
       - name: emailId
         type: string
-        description: The ID of the email to mark as read
+        description: Gmail message ID to mark as read.
+        required: true
+
+  - type: STAR_EMAIL
+    name: Star Email
+    description: >
+      Add the STARRED label to an email in Gmail.
+    params:
+      - name: emailId
+        type: string
+        description: Gmail message ID to star.
+        required: true
+
+  - type: UNSTAR_EMAIL
+    name: Unstar Email
+    description: >
+      Remove the STARRED label from an email in Gmail.
+    params:
+      - name: emailId
+        type: string
+        description: Gmail message ID to unstar.
+        required: true
+
+  - type: TRASH_EMAIL
+    name: Trash Email
+    description: >
+      Move an email into Gmail Trash and refresh the Email app cache.
+    params:
+      - name: emailId
+        type: string
+        description: Gmail message ID to move to trash.
         required: true

@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Aoi TTS Lab</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0f1115;
+        --panel: #171a21;
+        --panel-strong: #1f2430;
+        --line: rgba(255, 255, 255, 0.08);
+        --text: #eef2ff;
+        --muted: #a8b1c7;
+        --accent: #f8c44f;
+        --accent-2: #7fb7ff;
+        --danger: #ff7f8e;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background:
+          radial-gradient(circle at top left, rgba(127, 183, 255, 0.14), transparent 32%),
+          radial-gradient(circle at top right, rgba(248, 196, 79, 0.12), transparent 28%),
+          linear-gradient(180deg, #0e1014, var(--bg));
+        color: var(--text);
+        font-family:
+          "Segoe UI", "Noto Sans KR", "Hiragino Sans", "Yu Gothic", sans-serif;
+      }
+
+      main {
+        width: min(1200px, calc(100vw - 32px));
+        margin: 0 auto;
+        padding: 28px 0 40px;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      .hero {
+        display: grid;
+        gap: 14px;
+        padding: 24px;
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: rgba(23, 26, 33, 0.92);
+        backdrop-filter: blur(14px);
+      }
+
+      .eyebrow {
+        color: var(--accent);
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .hero p {
+        color: var(--muted);
+        line-height: 1.6;
+      }
+
+      .status {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+        padding: 8px 12px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.05);
+        border: 1px solid var(--line);
+        font-size: 13px;
+      }
+
+      .layout {
+        display: grid;
+        gap: 18px;
+        margin-top: 18px;
+      }
+
+      .panel {
+        display: grid;
+        gap: 16px;
+        padding: 20px;
+        border-radius: 18px;
+        border: 1px solid var(--line);
+        background: rgba(23, 26, 33, 0.92);
+      }
+
+      .panelHeader {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: space-between;
+        gap: 10px;
+        align-items: center;
+      }
+
+      .panelHeader p {
+        color: var(--muted);
+        font-size: 14px;
+      }
+
+      .fieldGrid {
+        display: grid;
+        gap: 14px;
+      }
+
+      label {
+        display: grid;
+        gap: 8px;
+        font-size: 13px;
+        color: var(--muted);
+      }
+
+      textarea,
+      input,
+      select {
+        width: 100%;
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        background: rgba(7, 9, 13, 0.95);
+        color: var(--text);
+        border-radius: 14px;
+        padding: 12px 14px;
+        font: inherit;
+      }
+
+      textarea {
+        min-height: 120px;
+        resize: vertical;
+      }
+
+      .row {
+        display: flex;
+        gap: 10px;
+        flex-wrap: wrap;
+      }
+
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 11px 16px;
+        background: linear-gradient(135deg, var(--accent), #f9a84d);
+        color: #17130b;
+        font-weight: 700;
+        cursor: pointer;
+      }
+
+      button.secondary {
+        background: rgba(255, 255, 255, 0.06);
+        color: var(--text);
+        border: 1px solid var(--line);
+      }
+
+      button.ghost {
+        background: transparent;
+        color: var(--accent-2);
+        border: 1px solid rgba(127, 183, 255, 0.2);
+      }
+
+      button:disabled {
+        opacity: 0.55;
+        cursor: wait;
+      }
+
+      .resultGrid {
+        display: grid;
+        gap: 14px;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+      }
+
+      .voiceCard {
+        display: grid;
+        gap: 12px;
+        padding: 16px;
+        border-radius: 16px;
+        background: var(--panel-strong);
+        border: 1px solid var(--line);
+      }
+
+      .voiceCardHeader {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+      }
+
+      .voiceCardHeader strong {
+        font-size: 16px;
+      }
+
+      .meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+      }
+
+      .meta span {
+        font-size: 11px;
+        color: var(--muted);
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        padding: 4px 8px;
+      }
+
+      .desc {
+        color: var(--muted);
+        font-size: 13px;
+        line-height: 1.55;
+      }
+
+      audio {
+        width: 100%;
+      }
+
+      .hint {
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+
+      .error {
+        color: var(--danger);
+        font-size: 13px;
+      }
+
+      @media (max-width: 720px) {
+        main {
+          width: min(100vw, calc(100vw - 20px));
+          padding-top: 18px;
+        }
+
+        .hero,
+        .panel {
+          padding: 16px;
+          border-radius: 16px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="hero">
+        <div class="eyebrow">Aoi Voice Lab</div>
+        <h1>Aoi용 TTS 후보를 직접 들어보는 페이지</h1>
+        <p>
+          Google 기본 후보 5개를 같은 대사로 바로 비교하고, ElevenLabs 계정 음성과 Voice
+          Library 후보도 같은 자리에서 들어볼 수 있게 구성했습니다.
+        </p>
+        <div id="status" class="status"></div>
+      </section>
+
+      <section class="layout">
+        <section class="panel">
+          <div class="panelHeader">
+            <div>
+              <h2>테스트 설정</h2>
+              <p>같은 대사와 같은 연기 지시를 유지한 채 목소리만 바꿔 들어보는 용도입니다.</p>
+            </div>
+          </div>
+          <div class="fieldGrid">
+            <label>
+              Aoi 대사
+              <textarea id="transcript"></textarea>
+            </label>
+            <label>
+              연기 지시
+              <textarea id="stylePrompt"></textarea>
+            </label>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panelHeader">
+            <div>
+              <h2>Google A/B</h2>
+              <p>`Despina`, `Kore`, `Pulcherrima`, `Achernar`, `Gacrux`를 한 번에 비교합니다.</p>
+            </div>
+            <div class="row">
+              <button id="generateGoogleAll">Google 후보 5개 생성</button>
+            </div>
+          </div>
+          <div id="googleResults" class="resultGrid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panelHeader">
+            <div>
+              <h2>ElevenLabs 계정 음성</h2>
+              <p>내 계정에 있는 음성들 중에서 바로 샘플을 생성해 들어볼 수 있습니다.</p>
+            </div>
+            <div class="row">
+              <input id="accountVoiceSearch" placeholder="검색어 예: japanese, anime, sassy" />
+              <button id="loadAccountVoices" class="secondary">계정 음성 불러오기</button>
+            </div>
+          </div>
+          <div class="hint">
+            계정 음성은 바로 합성 가능합니다. 저장된 Voice Library 음성이나 복제 음성이 있으면 여기에
+            같이 잡힐 수 있습니다.
+          </div>
+          <div id="accountVoiceError" class="error"></div>
+          <div id="accountVoiceResults" class="resultGrid"></div>
+        </section>
+
+        <section class="panel">
+          <div class="panelHeader">
+            <div>
+              <h2>ElevenLabs Voice Library 후보</h2>
+              <p>일본어 여성 목소리 위주로 훑고, preview로 먼저 성향을 들어보는 섹션입니다.</p>
+            </div>
+            <div class="row">
+              <input id="sharedVoiceSearch" value="anime" placeholder="검색어 예: anime, calm, elegant" />
+              <button id="loadSharedVoices" class="secondary">라이브러리 후보 찾기</button>
+            </div>
+          </div>
+          <div class="hint">
+            Voice Library 후보는 `preview_url`로 먼저 듣고, 마음에 드는 목소리는 ElevenLabs 쪽에서
+            저장한 뒤 계정 음성 섹션에서 샘플 생성하는 흐름이 안전합니다.
+          </div>
+          <div id="sharedVoiceError" class="error"></div>
+          <div id="sharedVoiceResults" class="resultGrid"></div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="./tts-lab.js"></script>
+  </body>
+</html>

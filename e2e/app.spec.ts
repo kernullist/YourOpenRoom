@@ -6,7 +6,7 @@ test.describe('Shell – main UI', () => {
   });
 
   test('renders the shell with desktop app icons', async ({ page }) => {
-    await expect(page).toHaveTitle('OpenRoom');
+    await expect(page).toHaveTitle('Your Room');
     const shell = page.locator('[data-testid="shell"]');
     await expect(shell).toBeVisible();
 

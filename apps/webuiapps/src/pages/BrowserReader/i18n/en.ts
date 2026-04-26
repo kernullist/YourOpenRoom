@@ -41,7 +41,7 @@ const en = {
   },
   google: {
     kicker: 'Google Search',
-    title: 'Search Google inside OpenRoom',
+    title: 'Search Google inside Your Room',
     description:
       'Google blocks iframe browsing, so this app shows a native results panel instead. Search here, then open any result back in the browser workspace.',
     placeholder: 'Search Google...',
@@ -49,7 +49,8 @@ const en = {
     loading: 'Loading Google results...',
     empty: 'Type a query to start.',
     noResults: 'No results could be parsed for this query.',
-    fallback: 'Google did not return usable results, so OpenRoom is showing fallback web search results instead.',
+    fallback:
+      'Google did not return usable results, so Your Room is showing fallback web search results instead.',
   },
 };
 

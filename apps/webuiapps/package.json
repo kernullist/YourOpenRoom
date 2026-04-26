@@ -7,9 +7,9 @@
   "scripts": {
     "dev": "vite",
     "debug": "vite --debug",
-    "build:test": "NODE_ENV=test vite build",
-    "build": "NODE_ENV=production vite build",
-    "build:analyze": "NODE_ENV=production ANALYZE=analyze vite build",
+    "build:test": "vite build --mode test",
+    "build": "vite build --mode production",
+    "build:analyze": "vite build --mode analyze",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",

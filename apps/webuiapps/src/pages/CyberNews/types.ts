@@ -8,6 +8,10 @@ export interface Article {
   content: string;
   imageUrl: string;
   publishedAt: string;
+  sourceName?: string;
+  sourceUrl?: string;
+  isLive?: boolean;
+  fetchedAt?: string;
 }
 
 export interface Clue {

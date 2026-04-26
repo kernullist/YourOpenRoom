@@ -73,11 +73,37 @@ interface WorkerSummary {
   remainingRisks: string[];
 }
 
+interface WorkerExecutionPlan {
+  summary: string;
+  intendedFiles: string[];
+  validationCommands: string[];
+  riskNotes: string[];
+}
+
 interface ReviewSummary {
   approved: boolean;
   summary: string;
   issues: string[];
   filesChecked: string[];
+}
+
+interface ValidationRerunSummary {
+  passed: string[];
+  failed: string[];
+  failureDetails: string[];
+}
+
+interface ResolvedValidationPlan {
+  plannerCommands: string[];
+  autoAddedCommands: string[];
+  effectiveCommands: string[];
+  notes: string[];
+}
+
+interface AutomationFailureResolution {
+  summary: string;
+  guidance: string;
+  userMessage: string;
 }
 
 interface ProjectDiscoveryFinding {
@@ -134,6 +160,18 @@ interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+interface AttemptFileSnapshot {
+  existed: boolean;
+  content: string | null;
+}
+
+interface WorkerAttemptState {
+  plan: WorkerExecutionPlan | null;
+  fileSnapshots: Map<string, AttemptFileSnapshot>;
+  commandsRun: string[];
+  readFiles: Set<string>;
+}
+
 type AgentMessage =
   | { role: 'user'; content: string }
   | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
@@ -151,6 +189,11 @@ const MAX_FILE_BYTES = 80_000;
 const MAX_OVERWRITE_FILE_BYTES = 8_000;
 const MAX_LIST_ENTRIES = 200;
 const MAX_SEARCH_RESULTS = 40;
+const MAX_PLANNED_FILES = 12;
+const MAX_PLANNER_VALIDATION_COMMANDS = 4;
+const MAX_DEFAULT_VALIDATION_COMMANDS = 2;
+const MAX_EFFECTIVE_VALIDATION_COMMANDS = 6;
+const MAX_REVIEW_DIFF_CHARS = 2_400;
 const COMMAND_TIMEOUT_MS = 90_000;
 const STALLED_WORK_MS = 15_000;
 const GLOBAL_SCAN_INTERVAL_MS = 10_000;
@@ -166,23 +209,23 @@ const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
 const SAFE_COMMAND_PATTERNS = [
-  /^python(?:\s|$)/i,
-  /^py(?:\s|$)/i,
+  /^python\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
+  /^py\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
   /^pytest(?:\s|$)/i,
-  /^uv(?:\s|$)/i,
-  /^pip(?:\s|$)/i,
-  /^npm(?:\s|$)/i,
-  /^pnpm(?:\s|$)/i,
-  /^node(?:\s|$)/i,
+  /^uv\s+run\s+(?:pytest(?:\s|$)|python\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b|py\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b|ruff\b|mypy\b)/i,
+  /^npm\s+(?:test(?:\s|$)|run\s+(?:test|lint|build|check|typecheck)\b)/i,
+  /^pnpm\s+(?:(?:run\s+)?(?:test|lint|build|check|typecheck)\b|exec\s+(?:vitest|jest|eslint|tsc|tsx|vite)\b)/i,
+  /^node\s+--test\b/i,
   /^git\s+(status|diff|show|rev-parse|branch|log)\b/i,
   /^rg(?:\s|$)/i,
-  /^go(?:\s|$)/i,
-  /^cargo(?:\s|$)/i,
-  /^dotnet(?:\s|$)/i,
+  /^go\s+(?:test|vet)\b/i,
+  /^cargo\s+(?:test|check|clippy|fmt)\b/i,
+  /^dotnet\s+(?:test|build)\b/i,
 ];
 const DANGEROUS_COMMAND_PATTERNS = [
   /\b(?:rm|del|rmdir|erase|format|shutdown)\b/i,
   /\b(?:remove-item|move-item|rename-item|copy-item)\b/i,
+  /\b(?:invoke-expression|iex|start-process|curl|wget|invoke-webrequest)\b/i,
   /\bgit\s+(?:reset|checkout|clean)\b/i,
   /[|;&><]/,
 ];
@@ -198,6 +241,42 @@ function sanitizeSessionPath(sessionPath: string): string {
 
 function makeId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.trim().replace(/\s+/g, ' ');
+}
+
+function uniqueStrings(values: string[]): string[] {
+  return [...new Set(values.filter(Boolean))];
+}
+
+function normalizeRelativePath(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/^\/+/, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+function normalizeCommandForComparison(command: string): string {
+  return normalizeWhitespace(command).toLowerCase();
+}
+
+function normalizePathList(values: unknown[], limit: number): string[] {
+  return uniqueStrings(
+    values.map((value) => normalizeRelativePath(String(value))).filter((value) => value !== ''),
+  ).slice(0, limit);
+}
+
+function createWorkerAttemptState(plan: WorkerExecutionPlan | null): WorkerAttemptState {
+  return {
+    plan,
+    fileSnapshots: new Map(),
+    commandsRun: [],
+    readFiles: new Set(),
+  };
 }
 
 function isAbortError(error: unknown): boolean {
@@ -306,15 +385,26 @@ function getGlobalAutomationLocksDir(sessionsDir: string): string {
 }
 
 function sanitizeLockKey(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 180) || 'lock';
+  return (
+    value
+      .replace(/[^a-zA-Z0-9._-]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .slice(0, 180) || 'lock'
+  );
 }
 
 function getWorkLockPath(sessionsDir: string, sessionPath: string, workId: string): string {
-  return join(getSessionAutomationLocksDir(sessionsDir, sessionPath), `work-${sanitizeLockKey(workId)}.json`);
+  return join(
+    getSessionAutomationLocksDir(sessionsDir, sessionPath),
+    `work-${sanitizeLockKey(workId)}.json`,
+  );
 }
 
 function getProjectLockPath(sessionsDir: string, projectKey: string): string {
-  return join(getGlobalAutomationLocksDir(sessionsDir), `project-${sanitizeLockKey(projectKey)}.json`);
+  return join(
+    getGlobalAutomationLocksDir(sessionsDir),
+    `project-${sanitizeLockKey(projectKey)}.json`,
+  );
 }
 
 function loadAutomationEvents(sessionsDir: string, sessionPath: string): KiraAutomationEvent[] {
@@ -415,7 +505,8 @@ export function resolveRoleLlmConfig(
 ): LLMConfig | null {
   const provider = getOptionalString(override?.provider) ?? baseConfig?.provider;
   const baseUrl = getOptionalString(override?.baseUrl) ?? baseConfig?.baseUrl;
-  const model = getOptionalString(override?.model) ?? getOptionalString(legacyModel) ?? baseConfig?.model;
+  const model =
+    getOptionalString(override?.model) ?? getOptionalString(legacyModel) ?? baseConfig?.model;
   const apiKey = override?.apiKey ?? baseConfig?.apiKey ?? '';
   const customHeaders = getOptionalString(override?.customHeaders) ?? baseConfig?.customHeaders;
 
@@ -434,7 +525,11 @@ function getKiraRuntimeSettings(configFile: string, fallbackWorkRootDirectory: s
   const llmConfig = loadLlmConfig(configFile);
   const kiraSettings = loadKiraSettings(configFile);
   const workRootDirectory = kiraSettings.workRootDirectory?.trim() || fallbackWorkRootDirectory;
-  const workerConfig = resolveRoleLlmConfig(llmConfig, kiraSettings.workerLlm, kiraSettings.workerModel);
+  const workerConfig = resolveRoleLlmConfig(
+    llmConfig,
+    kiraSettings.workerLlm,
+    kiraSettings.workerModel,
+  );
   const reviewerConfig = resolveRoleLlmConfig(
     llmConfig,
     kiraSettings.reviewerLlm,
@@ -751,8 +846,14 @@ async function callAnthropicCompatible(
     .trim();
   const toolCalls = (data.content ?? [])
     .filter(
-      (block): block is { type: 'tool_use'; id?: string; name?: string; input?: Record<string, unknown> } =>
-        block.type === 'tool_use',
+      (
+        block,
+      ): block is {
+        type: 'tool_use';
+        id?: string;
+        name?: string;
+        input?: Record<string, unknown>;
+      } => block.type === 'tool_use',
     )
     .map((block, index) => ({
       id: block.id || `tool_${index}`,
@@ -792,14 +893,153 @@ function containsCorruptionMarker(content: string): boolean {
   return /rest of file unchanged/i.test(content);
 }
 
+export function hasMergeConflictMarkers(content: string): boolean {
+  return /^(<{7}|={7}|>{7})(?: .*)?$/m.test(content);
+}
+
+export function isSafeCommandAllowed(command: string): boolean {
+  const normalized = normalizeWhitespace(command);
+  if (!normalized) return false;
+  if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized))) {
+    return false;
+  }
+  return SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
+}
+
+function captureAttemptFileSnapshot(
+  state: WorkerAttemptState | null | undefined,
+  projectRoot: string,
+  relativePath: string,
+): void {
+  if (!state) return;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (!normalizedPath || state.fileSnapshots.has(normalizedPath)) return;
+
+  const absolutePath = ensureInsideRoot(projectRoot, normalizedPath);
+  if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+    state.fileSnapshots.set(normalizedPath, {
+      existed: true,
+      content: fs.readFileSync(absolutePath, 'utf-8'),
+    });
+    return;
+  }
+
+  state.fileSnapshots.set(normalizedPath, {
+    existed: false,
+    content: null,
+  });
+}
+
+function restoreAttemptFiles(
+  projectRoot: string,
+  state: WorkerAttemptState | null | undefined,
+): string[] {
+  if (!state || state.fileSnapshots.size === 0) return [];
+
+  const restored: string[] = [];
+  for (const [relativePath, snapshot] of [...state.fileSnapshots.entries()].reverse()) {
+    const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+    if (snapshot.existed) {
+      fs.mkdirSync(dirname(absolutePath), { recursive: true });
+      fs.writeFileSync(absolutePath, snapshot.content ?? '', 'utf-8');
+      restored.push(relativePath);
+      continue;
+    }
+
+    if (fs.existsSync(absolutePath)) {
+      fs.rmSync(absolutePath, { force: true });
+      restored.push(relativePath);
+    }
+  }
+
+  return restored.sort();
+}
+
+function recordAttemptCommand(state: WorkerAttemptState | null | undefined, command: string): void {
+  if (!state) return;
+  const normalized = normalizeWhitespace(command);
+  if (normalized) {
+    state.commandsRun.push(normalized);
+  }
+}
+
+function recordAttemptRead(
+  state: WorkerAttemptState | null | undefined,
+  relativePath: string,
+): void {
+  if (!state) return;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (normalizedPath) {
+    state.readFiles.add(normalizedPath);
+  }
+}
+
+function truncateForReview(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 26)).trimEnd()}\n...diff truncated for review`;
+}
+
+function formatCommandOutput(stdout: string, stderr: string): string {
+  return [`stdout:\n${stdout.trim() || '(empty)'}`, `stderr:\n${stderr.trim() || '(empty)'}`].join(
+    '\n\n',
+  );
+}
+
+function formatCommandFailureDetail(command: string, error: unknown): string {
+  const stdout =
+    error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '';
+  const stderr =
+    error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return [
+    `Command: ${command}`,
+    `Error: ${message}`,
+    truncateForReview(formatCommandOutput(stdout, stderr), 1_200),
+  ].join('\n\n');
+}
+
+function isHighRiskFile(projectRoot: string, relativePath: string): boolean {
+  const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) return false;
+
+  const ext = absolutePath.slice(absolutePath.lastIndexOf('.')).toLowerCase();
+  const basename = absolutePath.slice(absolutePath.lastIndexOf('\\') + 1).toLowerCase();
+  const sourceLike = ['.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.java', '.cs'].includes(
+    ext,
+  );
+  if (!sourceLike) return false;
+
+  const content = fs.readFileSync(absolutePath, 'utf-8');
+  const lineCount = content.split(/\r?\n/).length;
+  return (
+    lineCount >= 220 ||
+    ['main.py', 'app.py', 'server.py', 'index.ts', 'index.tsx'].includes(basename)
+  );
+}
+
+function requiresExplicitReadBeforeWrite(
+  projectRoot: string,
+  relativePath: string,
+  state: WorkerAttemptState | null | undefined,
+): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (!normalizedPath || !state) return false;
+  if (state.readFiles.has(normalizedPath)) return false;
+  return isHighRiskFile(projectRoot, normalizedPath);
+}
+
 function collectFiles(root: string, currentDir: string, depth: number, entries: string[]): void {
   if (entries.length >= MAX_LIST_ENTRIES) return;
   const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
   for (const dirent of dirents) {
     if (entries.length >= MAX_LIST_ENTRIES) return;
-    if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') continue;
+    if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv')
+      continue;
     const absolutePath = join(currentDir, dirent.name);
-    const relativePath = absolutePath.slice(root.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+    const relativePath = absolutePath
+      .slice(root.length)
+      .replace(/^[\\/]+/, '')
+      .replace(/\\/g, '/');
     if (dirent.isDirectory()) {
       entries.push(`[dir] ${relativePath}`);
       if (depth > 0) collectFiles(root, absolutePath, depth - 1, entries);
@@ -817,13 +1057,17 @@ function searchProjectFiles(root: string, query: string): string[] {
     const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
     for (const dirent of dirents) {
       if (results.length >= MAX_SEARCH_RESULTS) return;
-      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') continue;
+      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv')
+        continue;
       const absolutePath = join(currentDir, dirent.name);
       if (dirent.isDirectory()) {
         walk(absolutePath);
         continue;
       }
-      const relativePath = absolutePath.slice(root.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+      const relativePath = absolutePath
+        .slice(root.length)
+        .replace(/^[\\/]+/, '')
+        .replace(/\\/g, '/');
       if (relativePath.toLowerCase().includes(needle)) {
         results.push(`${relativePath}: filename match`);
         continue;
@@ -835,7 +1079,10 @@ function searchProjectFiles(root: string, query: string): string[] {
         const lower = content.toLowerCase();
         const index = lower.indexOf(needle);
         if (index >= 0) {
-          const snippet = content.slice(Math.max(0, index - 80), Math.min(content.length, index + 120));
+          const snippet = content.slice(
+            Math.max(0, index - 80),
+            Math.min(content.length, index + 120),
+          );
           results.push(`${relativePath}: ${snippet.replace(/\s+/g, ' ').trim()}`);
         }
       } catch {
@@ -852,6 +1099,7 @@ async function executeTool(
   toolName: string,
   args: Record<string, unknown>,
   writable: boolean,
+  attemptState?: WorkerAttemptState | null,
 ): Promise<string> {
   switch (toolName) {
     case 'list_files': {
@@ -874,6 +1122,7 @@ async function executeTool(
       }
       const stat = fs.statSync(absolutePath);
       if (stat.size > MAX_FILE_BYTES) return 'error: file too large';
+      recordAttemptRead(attemptState, filePath);
       return fs.readFileSync(absolutePath, 'utf-8');
     }
     case 'write_file': {
@@ -882,10 +1131,14 @@ async function executeTool(
       const content = typeof args.content === 'string' ? args.content : '';
       if (!filePath) return 'error: path is required';
       const absolutePath = ensureInsideRoot(projectRoot, filePath);
+      captureAttemptFileSnapshot(attemptState, projectRoot, filePath);
       if (containsCorruptionMarker(content)) {
         return 'error: refusing to write placeholder or corruption marker text';
       }
       if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+        if (requiresExplicitReadBeforeWrite(projectRoot, filePath, attemptState)) {
+          return 'error: high-risk existing files must be read with read_file before overwriting';
+        }
         const stat = fs.statSync(absolutePath);
         if (stat.size > MAX_OVERWRITE_FILE_BYTES) {
           return 'error: existing file is too large for write_file; use edit_file instead';
@@ -907,6 +1160,10 @@ async function executeTool(
       if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
         return 'error: file not found';
       }
+      if (requiresExplicitReadBeforeWrite(projectRoot, filePath, attemptState)) {
+        return 'error: high-risk files must be read with read_file before editing';
+      }
+      captureAttemptFileSnapshot(attemptState, projectRoot, filePath);
       const current = fs.readFileSync(absolutePath, 'utf-8');
       const occurrences = current.split(find).length - 1;
       if (occurrences === 0) return 'error: target text not found';
@@ -929,10 +1186,12 @@ async function executeTool(
     case 'run_command': {
       const command = typeof args.command === 'string' ? args.command.trim() : '';
       if (!command) return 'error: command is required';
-      if (DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+      if (
+        DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalizeWhitespace(command)))
+      ) {
         return 'error: command rejected by safety policy';
       }
-      if (!SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(command))) {
+      if (!isSafeCommandAllowed(command)) {
         return 'error: command prefix is not allowed';
       }
       const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
@@ -942,7 +1201,8 @@ async function executeTool(
         timeout: COMMAND_TIMEOUT_MS,
         maxBuffer: 1024 * 1024,
       });
-      return [`stdout:\n${stdout.trim() || '(empty)'}`, `stderr:\n${stderr.trim() || '(empty)'}`].join('\n\n');
+      recordAttemptCommand(attemptState, command);
+      return formatCommandOutput(stdout, stderr);
     }
     default:
       return `error: unknown tool ${toolName}`;
@@ -974,7 +1234,11 @@ function buildToolDefinitions(writable: boolean): ToolDefinition[] {
               'Patch an existing UTF-8 file by replacing exact text. Prefer this over write_file for existing files, especially large ones.',
             parameters: {
               path: { type: 'string', description: 'Relative file path', required: true },
-              find: { type: 'string', description: 'Exact existing text to replace', required: true },
+              find: {
+                type: 'string',
+                description: 'Exact existing text to replace',
+                required: true,
+              },
               replace: { type: 'string', description: 'Replacement text', required: true },
               replace_all: {
                 type: 'boolean',
@@ -1004,7 +1268,7 @@ function buildToolDefinitions(writable: boolean): ToolDefinition[] {
     {
       name: 'run_command',
       description:
-        'Run a safe project command such as tests or diagnostics. Allowed prefixes include python, py, pytest, uv, npm, pnpm, node, git status/diff/show, rg, go, cargo, dotnet.',
+        'Run a safe diagnostic or validation command such as pytest, npm/pnpm test or lint, git status/diff/show, rg, go test, cargo test/check, or dotnet test/build.',
       parameters: {
         command: { type: 'string', description: 'Exact command to run', required: true },
       },
@@ -1019,6 +1283,7 @@ async function runToolAgent(
   systemPrompt: string,
   writable: boolean,
   signal?: AbortSignal,
+  attemptState?: WorkerAttemptState | null,
 ): Promise<string> {
   const history: AgentMessage[] = [{ role: 'user', content: prompt }];
   const tools = buildToolDefinitions(writable);
@@ -1046,7 +1311,13 @@ async function runToolAgent(
         error.name = 'AbortError';
         throw error;
       }
-      const toolResult = await executeTool(projectRoot, toolCall.name, toolCall.args, writable);
+      const toolResult = await executeTool(
+        projectRoot,
+        toolCall.name,
+        toolCall.args,
+        writable,
+        attemptState,
+      );
       history.push({
         role: 'tool',
         content: toolResult,
@@ -1058,16 +1329,66 @@ async function runToolAgent(
   throw new Error('Agent exceeded the maximum number of tool turns.');
 }
 
+export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as Partial<WorkerExecutionPlan>;
+    const allPlannedCommands = uniqueStrings(
+      (Array.isArray(parsed.validationCommands) ? parsed.validationCommands : [])
+        .map((value) => normalizeWhitespace(String(value)))
+        .filter(Boolean),
+    );
+    const safeCommands = allPlannedCommands.filter((command) => isSafeCommandAllowed(command));
+    const rejectedCommands = allPlannedCommands.filter((command) => !isSafeCommandAllowed(command));
+    const acceptedCommands = safeCommands.slice(0, MAX_PLANNER_VALIDATION_COMMANDS);
+    const droppedCommands = safeCommands.slice(MAX_PLANNER_VALIDATION_COMMANDS);
+
+    return {
+      summary: parsed.summary?.trim() || 'No execution plan provided.',
+      intendedFiles: normalizePathList(
+        Array.isArray(parsed.intendedFiles) ? parsed.intendedFiles : [],
+        MAX_PLANNED_FILES,
+      ),
+      validationCommands: acceptedCommands,
+      riskNotes: uniqueStrings([
+        ...(Array.isArray(parsed.riskNotes) ? parsed.riskNotes.map(String) : []),
+        ...rejectedCommands.map(
+          (command) =>
+            `Planner suggested an unsafe validation command that was removed: ${command}`,
+        ),
+        ...(droppedCommands.length > 0
+          ? [
+              `Planner suggested ${safeCommands.length} safe validation commands, so Kira kept only the first ${MAX_PLANNER_VALIDATION_COMMANDS}.`,
+            ]
+          : []),
+      ]),
+    };
+  } catch {
+    return {
+      summary: raw.trim() || 'No execution plan provided.',
+      intendedFiles: [],
+      validationCommands: [],
+      riskNotes: [],
+    };
+  }
+}
+
 function parseWorkerSummary(raw: string): WorkerSummary {
   try {
     const parsed = JSON.parse(extractJson(raw)) as Partial<WorkerSummary>;
     return {
       summary: parsed.summary?.trim() || 'No worker summary provided.',
-      filesChanged: Array.isArray(parsed.filesChanged) ? parsed.filesChanged.map(String) : [],
-      testsRun: Array.isArray(parsed.testsRun) ? parsed.testsRun.map(String) : [],
-      remainingRisks: Array.isArray(parsed.remainingRisks)
-        ? parsed.remainingRisks.map(String)
-        : [],
+      filesChanged: normalizePathList(
+        Array.isArray(parsed.filesChanged) ? parsed.filesChanged : [],
+        100,
+      ),
+      testsRun: uniqueStrings(
+        (Array.isArray(parsed.testsRun) ? parsed.testsRun : []).map((value) =>
+          normalizeWhitespace(String(value)),
+        ),
+      ),
+      remainingRisks: uniqueStrings(
+        Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
+      ),
     };
   } catch {
     return {
@@ -1098,6 +1419,207 @@ function parseReviewSummary(raw: string): ReviewSummary {
   }
 }
 
+function projectHasFile(projectRoot: string, relativePath: string): boolean {
+  const absolutePath = join(projectRoot, relativePath);
+  return fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile();
+}
+
+function projectHasDirectory(projectRoot: string, relativePath: string): boolean {
+  const absolutePath = join(projectRoot, relativePath);
+  return fs.existsSync(absolutePath) && fs.statSync(absolutePath).isDirectory();
+}
+
+function projectHasFileWithSuffix(projectRoot: string, suffixes: string[], maxDepth = 2): boolean {
+  const walk = (currentDir: string, depth: number): boolean => {
+    if (depth < 0 || !fs.existsSync(currentDir) || !fs.statSync(currentDir).isDirectory())
+      return false;
+    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') {
+        continue;
+      }
+      const absolutePath = join(currentDir, dirent.name);
+      if (dirent.isFile() && suffixes.some((suffix) => dirent.name.endsWith(suffix))) {
+        return true;
+      }
+      if (dirent.isDirectory() && walk(absolutePath, depth - 1)) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  return walk(projectRoot, maxDepth);
+}
+
+function loadPackageScripts(projectRoot: string): Record<string, string> {
+  const packageJsonPath = join(projectRoot, 'package.json');
+  if (!fs.existsSync(packageJsonPath) || !fs.statSync(packageJsonPath).isFile()) return {};
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+      scripts?: Record<string, unknown>;
+    };
+    return Object.fromEntries(
+      Object.entries(raw.scripts ?? {}).filter(
+        (entry): entry is [string, string] => typeof entry[1] === 'string',
+      ),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function detectNodePackageManager(projectRoot: string): 'pnpm' | 'npm' | null {
+  const packageJsonPath = join(projectRoot, 'package.json');
+  if (!fs.existsSync(packageJsonPath) || !fs.statSync(packageJsonPath).isFile()) return null;
+
+  try {
+    const raw = JSON.parse(fs.readFileSync(packageJsonPath, 'utf-8')) as {
+      packageManager?: unknown;
+    };
+    if (typeof raw.packageManager === 'string') {
+      if (raw.packageManager.startsWith('pnpm@')) return 'pnpm';
+      if (raw.packageManager.startsWith('npm@')) return 'npm';
+    }
+  } catch {
+    // Ignore invalid package.json metadata and fall back to lockfiles.
+  }
+
+  if (projectHasFile(projectRoot, 'pnpm-lock.yaml')) return 'pnpm';
+  return 'npm';
+}
+
+export function buildDefaultValidationCommands(
+  projectRoot: string,
+  filesChanged: string[],
+): string[] {
+  const changedFiles = normalizePathList(filesChanged, 200);
+  const changedExtensions = new Set(
+    changedFiles
+      .map((file) => file.slice(file.lastIndexOf('.')).toLowerCase())
+      .filter((ext) => ext.startsWith('.')),
+  );
+  const commands: string[] = [];
+
+  const packageManager = detectNodePackageManager(projectRoot);
+  if (packageManager) {
+    const scripts = loadPackageScripts(projectRoot);
+    const hasNodeSignals =
+      changedExtensions.has('.ts') ||
+      changedExtensions.has('.tsx') ||
+      changedExtensions.has('.js') ||
+      changedExtensions.has('.jsx') ||
+      changedExtensions.has('.mts') ||
+      changedExtensions.has('.cts') ||
+      changedExtensions.has('.mjs') ||
+      changedExtensions.has('.cjs') ||
+      changedFiles.length === 0;
+    if (hasNodeSignals) {
+      if (scripts.typecheck) {
+        commands.push(packageManager === 'pnpm' ? 'pnpm run typecheck' : 'npm run typecheck');
+      } else if (scripts.test) {
+        commands.push(packageManager === 'pnpm' ? 'pnpm test' : 'npm test');
+      } else if (scripts.lint) {
+        commands.push(packageManager === 'pnpm' ? 'pnpm run lint' : 'npm run lint');
+      }
+    }
+  }
+
+  const hasPythonSignals =
+    changedExtensions.has('.py') ||
+    projectHasFile(projectRoot, 'pytest.ini') ||
+    projectHasFile(projectRoot, 'pyproject.toml') ||
+    projectHasDirectory(projectRoot, 'tests');
+  if (
+    hasPythonSignals &&
+    (projectHasFile(projectRoot, 'pytest.ini') || projectHasDirectory(projectRoot, 'tests'))
+  ) {
+    commands.push('python -m pytest');
+  }
+
+  const hasGoSignals = changedExtensions.has('.go') || projectHasFile(projectRoot, 'go.mod');
+  if (hasGoSignals) {
+    commands.push('go test ./...');
+  }
+
+  const hasRustSignals = changedExtensions.has('.rs') || projectHasFile(projectRoot, 'Cargo.toml');
+  if (hasRustSignals) {
+    commands.push('cargo check');
+  }
+
+  const hasDotnetSignals =
+    changedExtensions.has('.cs') || projectHasFileWithSuffix(projectRoot, ['.sln', '.csproj']);
+  if (hasDotnetSignals) {
+    commands.push('dotnet build');
+  }
+
+  return uniqueStrings(commands)
+    .filter((command) => isSafeCommandAllowed(command))
+    .slice(0, MAX_DEFAULT_VALIDATION_COMMANDS);
+}
+
+export function resolveValidationPlan(
+  projectRoot: string,
+  plannerCommands: string[],
+  filesChanged: string[],
+): ResolvedValidationPlan {
+  const normalizedPlannerCommands = uniqueStrings(
+    plannerCommands.map((command) => normalizeWhitespace(command)),
+  ).filter(Boolean);
+  const autoAddedCommands = buildDefaultValidationCommands(projectRoot, filesChanged).filter(
+    (command) => !normalizedPlannerCommands.includes(command),
+  );
+  const effectiveCommands = uniqueStrings([
+    ...normalizedPlannerCommands,
+    ...autoAddedCommands,
+  ]).slice(0, MAX_EFFECTIVE_VALIDATION_COMMANDS);
+  const notes: string[] = [];
+
+  if (
+    normalizedPlannerCommands.length + autoAddedCommands.length >
+    MAX_EFFECTIVE_VALIDATION_COMMANDS
+  ) {
+    notes.push(
+      `Kira limited the combined validation plan to ${MAX_EFFECTIVE_VALIDATION_COMMANDS} commands.`,
+    );
+  }
+
+  return {
+    plannerCommands: normalizedPlannerCommands,
+    autoAddedCommands: autoAddedCommands.slice(
+      0,
+      Math.max(0, MAX_EFFECTIVE_VALIDATION_COMMANDS - normalizedPlannerCommands.length),
+    ),
+    effectiveCommands,
+    notes,
+  };
+}
+
+export function findOutOfPlanTouchedFiles(plannedFiles: string[], actualFiles: string[]): string[] {
+  const planned = normalizePathList(plannedFiles, 200);
+  if (planned.length === 0) return [];
+
+  return normalizePathList(actualFiles, 200).filter(
+    (actualFile) =>
+      !planned.some(
+        (plannedFile) =>
+          plannedFile === actualFile ||
+          (plannedFile.endsWith('/') && actualFile.startsWith(plannedFile)),
+      ),
+  );
+}
+
+export function findMissingValidationCommands(
+  plannedCommands: string[],
+  actualCommands: string[],
+): string[] {
+  const actual = new Set(actualCommands.map((command) => normalizeCommandForComparison(command)));
+  return uniqueStrings(plannedCommands.map((command) => normalizeWhitespace(command))).filter(
+    (command) => !actual.has(normalizeCommandForComparison(command)),
+  );
+}
+
 function normalizeFindingKind(value: unknown, title: string, summary: string): 'feature' | 'bug' {
   if (value === 'bug' || value === 'feature') return value;
   const haystack = `${title} ${summary}`.toLowerCase();
@@ -1120,7 +1642,9 @@ function buildFallbackTaskDescription(finding: ProjectDiscoveryFinding): string 
     '',
     `## Candidate Files`,
     '',
-    ...(finding.files.length > 0 ? finding.files.map((item) => `- ${item}`) : ['- Inspect the current project and choose the most relevant files.']),
+    ...(finding.files.length > 0
+      ? finding.files.map((item) => `- ${item}`)
+      : ['- Inspect the current project and choose the most relevant files.']),
     '',
     `## Acceptance Criteria`,
     '',
@@ -1143,29 +1667,29 @@ export function parseProjectDiscoveryAnalysis(
       findings?: Array<Partial<ProjectDiscoveryFinding>>;
     };
     const findings = Array.isArray(parsed.findings)
-      ? parsed.findings
-          .slice(0, MAX_DISCOVERY_FINDINGS)
-          .map((finding, index) => {
-            const title = finding.title?.trim() || `Discovery item ${index + 1}`;
-            const summary = finding.summary?.trim() || 'No summary provided.';
-            const files = Array.isArray(finding.files) ? finding.files.map(String).filter(Boolean) : [];
-            const evidence = Array.isArray(finding.evidence)
-              ? finding.evidence.map(String).filter(Boolean)
-              : files;
-            const normalized: ProjectDiscoveryFinding = {
-              id: finding.id?.trim() || `finding-${index + 1}`,
-              kind: normalizeFindingKind(finding.kind, title, summary),
-              title,
-              summary,
-              evidence,
-              files,
-              taskDescription: finding.taskDescription?.trim() || '',
-            };
-            return {
-              ...normalized,
-              taskDescription: normalized.taskDescription || buildFallbackTaskDescription(normalized),
-            };
-          })
+      ? parsed.findings.slice(0, MAX_DISCOVERY_FINDINGS).map((finding, index) => {
+          const title = finding.title?.trim() || `Discovery item ${index + 1}`;
+          const summary = finding.summary?.trim() || 'No summary provided.';
+          const files = Array.isArray(finding.files)
+            ? finding.files.map(String).filter(Boolean)
+            : [];
+          const evidence = Array.isArray(finding.evidence)
+            ? finding.evidence.map(String).filter(Boolean)
+            : files;
+          const normalized: ProjectDiscoveryFinding = {
+            id: finding.id?.trim() || `finding-${index + 1}`,
+            kind: normalizeFindingKind(finding.kind, title, summary),
+            title,
+            summary,
+            evidence,
+            files,
+            taskDescription: finding.taskDescription?.trim() || '',
+          };
+          return {
+            ...normalized,
+            taskDescription: normalized.taskDescription || buildFallbackTaskDescription(normalized),
+          };
+        })
       : [];
 
     return {
@@ -1208,7 +1732,10 @@ function parseStoredList(section: string): string[] {
     .map((line) => line.trim())
     .filter((line) => line.startsWith('- '))
     .map((line) => line.slice(2).trim())
-    .filter((line) => line !== '' && !/^No .* reported$/i.test(line) && line.toLowerCase() !== 'none reported');
+    .filter(
+      (line) =>
+        line !== '' && !/^No .* reported$/i.test(line) && line.toLowerCase() !== 'none reported',
+    );
 }
 
 function extractSection(body: string, label: string, nextLabels: string[]): string {
@@ -1231,12 +1758,30 @@ function extractSection(body: string, label: string, nextLabels: string[]): stri
 export function parseStoredWorkerAttemptComment(body: string): WorkerSummary | null {
   if (!body.startsWith('Attempt ')) return null;
 
-  const summary = extractSection(body, 'Summary', ['Files changed', 'Checks', 'Remaining risks']);
+  const trailingLabels = [
+    'Files changed',
+    'Checks',
+    'Remaining risks',
+    'Validation gaps',
+    'Out-of-plan files',
+  ];
+  const summary = extractSection(body, 'Summary', trailingLabels);
   return {
     summary: summary || 'No worker summary provided.',
-    filesChanged: parseStoredList(extractSection(body, 'Files changed', ['Checks', 'Remaining risks'])),
-    testsRun: parseStoredList(extractSection(body, 'Checks', ['Remaining risks'])),
-    remainingRisks: parseStoredList(extractSection(body, 'Remaining risks', [])),
+    filesChanged: parseStoredList(
+      extractSection(body, 'Files changed', [
+        'Checks',
+        'Remaining risks',
+        'Validation gaps',
+        'Out-of-plan files',
+      ]),
+    ),
+    testsRun: parseStoredList(
+      extractSection(body, 'Checks', ['Remaining risks', 'Validation gaps', 'Out-of-plan files']),
+    ),
+    remainingRisks: parseStoredList(
+      extractSection(body, 'Remaining risks', ['Validation gaps', 'Out-of-plan files']),
+    ),
   };
 }
 
@@ -1244,7 +1789,9 @@ export function findSuggestedCommitBackfillSummary(comments: TaskComment[]): Wor
   const approvalIndex = [...comments]
     .map((comment, index) => ({ comment, index }))
     .reverse()
-    .find(({ comment }) => isReviewerAuthor(comment.author) && comment.body.startsWith('Approved.'))?.index;
+    .find(
+      ({ comment }) => isReviewerAuthor(comment.author) && comment.body.startsWith('Approved.'),
+    )?.index;
 
   if (approvalIndex === undefined) return null;
 
@@ -1276,10 +1823,11 @@ function toKebabCase(value: string): string {
 
 function buildSuggestedCommitMessage(work: WorkTask, workerSummary: WorkerSummary): string {
   const fileList = workerSummary.filesChanged.join(' ').toLowerCase();
-  const type = /fix|bug|error|repair|patch|hotfix|버그|수정/.test(work.title.toLowerCase())
-    || /fix|bug|error|repair|patch|hotfix/.test(fileList)
-    ? 'fix'
-    : 'feat';
+  const type =
+    /fix|bug|error|repair|patch|hotfix|버그|수정/.test(work.title.toLowerCase()) ||
+    /fix|bug|error|repair|patch|hotfix/.test(fileList)
+      ? 'fix'
+      : 'feat';
   const scope = toKebabCase(work.projectName);
   const prefix = scope ? `${type}(${scope})` : type;
   return `${prefix}: ${work.title}`;
@@ -1341,23 +1889,15 @@ export function detectTouchedFilesFromGitStatus(
   return [...touched].sort();
 }
 
-function isHighRiskFile(projectRoot: string, relativePath: string): boolean {
-  const absolutePath = ensureInsideRoot(projectRoot, relativePath);
-  if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) return false;
-
-  const ext = absolutePath.slice(absolutePath.lastIndexOf('.')).toLowerCase();
-  const basename = absolutePath.slice(absolutePath.lastIndexOf('\\') + 1).toLowerCase();
-  const sourceLike = ['.py', '.js', '.jsx', '.ts', '.tsx', '.go', '.rs', '.java', '.cs'].includes(ext);
-  if (!sourceLike) return false;
-
-  const content = fs.readFileSync(absolutePath, 'utf-8');
-  const lineCount = content.split(/\r?\n/).length;
-  return lineCount >= 220 || ['main.py', 'app.py', 'server.py', 'index.ts', 'index.tsx'].includes(basename);
-}
-
-async function getTrackedHeadFile(projectRoot: string, relativePath: string): Promise<string | null> {
+async function getTrackedHeadFile(
+  projectRoot: string,
+  relativePath: string,
+): Promise<string | null> {
   try {
-    const content = await runGitCommand(projectRoot, ['show', `HEAD:${relativePath.replace(/\\/g, '/')}`]);
+    const content = await runGitCommand(projectRoot, [
+      'show',
+      `HEAD:${relativePath.replace(/\\/g, '/')}`,
+    ]);
     return content || '';
   } catch {
     return null;
@@ -1376,7 +1916,9 @@ async function collectHighRiskAttemptIssues(
     const absolutePath = ensureInsideRoot(projectRoot, relativePath);
     const content = fs.readFileSync(absolutePath, 'utf-8');
     if (containsCorruptionMarker(content)) {
-      issues.push(`High-risk file ${relativePath} still contains a placeholder or corruption marker.`);
+      issues.push(
+        `High-risk file ${relativePath} still contains a placeholder or corruption marker.`,
+      );
       continue;
     }
 
@@ -1402,7 +1944,9 @@ async function collectHighRiskAttemptIssues(
         );
       } catch (error) {
         const stderr =
-          error && typeof error === 'object' && 'stderr' in error ? String(error.stderr).trim() : '';
+          error && typeof error === 'object' && 'stderr' in error
+            ? String(error.stderr).trim()
+            : '';
         const detail = stderr || (error instanceof Error ? error.message : String(error));
         issues.push(`High-risk Python file ${relativePath} failed syntax validation: ${detail}`);
       }
@@ -1423,12 +1967,187 @@ async function collectHighRiskAttemptIssues(
   return issues;
 }
 
+async function collectPatchValidationIssues(
+  projectRoot: string,
+  filesChanged: string[],
+): Promise<string[]> {
+  const issues: string[] = [];
+  const normalizedFiles = uniqueStrings(filesChanged.map((file) => normalizeRelativePath(file)));
+
+  for (const relativePath of normalizedFiles) {
+    if (!relativePath) continue;
+    const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+    const content = fs.readFileSync(absolutePath, 'utf-8');
+    if (hasMergeConflictMarkers(content)) {
+      issues.push(`Merge conflict markers detected in ${relativePath}.`);
+    }
+  }
+
+  if (normalizedFiles.length === 0) return issues;
+
+  try {
+    await runGitCommand(projectRoot, ['rev-parse', '--is-inside-work-tree']);
+    const diffCheck = await runGitCommand(projectRoot, [
+      'diff',
+      '--check',
+      '--',
+      ...normalizedFiles,
+    ]);
+    if (diffCheck.trim()) {
+      issues.push(
+        `git diff --check reported patch problems:\n${truncateForReview(diffCheck, 500)}`,
+      );
+    }
+  } catch {
+    // Non-git projects or unavailable git diff checks are ignored here.
+  }
+
+  return issues;
+}
+
+async function rerunValidationCommands(
+  projectRoot: string,
+  commands: string[],
+): Promise<ValidationRerunSummary> {
+  const plannedCommands = uniqueStrings(
+    commands.map((command) => normalizeWhitespace(command)),
+  ).filter(Boolean);
+  const passed: string[] = [];
+  const failed: string[] = [];
+  const failureDetails: string[] = [];
+
+  for (const command of plannedCommands) {
+    if (!isSafeCommandAllowed(command)) {
+      failed.push(command);
+      failureDetails.push(`Command: ${command}\n\nError: Rejected by Kira safety policy.`);
+      continue;
+    }
+
+    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
+    try {
+      await execAsync(command, {
+        cwd: projectRoot,
+        shell,
+        timeout: COMMAND_TIMEOUT_MS,
+        maxBuffer: 1024 * 1024,
+      });
+      passed.push(command);
+    } catch (error) {
+      failed.push(command);
+      failureDetails.push(formatCommandFailureDetail(command, error));
+    }
+  }
+
+  return { passed, failed, failureDetails };
+}
+
+async function collectReviewerDiffExcerpts(
+  projectRoot: string,
+  filesChanged: string[],
+): Promise<string[]> {
+  const normalizedFiles = uniqueStrings(
+    filesChanged.map((file) => normalizeRelativePath(file)),
+  ).filter(Boolean);
+  if (normalizedFiles.length === 0) return [];
+
+  try {
+    await runGitCommand(projectRoot, ['rev-parse', '--is-inside-work-tree']);
+  } catch {
+    return [];
+  }
+
+  const excerpts: string[] = [];
+  for (const relativePath of normalizedFiles) {
+    try {
+      const diff = await runGitCommand(projectRoot, ['diff', '--unified=1', '--', relativePath]);
+      if (!diff.trim()) continue;
+      excerpts.push(`File: ${relativePath}\n${truncateForReview(diff, MAX_REVIEW_DIFF_CHARS)}`);
+    } catch {
+      // Ignore per-file diff failures and continue collecting what is available.
+    }
+  }
+
+  return excerpts;
+}
+
+function collectPlanGuardrailIssues(
+  projectRoot: string,
+  plan: WorkerExecutionPlan | null,
+  filesChanged: string[],
+  commandsRun: string[],
+): string[] {
+  if (!plan) return [];
+
+  const issues: string[] = [];
+  const outOfPlanFiles = findOutOfPlanTouchedFiles(plan.intendedFiles, filesChanged);
+  const highRiskOutOfPlan = outOfPlanFiles.filter((file) => isHighRiskFile(projectRoot, file));
+  if (highRiskOutOfPlan.length > 0) {
+    issues.push(
+      `High-risk files were modified outside the approved plan: ${highRiskOutOfPlan.join(', ')}`,
+    );
+  } else if (outOfPlanFiles.length >= 4) {
+    issues.push(
+      `Too many files were modified outside the approved plan: ${outOfPlanFiles.join(', ')}`,
+    );
+  }
+
+  const highRiskTouched = uniqueStrings(
+    filesChanged.filter((file) => isHighRiskFile(projectRoot, file)),
+  );
+  const missingValidationCommands = findMissingValidationCommands(
+    plan.validationCommands,
+    commandsRun,
+  );
+  if (
+    highRiskTouched.length > 0 &&
+    plan.validationCommands.length > 0 &&
+    missingValidationCommands.length === plan.validationCommands.length
+  ) {
+    issues.push(
+      `Worker skipped all planned validation commands after changing high-risk files: ${highRiskTouched.join(', ')}`,
+    );
+  }
+
+  return issues;
+}
+
 export function buildIssueSignature(issues: string[], summary: string): string {
   const normalized = (issues.length > 0 ? issues : [summary])
     .map((item) => item.trim().toLowerCase())
     .filter(Boolean)
     .sort();
   return normalized.join(' | ');
+}
+
+export function resolveUnexpectedAutomationFailure(
+  workTitle: string,
+  errorMessage: string,
+): AutomationFailureResolution {
+  const normalizedMessage = errorMessage.trim() || 'Unknown automation error.';
+  const missingCredentialFailure =
+    /\bapi key\b/i.test(normalizedMessage) ||
+    /\brequired api keys?\b/i.test(normalizedMessage) ||
+    /\bcredentials?\b/i.test(normalizedMessage) ||
+    /\btoken\b/i.test(normalizedMessage);
+
+  if (missingCredentialFailure) {
+    return {
+      summary:
+        'Automation blocked because the task depends on missing API keys or external credentials.',
+      guidance:
+        'Add the required API keys or credentials in the target project, or revise the work so that startup generation and other credential-gated steps are not required before retrying.',
+      userMessage: `Kira blocked: "${workTitle}" 작업은 필요한 API 키 또는 외부 인증 정보가 없어 자동으로 멈췄어요.`,
+    };
+  }
+
+  return {
+    summary:
+      'Automation failed unexpectedly, and Kira blocked the task to avoid repeating the same failure.',
+    guidance:
+      'Inspect the underlying error, fix the project or task brief, and then manually move the work out of Blocked before retrying.',
+    userMessage: `Kira blocked: "${workTitle}" 작업이 예기치 않은 오류로 중단되어 같은 실패를 반복하지 않도록 멈췄어요.`,
+  };
 }
 
 async function autoCommitApprovedWork(
@@ -1442,7 +2161,9 @@ async function autoCommitApprovedWork(
     return { status: 'skipped', message: 'Project settings disabled auto-commit.' };
   }
 
-  const normalizedFiles = [...new Set(filesChanged.map((filePath) => filePath.trim()).filter(Boolean))];
+  const normalizedFiles = [
+    ...new Set(filesChanged.map((filePath) => filePath.trim()).filter(Boolean)),
+  ];
   if (normalizedFiles.length === 0) {
     return { status: 'skipped', message: 'No changed files were reported for this work.' };
   }
@@ -1457,7 +2178,12 @@ async function autoCommitApprovedWork(
   try {
     targetFiles = normalizedFiles
       .map((filePath) => ensureInsideRoot(projectRoot, filePath))
-      .map((absolutePath) => absolutePath.slice(resolve(projectRoot).length).replace(/^[\\/]+/, '').replace(/\\/g, '/'))
+      .map((absolutePath) =>
+        absolutePath
+          .slice(resolve(projectRoot).length)
+          .replace(/^[\\/]+/, '')
+          .replace(/\\/g, '/'),
+      )
       .filter(Boolean);
   } catch (error) {
     return {
@@ -1482,7 +2208,10 @@ async function autoCommitApprovedWork(
     await runGitCommand(projectRoot, ['add', '--', ...targetFiles]);
     const staged = await runGitCommand(projectRoot, ['diff', '--cached', '--name-only']);
     if (!staged.trim()) {
-      return { status: 'skipped', message: 'There were no stageable changes for the reported files.' };
+      return {
+        status: 'skipped',
+        message: 'There were no stageable changes for the reported files.',
+      };
     }
 
     await runGitCommand(projectRoot, ['commit', '-m', commitMessage]);
@@ -1512,7 +2241,10 @@ function writeLockRecord(lockPath: string, record: AutomationLockRecord): void {
   writeJsonFile(lockPath, record);
 }
 
-function tryAcquireLock(lockPath: string, record: Omit<AutomationLockRecord, 'acquiredAt' | 'heartbeatAt'>): boolean {
+function tryAcquireLock(
+  lockPath: string,
+  record: Omit<AutomationLockRecord, 'acquiredAt' | 'heartbeatAt'>,
+): boolean {
   const now = Date.now();
   const nextRecord: AutomationLockRecord = {
     ...record,
@@ -1566,7 +2298,11 @@ function releaseLock(lockPath: string, ownerId: string): void {
   fs.rmSync(lockPath, { force: true });
 }
 
-function getProjectKey(workRootDirectory: string | null, work: WorkTask, sessionPath: string): string {
+function getProjectKey(
+  workRootDirectory: string | null,
+  work: WorkTask,
+  sessionPath: string,
+): string {
   if (workRootDirectory?.trim() && work.projectName.trim()) {
     return resolve(join(workRootDirectory, work.projectName)).toLowerCase();
   }
@@ -1579,7 +2315,13 @@ function buildProjectOverview(projectRoot: string): string {
   collectFiles(projectRoot, projectRoot, 1, topLevelEntries);
 
   const snippets: string[] = [];
-  for (const candidate of ['README.md', 'README.ko.md', 'package.json', 'requirements.txt', 'main.py']) {
+  for (const candidate of [
+    'README.md',
+    'README.ko.md',
+    'package.json',
+    'requirements.txt',
+    'main.py',
+  ]) {
     const absolutePath = join(projectRoot, candidate);
     if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
     const content = fs.readFileSync(absolutePath, 'utf-8').slice(0, 2400);
@@ -1603,7 +2345,9 @@ async function collectProjectSafetyIssues(projectRoot: string): Promise<string[]
 
   const pythonEntrypoints = ['main.py', 'app.py', 'server.py']
     .map((fileName) => ({ fileName, absolutePath: join(projectRoot, fileName) }))
-    .filter((entry) => fs.existsSync(entry.absolutePath) && fs.statSync(entry.absolutePath).isFile());
+    .filter(
+      (entry) => fs.existsSync(entry.absolutePath) && fs.statSync(entry.absolutePath).isFile(),
+    );
 
   for (const entry of pythonEntrypoints) {
     try {
@@ -1696,7 +2440,11 @@ function buildProjectDiscoverySystemPrompt(): string {
   ].join('\n');
 }
 
-function buildWorkerPrompt(work: WorkTask, projectOverview: string, feedback: string[]): string {
+function buildWorkerPlanningPrompt(
+  work: WorkTask,
+  projectOverview: string,
+  feedback: string[],
+): string {
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
@@ -1705,8 +2453,58 @@ function buildWorkerPrompt(work: WorkTask, projectOverview: string, feedback: st
     feedback.length > 0
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
+    'Inspect the project in read-only mode and create a focused implementation plan before any edits happen.',
+    'List only the files you currently expect to edit; keep the list small and concrete.',
+    'List validationCommands using only task-specific safe diagnostics or test commands that the worker can run later.',
+    `Keep validationCommands short: no more than ${MAX_PLANNER_VALIDATION_COMMANDS} commands.`,
+    'Kira will automatically add a small project-default validation set, so do not spend slots on generic repo-wide checks unless they are directly needed for this task.',
+    'Use riskNotes for tricky areas, compatibility concerns, or reasons the reviewer should pay extra attention.',
+    'Return only JSON with this shape:',
+    '{"summary":"string","intendedFiles":["..."],"validationCommands":["..."],"riskNotes":["..."]}',
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function buildWorkerPlanningSystemPrompt(): string {
+  return [
+    'You are the Kira preflight planner.',
+    'Inspect the project in read-only mode and produce a small, concrete execution plan.',
+    'Do not modify files.',
+    'Prefer a narrow file list over a broad one.',
+    `Return at most ${MAX_PLANNER_VALIDATION_COMMANDS} validation commands.`,
+    'Only suggest validation commands that are safe and diagnostic in nature, such as pytest, python -m pytest/unittest/compileall, npm or pnpm test/lint/build/typecheck, node --test, git status/diff/show, rg, go test/vet, cargo test/check/clippy/fmt, or dotnet test/build.',
+    'Do not wrap the final JSON in markdown fences.',
+  ].join('\n');
+}
+
+function buildWorkerPrompt(
+  work: WorkTask,
+  projectOverview: string,
+  plan: WorkerExecutionPlan | null,
+  feedback: string[],
+): string {
+  return [
+    `Project: ${work.projectName}`,
+    `Work title: ${work.title}`,
+    `Work brief:\n${work.description}`,
+    `Project overview:\n${projectOverview}`,
+    plan ? `Execution plan summary:\n${plan.summary}` : '',
+    plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
+    plan
+      ? `Planned validation commands:\n${formatList(
+          plan.validationCommands,
+          'No planned validation commands',
+        )}`
+      : '',
+    plan ? `Planner risk notes:\n${formatList(plan.riskNotes, 'No planner risks reported')}` : '',
+    feedback.length > 0
+      ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
+      : '',
     'Modify the project directly using the available tools.',
-    'Any file under the project root may be edited when it helps complete the task.',
+    'Stay within the planned files whenever practical. If you must expand scope, inspect the extra file first and keep the change justified and minimal.',
+    'Any file under the project root may be edited when it genuinely helps complete the task.',
+    'Read high-risk existing files with read_file before editing or overwriting them.',
     'For existing files, prefer edit_file with exact replacements.',
     'Use write_file only for new files or for small files that genuinely need a full rewrite.',
     'Do not treat other existing modified or untracked files in the project as something you must clean up unless the task explicitly asks for cleanup.',
@@ -1724,7 +2522,9 @@ function buildWorkerSystemPrompt(): string {
     'You are a background Kira implementation agent.',
     'Stay focused on the requested work item.',
     'Prefer small targeted edits over broad refactors.',
+    'Respect the preflight plan unless inspection shows a clearly necessary small expansion.',
     'You may edit any project-local file that is useful for the requested outcome.',
+    'Read high-risk existing files before editing them.',
     'Prefer edit_file for modifying existing files, especially large or critical ones.',
     'Do not try to clean unrelated dirty-worktree files unless the work item explicitly requires it.',
     'Use write_file only when creating a new file or replacing a genuinely small file.',
@@ -1736,19 +2536,65 @@ function buildWorkerSystemPrompt(): string {
 function buildReviewPrompt(
   work: WorkTask,
   projectOverview: string,
+  plan: WorkerExecutionPlan | null,
   workerSummary: WorkerSummary,
+  outOfPlanFiles: string[],
+  missingValidationCommands: string[],
+  validationPlan: ResolvedValidationPlan,
+  validationReruns: ValidationRerunSummary,
+  diffExcerpts: string[],
 ): string {
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
     `Acceptance target:\n${work.description}`,
     `Project overview:\n${projectOverview}`,
+    plan ? `Preflight plan summary:\n${plan.summary}` : '',
+    plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
+    plan ? `Planned checks:\n${formatList(plan.validationCommands, 'No planned checks')}` : '',
+    plan ? `Planner risk notes:\n${formatList(plan.riskNotes, 'No planner risks reported')}` : '',
     `Latest worker summary:\n${workerSummary.summary}`,
     `Files reported changed:\n${formatList(workerSummary.filesChanged, 'No files reported')}`,
-    `Checks reported:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
+    `Worker-reported checks:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
+    `Kira auto-added validation checks:\n${formatList(
+      validationPlan.autoAddedCommands,
+      'No auto-added validation checks',
+    )}`,
+    `Kira effective validation plan:\n${formatList(
+      validationPlan.effectiveCommands,
+      'No effective validation commands',
+    )}`,
+    validationPlan.notes.length > 0
+      ? `Validation plan notes:\n${formatList(validationPlan.notes, 'No validation plan notes')}`
+      : '',
+    `Kira-passed validation reruns:\n${formatList(
+      validationReruns.passed,
+      'No validation reruns passed',
+    )}`,
+    validationReruns.failed.length > 0
+      ? `Kira validation reruns that failed:\n${formatList(
+          validationReruns.failed,
+          'No validation reruns failed',
+        )}`
+      : '',
+    outOfPlanFiles.length > 0
+      ? `Files changed outside the plan:\n${formatList(outOfPlanFiles, 'No out-of-plan files')}`
+      : '',
+    missingValidationCommands.length > 0
+      ? `Planned checks the worker did not run:\n${formatList(
+          missingValidationCommands,
+          'No missing planned checks',
+        )}`
+      : '',
+    diffExcerpts.length > 0
+      ? `Git diff excerpts for this attempt:\n${diffExcerpts.join('\n\n')}`
+      : '',
     'Review the current project state. Do not modify files.',
+    'Only the Kira-passed validation reruns count as verification evidence.',
+    'Do not treat worker-reported checks as proof unless they also appear in the Kira-passed rerun list.',
     'Any file under the project root is allowed to change if it supports the requested outcome.',
     'Do NOT reject only because multiple project-local files changed, because the worker touched a file you did not expect, or because the git working tree already contains unrelated modified/untracked files.',
+    'Treat out-of-plan edits or missing planned checks as risk signals to scrutinize, not automatic rejection reasons on their own.',
     'Do NOT enforce minimal-diff purity as a standalone requirement.',
     'Approve when the requested outcome is achieved and there is no clear regression or harmful side effect.',
     'Only request changes when the acceptance target is not met, the implementation is clearly risky, or there is a concrete user-facing/code-level regression.',
@@ -1799,11 +2645,7 @@ function addComment(
   return comment;
 }
 
-function loadTaskComments(
-  sessionsDir: string,
-  sessionPath: string,
-  taskId: string,
-): TaskComment[] {
+function loadTaskComments(sessionsDir: string, sessionPath: string, taskId: string): TaskComment[] {
   const commentsDir = join(getKiraDataDir(sessionsDir, sessionPath), COMMENTS_DIR_NAME);
   return listJsonFiles(commentsDir)
     .map((filePath) => readJsonFile<TaskComment>(filePath))
@@ -1900,20 +2742,30 @@ async function analyzeProjectForDiscovery(
     throw new Error(`Project root was not found for ${projectName}.`);
   }
 
-  const previousAnalysis = loadProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, projectName);
+  const previousAnalysis = loadProjectDiscoveryAnalysis(
+    options.sessionsDir,
+    sessionPath,
+    projectName,
+  );
   if (previousAnalysis) {
     sendSseEvent(res, {
       type: 'log',
       message: `Loaded previous analysis from ${new Date(previousAnalysis.updatedAt).toLocaleString()}.`,
     });
   } else {
-    sendSseEvent(res, { type: 'log', message: 'No previous saved analysis found for this project.' });
+    sendSseEvent(res, {
+      type: 'log',
+      message: 'No previous saved analysis found for this project.',
+    });
   }
 
   sendSseEvent(res, { type: 'log', message: 'Scanning the project overview and source map...' });
   const projectOverview = buildProjectOverview(projectRoot);
 
-  sendSseEvent(res, { type: 'log', message: 'Aoi is reviewing the codebase and collecting candidate tasks...' });
+  sendSseEvent(res, {
+    type: 'log',
+    message: 'Aoi is reviewing the codebase and collecting candidate tasks...',
+  });
   const raw = await runToolAgent(
     runtime.reviewerConfig,
     projectRoot,
@@ -1922,7 +2774,10 @@ async function analyzeProjectForDiscovery(
     false,
   );
 
-  sendSseEvent(res, { type: 'log', message: 'Normalizing the findings and saving them for later reuse...' });
+  sendSseEvent(res, {
+    type: 'log',
+    message: 'Normalizing the findings and saving them for later reuse...',
+  });
   const analysis = parseProjectDiscoveryAnalysis(raw, projectName, projectRoot, previousAnalysis);
   saveProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, analysis);
 
@@ -2011,7 +2866,9 @@ async function processWork(
     return;
   }
 
-  const projectRoot = runtime.workRootDirectory ? join(runtime.workRootDirectory, work.projectName) : '';
+  const projectRoot = runtime.workRootDirectory
+    ? join(runtime.workRootDirectory, work.projectName)
+    : '';
   if (!runtime.workRootDirectory || !work.projectName || !fs.existsSync(projectRoot)) {
     addComment(options.sessionsDir, sessionPath, {
       taskId: work.id,
@@ -2064,7 +2921,8 @@ async function processWork(
 
   const projectOverview = buildProjectOverview(projectRoot);
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
-  const resumeFeedback = work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
+  const resumeFeedback =
+    work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
 
   throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
 
@@ -2099,26 +2957,93 @@ async function processWork(
   let previousIssueSignature: string | null = null;
   let repeatedIssueCount = 0;
   for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
-    const worktreeBefore = await getGitWorktreeEntries(projectRoot);
-    const workerRaw = await runToolAgent(
+    const workerPlanRaw = await runToolAgent(
       runtime.workerConfig,
       projectRoot,
-      buildWorkerPrompt(work, projectOverview, feedback),
-      buildWorkerSystemPrompt(),
-      true,
+      buildWorkerPlanningPrompt(work, projectOverview, feedback),
+      buildWorkerPlanningSystemPrompt(),
+      false,
       signal,
     );
+    throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
+    const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
+    const attemptState = createWorkerAttemptState(workerPlan);
+    const worktreeBefore = await getGitWorktreeEntries(projectRoot);
+    let workerRaw: string;
+    try {
+      workerRaw = await runToolAgent(
+        runtime.workerConfig,
+        projectRoot,
+        buildWorkerPrompt(work, projectOverview, workerPlan, feedback),
+        buildWorkerSystemPrompt(),
+        true,
+        signal,
+        attemptState,
+      );
+    } catch (error) {
+      if (!isAbortError(error)) {
+        const restoredFiles = restoreAttemptFiles(projectRoot, attemptState);
+        if (restoredFiles.length > 0) {
+          addComment(options.sessionsDir, sessionPath, {
+            taskId: work.id,
+            taskType: 'work',
+            author: runtime.reviewerAuthor,
+            body: [
+              `Restored files after worker attempt ${cycle} failed unexpectedly.`,
+              '',
+              `Files restored:\n${formatList(restoredFiles, 'No files restored')}`,
+            ].join('\n'),
+          });
+        }
+      }
+      throw error;
+    }
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const parsedWorkerSummary = parseWorkerSummary(workerRaw);
     const worktreeAfter = await getGitWorktreeEntries(projectRoot);
     const touchedFiles = detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter);
-    const resolvedFilesChanged = touchedFiles.length > 0 ? touchedFiles : parsedWorkerSummary.filesChanged;
+    const resolvedFilesChanged =
+      touchedFiles.length > 0 ? touchedFiles : parsedWorkerSummary.filesChanged;
+    const actualCommandsRun = uniqueStrings(
+      attemptState.commandsRun.map((command) => normalizeWhitespace(command)),
+    );
     const workerSummary: WorkerSummary = {
       ...parsedWorkerSummary,
       filesChanged: resolvedFilesChanged,
+      testsRun: actualCommandsRun.length > 0 ? actualCommandsRun : parsedWorkerSummary.testsRun,
     };
-
-    const highRiskIssues = await collectHighRiskAttemptIssues(projectRoot, workerSummary.filesChanged);
+    const outOfPlanFiles = findOutOfPlanTouchedFiles(
+      workerPlan.intendedFiles,
+      workerSummary.filesChanged,
+    );
+    const missingValidationCommands = findMissingValidationCommands(
+      workerPlan.validationCommands,
+      workerSummary.testsRun,
+    );
+    const validationPlan = resolveValidationPlan(
+      projectRoot,
+      workerPlan.validationCommands,
+      workerSummary.filesChanged,
+    );
+    const patchValidationIssues = await collectPatchValidationIssues(
+      projectRoot,
+      workerSummary.filesChanged,
+    );
+    const validationReruns = await rerunValidationCommands(
+      projectRoot,
+      validationPlan.effectiveCommands,
+    );
+    const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
+    const highRiskIssues = [
+      ...(await collectHighRiskAttemptIssues(projectRoot, workerSummary.filesChanged)),
+      ...patchValidationIssues,
+      ...collectPlanGuardrailIssues(
+        projectRoot,
+        workerPlan,
+        workerSummary.filesChanged,
+        workerSummary.testsRun,
+      ),
+    ];
 
     addComment(options.sessionsDir, sessionPath, {
       taskId: work.id,
@@ -2127,20 +3052,55 @@ async function processWork(
       body: [
         `Attempt ${cycle} finished.`,
         '',
+        `Plan:\n${workerPlan.summary}`,
+        '',
+        `Planned files:\n${formatList(workerPlan.intendedFiles, 'No planned files')}`,
+        '',
+        `Planned checks:\n${formatList(workerPlan.validationCommands, 'No planned checks')}`,
+        '',
+        `Kira auto-added validation checks:\n${formatList(
+          validationPlan.autoAddedCommands,
+          'No auto-added validation checks',
+        )}`,
+        '',
+        `Kira effective validation plan:\n${formatList(
+          validationPlan.effectiveCommands,
+          'No effective validation commands',
+        )}`,
+        '',
+        `Validation plan notes:\n${formatList(validationPlan.notes, 'No validation plan notes')}`,
+        '',
+        `Plan risks:\n${formatList(workerPlan.riskNotes, 'No planner risks reported')}`,
+        '',
         `Summary:\n${workerSummary.summary}`,
         '',
         `Files changed:\n${formatList(workerSummary.filesChanged, 'No files reported')}`,
         '',
         `Checks:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
         '',
+        `Kira-passed validation reruns:\n${formatList(
+          validationReruns.passed,
+          'No validation reruns passed',
+        )}`,
+        '',
+        `Kira validation failures:\n${formatList(
+          validationReruns.failed,
+          'No validation reruns failed',
+        )}`,
+        '',
         `Remaining risks:\n${formatList(
           [...workerSummary.remainingRisks, ...highRiskIssues],
           'None reported',
         )}`,
+        '',
+        `Validation gaps:\n${formatList(missingValidationCommands, 'No missing planned checks')}`,
+        '',
+        `Out-of-plan files:\n${formatList(outOfPlanFiles, 'No out-of-plan files')}`,
       ].join('\n'),
     });
 
     if (highRiskIssues.length > 0) {
+      const restoredFiles = restoreAttemptFiles(projectRoot, attemptState);
       updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
         ...current,
         status: 'blocked',
@@ -2154,7 +3114,9 @@ async function processWork(
           '',
           `Issues:\n${formatList(highRiskIssues, 'No detailed issues provided')}`,
           '',
-          'A high-risk file changed in a way that looks unsafe, so Kira stopped instead of retrying.',
+          `Rolled back files:\n${formatList(restoredFiles, 'No files rolled back')}`,
+          '',
+          'Kira rolled back the latest attempt instead of leaving unsafe or unverified edits in the worktree.',
         ].join('\n'),
       });
       enqueueEvent(options.sessionsDir, sessionPath, {
@@ -2169,6 +3131,80 @@ async function processWork(
       return;
     }
 
+    if (validationReruns.failed.length > 0) {
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: [
+          `Validation requested changes after attempt ${cycle}.`,
+          '',
+          `Passed reruns:\n${formatList(validationReruns.passed, 'No validation reruns passed')}`,
+          '',
+          `Failed reruns:\n${formatList(validationReruns.failed, 'No validation reruns failed')}`,
+          '',
+          `Failure details:\n${formatList(
+            validationReruns.failureDetails,
+            'No validation failure details provided',
+          )}`,
+          '',
+          'Kira reran the planned validation commands itself and will not send this attempt to final review until they pass.',
+        ].join('\n'),
+      });
+
+      feedback = validationReruns.failed.map(
+        (command) => `Planned validation failed when Kira reran it: ${command}`,
+      );
+      const validationSummary =
+        validationReruns.failed.length > 0
+          ? `Validation reruns failed: ${validationReruns.failed.join(', ')}`
+          : 'Validation reruns failed.';
+      const issueSignature = buildIssueSignature(feedback, validationSummary);
+      if (issueSignature === previousIssueSignature) {
+        repeatedIssueCount += 1;
+      } else {
+        repeatedIssueCount = 1;
+        previousIssueSignature = issueSignature;
+      }
+
+      if (repeatedIssueCount >= 2) {
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: [
+            `Blocked early because the same validation failures repeated without progress after attempt ${cycle}.`,
+            '',
+            `Issues:\n${formatList(feedback, validationSummary)}`,
+            '',
+            'Kira stopped retrying because the worker was not making progress against the same rerun validation failures.',
+          ].join('\n'),
+        });
+        enqueueEvent(options.sessionsDir, sessionPath, {
+          id: makeId('event'),
+          workId: work.id,
+          title: work.title,
+          projectName: work.projectName,
+          type: 'needs_attention',
+          createdAt: Date.now(),
+          message: `Kira blocked: "${work.title}" 작업이 같은 검증 실패를 반복해서 더 이상 자동 재시도하지 않을게요.`,
+        });
+        return;
+      }
+
+      if (cycle < MAX_REVIEW_CYCLES) {
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'in_progress',
+        }));
+      }
+      continue;
+    }
+
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
       status: 'in_review',
@@ -2177,7 +3213,17 @@ async function processWork(
     const reviewRaw = await runToolAgent(
       runtime.reviewerConfig,
       projectRoot,
-      buildReviewPrompt(work, projectOverview, workerSummary),
+      buildReviewPrompt(
+        work,
+        projectOverview,
+        workerPlan,
+        workerSummary,
+        outOfPlanFiles,
+        missingValidationCommands,
+        validationPlan,
+        validationReruns,
+        diffExcerpts,
+      ),
       buildReviewSystemPrompt(),
       false,
       signal,
@@ -2313,7 +3359,7 @@ async function processWork(
     taskType: 'work',
     author: runtime.reviewerAuthor,
     body: [
-      `Blocked after ${MAX_REVIEW_CYCLES} review attempts.`,
+      `Blocked after ${MAX_REVIEW_CYCLES} review or validation attempts.`,
       '',
       `Summary:\n${feedback[0] ?? 'The work could not satisfy the review requirements within the allowed retries.'}`,
       '',
@@ -2331,7 +3377,11 @@ async function processWork(
   });
 }
 
-function startWorkJob(options: KiraAutomationPluginOptions, sessionPath: string, workId: string): void {
+function startWorkJob(
+  options: KiraAutomationPluginOptions,
+  sessionPath: string,
+  workId: string,
+): void {
   const jobKey = `${sessionPath}::${workId}`;
   if (activeJobs.has(jobKey)) return;
 
@@ -2350,12 +3400,15 @@ function startWorkJob(options: KiraAutomationPluginOptions, sessionPath: string,
 
   const projectKey = getProjectKey(options.getWorkRootDirectory(), work, sessionPath);
   const projectLockPath = getProjectLockPath(options.sessionsDir, projectKey);
-  if (activeProjectJobs.has(projectKey) || !tryAcquireLock(projectLockPath, {
-    ownerId: SERVER_INSTANCE_ID,
-    resource: 'project',
-    sessionPath,
-    targetKey: projectKey,
-  })) {
+  if (
+    activeProjectJobs.has(projectKey) ||
+    !tryAcquireLock(projectLockPath, {
+      ownerId: SERVER_INSTANCE_ID,
+      resource: 'project',
+      sessionPath,
+      targetKey: projectKey,
+    })
+  ) {
     const comments = loadTaskComments(options.sessionsDir, sessionPath, workId);
     const alreadyQueued = comments.some(
       (comment) =>
@@ -2388,11 +3441,27 @@ function startWorkJob(options: KiraAutomationPluginOptions, sessionPath: string,
       if (isAbortError(error)) return;
       const work = readJsonFile<WorkTask>(join(dataDir, WORKS_DIR_NAME, `${workId}.json`));
       if (work) {
+        const resolvedFailure = resolveUnexpectedAutomationFailure(
+          work.title,
+          error instanceof Error ? error.message : String(error),
+        );
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
         addComment(options.sessionsDir, sessionPath, {
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: `Automation failed unexpectedly.\n\n${error instanceof Error ? error.message : String(error)}`,
+          body: [
+            'Automation failed unexpectedly and Kira blocked this task to avoid retry loops.',
+            '',
+            `Summary:\n${resolvedFailure.summary}`,
+            '',
+            `Error:\n${error instanceof Error ? error.message : String(error)}`,
+            '',
+            `Guidance:\n${resolvedFailure.guidance}`,
+          ].join('\n'),
         });
         enqueueEvent(options.sessionsDir, sessionPath, {
           id: makeId('event'),
@@ -2401,7 +3470,7 @@ function startWorkJob(options: KiraAutomationPluginOptions, sessionPath: string,
           projectName: work.projectName,
           type: 'needs_attention',
           createdAt: Date.now(),
-          message: `Kira 자동화 오류: "${work.title}" 작업 처리 중 문제가 생겼어요.`,
+          message: resolvedFailure.userMessage,
         });
       }
     })
@@ -2469,7 +3538,9 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
       timer.unref?.();
 
       const readRequestBody = (
-        req: NodeJS.ReadableStream & { on: (event: string, listener: (chunk?: Buffer) => void) => void },
+        req: NodeJS.ReadableStream & {
+          on: (event: string, listener: (chunk?: Buffer) => void) => void;
+        },
         onParsed: (body: Record<string, unknown>) => void | Promise<void>,
         onError: (error: unknown) => void,
       ) => {
@@ -2477,7 +3548,10 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
         req.on('data', (chunk: Buffer) => chunks.push(chunk));
         req.on('end', () => {
           try {
-            const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as Record<string, unknown>;
+            const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as Record<
+              string,
+              unknown
+            >;
             void onParsed(body);
           } catch (error) {
             onError(error);
@@ -2502,13 +3576,20 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
           req,
           async (body) => {
             try {
-              const sessionPath = typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
-              const projectName = typeof body.projectName === 'string' ? body.projectName.trim() : '';
+              const sessionPath =
+                typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
+              const projectName =
+                typeof body.projectName === 'string' ? body.projectName.trim() : '';
               if (!sessionPath || !projectName) {
                 throw new Error('Missing sessionPath or projectName.');
               }
 
-              const analysis = await analyzeProjectForDiscovery(options, sessionPath, projectName, res);
+              const analysis = await analyzeProjectForDiscovery(
+                options,
+                sessionPath,
+                projectName,
+                res,
+              );
               sendSseEvent(res, {
                 type: 'analysis_complete',
                 analysis,
@@ -2554,12 +3635,18 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
             return;
           }
 
-          const analysis = loadProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, projectName);
+          const analysis = loadProjectDiscoveryAnalysis(
+            options.sessionsDir,
+            sessionPath,
+            projectName,
+          );
           res.writeHead(200);
           res.end(JSON.stringify({ analysis: analysis ?? null }));
         } catch (error) {
           res.writeHead(500);
-          res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+          res.end(
+            JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+          );
         }
       });
 
@@ -2575,22 +3662,34 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
           req,
           async (body) => {
             try {
-              const sessionPath = typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
-              const projectName = typeof body.projectName === 'string' ? body.projectName.trim() : '';
+              const sessionPath =
+                typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
+              const projectName =
+                typeof body.projectName === 'string' ? body.projectName.trim() : '';
               if (!sessionPath || !projectName) {
                 res.writeHead(400);
                 res.end(JSON.stringify({ error: 'Missing sessionPath or projectName' }));
                 return;
               }
 
-              const analysis = loadProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, projectName);
+              const analysis = loadProjectDiscoveryAnalysis(
+                options.sessionsDir,
+                sessionPath,
+                projectName,
+              );
               if (!analysis) {
                 res.writeHead(404);
-                res.end(JSON.stringify({ error: 'No saved discovery analysis found for this project' }));
+                res.end(
+                  JSON.stringify({ error: 'No saved discovery analysis found for this project' }),
+                );
                 return;
               }
 
-              const { created, skippedTitles } = createWorksFromDiscovery(options, sessionPath, analysis);
+              const { created, skippedTitles } = createWorksFromDiscovery(
+                options,
+                sessionPath,
+                analysis,
+              );
               scanActionableWorks(options, sessionPath);
               res.writeHead(200);
               res.end(
@@ -2603,12 +3702,16 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
               );
             } catch (error) {
               res.writeHead(500);
-              res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+              res.end(
+                JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+              );
             }
           },
           (error) => {
             res.writeHead(400);
-            res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+            res.end(
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+            );
           },
         );
       });
@@ -2675,7 +3778,9 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
             res.end(JSON.stringify({ ok: true, wasRunning: Boolean(controller) }));
           } catch (error) {
             res.writeHead(500);
-            res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+            res.end(
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+            );
           }
         });
       });

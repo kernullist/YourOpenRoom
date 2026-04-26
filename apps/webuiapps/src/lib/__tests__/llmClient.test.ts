@@ -328,6 +328,200 @@ describe('saveConfig()', () => {
     expect(body.kira).toEqual({ workRootDirectory: 'F:/workspace/agent-root' });
   });
 
+  it('preserves dialogLlm config when saving the main LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            dialogLlm: {
+              model: 'openai/gpt-5-mini',
+              baseUrl: 'https://openrouter.ai/api/v1',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
+    expect(body.dialogLlm).toEqual({
+      model: 'openai/gpt-5-mini',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+  });
+
+  it('includes userProfile when provided', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, {
+      displayName: 'Minji',
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.userProfile).toEqual({ displayName: 'Minji' });
+  });
+
+  it('preserves userProfile when saving the main LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            userProfile: {
+              displayName: 'Minji',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.userProfile).toEqual({ displayName: 'Minji' });
+  });
+
+  it('can explicitly clear dialogLlm config', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            dialogLlm: {
+              model: 'openai/gpt-5-mini',
+              baseUrl: 'https://openrouter.ai/api/v1',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, null);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.dialogLlm).toBeUndefined();
+  });
+
+  it('can explicitly clear userProfile config', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            userProfile: {
+              displayName: 'Minji',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, null);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.userProfile).toBeUndefined();
+  });
+
+  it('includes conversationPreferences when provided', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        responseLanguageMode: 'english',
+        ttsEnabled: true,
+        ttsPreloadCommonPhrases: false,
+      },
+    );
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.conversationPreferences).toEqual({
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: false,
+    });
+  });
+
+  it('preserves conversationPreferences when saving the main LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            conversationPreferences: {
+              responseLanguageMode: 'english',
+              ttsEnabled: true,
+              ttsPreloadCommonPhrases: false,
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.conversationPreferences).toEqual({
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: false,
+    });
+  });
+
+  it('can explicitly clear conversationPreferences config', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            conversationPreferences: {
+              responseLanguageMode: 'english',
+              ttsEnabled: true,
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, undefined, null);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.conversationPreferences).toBeUndefined();
+  });
+
   it('preserves kira worker and reviewer model settings when saving LLM settings', async () => {
     const mockFetch = vi
       .fn()

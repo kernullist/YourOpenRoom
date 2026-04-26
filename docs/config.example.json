@@ -1,0 +1,57 @@
+{
+  "llm": {
+    "provider": "openrouter",
+    "apiKey": "YOUR_API_KEY",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "anthropic/claude-sonnet-4.6"
+  },
+  "dialogLlm": {
+    "provider": "openrouter",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "openai/gpt-5-mini"
+  },
+  "userProfile": {
+    "displayName": "Minji"
+  },
+  "conversationPreferences": {
+    "responseLanguageMode": "match-user"
+  },
+  "imageGen": {
+    "provider": "openai",
+    "apiKey": "YOUR_IMAGE_API_KEY",
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-image-1"
+  },
+  "album": {
+    "photoDirectory": "C:\\Users\\your-name\\Pictures"
+  },
+  "kira": {
+    "workRootDirectory": "C:\\Users\\your-name\\workspace",
+    "projectDefaults": {
+      "autoCommit": true
+    },
+    "workerLlm": {
+      "model": "openai/gpt-5.4-mini"
+    },
+    "reviewerLlm": {
+      "model": "openai/gpt-5.4"
+    }
+  },
+  "openvscode": {
+    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
+  },
+  "tavily": {
+    "apiKey": "tvly-YOUR_API_KEY"
+  },
+  "gmail": {
+    "clientId": "YOUR_GOOGLE_OAUTH_DESKTOP_CLIENT_ID",
+    "clientSecret": "OPTIONAL_GOOGLE_CLIENT_SECRET"
+  },
+  "idaPe": {
+    "mode": "prescan-only",
+    "backendUrl": "http://127.0.0.1:17300"
+  },
+  "app": {
+    "title": "YourOpenRoom"
+  }
+}

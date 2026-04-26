@@ -1,0 +1,16 @@
+app_display_name: Aoi's IDE
+description: >
+  Lightweight built-in code editor for a local workspace folder. Browse files, open text files, edit
+  them, and save changes directly from OpenRoom.
+actions:
+  - type: OPEN_FILE
+    name: Open File
+    description: Open a specific file in the IDE editor.
+    params:
+      - name: path
+        type: string
+        required: true
+        description: File path relative to the configured workspace root.
+  - type: REFRESH_WORKSPACE
+    name: Refresh Workspace
+    description: Reload the workspace tree from disk.

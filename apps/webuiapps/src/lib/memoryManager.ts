@@ -8,6 +8,7 @@
  */
 
 import type { ToolDef } from './llmClient';
+import { logger } from './logger';
 
 const API_PATH = '/api/session-data';
 
@@ -21,6 +22,10 @@ export interface MemoryEntry {
   category: 'fact' | 'preference' | 'event' | 'emotion' | 'other';
   createdAt: number;
 }
+
+const MAX_PROMPT_MEMORY_ENTRIES = 12;
+const MAX_PROMPT_MEMORY_CHARS = 1400;
+const MAX_PROMPT_MEMORY_ITEM_CHARS = 160;
 
 // ---------------------------------------------------------------------------
 // Tool definition
@@ -126,7 +131,7 @@ export async function saveMemory(
 
   try {
     const url = memoryApiUrl(sessionPath, `${entry.id}.json`);
-    console.info('[Memory] Saving memory', {
+    logger.info('Memory', 'Saving memory', {
       sessionPath,
       url,
       category: entry.category,
@@ -139,13 +144,10 @@ export async function saveMemory(
     });
     if (!res.ok) {
       const text = await res.text();
-      console.error('[Memory] Failed to save memory', {
-        status: res.status,
-        body: text,
-      });
+      logger.error('Memory', 'Failed to save memory', { status: res.status, body: text });
     }
   } catch {
-    console.error('[Memory] Failed to save memory due to network/API error');
+    logger.error('Memory', 'Failed to save memory due to network/API error');
   }
 
   return entry;
@@ -167,12 +169,39 @@ export async function executeMemoryTool(
 // SP injection — build a compact memory summary for the system prompt
 // ---------------------------------------------------------------------------
 
+function truncateMemoryContent(content: string): string {
+  const normalized = content.replace(/\s+/g, ' ').trim();
+  if (normalized.length <= MAX_PROMPT_MEMORY_ITEM_CHARS) return normalized;
+  return `${normalized.slice(0, MAX_PROMPT_MEMORY_ITEM_CHARS - 1).trimEnd()}…`;
+}
+
+export function selectMemoriesForPrompt(memories: MemoryEntry[]): MemoryEntry[] {
+  const sorted = [...memories].sort((a, b) => b.createdAt - a.createdAt);
+  const selected: MemoryEntry[] = [];
+  let totalChars = 0;
+
+  for (const memory of sorted) {
+    const content = truncateMemoryContent(memory.content);
+    if (
+      selected.length >= MAX_PROMPT_MEMORY_ENTRIES ||
+      totalChars + content.length > MAX_PROMPT_MEMORY_CHARS
+    ) {
+      break;
+    }
+    selected.push({ ...memory, content });
+    totalChars += content.length;
+  }
+
+  return selected.reverse();
+}
+
 /** Build memory context string for system prompt injection */
 export function buildMemoryPrompt(memories: MemoryEntry[]): string {
-  if (memories.length === 0) return '';
+  const selectedMemories = selectMemoriesForPrompt(memories);
+  if (selectedMemories.length === 0) return '';
 
   const grouped: Record<string, string[]> = {};
-  for (const m of memories) {
+  for (const m of selectedMemories) {
     if (!grouped[m.category]) grouped[m.category] = [];
     grouped[m.category].push(m.content);
   }
@@ -188,6 +217,9 @@ export function buildMemoryPrompt(memories: MemoryEntry[]): string {
   let prompt = '\n\n## Your memories about the user\n';
   prompt +=
     'The following are things you remember from previous conversations. Use them naturally — do not explicitly tell the user you are reading from memory.\n\n';
+  if (selectedMemories.length < memories.length) {
+    prompt += `Only the ${selectedMemories.length} most relevant memories are included here to stay within the token budget.\n\n`;
+  }
 
   for (const [cat, items] of Object.entries(grouped)) {
     prompt += `### ${categoryLabels[cat] || cat}\n`;

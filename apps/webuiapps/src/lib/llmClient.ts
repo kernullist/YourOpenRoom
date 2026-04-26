@@ -6,7 +6,12 @@
 import type { LLMConfig } from './llmModels';
 
 import { logger } from './logger';
-import { loadPersistedConfig, savePersistedConfig } from './configPersistence';
+import {
+  loadPersistedConfig,
+  normalizeResponseLanguageMode,
+  normalizeUserProfileDisplayName,
+  savePersistedConfig,
+} from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
 
@@ -34,6 +39,10 @@ export async function loadConfig(): Promise<LLMConfig | null> {
 export async function saveConfig(
   config: LLMConfig,
   imageGenConfig?: import('./imageGenClient').ImageGenConfig | null,
+  dialogLlmConfig?: import('./configPersistence').DialogLlmConfig | null,
+  idaPeConfig?: import('./configPersistence').IdaPeConfig | null,
+  userProfileConfig?: import('./configPersistence').UserProfileConfig | null,
+  conversationPreferencesConfig?: import('./configPersistence').ConversationPreferencesConfig | null,
 ): Promise<void> {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
@@ -42,16 +51,81 @@ export async function saveConfig(
     llm: config,
     ...(existing?.album ? { album: existing.album } : {}),
     ...(existing?.kira ? { kira: existing.kira } : {}),
+    ...(existing?.openvscode ? { openvscode: existing.openvscode } : {}),
     ...(existing?.app ? { app: existing.app } : {}),
+    ...(existing?.userProfile ? { userProfile: existing.userProfile } : {}),
+    ...(existing?.conversationPreferences
+      ? { conversationPreferences: existing.conversationPreferences }
+      : {}),
     ...(existing?.tavily ? { tavily: existing.tavily } : {}),
+    ...(existing?.gmail ? { gmail: existing.gmail } : {}),
   };
+  if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
+    persisted.dialogLlm = dialogLlmConfig;
+  } else if (dialogLlmConfig === undefined && existing?.dialogLlm) {
+    persisted.dialogLlm = existing.dialogLlm;
+  }
   if (imageGenConfig) {
     persisted.imageGen = imageGenConfig;
-  } else if (existing?.imageGen) {
+  } else if (imageGenConfig === undefined && existing?.imageGen) {
     persisted.imageGen = existing.imageGen;
   }
+  if (idaPeConfig) {
+    persisted.idaPe = idaPeConfig;
+  } else if (idaPeConfig === undefined && existing?.idaPe) {
+    persisted.idaPe = existing.idaPe;
+  }
+  const normalizedDisplayName = normalizeUserProfileDisplayName(userProfileConfig?.displayName);
+  if (normalizedDisplayName) {
+    persisted.userProfile = { displayName: normalizedDisplayName };
+  } else if (userProfileConfig === undefined && existing?.userProfile) {
+    persisted.userProfile = existing.userProfile;
+  } else if (userProfileConfig !== undefined) {
+    delete persisted.userProfile;
+  }
+  if (conversationPreferencesConfig) {
+    persisted.conversationPreferences = {
+      responseLanguageMode: normalizeResponseLanguageMode(
+        conversationPreferencesConfig.responseLanguageMode,
+      ),
+      ttsEnabled: conversationPreferencesConfig.ttsEnabled === true,
+      ttsPreloadCommonPhrases: conversationPreferencesConfig.ttsPreloadCommonPhrases !== false,
+    };
+  } else if (
+    conversationPreferencesConfig === undefined &&
+    existing?.conversationPreferences
+  ) {
+    persisted.conversationPreferences = existing.conversationPreferences;
+  } else if (conversationPreferencesConfig !== undefined) {
+    delete persisted.conversationPreferences;
+  }
 
-  await savePersistedConfig(persisted);
+  try {
+    await savePersistedConfig(persisted);
+  } catch {
+    // Keep localStorage in sync even when the dev-server config API is unavailable.
+  }
+}
+
+export function resolveLlmOverride(
+  baseConfig: LLMConfig | null,
+  override?: Partial<LLMConfig> | null,
+): LLMConfig | null {
+  const provider = override?.provider ?? baseConfig?.provider;
+  const baseUrl = override?.baseUrl?.trim() || baseConfig?.baseUrl;
+  const model = override?.model?.trim() || baseConfig?.model;
+  const apiKey = override?.apiKey ?? baseConfig?.apiKey ?? '';
+  const customHeaders = override?.customHeaders?.trim() || baseConfig?.customHeaders;
+
+  if (!provider || !baseUrl || !model) return null;
+
+  return {
+    provider,
+    apiKey,
+    baseUrl,
+    model,
+    ...(customHeaders ? { customHeaders } : {}),
+  };
 }
 
 export function loadConfigSync(): LLMConfig | null {
@@ -298,8 +372,9 @@ async function chatOpenAI(
     .map((tc: { function?: { name?: string } }) => tc.function?.name)
     .filter(Boolean);
   console.info('[LLM] OpenAI-compatible parsed response', {
-    contentPreview: (
-      choice?.tool_calls?.length ? stripThinkTags(choice?.content || '') : parsedInline.content
+    contentPreview: (choice?.tool_calls?.length
+      ? stripThinkTags(choice?.content || '')
+      : parsedInline.content
     ).slice(0, 200),
     toolCallCount: toolCalls.length,
     calledNames,

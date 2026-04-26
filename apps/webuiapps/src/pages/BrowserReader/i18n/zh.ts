@@ -41,7 +41,7 @@ const zh = {
   },
   google: {
     kicker: 'Google 搜索',
-    title: '在 OpenRoom 里搜索 Google',
+    title: '在 Your Room 里搜索 Google',
     description:
       '由于 Google 阻止 iframe 浏览，这里会改用原生结果面板显示。先在这里搜索，再把任意结果重新打开到浏览器工作区中。',
     placeholder: '搜索 Google...',
@@ -49,7 +49,7 @@ const zh = {
     loading: '正在加载 Google 搜索结果...',
     empty: '输入关键词后开始搜索。',
     noResults: '这个关键词暂时没有解析到结果。',
-    fallback: 'Google 没有返回可用结果，OpenRoom 已自动切换到备用网页搜索结果。',
+    fallback: 'Google 没有返回可用结果，Your Room 已自动切换到备用网页搜索结果。',
   },
 };
 

@@ -32,7 +32,7 @@ const zh = {
   body: '正文',
   bodyPlaceholder: '支持 Markdown，标题、列表、任务清单、代码块和链接都可以。',
   previewEmpty: '还没有可预览的内容。',
-  syncHint: '笔记和 OpenRoom 其他应用一样，走同一套本地/云端文件同步层。',
+  syncHint: '笔记和 Your Room 其他应用一样，走同一套本地/云端文件同步层。',
   saveNote: '保存笔记',
   saveChanges: '保存修改',
   validation: '至少填写标题或正文后再保存。',

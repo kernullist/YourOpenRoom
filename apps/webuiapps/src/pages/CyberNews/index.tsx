@@ -11,8 +11,8 @@ import {
   batchConcurrent,
   type CharacterAppAction,
 } from '@/lib';
-import './i18n';
-import { Newspaper, ArrowLeft, AlertTriangle } from 'lucide-react';
+import i18n from './i18n';
+import { Newspaper, ArrowLeft, AlertTriangle, ExternalLink, RefreshCw } from 'lucide-react';
 import type { Article, Case, Clue, ArticleCategory, AppState } from './types';
 import {
   APP_ID,
@@ -23,7 +23,17 @@ import {
   ActionTypes,
   DEFAULT_APP_STATE,
 } from './actions/constants';
-import { SEED_ARTICLES, SEED_CASES } from './mock/seedData';
+import {
+  fetchLiveNews,
+  isLegacySeedArticle,
+  isLiveArticle,
+  LEGACY_SEED_IDS,
+  LIVE_ARTICLE_PREFIX,
+  LIVE_NEWS_LIMIT,
+  shouldRefreshLiveArticles,
+  toLiveArticle,
+} from './liveNews';
+import { SEED_CASES } from './mock/seedData';
 import styles from './index.module.scss';
 
 import headlinePlaceholder from './assets/headline-placeholder.jpg';
@@ -94,6 +104,48 @@ const CategoryFilter: React.FC<CategoryFilterProps> = ({ active, onSelect }) => 
   );
 };
 
+interface NewsToolbarProps {
+  active: ArticleCategory | null;
+  isSyncing: boolean;
+  lastSyncedAt: string | null;
+  syncError: string | null;
+  onSelect: (cat: ArticleCategory | null) => void;
+  onRefresh: () => void;
+}
+
+const NewsToolbar: React.FC<NewsToolbarProps> = ({
+  active,
+  isSyncing,
+  lastSyncedAt,
+  syncError,
+  onSelect,
+  onRefresh,
+}) => {
+  const { t } = useTranslation('cyberNews');
+
+  return (
+    <div className={styles.newsToolbar}>
+      <CategoryFilter active={active} onSelect={onSelect} />
+      <div className={styles.newsToolbarMeta}>
+        {lastSyncedAt && (
+          <span className={styles.newsSyncStamp}>
+            {t('news.lastUpdated')}: {formatDateTime(lastSyncedAt)}
+          </span>
+        )}
+        <button className={styles.newsRefreshBtn} onClick={onRefresh} disabled={isSyncing}>
+          <RefreshCw size={14} className={isSyncing ? styles.spinning : ''} />
+          {isSyncing ? t('news.refreshing') : t('news.refresh')}
+        </button>
+      </div>
+      {syncError && (
+        <div className={styles.newsSyncError}>
+          {t('news.syncFailed')}: {syncError}
+        </div>
+      )}
+    </div>
+  );
+};
+
 // ============ Headline Card ============
 interface HeadlineCardProps {
   article: Article;
@@ -101,6 +153,8 @@ interface HeadlineCardProps {
 }
 
 const HeadlineCard: React.FC<HeadlineCardProps> = ({ article, onClick }) => {
+  const { t } = useTranslation('cyberNews');
+
   return (
     <div className={styles.headlineCard} onClick={onClick}>
       <div className={styles.headlineImageWrap}>
@@ -110,8 +164,9 @@ const HeadlineCard: React.FC<HeadlineCardProps> = ({ article, onClick }) => {
       <div className={styles.headlineContent}>
         <div className={styles.headlineMeta}>
           <span className={`${styles.headlineBadge} ${styles[article.category]}`}>
-            {article.category}
+            {t(`news.${article.category}`)}
           </span>
+          {article.sourceName && <span className={styles.headlineSource}>{article.sourceName}</span>}
           <span className={styles.headlineDate}>{formatDate(article.publishedAt)}</span>
         </div>
         <h2 className={styles.headlineTitle}>{article.title}</h2>
@@ -131,6 +186,20 @@ const formatDate = (dateStr: string): string => {
   try {
     const d = new Date(dateStr);
     return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+  } catch {
+    return dateStr;
+  }
+};
+
+const formatDateTime = (dateStr: string): string => {
+  try {
+    const d = new Date(dateStr);
+    return d.toLocaleString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
   } catch {
     return dateStr;
   }
@@ -156,6 +225,8 @@ const NewsListCard: React.FC<NewsListCardProps> = ({ article, onClick }) => {
           <span className={`${styles.newsListBadge} ${styles[article.category]}`}>
             {t(`news.${article.category}`)}
           </span>
+          {article.sourceName && <span className={styles.newsListSource}>{article.sourceName}</span>}
+          <span className={styles.newsListDate}>{formatDate(article.publishedAt)}</span>
         </div>
         <div className={styles.newsListTitleWrap}>
           <div className={styles.newsListTitle} title={article.title}>
@@ -220,10 +291,22 @@ const ArticleDetail: React.FC<ArticleDetailProps> = ({ article, onBack }) => {
         </div>
         <div className={styles.articleMeta}>
           <span className={`${styles.headlineBadge} ${styles[article.category]}`}>
-            {article.category}
+            {t(`news.${article.category}`)}
           </span>
+          {article.sourceName && <span className={styles.articleSource}>{article.sourceName}</span>}
           <span className={styles.newsListDate}>{formatDate(article.publishedAt)}</span>
         </div>
+        {article.sourceUrl && (
+          <a
+            className={styles.articleSourceLink}
+            href={article.sourceUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <ExternalLink size={14} />
+            {t('news.openOriginal')}
+          </a>
+        )}
         <h1 className={styles.articleTitle}>{article.title}</h1>
         <p className={styles.articleSummary}>{article.summary}</p>
         <div className={styles.articleContent}>
@@ -482,6 +565,23 @@ const CyberNews: React.FC = () => {
   const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
   const [newsFilter, setNewsFilter] = useState<ArticleCategory | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+
+  const updateLastSyncedAt = useCallback((articleList: Article[]) => {
+    const timestamps = articleList
+      .filter(isLiveArticle)
+      .map((article) => Date.parse(article.fetchedAt || article.publishedAt))
+      .filter((value) => !Number.isNaN(value));
+
+    if (timestamps.length === 0) {
+      setLastSyncedAt(null);
+      return;
+    }
+
+    setLastSyncedAt(new Date(Math.max(...timestamps)).toISOString());
+  }, []);
 
   // ============ Image Path Resolution ============
   const resolveArticleImages = useCallback(async (articleList: Article[]) => {
@@ -512,6 +612,67 @@ const CyberNews: React.FC = () => {
       },
     });
   }, []);
+
+  const syncLiveArticles = useCallback(
+    async (existingArticles: Article[]): Promise<Article[]> => {
+      setIsSyncing(true);
+      setSyncError(null);
+
+      try {
+        const liveResponse = await fetchLiveNews(LIVE_NEWS_LIMIT);
+        const liveArticles = liveResponse.items.map((item) =>
+          toLiveArticle(item, liveResponse.fetchedAt),
+        );
+
+        if (liveArticles.length === 0) {
+          throw new Error('No live articles returned');
+        }
+
+        const preservedArticles = existingArticles.filter(
+          (article) => !isLegacySeedArticle(article) && !isLiveArticle(article),
+        );
+        const nextArticles = [...preservedArticles, ...liveArticles];
+        const liveFileNames = new Set(liveArticles.map((article) => `${article.id}.json`));
+        const articleFiles = await cyberFileApi.listFiles(ARTICLES_DIR);
+        const stalePaths = articleFiles
+          .filter((file) => file.type === 'file' && file.name.endsWith('.json'))
+          .filter((file) => {
+            const articleId = file.name.replace(/\.json$/i, '');
+            if (LEGACY_SEED_IDS.has(articleId)) return true;
+            if (!file.name.startsWith(LIVE_ARTICLE_PREFIX)) return false;
+            return !liveFileNames.has(file.name);
+          })
+          .map((file) => file.path);
+
+        await batchConcurrent(liveArticles, (article) =>
+          cyberFileApi.writeFile(`${ARTICLES_DIR}/${article.id}.json`, article),
+        );
+
+        if (stalePaths.length > 0) {
+          await batchConcurrent(stalePaths, async (path) => {
+            await cyberFileApi.deleteFile(path).catch(() => undefined);
+          });
+        }
+
+        setArticles(nextArticles);
+        setSelectedArticleId((prev) =>
+          prev && nextArticles.some((article) => article.id === prev) ? prev : null,
+        );
+        setLastSyncedAt(liveResponse.fetchedAt);
+
+        return nextArticles;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        console.error('[CyberNews] Failed to sync live articles:', error);
+        setSyncError(message);
+        updateLastSyncedAt(existingArticles);
+        return existingArticles;
+      } finally {
+        setIsSyncing(false);
+      }
+    },
+    [updateLastSyncedAt],
+  );
 
   // ============ Repo refresh methods ============
   const refreshArticles = useCallback(async (): Promise<Article[]> => {
@@ -564,14 +725,24 @@ const CyberNews: React.FC = () => {
         'articles:',
         loaded.map((a) => a.id),
       );
-      await resolveArticleImages(loaded);
-      setArticles([...loaded]);
-      return loaded;
+      const sanitized = loaded.filter((article) => !isLegacySeedArticle(article));
+      await resolveArticleImages(sanitized);
+      setArticles([...sanitized]);
+      setSelectedArticleId((prev) =>
+        prev && sanitized.some((article) => article.id === prev) ? prev : null,
+      );
+      updateLastSyncedAt(sanitized);
+
+      if (shouldRefreshLiveArticles(sanitized)) {
+        return await syncLiveArticles(sanitized);
+      }
+
+      return sanitized;
     } catch (error) {
       console.error('[CyberNews] Failed to refresh articles:', error);
       return articles;
     }
-  }, [articles]);
+  }, [articles, resolveArticleImages, syncLiveArticles, updateLastSyncedAt]);
 
   const refreshCases = useCallback(async (): Promise<Case[]> => {
     try {
@@ -662,10 +833,12 @@ const CyberNews: React.FC = () => {
           });
           if (loadedArticles.length > 0) {
             // Temporarily clear unresolved .json imageUrl to prevent browser 404
-            const snapshot = loadedArticles.map((a) => ({
-              ...a,
-              imageUrl: a.imageUrl?.endsWith('.json') ? '' : a.imageUrl,
-            }));
+            const snapshot = loadedArticles
+              .filter((article) => !isLegacySeedArticle(article))
+              .map((a) => ({
+                ...a,
+                imageUrl: a.imageUrl?.endsWith('.json') ? '' : a.imageUrl,
+              }));
             setArticles(snapshot);
           }
           if (loadedCases.length > 0) setCases([...loadedCases]);
@@ -676,18 +849,14 @@ const CyberNews: React.FC = () => {
         },
       });
 
-      // Resolve image reference paths
-      if (loadedArticles.length > 0) {
-        await resolveArticleImages(loadedArticles);
-        setArticles([...loadedArticles]);
-      }
+      const sanitizedArticles = loadedArticles.filter((article) => !isLegacySeedArticle(article));
 
-      // Seed data fallback
-      if (loadedArticles.length === 0) {
-        setArticles(SEED_ARTICLES);
-        await batchConcurrent(SEED_ARTICLES, (article) =>
-          cyberFileApi.writeFile(`${ARTICLES_DIR}/${article.id}.json`, article),
-        );
+      if (sanitizedArticles.length > 0) {
+        await resolveArticleImages(sanitizedArticles);
+        setArticles([...sanitizedArticles]);
+        updateLastSyncedAt(sanitizedArticles);
+      } else {
+        setArticles([]);
       }
 
       if (loadedCases.length === 0) {
@@ -695,6 +864,10 @@ const CyberNews: React.FC = () => {
         await batchConcurrent(SEED_CASES, (c) =>
           cyberFileApi.writeFile(`${CASES_DIR}/${c.id}.json`, c),
         );
+      }
+
+      if (shouldRefreshLiveArticles(sanitizedArticles)) {
+        await syncLiveArticles(sanitizedArticles);
       }
 
       if (!firstBatchRendered) setIsLoading(false);
@@ -722,11 +895,11 @@ const CyberNews: React.FC = () => {
       }
     } catch (error) {
       console.error('[CyberNews] Failed to load data:', error);
-      setArticles(SEED_ARTICLES);
+      setArticles([]);
       setCases(SEED_CASES);
       setIsLoading(false);
     }
-  }, []);
+  }, [resolveArticleImages, syncLiveArticles, updateLastSyncedAt]);
 
   // ============ State persistence ============
   const saveState = useCallback(
@@ -760,6 +933,10 @@ const CyberNews: React.FC = () => {
   const handleFilterNews = useCallback((cat: ArticleCategory | null) => {
     setNewsFilter(cat);
   }, []);
+
+  const handleRefreshNews = useCallback(() => {
+    void syncLiveArticles(articles);
+  }, [articles, syncLiveArticles]);
 
   const handleViewArticle = useCallback((articleId: string, _fromAgent = false) => {
     setSelectedArticleId(articleId);
@@ -880,7 +1057,8 @@ const CyberNews: React.FC = () => {
             setCurrentView('news');
             setSelectedArticleId(null);
           }
-          await refreshArticles();
+          const refreshed = await refreshArticles();
+          await syncLiveArticles(refreshed);
           return 'success';
         }
         case ActionTypes.REFRESH_CASES: {
@@ -928,6 +1106,7 @@ const CyberNews: React.FC = () => {
       cases,
       refreshArticles,
       refreshCases,
+      syncLiveArticles,
       handleViewArticle,
       handleSelectCase,
       handleMoveClue,
@@ -961,8 +1140,7 @@ const CyberNews: React.FC = () => {
         reportLifecycle(AppLifecycle.DOM_READY);
         await fetchVibeInfo();
         // Force English UI
-        const i18nModule = await import('./i18n');
-        i18nModule.default.changeLanguage('en');
+        i18n.changeLanguage('en');
         await loadData();
         reportLifecycle(AppLifecycle.LOADED);
         manager.ready();
@@ -979,7 +1157,7 @@ const CyberNews: React.FC = () => {
       reportLifecycle(AppLifecycle.UNLOADING);
       reportLifecycle(AppLifecycle.DESTROYED);
     };
-  }, []);
+  }, [loadData]);
 
   // ============ Derived state ============
   const filteredArticles = newsFilter
@@ -1017,7 +1195,14 @@ const CyberNews: React.FC = () => {
       <div className={styles.mainContent}>
         {currentView === 'news' && !selectedArticle && (
           <div className={styles.newsFeed}>
-            <CategoryFilter active={newsFilter} onSelect={handleFilterNews} />
+            <NewsToolbar
+              active={newsFilter}
+              isSyncing={isSyncing}
+              lastSyncedAt={lastSyncedAt}
+              syncError={syncError}
+              onSelect={handleFilterNews}
+              onRefresh={handleRefreshNews}
+            />
             {sortedArticles.length === 0 ? (
               <div className={styles.emptyState}>
                 <Newspaper size={48} />

@@ -12,6 +12,14 @@ import {
   generateId,
   type CharacterAppAction,
 } from '@/lib';
+import {
+  buildBrowserReaderProxyUrl,
+  isLikelyInteractiveHomePage,
+  normalizeUrlInput,
+  parseReadablePageSnapshot,
+  stripCollapsedText,
+  type ReadablePageSnapshot,
+} from '@/lib/readerExtraction';
 import './i18n';
 import styles from './index.module.scss';
 
@@ -49,18 +57,7 @@ interface BrowserState {
   sidebarOpen: boolean;
 }
 
-interface ReaderBlock {
-  type: 'heading' | 'paragraph' | 'quote' | 'list';
-  text: string;
-}
-
-interface PageSnapshot {
-  finalUrl: string;
-  title: string;
-  excerpt: string;
-  siteName: string;
-  blocks: ReaderBlock[];
-}
+type PageSnapshot = ReadablePageSnapshot;
 
 interface GoogleSearchResult {
   title: string;
@@ -77,34 +74,6 @@ const DEFAULT_STATE: BrowserState = {
   viewMode: 'browse',
   sidebarOpen: false,
 };
-
-function normalizeUrlInput(input: string): string {
-  const trimmed = input.trim();
-  if (!trimmed) return '';
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
-  return `https://${trimmed}`;
-}
-
-function buildProxyUrl(url: string): string {
-  return `/api/browser-reader?url=${encodeURIComponent(url)}`;
-}
-
-function isLikelyInteractiveHomePage(url: string): boolean {
-  try {
-    const parsed = new URL(url);
-    const host = parsed.hostname.toLowerCase();
-    const pathname = parsed.pathname.replace(/\/+$/, '') || '/';
-    const search = parsed.search.trim();
-    if (/(\.|^)google\./.test(host) && pathname === '/' && !search) return true;
-    if ((host === 'www.youtube.com' || host === 'youtube.com') && pathname === '/' && !search) return true;
-    if ((host === 'x.com' || host === 'www.x.com' || host === 'twitter.com' || host === 'www.twitter.com') && pathname === '/' && !search) {
-      return true;
-    }
-    return false;
-  } catch {
-    return false;
-  }
-}
 
 function isGoogleUrl(url: string): boolean {
   try {
@@ -142,10 +111,6 @@ function isKnownFrameBlockedUrl(url: string): boolean {
   }
 }
 
-function stripText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim();
-}
-
 function parseGoogleSearchResults(html: string): GoogleSearchResult[] {
   const doc = new DOMParser().parseFromString(html, 'text/html');
   const anchors = Array.from(doc.querySelectorAll('a[href]'));
@@ -175,7 +140,7 @@ function parseGoogleSearchResults(html: string): GoogleSearchResult[] {
     if (isGoogleUrl(targetUrl)) continue;
     if (seen.has(targetUrl)) continue;
 
-    const title = stripText(
+    const title = stripCollapsedText(
       anchor.querySelector('h3')?.textContent ||
         anchor.querySelector('span')?.textContent ||
         anchor.textContent ||
@@ -184,7 +149,9 @@ function parseGoogleSearchResults(html: string): GoogleSearchResult[] {
     if (!title || title.length < 3) continue;
 
     const container = anchor.closest('div');
-    const surroundingText = stripText(container?.parentElement?.textContent || container?.textContent || '');
+    const surroundingText = stripCollapsedText(
+      container?.parentElement?.textContent || container?.textContent || '',
+    );
     const snippetCandidate = surroundingText.replace(title, '').replace(targetUrl, '').trim();
 
     let displayUrl = '';
@@ -223,10 +190,10 @@ function parseDuckDuckGoResults(html: string): GoogleSearchResult[] {
       anchor.closest('[data-testid="result"]') ||
       anchor.parentElement;
 
-    const title = stripText(anchor.textContent || '');
+    const title = stripCollapsedText(anchor.textContent || '');
     if (!title) continue;
 
-    const snippet = stripText(
+    const snippet = stripCollapsedText(
       container?.querySelector('.result__snippet')?.textContent ||
         container?.querySelector('[data-result="snippet"]')?.textContent ||
         container?.textContent ||
@@ -253,61 +220,6 @@ function parseDuckDuckGoResults(html: string): GoogleSearchResult[] {
   return results;
 }
 
-function parsePageSnapshot(html: string, sourceUrl: string): PageSnapshot {
-  const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, style, noscript, iframe, svg, canvas').forEach((node) => node.remove());
-
-  const title =
-    doc.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() ||
-    doc.title?.trim() ||
-    sourceUrl;
-
-  const siteName =
-    doc.querySelector('meta[property="og:site_name"]')?.getAttribute('content')?.trim() ||
-    new URL(sourceUrl).hostname.replace(/^www\./, '');
-
-  const excerpt =
-    doc.querySelector('meta[name="description"]')?.getAttribute('content')?.trim() ||
-    doc.querySelector('meta[property="og:description"]')?.getAttribute('content')?.trim() ||
-    '';
-
-  const root =
-    doc.querySelector('article') ||
-    doc.querySelector('main') ||
-    doc.querySelector('[role="main"]') ||
-    doc.querySelector('.article') ||
-    doc.querySelector('.post') ||
-    doc.querySelector('.entry-content') ||
-    doc.querySelector('.content') ||
-    doc.body;
-
-  const nodes = Array.from(root.querySelectorAll('h1, h2, h3, p, li, blockquote'));
-  const blocks: ReaderBlock[] = [];
-  for (const node of nodes) {
-    const text = node.textContent?.replace(/\s+/g, ' ').trim() || '';
-    if (text.length < 30) continue;
-    const type =
-      node.tagName === 'BLOCKQUOTE'
-        ? 'quote'
-        : node.tagName === 'LI'
-          ? 'list'
-          : /^H[1-3]$/.test(node.tagName)
-            ? 'heading'
-            : 'paragraph';
-    blocks.push({ type, text });
-    if (blocks.length >= 30) break;
-  }
-
-  const fallbackExcerpt = excerpt || blocks.find((block) => block.type === 'paragraph')?.text || title;
-  return {
-    finalUrl: sourceUrl,
-    title,
-    excerpt: fallbackExcerpt.length > 220 ? `${fallbackExcerpt.slice(0, 220)}...` : fallbackExcerpt,
-    siteName,
-    blocks,
-  };
-}
-
 async function fetchPageSnapshot(url: string): Promise<PageSnapshot> {
   if (isLikelyInteractiveHomePage(url)) {
     const parsed = new URL(url);
@@ -328,7 +240,7 @@ async function fetchPageSnapshot(url: string): Promise<PageSnapshot> {
 
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), READER_FETCH_TIMEOUT_MS);
-  const res = await fetch(buildProxyUrl(url), { signal: controller.signal }).finally(() => {
+  const res = await fetch(buildBrowserReaderProxyUrl(url), { signal: controller.signal }).finally(() => {
     window.clearTimeout(timer);
   });
   const contentType = res.headers.get('content-type') || '';
@@ -341,7 +253,7 @@ async function fetchPageSnapshot(url: string): Promise<PageSnapshot> {
     throw new Error(await res.text());
   }
   const html = await res.text();
-  return parsePageSnapshot(html, finalUrl);
+  return parseReadablePageSnapshot(html, finalUrl);
 }
 
 async function fetchGoogleSearchResults(
@@ -352,7 +264,7 @@ async function fetchGoogleSearchResults(
   const searchUrl = `https://www.google.com/search?hl=en&gbv=1&num=10&q=${encodeURIComponent(query)}`;
 
   try {
-    const res = await fetch(buildProxyUrl(searchUrl), { signal: controller.signal });
+    const res = await fetch(buildBrowserReaderProxyUrl(searchUrl), { signal: controller.signal });
     if (!res.ok) {
       throw new Error('Google search request failed');
     }
@@ -375,7 +287,7 @@ async function fetchFallbackSearchResults(
   const fallbackUrl = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
 
   try {
-    const res = await fetch(buildProxyUrl(fallbackUrl), { signal: controller.signal });
+    const res = await fetch(buildBrowserReaderProxyUrl(fallbackUrl), { signal: controller.signal });
     if (!res.ok) {
       throw new Error('Fallback search request failed');
     }
@@ -916,7 +828,7 @@ const BrowserReaderPage: React.FC = () => {
                   <iframe
                     key={currentUrl}
                     title={pageSnapshot?.title || currentUrl}
-                    src={buildProxyUrl(currentUrl)}
+                    src={buildBrowserReaderProxyUrl(currentUrl)}
                     className={styles.browserFrame}
                     sandbox="allow-forms allow-popups allow-scripts"
                   />

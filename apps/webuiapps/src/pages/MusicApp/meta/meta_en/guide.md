@@ -9,21 +9,25 @@
 
 ## State File `/state.json`
 
-This app is a YouTube search launcher. It does not maintain song or playlist files. Everything it needs is stored in `state.json`.
+This app is a YouTube search launcher. It does not maintain song or playlist files. Everything it
+needs is stored in `state.json`.
 
-| Field | Type | Default | Description |
-| --- | --- | --- | --- |
-| searchQuery | string | `""` | Current search keyword |
-| recentSearches | SearchEntry[] | `[]` | Recent YouTube searches |
-| favoriteTopics | string[] | pre-seeded list | Saved one-click topics |
-| sidebarOpen | boolean | `false` | Whether the left saved-topics sidebar is expanded |
+| Field           | Type          | Default         | Description                                                                                |
+| --------------- | ------------- | --------------- | ------------------------------------------------------------------------------------------ |
+| searchQuery     | string        | `""`            | Current search keyword                                                                     |
+| recentSearches  | SearchEntry[] | `[]`            | Recent YouTube searches                                                                    |
+| favoriteTopics  | string[]      | pre-seeded list | Saved one-click topics                                                                     |
+| sidebarOpen     | boolean       | `false`         | Whether the left saved-topics sidebar is expanded                                          |
+| resultsAutoHide | boolean       | `false`         | Whether the in-app search results list should automatically collapse after picking a video |
+| loopPlayback    | boolean       | `false`         | Whether the in-app player should loop the currently selected video                         |
+| playerZoom      | number        | `1`             | The current in-app player zoom factor, where `1` means 100%                                |
 
 ### SearchEntry
 
-| Field | Type | Description |
-| --- | --- | --- |
-| id | string | Unique search entry ID |
-| query | string | Search query text |
+| Field     | Type   | Description               |
+| --------- | ------ | ------------------------- |
+| id        | string | Unique search entry ID    |
+| query     | string | Search query text         |
 | createdAt | number | Timestamp in milliseconds |
 
 Example:
@@ -39,7 +43,10 @@ Example:
     }
   ],
   "favoriteTopics": ["lofi hip hop", "deep focus music", "IVE I AM"],
-  "sidebarOpen": false
+  "sidebarOpen": false,
+  "resultsAutoHide": false,
+  "loopPlayback": false,
+  "playerZoom": 1
 }
 ```
 

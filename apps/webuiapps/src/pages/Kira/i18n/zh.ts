@@ -96,7 +96,7 @@ const zh = {
     previewEmpty: '还没有可预览的内容。',
     markdownHint: '可以用 Markdown 写实现说明、验收标准、发布步骤和评审备注。',
     syncHint:
-      'Kira 和 OpenRoom 其他应用一样，走同一套本地/云端文件层，所以 Agent 可以先写文件，再刷新界面。',
+      'Kira 和 Your Room 其他应用一样，走同一套本地/云端文件层，所以 Agent 可以先写文件，再刷新界面。',
     validationTitle: '保存前请先填写标题。',
     discoveryIdle: '让 Aoi 检查当前项目，并建议接下来应该做的工作项。',
     discoveryRunning: 'Aoi 正在读取当前项目并保存分析结果。',

@@ -7,6 +7,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   loadPersistedConfig,
+  loadConversationPreferencesSync,
+  saveConversationPreferences,
   savePersistedConfig,
   type PersistedConfig,
 } from '../configPersistence';
@@ -45,8 +47,23 @@ const MOCK_PERSISTED: PersistedConfig = {
       model: 'claude-sonnet-4.6',
     },
   },
+  dialogLlm: {
+    model: 'openai/gpt-5-mini',
+    baseUrl: 'https://openrouter.ai/api/v1',
+  },
+  openvscode: {
+    baseUrl: 'http://127.0.0.1:3001/',
+  },
   app: {
     title: 'My Room',
+  },
+  userProfile: {
+    displayName: 'Minji',
+  },
+  conversationPreferences: {
+    responseLanguageMode: 'english',
+    ttsEnabled: true,
+    ttsPreloadCommonPhrases: true,
   },
 };
 
@@ -79,6 +96,12 @@ describe('loadPersistedConfig()', () => {
     expect(result?.kira?.workerLlm?.model).toBe('openai/gpt-5.4');
     expect(result?.kira?.reviewerLlm?.provider).toBe('anthropic');
     expect(result?.kira?.reviewerLlm?.model).toBe('claude-sonnet-4.6');
+    expect(result?.dialogLlm?.model).toBe('openai/gpt-5-mini');
+    expect(result?.openvscode?.baseUrl).toBe('http://127.0.0.1:3001/');
+    expect(result?.userProfile?.displayName).toBe('Minji');
+    expect(result?.conversationPreferences?.responseLanguageMode).toBe('english');
+    expect(result?.conversationPreferences?.ttsEnabled).toBe(true);
+    expect(result?.conversationPreferences?.ttsPreloadCommonPhrases).toBe(true);
   });
 
   it('returns { llm } only when imageGen is absent', async () => {
@@ -93,6 +116,46 @@ describe('loadPersistedConfig()', () => {
     expect(result?.llm).toEqual(MOCK_LLM_CONFIG);
     expect(result?.imageGen).toBeUndefined();
     expect(result?.app?.title).toBe('My Room');
+  });
+
+  it('returns config objects even when llm is absent', async () => {
+    const ideOnly = { openvscode: { baseUrl: 'http://127.0.0.1:3001/' } };
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(ideOnly),
+    } as unknown as Response);
+
+    const result = await loadPersistedConfig();
+
+    expect(result).toEqual(ideOnly);
+    expect(result?.llm).toBeUndefined();
+    expect(result?.openvscode?.baseUrl).toBe('http://127.0.0.1:3001/');
+  });
+
+  it('returns config when only userProfile is present', async () => {
+    const userOnly = { userProfile: { displayName: 'Minji' } };
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(userOnly),
+    } as unknown as Response);
+
+    const result = await loadPersistedConfig();
+
+    expect(result).toEqual(userOnly);
+    expect(result?.userProfile?.displayName).toBe('Minji');
+  });
+
+  it('returns config when only conversationPreferences is present', async () => {
+    const conversationOnly = { conversationPreferences: { responseLanguageMode: 'english' } };
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      json: () => Promise.resolve(conversationOnly),
+    } as unknown as Response);
+
+    const result = await loadPersistedConfig();
+
+    expect(result).toEqual(conversationOnly);
+    expect(result?.conversationPreferences?.responseLanguageMode).toBe('english');
   });
 
   it('migrates legacy flat LLMConfig format to { llm } wrapper', async () => {
@@ -172,7 +235,18 @@ describe('savePersistedConfig()', () => {
         model: 'claude-sonnet-4.6',
       },
     });
+    expect(body.dialogLlm).toEqual({
+      model: 'openai/gpt-5-mini',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+    expect(body.openvscode).toEqual({ baseUrl: 'http://127.0.0.1:3001/' });
     expect(body.app).toEqual({ title: 'My Room' });
+    expect(body.userProfile).toEqual({ displayName: 'Minji' });
+    expect(body.conversationPreferences).toEqual({
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: true,
+    });
   });
 
   it('omits imageGen when not provided', async () => {
@@ -186,9 +260,48 @@ describe('savePersistedConfig()', () => {
     expect(body.imageGen).toBeUndefined();
   });
 
-  it('does not throw when fetch fails', async () => {
+  it('throws when fetch fails', async () => {
     globalThis.fetch = vi.fn().mockRejectedValueOnce(new Error('Network error'));
 
-    await expect(savePersistedConfig(MOCK_PERSISTED)).resolves.toBeUndefined();
+    await expect(savePersistedConfig(MOCK_PERSISTED)).rejects.toThrow('Network error');
+  });
+
+  it('throws the API error when the config endpoint responds with a failure', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: false,
+      status: 500,
+      json: () => Promise.resolve({ error: 'Write failed' }),
+    } as unknown as Response);
+
+    await expect(savePersistedConfig(MOCK_PERSISTED)).rejects.toThrow('Write failed');
+  });
+});
+
+describe('conversation preference helpers', () => {
+  it('persists and reloads tts settings from localStorage', () => {
+    saveConversationPreferences({
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: false,
+    });
+
+    expect(loadConversationPreferencesSync()).toEqual({
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: false,
+    });
+  });
+
+  it('defaults preload to true when omitted', () => {
+    saveConversationPreferences({
+      responseLanguageMode: 'match-user',
+      ttsEnabled: true,
+    });
+
+    expect(loadConversationPreferencesSync()).toEqual({
+      responseLanguageMode: 'match-user',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: true,
+    });
   });
 });

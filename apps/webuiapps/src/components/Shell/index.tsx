@@ -16,6 +16,7 @@ import {
   CalendarDays,
   Radio,
   KanbanSquare,
+  Code2,
   Video,
   VideoOff,
   Plus,
@@ -29,7 +30,7 @@ import ChatPanel from '../ChatPanel';
 import AppWindow from '../AppWindow';
 import { getWindows, subscribe, openWindow, claimZIndex } from '@/lib/windowManager';
 import { getDesktopApps } from '@/lib/appRegistry';
-import { reportUserOsAction, onOSEvent } from '@/lib/vibeContainerMock';
+import { dispatchAgentAction, reportUserOsAction, onOSEvent } from '@/lib/vibeContainerMock';
 import { setReportUserActions, extractCard } from '@/lib';
 import type { ExtractResult, Manifest } from '@/lib';
 import { buildModPrompt } from './modPrompt';
@@ -43,7 +44,6 @@ import {
   DEFAULT_MOD_COLLECTION,
 } from '@/lib/modManager';
 import type { ModConfig } from '@/lib/modManager';
-import i18next from 'i18next';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { logger } from '@/lib/logger';
 import styles from './index.module.scss';
@@ -69,6 +69,8 @@ const ICON_MAP: Record<string, LucideIcon> = {
   CalendarDays,
   Radio,
   KanbanSquare,
+  Code2,
+  FileArchive,
   MessageCircle,
 };
 
@@ -85,6 +87,23 @@ const STATIC_WALLPAPER =
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
+const KIRA_APP_ID = 18;
+const KIRA_NOTICE_TIMEOUT_MS = 12_000;
+
+interface KiraAutomationEvent {
+  id: string;
+  workId: string;
+  title: string;
+  projectName: string;
+  message: string;
+  createdAt: number;
+  type: 'started' | 'resumed' | 'completed' | 'needs_attention';
+}
+
+interface KiraAutomationNotice extends KiraAutomationEvent {
+  localId: string;
+}
 
 function isVideoUrl(url: string): boolean {
   try {
@@ -105,14 +124,16 @@ const Shell: React.FC = () => {
     }
   });
   const [reportEnabled, setReportEnabled] = useState(true);
-  const [lang, setLang] = useState<'en' | 'zh'>('en');
   const [liveWallpaper, setLiveWallpaper] = useState(true);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractResult | null>(null);
   const [extracting, setExtracting] = useState(false);
   const [modGenerating, setModGenerating] = useState(false);
+  const [kiraNotices, setKiraNotices] = useState<KiraAutomationNotice[]>([]);
+  const [kiraUnreadCount, setKiraUnreadCount] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const kiraNoticeTimersRef = useRef<Map<string, number>>(new Map());
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -127,6 +148,39 @@ const Shell: React.FC = () => {
     setUploadedFile(null);
     setExtractResult(null);
   }, []);
+
+  const dismissKiraNotice = useCallback((localId: string) => {
+    const timer = kiraNoticeTimersRef.current.get(localId);
+    if (timer) {
+      window.clearTimeout(timer);
+      kiraNoticeTimersRef.current.delete(localId);
+    }
+    setKiraNotices((prev) => prev.filter((notice) => notice.localId !== localId));
+  }, []);
+
+  const handleOpenKiraNotice = useCallback(
+    async (notice: KiraAutomationNotice) => {
+      setKiraUnreadCount(0);
+      dismissKiraNotice(notice.localId);
+      try {
+        await dispatchAgentAction({
+          app_id: KIRA_APP_ID,
+          action_type: 'OPEN_APP',
+          params: { app_id: String(KIRA_APP_ID) },
+        });
+        if (notice.workId) {
+          await dispatchAgentAction({
+            app_id: KIRA_APP_ID,
+            action_type: 'REFRESH_KIRA',
+            params: { focusId: notice.workId, focusType: 'work' },
+          });
+        }
+      } catch (error) {
+        logger.error('Shell', 'Failed to open Kira from notification:', error);
+      }
+    },
+    [dismissKiraNotice],
+  );
 
   const generateMod = useCallback(async (character: Manifest['character']): Promise<string> => {
     const llmConfig = await loadConfig();
@@ -232,7 +286,6 @@ const Shell: React.FC = () => {
   // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const [wallpaper, setWallpaper] = useState(VIDEO_WALLPAPER);
   const [chatZIndex, setChatZIndex] = useState(() => claimZIndex());
-  const barRef = useRef<HTMLDivElement>(null);
   const windows = useWindows();
 
   const bgWallpaper = isVideoUrl(wallpaper) ? STATIC_WALLPAPER : wallpaper;
@@ -242,14 +295,6 @@ const Shell: React.FC = () => {
     setReportEnabled((prev) => {
       const next = !prev;
       setReportUserActions(next);
-      return next;
-    });
-  }, []);
-
-  const handleToggleLang = useCallback(() => {
-    setLang((prev) => {
-      const next = prev === 'en' ? 'zh' : 'en';
-      i18next.changeLanguage(next);
       return next;
     });
   }, []);
@@ -297,6 +342,33 @@ const Shell: React.FC = () => {
     };
   }, []);
 
+  useEffect(() => {
+    const handleKiraNotice = (event: Event) => {
+      const detail = (event as CustomEvent<KiraAutomationEvent>).detail;
+      if (!detail?.id) return;
+
+      const notice: KiraAutomationNotice = {
+        ...detail,
+        localId: `${detail.id}-${Date.now()}`,
+      };
+      setKiraNotices((prev) => [notice, ...prev].slice(0, 4));
+      setKiraUnreadCount((prev) => prev + 1);
+
+      const timer = window.setTimeout(() => {
+        setKiraNotices((prev) => prev.filter((item) => item.localId !== notice.localId));
+        kiraNoticeTimersRef.current.delete(notice.localId);
+      }, KIRA_NOTICE_TIMEOUT_MS);
+      kiraNoticeTimersRef.current.set(notice.localId, timer);
+    };
+
+    window.addEventListener(KIRA_AUTOMATION_NOTICE_EVENT, handleKiraNotice);
+    return () => {
+      window.removeEventListener(KIRA_AUTOMATION_NOTICE_EVENT, handleKiraNotice);
+      kiraNoticeTimersRef.current.forEach((timer) => window.clearTimeout(timer));
+      kiraNoticeTimersRef.current.clear();
+    };
+  }, []);
+
   return (
     <div
       className={styles.shell}
@@ -309,7 +381,14 @@ const Shell: React.FC = () => {
     >
       {showVideo && (
         <div className={styles.liveWallpaperLayer} data-testid="video-pip">
-          <video className={styles.liveWallpaperVideo} src={wallpaper} autoPlay loop muted playsInline />
+          <video
+            className={styles.liveWallpaperVideo}
+            src={wallpaper}
+            autoPlay
+            loop
+            muted
+            playsInline
+          />
           <div className={styles.liveWallpaperVignette} />
           <div className={styles.liveWallpaperGlow} />
         </div>
@@ -442,6 +521,58 @@ const Shell: React.FC = () => {
         </div>
       )}
 
+      {kiraNotices.length > 0 && (
+        <div
+          className={`${styles.kiraToastStack} ${
+            chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
+          }`}
+        >
+          {kiraNotices.map((notice) => (
+            <div
+              key={notice.localId}
+              className={`${styles.kiraToast} ${
+                notice.type === 'needs_attention' ? styles.kiraToastAlert : styles.kiraToastInfo
+              }`}
+              onClick={() => void handleOpenKiraNotice(notice)}
+              role="button"
+              tabIndex={0}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault();
+                  void handleOpenKiraNotice(notice);
+                }
+              }}
+            >
+              <div className={styles.kiraToastMeta}>
+                <span className={styles.kiraToastApp}>Kira</span>
+                <span className={styles.kiraToastType}>
+                  {notice.type === 'needs_attention'
+                    ? 'Needs attention'
+                    : notice.type === 'completed'
+                      ? 'Completed'
+                      : 'In progress'}
+                </span>
+              </div>
+              <strong className={styles.kiraToastTitle}>{notice.title}</strong>
+              <p className={styles.kiraToastMessage}>{notice.message}</p>
+              {notice.projectName && (
+                <span className={styles.kiraToastProject}>{notice.projectName}</span>
+              )}
+              <button
+                className={styles.kiraToastClose}
+                onClick={(event) => {
+                  event.stopPropagation();
+                  dismissKiraNotice(notice.localId);
+                }}
+                title="Dismiss"
+              >
+                <X size={14} />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
       {/* Floating add button */}
       <button
         className={`${styles.addBtn} ${
@@ -479,11 +610,24 @@ const Shell: React.FC = () => {
 
         <button
           className={`${styles.barBtn} ${styles.chatBtn}`}
-          onClick={() => setChatOpen(!chatOpen)}
+          onClick={() => {
+            setChatOpen((prev) => {
+              const next = !prev;
+              if (next) {
+                setKiraUnreadCount(0);
+              }
+              return next;
+            });
+          }}
           title="Toggle Chat"
           data-testid="chat-toggle"
         >
           <MessageCircle size={18} />
+          {kiraUnreadCount > 0 && (
+            <span className={styles.kiraUnreadBadge}>
+              {kiraUnreadCount > 9 ? '9+' : kiraUnreadCount}
+            </span>
+          )}
         </button>
       </div>
     </div>

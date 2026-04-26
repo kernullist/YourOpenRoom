@@ -1,53 +1,141 @@
 app_id: 11
 app_name: email
-app_display_name: 邮箱
-version: "1.0.0"
+app_display_name: Email
+version: "2.0.0"
 description: >
-  邮箱应用。邮件数据以细粒度文件存储在 emails/ 目录，每封邮件为独立 JSON 文件。
-  用户仅可浏览、阅读、加星标和删除；撰写/回复/发送由 Agent 完成。
-  支持 COMPOSE_EMAIL/DELETE_EMAIL/MARK_READ 数据变更指令。
-  本文件仅定义 Agent 下发给前端的操作指令，用户本地操作由前端代码自行处理和上报。
+  基于 Gmail 的真实邮件客户端。前端读取 emails/ 下的缓存 JSON 文件，Gmail OAuth、同步、发送、
+  草稿、已读、加星、归档、回收站等操作通过前端调用 Gmail bridge API 完成。
 displayDesc: >
-  智能邮箱客户端，轻松浏览和管理邮件，AI 助手帮你撰写和回复，让沟通更高效。
-
-# ============================================================
-# 以下 actions 仅用于 Agent → 前端 的指令下发。
-# Agent 在调用这些 action 之前，应当已经完成了云端文件的写入/修改/删除，
-# 下发 action 的目的是通知前端从云端同步最新数据并刷新 UI。
-# ============================================================
+  一个真正连接 Gmail 的邮件应用，支持收件箱同步、写信、草稿、回复、加星、归档和回收站。
 
 actions:
-  - type: COMPOSE_EMAIL
-    name: 撰写邮件
+  - type: SYNC_EMAIL
+    name: 同步邮件
     description: >
-      Agent 已在云端写入邮件文件（/emails/{id}.json）后，下发此 action 通知前端同步。
-      前端收到后从云端拉取该文件，更新本地文件树和 UI，无需本地再次创建文件。
-      邮件文件应包含完整的 Email JSON 结构，包括 from、to、cc、subject、content、
-      timestamp、isRead、isStarred、folder 等字段。
+      触发 Gmail 同步，让 Email 应用从已连接的 Gmail 账号刷新本地缓存。
     params:
-      - name: filePath
+      - name: focusId
         type: string
-        description: Agent 写入的邮件文件路径，如 /emails/{id}.json
-        required: true
+        description: 同步后可选聚焦的邮件 ID。
+        required: false
+      - name: folder
+        type: string
+        description: 同步后可选打开的文件夹。
+        required: false
+        enum: [inbox, sent, drafts, trash]
 
-  - type: DELETE_EMAIL
-    name: 删除邮件
+  - type: SEND_EMAIL
+    name: 发送邮件
     description: >
-      Agent 已在云端删除邮件文件后，下发此 action 通知前端同步。
-      前端收到后从本地文件树中移除该邮件并刷新 UI。
+      通过已连接的 Gmail 账号发送真实邮件，然后刷新 Email 应用缓存。
     params:
-      - name: emailId
+      - name: to
         type: string
-        description: 要删除的邮件 ID（对应文件名，不含 .json 后缀）
+        description: 逗号分隔的收件人。
         required: true
+      - name: cc
+        type: string
+        description: 可选的抄送列表。
+        required: false
+      - name: subject
+        type: string
+        description: 邮件主题。
+        required: false
+      - name: content
+        type: string
+        description: 纯文本正文。
+        required: true
+      - name: threadId
+        type: string
+        description: 回复时可选的 Gmail thread ID。
+        required: false
+      - name: internetMessageId
+        type: string
+        description: 回复时可选的 In-Reply-To 头。
+        required: false
+      - name: references
+        type: string
+        description: 回复时可选的 References 头。
+        required: false
+      - name: draftId
+        type: string
+        description: 可选的 Gmail 草稿 ID，表示更新后发送。
+        required: false
+
+  - type: SAVE_DRAFT
+    name: 保存草稿
+    description: >
+      通过已连接的 Gmail 账号创建或更新真实草稿。
+    params:
+      - name: to
+        type: string
+        description: 可选的收件人列表。
+        required: false
+      - name: cc
+        type: string
+        description: 可选的抄送列表。
+        required: false
+      - name: subject
+        type: string
+        description: 邮件主题。
+        required: false
+      - name: content
+        type: string
+        description: 草稿正文。
+        required: true
+      - name: threadId
+        type: string
+        description: 回复草稿时可选的 Gmail thread ID。
+        required: false
+      - name: internetMessageId
+        type: string
+        description: 可选的 In-Reply-To 头。
+        required: false
+      - name: references
+        type: string
+        description: 可选的 References 头。
+        required: false
+      - name: draftId
+        type: string
+        description: 可选的 Gmail 草稿 ID，用于更新已有草稿。
+        required: false
 
   - type: MARK_READ
     name: 标记已读
     description: >
-      Agent 已在云端更新邮件文件（isRead 设为 true）后，下发此 action 通知前端同步。
-      前端收到后从云端重新读取该邮件文件并刷新 UI。
+      从 Gmail 邮件上移除 UNREAD 标签，并刷新该缓存记录。
     params:
       - name: emailId
         type: string
-        description: 要标记为已读的邮件 ID
+        description: 要标记已读的 Gmail message ID。
+        required: true
+
+  - type: STAR_EMAIL
+    name: 加星
+    description: >
+      为 Gmail 邮件添加 STARRED 标签。
+    params:
+      - name: emailId
+        type: string
+        description: 要加星的 Gmail message ID。
+        required: true
+
+  - type: UNSTAR_EMAIL
+    name: 取消加星
+    description: >
+      从 Gmail 邮件移除 STARRED 标签。
+    params:
+      - name: emailId
+        type: string
+        description: 要取消加星的 Gmail message ID。
+        required: true
+
+  - type: TRASH_EMAIL
+    name: 移入回收站
+    description: >
+      把邮件移入 Gmail 回收站，并刷新 Email 应用缓存。
+    params:
+      - name: emailId
+        type: string
+        description: 要移入回收站的 Gmail message ID。
         required: true

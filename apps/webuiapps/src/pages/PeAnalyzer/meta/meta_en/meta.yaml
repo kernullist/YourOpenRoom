@@ -1,0 +1,55 @@
+app_id: 20
+app_name: peanalyzer
+app_display_name: PE Analyst
+version: "0.1.0"
+description: >
+  Static triage workspace for Windows PE samples. Upload a PE file, persist the sample metadata,
+  inspect sections/imports/strings, and store quick analysis records for later IDA-backed work.
+displayDesc: >
+  A malware-triage style workspace for PE uploads, quick prescan analysis, and future IDA MCP workflows.
+
+actions:
+  - type: USE_CURRENT_IDB
+    name: Use Current IDB
+    description: Focus the binary that is currently opened in IDA Pro and build a triage record from it.
+    params: []
+
+  - type: OPEN_SAMPLE
+    name: Open Sample
+    description: Focus a specific sample in the PE Analyst UI.
+    params:
+      - name: sampleId
+        type: string
+        description: Sample ID to focus.
+        required: true
+
+  - type: RUN_QUICK_TRIAGE
+    name: Run Quick Triage
+    description: Re-run the quick static triage pass for a stored sample.
+    params:
+      - name: sampleId
+        type: string
+        description: Sample ID to analyze again.
+        required: true
+
+  - type: SHOW_ANALYSIS
+    name: Show Analysis
+    description: Focus a specific saved analysis in the UI.
+    params:
+      - name: analysisId
+        type: string
+        description: Analysis ID to focus.
+        required: true
+
+  - type: REFRESH_PE_ANALYZER
+    name: Refresh PE Analyst
+    description: Reload the app state, samples, and analyses from storage.
+    params:
+      - name: sampleId
+        type: string
+        description: Optional sample ID to focus after refresh.
+        required: false
+      - name: analysisId
+        type: string
+        description: Optional analysis ID to focus after refresh.
+        required: false

@@ -1,55 +1,117 @@
-# React + TypeScript + Vite
+# @openroom/webuiapps
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Main browser desktop runtime for YourOpenRoom.
 
-Currently, two official plugins are available:
+This package is **not** a stock Vite starter anymore. It is the app that currently delivers:
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react/README.md)
-  uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react-swc) uses
-  [SWC](https://swc.rs/) for Fast Refresh
+- the desktop shell and window manager
+- the floating chat panel and tool runtime
+- built-in apps under `src/pages/`, including PE Analyst
+- the local standalone implementation of `@gui/vibe-container`
+- the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode,
+  PE Analyst, session persistence, and config storage work in local development
 
-## Expanding the ESLint configuration
+## What Lives Here
 
-If you are developing a production application, we recommend updating the configuration to enable
-type aware lint rules:
+### Frontend runtime
 
-- Configure the top-level `parserOptions` property like this:
+- `src/components/`
+  - shell UI
+  - chat panel
+  - app windows
+- `src/pages/`
+  - built-in desktop apps such as Email, Kira, Browser Reader, Notes, Calendar, YouTube, Chess
+- `src/routers/`
+  - standalone desktop routing
+- `src/common.scss`
+  - shared global styles
 
-```js
-export default tseslint.config({
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-});
-```
+### Runtime glue and tooling
 
-- Replace `tseslint.configs.recommended` to `tseslint.configs.recommendedTypeChecked` or
-  `tseslint.configs.strictTypeChecked`
-- Optionally add `...tseslint.configs.stylisticTypeChecked`
-- Install [eslint-plugin-react](https://github.com/jsx-eslint/eslint-plugin-react) and update the
-  config:
+- `src/lib/appRegistry.ts`
+  - app registry, app metadata loading, action discovery
+- `src/lib/fileTools.ts`
+  - schema-aware app-storage read/write/patch/delete tools
+- `src/lib/workspaceTools.ts`
+  - session app-storage search
+- `src/lib/ideTools.ts`
+  - real workspace text search
+- `src/lib/openVscode*`
+  - symbol, search, and TypeScript semantic helpers
+- `src/lib/idaPe*`
+  - PE pre-scan logic, MCP transport adapter, and PE Analyst backend/client glue
+- `src/lib/semanticTools.ts`
+  - references, exports, definition peek, semantic rename preview/apply
+- `src/lib/commandTools.ts`
+  - safe workspace command execution
+- `src/lib/diagnosticsTools.ts`
+  - structured diagnostics parsing
+- `src/lib/checkpointTools.ts`
+  - IDE/app-storage checkpoints
+- `src/lib/previewTools.ts`
+  - pre-mutation previews
+- `src/lib/undoTools.ts`
+  - reversible file mutations
+- `src/lib/backgroundWatchTools.ts`
+  - polling-based watches for IDE or app-storage changes
+- `src/lib/memoryManager.ts`
+  - long-term memory persistence and prompt injection
 
-```js
-// eslint.config.js
-import react from 'eslint-plugin-react';
+### Dev-server APIs
 
-export default tseslint.config({
-  // Set the react version
-  settings: { react: { version: '18.3' } },
-  plugins: {
-    // Add the react plugin
-    react,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended rules
-    ...react.configs.recommended.rules,
-    ...react.configs['jsx-runtime'].rules,
-  },
-});
-```
+Most backend behavior in local mode is implemented inside [`vite.config.ts`](./vite.config.ts):
+
+- `/api/llm-config`
+- `/api/session-data`
+- `/api/gmail/*`
+- `/api/browser-reader`
+- `/api/cybernews/live`
+- `/api/youtube-search`
+- `/api/tavily-search`
+- `/api/kira-*`
+- `/api/openvscode/*`
+- `/api/ida-pe/*`
+- `/api/openroom-reset`
+
+If you run only a static build without equivalent backend endpoints, these features will not work.
+
+## Commands
+
+Run these from the repo root unless you specifically filter to this workspace.
+
+| Command | Purpose |
+| --- | --- |
+| `pnpm dev` | Start the desktop and local middleware APIs |
+| `pnpm --filter @openroom/webuiapps dev` | Start this app directly with Vite |
+| `pnpm --filter @openroom/webuiapps build` | Build the browser bundle |
+| `pnpm --filter @openroom/webuiapps preview` | Preview the built bundle |
+| `pnpm --filter @openroom/webuiapps test` | Run Vitest |
+| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage |
+
+## Local Persistence
+
+This app reads and writes to `~/.openroom/` in standalone mode:
+
+- `config.json`
+  - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail,
+    Tavily, album, Kira, OpenVSCode, and `idaPe` config
+- `sessions/...`
+  - session-scoped app data and chat data
+- `characters.json`
+  - character definitions
+- `mods.json`
+  - mod definitions
+
+Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/api/session-data`.
+
+## Important Notes
+
+- The open-source standalone build aliases `@gui/vibe-container` to
+  `src/lib/vibeContainerMock.ts`.
+- App action definitions are loaded from each app's `meta.yaml`.
+- The chat panel includes both app-level tools and real workspace tools, so changes in `src/lib/`
+  often affect the desktop, Kira, and Aoi's IDE together.
+- `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
+- `PE Analyst` supports two modes today:
+  - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`
+  - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as `http://127.0.0.1:17300/`

@@ -1,218 +1,213 @@
-# VibeApps
+# YourOpenRoom
 
-[中文](./README_zh.md) | English
+[中文](./README_zh.md) | English | [한국어](./README_ko.md)
 
-> Imagine a desktop that lives in your browser — and an AI that knows how to use every app on it.
+> A fork of OpenRoom that has evolved into a local-first browser desktop for AI-operated apps,
+> real workspace automation, and prompt-driven app workflows.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-**[Website](https://www.openroom.ai)** · **[X / Twitter](https://x.com/openroom_ai_)**
+**[Repository](https://github.com/kernullist/YourOpenRoom)** · **[Issues](https://github.com/kernullist/YourOpenRoom/issues)** · **[Original Fork Source](https://github.com/MiniMax-AI/OpenRoom)**
 
-https://github.com/user-attachments/assets/adb176a3-02db-41e0-ba71-c9f9cece13d5
+## What This Repo Is Now
 
-## What is VibeApps?
+YourOpenRoom started as a fork of MiniMax OpenRoom, but the current codebase is no longer just a
+browser desktop demo.
 
-VibeApps brings a full desktop experience into your browser — windows you can drag and resize, apps you can open side by side, all wrapped in a clean macOS-inspired interface. But what makes it different is the **AI Agent** sitting inside.
+Today the project is centered on three connected layers:
 
-Instead of clicking through menus, just tell it what you want:
+- A **browser desktop shell** with draggable windows, a floating chat panel, local state, and a
+  set of built-in apps.
+- An **agent runtime** that can operate apps through `meta.yaml` actions, inspect app state,
+  mutate app storage, and call tooling from the chat panel.
+- A **local project automation stack** built around **Kira** and **Aoi's IDE**, with search,
+  file editing, semantic code tools, diagnostics, checkpoints, safe command execution, and
+  automated worker/reviewer loops.
 
-> *"Play some jazz"* — and the Music app starts playing.
->
-> *"Write a diary entry about today's hiking trip"* — Diary opens, a new entry appears.
->
-> *"Let's play chess"* — the board is ready.
+The main runtime that ships today lives in `apps/webuiapps`.
 
-The Agent doesn't just launch apps — it **operates** them. It reads data, triggers actions, and updates state, all through a structured Action system that every app speaks.
+## What Actually Ships Today
 
-Everything runs locally in your browser. No backend, no accounts, no setup headaches. Your data stays in IndexedDB, right where it belongs.
+- A standalone browser desktop with floating windows, desktop icons, chat docking, live wallpaper
+  toggles, and Kira automation notices.
+- A configurable chat panel with:
+  - main LLM routing for OpenAI-compatible or Anthropic-compatible backends
+  - optional cheaper dialog-model override for light chat turns
+  - remembered preferred user name
+  - reply language mode (`match-user` or `english`)
+  - long-term memory saving
+  - image generation
+  - live web search through Tavily
+  - prompt budget and tool inspector panels
+- Session-scoped app storage persisted under `~/.openroom/sessions/...`.
+- A local mock of `@gui/vibe-container`, so the open-source standalone build works without the
+  original iframe runtime.
+- Vite middleware APIs for Gmail OAuth, browser/article extraction, YouTube search, live cyber news
+  RSS aggregation, album folder access, Tavily proxying, OpenVSCode workspace tools, PE Analyst
+  IDA/PE analysis bridging, Kira
+  automation, config persistence, and session file storage.
+- The upstream character/mod layer is still present: characters, mods, emotion media, upload-based
+  mod generation, and memory injection are part of the current shell and chat experience.
 
 ## Built-in Apps
 
-Out of the box, you get a suite of apps ready to explore:
+| App | What it does now |
+| --- | --- |
+| `Twitter` | Local social feed with posts, likes, and comments persisted in app storage |
+| `YouTube` | YouTube search, recent searches, favorite topics, playlists, queue playback, and popup player controls |
+| `Diary` | Markdown journal with mood/weather metadata, calendar navigation, and styled handwritten rendering |
+| `Album` | Read-only local photo gallery backed by `album.photoDirectory` |
+| `FreeCell` | Persistent FreeCell game state with rule-aware moves |
+| `Email` | Real Gmail sync with OAuth desktop flow, inbox/sent/drafts/trash, reply, draft save, archive, star, restore, and delete |
+| `Chess` | Full chess rules, 3D board, local persistence, and agent-turn synchronization |
+| `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data |
+| `CyberNews` | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view |
+| `Calendar` | Local event/reminder planner with reminder metadata saved in app storage |
+| `Notes` | Local markdown notes with tags, pinning, filtering, and preview mode |
+| `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes |
+| `Kira` | Project work board with work items, comments, discovery analysis, and automation handoff |
+| `Aoi's IDE` | Local workspace tree/editor on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands |
+| `PE Analyst` | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
 
-| App | Description |
-|-----|-------------|
-| 🎵 Music | Full-featured player with playlists, playback controls, and album art |
-| ♟️ Chess | Classic chess with complete rule enforcement |
-| ⚫ Gomoku | Five-in-a-row — simple rules, deep strategy |
-| 🃏 FreeCell | The solitaire game that's all skill, no luck |
-| 📧 Email | Inbox, sent, drafts — a familiar email experience |
-| 📔 Diary | Journal with mood tracking to capture your days |
-| 🐦 Twitter | A social feed you actually control |
-| 📷 Album | Browse and organize your photo collections |
-| 📰 CyberNews | Stay informed with a curated news aggregator |
+## PE Analyst + IDA MCP
 
-Each app is fully integrated with the AI Agent — meaning you can interact with any of them through natural language.
+`PE Analyst` now supports two workflows:
 
-## Getting Started
+- **Current IDB mode**
+  - Best with `ida_pro_mcp`
+  - Uses the binary currently opened in IDA Pro as the source of truth
+  - Supports function listing, pseudocode, disassembly, and xrefs without uploading a file
+- **Sample upload mode**
+  - Works for the built-in PE pre-scan and for headless backends
+  - Stores uploaded PE samples in the local cache and persists analysis metadata in session app data
+
+Today the backend auto-detects two MCP styles:
+
+- `ida_pro_mcp`
+  - typically exposed from the IDA plugin as `http://127.0.0.1:13337/mcp`
+- `ida-headless-mcp`
+  - typically exposed as a standalone HTTP MCP server such as `http://127.0.0.1:17300/`
+
+## Agent Tooling Inside Chat
+
+The chat panel is not limited to `app_action`. It currently exposes several tool families:
+
+- **App runtime tools**
+  - `list_apps`, `app_action`, `get_app_state`, `get_app_schema`
+  - schema-aware app storage tools: `file_read`, `file_write`, `file_patch`, `file_list`, `file_delete`
+- **Web/content tools**
+  - `search_web` via Tavily
+  - `read_url` for article-style extraction
+  - `generate_image`
+- **Workspace and IDE tools**
+  - `workspace_search` for session app storage
+  - `ide_search` for the real IDE workspace
+  - `find_references`, `list_exports`, `peek_definition`
+  - `rename_preview`, `apply_semantic_rename`
+  - `run_command`, `structured_diagnostics`
+- **Safety and recovery tools**
+  - `preview_changes`
+  - `undo_last_action`
+  - `workspace_checkpoint`
+  - `autofix_diagnostics`
+  - `background_watch`
+
+These tools are guarded by the current implementation:
+
+- app JSON writes are validated against machine-readable schemas when available
+- semantic rename requires a preview signature before apply
+- safe command execution is allowlisted to read-only `git`, `node`, `npm`, and `pnpm` patterns
+- Kira reruns planned validation commands itself and can block or retry work before approval
+
+## Kira + Aoi's IDE
+
+This fork invests heavily in local project work, not just built-in app demos.
+
+### Kira
+
+Kira stores work items and comments in app storage, shows project-scoped boards, and can run a
+discovery flow against a configured local work root. The Vite plugin in `apps/webuiapps/vite.config.ts`
+also exposes automation endpoints that can:
+
+1. scan actionable tasks
+2. plan intended files and validation commands
+3. run worker/reviewer loops
+4. rerun validation
+5. block, retry, or auto-commit based on project settings
+
+### Aoi's IDE
+
+Aoi's IDE is a built-in file tree and text editor, but the server side is where the deeper tooling
+lives. The current `/api/openvscode/*` endpoints support:
+
+- workspace listing and file read/write/delete
+- text search
+- symbol search
+- reference lookup
+- export listing
+- definition peeking
+- semantic rename preview and apply
+- safe command execution
+
+Where possible, semantic features use the local TypeScript language service.
+
+## Prompt-to-App Workflow
+
+The original prompt-driven app workflow is still in this repo under `.claude/`.
+
+- `.claude/commands/vibe.md` is the main entry point
+- `.claude/workflow/` contains staged generation and change workflows
+- `appGeneratorPlugin` in `apps/webuiapps/vite.config.ts` integrates generated apps into the
+  runtime
+
+This is still useful, but it is no longer the only story. The dominant focus of the current fork
+is the AI desktop plus local workspace automation stack.
+
+## Quick Start
 
 ### Prerequisites
 
-| Tool | Version | Check | Install |
-|------|---------|-------|---------|
-| **Node.js** | 18+ | `node -v` | [nodejs.org](https://nodejs.org/) |
-| **pnpm** | 9+ | `pnpm -v` | `npm install -g pnpm@9` |
+| Tool | Version |
+| --- | --- |
+| Node.js | 18+ |
+| pnpm | 9+ |
 
-> **In China?** Uncomment the mirror lines in `.npmrc` for faster downloads via npmmirror.
-
-### Up and Running in 60 Seconds
+### Run Locally
 
 ```bash
-# Clone & enter the project
-git clone https://github.com/MiniMax-AI/OpenRoom.git
-cd OpenRoom
-
-# Install dependencies
+git clone https://github.com/kernullist/YourOpenRoom.git
+cd YourOpenRoom
 pnpm install
-
-# (Optional) Set up environment variables
 cp apps/webuiapps/.env.example apps/webuiapps/.env
-
-# Launch
 pnpm dev
 ```
 
-Open `http://localhost:3000` — you'll see a desktop with app icons. **Double-click** to open any app.
+Open `http://localhost:3000`.
 
-### Meet the AI Agent (In-App Chat)
+### Important Runtime Note
 
-Click the **chat icon** in the bottom-right corner. A panel slides open — that's your Agent.
+`pnpm dev` is the full local stack.
 
-Type naturally: *"play the next song"*, *"show me my emails"*, *"start a new chess game"*. The Agent figures out which app to talk to, what action to take, and makes it happen.
+Many of the current capabilities are implemented as Vite middleware, including:
 
-> **Note:** You'll need an LLM API key. Configure it in the Chat Panel settings.
->
-> This chat panel is for **using** existing apps. To **create** new apps, see the [Vibe Workflow](#build-your-own-apps--just-describe-them) section below — that runs in Claude Code CLI.
+- Gmail OAuth and sync
+- Browser Reader proxying
+- CyberNews live RSS ingestion
+- YouTube search parsing
+- album folder access
+- Tavily proxying
+- Kira automation APIs
+- OpenVSCode workspace APIs
+- config and session persistence
 
-## Build Your Own Apps — Just Describe Them
+`pnpm build` will still produce the browser bundle, but those integrations only work if you also
+provide equivalent backend endpoints in your deployment.
 
-This is where it gets interesting. With the **Vibe Workflow**, you can generate a complete, fully-integrated app just by describing what you want. No boilerplate, no scaffolding — [Claude Code](https://docs.anthropic.com/en/docs/claude-code) handles the entire process.
+## Configuration
 
-> **Important:** The Vibe Workflow runs in **Claude Code (CLI terminal)**, not in the browser's chat panel. The in-app chat panel is for operating existing apps; creating new apps happens in your development environment.
+Runtime settings are read from `~/.openroom/config.json`.
 
-### Create from Scratch
-
-```bash
-/vibe WeatherApp Create a weather dashboard with 5-day forecasts and temperature charts
-```
-
-Behind the scenes, the workflow runs through **6 stages** — each one building on the last:
-
-```
-Requirement Analysis   →  What exactly are we building?
-Architecture Design    →  Components, data models, state shape
-Task Planning          →  Breaking it down into implementable chunks
-Code Generation        →  Writing the actual React + TypeScript code
-Asset Generation       →  Creating icons and images
-Project Integration    →  Registering the app so it shows up on the desktop
-```
-
-When it's done, your new app is live — complete with AI Agent integration.
-
-### Evolve Existing Apps
-
-Already have an app but want more? Describe the change:
-
-```bash
-/vibe MusicApp Add a lyrics panel that shows synced lyrics during playback
-```
-
-This triggers a focused **4-stage change workflow**: Impact Analysis → Planning → Implementation → Verification.
-
-### Resume or Replay
-
-```bash
-# Pick up where you left off
-/vibe MyApp
-
-# Jump to a specific stage
-/vibe MyApp --from=04-codegen
-```
-
-## Under the Hood
-
-### Project Layout
-
-```
-OpenRoom/
-├── apps/webuiapps/              # The main desktop application
-│   └── src/
-│       ├── components/          # Shell, window manager, chat panel
-│       ├── lib/                 # Core SDK — file API, actions, app registry
-│       ├── pages/               # Where each app lives
-│       └── routers/             # Route definitions
-├── packages/
-│   └── vibe-container/          # iframe communication SDK (stub in open-source mode)
-├── .claude/                     # AI workflow engine
-│   ├── commands/vibe.md         # Workflow entry point
-│   ├── workflow/                # Stage definitions & rules
-│   └── rules/                   # Code generation constraints
-└── .github/workflows/           # CI pipeline
-```
-
-> **Note on `vibe-container`:** In the open-source standalone version, the real iframe SDK is replaced by a local mock (`src/lib/vibeContainerMock.ts`) that uses IndexedDB for storage and a local event bus for Agent communication. The package under `packages/vibe-container/` provides type definitions and the client-side SDK interface. See its [README](./packages/vibe-container/README.md) for details.
-
-### Anatomy of an App
-
-Every app follows the same structure — consistent, predictable, easy to navigate:
-
-```
-pages/MusicApp/
-├── components/         # UI building blocks
-├── data/               # Seed data (JSON)
-├── store/              # State management (Context + Reducer)
-├── actions/            # How the AI Agent talks to this app
-│   └── constants.ts    # APP_ID + action type definitions
-├── i18n/               # Translations (en.ts + zh.ts)
-├── meta/               # Metadata for the Vibe workflow
-│   ├── meta_cn/        # guide.md + meta.yaml (Chinese)
-│   └── meta_en/        # guide.md + meta.yaml (English)
-├── index.tsx           # Entry point
-├── types.ts            # TypeScript definitions
-└── index.module.scss   # Scoped styles
-```
-
-## Development
-
-| Command | Description |
-|---------|-------------|
-| `pnpm dev` | Start dev server → `http://localhost:3000` |
-| `pnpm build` | Production build |
-| `pnpm run lint` | Lint + auto-fix |
-| `pnpm run pretty` | Format with Prettier |
-| `pnpm clean` | Clean build artifacts |
-
-## Tech Stack
-
-| | |
-|---|---|
-| **Framework** | React 18 + TypeScript + Vite |
-| **Styling** | Tailwind CSS + CSS Modules + Design Tokens |
-| **Icons** | Lucide React |
-| **State** | React Context + Reducer |
-| **Storage** | IndexedDB (standalone) / Cloud NAS (production) |
-| **i18n** | i18next + react-i18next |
-| **Monorepo** | pnpm workspaces + Turborepo |
-| **CI** | GitHub Actions |
-
-## Environment Variables
-
-```bash
-cp apps/webuiapps/.env.example apps/webuiapps/.env
-```
-
-| Variable | Required | Description |
-|----------|----------|-------------|
-| `CDN_PREFIX` | No | CDN prefix for static assets |
-| `VITE_RUM_SITE` | No | RUM monitoring endpoint |
-| `VITE_RUM_CLIENT_TOKEN` | No | RUM client token |
-| `SENTRY_AUTH_TOKEN` | No | Sentry auth token (enables error tracking when set) |
-| `SENTRY_ORG` | No | Sentry organization slug |
-| `SENTRY_PROJECT` | No | Sentry project slug |
-
-All optional. The app runs fine without any of them.
-
-Example `~/.openroom/config.json`:
+A current example is also available at [`docs/config.example.json`](./docs/config.example.json).
 
 ```json
 {
@@ -222,11 +217,28 @@ Example `~/.openroom/config.json`:
     "baseUrl": "https://openrouter.ai/api/v1",
     "model": "anthropic/claude-sonnet-4.6"
   },
+  "dialogLlm": {
+    "provider": "openrouter",
+    "baseUrl": "https://openrouter.ai/api/v1",
+    "model": "openai/gpt-5-mini"
+  },
+  "userProfile": {
+    "displayName": "Minji"
+  },
+  "conversationPreferences": {
+    "responseLanguageMode": "match-user"
+  },
+  "imageGen": {
+    "provider": "openai",
+    "apiKey": "YOUR_IMAGE_API_KEY",
+    "baseUrl": "https://api.openai.com/v1",
+    "model": "gpt-image-1"
+  },
   "album": {
     "photoDirectory": "C:\\Users\\your-name\\Pictures"
   },
   "kira": {
-    "workRootDirectory": "C:\\Users\\your-name\\workspace\\your-project",
+    "workRootDirectory": "C:\\Users\\your-name\\workspace",
     "projectDefaults": {
       "autoCommit": true
     },
@@ -237,23 +249,117 @@ Example `~/.openroom/config.json`:
       "model": "openai/gpt-5.4"
     }
   },
+  "openvscode": {
+    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
+  },
   "tavily": {
     "apiKey": "tvly-YOUR_API_KEY"
   },
+  "gmail": {
+    "clientId": "YOUR_GOOGLE_OAUTH_DESKTOP_CLIENT_ID",
+    "clientSecret": "OPTIONAL_GOOGLE_CLIENT_SECRET"
+  },
+  "idaPe": {
+    "mode": "prescan-only",
+    "backendUrl": "http://127.0.0.1:17300/"
+  },
   "app": {
-    "title": "My OpenRoom"
+    "title": "YourOpenRoom"
   }
 }
 ```
 
-The same sample is also available at [`docs/config.example.json`](./docs/config.example.json).
+Notes:
 
-LLM, Album, Kira, Tavily, and app title settings are now managed from `~/.openroom/config.json`. `.env` is no longer used for LLM defaults.
+- `openvscode.workspacePath` is the real workspace used by Aoi's IDE and the IDE tooling APIs.
+- If `openvscode.workspacePath` is omitted, the current code defaults to the repo root.
+- `gmail.clientId` must be a Google OAuth **Desktop App** client ID.
+- `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled.
+- `userProfile.displayName` lets the chat panel remember how to address the user across launches.
+- `conversationPreferences.responseLanguageMode` supports `match-user` and `english`.
+- When `conversationPreferences.responseLanguageMode` is `english`, assistant replies, reminder
+  messages, and newly seeded opening/prologue messages are generated in English.
+- `imageGen` is optional and powers the chat panel's image-generation tool.
+- `idaPe.mode` supports `prescan-only` and `mcp-http`.
+- `idaPe.backendUrl` can point to an IDA MCP server such as `http://127.0.0.1:13337/mcp` for
+  `ida_pro_mcp` current-IDB mode or `http://127.0.0.1:17300/` for `ida-headless-mcp`.
+
+### Optional `.env`
+
+`apps/webuiapps/.env.example` covers optional build/runtime settings such as CDN and Sentry values.
+
+## Local Data Layout
+
+The standalone build persists data under `~/.openroom/`.
+
+```text
+~/.openroom/
+├── config.json
+├── characters.json
+├── mods.json
+└── sessions/
+    └── <session-path>/
+        ├── apps/
+        │   ├── notes/data/
+        │   ├── email/data/
+        │   ├── kira/data/
+        │   ├── peanalyzer/data/
+        │   └── ...
+        ├── chat/
+        └── memory/
+```
+
+## Repository Layout
+
+```text
+YourOpenRoom/
+├── apps/
+│   └── webuiapps/          # Main browser desktop runtime
+├── packages/
+│   └── vibe-container/     # Shared types + standalone stub package
+├── .claude/                # Prompt-to-app workflow scaffolding
+├── docs/                   # Supporting project docs and config example
+└── e2e/                    # Playwright scenarios
+```
+
+Inside `apps/webuiapps/src/`:
+
+- `components/` contains the desktop shell, chat panel, and app window chrome
+- `pages/` contains built-in apps
+- `lib/` contains the runtime glue: storage, LLM clients, tools, app registry, plugins, and IDE helpers
+- `routers/` defines the browser routes used by the standalone shell
+
+## Development
+
+| Command | Purpose |
+| --- | --- |
+| `pnpm dev` | Start the local desktop plus Vite middleware APIs at `http://localhost:3000` |
+| `pnpm build` | Build the browser bundle |
+| `pnpm clean` | Clean Turborepo artifacts |
+| `pnpm run lint` | Lint and auto-fix |
+| `pnpm run pretty` | Format source files |
+| `pnpm --filter @openroom/webuiapps test` | Run Vitest unit tests for the desktop app |
+| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage |
+| `pnpm test:e2e` | Run Playwright end-to-end tests |
+
+## Tech Stack
+
+| Area | Current stack |
+| --- | --- |
+| UI | React 18, TypeScript, React Router, Vite |
+| Styling | SCSS and CSS Modules |
+| Motion | Framer Motion |
+| App runtime | Local `@gui/vibe-container` mock, session-data middleware, app `meta.yaml` actions |
+| Local tooling | Filesystem APIs, TypeScript language service, safe command runner, diagnostics parsers |
+| Integrations | Gmail OAuth, Tavily, image generation, RSS ingestion, YouTube search parsing |
+| Monorepo | pnpm workspaces, Turborepo |
+| Testing | Vitest and Playwright |
 
 ## Contributing
 
-We'd love your help. Whether it's fixing a bug, building a new app, or improving docs — check out [CONTRIBUTING.md](./CONTRIBUTING.md) to get started.
+Issues, documentation fixes, workflow improvements, new tools, and app changes are all welcome.
+Start with [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ## License
 
-[MIT](LICENSE) — Copyright (c) 2025 MiniMax
+[MIT](./LICENSE)

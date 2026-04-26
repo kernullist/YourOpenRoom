@@ -104,7 +104,7 @@ const en = {
     markdownHint:
       'Use markdown for implementation briefs, acceptance criteria, rollout steps, and reviewer notes.',
     syncHint:
-      'Kira uses the same local/cloud file layer as the other OpenRoom apps, so agents can write files first and refresh the UI after.',
+      'Kira uses the same local/cloud file layer as the other Your Room apps, so agents can write files first and refresh the UI after.',
     validationTitle: 'Add a title before saving.',
     discoveryIdle: 'Ask Aoi to inspect the current project and suggest work items.',
     discoveryRunning: 'Aoi is reading the current project and saving discovery notes.',

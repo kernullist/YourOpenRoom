@@ -101,5 +101,7 @@ apps/*/logs/
 nohup.out
 
 # Docs (local planning & notes)
-docs/
+docs/*
+!docs/project-structure.md
+!docs/config.example.json
 .worktrees/
