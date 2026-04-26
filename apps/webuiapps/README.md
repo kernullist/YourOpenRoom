@@ -6,10 +6,10 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including PE Analyst
+- built-in apps under `src/pages/`, including OpenVSCode and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode,
-  PE Analyst, session persistence, and config storage work in local development
+  PE Analyst, TTS lab synthesis, session persistence, and config storage work in local development
 
 ## What Lives Here
 
@@ -20,7 +20,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - chat panel
   - app windows
 - `src/pages/`
-  - built-in desktop apps such as Email, Kira, Browser Reader, Notes, Calendar, YouTube, Chess
+  - built-in desktop apps such as Email, Kira, Browser Reader, Notes, Calendar, YouTube, Chess,
+    OpenVSCode, and PE Analyst
 - `src/routers/`
   - standalone desktop routing
 - `src/common.scss`
@@ -56,6 +57,17 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - polling-based watches for IDE or app-storage changes
 - `src/lib/memoryManager.ts`
   - long-term memory persistence and prompt injection
+- `src/lib/aoiTts.ts`
+  - Aoi message playback, phrase prewarming, and TTS status tracking
+
+### TTS lab
+
+- `public/tts-lab.html`
+  - browser-based A/B listening page for Aoi voice comparisons
+- `public/tts-lab.js`
+  - the standalone client for the TTS lab page
+- `script/generate-aoi-voice-samples.mjs`
+  - local sample generation script for Google / ElevenLabs Aoi voice tests
 
 ### Dev-server APIs
 
@@ -71,6 +83,7 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 - `/api/kira-*`
 - `/api/openvscode/*`
 - `/api/ida-pe/*`
+- `/api/tts-lab/*`
 - `/api/openroom-reset`
 
 If you run only a static build without equivalent backend endpoints, these features will not work.
@@ -94,7 +107,7 @@ This app reads and writes to `~/.openroom/` in standalone mode:
 
 - `config.json`
   - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail,
-    Tavily, album, Kira, OpenVSCode, and `idaPe` config
+    Aoi TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
 - `sessions/...`
   - session-scoped app data and chat data
 - `characters.json`
@@ -111,6 +124,9 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - App action definitions are loaded from each app's `meta.yaml`.
 - The chat panel includes both app-level tools and real workspace tools, so changes in `src/lib/`
   often affect the desktop, Kira, and Aoi's IDE together.
+- Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat
+  settings.
+- The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - `PE Analyst` supports two modes today:
   - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`

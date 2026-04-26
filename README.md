@@ -35,6 +35,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
   - optional cheaper dialog-model override for light chat turns
   - remembered preferred user name
   - reply language mode (`match-user` or `english`)
+  - optional Aoi TTS playback for assistant messages, with prewarmed short replies
   - long-term memory saving
   - image generation
   - live web search through Tavily
@@ -44,7 +45,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
   original iframe runtime.
 - Vite middleware APIs for Gmail OAuth, browser/article extraction, YouTube search, live cyber news
   RSS aggregation, album folder access, Tavily proxying, OpenVSCode workspace tools, PE Analyst
-  IDA/PE analysis bridging, Kira
+  IDA/PE analysis bridging, TTS lab synthesis, Kira
   automation, config persistence, and session file storage.
 - The upstream character/mod layer is still present: characters, mods, emotion media, upload-based
   mod generation, and memory injection are part of the current shell and chat experience.
@@ -87,6 +88,20 @@ Today the backend auto-detects two MCP styles:
   - typically exposed from the IDA plugin as `http://127.0.0.1:13337/mcp`
 - `ida-headless-mcp`
   - typically exposed as a standalone HTTP MCP server such as `http://127.0.0.1:17300/`
+
+## Aoi TTS + Voice Lab
+
+The desktop now includes an **optional Aoi TTS layer** for assistant messages.
+
+- When enabled in chat settings, newly added assistant messages are spoken aloud.
+- The current default voice is **Google `Despina`**.
+- The TTS helper can prewarm:
+  - built-in short stock phrases
+  - recent real assistant replies from the current session
+- A browser-based voice comparison page is available at:
+  - `http://localhost:3000/tts-lab.html`
+- A local sample-generation script is also included:
+  - `node apps/webuiapps/script/generate-aoi-voice-samples.mjs`
 
 ## Agent Tooling Inside Chat
 
@@ -226,7 +241,9 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
     "displayName": "Minji"
   },
   "conversationPreferences": {
-    "responseLanguageMode": "match-user"
+    "responseLanguageMode": "match-user",
+    "ttsEnabled": true,
+    "ttsPreloadCommonPhrases": true
   },
   "imageGen": {
     "provider": "openai",
@@ -277,6 +294,9 @@ Notes:
 - `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled.
 - `userProfile.displayName` lets the chat panel remember how to address the user across launches.
 - `conversationPreferences.responseLanguageMode` supports `match-user` and `english`.
+- `conversationPreferences.ttsEnabled` turns Aoi message playback on or off.
+- `conversationPreferences.ttsPreloadCommonPhrases` pre-generates common short lines and recent
+  assistant replies to reduce playback delay.
 - When `conversationPreferences.responseLanguageMode` is `english`, assistant replies, reminder
   messages, and newly seeded opening/prologue messages are generated in English.
 - `imageGen` is optional and powers the chat panel's image-generation tool.
@@ -286,7 +306,11 @@ Notes:
 
 ### Optional `.env`
 
-`apps/webuiapps/.env.example` covers optional build/runtime settings such as CDN and Sentry values.
+`apps/webuiapps/.env.example` covers optional build/runtime settings such as CDN and Sentry values,
+and local TTS experiments can use:
+
+- `GEMINI_API_KEY`
+- `ELEVENLABS_API_KEY`
 
 ## Local Data Layout
 

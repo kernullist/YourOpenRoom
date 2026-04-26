@@ -28,6 +28,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - 가벼운 대화용 dialog model 오버라이드
   - 사용자 호칭/이름 기억
   - 응답 언어 모드 (`match-user` / `english`)
+  - Aoi 답변을 음성으로 읽어주는 선택형 TTS와 짧은 대사 프리로드
   - 장기 메모리 저장
   - 이미지 생성
   - Tavily 실시간 웹 검색
@@ -43,6 +44,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - Tavily 프록시
   - OpenVSCode 워크스페이스 API
   - PE Analyst IDA / PE 분석 브리지
+  - TTS lab 합성 API
   - Kira 자동화 API
   - 설정 및 세션 데이터 저장
 - 업스트림의 캐릭터 / mod 계층도 여전히 남아 있습니다. 캐릭터, mod, 감정 미디어, 업로드 기반 mod 생성, 메모리 주입이 현재 셸 안에 포함되어 있습니다.
@@ -85,6 +87,20 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - 보통 IDA 플러그인이 `http://127.0.0.1:13337/mcp` 로 제공합니다
 - `ida-headless-mcp`
   - 보통 별도 HTTP MCP 서버 `http://127.0.0.1:17300/` 형태로 실행합니다
+
+## Aoi TTS 와 Voice Lab
+
+현재 데스크톱에는 **Aoi용 선택형 TTS 레이어**가 들어 있습니다.
+
+- 채팅 설정에서 켜면 새로 추가되는 assistant 메시지를 음성으로 읽어줍니다
+- 현재 기본 음성은 **Google `Despina`** 입니다
+- TTS helper 는 다음을 미리 생성할 수 있습니다
+  - 자주 쓰는 짧은 고정 대사
+  - 현재 세션에서 최근 실제로 나온 assistant 대사
+- 브라우저에서 음성 비교를 하려면:
+  - `http://localhost:3000/tts-lab.html`
+- 로컬 샘플 생성 스크립트:
+  - `node apps/webuiapps/script/generate-aoi-voice-samples.mjs`
 
 ## 채팅 패널 안의 Agent 툴링
 
@@ -196,6 +212,7 @@ pnpm dev
 - Tavily 프록시
 - Kira 자동화 API
 - OpenVSCode 워크스페이스 API
+- TTS lab 합성 API
 - 설정 / 세션 데이터 저장
 
 그래서 `pnpm build` 로 프런트 번들은 만들 수 있어도, 완전한 기능을 유지하려면 같은 백엔드 엔드포인트를 따로 제공해야 합니다.
@@ -223,7 +240,9 @@ pnpm dev
     "displayName": "Minji"
   },
   "conversationPreferences": {
-    "responseLanguageMode": "match-user"
+    "responseLanguageMode": "match-user",
+    "ttsEnabled": true,
+    "ttsPreloadCommonPhrases": true
   },
   "imageGen": {
     "provider": "openai",
@@ -274,11 +293,21 @@ pnpm dev
 - `dialogLlm` 을 쓰려면 최소 `baseUrl` 과 `model` 이 필요합니다
 - `userProfile.displayName` 을 설정하면 채팅 패널이 다음 실행에서도 같은 이름으로 사용자를 부릅니다
 - `conversationPreferences.responseLanguageMode` 는 `match-user` 와 `english` 를 지원합니다
+- `conversationPreferences.ttsEnabled` 로 Aoi 답변 음성 재생을 켜고 끌 수 있습니다
+- `conversationPreferences.ttsPreloadCommonPhrases` 는 짧은 고정 대사와 최근 assistant
+  답변을 미리 생성해서 재생 지연을 줄입니다
 - `conversationPreferences.responseLanguageMode` 가 `english` 이면 일반 답변, 리마인더, 새로 심는 첫 프로로그/추천 답변까지 영어로 맞춥니다
 - `imageGen` 은 채팅 패널 이미지 생성 툴의 선택 설정입니다
 - `idaPe.mode` 는 `prescan-only` 와 `mcp-http` 를 지원합니다
 - `idaPe.backendUrl` 은 `ida_pro_mcp` current-IDB 모드라면 `http://127.0.0.1:13337/mcp`,
   `ida-headless-mcp` 라면 `http://127.0.0.1:17300/` 같은 주소를 사용하면 됩니다
+
+### Optional `.env`
+
+`apps/webuiapps/.env.example` 에는 CDN / Sentry 같은 선택 설정 외에도 TTS 실험용 키가 들어갑니다.
+
+- `GEMINI_API_KEY`
+- `ELEVENLABS_API_KEY`
 
 ## 로컬 데이터 구조
 
