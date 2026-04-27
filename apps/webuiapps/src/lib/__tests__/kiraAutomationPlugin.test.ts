@@ -5,6 +5,13 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
   buildIssueSignature,
+  buildProjectContextScan,
+  buildReviewPrompt,
+  buildReviewSystemPrompt,
+  buildWorkerPlanningPrompt,
+  buildWorkerPlanningSystemPrompt,
+  buildWorkerPrompt,
+  buildWorkerSystemPrompt,
   detectTouchedFilesFromGitStatus,
   findMissingValidationCommands,
   findSuggestedCommitBackfillSummary,
@@ -15,11 +22,61 @@ import {
   parseProjectDiscoveryAnalysis,
   parseStoredWorkerAttemptComment,
   parseWorkerExecutionPlan,
+  resolveAttemptChangedFiles,
   resolveUnexpectedAutomationFailure,
   resolveValidationPlan,
   resolveProjectSettings,
   resolveRoleLlmConfig,
 } from '../kiraAutomationPlugin';
+
+function makeTempDir(prefix: string): string {
+  return fs.mkdtempSync(join(os.tmpdir(), prefix));
+}
+
+function makeWork() {
+  return {
+    id: 'work-1',
+    type: 'work' as const,
+    projectName: 'Demo',
+    title: 'Improve Kira prompts',
+    description: 'Make worker and reviewer behavior safer.',
+    status: 'todo' as const,
+    assignee: '',
+    createdAt: 1,
+    updatedAt: 1,
+  };
+}
+
+function makeContextScan() {
+  return {
+    projectRoot: '/repo',
+    packageManager: 'pnpm',
+    workspaceFiles: ['package.json'],
+    packageScripts: ['test: vitest run'],
+    existingChanges: [' M src/user-work.ts'],
+    searchTerms: ['Kira'],
+    likelyFiles: ['src/kira.ts: filename match'],
+    relatedDocs: ['README.md'],
+    testFiles: ['src/kira.test.ts'],
+    candidateChecks: ['pnpm test'],
+    notes: ['Existing git changes may include user work.'],
+  };
+}
+
+function makePlan() {
+  return {
+    valid: true,
+    parseIssues: [],
+    understanding: 'Improve prompt behavior safely.',
+    repoFindings: ['src/kira.ts contains Kira prompt builders.'],
+    summary: 'Update Kira prompt builders.',
+    intendedFiles: ['src/kira.ts'],
+    protectedFiles: ['src/user-work.ts'],
+    validationCommands: ['pnpm test'],
+    riskNotes: ['Prompt drift could weaken guardrails.'],
+    stopConditions: ['Protected files must change.'],
+  };
+}
 
 describe('parseStoredWorkerAttemptComment()', () => {
   it('parses summary and list sections from a stored worker comment', () => {
@@ -90,6 +147,90 @@ describe('parseStoredWorkerAttemptComment()', () => {
   });
 });
 
+describe('Kira Codex-grade prompts', () => {
+  it('locks worker system prompts to planning, safety, validation, and reporting rules', () => {
+    const planner = buildWorkerPlanningSystemPrompt();
+    const worker = buildWorkerSystemPrompt();
+
+    expect(planner).toContain('inspect repository structure and relevant files');
+    expect(planner).toContain('protectedFiles');
+    expect(planner).toContain('stopConditions');
+    expect(planner).toContain('Do not invent inspected files');
+    expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
+    expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
+    expect(worker).toContain('Do not touch out-of-plan files unless necessary and explained.');
+    expect(worker).toContain(
+      'Never claim a check passed unless you ran it or Kira provided the result.',
+    );
+  });
+
+  it('locks worker planning and execution prompts to structured JSON contracts', () => {
+    const planningPrompt = buildWorkerPlanningPrompt(
+      makeWork(),
+      'package.json\nsrc/kira.ts',
+      makeContextScan(),
+      ['Address review feedback.'],
+    );
+    const workerPrompt = buildWorkerPrompt(
+      makeWork(),
+      'package.json\nsrc/kira.ts',
+      makeContextScan(),
+      makePlan(),
+      [],
+    );
+
+    expect(planningPrompt).toContain('"understanding":"string"');
+    expect(planningPrompt).toContain('"repoFindings":["..."]');
+    expect(planningPrompt).toContain('"protectedFiles":["..."]');
+    expect(planningPrompt).toContain('"stopConditions":["..."]');
+    expect(workerPrompt).toContain('Never edit protectedFiles.');
+    expect(workerPrompt).toContain('Run the planned validation commands when practical');
+    expect(workerPrompt).toContain('"remainingRisks":["..."]');
+  });
+
+  it('locks reviewer prompts to independent review priorities and structured feedback', () => {
+    const reviewerSystem = buildReviewSystemPrompt();
+    const reviewPrompt = buildReviewPrompt(
+      makeWork(),
+      'package.json\nsrc/kira.ts',
+      makeContextScan(),
+      makePlan(),
+      {
+        summary: 'Updated prompt builders.',
+        filesChanged: ['src/kira.ts'],
+        testsRun: ['pnpm test'],
+        remainingRisks: [],
+      },
+      [],
+      [],
+      {
+        plannerCommands: ['pnpm test'],
+        autoAddedCommands: [],
+        effectiveCommands: ['pnpm test'],
+        notes: [],
+      },
+      {
+        passed: ['pnpm test'],
+        failed: [],
+        failureDetails: [],
+      },
+      ['diff -- src/kira.ts'],
+    );
+
+    expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
+    expect(reviewerSystem).toContain('Prioritize correctness and requirement coverage.');
+    expect(reviewerSystem).toContain('Do not approve if validation failed.');
+    expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
+    expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
+    expect(reviewPrompt).toContain(
+      'Do not approve if the worker summary conflicts with the diff excerpts.',
+    );
+    expect(reviewPrompt).toContain('"missingValidation":["..."]');
+    expect(reviewPrompt).toContain('"nextWorkerInstructions":["..."]');
+    expect(reviewPrompt).toContain('"residualRisk":["..."]');
+  });
+});
+
 describe('parseWorkerExecutionPlan()', () => {
   it('normalizes files and filters unsafe planned commands into risk notes', () => {
     const plan = parseWorkerExecutionPlan(
@@ -108,11 +249,20 @@ describe('parseWorkerExecutionPlan()', () => {
     );
 
     expect(plan).toEqual({
+      valid: false,
+      parseIssues: [
+        'Missing required field: understanding',
+        'Missing required field: repoFindings',
+        'Missing required field: stopConditions',
+      ],
+      understanding: 'No requirement understanding provided.',
+      repoFindings: [],
       summary: 'Update the Kira automation guardrails.',
       intendedFiles: [
         'apps/webuiapps/src/lib/kiraAutomationPlugin.ts',
         'apps/webuiapps/src/lib/__tests__/kiraAutomationPlugin.test.ts',
       ],
+      protectedFiles: [],
       validationCommands: [
         'pnpm exec vitest apps/webuiapps/src/lib/__tests__/kiraAutomationPlugin.test.ts',
       ],
@@ -120,6 +270,7 @@ describe('parseWorkerExecutionPlan()', () => {
         'Watch for dirty worktree handling.',
         'Planner suggested an unsafe validation command that was removed: npm install',
       ],
+      stopConditions: [],
     });
   });
 
@@ -137,6 +288,7 @@ describe('parseWorkerExecutionPlan()', () => {
       }),
     );
 
+    expect(plan.valid).toBe(false);
     expect(plan.validationCommands).toEqual([
       'git diff --stat',
       'pnpm test',
@@ -223,6 +375,90 @@ describe('project default validation helpers', () => {
         ],
         notes: [],
       });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('prioritizes changed Vitest files and records doc-only validation notes', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-validation-'));
+    fs.writeFileSync(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@9.0.0',
+        scripts: {
+          test: 'vitest run',
+          build: 'vite build',
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9', 'utf-8');
+
+    try {
+      expect(buildDefaultValidationCommands(projectRoot, ['src/foo.test.ts'])).toContain(
+        'pnpm exec vitest src/foo.test.ts',
+      );
+      expect(resolveValidationPlan(projectRoot, [], ['docs/guide.md']).notes).toContain(
+        'Only documentation files changed; no automatic code validation command was added.',
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('buildProjectContextScan()', () => {
+  it('collects scripts, likely files, and candidate checks for worker preflight', async () => {
+    const projectRoot = makeTempDir('kira-context-');
+    fs.mkdirSync(join(projectRoot, 'src', 'pages', 'Kira'), { recursive: true });
+    fs.writeFileSync(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@9.0.0',
+        scripts: {
+          test: 'vitest run',
+          lint: 'eslint .',
+          build: 'vite build',
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9', 'utf-8');
+    fs.writeFileSync(join(projectRoot, 'README.md'), '# Kira model guide\n', 'utf-8');
+    fs.writeFileSync(
+      join(projectRoot, 'src', 'pages', 'Kira', 'model.test.ts'),
+      'import "./model";\n',
+      'utf-8',
+    );
+    fs.writeFileSync(
+      join(projectRoot, 'src', 'pages', 'Kira', 'model.ts'),
+      'export const kiraModel = true;\n',
+      'utf-8',
+    );
+
+    try {
+      const scan = await buildProjectContextScan(projectRoot, {
+        id: 'work-1',
+        type: 'work',
+        projectName: 'Demo',
+        title: 'Improve Kira model handling',
+        description: 'Update src/pages/Kira/model.ts so Kira handles model state safely.',
+        status: 'todo',
+        assignee: '',
+        createdAt: 1,
+        updatedAt: 1,
+      });
+
+      expect(scan.packageManager).toBe('pnpm');
+      expect(scan.workspaceFiles).toContain('package.json');
+      expect(scan.packageScripts).toContain('test: vitest run');
+      expect(scan.searchTerms).toContain('src/pages/Kira/model.ts');
+      expect(scan.candidateChecks).toContain('pnpm test');
+      expect(scan.candidateChecks).toContain('pnpm run lint');
+      expect(scan.likelyFiles.some((item) => item.includes('src/pages/Kira/model.ts'))).toBe(true);
+      expect(scan.relatedDocs).toContain('README.md');
+      expect(scan.testFiles).toContain('src/pages/Kira/model.test.ts');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -436,6 +672,21 @@ describe('git status helpers', () => {
     );
 
     expect(detectTouchedFilesFromGitStatus(before, after)).toEqual(['changed.py', 'new.txt']);
+  });
+
+  it('uses the renamed target path from porcelain rename entries', () => {
+    expect(parseGitStatusPorcelain('R  old-name.ts -> src/new-name.ts')).toEqual([
+      { status: 'R ', path: 'src/new-name.ts' },
+    ]);
+  });
+
+  it('keeps patched files in the resolved attempt changes even when git status is unchanged', () => {
+    expect(resolveAttemptChangedFiles([], ['model-reported.ts'], ['src/dirty.ts'])).toEqual([
+      'src/dirty.ts',
+    ]);
+    expect(resolveAttemptChangedFiles([], ['model-reported.ts'], [])).toEqual([
+      'model-reported.ts',
+    ]);
   });
 });
 

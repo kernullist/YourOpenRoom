@@ -74,16 +74,89 @@ interface WorkerSummary {
 }
 
 interface WorkerExecutionPlan {
+  valid: boolean;
+  parseIssues: string[];
+  understanding: string;
+  repoFindings: string[];
   summary: string;
   intendedFiles: string[];
+  protectedFiles: string[];
   validationCommands: string[];
   riskNotes: string[];
+  stopConditions: string[];
+}
+
+interface ProjectContextScan {
+  projectRoot: string;
+  packageManager: string | null;
+  workspaceFiles: string[];
+  packageScripts: string[];
+  existingChanges: string[];
+  searchTerms: string[];
+  likelyFiles: string[];
+  relatedDocs: string[];
+  testFiles: string[];
+  candidateChecks: string[];
+  notes: string[];
 }
 
 interface ReviewSummary {
   approved: boolean;
   summary: string;
   issues: string[];
+  filesChecked: string[];
+  findings: ReviewFinding[];
+  missingValidation: string[];
+  nextWorkerInstructions: string[];
+  residualRisk: string[];
+}
+
+interface ReviewFinding {
+  file: string;
+  line: number | null;
+  severity: 'low' | 'medium' | 'high';
+  message: string;
+}
+
+interface KiraAttemptRecord {
+  id: string;
+  workId: string;
+  attemptNo: number;
+  status:
+    | 'planned'
+    | 'needs_context'
+    | 'validation_failed'
+    | 'review_requested_changes'
+    | 'blocked'
+    | 'approved';
+  startedAt: number;
+  finishedAt: number;
+  contextScan: ProjectContextScan;
+  workerPlan: WorkerExecutionPlan;
+  preflightExploration: string[];
+  readFiles: string[];
+  patchedFiles: string[];
+  changedFiles: string[];
+  commandsRun: string[];
+  validationReruns: ValidationRerunSummary;
+  outOfPlanFiles: string[];
+  validationGaps: string[];
+  risks: string[];
+  blockedReason?: string;
+  rollbackFiles?: string[];
+}
+
+interface KiraReviewRecord {
+  id: string;
+  workId: string;
+  attemptNo: number;
+  approved: boolean;
+  createdAt: number;
+  summary: string;
+  findings: ReviewFinding[];
+  missingValidation: string[];
+  nextWorkerInstructions: string[];
+  residualRisk: string[];
   filesChecked: string[];
 }
 
@@ -170,6 +243,9 @@ interface WorkerAttemptState {
   fileSnapshots: Map<string, AttemptFileSnapshot>;
   commandsRun: string[];
   readFiles: Set<string>;
+  explorationActions: string[];
+  patchedFiles: Set<string>;
+  dirtyFiles: Set<string>;
 }
 
 type AgentMessage =
@@ -180,6 +256,8 @@ type AgentMessage =
 const COMMENTS_DIR_NAME = 'comments';
 const WORKS_DIR_NAME = 'works';
 const ANALYSIS_DIR_NAME = 'analysis';
+const ATTEMPTS_DIR_NAME = 'attempts';
+const REVIEWS_DIR_NAME = 'reviews';
 const PROJECT_SETTINGS_DIR_NAME = '.kira';
 const PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
 const MAX_REVIEW_CYCLES = 5;
@@ -270,12 +348,18 @@ function normalizePathList(values: unknown[], limit: number): string[] {
   ).slice(0, limit);
 }
 
-function createWorkerAttemptState(plan: WorkerExecutionPlan | null): WorkerAttemptState {
+function createWorkerAttemptState(
+  plan: WorkerExecutionPlan | null,
+  dirtyFiles: string[] = [],
+): WorkerAttemptState {
   return {
     plan,
     fileSnapshots: new Map(),
     commandsRun: [],
     readFiles: new Set(),
+    explorationActions: [],
+    patchedFiles: new Set(),
+    dirtyFiles: new Set(dirtyFiles.map((file) => normalizeRelativePath(file)).filter(Boolean)),
   };
 }
 
@@ -328,6 +412,14 @@ function getKiraDataDir(sessionsDir: string, sessionPath: string): string {
 
 function getKiraAnalysisDir(sessionsDir: string, sessionPath: string): string {
   return join(getKiraDataDir(sessionsDir, sessionPath), ANALYSIS_DIR_NAME);
+}
+
+function getKiraAttemptsDir(sessionsDir: string, sessionPath: string): string {
+  return join(getKiraDataDir(sessionsDir, sessionPath), ATTEMPTS_DIR_NAME);
+}
+
+function getKiraReviewsDir(sessionsDir: string, sessionPath: string): string {
+  return join(getKiraDataDir(sessionsDir, sessionPath), REVIEWS_DIR_NAME);
 }
 
 function getProjectSettingsPath(projectRoot: string): string {
@@ -930,6 +1022,53 @@ function captureAttemptFileSnapshot(
   });
 }
 
+function isPlannedFile(plan: WorkerExecutionPlan | null, relativePath: string): boolean {
+  if (!plan) return false;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  return plan.intendedFiles.some(
+    (plannedFile) =>
+      plannedFile === normalizedPath ||
+      (plannedFile.endsWith('/') && normalizedPath.startsWith(plannedFile)),
+  );
+}
+
+function isProtectedFile(plan: WorkerExecutionPlan | null, relativePath: string): boolean {
+  if (!plan) return false;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  return plan.protectedFiles.some(
+    (protectedFile) =>
+      protectedFile === normalizedPath ||
+      (protectedFile.endsWith('/') && normalizedPath.startsWith(protectedFile)),
+  );
+}
+
+function validateWriteTarget(
+  state: WorkerAttemptState | null | undefined,
+  relativePath: string,
+): string | null {
+  if (!state) return null;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (!normalizedPath) return null;
+  if (isProtectedFile(state.plan, normalizedPath)) {
+    return `error: ${normalizedPath} is listed in protectedFiles and cannot be edited by this attempt`;
+  }
+  if (state.dirtyFiles.has(normalizedPath) && !isPlannedFile(state.plan, normalizedPath)) {
+    return `error: ${normalizedPath} has pre-existing worktree changes and is not listed in intendedFiles`;
+  }
+  return null;
+}
+
+function recordAttemptPatch(
+  state: WorkerAttemptState | null | undefined,
+  relativePath: string,
+): void {
+  if (!state) return;
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (normalizedPath) {
+    state.patchedFiles.add(normalizedPath);
+  }
+}
+
 function restoreAttemptFiles(
   projectRoot: string,
   state: WorkerAttemptState | null | undefined,
@@ -955,11 +1094,36 @@ function restoreAttemptFiles(
   return restored.sort();
 }
 
+function tryRestoreAttemptFiles(
+  projectRoot: string,
+  state: WorkerAttemptState | null | undefined,
+): { restoredFiles: string[]; error: string | null } {
+  try {
+    return { restoredFiles: restoreAttemptFiles(projectRoot, state), error: null };
+  } catch (error) {
+    return {
+      restoredFiles: [],
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
 function recordAttemptCommand(state: WorkerAttemptState | null | undefined, command: string): void {
   if (!state) return;
   const normalized = normalizeWhitespace(command);
   if (normalized) {
     state.commandsRun.push(normalized);
+  }
+}
+
+function recordAttemptExploration(
+  state: WorkerAttemptState | null | undefined,
+  action: string,
+): void {
+  if (!state) return;
+  const normalized = normalizeWhitespace(action);
+  if (normalized) {
+    state.explorationActions.push(normalized);
   }
 }
 
@@ -971,6 +1135,7 @@ function recordAttemptRead(
   const normalizedPath = normalizeRelativePath(relativePath);
   if (normalizedPath) {
     state.readFiles.add(normalizedPath);
+    recordAttemptExploration(state, `read_file ${normalizedPath}`);
   }
 }
 
@@ -1111,6 +1276,10 @@ async function executeTool(
       }
       const entries: string[] = [];
       collectFiles(targetDir, targetDir, depth, entries);
+      recordAttemptExploration(
+        attemptState,
+        `list_files ${normalizeRelativePath(directory) || '.'}`,
+      );
       return entries.length > 0 ? entries.join('\n') : 'empty directory';
     }
     case 'read_file': {
@@ -1131,6 +1300,8 @@ async function executeTool(
       const content = typeof args.content === 'string' ? args.content : '';
       if (!filePath) return 'error: path is required';
       const absolutePath = ensureInsideRoot(projectRoot, filePath);
+      const targetError = validateWriteTarget(attemptState, filePath);
+      if (targetError) return targetError;
       captureAttemptFileSnapshot(attemptState, projectRoot, filePath);
       if (containsCorruptionMarker(content)) {
         return 'error: refusing to write placeholder or corruption marker text';
@@ -1146,6 +1317,7 @@ async function executeTool(
       }
       fs.mkdirSync(dirname(absolutePath), { recursive: true });
       fs.writeFileSync(absolutePath, content, 'utf-8');
+      recordAttemptPatch(attemptState, filePath);
       return 'success';
     }
     case 'edit_file': {
@@ -1160,6 +1332,8 @@ async function executeTool(
       if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) {
         return 'error: file not found';
       }
+      const targetError = validateWriteTarget(attemptState, filePath);
+      if (targetError) return targetError;
       if (requiresExplicitReadBeforeWrite(projectRoot, filePath, attemptState)) {
         return 'error: high-risk files must be read with read_file before editing';
       }
@@ -1175,12 +1349,14 @@ async function executeTool(
         return 'error: refusing to write placeholder or corruption marker text';
       }
       fs.writeFileSync(absolutePath, next, 'utf-8');
+      recordAttemptPatch(attemptState, filePath);
       return `success: replaced ${replaceAll ? occurrences : 1} occurrence(s)`;
     }
     case 'search_files': {
       const query = typeof args.query === 'string' ? args.query.trim() : '';
       if (!query) return 'error: query is required';
       const results = searchProjectFiles(projectRoot, query);
+      recordAttemptExploration(attemptState, `search_files ${query}`);
       return results.length > 0 ? results.join('\n') : 'no matches';
     }
     case 'run_command': {
@@ -1342,10 +1518,33 @@ export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
     const acceptedCommands = safeCommands.slice(0, MAX_PLANNER_VALIDATION_COMMANDS);
     const droppedCommands = safeCommands.slice(MAX_PLANNER_VALIDATION_COMMANDS);
 
+    const parseIssues: string[] = [];
+    if (!parsed.understanding?.trim()) parseIssues.push('Missing required field: understanding');
+    if (!parsed.summary?.trim()) parseIssues.push('Missing required field: summary');
+    if (!Array.isArray(parsed.repoFindings) || parsed.repoFindings.length === 0) {
+      parseIssues.push('Missing required field: repoFindings');
+    }
+    if (!Array.isArray(parsed.intendedFiles) || parsed.intendedFiles.length === 0) {
+      parseIssues.push('Missing required field: intendedFiles');
+    }
+    if (!Array.isArray(parsed.stopConditions) || parsed.stopConditions.length === 0) {
+      parseIssues.push('Missing required field: stopConditions');
+    }
+
     return {
+      valid: parseIssues.length === 0,
+      parseIssues,
+      understanding: parsed.understanding?.trim() || 'No requirement understanding provided.',
+      repoFindings: uniqueStrings(
+        Array.isArray(parsed.repoFindings) ? parsed.repoFindings.map(String) : [],
+      ),
       summary: parsed.summary?.trim() || 'No execution plan provided.',
       intendedFiles: normalizePathList(
         Array.isArray(parsed.intendedFiles) ? parsed.intendedFiles : [],
+        MAX_PLANNED_FILES,
+      ),
+      protectedFiles: normalizePathList(
+        Array.isArray(parsed.protectedFiles) ? parsed.protectedFiles : [],
         MAX_PLANNED_FILES,
       ),
       validationCommands: acceptedCommands,
@@ -1361,13 +1560,22 @@ export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
             ]
           : []),
       ]),
+      stopConditions: uniqueStrings(
+        Array.isArray(parsed.stopConditions) ? parsed.stopConditions.map(String) : [],
+      ),
     };
   } catch {
     return {
+      valid: false,
+      parseIssues: ['Plan result could not be parsed into structured JSON.'],
+      understanding: 'Plan result could not be parsed.',
+      repoFindings: [],
       summary: raw.trim() || 'No execution plan provided.',
       intendedFiles: [],
+      protectedFiles: [],
       validationCommands: [],
       riskNotes: [],
+      stopConditions: [],
     };
   }
 }
@@ -1403,11 +1611,35 @@ function parseWorkerSummary(raw: string): WorkerSummary {
 function parseReviewSummary(raw: string): ReviewSummary {
   try {
     const parsed = JSON.parse(extractJson(raw)) as Partial<ReviewSummary>;
+    const findings = Array.isArray(parsed.findings)
+      ? parsed.findings.map((finding) => normalizeReviewFinding(finding))
+      : [];
+    const missingValidation = uniqueStrings(
+      Array.isArray(parsed.missingValidation) ? parsed.missingValidation.map(String) : [],
+    );
+    const nextWorkerInstructions = uniqueStrings(
+      Array.isArray(parsed.nextWorkerInstructions) ? parsed.nextWorkerInstructions.map(String) : [],
+    );
+    const residualRisk = uniqueStrings(
+      Array.isArray(parsed.residualRisk) ? parsed.residualRisk.map(String) : [],
+    );
     return {
       approved: Boolean(parsed.approved),
       summary: parsed.summary?.trim() || 'No review summary provided.',
-      issues: Array.isArray(parsed.issues) ? parsed.issues.map(String) : [],
+      issues: uniqueStrings([
+        ...(Array.isArray(parsed.issues) ? parsed.issues.map(String) : []),
+        ...findings.map((finding) =>
+          [finding.file, finding.line ? `line ${finding.line}` : '', finding.message]
+            .filter(Boolean)
+            .join(': '),
+        ),
+        ...missingValidation.map((command) => `Missing validation: ${command}`),
+      ]),
       filesChecked: Array.isArray(parsed.filesChecked) ? parsed.filesChecked.map(String) : [],
+      findings,
+      missingValidation,
+      nextWorkerInstructions,
+      residualRisk,
     };
   } catch {
     return {
@@ -1415,8 +1647,26 @@ function parseReviewSummary(raw: string): ReviewSummary {
       summary: raw.trim() || 'Review parsing failed.',
       issues: ['Review result could not be parsed into structured JSON.'],
       filesChecked: [],
+      findings: [],
+      missingValidation: [],
+      nextWorkerInstructions: ['Return the review result as structured JSON.'],
+      residualRisk: [],
     };
   }
+}
+
+function normalizeReviewFinding(raw: unknown): ReviewFinding {
+  const value = typeof raw === 'object' && raw !== null ? (raw as Partial<ReviewFinding>) : {};
+  const severity =
+    value.severity === 'high' || value.severity === 'medium' || value.severity === 'low'
+      ? value.severity
+      : 'medium';
+  return {
+    file: typeof value.file === 'string' ? normalizeRelativePath(value.file) : '',
+    line: typeof value.line === 'number' && Number.isFinite(value.line) ? value.line : null,
+    severity,
+    message: typeof value.message === 'string' ? value.message.trim() : String(raw),
+  };
 }
 
 function projectHasFile(projectRoot: string, relativePath: string): boolean {
@@ -1490,6 +1740,214 @@ function detectNodePackageManager(projectRoot: string): 'pnpm' | 'npm' | null {
   return 'npm';
 }
 
+function detectWorkspaceFiles(projectRoot: string): string[] {
+  return [
+    'package.json',
+    'pnpm-workspace.yaml',
+    'turbo.json',
+    'vite.config.ts',
+    'vitest.config.ts',
+    'jest.config.js',
+    'tsconfig.json',
+    'pyproject.toml',
+    'pytest.ini',
+    'requirements.txt',
+    'go.mod',
+    'Cargo.toml',
+  ].filter((filePath) => projectHasFile(projectRoot, filePath));
+}
+
+function formatPackageScripts(scripts: Record<string, string>): string[] {
+  return Object.entries(scripts)
+    .filter(([name]) => ['test', 'lint', 'build', 'typecheck', 'check'].includes(name))
+    .map(([name, command]) => `${name}: ${command}`);
+}
+
+function extractWorkSearchTerms(work: WorkTask): string[] {
+  const source = `${work.title}\n${work.description}`;
+  const pathLike = source.match(/[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)+/g) ?? [];
+  const words = source
+    .replace(/[`*_#[\](){}:;,.!?]/g, ' ')
+    .split(/\s+/)
+    .map((word) => word.trim())
+    .filter((word) => word.length >= 4 && /[A-Za-z]/.test(word))
+    .filter(
+      (word) =>
+        ![
+          'this',
+          'that',
+          'with',
+          'from',
+          'into',
+          'work',
+          'task',
+          'should',
+          'would',
+          'could',
+          'when',
+          'where',
+          'there',
+          'about',
+          'using',
+          'make',
+          'update',
+          'create',
+          'delete',
+          'remove',
+          'fix',
+          'add',
+        ].includes(word.toLowerCase()),
+    );
+
+  return uniqueStrings([...pathLike, ...words]).slice(0, 8);
+}
+
+function collectLikelyFilesForWork(projectRoot: string, work: WorkTask): string[] {
+  const results: string[] = [];
+  for (const term of extractWorkSearchTerms(work)) {
+    results.push(...searchProjectFiles(projectRoot, term).slice(0, 4));
+    if (results.length >= 16) break;
+  }
+  return uniqueStrings(results).slice(0, 16);
+}
+
+function collectProjectPaths(
+  root: string,
+  predicate: (relativePath: string, dirent: fs.Dirent) => boolean,
+  limit = MAX_SEARCH_RESULTS,
+): string[] {
+  const results: string[] = [];
+  const walk = (currentDir: string) => {
+    if (results.length >= limit) return;
+    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    for (const dirent of dirents) {
+      if (results.length >= limit) return;
+      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') {
+        continue;
+      }
+      const absolutePath = join(currentDir, dirent.name);
+      const relativePath = absolutePath
+        .slice(root.length)
+        .replace(/^[\\/]+/, '')
+        .replace(/\\/g, '/');
+      if (predicate(relativePath, dirent)) {
+        results.push(relativePath);
+      }
+      if (dirent.isDirectory()) {
+        walk(absolutePath);
+      }
+    }
+  };
+
+  walk(root);
+  return uniqueStrings(results).slice(0, limit);
+}
+
+function collectRelatedDocs(projectRoot: string, work: WorkTask): string[] {
+  const terms = extractWorkSearchTerms(work).map((term) => term.toLowerCase());
+  const docs = collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      const lowerPath = relativePath.toLowerCase();
+      if (!/\.(md|mdx|txt|rst)$/.test(lowerPath)) return false;
+      return terms.length === 0 || terms.some((term) => lowerPath.includes(term));
+    },
+    20,
+  );
+
+  return docs.length > 0
+    ? docs
+    : collectProjectPaths(
+        projectRoot,
+        (relativePath, dirent) =>
+          dirent.isFile() &&
+          /(^|\/)(readme|contributing|architecture|guide).*\.md$/i.test(relativePath),
+        10,
+      );
+}
+
+function collectRelatedTests(projectRoot: string, work: WorkTask): string[] {
+  const terms = extractWorkSearchTerms(work).map((term) => term.toLowerCase());
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      const lowerPath = relativePath.toLowerCase();
+      const isTestPath =
+        lowerPath.includes('/__tests__/') ||
+        lowerPath.includes('/tests/') ||
+        /\.(test|spec)\.[a-z0-9]+$/.test(lowerPath) ||
+        /^tests?\//.test(lowerPath);
+      if (!isTestPath) return false;
+      return terms.length === 0 || terms.some((term) => lowerPath.includes(term));
+    },
+    20,
+  );
+}
+
+function formatGitStatusEntries(entries: GitStatusEntry[] | null): string[] {
+  if (!entries) return ['Git status unavailable'];
+  return entries.map((entry) => `${entry.status.trim() || 'modified'} ${entry.path}`).slice(0, 40);
+}
+
+export async function buildProjectContextScan(
+  projectRoot: string,
+  work: WorkTask,
+): Promise<ProjectContextScan> {
+  const packageManager = detectNodePackageManager(projectRoot);
+  const scripts = loadPackageScripts(projectRoot);
+  const existingChanges = formatGitStatusEntries(await getGitWorktreeEntries(projectRoot));
+  const searchTerms = extractWorkSearchTerms(work);
+  const likelyFiles = collectLikelyFilesForWork(projectRoot, work);
+  const relatedDocs = collectRelatedDocs(projectRoot, work);
+  const testFiles = collectRelatedTests(projectRoot, work);
+  const candidateChecks = uniqueStrings([
+    ...buildDefaultValidationCommands(projectRoot, []),
+    ...(['test', 'lint', 'typecheck', 'build'] as const)
+      .filter((scriptName) => scripts[scriptName])
+      .map((scriptName) =>
+        packageManager === 'pnpm' ? `pnpm run ${scriptName}` : `npm run ${scriptName}`,
+      ),
+  ])
+    .filter((command) => isSafeCommandAllowed(command))
+    .slice(0, MAX_EFFECTIVE_VALIDATION_COMMANDS);
+
+  const notes: string[] = [];
+  if (existingChanges.length > 0 && existingChanges[0] !== 'Git status unavailable') {
+    notes.push('Existing git changes may include user work; preserve unrelated changes.');
+  }
+  if (candidateChecks.length === 0) {
+    notes.push(
+      'No obvious validation command was detected; planner must explain validation choice.',
+    );
+  }
+  if (likelyFiles.length === 0) {
+    notes.push(
+      'No likely implementation files were found from the brief; planner must search before planning edits.',
+    );
+  }
+  if (testFiles.length === 0) {
+    notes.push(
+      'No related test files were detected from the brief; planner should identify the nearest validation path.',
+    );
+  }
+
+  return {
+    projectRoot,
+    packageManager,
+    workspaceFiles: detectWorkspaceFiles(projectRoot),
+    packageScripts: formatPackageScripts(scripts),
+    existingChanges,
+    searchTerms,
+    likelyFiles,
+    relatedDocs,
+    testFiles,
+    candidateChecks,
+    notes,
+  };
+}
+
 export function buildDefaultValidationCommands(
   projectRoot: string,
   filesChanged: string[],
@@ -1505,6 +1963,16 @@ export function buildDefaultValidationCommands(
   const packageManager = detectNodePackageManager(projectRoot);
   if (packageManager) {
     const scripts = loadPackageScripts(projectRoot);
+    const changedTestFile = changedFiles.find((file) =>
+      /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/.test(file.toLowerCase()),
+    );
+    if (changedTestFile) {
+      commands.push(
+        packageManager === 'pnpm'
+          ? `pnpm exec vitest ${changedTestFile}`
+          : `npm test -- ${changedTestFile}`,
+      );
+    }
     const hasNodeSignals =
       changedExtensions.has('.ts') ||
       changedExtensions.has('.tsx') ||
@@ -1575,6 +2043,10 @@ export function resolveValidationPlan(
     ...autoAddedCommands,
   ]).slice(0, MAX_EFFECTIVE_VALIDATION_COMMANDS);
   const notes: string[] = [];
+  const normalizedFiles = normalizePathList(filesChanged, 200);
+  const docOnly =
+    normalizedFiles.length > 0 &&
+    normalizedFiles.every((file) => /\.(md|mdx|txt|rst)$/i.test(file));
 
   if (
     normalizedPlannerCommands.length + autoAddedCommands.length >
@@ -1583,6 +2055,12 @@ export function resolveValidationPlan(
     notes.push(
       `Kira limited the combined validation plan to ${MAX_EFFECTIVE_VALIDATION_COMMANDS} commands.`,
     );
+  }
+  if (docOnly && autoAddedCommands.length === 0) {
+    notes.push('Only documentation files changed; no automatic code validation command was added.');
+  }
+  if (normalizedFiles.length > 0 && effectiveCommands.length === 0) {
+    notes.push('No safe validation command could be inferred from the changed files.');
   }
 
   return {
@@ -1726,6 +2204,60 @@ function formatList(items: string[], emptyLabel: string): string {
   return items.map((item) => `- ${item}`).join('\n');
 }
 
+function formatProjectContextScan(scan: ProjectContextScan): string {
+  return [
+    `Project context:\n- Root: ${scan.projectRoot}\n- Package manager: ${
+      scan.packageManager ?? 'not detected'
+    }`,
+    `Workspace/config files:\n${formatList(scan.workspaceFiles, 'No common workspace files detected')}`,
+    `Important package scripts:\n${formatList(scan.packageScripts, 'No test/lint/build/typecheck scripts detected')}`,
+    `Existing changes:\n${formatList(scan.existingChanges, 'Clean worktree or no git changes detected')}`,
+    `Search terms from brief:\n${formatList(scan.searchTerms, 'No search terms extracted')}`,
+    `Likely files:\n${formatList(scan.likelyFiles, 'No likely file matches detected yet')}`,
+    `Related docs:\n${formatList(scan.relatedDocs, 'No related docs detected')}`,
+    `Related tests:\n${formatList(scan.testFiles, 'No related tests detected')}`,
+    `Candidate checks:\n${formatList(scan.candidateChecks, 'No candidate checks detected')}`,
+    `Context notes:\n${formatList(scan.notes, 'No context notes')}`,
+  ].join('\n\n');
+}
+
+function collectPreflightPlanningIssues(
+  contextScan: ProjectContextScan,
+  plan: WorkerExecutionPlan,
+  explorationActions: string[],
+): string[] {
+  const issues: string[] = [];
+
+  issues.push(...plan.parseIssues);
+
+  if (explorationActions.length === 0) {
+    issues.push(
+      'The preflight planner did not inspect the repository with list_files, search_files, or read_file before returning a plan.',
+    );
+  }
+
+  if (contextScan.likelyFiles.length === 0 && explorationActions.length === 0) {
+    issues.push(
+      'No likely files were found from the initial context scan, so the planner must search or list the repository before choosing files.',
+    );
+  }
+
+  if (plan.intendedFiles.length === 0) {
+    issues.push('The preflight plan did not identify any intended files to inspect or edit.');
+  }
+
+  const protectedAndPlanned = plan.intendedFiles.filter((plannedFile) =>
+    isProtectedFile(plan, plannedFile),
+  );
+  if (protectedAndPlanned.length > 0) {
+    issues.push(
+      `The preflight plan lists files as both intendedFiles and protectedFiles: ${protectedAndPlanned.join(', ')}`,
+    );
+  }
+
+  return issues;
+}
+
 function parseStoredList(section: string): string[] {
   return section
     .split('\n')
@@ -1853,10 +2385,13 @@ export function parseGitStatusPorcelain(output: string): GitStatusEntry[] {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => ({
-      status: line.slice(0, 2),
-      path: line.slice(3).trim().replace(/\\/g, '/'),
-    }))
+    .map((line) => {
+      const rawPath = line.slice(3).trim().replace(/\\/g, '/');
+      return {
+        status: line.slice(0, 2),
+        path: rawPath.includes(' -> ') ? (rawPath.split(' -> ').pop() ?? rawPath) : rawPath,
+      };
+    })
     .filter((entry) => entry.path !== '');
 }
 
@@ -1887,6 +2422,15 @@ export function detectTouchedFilesFromGitStatus(
   }
 
   return [...touched].sort();
+}
+
+export function resolveAttemptChangedFiles(
+  touchedFiles: string[],
+  reportedFiles: string[],
+  patchedFiles: string[],
+): string[] {
+  const observedFiles = normalizePathList([...touchedFiles, ...patchedFiles], 200);
+  return observedFiles.length > 0 ? observedFiles : normalizePathList(reportedFiles, 200);
 }
 
 async function getTrackedHeadFile(
@@ -2110,6 +2654,135 @@ function collectPlanGuardrailIssues(
   }
 
   return issues;
+}
+
+function getDirtyWorktreePaths(entries: GitStatusEntry[] | null): string[] {
+  if (!entries) return [];
+  return uniqueStrings(entries.map((entry) => normalizeRelativePath(entry.path)).filter(Boolean));
+}
+
+function collectDirtyFileGuardrailIssues(
+  plan: WorkerExecutionPlan | null,
+  dirtyFiles: string[],
+  filesChanged: string[],
+): string[] {
+  if (!plan) return [];
+  const changedDirtyFiles = normalizePathList(filesChanged, 200).filter((file) =>
+    dirtyFiles.includes(file),
+  );
+  const unplannedDirtyFiles = changedDirtyFiles.filter((file) => !isPlannedFile(plan, file));
+  const protectedDirtyFiles = changedDirtyFiles.filter((file) => isProtectedFile(plan, file));
+  return [
+    ...protectedDirtyFiles.map((file) => `Protected dirty file was modified: ${file}`),
+    ...unplannedDirtyFiles.map(
+      (file) => `Pre-existing dirty file was modified outside intendedFiles: ${file}`,
+    ),
+  ];
+}
+
+function buildReviewRecord(
+  workId: string,
+  attemptNo: number,
+  reviewSummary: ReviewSummary,
+): KiraReviewRecord {
+  return {
+    id: `${workId}-${attemptNo}`,
+    workId,
+    attemptNo,
+    approved: reviewSummary.approved,
+    createdAt: Date.now(),
+    summary: reviewSummary.summary,
+    findings: reviewSummary.findings,
+    missingValidation: reviewSummary.missingValidation,
+    nextWorkerInstructions: reviewSummary.nextWorkerInstructions,
+    residualRisk: reviewSummary.residualRisk,
+    filesChecked: reviewSummary.filesChecked,
+  };
+}
+
+function enforceReviewDecision(summary: ReviewSummary): ReviewSummary {
+  const blockingIssues = [
+    ...summary.findings.map((finding) =>
+      [finding.file, finding.line ? `line ${finding.line}` : '', finding.message]
+        .filter(Boolean)
+        .join(': '),
+    ),
+    ...summary.missingValidation.map((command) => `Missing validation: ${command}`),
+  ];
+  if (summary.approved && blockingIssues.length > 0) {
+    return {
+      ...summary,
+      approved: false,
+      issues: uniqueStrings([...summary.issues, ...blockingIssues]),
+      summary: `${summary.summary}\n\nKira changed this review to request changes because the structured review included blocking findings or missing validation.`,
+    };
+  }
+  return summary;
+}
+
+function buildAttemptRecord(params: {
+  workId: string;
+  attemptNo: number;
+  status: KiraAttemptRecord['status'];
+  startedAt: number;
+  contextScan: ProjectContextScan;
+  workerPlan: WorkerExecutionPlan;
+  planningState: WorkerAttemptState;
+  attemptState?: WorkerAttemptState | null;
+  workerSummary?: WorkerSummary;
+  validationReruns?: ValidationRerunSummary;
+  outOfPlanFiles?: string[];
+  validationGaps?: string[];
+  risks?: string[];
+  blockedReason?: string;
+  rollbackFiles?: string[];
+}): KiraAttemptRecord {
+  const attemptState = params.attemptState ?? null;
+  return {
+    id: `${params.workId}-${params.attemptNo}`,
+    workId: params.workId,
+    attemptNo: params.attemptNo,
+    status: params.status,
+    startedAt: params.startedAt,
+    finishedAt: Date.now(),
+    contextScan: params.contextScan,
+    workerPlan: params.workerPlan,
+    preflightExploration: uniqueStrings(params.planningState.explorationActions),
+    readFiles: attemptState ? [...attemptState.readFiles].sort() : [],
+    patchedFiles: attemptState ? [...attemptState.patchedFiles].sort() : [],
+    changedFiles: params.workerSummary?.filesChanged ?? [],
+    commandsRun: attemptState
+      ? [...attemptState.commandsRun]
+      : uniqueStrings(params.planningState.commandsRun),
+    validationReruns: params.validationReruns ?? { passed: [], failed: [], failureDetails: [] },
+    outOfPlanFiles: params.outOfPlanFiles ?? [],
+    validationGaps: params.validationGaps ?? [],
+    risks: params.risks ?? [],
+    ...(params.blockedReason ? { blockedReason: params.blockedReason } : {}),
+    ...(params.rollbackFiles ? { rollbackFiles: params.rollbackFiles } : {}),
+  };
+}
+
+function saveAttemptRecord(
+  sessionsDir: string,
+  sessionPath: string,
+  record: KiraAttemptRecord,
+): void {
+  writeJsonFile(
+    join(getKiraAttemptsDir(sessionsDir, sessionPath), `${record.workId}-${record.attemptNo}.json`),
+    record,
+  );
+}
+
+function saveReviewRecord(
+  sessionsDir: string,
+  sessionPath: string,
+  record: KiraReviewRecord,
+): void {
+  writeJsonFile(
+    join(getKiraReviewsDir(sessionsDir, sessionPath), `${record.workId}-${record.attemptNo}.json`),
+    record,
+  );
 }
 
 export function buildIssueSignature(issues: string[], summary: string): string {
@@ -2440,9 +3113,10 @@ function buildProjectDiscoverySystemPrompt(): string {
   ].join('\n');
 }
 
-function buildWorkerPlanningPrompt(
+export function buildWorkerPlanningPrompt(
   work: WorkTask,
   projectOverview: string,
+  contextScan: ProjectContextScan,
   feedback: string[],
 ): string {
   return [
@@ -2450,37 +3124,50 @@ function buildWorkerPlanningPrompt(
     `Work title: ${work.title}`,
     `Work brief:\n${work.description}`,
     `Project overview:\n${projectOverview}`,
+    `Project context scan:\n${formatProjectContextScan(contextScan)}`,
     feedback.length > 0
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Inspect the project in read-only mode and create a focused implementation plan before any edits happen.',
+    'Use the context scan as a starting point, but verify relevant files yourself before planning edits.',
+    'If likely relevant files are empty or weak, search/read the repository before returning a plan.',
+    'Treat existing git changes as user or prior automation work unless inspection proves they are part of this task.',
     'List only the files you currently expect to edit; keep the list small and concrete.',
+    'Use protectedFiles for existing dirty files or user-owned files that must not be touched by this attempt.',
     'List validationCommands using only task-specific safe diagnostics or test commands that the worker can run later.',
     `Keep validationCommands short: no more than ${MAX_PLANNER_VALIDATION_COMMANDS} commands.`,
     'Kira will automatically add a small project-default validation set, so do not spend slots on generic repo-wide checks unless they are directly needed for this task.',
     'Use riskNotes for tricky areas, compatibility concerns, or reasons the reviewer should pay extra attention.',
+    'Use stopConditions for situations where the worker must stop rather than continue making edits.',
     'Return only JSON with this shape:',
-    '{"summary":"string","intendedFiles":["..."],"validationCommands":["..."],"riskNotes":["..."]}',
+    '{"understanding":"string","repoFindings":["..."],"summary":"string","intendedFiles":["..."],"protectedFiles":["..."],"validationCommands":["..."],"riskNotes":["..."],"stopConditions":["..."]}',
   ]
     .filter(Boolean)
     .join('\n\n');
 }
 
-function buildWorkerPlanningSystemPrompt(): string {
+export function buildWorkerPlanningSystemPrompt(): string {
   return [
-    'You are the Kira preflight planner.',
-    'Inspect the project in read-only mode and produce a small, concrete execution plan.',
+    'You are Kira Preflight Planner, a careful read-only planning agent.',
+    'Before planning, inspect repository structure and relevant files with read-only tools.',
+    'Identify existing user changes and mark files that must not be overwritten as protectedFiles.',
+    'Produce a structured plan with intended files, validation commands, risks, and stop conditions.',
     'Do not modify files.',
+    'Prefer existing project patterns over new abstractions.',
     'Prefer a narrow file list over a broad one.',
+    'Return concrete repoFindings based on files or searches you actually inspected.',
+    'Do not invent inspected files, checks, or repository facts.',
     `Return at most ${MAX_PLANNER_VALIDATION_COMMANDS} validation commands.`,
     'Only suggest validation commands that are safe and diagnostic in nature, such as pytest, python -m pytest/unittest/compileall, npm or pnpm test/lint/build/typecheck, node --test, git status/diff/show, rg, go test/vet, cargo test/check/clippy/fmt, or dotnet test/build.',
+    'Define stopConditions for blocked protected files, unclear requirements, unsafe required commands, or missing context that cannot be resolved with read-only inspection.',
     'Do not wrap the final JSON in markdown fences.',
   ].join('\n');
 }
 
-function buildWorkerPrompt(
+export function buildWorkerPrompt(
   work: WorkTask,
   projectOverview: string,
+  contextScan: ProjectContextScan,
   plan: WorkerExecutionPlan | null,
   feedback: string[],
 ): string {
@@ -2489,8 +3176,12 @@ function buildWorkerPrompt(
     `Work title: ${work.title}`,
     `Work brief:\n${work.description}`,
     `Project overview:\n${projectOverview}`,
+    `Project context scan:\n${formatProjectContextScan(contextScan)}`,
+    plan ? `Plan understanding:\n${plan.understanding}` : '',
+    plan ? `Plan repo findings:\n${formatList(plan.repoFindings, 'No repo findings')}` : '',
     plan ? `Execution plan summary:\n${plan.summary}` : '',
     plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
+    plan ? `Protected files:\n${formatList(plan.protectedFiles, 'No protected files')}` : '',
     plan
       ? `Planned validation commands:\n${formatList(
           plan.validationCommands,
@@ -2498,18 +3189,24 @@ function buildWorkerPrompt(
         )}`
       : '',
     plan ? `Planner risk notes:\n${formatList(plan.riskNotes, 'No planner risks reported')}` : '',
+    plan ? `Stop conditions:\n${formatList(plan.stopConditions, 'No stop conditions')}` : '',
     feedback.length > 0
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Modify the project directly using the available tools.',
+    'Before editing, inspect the files that matter for this task, especially files from the context scan and planned file list.',
+    'Use existing project patterns and local helpers before introducing new abstractions.',
     'Stay within the planned files whenever practical. If you must expand scope, inspect the extra file first and keep the change justified and minimal.',
-    'Any file under the project root may be edited when it genuinely helps complete the task.',
+    'Never edit protectedFiles. Stop and report the blocker if a protected file must change.',
+    'Do not touch out-of-plan files unless necessary and explained by the final summary.',
     'Read high-risk existing files with read_file before editing or overwriting them.',
     'For existing files, prefer edit_file with exact replacements.',
     'Use write_file only for new files or for small files that genuinely need a full rewrite.',
     'Do not treat other existing modified or untracked files in the project as something you must clean up unless the task explicitly asks for cleanup.',
     'When you report filesChanged, list the files you intentionally touched for this attempt, not unrelated pre-existing worktree noise.',
-    'Run relevant tests or checks when practical.',
+    'Run the planned validation commands when practical, plus focused checks needed by the actual changes.',
+    'Never claim a check passed unless you ran it in this attempt or Kira provided the rerun result.',
+    'If validation cannot be run, put the reason and residual risk in remainingRisks.',
     'When finished, return only JSON with this shape:',
     '{"summary":"string","filesChanged":["..."],"testsRun":["..."],"remainingRisks":["..."]}',
   ]
@@ -2517,25 +3214,32 @@ function buildWorkerPrompt(
     .join('\n\n');
 }
 
-function buildWorkerSystemPrompt(): string {
+export function buildWorkerSystemPrompt(): string {
   return [
-    'You are a background Kira implementation agent.',
+    'You are Kira Worker, a careful implementation agent.',
     'Stay focused on the requested work item.',
+    'Before editing, inspect repository structure and relevant files.',
+    'Identify existing user changes and avoid overwriting them.',
     'Prefer small targeted edits over broad refactors.',
+    'Prefer existing project patterns over new abstractions.',
     'Respect the preflight plan unless inspection shows a clearly necessary small expansion.',
-    'You may edit any project-local file that is useful for the requested outcome.',
+    'Do not touch out-of-plan files unless necessary and explained.',
+    'Never edit protectedFiles; stop and report the blocker instead.',
     'Read high-risk existing files before editing them.',
     'Prefer edit_file for modifying existing files, especially large or critical ones.',
     'Do not try to clean unrelated dirty-worktree files unless the work item explicitly requires it.',
     'Use write_file only when creating a new file or replacing a genuinely small file.',
-    'Use run_command for safe checks only.',
+    'Use run_command for safe checks only, and run planned validation commands when practical.',
+    'Summarize changed files, checks run, failures, and remaining risks.',
+    'Never claim a check passed unless you ran it or Kira provided the result.',
     'Do not mention markdown fences in your final answer.',
   ].join('\n');
 }
 
-function buildReviewPrompt(
+export function buildReviewPrompt(
   work: WorkTask,
   projectOverview: string,
+  contextScan: ProjectContextScan,
   plan: WorkerExecutionPlan | null,
   workerSummary: WorkerSummary,
   outOfPlanFiles: string[],
@@ -2549,10 +3253,15 @@ function buildReviewPrompt(
     `Work title: ${work.title}`,
     `Acceptance target:\n${work.description}`,
     `Project overview:\n${projectOverview}`,
+    `Project context scan:\n${formatProjectContextScan(contextScan)}`,
+    plan ? `Preflight understanding:\n${plan.understanding}` : '',
+    plan ? `Repo findings:\n${formatList(plan.repoFindings, 'No repo findings')}` : '',
     plan ? `Preflight plan summary:\n${plan.summary}` : '',
     plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
+    plan ? `Protected files:\n${formatList(plan.protectedFiles, 'No protected files')}` : '',
     plan ? `Planned checks:\n${formatList(plan.validationCommands, 'No planned checks')}` : '',
     plan ? `Planner risk notes:\n${formatList(plan.riskNotes, 'No planner risks reported')}` : '',
+    plan ? `Stop conditions:\n${formatList(plan.stopConditions, 'No stop conditions')}` : '',
     `Latest worker summary:\n${workerSummary.summary}`,
     `Files reported changed:\n${formatList(workerSummary.filesChanged, 'No files reported')}`,
     `Worker-reported checks:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
@@ -2590,28 +3299,39 @@ function buildReviewPrompt(
       ? `Git diff excerpts for this attempt:\n${diffExcerpts.join('\n\n')}`
       : '',
     'Review the current project state. Do not modify files.',
+    'Review priorities: correctness and requirement coverage first, then regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
     'Only the Kira-passed validation reruns count as verification evidence.',
     'Do not treat worker-reported checks as proof unless they also appear in the Kira-passed rerun list.',
-    'Any file under the project root is allowed to change if it supports the requested outcome.',
+    'Do not approve if Kira validation reruns failed or if missingValidation is required for confidence.',
+    'Do not approve if the worker summary conflicts with the diff excerpts.',
+    'Do not approve unexplained out-of-plan edits when they create concrete risk or obscure the requested outcome.',
     'Do NOT reject only because multiple project-local files changed, because the worker touched a file you did not expect, or because the git working tree already contains unrelated modified/untracked files.',
     'Treat out-of-plan edits or missing planned checks as risk signals to scrutinize, not automatic rejection reasons on their own.',
     'Do NOT enforce minimal-diff purity as a standalone requirement.',
     'Approve when the requested outcome is achieved and there is no clear regression or harmful side effect.',
     'Only request changes when the acceptance target is not met, the implementation is clearly risky, or there is a concrete user-facing/code-level regression.',
+    'When requesting changes, provide concrete nextWorkerInstructions that the worker can execute immediately.',
     'Return only JSON with this shape:',
-    '{"approved":true,"summary":"string","issues":["..."],"filesChecked":["..."]}',
+    '{"approved":true,"summary":"string","findings":[{"file":"path","line":1,"severity":"low|medium|high","message":"string"}],"missingValidation":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"issues":["..."],"filesChecked":["..."]}',
   ]
     .filter(Boolean)
     .join('\n\n');
 }
 
-function buildReviewSystemPrompt(): string {
+export function buildReviewSystemPrompt(): string {
   return [
-    'You are the Kira main reviewer.',
+    'You are Kira Reviewer, an independent code reviewer.',
     'Review the implementation carefully against the requested result and real regressions.',
+    'Prioritize correctness and requirement coverage.',
+    'Then check regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
+    'Do not approve if validation failed.',
+    'Do not approve if the worker summary conflicts with the diff or provided project state.',
+    'Do not approve unexplained out-of-plan edits when they create concrete risk or obscure the requested outcome.',
+    'Provide concrete nextWorkerInstructions when requesting changes.',
     'Do not fail a review only for scope broadness, extra project-local file edits, or unrelated pre-existing dirty-worktree files.',
     'Never edit files.',
     'Use read-only tools and safe commands only.',
+    'Return only the requested structured JSON.',
   ].join('\n');
 }
 
@@ -2920,6 +3640,7 @@ async function processWork(
   }
 
   const projectOverview = buildProjectOverview(projectRoot);
+  const contextScan = await buildProjectContextScan(projectRoot, work);
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
   const resumeFeedback =
     work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
@@ -2957,24 +3678,69 @@ async function processWork(
   let previousIssueSignature: string | null = null;
   let repeatedIssueCount = 0;
   for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
+    const attemptStartedAt = Date.now();
+    const planningState = createWorkerAttemptState(null);
     const workerPlanRaw = await runToolAgent(
       runtime.workerConfig,
       projectRoot,
-      buildWorkerPlanningPrompt(work, projectOverview, feedback),
+      buildWorkerPlanningPrompt(work, projectOverview, contextScan, feedback),
       buildWorkerPlanningSystemPrompt(),
       false,
       signal,
+      planningState,
     );
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
-    const attemptState = createWorkerAttemptState(workerPlan);
+    const preflightIssues = collectPreflightPlanningIssues(
+      contextScan,
+      workerPlan,
+      uniqueStrings(planningState.explorationActions),
+    );
+    if (preflightIssues.length > 0) {
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'needs_context',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          risks: preflightIssues,
+          blockedReason: 'Preflight planning needs more repository context.',
+        }),
+      );
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: [
+          `Preflight planning requested more context before attempt ${cycle}.`,
+          '',
+          `Issues:\n${formatList(preflightIssues, 'No detailed issues provided')}`,
+          '',
+          `Context scan search terms:\n${formatList(
+            contextScan.searchTerms,
+            'No search terms extracted',
+          )}`,
+          '',
+          `Likely files:\n${formatList(contextScan.likelyFiles, 'No likely files detected')}`,
+        ].join('\n'),
+      });
+      feedback = preflightIssues;
+      continue;
+    }
     const worktreeBefore = await getGitWorktreeEntries(projectRoot);
+    const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
+    const attemptState = createWorkerAttemptState(workerPlan, dirtyFilesBefore);
     let workerRaw: string;
     try {
       workerRaw = await runToolAgent(
         runtime.workerConfig,
         projectRoot,
-        buildWorkerPrompt(work, projectOverview, workerPlan, feedback),
+        buildWorkerPrompt(work, projectOverview, contextScan, workerPlan, feedback),
         buildWorkerSystemPrompt(),
         true,
         signal,
@@ -2982,7 +3748,10 @@ async function processWork(
       );
     } catch (error) {
       if (!isAbortError(error)) {
-        const restoredFiles = restoreAttemptFiles(projectRoot, attemptState);
+        const { restoredFiles, error: restoreError } = tryRestoreAttemptFiles(
+          projectRoot,
+          attemptState,
+        );
         if (restoredFiles.length > 0) {
           addComment(options.sessionsDir, sessionPath, {
             taskId: work.id,
@@ -2995,6 +3764,17 @@ async function processWork(
             ].join('\n'),
           });
         }
+        if (restoreError) {
+          enqueueEvent(options.sessionsDir, sessionPath, {
+            id: makeId('event'),
+            workId: work.id,
+            title: work.title,
+            projectName: work.projectName,
+            type: 'needs_attention',
+            createdAt: Date.now(),
+            message: `Kira rollback failed: "${work.title}" 작업의 실패한 시도 파일 복구 중 오류가 발생했어요.`,
+          });
+        }
       }
       throw error;
     }
@@ -3002,8 +3782,11 @@ async function processWork(
     const parsedWorkerSummary = parseWorkerSummary(workerRaw);
     const worktreeAfter = await getGitWorktreeEntries(projectRoot);
     const touchedFiles = detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter);
-    const resolvedFilesChanged =
-      touchedFiles.length > 0 ? touchedFiles : parsedWorkerSummary.filesChanged;
+    const resolvedFilesChanged = resolveAttemptChangedFiles(
+      touchedFiles,
+      parsedWorkerSummary.filesChanged,
+      [...attemptState.patchedFiles],
+    );
     const actualCommandsRun = uniqueStrings(
       attemptState.commandsRun.map((command) => normalizeWhitespace(command)),
     );
@@ -3037,6 +3820,7 @@ async function processWork(
     const highRiskIssues = [
       ...(await collectHighRiskAttemptIssues(projectRoot, workerSummary.filesChanged)),
       ...patchValidationIssues,
+      ...collectDirtyFileGuardrailIssues(workerPlan, dirtyFilesBefore, workerSummary.filesChanged),
       ...collectPlanGuardrailIssues(
         projectRoot,
         workerPlan,
@@ -3052,9 +3836,37 @@ async function processWork(
       body: [
         `Attempt ${cycle} finished.`,
         '',
+        `Project context:\n- Root: ${contextScan.projectRoot}\n- Package manager: ${
+          contextScan.packageManager ?? 'not detected'
+        }`,
+        '',
+        `Existing changes:\n${formatList(
+          contextScan.existingChanges,
+          'Clean worktree or no git changes detected',
+        )}`,
+        '',
+        `Likely files:\n${formatList(contextScan.likelyFiles, 'No likely files detected')}`,
+        '',
+        `Candidate checks:\n${formatList(contextScan.candidateChecks, 'No candidate checks detected')}`,
+        '',
+        `Preflight exploration:\n${formatList(
+          uniqueStrings(planningState.explorationActions),
+          'No preflight exploration recorded',
+        )}`,
+        '',
+        `Read files:\n${formatList([...attemptState.readFiles].sort(), 'No files read during implementation')}`,
+        '',
+        `Patched files:\n${formatList([...attemptState.patchedFiles].sort(), 'No files patched during implementation')}`,
+        '',
         `Plan:\n${workerPlan.summary}`,
         '',
+        `Plan understanding:\n${workerPlan.understanding}`,
+        '',
+        `Repo findings:\n${formatList(workerPlan.repoFindings, 'No repo findings')}`,
+        '',
         `Planned files:\n${formatList(workerPlan.intendedFiles, 'No planned files')}`,
+        '',
+        `Protected files:\n${formatList(workerPlan.protectedFiles, 'No protected files')}`,
         '',
         `Planned checks:\n${formatList(workerPlan.validationCommands, 'No planned checks')}`,
         '',
@@ -3071,6 +3883,8 @@ async function processWork(
         `Validation plan notes:\n${formatList(validationPlan.notes, 'No validation plan notes')}`,
         '',
         `Plan risks:\n${formatList(workerPlan.riskNotes, 'No planner risks reported')}`,
+        '',
+        `Stop conditions:\n${formatList(workerPlan.stopConditions, 'No stop conditions')}`,
         '',
         `Summary:\n${workerSummary.summary}`,
         '',
@@ -3100,7 +3914,31 @@ async function processWork(
     });
 
     if (highRiskIssues.length > 0) {
-      const restoredFiles = restoreAttemptFiles(projectRoot, attemptState);
+      const { restoredFiles, error: restoreError } = tryRestoreAttemptFiles(
+        projectRoot,
+        attemptState,
+      );
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'blocked',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          attemptState,
+          workerSummary,
+          validationReruns,
+          outOfPlanFiles,
+          validationGaps: missingValidationCommands,
+          risks: [...workerSummary.remainingRisks, ...highRiskIssues],
+          blockedReason: 'Automated safety validation failed.',
+          rollbackFiles: restoredFiles,
+        }),
+      );
       updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
         ...current,
         status: 'blocked',
@@ -3116,6 +3954,8 @@ async function processWork(
           '',
           `Rolled back files:\n${formatList(restoredFiles, 'No files rolled back')}`,
           '',
+          restoreError ? `Rollback error:\n${restoreError}` : 'Rollback completed without errors.',
+          '',
           'Kira rolled back the latest attempt instead of leaving unsafe or unverified edits in the worktree.',
         ].join('\n'),
       });
@@ -3128,10 +3968,40 @@ async function processWork(
         createdAt: Date.now(),
         message: `Kira blocked: "${work.title}" 작업이 고위험 파일 안전 검증에 걸려 중단됐어요.`,
       });
+      if (restoreError) {
+        enqueueEvent(options.sessionsDir, sessionPath, {
+          id: makeId('event'),
+          workId: work.id,
+          title: work.title,
+          projectName: work.projectName,
+          type: 'needs_attention',
+          createdAt: Date.now(),
+          message: `Kira rollback failed: "${work.title}" 작업의 안전 차단 후 파일 복구 중 오류가 발생했어요.`,
+        });
+      }
       return;
     }
 
     if (validationReruns.failed.length > 0) {
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'validation_failed',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          attemptState,
+          workerSummary,
+          validationReruns,
+          outOfPlanFiles,
+          validationGaps: missingValidationCommands,
+          risks: workerSummary.remainingRisks,
+        }),
+      );
       addComment(options.sessionsDir, sessionPath, {
         taskId: work.id,
         taskType: 'work',
@@ -3168,6 +4038,26 @@ async function processWork(
       }
 
       if (repeatedIssueCount >= 2) {
+        saveAttemptRecord(
+          options.sessionsDir,
+          sessionPath,
+          buildAttemptRecord({
+            workId: work.id,
+            attemptNo: cycle,
+            status: 'blocked',
+            startedAt: attemptStartedAt,
+            contextScan,
+            workerPlan,
+            planningState,
+            attemptState,
+            workerSummary,
+            validationReruns,
+            outOfPlanFiles,
+            validationGaps: missingValidationCommands,
+            risks: feedback,
+            blockedReason: 'Validation failures repeated without progress.',
+          }),
+        );
         updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
           ...current,
           status: 'blocked',
@@ -3216,6 +4106,7 @@ async function processWork(
       buildReviewPrompt(
         work,
         projectOverview,
+        contextScan,
         workerPlan,
         workerSummary,
         outOfPlanFiles,
@@ -3229,9 +4120,30 @@ async function processWork(
       signal,
     );
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
-    const reviewSummary = parseReviewSummary(reviewRaw);
+    const reviewSummary = enforceReviewDecision(parseReviewSummary(reviewRaw));
+    const reviewRecord = buildReviewRecord(work.id, cycle, reviewSummary);
+    saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
 
     if (reviewSummary.approved) {
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'approved',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          attemptState,
+          workerSummary,
+          validationReruns,
+          outOfPlanFiles,
+          validationGaps: missingValidationCommands,
+          risks: [...workerSummary.remainingRisks, ...reviewSummary.residualRisk],
+        }),
+      );
       const suggestedCommitMessage = buildSuggestedCommitMessage(work, workerSummary);
       updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
         ...current,
@@ -3300,11 +4212,60 @@ async function processWork(
         '',
         `Summary:\n${reviewSummary.summary}`,
         '',
+        `Findings:\n${formatList(
+          reviewSummary.findings.map((finding) =>
+            [
+              finding.severity,
+              finding.file,
+              finding.line ? `line ${finding.line}` : '',
+              finding.message,
+            ]
+              .filter(Boolean)
+              .join(': '),
+          ),
+          'No structured findings',
+        )}`,
+        '',
+        `Missing validation:\n${formatList(
+          reviewSummary.missingValidation,
+          'No missing validation reported',
+        )}`,
+        '',
+        `Next worker instructions:\n${formatList(
+          reviewSummary.nextWorkerInstructions,
+          'No next instructions provided',
+        )}`,
+        '',
         `Issues:\n${formatList(reviewSummary.issues, 'No detailed issues provided')}`,
       ].join('\n'),
     });
 
-    feedback = reviewSummary.issues.length > 0 ? reviewSummary.issues : [reviewSummary.summary];
+    saveAttemptRecord(
+      options.sessionsDir,
+      sessionPath,
+      buildAttemptRecord({
+        workId: work.id,
+        attemptNo: cycle,
+        status: 'review_requested_changes',
+        startedAt: attemptStartedAt,
+        contextScan,
+        workerPlan,
+        planningState,
+        attemptState,
+        workerSummary,
+        validationReruns,
+        outOfPlanFiles,
+        validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
+        risks: [...workerSummary.remainingRisks, ...reviewSummary.issues],
+      }),
+    );
+
+    feedback =
+      reviewSummary.nextWorkerInstructions.length > 0
+        ? reviewSummary.nextWorkerInstructions
+        : reviewSummary.issues.length > 0
+          ? reviewSummary.issues
+          : [reviewSummary.summary];
     const issueSignature = buildIssueSignature(reviewSummary.issues, reviewSummary.summary);
     if (issueSignature === previousIssueSignature) {
       repeatedIssueCount += 1;
@@ -3314,6 +4275,26 @@ async function processWork(
     }
 
     if (repeatedIssueCount >= 2) {
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'blocked',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          attemptState,
+          workerSummary,
+          validationReruns,
+          outOfPlanFiles,
+          validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
+          risks: reviewSummary.issues,
+          blockedReason: 'Review issues repeated without progress.',
+        }),
+      );
       updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
         ...current,
         status: 'blocked',

@@ -12,6 +12,10 @@ import {
 
 const tempDirs: string[] = [];
 
+function normalizePath(value: string): string {
+  return value.replace(/\\/g, '/');
+}
+
 function makeTempWorkspace(): string {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'openroom-ts-service-'));
   tempDirs.push(dir);
@@ -47,7 +51,12 @@ describe('openVscodeTsLanguageService', () => {
     );
     fs.writeFileSync(
       path.join(rootDir, 'src', 'a.ts'),
-      ['export const OldName = 1;', 'export function useOldName() {', '  return OldName;', '}'].join('\n'),
+      [
+        'export const OldName = 1;',
+        'export function useOldName() {',
+        '  return OldName;',
+        '}',
+      ].join('\n'),
       'utf-8',
     );
     fs.writeFileSync(
@@ -60,7 +69,7 @@ describe('openVscodeTsLanguageService', () => {
     const references = getTsSemanticReferences({ rootDir, symbol: 'OldName' });
     const renameLocations = getTsSemanticRenameLocations({ rootDir, symbol: 'OldName' });
 
-    expect(definition?.fileName.endsWith(path.join('src', 'a.ts'))).toBe(true);
+    expect(definition ? normalizePath(definition.fileName).endsWith('src/a.ts') : false).toBe(true);
     expect(references?.length).toBeGreaterThanOrEqual(3);
     expect(renameLocations?.length).toBeGreaterThanOrEqual(3);
   });

@@ -2,6 +2,8 @@ import {
   buildExcerpt,
   groupWorksByStatus,
   matchesProjectName,
+  normalizeKiraAttempt,
+  normalizeKiraReview,
   normalizeTaskComment,
   normalizeWorkTask,
 } from './model';
@@ -86,5 +88,50 @@ describe('Kira model helpers', () => {
     expect(matchesProjectName('YourOpenRoom', 'YourOpenRoom')).toBe(true);
     expect(matchesProjectName('', 'AnotherProject')).toBe(true);
     expect(matchesProjectName('YourOpenRoom', 'AnotherProject')).toBe(false);
+  });
+
+  it('normalizes Kira attempt records for the Attempts panel', () => {
+    const attempt = normalizeKiraAttempt({
+      id: 'work-1-2',
+      workId: 'work-1',
+      attemptNo: 2,
+      status: 'blocked',
+      changedFiles: ['src/app.ts', 123],
+      commandsRun: ['pnpm test'],
+      blockedReason: { invalid: true },
+      patchedFiles: ['src/app.ts'],
+    });
+
+    expect(attempt).toMatchObject({
+      id: 'work-1-2',
+      workId: 'work-1',
+      attemptNo: 2,
+      status: 'blocked',
+      changedFiles: ['src/app.ts', '123'],
+      commandsRun: ['pnpm test'],
+      patchedFiles: ['src/app.ts'],
+    });
+    expect(attempt?.blockedReason).toBeUndefined();
+  });
+
+  it('normalizes Kira review findings and drops malformed entries', () => {
+    const review = normalizeKiraReview({
+      id: 'work-1-2',
+      workId: 'work-1',
+      attemptNo: 2,
+      approved: true,
+      summary: 'Needs work',
+      findings: [
+        { file: 'src/app.ts', line: 4, severity: 'critical', message: 'bad branch' },
+        { file: 'src/empty.ts', message: '' },
+        'not-a-finding',
+      ],
+      missingValidation: ['pnpm test', 42],
+    });
+
+    expect(review?.findings).toEqual([
+      { file: 'src/app.ts', line: 4, severity: 'medium', message: 'bad branch' },
+    ]);
+    expect(review?.missingValidation).toEqual(['pnpm test', '42']);
   });
 });

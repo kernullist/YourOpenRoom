@@ -22,13 +22,69 @@ export interface TaskComment {
   createdAt: number;
 }
 
+export interface KiraAttemptRecord {
+  id: string;
+  workId: string;
+  attemptNo: number;
+  status: string;
+  startedAt: number;
+  finishedAt: number;
+  changedFiles: string[];
+  commandsRun: string[];
+  outOfPlanFiles: string[];
+  validationGaps: string[];
+  risks: string[];
+  blockedReason?: string;
+  rollbackFiles?: string[];
+  workerPlan?: {
+    summary?: string;
+    intendedFiles?: string[];
+    protectedFiles?: string[];
+    riskNotes?: string[];
+    stopConditions?: string[];
+  };
+  validationReruns?: {
+    passed?: string[];
+    failed?: string[];
+    failureDetails?: string[];
+  };
+  preflightExploration?: string[];
+  readFiles?: string[];
+  patchedFiles?: string[];
+}
+
+export interface KiraReviewRecord {
+  id: string;
+  workId: string;
+  attemptNo: number;
+  approved: boolean;
+  createdAt: number;
+  summary: string;
+  findings: Array<{
+    file: string;
+    line: number | null;
+    severity: string;
+    message: string;
+  }>;
+  missingValidation: string[];
+  nextWorkerInstructions: string[];
+  residualRisk: string[];
+  filesChecked: string[];
+}
+
 export interface KiraViewState {
   selectedTaskId: string | null;
   activeProjectName: string | null;
   previewMode: boolean;
 }
 
-export const STATUS_ORDER: KiraTaskStatus[] = ['todo', 'in_progress', 'in_review', 'done', 'blocked'];
+export const STATUS_ORDER: KiraTaskStatus[] = [
+  'todo',
+  'in_progress',
+  'in_review',
+  'done',
+  'blocked',
+];
 
 export const DEFAULT_VIEW_STATE: KiraViewState = {
   selectedTaskId: null,
@@ -46,6 +102,31 @@ function parseRecord<T>(raw: unknown): T | null {
     return JSON.parse(raw) as T;
   }
   return raw as T;
+}
+
+function normalizeStringList(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function normalizeReviewFindings(value: unknown): KiraReviewRecord['findings'] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((finding) => {
+      if (!finding || typeof finding !== 'object') return null;
+      const raw = finding as Partial<KiraReviewRecord['findings'][number]>;
+      const message = typeof raw.message === 'string' ? raw.message.trim() : '';
+      if (!message) return null;
+      return {
+        file: typeof raw.file === 'string' ? raw.file : '',
+        line: typeof raw.line === 'number' && Number.isFinite(raw.line) ? raw.line : null,
+        severity:
+          raw.severity === 'low' || raw.severity === 'medium' || raw.severity === 'high'
+            ? raw.severity
+            : 'medium',
+        message,
+      };
+    })
+    .filter((finding): finding is KiraReviewRecord['findings'][number] => finding !== null);
 }
 
 export function normalizeWorkTask(raw: unknown): WorkTask | null {
@@ -81,6 +162,51 @@ export function normalizeTaskComment(raw: unknown): TaskComment | null {
   };
 }
 
+export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
+  const parsed = parseRecord<Partial<KiraAttemptRecord>>(raw);
+  if (!parsed?.id || !parsed.workId) return null;
+  return {
+    id: parsed.id,
+    workId: parsed.workId,
+    attemptNo: typeof parsed.attemptNo === 'number' ? parsed.attemptNo : 0,
+    status: parsed.status ?? 'unknown',
+    startedAt: typeof parsed.startedAt === 'number' ? parsed.startedAt : 0,
+    finishedAt: typeof parsed.finishedAt === 'number' ? parsed.finishedAt : 0,
+    changedFiles: normalizeStringList(parsed.changedFiles),
+    commandsRun: normalizeStringList(parsed.commandsRun),
+    outOfPlanFiles: normalizeStringList(parsed.outOfPlanFiles),
+    validationGaps: normalizeStringList(parsed.validationGaps),
+    risks: normalizeStringList(parsed.risks),
+    blockedReason: typeof parsed.blockedReason === 'string' ? parsed.blockedReason : undefined,
+    rollbackFiles: normalizeStringList(parsed.rollbackFiles),
+    workerPlan: parsed.workerPlan,
+    validationReruns: parsed.validationReruns,
+    preflightExploration: Array.isArray(parsed.preflightExploration)
+      ? normalizeStringList(parsed.preflightExploration)
+      : [],
+    readFiles: normalizeStringList(parsed.readFiles),
+    patchedFiles: normalizeStringList(parsed.patchedFiles),
+  };
+}
+
+export function normalizeKiraReview(raw: unknown): KiraReviewRecord | null {
+  const parsed = parseRecord<Partial<KiraReviewRecord>>(raw);
+  if (!parsed?.id || !parsed.workId) return null;
+  return {
+    id: parsed.id,
+    workId: parsed.workId,
+    attemptNo: typeof parsed.attemptNo === 'number' ? parsed.attemptNo : 0,
+    approved: Boolean(parsed.approved),
+    createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : 0,
+    summary: parsed.summary ?? '',
+    findings: normalizeReviewFindings(parsed.findings),
+    missingValidation: normalizeStringList(parsed.missingValidation),
+    nextWorkerInstructions: normalizeStringList(parsed.nextWorkerInstructions),
+    residualRisk: normalizeStringList(parsed.residualRisk),
+    filesChecked: normalizeStringList(parsed.filesChecked),
+  };
+}
+
 export function getWorkFilePath(workId: string): string {
   return `/works/${workId}.json`;
 }
@@ -103,7 +229,7 @@ export function sortByCreatedAtDesc<T extends { createdAt: number }>(items: T[])
 
 export function buildExcerpt(text: string, maxLength = 140): string {
   const plain = text
-    .replace(/[#>*`~_\-\[\]\(\)!]/g, ' ')
+    .replace(/[#>*`~_[\]()!-]/g, ' ')
     .replace(/\s+/g, ' ')
     .trim();
 

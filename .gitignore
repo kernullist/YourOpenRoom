@@ -104,4 +104,5 @@ nohup.out
 docs/*
 !docs/project-structure.md
 !docs/config.example.json
+!docs/kira-codex-grade-worker-reviewer-plan.md
 .worktrees/

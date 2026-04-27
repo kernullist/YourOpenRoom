@@ -18,20 +18,22 @@ import './i18n';
 import styles from './index.module.scss';
 import {
   type KiraTaskStatus,
+  type KiraAttemptRecord,
+  type KiraReviewRecord,
   type KiraViewState,
   type TaskComment,
   type WorkTask,
   DEFAULT_VIEW_STATE,
   STATUS_ORDER,
-  buildExcerpt,
   formatTimestamp,
   getCommentFilePath,
   getWorkFilePath,
   groupWorksByStatus,
   matchesProjectName,
   normalizeTaskComment,
+  normalizeKiraAttempt,
+  normalizeKiraReview,
   normalizeWorkTask,
-  sortByCreatedAtAsc,
   sortByCreatedAtDesc,
   sortByUpdatedAtDesc,
 } from './model';
@@ -40,6 +42,8 @@ const APP_ID = 18;
 const APP_NAME = 'kira';
 const WORKS_DIR = '/works';
 const COMMENTS_DIR = '/comments';
+const ATTEMPTS_DIR = '/attempts';
+const REVIEWS_DIR = '/reviews';
 const STATE_FILE = '/state.json';
 const KIRA_LIVE_REFRESH_INTERVAL_MS = 4_000;
 
@@ -133,7 +137,7 @@ async function consumeSseResponse(
     }
   };
 
-  while (true) {
+  for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
@@ -156,7 +160,10 @@ async function fetchExistingDiscoveryAnalysis(
   const res = await fetch(
     `/api/kira-discovery/existing?sessionPath=${encodeURIComponent(sessionPath)}&projectName=${encodeURIComponent(projectName)}`,
   );
-  const data = (await res.json()) as { analysis?: KiraProjectDiscoveryAnalysis | null; error?: string };
+  const data = (await res.json()) as {
+    analysis?: KiraProjectDiscoveryAnalysis | null;
+    error?: string;
+  };
   if (!res.ok) {
     throw new Error(data.error || `Existing discovery lookup failed with ${res.status}`);
   }
@@ -201,6 +208,8 @@ const KiraPage: React.FC = () => {
   const { t, i18n } = useTranslation('kira');
   const [works, setWorks] = useState<WorkTask[]>([]);
   const [comments, setComments] = useState<TaskComment[]>([]);
+  const [attempts, setAttempts] = useState<KiraAttemptRecord[]>([]);
+  const [reviews, setReviews] = useState<KiraReviewRecord[]>([]);
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
@@ -215,7 +224,9 @@ const KiraPage: React.FC = () => {
   const [discoveryOpen, setDiscoveryOpen] = useState(false);
   const [discoveryStage, setDiscoveryStage] = useState<KiraDiscoveryStage>('idle');
   const [discoveryLogs, setDiscoveryLogs] = useState<string[]>([]);
-  const [discoveryAnalysis, setDiscoveryAnalysis] = useState<KiraProjectDiscoveryAnalysis | null>(null);
+  const [discoveryAnalysis, setDiscoveryAnalysis] = useState<KiraProjectDiscoveryAnalysis | null>(
+    null,
+  );
   const discoveryAbortRef = useRef<AbortController | null>(null);
 
   const { saveFile, syncToCloud, deleteFromCloud, initFromCloud, getChildrenByPath, getByPath } =
@@ -251,6 +262,36 @@ const KiraPage: React.FC = () => {
         })
         .filter((comment): comment is TaskComment => comment !== null),
     );
+  }, [getChildrenByPath]);
+
+  const loadAttemptsFromFS = useCallback((): KiraAttemptRecord[] => {
+    return getChildrenByPath(ATTEMPTS_DIR)
+      .filter((node) => node.type === 'file')
+      .map((node) => {
+        try {
+          return normalizeKiraAttempt(node.content);
+        } catch (error) {
+          console.warn('[Kira] Failed to parse attempt', node.path, error);
+          return null;
+        }
+      })
+      .filter((attempt): attempt is KiraAttemptRecord => attempt !== null)
+      .sort((a, b) => b.attemptNo - a.attemptNo);
+  }, [getChildrenByPath]);
+
+  const loadReviewsFromFS = useCallback((): KiraReviewRecord[] => {
+    return getChildrenByPath(REVIEWS_DIR)
+      .filter((node) => node.type === 'file')
+      .map((node) => {
+        try {
+          return normalizeKiraReview(node.content);
+        } catch (error) {
+          console.warn('[Kira] Failed to parse review', node.path, error);
+          return null;
+        }
+      })
+      .filter((review): review is KiraReviewRecord => review !== null)
+      .sort((a, b) => b.attemptNo - a.attemptNo);
   }, [getChildrenByPath]);
 
   const saveViewState = useCallback(
@@ -296,24 +337,38 @@ const KiraPage: React.FC = () => {
 
       const nextWorks = loadWorksFromFS();
       const nextComments = loadCommentsFromFS();
+      const nextAttempts = loadAttemptsFromFS();
+      const nextReviews = loadReviewsFromFS();
       const stateNode = getByPath(STATE_FILE);
       const persisted = parseViewState(stateNode?.content);
       const projectNames = nextWorkRootConfig?.projects?.map((project) => project.name) ?? [];
       const nextActiveProjectName =
         persisted.activeProjectName && projectNames.includes(persisted.activeProjectName)
           ? persisted.activeProjectName
-          : projectNames[0] ?? null;
+          : (projectNames[0] ?? null);
       const projectScopedWorks = nextWorks.filter((work) =>
         matchesProjectName(work.projectName, nextActiveProjectName),
       );
 
       setWorks(nextWorks);
       setComments(nextComments);
-      setSelectedTaskId(resolveSelection(focus?.id ?? persisted.selectedTaskId, projectScopedWorks));
+      setAttempts(nextAttempts);
+      setReviews(nextReviews);
+      setSelectedTaskId(
+        resolveSelection(focus?.id ?? persisted.selectedTaskId, projectScopedWorks),
+      );
       setActiveProjectName(nextActiveProjectName);
       setPreviewMode(persisted.previewMode);
     },
-    [getByPath, initFromCloud, loadCommentsFromFS, loadWorkRootConfig, loadWorksFromFS],
+    [
+      getByPath,
+      initFromCloud,
+      loadAttemptsFromFS,
+      loadCommentsFromFS,
+      loadReviewsFromFS,
+      loadWorkRootConfig,
+      loadWorksFromFS,
+    ],
   );
 
   const handleAgentAction = useCallback(
@@ -328,7 +383,9 @@ const KiraPage: React.FC = () => {
         case 'CREATE_EPIC':
         case 'UPDATE_EPIC':
         case 'DELETE_EPIC':
-          await refreshFromCloud({ id: action.params?.focusId ?? action.params?.workId ?? action.params?.taskId ?? null });
+          await refreshFromCloud({
+            id: action.params?.focusId ?? action.params?.workId ?? action.params?.taskId ?? null,
+          });
           return 'success';
         default:
           return `error: unknown action_type ${action.action_type}`;
@@ -481,19 +538,36 @@ const KiraPage: React.FC = () => {
     [comments, projectScopedTaskIds],
   );
   const commentCountByTask = useMemo(() => {
-    return projectScopedComments.reduce(
-      (acc, comment) => {
-        acc.set(comment.taskId, (acc.get(comment.taskId) ?? 0) + 1);
-        return acc;
-      },
-      new Map<string, number>(),
-    );
+    return projectScopedComments.reduce((acc, comment) => {
+      acc.set(comment.taskId, (acc.get(comment.taskId) ?? 0) + 1);
+      return acc;
+    }, new Map<string, number>());
   }, [projectScopedComments]);
   const currentComments = useMemo(
     () =>
-      selectedTaskId ? sortByCreatedAtDesc(comments.filter((comment) => comment.taskId === selectedTaskId)) : [],
+      selectedTaskId
+        ? sortByCreatedAtDesc(comments.filter((comment) => comment.taskId === selectedTaskId))
+        : [],
     [comments, selectedTaskId],
   );
+  const currentAttempts = useMemo(
+    () =>
+      selectedTaskId
+        ? attempts
+            .filter((attempt) => attempt.workId === selectedTaskId)
+            .sort((a, b) => b.attemptNo - a.attemptNo)
+        : [],
+    [attempts, selectedTaskId],
+  );
+  const reviewsByAttempt = useMemo(() => {
+    const map = new Map<number, KiraReviewRecord>();
+    for (const review of reviews) {
+      if (review.workId === selectedTaskId) {
+        map.set(review.attemptNo, review);
+      }
+    }
+    return map;
+  }, [reviews, selectedTaskId]);
   const automationBadgeByTask = useMemo(() => {
     const map = new Map<string, 'queued' | 'running' | 'reviewPending'>();
     const latestByTask = new Map<string, TaskComment>();
@@ -506,9 +580,14 @@ const KiraPage: React.FC = () => {
     }
 
     for (const [taskId, comment] of latestByTask.entries()) {
-      if (comment.body.startsWith('Queued: waiting for another work in the same project to finish.')) {
+      if (
+        comment.body.startsWith('Queued: waiting for another work in the same project to finish.')
+      ) {
         map.set(taskId, 'queued');
-      } else if (comment.body.includes('started implementation') || comment.body.includes('resumed implementation')) {
+      } else if (
+        comment.body.includes('started implementation') ||
+        comment.body.includes('resumed implementation')
+      ) {
         map.set(taskId, 'running');
       } else if (comment.body.startsWith('Review requested changes')) {
         map.set(taskId, 'reviewPending');
@@ -741,7 +820,9 @@ const KiraPage: React.FC = () => {
       const filePath = getWorkFilePath(workId);
       saveFile(filePath, nextWork);
       await syncToCloud(filePath, nextWork);
-      setWorks((prev) => sortByUpdatedAtDesc([...prev.filter((work) => work.id !== workId), nextWork]));
+      setWorks((prev) =>
+        sortByUpdatedAtDesc([...prev.filter((work) => work.id !== workId), nextWork]),
+      );
       setSelectedTaskId(workId);
       setEditorOpen(false);
       reportAction(APP_ID, existing ? 'UPDATE_WORK' : 'CREATE_WORK', {
@@ -770,14 +851,22 @@ const KiraPage: React.FC = () => {
       const commentPaths = comments
         .filter((comment) => comment.taskId === selectedTaskId)
         .map((comment) => getCommentFilePath(comment.id));
+      const attemptPaths = attempts
+        .filter((attempt) => attempt.workId === selectedTaskId)
+        .map((attempt) => `${ATTEMPTS_DIR}/${attempt.id}.json`);
+      const reviewPaths = reviews
+        .filter((review) => review.workId === selectedTaskId)
+        .map((review) => `${REVIEWS_DIR}/${review.id}.json`);
 
-      for (const path of commentPaths) {
+      for (const path of [...commentPaths, ...attemptPaths, ...reviewPaths]) {
         await deleteFromCloud(path);
       }
 
       await deleteFromCloud(getWorkFilePath(selectedTaskId));
       setWorks((prev) => prev.filter((work) => work.id !== selectedTaskId));
       setComments((prev) => prev.filter((comment) => comment.taskId !== selectedTaskId));
+      setAttempts((prev) => prev.filter((attempt) => attempt.workId !== selectedTaskId));
+      setReviews((prev) => prev.filter((review) => review.workId !== selectedTaskId));
       setSelectedTaskId(null);
       setEditorOpen(false);
       setDeleteConfirmOpen(false);
@@ -788,7 +877,7 @@ const KiraPage: React.FC = () => {
       console.error('[Kira] Delete failed:', error);
       setErrorText(error instanceof Error ? error.message : String(error));
     }
-  }, [comments, deleteFromCloud, selectedTaskId]);
+  }, [attempts, comments, deleteFromCloud, reviews, selectedTaskId]);
 
   const requestDeleteTask = useCallback(() => {
     if (!selectedWork) return;
@@ -884,16 +973,16 @@ const KiraPage: React.FC = () => {
     discoveryStage === 'chooseExisting'
       ? t('messages.discoveryExistingPrompt')
       : discoveryStage === 'analyzing'
-      ? t('messages.discoveryRunning')
-      : discoveryStage === 'creating'
-        ? t('messages.discoveryCreating')
-        : discoveryStage === 'created'
-          ? t('messages.discoveryCreatedHint')
-          : discoveryStage === 'error'
-            ? t('messages.discoveryErrored')
-            : discoveryStage === 'done'
-              ? t('messages.discoveryNoFindings')
-              : t('messages.discoveryStored');
+        ? t('messages.discoveryRunning')
+        : discoveryStage === 'creating'
+          ? t('messages.discoveryCreating')
+          : discoveryStage === 'created'
+            ? t('messages.discoveryCreatedHint')
+            : discoveryStage === 'error'
+              ? t('messages.discoveryErrored')
+              : discoveryStage === 'done'
+                ? t('messages.discoveryNoFindings')
+                : t('messages.discoveryStored');
   const discoveryBusy = discoveryStage === 'analyzing' || discoveryStage === 'creating';
   const discoveryLatestLog = discoveryLogs[discoveryLogs.length - 1] ?? null;
   const discoveryStepLabels = [
@@ -1019,8 +1108,12 @@ const KiraPage: React.FC = () => {
             ) : null}
           </div>
           <div className={styles.boardMeta}>
-            <span>{projectScopedWorks.length} {t('stats.works').toLowerCase()}</span>
-            <span>{projectScopedComments.length} {t('sections.comments').toLowerCase()}</span>
+            <span>
+              {projectScopedWorks.length} {t('stats.works').toLowerCase()}
+            </span>
+            <span>
+              {projectScopedComments.length} {t('sections.comments').toLowerCase()}
+            </span>
           </div>
         </div>
 
@@ -1067,7 +1160,9 @@ const KiraPage: React.FC = () => {
                         ) : null}
                         <div className={styles.workCardBottom}>
                           <span>{work.assignee || t('board.unassigned')}</span>
-                          <span>{t('board.comments', { count: commentCountByTask.get(work.id) ?? 0 })}</span>
+                          <span>
+                            {t('board.comments', { count: commentCountByTask.get(work.id) ?? 0 })}
+                          </span>
                         </div>
                       </button>
                     );
@@ -1169,6 +1264,71 @@ const KiraPage: React.FC = () => {
             </div>
           </div>
 
+          {selectedTaskId ? (
+            <div className={styles.attemptsPanel}>
+              <div className={styles.sectionHeader}>
+                <h3>Attempts</h3>
+                <span>{currentAttempts.length}</span>
+              </div>
+              {selectedWork?.status === 'blocked' && currentAttempts[0]?.blockedReason ? (
+                <div className={styles.blockedNotice}>
+                  <strong>Resume condition</strong>
+                  <span>{currentAttempts[0].blockedReason}</span>
+                </div>
+              ) : null}
+              <div className={styles.attemptList}>
+                {currentAttempts.length > 0 ? (
+                  currentAttempts.map((attempt) => {
+                    const review = reviewsByAttempt.get(attempt.attemptNo);
+                    return (
+                      <details key={attempt.id} className={styles.attemptCard}>
+                        <summary>
+                          <span>Attempt {attempt.attemptNo}</span>
+                          <strong>{attempt.status.replace(/_/g, ' ')}</strong>
+                        </summary>
+                        <div className={styles.attemptGrid}>
+                          <div>
+                            <h4>Plan</h4>
+                            <p>{attempt.workerPlan?.summary || 'No plan summary'}</p>
+                            <small>
+                              Files:{' '}
+                              {(attempt.workerPlan?.intendedFiles ?? []).join(', ') || 'none'}
+                            </small>
+                          </div>
+                          <div>
+                            <h4>Changes</h4>
+                            <p>{attempt.changedFiles.join(', ') || 'No changed files recorded'}</p>
+                            <small>
+                              Read: {attempt.readFiles?.join(', ') || 'none'} | Patched:{' '}
+                              {attempt.patchedFiles?.join(', ') || 'none'}
+                            </small>
+                          </div>
+                          <div>
+                            <h4>Validation</h4>
+                            <p>Passed: {attempt.validationReruns?.passed?.join(', ') || 'none'}</p>
+                            <small>
+                              Failed: {attempt.validationReruns?.failed?.join(', ') || 'none'}
+                            </small>
+                          </div>
+                          <div>
+                            <h4>Review</h4>
+                            <p>{review?.summary || 'No review record'}</p>
+                            <small>
+                              Findings: {review?.findings.length ?? 0} | Missing checks:{' '}
+                              {review?.missingValidation.length ?? 0}
+                            </small>
+                          </div>
+                        </div>
+                      </details>
+                    );
+                  })
+                ) : (
+                  <div className={styles.commentEmpty}>No attempt records yet.</div>
+                )}
+              </div>
+            </div>
+          ) : null}
+
           <div className={styles.commentsPanel}>
             <div className={styles.sectionHeader}>
               <h3>{t('sections.comments')}</h3>
@@ -1203,7 +1363,10 @@ const KiraPage: React.FC = () => {
 
                   <div className={styles.commentActions}>
                     <span>{t('comments.hint')}</span>
-                    <button className={styles.secondaryButton} onClick={() => void handleAddComment()}>
+                    <button
+                      className={styles.secondaryButton}
+                      onClick={() => void handleAddComment()}
+                    >
                       {t('actions.addComment')}
                     </button>
                   </div>
@@ -1256,16 +1419,16 @@ const KiraPage: React.FC = () => {
                 {discoveryStage === 'chooseExisting'
                   ? t('messages.discoveryExistingReady')
                   : discoveryStage === 'analyzing'
-                  ? t('messages.discoveryRunning')
-                  : discoveryStage === 'ready'
-                    ? t('messages.discoveryReady')
-                    : discoveryStage === 'creating'
-                      ? t('messages.discoveryCreating')
-                      : discoveryStage === 'created'
-                        ? t('messages.discoveryCreated')
-                        : discoveryStage === 'error'
-                          ? t('messages.discoveryErrored')
-                          : t('messages.discoveryIdle')}
+                    ? t('messages.discoveryRunning')
+                    : discoveryStage === 'ready'
+                      ? t('messages.discoveryReady')
+                      : discoveryStage === 'creating'
+                        ? t('messages.discoveryCreating')
+                        : discoveryStage === 'created'
+                          ? t('messages.discoveryCreated')
+                          : discoveryStage === 'error'
+                            ? t('messages.discoveryErrored')
+                            : t('messages.discoveryIdle')}
               </strong>
               {activeProjectName ? <span>{activeProjectName}</span> : null}
             </div>
@@ -1274,7 +1437,9 @@ const KiraPage: React.FC = () => {
               className={`${styles.discoveryHero} ${
                 discoveryBusy
                   ? styles.discoveryHeroBusy
-                  : discoveryStage === 'ready' || discoveryStage === 'created' || discoveryStage === 'done'
+                  : discoveryStage === 'ready' ||
+                      discoveryStage === 'created' ||
+                      discoveryStage === 'done'
                     ? styles.discoveryHeroReady
                     : discoveryStage === 'error'
                       ? styles.discoveryHeroError
@@ -1298,18 +1463,20 @@ const KiraPage: React.FC = () => {
                     {discoveryStage === 'chooseExisting'
                       ? t('messages.discoveryExistingReady')
                       : discoveryBusy
-                      ? t('messages.discoveryAnalyzingTitle')
-                      : discoveryStage === 'ready'
-                        ? t('messages.discoveryReady')
-                        : discoveryStage === 'created'
-                          ? t('messages.discoveryCreated')
-                          : discoveryStage === 'error'
-                            ? t('messages.discoveryErrored')
-                            : t('messages.discoveryIdle')}
+                        ? t('messages.discoveryAnalyzingTitle')
+                        : discoveryStage === 'ready'
+                          ? t('messages.discoveryReady')
+                          : discoveryStage === 'created'
+                            ? t('messages.discoveryCreated')
+                            : discoveryStage === 'error'
+                              ? t('messages.discoveryErrored')
+                              : t('messages.discoveryIdle')}
                   </strong>
                   <p>
                     {discoveryLatestLog ??
-                      (discoveryBusy ? t('messages.discoveryAnalyzingHint') : discoveryFooterMessage)}
+                      (discoveryBusy
+                        ? t('messages.discoveryAnalyzingHint')
+                        : discoveryFooterMessage)}
                   </p>
                 </div>
               </div>
@@ -1321,13 +1488,19 @@ const KiraPage: React.FC = () => {
                     discoveryStage !== 'error' &&
                     (discoveryStage !== 'analyzing' || index < discoveryActiveStepIndex);
                   const active =
-                    discoveryBusy && discoveryStage === 'analyzing' && index === discoveryActiveStepIndex;
+                    discoveryBusy &&
+                    discoveryStage === 'analyzing' &&
+                    index === discoveryActiveStepIndex;
 
                   return (
                     <div
                       key={label}
                       className={`${styles.discoveryStep} ${
-                        completed ? styles.discoveryStepDone : active ? styles.discoveryStepActive : ''
+                        completed
+                          ? styles.discoveryStepDone
+                          : active
+                            ? styles.discoveryStepActive
+                            : ''
                       }`}
                     >
                       <span>{index + 1}</span>
@@ -1376,7 +1549,9 @@ const KiraPage: React.FC = () => {
                           >
                             {finding.kind === 'bug' ? 'Bug' : 'Feature'}
                           </span>
-                          <span>{finding.files[0] || finding.evidence[0] || activeProjectName}</span>
+                          <span>
+                            {finding.files[0] || finding.evidence[0] || activeProjectName}
+                          </span>
                         </div>
                         <strong>{finding.title}</strong>
                         <p>{finding.summary}</p>
@@ -1419,12 +1594,19 @@ const KiraPage: React.FC = () => {
                 </>
               ) : discoveryStage === 'ready' ? (
                 <>
-                  <p>{t('messages.discoveryContinuePrompt', { count: discoveryAnalysis?.findings.length ?? 0 })}</p>
+                  <p>
+                    {t('messages.discoveryContinuePrompt', {
+                      count: discoveryAnalysis?.findings.length ?? 0,
+                    })}
+                  </p>
                   <div className={styles.discoveryFooterActions}>
                     <button className={styles.secondaryButton} onClick={handleCloseDiscovery}>
                       {t('actions.notNow')}
                     </button>
-                    <button className={styles.primaryButton} onClick={() => void handleContinueDiscovery()}>
+                    <button
+                      className={styles.primaryButton}
+                      onClick={() => void handleContinueDiscovery()}
+                    >
                       {t('actions.continue')}
                     </button>
                   </div>
@@ -1471,7 +1653,10 @@ const KiraPage: React.FC = () => {
             <div className={styles.discoveryFooter}>
               <p>Delete this task and its comments?</p>
               <div className={styles.discoveryFooterActions}>
-                <button className={styles.secondaryButton} onClick={() => setDeleteConfirmOpen(false)}>
+                <button
+                  className={styles.secondaryButton}
+                  onClick={() => setDeleteConfirmOpen(false)}
+                >
                   {t('actions.notNow')}
                 </button>
                 <button className={styles.dangerButton} onClick={() => void handleDeleteTask()}>
