@@ -4,22 +4,31 @@ import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
+  buildCodexCliArgs,
   buildIssueSignature,
   buildProjectContextScan,
   buildReviewPrompt,
   buildReviewSystemPrompt,
+  buildAttemptComparisonReviewSystemPrompt,
+  canUseFullFileRewrite,
+  collectAttemptReviewabilityIssues,
   buildWorkerPlanningPrompt,
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
   buildWorkerSystemPrompt,
   detectTouchedFilesFromGitStatus,
+  filterStageableChangedFiles,
   findMissingValidationCommands,
   findSuggestedCommitBackfillSummary,
   findOutOfPlanTouchedFiles,
+  formatWorkerSubmission,
+  getOpenAiAssistantReasoningContent,
   hasMergeConflictMarkers,
+  isGeneratedArtifactPath,
   isSafeCommandAllowed,
   parseGitStatusPorcelain,
   parseProjectDiscoveryAnalysis,
+  parseAttemptSelectionSummary,
   parseStoredWorkerAttemptComment,
   parseWorkerExecutionPlan,
   resolveAttemptChangedFiles,
@@ -27,6 +36,10 @@ import {
   resolveValidationPlan,
   resolveProjectSettings,
   resolveRoleLlmConfig,
+  resolveKiraProjectRoot,
+  resolveWorkerLlmConfigs,
+  shouldUseKiraAttemptWorktrees,
+  shouldUseKiraIsolatedWorktree,
 } from '../kiraAutomationPlugin';
 
 function makeTempDir(prefix: string): string {
@@ -147,18 +160,83 @@ describe('parseStoredWorkerAttemptComment()', () => {
   });
 });
 
+describe('formatWorkerSubmission()', () => {
+  it('preserves the raw worker final response for comments', () => {
+    const raw = '  {"summary":"done","filesChanged":["src/app.ts"],"testsRun":["pnpm test"]}  ';
+
+    expect(formatWorkerSubmission(raw)).toBe(
+      '{"summary":"done","filesChanged":["src/app.ts"],"testsRun":["pnpm test"]}',
+    );
+  });
+
+  it('truncates very long worker responses with a clear marker', () => {
+    const formatted = formatWorkerSubmission('abcdef', 5);
+
+    expect(formatted).toContain('...worker submission truncated for comment');
+  });
+});
+
+describe('collectAttemptReviewabilityIssues()', () => {
+  it('blocks empty worker submissions before final review', () => {
+    expect(
+      collectAttemptReviewabilityIssues({
+        rawWorkerOutput: '',
+        workerSummary: { summary: 'No worker summary provided.', filesChanged: [] },
+        workerPlan: { intendedFiles: ['templates/index.html'] },
+        diffExcerpts: [],
+        gitDiffAvailable: true,
+      }),
+    ).toEqual([
+      'Worker returned an empty final submission, so Kira cannot verify the attempt summary or validation evidence.',
+      'Worker planned edits to templates/index.html but produced no changed files.',
+    ]);
+  });
+
+  it('blocks git attempts that report changed files without reviewable diff evidence', () => {
+    expect(
+      collectAttemptReviewabilityIssues({
+        rawWorkerOutput: JSON.stringify({
+          summary: 'Changed the template.',
+          filesChanged: ['templates/index.html'],
+        }),
+        workerSummary: { summary: 'Changed the template.', filesChanged: ['templates/index.html'] },
+        workerPlan: { intendedFiles: ['templates/index.html'] },
+        diffExcerpts: [],
+        gitDiffAvailable: true,
+      }),
+    ).toEqual([
+      'Kira detected changed files (templates/index.html) but could not collect a git diff; the attempt cannot be reviewed safely.',
+    ]);
+  });
+
+  it('allows non-git attempts without diff excerpts when a worker summary exists', () => {
+    expect(
+      collectAttemptReviewabilityIssues({
+        rawWorkerOutput: '{"summary":"Updated docs","filesChanged":["README.md"]}',
+        workerSummary: { summary: 'Updated docs', filesChanged: ['README.md'] },
+        workerPlan: { intendedFiles: ['README.md'] },
+        diffExcerpts: [],
+        gitDiffAvailable: false,
+      }),
+    ).toEqual([]);
+  });
+});
+
 describe('Kira Codex-grade prompts', () => {
   it('locks worker system prompts to planning, safety, validation, and reporting rules', () => {
     const planner = buildWorkerPlanningSystemPrompt();
     const worker = buildWorkerSystemPrompt();
 
     expect(planner).toContain('inspect repository structure and relevant files');
+    expect(planner).toContain('Never return the final plan before using list_files');
     expect(planner).toContain('protectedFiles');
     expect(planner).toContain('stopConditions');
     expect(planner).toContain('Do not invent inspected files');
     expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
     expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
+    expect(worker).toContain('sibling git worktrees');
     expect(worker).toContain('Do not touch out-of-plan files unless necessary and explained.');
+    expect(worker).toContain('complete final content');
     expect(worker).toContain(
       'Never claim a check passed unless you ran it or Kira provided the result.',
     );
@@ -183,8 +261,10 @@ describe('Kira Codex-grade prompts', () => {
     expect(planningPrompt).toContain('"repoFindings":["..."]');
     expect(planningPrompt).toContain('"protectedFiles":["..."]');
     expect(planningPrompt).toContain('"stopConditions":["..."]');
+    expect(planningPrompt).toContain('Call at least one read-only tool');
     expect(workerPrompt).toContain('Never edit protectedFiles.');
     expect(workerPrompt).toContain('Run the planned validation commands when practical');
+    expect(workerPrompt).toContain('complete final file content');
     expect(workerPrompt).toContain('"remainingRisks":["..."]');
   });
 
@@ -219,8 +299,10 @@ describe('Kira Codex-grade prompts', () => {
 
     expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
     expect(reviewerSystem).toContain('Prioritize correctness and requirement coverage.');
+    expect(reviewerSystem).toContain('concurrent-agent integration risks');
     expect(reviewerSystem).toContain('Do not approve if validation failed.');
     expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
+    expect(buildAttemptComparisonReviewSystemPrompt()).toContain('attempt judge');
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
     expect(reviewPrompt).toContain(
       'Do not approve if the worker summary conflicts with the diff excerpts.',
@@ -228,6 +310,44 @@ describe('Kira Codex-grade prompts', () => {
     expect(reviewPrompt).toContain('"missingValidation":["..."]');
     expect(reviewPrompt).toContain('"nextWorkerInstructions":["..."]');
     expect(reviewPrompt).toContain('"residualRisk":["..."]');
+  });
+});
+
+describe('parseAttemptSelectionSummary()', () => {
+  it('approves only when the selected attempt is one of the valid attempts', () => {
+    expect(
+      parseAttemptSelectionSummary(
+        JSON.stringify({
+          approved: true,
+          selectedAttemptNo: 2,
+          summary: 'Attempt 2 is the safest complete fix.',
+          issues: [],
+          nextWorkerInstructions: [],
+          residualRisk: ['Watch release notes.'],
+          filesChecked: ['src/kira.ts'],
+        }),
+        [1, 2, 3],
+      ),
+    ).toEqual({
+      approved: true,
+      selectedAttemptNo: 2,
+      summary: 'Attempt 2 is the safest complete fix.',
+      issues: [],
+      nextWorkerInstructions: [],
+      residualRisk: ['Watch release notes.'],
+      filesChecked: ['src/kira.ts'],
+    });
+
+    expect(
+      parseAttemptSelectionSummary(
+        JSON.stringify({
+          approved: true,
+          selectedAttemptNo: 9,
+          summary: 'Invalid winner.',
+        }),
+        [1, 2, 3],
+      ).approved,
+    ).toBe(false);
   });
 });
 
@@ -338,6 +458,26 @@ describe('project default validation helpers', () => {
     try {
       expect(buildDefaultValidationCommands(projectRoot, ['app/main.py'])).toEqual([
         'python -m pytest',
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('adds lightweight validation for changed HTML theme files', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-html-'));
+    fs.mkdirSync(join(projectRoot, 'templates'), { recursive: true });
+    fs.writeFileSync(join(projectRoot, '.git'), 'gitdir: ../repo/.git/worktrees/demo\n', 'utf-8');
+    fs.writeFileSync(
+      join(projectRoot, 'templates', 'index.html'),
+      '<select data-theme><option>default</option></select><script>localStorage.theme = "dark";</script>',
+      'utf-8',
+    );
+
+    try {
+      expect(buildDefaultValidationCommands(projectRoot, ['templates/index.html'])).toEqual([
+        'git diff --check -- templates/index.html',
+        'rg -n "data-theme" templates/index.html',
       ]);
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
@@ -647,6 +787,143 @@ describe('resolveRoleLlmConfig()', () => {
       model: 'claude-sonnet-4.6',
     });
   });
+
+  it('supports Codex CLI roles without API endpoint settings', () => {
+    const resolved = resolveRoleLlmConfig(
+      null,
+      {
+        provider: 'codex-cli',
+        model: 'gpt-5.3-codex',
+      },
+      null,
+    );
+
+    expect(resolved).toEqual({
+      provider: 'codex-cli',
+      apiKey: '',
+      baseUrl: '',
+      model: 'gpt-5.3-codex',
+    });
+  });
+
+  it('defaults OpenCode API roles to the Zen endpoint', () => {
+    const resolved = resolveRoleLlmConfig(
+      null,
+      {
+        provider: 'opencode',
+        apiKey: 'oc-test',
+        model: 'opencode/kimi-k2.5',
+      },
+      null,
+    );
+
+    expect(resolved).toEqual({
+      provider: 'opencode',
+      apiKey: 'oc-test',
+      baseUrl: 'https://opencode.ai/zen',
+      model: 'opencode/kimi-k2.5',
+    });
+  });
+});
+
+describe('resolveWorkerLlmConfigs()', () => {
+  it('caps configured workers at three and preserves per-worker models', () => {
+    const workers = resolveWorkerLlmConfigs(
+      {
+        provider: 'openrouter',
+        apiKey: 'sk-test',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openai/gpt-5.4',
+      },
+      {
+        workers: [
+          { model: 'openai/gpt-5.4-mini' },
+          { provider: 'codex-cli', model: 'gpt-5.3-codex' },
+          { provider: 'opencode-go', apiKey: 'oc-test', model: 'opencode-go/kimi-k2.5' },
+          { model: 'ignored-fourth-worker' },
+        ],
+      },
+    );
+
+    expect(workers).toHaveLength(3);
+    expect(workers.map((worker) => worker.model)).toEqual([
+      'openai/gpt-5.4-mini',
+      'gpt-5.3-codex',
+      'opencode-go/kimi-k2.5',
+    ]);
+    expect(workers[1].provider).toBe('codex-cli');
+    expect(workers[2].baseUrl).toBe('https://opencode.ai/zen/go');
+  });
+});
+
+describe('buildCodexCliArgs()', () => {
+  it('uses only arguments supported by the installed Codex CLI', () => {
+    const args = buildCodexCliArgs(
+      {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      },
+      'F:/workspace/project',
+      true,
+      'F:/tmp/last-message.txt',
+    );
+
+    expect(args).not.toContain('--ask-for-approval');
+    expect(args).toEqual(
+      expect.arrayContaining([
+        'exec',
+        '--cd',
+        'F:/workspace/project',
+        '--skip-git-repo-check',
+        '--sandbox',
+        'workspace-write',
+        '--output-last-message',
+        'F:/tmp/last-message.txt',
+        '--model',
+        'gpt-5.5',
+        '-',
+      ]),
+    );
+  });
+});
+
+describe('getOpenAiAssistantReasoningContent()', () => {
+  it('fills missing reasoning_content for Kimi tool-call turns', () => {
+    expect(
+      getOpenAiAssistantReasoningContent(
+        { provider: 'opencode-go', model: 'opencode-go/kimi-k2.6' },
+        {
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'read_file',
+              args: { path: 'templates/index.html' },
+            },
+          ],
+        },
+      ),
+    ).toContain('reasoning_content');
+  });
+
+  it('keeps existing reasoning_content when the provider returned it', () => {
+    expect(
+      getOpenAiAssistantReasoningContent(
+        { provider: 'opencode-go', model: 'opencode-go/kimi-k2.6' },
+        {
+          reasoningContent: 'Actual model reasoning.',
+          toolCalls: [
+            {
+              id: 'call_1',
+              name: 'read_file',
+              args: { path: 'templates/index.html' },
+            },
+          ],
+        },
+      ),
+    ).toBe('Actual model reasoning.');
+  });
 });
 
 describe('resolveProjectSettings()', () => {
@@ -661,6 +938,60 @@ describe('resolveProjectSettings()', () => {
 
   it('uses the provided fallback when the project file does not define autoCommit', () => {
     expect(resolveProjectSettings({}, { autoCommit: false })).toEqual({ autoCommit: false });
+  });
+});
+
+describe('resolveKiraProjectRoot()', () => {
+  it('treats the configured work root itself as the project when it has project markers', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'briefwave-cast-'));
+    try {
+      fs.writeFileSync(join(projectRoot, '.git'), 'gitdir: ../repo/.git/worktrees/demo\n', 'utf-8');
+
+      expect(resolveKiraProjectRoot(projectRoot, projectRoot.split(/[\\/]/).pop())).toBe(
+        projectRoot,
+      );
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('falls back to a child project path when the work root is a project container', () => {
+    const workRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-work-root-'));
+    try {
+      expect(resolveKiraProjectRoot(workRoot, 'templates')).toBe(join(workRoot, 'templates'));
+    } finally {
+      fs.rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('shouldUseKiraIsolatedWorktree()', () => {
+  it('enables worktree isolation only for auto-commit git projects', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-worktree-'));
+    try {
+      fs.writeFileSync(join(projectRoot, '.git'), 'gitdir: ../repo/.git/worktrees/demo\n', 'utf-8');
+
+      expect(shouldUseKiraIsolatedWorktree(projectRoot, { autoCommit: true })).toBe(true);
+      expect(shouldUseKiraIsolatedWorktree(projectRoot, { autoCommit: false })).toBe(false);
+      expect(
+        shouldUseKiraIsolatedWorktree(join(projectRoot, 'missing'), { autoCommit: true }),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('requires attempt worktrees for multi-worker git projects even without auto-commit', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-attempt-worktree-'));
+    try {
+      fs.writeFileSync(join(projectRoot, '.git'), 'gitdir: ../repo/.git/worktrees/demo\n', 'utf-8');
+
+      expect(shouldUseKiraAttemptWorktrees(projectRoot, { autoCommit: false }, 1)).toBe(false);
+      expect(shouldUseKiraAttemptWorktrees(projectRoot, { autoCommit: false }, 3)).toBe(true);
+      expect(shouldUseKiraAttemptWorktrees(projectRoot, { autoCommit: true }, 1)).toBe(true);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 });
 
@@ -680,6 +1011,12 @@ describe('git status helpers', () => {
     ]);
   });
 
+  it('preserves the first path character when status output uses compact one-column status', () => {
+    expect(parseGitStatusPorcelain('M templates/index.html')).toEqual([
+      { status: 'M ', path: 'templates/index.html' },
+    ]);
+  });
+
   it('keeps patched files in the resolved attempt changes even when git status is unchanged', () => {
     expect(resolveAttemptChangedFiles([], ['model-reported.ts'], ['src/dirty.ts'])).toEqual([
       'src/dirty.ts',
@@ -688,9 +1025,90 @@ describe('git status helpers', () => {
       'model-reported.ts',
     ]);
   });
+
+  it('filters generated artifacts from detected attempt changes', () => {
+    expect(isGeneratedArtifactPath('__pycache__/main.cpython-311.pyc')).toBe(true);
+    expect(
+      detectTouchedFilesFromGitStatus(
+        [],
+        [
+          { status: '??', path: '__pycache__/main.cpython-311.pyc' },
+          { status: ' M', path: 'templates/index.html' },
+        ],
+      ),
+    ).toEqual(['templates/index.html']);
+    expect(
+      resolveAttemptChangedFiles(
+        ['__pycache__/main.cpython-311.pyc'],
+        ['__pycache__/main.cpython-311.pyc'],
+        [],
+      ),
+    ).toEqual([]);
+  });
+
+  it('filters non-stageable reported paths before integration', () => {
+    expect(
+      filterStageableChangedFiles(
+        ['emplates/index.html', 'templates/index.html'],
+        [{ status: ' M', path: 'templates/index.html' }],
+      ),
+    ).toEqual({
+      targetFiles: ['templates/index.html'],
+      ignoredFiles: ['emplates/index.html'],
+    });
+
+    expect(
+      filterStageableChangedFiles(
+        ['templates/old.html'],
+        [{ status: ' D', path: 'templates/old.html' }],
+      ).targetFiles,
+    ).toEqual(['templates/old.html']);
+  });
 });
 
 describe('worker guardrail helpers', () => {
+  it('allows full-file rewrites only for read, planned, unprotected files within size limits', () => {
+    expect(
+      canUseFullFileRewrite({
+        existingFileSize: 20_000,
+        relativePath: 'templates/index.html',
+        intendedFiles: ['templates/index.html'],
+        protectedFiles: [],
+        readFiles: ['templates/index.html'],
+      }),
+    ).toBe(true);
+
+    expect(
+      canUseFullFileRewrite({
+        existingFileSize: 20_000,
+        relativePath: 'templates/index.html',
+        intendedFiles: ['templates/index.html'],
+        protectedFiles: [],
+        readFiles: [],
+      }),
+    ).toBe(false);
+
+    expect(
+      canUseFullFileRewrite({
+        existingFileSize: 20_000,
+        relativePath: 'templates/index.html',
+        intendedFiles: ['templates/index.html'],
+        protectedFiles: ['templates/index.html'],
+        readFiles: ['templates/index.html'],
+      }),
+    ).toBe(false);
+
+    expect(
+      canUseFullFileRewrite({
+        existingFileSize: 100_000,
+        relativePath: 'templates/index.html',
+        intendedFiles: ['templates/index.html'],
+        protectedFiles: [],
+        readFiles: ['templates/index.html'],
+      }),
+    ).toBe(false);
+  });
+
   it('flags files that fall outside the preflight plan', () => {
     expect(
       findOutOfPlanTouchedFiles(
@@ -726,6 +1144,7 @@ describe('isSafeCommandAllowed()', () => {
     expect(isSafeCommandAllowed('python -m pytest tests/test_memory.py')).toBe(true);
     expect(isSafeCommandAllowed('pnpm exec vitest src/foo.test.ts')).toBe(true);
     expect(isSafeCommandAllowed('git diff --stat')).toBe(true);
+    expect(isSafeCommandAllowed('rg -n "data-theme" templates/index.html')).toBe(true);
   });
 
   it('rejects commands that are too broad or potentially mutating', () => {

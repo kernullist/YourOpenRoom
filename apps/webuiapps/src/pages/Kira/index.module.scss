@@ -36,7 +36,16 @@
 }
 
 .editorOpen {
-  grid-template-columns: 300px minmax(0, 1fr) 420px;
+  grid-template-columns: 300px minmax(0, 1fr) var(--kira-editor-width, 420px);
+}
+
+.editorResizing {
+  cursor: col-resize;
+  user-select: none;
+
+  * {
+    cursor: col-resize;
+  }
 }
 
 .loadingState,
@@ -164,6 +173,49 @@
   border: 1px solid var(--line-soft);
 }
 
+.modelSettingsCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line-soft);
+}
+
+.modelSettingsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+
+  strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    letter-spacing: -0.02em;
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+  }
+}
+
+.modelSettingsButton {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+
+  svg {
+    flex: 0 0 auto;
+  }
+}
+
 .rootHeader {
   display: flex;
   align-items: center;
@@ -222,6 +274,55 @@
   color: var(--text-muted);
   font-size: 13px;
   line-height: 1.5;
+}
+
+.rootForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rootField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  span {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  input {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(6, 10, 14, 0.55);
+    color: #ffe1c6;
+    font-size: 12px;
+    line-height: 1.45;
+    outline: none;
+
+    &:focus {
+      border-color: rgba(255, 143, 61, 0.42);
+    }
+  }
+}
+
+.rootFormActions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+
+  button {
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+  }
 }
 
 .projectSection {
@@ -328,6 +429,13 @@
   gap: 10px;
 }
 
+.actionHint {
+  margin: 0;
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .primaryButton,
 .aoiButton,
 .secondaryButton,
@@ -359,6 +467,14 @@
 
   &:active {
     transform: scale(0.98);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+    filter: grayscale(0.2);
+    box-shadow: none;
+    transform: none;
   }
 }
 
@@ -436,6 +552,52 @@
   span {
     font-size: 12px;
     color: var(--text-muted);
+  }
+}
+
+.sectionHeaderTitle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.sectionToggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--line-soft);
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-main);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    color 160ms ease;
+
+  svg {
+    transition: transform 160ms ease;
+  }
+
+  &:hover {
+    border-color: var(--line-strong);
+    background: rgba(255, 255, 255, 0.08);
+  }
+
+  &:active {
+    transform: scale(0.96);
+  }
+}
+
+.sectionToggleCollapsed {
+  svg {
+    transform: rotate(-90deg);
   }
 }
 
@@ -547,7 +709,7 @@
 
 .boardGrid {
   display: grid;
-  grid-template-columns: repeat(3, minmax(220px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   gap: 14px;
   min-height: 0;
   overflow: auto;
@@ -659,11 +821,55 @@
 }
 
 .editorSection {
+  position: relative;
   display: flex;
   flex-direction: column;
   gap: 16px;
   padding: 22px;
   overflow: auto;
+}
+
+.editorResizeHandle {
+  position: absolute;
+  z-index: 5;
+  top: 22px;
+  bottom: 22px;
+  left: -14px;
+  width: 20px;
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  cursor: col-resize;
+  touch-action: none;
+
+  &::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 4px;
+    height: 72px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.18);
+    box-shadow: 0 0 0 1px rgba(6, 10, 14, 0.4);
+    transform: translate(-50%, -50%);
+    transition:
+      background 120ms ease,
+      height 120ms ease,
+      box-shadow 120ms ease;
+  }
+
+  &:hover::before,
+  &:focus-visible::before {
+    height: 96px;
+    background: rgba(255, 143, 61, 0.72);
+    box-shadow: 0 0 0 5px rgba(255, 143, 61, 0.14);
+  }
+
+  &:focus-visible {
+    outline: none;
+  }
 }
 
 .editorHeader {
@@ -688,6 +894,8 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
+  min-width: 0;
+  max-width: 100%;
   padding: 18px;
   border-radius: 24px;
 }
@@ -699,6 +907,8 @@
 }
 
 .attemptCard {
+  min-width: 0;
+  max-width: 100%;
   border-radius: 16px;
   border: 1px solid var(--line-soft);
   background: rgba(255, 255, 255, 0.035);
@@ -774,6 +984,7 @@
   display: flex;
   flex-direction: column;
   gap: 4px;
+  min-width: 0;
   padding: 12px;
   border-radius: 14px;
   border: 1px solid rgba(248, 113, 113, 0.22);
@@ -787,6 +998,7 @@
   span {
     color: var(--text-muted);
     line-height: 1.45;
+    overflow-wrap: anywhere;
   }
 }
 
@@ -939,11 +1151,17 @@
   display: flex;
   flex-direction: column;
   gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
   padding: 14px;
 
   p {
     margin: 0;
     line-height: 1.55;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    word-break: break-word;
   }
 }
 
@@ -954,10 +1172,12 @@
     display: flex;
     flex-direction: column;
     gap: 2px;
+    min-width: 0;
   }
 
   strong {
     font-size: 14px;
+    overflow-wrap: anywhere;
   }
 
   span {
@@ -966,6 +1186,7 @@
   }
 
   button {
+    flex: 0 0 auto;
     min-height: 34px;
     padding: 0 10px;
     border-radius: 12px;
@@ -1407,6 +1628,10 @@
   .editorSection {
     grid-area: editor;
   }
+
+  .editorResizeHandle {
+    display: none;
+  }
 }
 
 @media (max-width: 900px) {
@@ -1420,7 +1645,7 @@
   }
 
   .boardGrid {
-    grid-template-columns: repeat(3, minmax(240px, 1fr));
+    grid-template-columns: repeat(auto-fit, minmax(min(180px, 100%), 1fr));
   }
 
   .formGrid,

@@ -23,9 +23,18 @@ const en = {
     useSavedAnalysis: 'Use Saved Analysis',
     analyzeAgain: 'Analyze Again',
     close: 'Close',
+    refresh: 'Refresh',
+    saveWorkRoot: 'Save root',
+    saving: 'Saving...',
+    configureModels: 'Configure Kira models',
+    resizeDetails: 'Resize task detail panel',
+    expandAttempts: 'Expand attempts',
+    collapseAttempts: 'Collapse attempts',
   },
   sections: {
     workRoot: 'Work Root',
+    modelSettings: 'Model settings',
+    modelSettingsCopy: 'Choose worker and reviewer providers, models, and worker count.',
     projects: 'Projects',
     boardEyebrow: 'Execution board',
     boardAllTitle: 'All tasks',
@@ -33,6 +42,7 @@ const en = {
     details: 'Task detail',
     detailCopy:
       'Write the markdown brief here, then let comments handle short handoff and review notes.',
+    attempts: 'Attempts',
     comments: 'Comments',
     discoveryEyebrow: 'Aoi analysis',
     discoveryTitle: 'Aoi Project Discovery',
@@ -48,6 +58,7 @@ const en = {
     assignee: 'Assignee',
     commentAuthor: 'Author',
     commentBody: 'Comment',
+    workRootDirectory: 'Local work root folder',
   },
   placeholders: {
     workTitle: 'Implement work detail sync',
@@ -56,6 +67,7 @@ const en = {
     assignee: 'backend-agent-1, reviewer, or leave blank',
     commentAuthor: 'You, orchestrator, reviewer...',
     commentBody: 'Short note, review remark, or handoff update.',
+    workRootDirectory: 'F:/workspace',
   },
   drafts: {
     task: 'Task draft',
@@ -95,12 +107,15 @@ const en = {
     noProjectsHint:
       'Kira can see the work root, but there are no first-level project folders under it yet.',
     activeProject: 'Active project',
+    modelsReady: 'Ready',
+    modelsNeedSetup: 'Needs setup',
     activeProjectHint:
       'Pick the local project Kira should treat as the current execution target for planning and agent handoff.',
   },
   messages: {
     loading: 'Loading Kira...',
     previewEmpty: 'Nothing to preview yet.',
+    noAttemptRecords: 'No attempt records yet.',
     markdownHint:
       'Use markdown for implementation briefs, acceptance criteria, rollout steps, and reviewer notes.',
     syncHint:
@@ -119,9 +134,18 @@ const en = {
     discoveryExistingReady: 'A saved project analysis is ready to use.',
     discoveryExistingPrompt:
       'Aoi already has {{count}} saved candidate tasks for this project. Do you want to reuse them or run a fresh analysis?',
-    discoveryUsingSaved: 'Loaded the saved analysis. You can continue from these existing findings.',
+    discoveryUsingSaved:
+      'Loaded the saved analysis. You can continue from these existing findings.',
     discoveryNoFindings: 'Aoi did not find any actionable tasks this time.',
     discoveryProjectRequired: 'Pick an active project before asking Aoi to analyze it.',
+    workRootRequired:
+      'Configure a valid Work Root with at least one project folder before creating tasks or running Aoi.',
+    modelConfigRequired:
+      'Configure Kira worker and reviewer models in Settings > Kira before creating tasks or running Aoi.',
+    modelWorkerRequired:
+      'Configure at least one Kira worker model in Settings > Kira before creating tasks or running Aoi.',
+    modelReviewerRequired:
+      'Configure a Kira reviewer model in Settings > Kira before creating tasks or running Aoi.',
     discoverySessionMissing: 'Aoi could not determine the current session path.',
     discoveryContinuePrompt:
       'Aoi found {{count}} candidate tasks. Do you want to turn them into todo works now?',

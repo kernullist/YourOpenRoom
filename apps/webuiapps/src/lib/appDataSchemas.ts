@@ -1,7 +1,4 @@
-import {
-  findAppSchemaByFilePath,
-  validateAgainstAppSchema,
-} from './appSchemaRegistry';
+import { findAppSchemaByFilePath, validateAgainstAppSchema } from './appSchemaRegistry';
 
 interface ValidationSuccess {
   ok: true;
@@ -23,7 +20,10 @@ type JsonRecord = Record<string, unknown>;
 interface SchemaDefinition {
   schemaId: string;
   match: RegExp;
-  validate: (value: JsonRecord, filePath: string) => { normalized: JsonRecord; errors: string[]; warnings: string[] };
+  validate: (
+    value: JsonRecord,
+    filePath: string,
+  ) => { normalized: JsonRecord; errors: string[]; warnings: string[] };
 }
 
 function getFileNameWithoutExtension(filePath: string): string {
@@ -142,7 +142,11 @@ function validateIdMatchesFile(record: JsonRecord, filePath: string, errors: str
   return id;
 }
 
-function validateBrowserState(record: JsonRecord): { normalized: JsonRecord; errors: string[]; warnings: string[] } {
+function validateBrowserState(record: JsonRecord): {
+  normalized: JsonRecord;
+  errors: string[];
+  warnings: string[];
+} {
   const errors: string[] = [];
   const normalized = {
     ...record,
@@ -226,10 +230,12 @@ function validateDiaryEntry(record: JsonRecord, filePath: string) {
   const normalized = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
-    date: isDateString(record.date) ? (record.date as string) : (() => {
-      errors.push('date must be YYYY-MM-DD');
-      return '';
-    })(),
+    date: isDateString(record.date)
+      ? (record.date as string)
+      : (() => {
+          errors.push('date must be YYYY-MM-DD');
+          return '';
+        })(),
     title: requireString(record, 'title', errors),
     content: requireString(record, 'content', errors),
     createdAt: requireInteger(record, 'createdAt', errors),
@@ -249,7 +255,10 @@ function validateDiaryState(record: JsonRecord) {
     errors.push('selectedDate must be a string or null');
   }
   return {
-    normalized: { ...record, selectedDate: typeof value === 'string' || value === null ? value : null },
+    normalized: {
+      ...record,
+      selectedDate: typeof value === 'string' || value === null ? value : null,
+    },
     errors,
     warnings: [],
   };
@@ -274,7 +283,9 @@ function validateNotesState(record: JsonRecord) {
   const errors: string[] = [];
   const selectedNoteId = record.selectedNoteId;
   const activeTag = record.activeTag;
-  if (!(typeof selectedNoteId === 'string' || selectedNoteId === null || selectedNoteId === undefined)) {
+  if (
+    !(typeof selectedNoteId === 'string' || selectedNoteId === null || selectedNoteId === undefined)
+  ) {
     errors.push('selectedNoteId must be a string or null');
   }
   if (!(typeof activeTag === 'string' || activeTag === null || activeTag === undefined)) {
@@ -283,7 +294,8 @@ function validateNotesState(record: JsonRecord) {
   return {
     normalized: {
       ...record,
-      selectedNoteId: typeof selectedNoteId === 'string' || selectedNoteId === null ? selectedNoteId : null,
+      selectedNoteId:
+        typeof selectedNoteId === 'string' || selectedNoteId === null ? selectedNoteId : null,
       activeTag: typeof activeTag === 'string' || activeTag === null ? activeTag : null,
       searchQuery: requireString(record, 'searchQuery', errors),
       previewMode: requireBoolean(record, 'previewMode', errors),
@@ -303,14 +315,18 @@ function validateEmailAddress(record: JsonRecord, fieldPrefix: string, errors: s
 function validateEmail(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
   const from = requireObject(record, 'from', errors);
-  const to = Array.isArray(record.to) ? record.to : (() => {
-    errors.push('to must be an array');
-    return [];
-  })();
-  const cc = Array.isArray(record.cc) ? record.cc : (() => {
-    errors.push('cc must be an array');
-    return [];
-  })();
+  const to = Array.isArray(record.to)
+    ? record.to
+    : (() => {
+        errors.push('to must be an array');
+        return [];
+      })();
+  const cc = Array.isArray(record.cc)
+    ? record.cc
+    : (() => {
+        errors.push('cc must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
@@ -356,7 +372,12 @@ function validateEmailState(record: JsonRecord) {
     normalized: {
       ...record,
       selectedEmailId: typeof selected === 'string' || selected === null ? selected : null,
-      currentFolder: requireEnum(record, 'currentFolder', ['inbox', 'sent', 'drafts', 'trash'] as const, errors),
+      currentFolder: requireEnum(
+        record,
+        'currentFolder',
+        ['inbox', 'sent', 'drafts', 'trash'] as const,
+        errors,
+      ),
     },
     errors,
     warnings: [],
@@ -375,15 +396,21 @@ function validateTwitterPost(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
   const warnings: string[] = [];
   const author = requireObject(record, 'author', errors);
-  const comments = Array.isArray(record.comments) ? record.comments : (() => {
-    errors.push('comments must be an array');
-    return [];
-  })();
+  const comments = Array.isArray(record.comments)
+    ? record.comments
+    : (() => {
+        errors.push('comments must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     author: validateTwitterAuthor(
-      { 'author.name': author.name, 'author.username': author.username, 'author.avatar': author.avatar },
+      {
+        'author.name': author.name,
+        'author.username': author.username,
+        'author.avatar': author.avatar,
+      },
       'author',
       errors,
     ),
@@ -411,7 +438,8 @@ function validateTwitterPost(record: JsonRecord, filePath: string) {
       };
     }),
   };
-  if (normalized.content.length > 280) warnings.push('Twitter post content exceeds the documented 280 character guideline.');
+  if (normalized.content.length > 280)
+    warnings.push('Twitter post content exceeds the documented 280 character guideline.');
   return { normalized, errors, warnings };
 }
 
@@ -439,14 +467,19 @@ function validateTwitterState(record: JsonRecord) {
 
 function validateKiraWork(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
-  const normalized = {
+  const normalized: JsonRecord = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     type: requireEnum(record, 'type', ['work'] as const, errors),
     projectName: requireString(record, 'projectName', errors),
     title: requireString(record, 'title', errors),
     description: requireString(record, 'description', errors),
-    status: requireEnum(record, 'status', ['todo', 'in_progress', 'in_review', 'blocked', 'done'] as const, errors),
+    status: requireEnum(
+      record,
+      'status',
+      ['todo', 'in_progress', 'in_review', 'blocked', 'done'] as const,
+      errors,
+    ),
     createdAt: requireInteger(record, 'createdAt', errors),
     updatedAt: requireInteger(record, 'updatedAt', errors),
   };
@@ -476,8 +509,12 @@ function validateKiraState(record: JsonRecord) {
   return {
     normalized: {
       ...record,
-      selectedTaskId: typeof selectedTaskId === 'string' || selectedTaskId === null ? selectedTaskId : null,
-      activeProjectName: typeof activeProjectName === 'string' || activeProjectName === null ? activeProjectName : null,
+      selectedTaskId:
+        typeof selectedTaskId === 'string' || selectedTaskId === null ? selectedTaskId : null,
+      activeProjectName:
+        typeof activeProjectName === 'string' || activeProjectName === null
+          ? activeProjectName
+          : null,
       previewMode: requireBoolean(record, 'previewMode', errors),
     },
     errors,
@@ -487,14 +524,18 @@ function validateKiraState(record: JsonRecord) {
 
 function validateYouTubeState(record: JsonRecord) {
   const errors: string[] = [];
-  const recentSearches = Array.isArray(record.recentSearches) ? record.recentSearches : (() => {
-    errors.push('recentSearches must be an array');
-    return [];
-  })();
-  const playlists = Array.isArray(record.playlists) ? record.playlists : (() => {
-    errors.push('playlists must be an array');
-    return [];
-  })();
+  const recentSearches = Array.isArray(record.recentSearches)
+    ? record.recentSearches
+    : (() => {
+        errors.push('recentSearches must be an array');
+        return [];
+      })();
+  const playlists = Array.isArray(record.playlists)
+    ? record.playlists
+    : (() => {
+        errors.push('playlists must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     searchQuery: requireString(record, 'searchQuery', errors),
@@ -516,10 +557,13 @@ function validateYouTubeState(record: JsonRecord) {
     sidebarOpen: requireBoolean(record, 'sidebarOpen', errors),
     resultsAutoHide: requireBoolean(record, 'resultsAutoHide', errors),
     loopPlayback: requireBoolean(record, 'loopPlayback', errors),
-    playerZoom: typeof record.playerZoom === 'number' ? record.playerZoom : (() => {
-      errors.push('playerZoom must be a number');
-      return 1;
-    })(),
+    playerZoom:
+      typeof record.playerZoom === 'number'
+        ? record.playerZoom
+        : (() => {
+            errors.push('playerZoom must be a number');
+            return 1;
+          })(),
     recentSearches: recentSearches.map((item) => {
       const entry = isObject(item) ? item : {};
       return {
@@ -580,7 +624,12 @@ function validateCyberNewsArticle(record: JsonRecord, filePath: string) {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     title: requireString(record, 'title', errors),
-    category: requireEnum(record, 'category', ['breaking', 'corporate', 'street', 'tech'] as const, errors),
+    category: requireEnum(
+      record,
+      'category',
+      ['breaking', 'corporate', 'street', 'tech'] as const,
+      errors,
+    ),
     summary: requireString(record, 'summary', errors),
     content: requireString(record, 'content', errors),
     imageUrl: requireString(record, 'imageUrl', errors),
@@ -596,10 +645,12 @@ function validateCyberNewsArticle(record: JsonRecord, filePath: string) {
 
 function validateCyberNewsCase(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
-  const clues = Array.isArray(record.clues) ? record.clues : (() => {
-    errors.push('clues must be an array');
-    return [];
-  })();
+  const clues = Array.isArray(record.clues)
+    ? record.clues
+    : (() => {
+        errors.push('clues must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
@@ -611,17 +662,28 @@ function validateCyberNewsCase(record: JsonRecord, filePath: string) {
       return {
         ...clue,
         id: requireString(clue, 'id', errors),
-        type: requireEnum(clue, 'type', ['press', 'report', 'document', 'message', 'note'] as const, errors),
+        type: requireEnum(
+          clue,
+          'type',
+          ['press', 'report', 'document', 'message', 'note'] as const,
+          errors,
+        ),
         title: requireString(clue, 'title', errors),
         content: requireString(clue, 'content', errors),
-        posX: typeof clue.posX === 'number' ? clue.posX : (() => {
-          errors.push('clue.posX must be a number');
-          return 0;
-        })(),
-        posY: typeof clue.posY === 'number' ? clue.posY : (() => {
-          errors.push('clue.posY must be a number');
-          return 0;
-        })(),
+        posX:
+          typeof clue.posX === 'number'
+            ? clue.posX
+            : (() => {
+                errors.push('clue.posX must be a number');
+                return 0;
+              })(),
+        posY:
+          typeof clue.posY === 'number'
+            ? clue.posY
+            : (() => {
+                errors.push('clue.posY must be a number');
+                return 0;
+              })(),
       };
     }),
   };
@@ -675,7 +737,11 @@ function validateChessPiece(value: unknown, errors: string[]): JsonRecord | null
   return { type, color };
 }
 
-function validateChessPositionArray(value: unknown, key: string, errors: string[]): [number, number] | null {
+function validateChessPositionArray(
+  value: unknown,
+  key: string,
+  errors: string[],
+): [number, number] | null {
   if (value === null) return null;
   if (!Array.isArray(value) || value.length !== 2 || !value.every((item) => isInteger(item))) {
     errors.push(`${key} must be [number, number] or null`);
@@ -686,18 +752,22 @@ function validateChessPositionArray(value: unknown, key: string, errors: string[
 
 function validateChessState(record: JsonRecord) {
   const errors: string[] = [];
-  const board = Array.isArray(record.board) ? record.board : (() => {
-    errors.push('board must be a 2D array');
-    return [];
-  })();
+  const board = Array.isArray(record.board)
+    ? record.board
+    : (() => {
+        errors.push('board must be a 2D array');
+        return [];
+      })();
   const normalizedBoard = board.map((row) =>
     Array.isArray(row) ? row.map((cell) => validateChessPiece(cell, errors)) : [],
   );
   const castlingRights = requireObject(record, 'castlingRights', errors);
-  const moveHistory = Array.isArray(record.moveHistory) ? record.moveHistory : (() => {
-    errors.push('moveHistory must be an array');
-    return [];
-  })();
+  const moveHistory = Array.isArray(record.moveHistory)
+    ? record.moveHistory
+    : (() => {
+        errors.push('moveHistory must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     board: normalizedBoard,
@@ -741,7 +811,11 @@ function validateChessState(record: JsonRecord) {
     gameId: requireString(record, 'gameId', errors),
     lastMove: isObject(record.lastMove)
       ? {
-          from: validateChessPositionArray((record.lastMove as JsonRecord).from, 'lastMove.from', errors),
+          from: validateChessPositionArray(
+            (record.lastMove as JsonRecord).from,
+            'lastMove.from',
+            errors,
+          ),
           to: validateChessPositionArray((record.lastMove as JsonRecord).to, 'lastMove.to', errors),
         }
       : null,
@@ -752,14 +826,18 @@ function validateChessState(record: JsonRecord) {
 
 function validateGomokuHistory(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
-  const players = Array.isArray(record.players) ? record.players : (() => {
-    errors.push('players must be an array');
-    return [];
-  })();
-  const moves = Array.isArray(record.moves) ? record.moves : (() => {
-    errors.push('moves must be an array');
-    return [];
-  })();
+  const players = Array.isArray(record.players)
+    ? record.players
+    : (() => {
+        errors.push('players must be an array');
+        return [];
+      })();
+  const moves = Array.isArray(record.moves)
+    ? record.moves
+    : (() => {
+        errors.push('moves must be an array');
+        return [];
+      })();
   const normalized = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
@@ -800,10 +878,12 @@ function validateGomokuHistory(record: JsonRecord, filePath: string) {
                   ? null
                   : (() => {
                       const line = isObject(winLine) ? winLine : {};
-                      const positions = Array.isArray(line.positions) ? line.positions : (() => {
-                        errors.push('result.winLine.positions must be an array');
-                        return [];
-                      })();
+                      const positions = Array.isArray(line.positions)
+                        ? line.positions
+                        : (() => {
+                            errors.push('result.winLine.positions must be an array');
+                            return [];
+                          })();
                       return {
                         positions: positions.map((position) => {
                           const item = isObject(position) ? position : {};
@@ -815,7 +895,12 @@ function validateGomokuHistory(record: JsonRecord, filePath: string) {
                         color: requireEnum(line, 'color', ['black', 'white'] as const, errors),
                       };
                     })(),
-              reason: requireEnum(result, 'reason', ['five-in-a-row', 'surrender', 'draw'] as const, errors),
+              reason: requireEnum(
+                result,
+                'reason',
+                ['five-in-a-row', 'surrender', 'draw'] as const,
+                errors,
+              ),
             };
           })(),
     startedAt: requireInteger(record, 'startedAt', errors),
@@ -832,7 +917,7 @@ function validateGomokuState(record: JsonRecord) {
       ...record,
       currentGameId:
         typeof record.currentGameId === 'string' || record.currentGameId === null
-          ? record.currentGameId ?? null
+          ? (record.currentGameId ?? null)
           : null,
       totalGames: requireInteger(record, 'totalGames', errors),
       stats: {
@@ -860,18 +945,24 @@ function validateFreeCellCard(value: unknown, errors: string[]): JsonRecord | nu
 
 function validateFreeCellState(record: JsonRecord) {
   const errors: string[] = [];
-  const columns = Array.isArray(record.columns) ? record.columns : (() => {
-    errors.push('columns must be an array');
-    return [];
-  })();
-  const freeCells = Array.isArray(record.freeCells) ? record.freeCells : (() => {
-    errors.push('freeCells must be an array');
-    return [];
-  })();
+  const columns = Array.isArray(record.columns)
+    ? record.columns
+    : (() => {
+        errors.push('columns must be an array');
+        return [];
+      })();
+  const freeCells = Array.isArray(record.freeCells)
+    ? record.freeCells
+    : (() => {
+        errors.push('freeCells must be an array');
+        return [];
+      })();
   const foundations = requireObject(record, 'foundations', errors);
   const normalized = {
     ...record,
-    columns: columns.map((column) => (Array.isArray(column) ? column.map((card) => validateFreeCellCard(card, errors)) : [])),
+    columns: columns.map((column) =>
+      Array.isArray(column) ? column.map((card) => validateFreeCellCard(card, errors)) : [],
+    ),
     freeCells: freeCells.map((cell) => validateFreeCellCard(cell, errors)),
     foundations: {
       hearts: Array.isArray(foundations.hearts)
@@ -894,7 +985,10 @@ function validateFreeCellState(record: JsonRecord) {
   return { normalized, errors, warnings: [] };
 }
 
-function validateGenericState(record: JsonRecord, requiredKeys: Array<[string, 'string' | 'boolean' | 'number' | 'nullable-string']>) {
+function validateGenericState(
+  record: JsonRecord,
+  requiredKeys: Array<[string, 'string' | 'boolean' | 'number' | 'nullable-string']>,
+) {
   const errors: string[] = [];
   const normalized: JsonRecord = { ...record };
   for (const [key, type] of requiredKeys) {
@@ -918,31 +1012,127 @@ function validateGenericState(record: JsonRecord, requiredKeys: Array<[string, '
 }
 
 const SCHEMAS: SchemaDefinition[] = [
-  { schemaId: 'browser-bookmark', match: /^apps\/browser\/data\/bookmarks\/[^/]+\.json$/, validate: validateBrowserBookmark },
-  { schemaId: 'browser-history', match: /^apps\/browser\/data\/history\/[^/]+\.json$/, validate: validateBrowserHistory },
-  { schemaId: 'browser-state', match: /^apps\/browser\/data\/state\.json$/, validate: validateBrowserState },
-  { schemaId: 'calendar-event', match: /^apps\/calendar\/data\/events\/[^/]+\.json$/, validate: validateCalendarEvent },
-  { schemaId: 'calendar-state', match: /^apps\/calendar\/data\/state\.json$/, validate: validateCalendarState },
-  { schemaId: 'diary-entry', match: /^apps\/diary\/data\/entries\/[^/]+\.json$/, validate: validateDiaryEntry },
-  { schemaId: 'diary-state', match: /^apps\/diary\/data\/state\.json$/, validate: validateDiaryState },
-  { schemaId: 'notes-note', match: /^apps\/notes\/data\/notes\/[^/]+\.json$/, validate: validateNotesNote },
-  { schemaId: 'notes-state', match: /^apps\/notes\/data\/state\.json$/, validate: validateNotesState },
-  { schemaId: 'email-email', match: /^apps\/email\/data\/emails\/[^/]+\.json$/, validate: validateEmail },
-  { schemaId: 'email-state', match: /^apps\/email\/data\/state\.json$/, validate: validateEmailState },
-  { schemaId: 'twitter-post', match: /^apps\/twitter\/data\/posts\/[^/]+\.json$/, validate: validateTwitterPost },
-  { schemaId: 'twitter-state', match: /^apps\/twitter\/data\/state\.json$/, validate: validateTwitterState },
-  { schemaId: 'kira-work', match: /^apps\/kira\/data\/works\/[^/]+\.json$/, validate: validateKiraWork },
-  { schemaId: 'kira-comment', match: /^apps\/kira\/data\/comments\/[^/]+\.json$/, validate: validateKiraComment },
+  {
+    schemaId: 'browser-bookmark',
+    match: /^apps\/browser\/data\/bookmarks\/[^/]+\.json$/,
+    validate: validateBrowserBookmark,
+  },
+  {
+    schemaId: 'browser-history',
+    match: /^apps\/browser\/data\/history\/[^/]+\.json$/,
+    validate: validateBrowserHistory,
+  },
+  {
+    schemaId: 'browser-state',
+    match: /^apps\/browser\/data\/state\.json$/,
+    validate: validateBrowserState,
+  },
+  {
+    schemaId: 'calendar-event',
+    match: /^apps\/calendar\/data\/events\/[^/]+\.json$/,
+    validate: validateCalendarEvent,
+  },
+  {
+    schemaId: 'calendar-state',
+    match: /^apps\/calendar\/data\/state\.json$/,
+    validate: validateCalendarState,
+  },
+  {
+    schemaId: 'diary-entry',
+    match: /^apps\/diary\/data\/entries\/[^/]+\.json$/,
+    validate: validateDiaryEntry,
+  },
+  {
+    schemaId: 'diary-state',
+    match: /^apps\/diary\/data\/state\.json$/,
+    validate: validateDiaryState,
+  },
+  {
+    schemaId: 'notes-note',
+    match: /^apps\/notes\/data\/notes\/[^/]+\.json$/,
+    validate: validateNotesNote,
+  },
+  {
+    schemaId: 'notes-state',
+    match: /^apps\/notes\/data\/state\.json$/,
+    validate: validateNotesState,
+  },
+  {
+    schemaId: 'email-email',
+    match: /^apps\/email\/data\/emails\/[^/]+\.json$/,
+    validate: validateEmail,
+  },
+  {
+    schemaId: 'email-state',
+    match: /^apps\/email\/data\/state\.json$/,
+    validate: validateEmailState,
+  },
+  {
+    schemaId: 'twitter-post',
+    match: /^apps\/twitter\/data\/posts\/[^/]+\.json$/,
+    validate: validateTwitterPost,
+  },
+  {
+    schemaId: 'twitter-state',
+    match: /^apps\/twitter\/data\/state\.json$/,
+    validate: validateTwitterState,
+  },
+  {
+    schemaId: 'kira-work',
+    match: /^apps\/kira\/data\/works\/[^/]+\.json$/,
+    validate: validateKiraWork,
+  },
+  {
+    schemaId: 'kira-comment',
+    match: /^apps\/kira\/data\/comments\/[^/]+\.json$/,
+    validate: validateKiraComment,
+  },
   { schemaId: 'kira-state', match: /^apps\/kira\/data\/state\.json$/, validate: validateKiraState },
-  { schemaId: 'youtube-state', match: /^apps\/youtube\/data\/state\.json$/, validate: validateYouTubeState },
-  { schemaId: 'album-image', match: /^apps\/album\/data\/images\/[^/]+\.json$/, validate: validateAlbumImage },
-  { schemaId: 'evidencevault-file', match: /^apps\/evidencevault\/data\/files\/[^/]+\.json$/, validate: validateEvidenceVaultFile },
-  { schemaId: 'chess-state', match: /^apps\/chess\/data\/state\.json$/, validate: validateChessState },
-  { schemaId: 'gomoku-history', match: /^apps\/gomoku\/data\/history\/[^/]+\.json$/, validate: validateGomokuHistory },
-  { schemaId: 'gomoku-state', match: /^apps\/gomoku\/data\/state\.json$/, validate: validateGomokuState },
-  { schemaId: 'freecell-state', match: /^apps\/freecell\/data\/state\.json$/, validate: validateFreeCellState },
-  { schemaId: 'cybernews-article', match: /^apps\/cyberNews\/data\/articles\/[^/]+\.json$/, validate: validateCyberNewsArticle },
-  { schemaId: 'cybernews-case', match: /^apps\/cyberNews\/data\/cases\/[^/]+\.json$/, validate: validateCyberNewsCase },
+  {
+    schemaId: 'youtube-state',
+    match: /^apps\/youtube\/data\/state\.json$/,
+    validate: validateYouTubeState,
+  },
+  {
+    schemaId: 'album-image',
+    match: /^apps\/album\/data\/images\/[^/]+\.json$/,
+    validate: validateAlbumImage,
+  },
+  {
+    schemaId: 'evidencevault-file',
+    match: /^apps\/evidencevault\/data\/files\/[^/]+\.json$/,
+    validate: validateEvidenceVaultFile,
+  },
+  {
+    schemaId: 'chess-state',
+    match: /^apps\/chess\/data\/state\.json$/,
+    validate: validateChessState,
+  },
+  {
+    schemaId: 'gomoku-history',
+    match: /^apps\/gomoku\/data\/history\/[^/]+\.json$/,
+    validate: validateGomokuHistory,
+  },
+  {
+    schemaId: 'gomoku-state',
+    match: /^apps\/gomoku\/data\/state\.json$/,
+    validate: validateGomokuState,
+  },
+  {
+    schemaId: 'freecell-state',
+    match: /^apps\/freecell\/data\/state\.json$/,
+    validate: validateFreeCellState,
+  },
+  {
+    schemaId: 'cybernews-article',
+    match: /^apps\/cyberNews\/data\/articles\/[^/]+\.json$/,
+    validate: validateCyberNewsArticle,
+  },
+  {
+    schemaId: 'cybernews-case',
+    match: /^apps\/cyberNews\/data\/cases\/[^/]+\.json$/,
+    validate: validateCyberNewsCase,
+  },
   {
     schemaId: 'cybernews-state',
     match: /^apps\/cyberNews\/data\/state\.json$/,
@@ -956,7 +1146,10 @@ const SCHEMAS: SchemaDefinition[] = [
   },
 ];
 
-export function validateAppDataWrite(filePath: string, rawJsonContent: string): AppDataValidationResult | null {
+export function validateAppDataWrite(
+  filePath: string,
+  rawJsonContent: string,
+): AppDataValidationResult | null {
   const registrySchema = findAppSchemaByFilePath(filePath);
   if (registrySchema) {
     let parsed: unknown;

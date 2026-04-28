@@ -14,7 +14,15 @@ export interface AlbumConfig {
   photoDirectory?: string;
 }
 
-export interface KiraRoleLlmConfig extends Partial<LLMConfig> {}
+export type KiraAgentProvider = LLMConfig['provider'];
+export type KiraAgentApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
+
+export interface KiraRoleLlmConfig extends Partial<Omit<LLMConfig, 'provider'>> {
+  provider?: KiraAgentProvider;
+  command?: string;
+  apiStyle?: KiraAgentApiStyle;
+  name?: string;
+}
 
 export interface KiraProjectDefaults {
   autoCommit?: boolean;
@@ -24,6 +32,7 @@ export interface KiraConfig {
   workRootDirectory?: string;
   workerModel?: string;
   reviewerModel?: string;
+  workers?: KiraRoleLlmConfig[];
   workerLlm?: KiraRoleLlmConfig;
   reviewerLlm?: KiraRoleLlmConfig;
   projectDefaults?: KiraProjectDefaults;

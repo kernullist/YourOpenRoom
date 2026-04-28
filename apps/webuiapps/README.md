@@ -8,8 +8,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - the floating chat panel and tool runtime
 - built-in apps under `src/pages/`, including OpenVSCode and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
-- the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode,
-  PE Analyst, TTS lab synthesis, session persistence, and config storage work in local development
+- the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
+  Analyst, TTS lab synthesis, session persistence, and config storage work in local development
 
 ## What Lives Here
 
@@ -86,28 +86,43 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 - `/api/tts-lab/*`
 - `/api/openroom-reset`
 
+## Kira Automation Notes
+
+Kira supports one worker by default or up to three configured workers. In multi-worker mode, every
+worker gets a separate git worktree for its attempt, and the reviewer compares all validated
+attempts before selecting one winner. Codex CLI workers/reviewers can be configured with
+`provider: "codex-cli"` after `codex login`; OpenCode Zen/Go workers/reviewers can be configured
+with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key.
+
+For git projects with Kira `autoCommit` enabled, automation commits approved work in the winning
+temporary git worktree. The primary project worktree is touched only during the final locked
+cherry-pick integration. With multiple workers and `autoCommit` disabled, Kira still isolates
+attempts and integrates the selected diff without making the final commit. Integration conflicts,
+overlapping dirty files, or existing staged changes block the task and keep the winning isolated
+worktree for manual recovery.
+
 If you run only a static build without equivalent backend endpoints, these features will not work.
 
 ## Commands
 
 Run these from the repo root unless you specifically filter to this workspace.
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Start the desktop and local middleware APIs |
-| `pnpm --filter @openroom/webuiapps dev` | Start this app directly with Vite |
-| `pnpm --filter @openroom/webuiapps build` | Build the browser bundle |
-| `pnpm --filter @openroom/webuiapps preview` | Preview the built bundle |
-| `pnpm --filter @openroom/webuiapps test` | Run Vitest |
-| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage |
+| Command                                           | Purpose                                     |
+| ------------------------------------------------- | ------------------------------------------- |
+| `pnpm dev`                                        | Start the desktop and local middleware APIs |
+| `pnpm --filter @openroom/webuiapps dev`           | Start this app directly with Vite           |
+| `pnpm --filter @openroom/webuiapps build`         | Build the browser bundle                    |
+| `pnpm --filter @openroom/webuiapps preview`       | Preview the built bundle                    |
+| `pnpm --filter @openroom/webuiapps test`          | Run Vitest                                  |
+| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage                    |
 
 ## Local Persistence
 
 This app reads and writes to `~/.openroom/` in standalone mode:
 
 - `config.json`
-  - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail,
-    Aoi TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
+  - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail, Aoi
+    TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
 - `sessions/...`
   - session-scoped app data and chat data
 - `characters.json`
@@ -119,15 +134,14 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 
 ## Important Notes
 
-- The open-source standalone build aliases `@gui/vibe-container` to
-  `src/lib/vibeContainerMock.ts`.
+- The open-source standalone build aliases `@gui/vibe-container` to `src/lib/vibeContainerMock.ts`.
 - App action definitions are loaded from each app's `meta.yaml`.
 - The chat panel includes both app-level tools and real workspace tools, so changes in `src/lib/`
   often affect the desktop, Kira, and Aoi's IDE together.
-- Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat
-  settings.
+- Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - `PE Analyst` supports two modes today:
   - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`
-  - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as `http://127.0.0.1:17300/`
+  - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as
+    `http://127.0.0.1:17300/`

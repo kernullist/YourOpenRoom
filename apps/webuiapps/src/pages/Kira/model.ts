@@ -34,6 +34,7 @@ export interface KiraAttemptRecord {
   outOfPlanFiles: string[];
   validationGaps: string[];
   risks: string[];
+  diffExcerpts?: string[];
   blockedReason?: string;
   rollbackFiles?: string[];
   workerPlan?: {
@@ -177,6 +178,7 @@ export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
     outOfPlanFiles: normalizeStringList(parsed.outOfPlanFiles),
     validationGaps: normalizeStringList(parsed.validationGaps),
     risks: normalizeStringList(parsed.risks),
+    diffExcerpts: normalizeStringList(parsed.diffExcerpts),
     blockedReason: typeof parsed.blockedReason === 'string' ? parsed.blockedReason : undefined,
     rollbackFiles: normalizeStringList(parsed.rollbackFiles),
     workerPlan: parsed.workerPlan,

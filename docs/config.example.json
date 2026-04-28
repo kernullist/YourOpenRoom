@@ -30,11 +30,27 @@
     "projectDefaults": {
       "autoCommit": true
     },
-    "workerLlm": {
-      "model": "openai/gpt-5.4-mini"
-    },
+    "workers": [
+      {
+        "name": "Fast API worker",
+        "model": "openai/gpt-5.4-mini"
+      },
+      {
+        "name": "Codex local worker",
+        "provider": "codex-cli",
+        "model": "gpt-5.3-codex"
+      },
+      {
+        "name": "OpenCode Go worker",
+        "provider": "opencode-go",
+        "apiKey": "YOUR_OPENCODE_API_KEY",
+        "model": "opencode-go/kimi-k2.5"
+      }
+    ],
     "reviewerLlm": {
-      "model": "openai/gpt-5.4"
+      "provider": "opencode",
+      "apiKey": "YOUR_OPENCODE_API_KEY",
+      "model": "opencode/claude-sonnet-4-6"
     }
   },
   "openvscode": {

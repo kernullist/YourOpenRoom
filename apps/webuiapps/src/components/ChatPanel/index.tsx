@@ -11,6 +11,7 @@ import {
   List,
   PanelLeft,
   PanelRight,
+  Plus,
 } from 'lucide-react';
 import {
   chat,
@@ -23,6 +24,9 @@ import {
 import {
   PROVIDER_MODELS,
   getDefaultProviderConfig,
+  getModelInfo,
+  getProviderDisplayName,
+  type LLMApiStyle,
   type LLMConfig,
   type LLMProvider,
 } from '@/lib/llmModels';
@@ -143,9 +147,19 @@ import {
   type ConversationPreferencesConfig,
   type DialogLlmConfig,
   type IdaPeConfig,
+  type KiraAgentApiStyle,
+  type KiraAgentProvider,
+  type KiraConfig,
+  type KiraRoleLlmConfig,
   type ResponseLanguageMode,
   type UserProfileConfig,
 } from '@/lib/configPersistence';
+import {
+  OPEN_APP_SETTINGS_EVENT,
+  dispatchAppSettingsSaved,
+  type AppSettingsTabKey,
+  type OpenAppSettingsDetail,
+} from '@/lib/settingsEvents';
 import {
   getAoiTtsStatusSnapshot,
   playAoiTtsMessage,
@@ -533,6 +547,9 @@ function buildIdeOpenAck(
 }
 
 function hasUsableLLMConfig(config: LLMConfig | null | undefined): config is LLMConfig {
+  if (config?.provider === 'codex-cli') {
+    return !!config.model.trim();
+  }
   return !!config?.baseUrl.trim() && !!config.model.trim();
 }
 
@@ -1249,9 +1266,11 @@ const ChatPanel: React.FC<{
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [settingsInitialTab, setSettingsInitialTab] = useState<AppSettingsTabKey>('chat');
   const [config, setConfig] = useState<LLMConfig | null>(loadConfigSync);
   const [dialogLlmConfig, setDialogLlmConfig] = useState<DialogLlmConfig | null>(null);
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
+  const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
   const [userProfile, setUserProfile] = useState<UserProfileConfig | null>(
     loadUserProfileConfigSync,
   );
@@ -1289,6 +1308,16 @@ const ChatPanel: React.FC<{
       // ignore persistence failures
     }
   }, [dockSide]);
+
+  useEffect(() => {
+    const handler = (event: Event) => {
+      const tab = (event as CustomEvent<OpenAppSettingsDetail>).detail?.tab ?? 'chat';
+      setSettingsInitialTab(tab);
+      setShowSettings(true);
+    };
+    window.addEventListener(OPEN_APP_SETTINGS_EVENT, handler);
+    return () => window.removeEventListener(OPEN_APP_SETTINGS_EVENT, handler);
+  }, []);
 
   // Open mod editor when triggered from Shell (e.g. after card import mod generation)
   useEffect(() => {
@@ -1504,6 +1533,7 @@ const ChatPanel: React.FC<{
       if (persisted?.idaPe) {
         setIdaPeConfig(persisted.idaPe);
       }
+      setKiraConfig(persisted?.kira ?? null);
       const nextUserProfile = persisted
         ? (persisted.userProfile ?? null)
         : loadUserProfileConfigSync();
@@ -1623,6 +1653,7 @@ const ChatPanel: React.FC<{
       loadPersistedConfig().catch(() => null),
     ]);
     const latestDialogConfig = persisted?.dialogLlm ?? null;
+    const latestKiraConfig = persisted?.kira ?? null;
     const latestUserProfile = persisted
       ? (persisted.userProfile ?? null)
       : loadUserProfileConfigSync();
@@ -1636,6 +1667,7 @@ const ChatPanel: React.FC<{
     }
     setDialogLlmConfig(latestDialogConfig);
     dialogLlmConfigRef.current = latestDialogConfig;
+    setKiraConfig(latestKiraConfig);
     setUserProfile(latestUserProfile);
     userProfileRef.current = latestUserProfile;
     setConversationPreferences(latestConversationPreferences);
@@ -2030,13 +2062,16 @@ const ChatPanel: React.FC<{
             normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
           );
 
-          emitAssistantMessage({
-            id: `calendar-reminder-${event.id}-${Date.now()}`,
-            role: 'assistant',
-            content: reminder.content,
-            emotion: reminder.emotion,
-            suggestedReplies: reminder.replies,
-          }, { updateSuggestedReplies: true, applyEmotion: true });
+          emitAssistantMessage(
+            {
+              id: `calendar-reminder-${event.id}-${Date.now()}`,
+              role: 'assistant',
+              content: reminder.content,
+              emotion: reminder.emotion,
+              suggestedReplies: reminder.replies,
+            },
+            { updateSuggestedReplies: true, applyEmotion: true },
+          );
 
           await markCalendarReminderSent(event);
         }
@@ -2073,6 +2108,7 @@ const ChatPanel: React.FC<{
 
       if (!hasUsableLLMConfig(selectedConversationModel.config)) {
         console.info('[ChatPanel] Missing usable LLM config, opening settings modal');
+        setSettingsInitialTab('models');
         setShowSettings(true);
         return;
       }
@@ -2266,7 +2302,15 @@ const ChatPanel: React.FC<{
         setLoading(false);
       }
     },
-    [input, loading, config, chatHistory, addMessage, emitAssistantMessage, refreshConversationConfigs],
+    [
+      input,
+      loading,
+      config,
+      chatHistory,
+      addMessage,
+      emitAssistantMessage,
+      refreshConversationConfigs,
+    ],
   );
 
   // Core conversation loop
@@ -2461,6 +2505,7 @@ const ChatPanel: React.FC<{
         role: 'assistant',
         content: response.content,
         tool_calls: response.toolCalls,
+        reasoning_content: response.reasoningContent,
       };
       currentMessages = [...currentMessages, assistantMsg];
 
@@ -2695,15 +2740,20 @@ const ChatPanel: React.FC<{
             replies,
           });
 
-          emitAssistantMessage({
-            id: String(Date.now()),
-            role: 'assistant',
-            content,
-            emotion,
-            suggestedReplies: replies,
-            toolCalls:
-              pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
-          }, { updateSuggestedReplies: true, applyEmotion: true });
+          emitAssistantMessage(
+            {
+              id: String(Date.now()),
+              role: 'assistant',
+              content,
+              emotion,
+              suggestedReplies: replies,
+              toolCalls:
+                pendingToolCallsRef.current.length > 0
+                  ? [...pendingToolCallsRef.current]
+                  : undefined,
+            },
+            { updateSuggestedReplies: true, applyEmotion: true },
+          );
           pendingToolCallsRef.current = [];
           currentMessages = [
             ...currentMessages,
@@ -3631,7 +3681,10 @@ const ChatPanel: React.FC<{
               </button>
               <button
                 className={styles.iconBtn}
-                onClick={() => setShowSettings(true)}
+                onClick={() => {
+                  setSettingsInitialTab('chat');
+                  setShowSettings(true);
+                }}
                 title="Settings"
                 data-testid="settings-btn"
               >
@@ -3725,6 +3778,7 @@ const ChatPanel: React.FC<{
           config={config}
           dialogConfig={dialogLlmConfig}
           idaPeConfig={idaPeConfig}
+          kiraConfig={kiraConfig}
           userProfile={userProfile}
           conversationPreferences={conversationPreferences}
           ttsStatusSnapshot={ttsStatusSnapshot}
@@ -3732,12 +3786,14 @@ const ChatPanel: React.FC<{
           promptBudgetEntries={promptBudgetEntries}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
+          initialTab={settingsInitialTab}
           onResetAll={handleResetSessionHistory}
           onSave={(
             c,
             igc,
             dcfg,
             nextIdaPeConfig,
+            nextKiraConfig,
             nextUserProfile,
             nextConversationPreferences,
             nextToolSafetyPolicy,
@@ -3745,17 +3801,27 @@ const ChatPanel: React.FC<{
             setConfig(c);
             setDialogLlmConfig(dcfg);
             setIdaPeConfig(nextIdaPeConfig);
+            setKiraConfig(nextKiraConfig);
             setUserProfile(nextUserProfile);
             setConversationPreferences(nextConversationPreferences);
             setImageGenConfig(igc);
             setToolSafetyPolicy(nextToolSafetyPolicy);
             userProfileRef.current = nextUserProfile;
             conversationPreferencesRef.current = nextConversationPreferences;
-            saveConfig(c, igc, dcfg, nextIdaPeConfig, nextUserProfile, nextConversationPreferences);
+            saveConfig(
+              c,
+              igc,
+              dcfg,
+              nextIdaPeConfig,
+              nextUserProfile,
+              nextConversationPreferences,
+              nextKiraConfig,
+            );
             if (igc) saveImageGenConfig(igc);
             saveUserProfileConfig(nextUserProfile);
             saveConversationPreferences(nextConversationPreferences);
             saveToolSafetyPolicy(nextToolSafetyPolicy);
+            dispatchAppSettingsSaved(settingsInitialTab);
             setShowSettings(false);
           }}
           onClose={() => setShowSettings(false)}
@@ -3800,12 +3866,211 @@ const ChatPanel: React.FC<{
 // Settings Modal (extended with Character + Mod)
 // ---------------------------------------------------------------------------
 
-type SettingsTabKey = 'chat' | 'models' | 'image' | 'advanced';
+type SettingsTabKey = AppSettingsTabKey;
+
+interface KiraRoleDraft {
+  id: string;
+  name: string;
+  provider: KiraAgentProvider;
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  customHeaders: string;
+  command: string;
+  apiStyle: KiraAgentApiStyle | '';
+}
+
+interface RuntimeModelOption {
+  id: string;
+  name: string;
+}
+
+type RuntimeModelStatus = 'idle' | 'loading' | 'loaded' | 'error';
+
+const MODEL_PROVIDER_OPTIONS: Array<{ value: LLMProvider; label: string }> = [
+  'openai',
+  'anthropic',
+  'deepseek',
+  'llama.cpp',
+  'minimax',
+  'z.ai',
+  'kimi',
+  'openrouter',
+  'codex-cli',
+  'opencode',
+  'opencode-go',
+].map((value) => ({
+  value: value as LLMProvider,
+  label: getProviderDisplayName(value as LLMProvider),
+}));
+
+const KIRA_PROVIDER_OPTIONS: Array<{ value: KiraAgentProvider; label: string }> =
+  MODEL_PROVIDER_OPTIONS;
+
+const KIRA_API_STYLE_OPTIONS: Array<{ value: KiraAgentApiStyle | ''; label: string }> = [
+  { value: '', label: 'Auto' },
+  { value: 'openai-chat', label: 'OpenAI Chat Completions' },
+  { value: 'openai-responses', label: 'OpenAI Responses' },
+  { value: 'anthropic-messages', label: 'Anthropic Messages' },
+];
+
+function canInheritKiraApiKey(
+  roleProvider: KiraAgentProvider,
+  mainProvider: LLMProvider,
+  mainApiKey: string,
+): boolean {
+  return (
+    roleProvider !== 'codex-cli' && roleProvider === mainProvider && Boolean(mainApiKey.trim())
+  );
+}
+
+function getProviderModelOptions(
+  provider: LLMProvider,
+  runtimeModels: Partial<Record<LLMProvider, RuntimeModelOption[]>> = {},
+): string[] {
+  const liveModels = runtimeModels[provider];
+  if (liveModels?.length) return liveModels.map((modelInfo) => modelInfo.id);
+  return PROVIDER_MODELS[provider] ?? [];
+}
+
+function formatProviderModelLabel(
+  provider: LLMProvider,
+  modelId: string,
+  runtimeModelLabels: Partial<Record<LLMProvider, Record<string, string>>> = {},
+): string {
+  const runtimeName = runtimeModelLabels[provider]?.[modelId];
+  if (runtimeName) return `${runtimeName} (${modelId})`;
+  const modelInfo = getModelInfo(provider, modelId);
+  return modelInfo ? `${modelInfo.name} (${modelId})` : modelId;
+}
+
+function isCodexCliProvider(provider: LLMProvider): boolean {
+  return provider === 'codex-cli';
+}
+
+function isOpenCodeProvider(provider: LLMProvider): boolean {
+  return provider === 'opencode' || provider === 'opencode-go';
+}
+
+function getDefaultKiraRoleConfig(
+  provider: KiraAgentProvider,
+  _mainConfig: LLMConfig | null,
+): KiraRoleLlmConfig {
+  if (provider === 'codex-cli') {
+    return {
+      provider,
+      command: 'codex',
+      model: 'gpt-5.3-codex',
+    };
+  }
+  if (provider === 'opencode') {
+    return {
+      provider,
+      baseUrl: 'https://opencode.ai/zen',
+      model: 'opencode/claude-sonnet-4-6',
+    };
+  }
+  if (provider === 'opencode-go') {
+    return {
+      provider,
+      baseUrl: 'https://opencode.ai/zen/go',
+      model: 'opencode-go/kimi-k2.5',
+    };
+  }
+
+  const defaults = getDefaultProviderConfig(provider);
+  return {
+    provider,
+    baseUrl: defaults.baseUrl,
+    model: defaults.model,
+  };
+}
+
+function makeKiraRoleDraft(
+  role: KiraRoleLlmConfig | undefined,
+  mainConfig: LLMConfig | null,
+  id: string,
+): KiraRoleDraft {
+  const fallbackProvider = mainConfig?.provider ?? 'openrouter';
+  const provider =
+    role?.provider && KIRA_PROVIDER_OPTIONS.some((item) => item.value === role.provider)
+      ? role.provider
+      : fallbackProvider;
+  const defaults = getDefaultKiraRoleConfig(provider, mainConfig);
+
+  return {
+    id,
+    name: role?.name ?? '',
+    provider,
+    apiKey: role?.apiKey ?? '',
+    baseUrl: role?.baseUrl ?? defaults.baseUrl ?? '',
+    model: role?.model ?? defaults.model ?? '',
+    customHeaders: role?.customHeaders ?? '',
+    command: role?.command ?? defaults.command ?? '',
+    apiStyle: role?.apiStyle ?? '',
+  };
+}
+
+function resolveInitialKiraWorkers(
+  kiraConfig: KiraConfig | null,
+  mainConfig: LLMConfig | null,
+): KiraRoleDraft[] {
+  const rawWorkers =
+    Array.isArray(kiraConfig?.workers) && kiraConfig.workers.length > 0
+      ? kiraConfig.workers.slice(0, 3)
+      : [
+          {
+            ...(kiraConfig?.workerLlm ?? {}),
+            ...(kiraConfig?.workerModel ? { model: kiraConfig.workerModel } : {}),
+          },
+        ];
+  return rawWorkers
+    .slice(0, 3)
+    .map((worker, index) => makeKiraRoleDraft(worker, mainConfig, `worker-${index}`));
+}
+
+function resolveInitialKiraReviewer(
+  kiraConfig: KiraConfig | null,
+  mainConfig: LLMConfig | null,
+): KiraRoleDraft {
+  const reviewer = {
+    ...(kiraConfig?.reviewerLlm ?? {}),
+    ...(kiraConfig?.reviewerModel ? { model: kiraConfig.reviewerModel } : {}),
+  };
+  return makeKiraRoleDraft(reviewer, mainConfig, 'reviewer');
+}
+
+function kiraDraftToConfig(draft: KiraRoleDraft): KiraRoleLlmConfig {
+  const normalizedApiKey = draft.apiKey.trim();
+  const base: KiraRoleLlmConfig = {
+    provider: draft.provider,
+    ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
+    ...(draft.model.trim() ? { model: draft.model.trim() } : {}),
+  };
+
+  if (draft.provider === 'codex-cli') {
+    return {
+      ...base,
+      ...(draft.command.trim() && draft.command.trim() !== 'codex'
+        ? { command: draft.command.trim() }
+        : {}),
+    };
+  }
+
+  return {
+    ...base,
+    ...(normalizedApiKey && normalizedApiKey !== '***' ? { apiKey: normalizedApiKey } : {}),
+    ...(draft.baseUrl.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
+    ...(draft.customHeaders.trim() ? { customHeaders: draft.customHeaders.trim() } : {}),
+    ...(draft.apiStyle ? { apiStyle: draft.apiStyle } : {}),
+  };
+}
 
 const SettingsModal: React.FC<{
   config: LLMConfig | null;
   dialogConfig: DialogLlmConfig | null;
   idaPeConfig: IdaPeConfig | null;
+  kiraConfig: KiraConfig | null;
   userProfile: UserProfileConfig | null;
   conversationPreferences: ConversationPreferencesConfig | null;
   ttsStatusSnapshot: AoiTtsStatusSnapshot;
@@ -3813,12 +4078,14 @@ const SettingsModal: React.FC<{
   promptBudgetEntries: PromptBudgetEntry[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
+  initialTab?: AppSettingsTabKey;
   onResetAll: () => void;
   onSave: (
     _config: LLMConfig,
     _igConfig: ImageGenConfig | null,
     _dialogConfig: DialogLlmConfig | null,
     _idaPeConfig: IdaPeConfig | null,
+    _kiraConfig: KiraConfig | null,
     _userProfile: UserProfileConfig | null,
     _conversationPreferences: ConversationPreferencesConfig | null,
     _toolSafetyPolicy: ToolSafetyPolicy,
@@ -3828,6 +4095,7 @@ const SettingsModal: React.FC<{
   config,
   dialogConfig,
   idaPeConfig,
+  kiraConfig,
   userProfile,
   conversationPreferences,
   ttsStatusSnapshot,
@@ -3835,6 +4103,7 @@ const SettingsModal: React.FC<{
   promptBudgetEntries,
   recentToolActivity,
   toolSafetyPolicy,
+  initialTab = 'chat',
   onResetAll,
   onSave,
   onClose,
@@ -3846,20 +4115,27 @@ const SettingsModal: React.FC<{
     config?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
   );
   const [model, setModel] = useState(config?.model || getDefaultProviderConfig('openrouter').model);
+  const [command, setCommand] = useState(config?.command || 'codex');
+  const [apiStyle, setApiStyle] = useState<LLMApiStyle | ''>(config?.apiStyle || '');
   const [customHeaders, setCustomHeaders] = useState(config?.customHeaders || '');
   const [manualModelMode, setManualModelMode] = useState(false);
   const [preferredName, setPreferredName] = useState(userProfile?.displayName || '');
   const [responseLanguageMode, setResponseLanguageMode] = useState<ResponseLanguageMode>(
     normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
   );
-  const [activeTab, setActiveTab] = useState<SettingsTabKey>('chat');
+  const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
+  const [focusedKiraApiKeyId, setFocusedKiraApiKeyId] = useState<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(Boolean(conversationPreferences?.ttsEnabled));
   const [ttsPreloadCommonPhrases, setTtsPreloadCommonPhrases] = useState(
     conversationPreferences?.ttsPreloadCommonPhrases !== false,
   );
+  const [openRouterModels, setOpenRouterModels] = useState<RuntimeModelOption[]>([]);
+  const [openRouterModelsStatus, setOpenRouterModelsStatus] = useState<RuntimeModelStatus>('idle');
+  const [openRouterModelsError, setOpenRouterModelsError] = useState('');
 
-  const isPresetModel = PROVIDER_MODELS[provider]?.includes(model) ?? false;
-  const showDropdown = !manualModelMode && isPresetModel;
+  useEffect(() => {
+    setActiveTab(initialTab);
+  }, [initialTab]);
 
   // Image gen settings
   const [igProvider, setIgProvider] = useState<ImageGenProvider>(
@@ -3884,12 +4160,46 @@ const SettingsModal: React.FC<{
     dialogConfig?.baseUrl || config?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
   );
   const [dialogModel, setDialogModel] = useState(dialogConfig?.model || '');
+  const [dialogCommand, setDialogCommand] = useState(dialogConfig?.command || 'codex');
+  const [dialogApiStyle, setDialogApiStyle] = useState<LLMApiStyle | ''>(
+    dialogConfig?.apiStyle || '',
+  );
   const [dialogCustomHeaders, setDialogCustomHeaders] = useState(dialogConfig?.customHeaders || '');
   const [dialogManualModelMode, setDialogManualModelMode] = useState(false);
   const [idaPeMode, setIdaPeMode] = useState<'prescan-only' | 'mcp-http'>(
     idaPeConfig?.mode || 'prescan-only',
   );
   const [idaPeBackendUrl, setIdaPeBackendUrl] = useState(idaPeConfig?.backendUrl || '');
+  const [kiraWorkRootDirectory, setKiraWorkRootDirectory] = useState(
+    kiraConfig?.workRootDirectory || '',
+  );
+  const [kiraAutoCommit, setKiraAutoCommit] = useState(
+    kiraConfig?.projectDefaults?.autoCommit !== false,
+  );
+  const [kiraWorkers, setKiraWorkers] = useState<KiraRoleDraft[]>(() =>
+    resolveInitialKiraWorkers(kiraConfig, config),
+  );
+  const [kiraReviewer, setKiraReviewer] = useState<KiraRoleDraft>(() =>
+    resolveInitialKiraReviewer(kiraConfig, config),
+  );
+  const runtimeModels = useMemo<Partial<Record<LLMProvider, RuntimeModelOption[]>>>(
+    () => (openRouterModels.length ? { openrouter: openRouterModels } : {}),
+    [openRouterModels],
+  );
+  const runtimeModelLabels = useMemo<Partial<Record<LLMProvider, Record<string, string>>>>(
+    () =>
+      openRouterModels.length
+        ? {
+            openrouter: Object.fromEntries(
+              openRouterModels.map((modelInfo) => [modelInfo.id, modelInfo.name]),
+            ),
+          }
+        : {},
+    [openRouterModels],
+  );
+  const modelOptions = getProviderModelOptions(provider, runtimeModels);
+  const isPresetModel = modelOptions.includes(model);
+  const showDropdown = !manualModelMode && modelOptions.length > 0;
   const promptBudgetOverview = useMemo(
     () => summarizePromptBudget(promptBudgetEntries),
     [promptBudgetEntries],
@@ -3909,12 +4219,68 @@ const SettingsModal: React.FC<{
   );
   const recentMutations = useMemo(() => listRecentMutations().slice(0, 8), []);
   const activeBackgroundWatches = useMemo(() => listBackgroundWatches().slice(0, 8), []);
+  const formatModelLabel = useCallback(
+    (modelProvider: LLMProvider, modelId: string) =>
+      formatProviderModelLabel(modelProvider, modelId, runtimeModelLabels),
+    [runtimeModelLabels],
+  );
+  const openRouterStatusHint =
+    openRouterModelsStatus === 'loading'
+      ? 'Loading live OpenRouter model catalog...'
+      : openRouterModelsStatus === 'loaded'
+        ? `Loaded ${openRouterModels.length} text models from OpenRouter.`
+        : openRouterModelsStatus === 'error'
+          ? `Using fallback model list. ${openRouterModelsError}`
+          : 'Loads the live OpenRouter model catalog when this provider is selected.';
+  const usesOpenRouterModels =
+    provider === 'openrouter' ||
+    dialogProvider === 'openrouter' ||
+    kiraReviewer.provider === 'openrouter' ||
+    kiraWorkers.some((worker) => worker.provider === 'openrouter');
+
+  const refreshOpenRouterModels = useCallback(async () => {
+    setOpenRouterModelsStatus('loading');
+    setOpenRouterModelsError('');
+    try {
+      const res = await fetch('/api/openrouter-models');
+      const payload = (await res.json()) as {
+        data?: Array<{ id?: unknown; name?: unknown }>;
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(payload.error || `OpenRouter model list failed with ${res.status}`);
+      }
+      const nextModels = (Array.isArray(payload.data) ? payload.data : [])
+        .map((entry) => {
+          const id = typeof entry.id === 'string' ? entry.id.trim() : '';
+          const name = typeof entry.name === 'string' ? entry.name.trim() : id;
+          return id ? { id, name } : null;
+        })
+        .filter((entry): entry is RuntimeModelOption => Boolean(entry));
+      if (nextModels.length === 0) {
+        throw new Error('OpenRouter returned no models.');
+      }
+      setOpenRouterModels(nextModels);
+      setOpenRouterModelsStatus('loaded');
+    } catch (error) {
+      setOpenRouterModelsStatus('error');
+      setOpenRouterModelsError(error instanceof Error ? error.message : String(error));
+    }
+  }, []);
+
+  useEffect(() => {
+    if (usesOpenRouterModels && openRouterModelsStatus === 'idle') {
+      void refreshOpenRouterModels();
+    }
+  }, [openRouterModelsStatus, refreshOpenRouterModels, usesOpenRouterModels]);
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p);
     const defaults = getDefaultProviderConfig(p);
     setBaseUrl(defaults.baseUrl);
     setModel(defaults.model);
+    setCommand(defaults.command || 'codex');
+    setApiStyle(defaults.apiStyle || '');
     setManualModelMode(false);
   };
 
@@ -3934,23 +4300,292 @@ const SettingsModal: React.FC<{
     setDialogProvider(p);
     const defaults = getDefaultProviderConfig(p);
     setDialogBaseUrl(defaults.baseUrl);
-    if (!dialogModel.trim()) {
-      setDialogModel(defaults.model);
-    }
+    setDialogCommand(defaults.command || 'codex');
+    setDialogApiStyle(defaults.apiStyle || '');
+    setDialogModel(defaults.model);
     setDialogManualModelMode(false);
   };
 
-  const isPresetDialogModel = PROVIDER_MODELS[dialogProvider]?.includes(dialogModel) ?? false;
-  const showDialogDropdown = !dialogManualModelMode && isPresetDialogModel;
+  const updateKiraWorker = (id: string, patch: Partial<KiraRoleDraft>) => {
+    setKiraWorkers((prev) =>
+      prev.map((worker) => (worker.id === id ? { ...worker, ...patch } : worker)),
+    );
+  };
+
+  const updateKiraReviewer = (patch: Partial<KiraRoleDraft>) => {
+    setKiraReviewer((prev) => ({ ...prev, ...patch }));
+  };
+
+  const handleKiraWorkerProviderChange = (id: string, nextProvider: KiraAgentProvider) => {
+    const defaults = getDefaultKiraRoleConfig(nextProvider, config);
+    updateKiraWorker(id, {
+      provider: nextProvider,
+      apiKey: '',
+      baseUrl: defaults.baseUrl ?? '',
+      model: defaults.model ?? '',
+      customHeaders: '',
+      command: defaults.command ?? '',
+      apiStyle: defaults.apiStyle ?? '',
+    });
+  };
+
+  const handleKiraReviewerProviderChange = (nextProvider: KiraAgentProvider) => {
+    const defaults = getDefaultKiraRoleConfig(nextProvider, config);
+    updateKiraReviewer({
+      provider: nextProvider,
+      apiKey: '',
+      baseUrl: defaults.baseUrl ?? '',
+      model: defaults.model ?? '',
+      customHeaders: '',
+      command: defaults.command ?? '',
+      apiStyle: defaults.apiStyle ?? '',
+    });
+  };
+
+  const addKiraWorker = () => {
+    setKiraWorkers((prev) => {
+      if (prev.length >= 3) return prev;
+      const nextIndex = prev.length;
+      return [
+        ...prev,
+        makeKiraRoleDraft(
+          getDefaultKiraRoleConfig(config?.provider ?? 'openrouter', config),
+          config,
+          `worker-${Date.now()}-${nextIndex}`,
+        ),
+      ];
+    });
+  };
+
+  const removeKiraWorker = (id: string) => {
+    setKiraWorkers((prev) => (prev.length <= 1 ? prev : prev.filter((worker) => worker.id !== id)));
+  };
+
+  const dialogModelOptions = getProviderModelOptions(dialogProvider, runtimeModels);
+  const isPresetDialogModel = dialogModelOptions.includes(dialogModel);
+  const showDialogDropdown = !dialogManualModelMode && dialogModelOptions.length > 0;
   const ttsLastWarmLabel = ttsStatusSnapshot.lastWarmAt
     ? new Date(ttsStatusSnapshot.lastWarmAt).toLocaleTimeString()
     : 'Not yet';
   const settingsTabs: Array<{ key: SettingsTabKey; label: string }> = [
     { key: 'chat', label: 'Chat' },
     { key: 'models', label: 'Models' },
+    { key: 'kira', label: 'Kira' },
     { key: 'image', label: 'Image' },
     { key: 'advanced', label: 'Advanced' },
   ];
+
+  const renderKiraRoleFields = (
+    draft: KiraRoleDraft,
+    title: string,
+    subtitle: string,
+    onChange: (patch: Partial<KiraRoleDraft>) => void,
+    onProviderChange: (provider: KiraAgentProvider) => void,
+    removable?: boolean,
+  ) => {
+    const isCodexCli = isCodexCliProvider(draft.provider);
+    const isOpenCode = isOpenCodeProvider(draft.provider);
+    const roleModelOptions = getProviderModelOptions(draft.provider, runtimeModels);
+    const hasPresetRoleModel = roleModelOptions.includes(draft.model);
+    const usesInheritedApiKey =
+      !draft.apiKey.trim() && canInheritKiraApiKey(draft.provider, provider, apiKey);
+    const showInheritedApiKeyMask = usesInheritedApiKey && focusedKiraApiKeyId !== draft.id;
+    const apiKeyValue = showInheritedApiKeyMask ? '***' : draft.apiKey;
+
+    return (
+      <div className={styles.settingsSectionCard} key={draft.id}>
+        <div className={styles.settingsSectionHeader}>
+          <div>
+            <div className={styles.settingsSectionTitle}>{title}</div>
+            <span className={styles.modelHint}>{subtitle}</span>
+          </div>
+          {removable && (
+            <button
+              type="button"
+              className={styles.iconActionBtn}
+              onClick={() => removeKiraWorker(draft.id)}
+              disabled={kiraWorkers.length <= 1}
+              title="Remove worker"
+            >
+              <Trash2 size={14} />
+            </button>
+          )}
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>Display name</label>
+          <input
+            className={styles.fieldInput}
+            value={draft.name}
+            onChange={(e) => onChange({ name: e.target.value })}
+            placeholder={title}
+          />
+        </div>
+
+        <div className={styles.field}>
+          <label className={styles.label}>Provider</label>
+          <select
+            className={styles.select}
+            value={draft.provider}
+            onChange={(e) => onProviderChange(e.target.value as KiraAgentProvider)}
+          >
+            {KIRA_PROVIDER_OPTIONS.map((option) => (
+              <option key={option.value} value={option.value}>
+                {option.label}
+              </option>
+            ))}
+          </select>
+        </div>
+
+        {isCodexCli ? (
+          <>
+            <div className={styles.field}>
+              <label className={styles.label}>Command</label>
+              <input
+                className={styles.fieldInput}
+                value={draft.command}
+                onChange={(e) => onChange({ command: e.target.value })}
+                placeholder="codex"
+              />
+              <span className={styles.modelHint}>
+                Uses your local Codex CLI session. Run `codex login` before using this provider.
+              </span>
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Model</label>
+              {roleModelOptions.length > 0 ? (
+                <select
+                  className={styles.select}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                >
+                  {!draft.model.trim() ? <option value="">Select a model</option> : null}
+                  {draft.model.trim() && !hasPresetRoleModel ? (
+                    <option value={draft.model}>{draft.model} (custom)</option>
+                  ) : null}
+                  {roleModelOptions.map((modelId) => (
+                    <option key={modelId} value={modelId}>
+                      {formatModelLabel(draft.provider, modelId)}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={styles.fieldInput}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                  placeholder="gpt-5.3-codex"
+                />
+              )}
+              {draft.provider === 'openrouter' ? (
+                <span className={styles.modelHint}>{openRouterStatusHint}</span>
+              ) : null}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className={styles.field}>
+              <label className={styles.label}>API Key</label>
+              <input
+                className={styles.fieldInput}
+                type="password"
+                value={apiKeyValue}
+                onFocus={() => {
+                  if (usesInheritedApiKey) setFocusedKiraApiKeyId(draft.id);
+                }}
+                onBlur={() => {
+                  setFocusedKiraApiKeyId((current) => (current === draft.id ? null : current));
+                }}
+                onChange={(e) => onChange({ apiKey: e.target.value })}
+                placeholder={
+                  usesInheritedApiKey
+                    ? 'Inherited from Main LLM'
+                    : isOpenCode
+                      ? 'Optional if OPENCODE_API_KEY is set'
+                      : 'Optional if inherited from environment'
+                }
+              />
+              {usesInheritedApiKey ? (
+                <span className={styles.modelHint}>
+                  Inherits the API key from the Main LLM settings.
+                </span>
+              ) : null}
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Base URL</label>
+              <input
+                className={styles.fieldInput}
+                value={draft.baseUrl}
+                onChange={(e) => onChange({ baseUrl: e.target.value })}
+              />
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Model</label>
+              {roleModelOptions.length > 0 ? (
+                <select
+                  className={styles.select}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                >
+                  {!draft.model.trim() ? <option value="">Select a model</option> : null}
+                  {draft.model.trim() && !hasPresetRoleModel ? (
+                    <option value={draft.model}>{draft.model} (custom)</option>
+                  ) : null}
+                  {roleModelOptions.map((modelId) => (
+                    <option key={modelId} value={modelId}>
+                      {formatModelLabel(draft.provider, modelId)}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={styles.fieldInput}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                  placeholder={isOpenCode ? 'opencode/claude-sonnet-4-6' : 'model-id'}
+                />
+              )}
+              {draft.provider === 'openrouter' ? (
+                <span className={styles.modelHint}>{openRouterStatusHint}</span>
+              ) : null}
+            </div>
+
+            {isOpenCode && (
+              <div className={styles.field}>
+                <label className={styles.label}>API style</label>
+                <select
+                  className={styles.select}
+                  value={draft.apiStyle}
+                  onChange={(e) => onChange({ apiStyle: e.target.value as KiraAgentApiStyle | '' })}
+                >
+                  {KIRA_API_STYLE_OPTIONS.map((option) => (
+                    <option key={option.value || 'auto'} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+
+            <div className={styles.field}>
+              <label className={styles.label}>Custom Headers</label>
+              <textarea
+                className={styles.fieldInput}
+                value={draft.customHeaders}
+                onChange={(e) => onChange({ customHeaders: e.target.value })}
+                placeholder={'X-Custom-Header: value'}
+                rows={2}
+                style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
+              />
+            </div>
+          </>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div className={styles.overlay} data-testid="settings-overlay">
@@ -4009,13 +4644,16 @@ const SettingsModal: React.FC<{
                   <select
                     className={styles.select}
                     value={responseLanguageMode}
-                    onChange={(e) => setResponseLanguageMode(e.target.value as ResponseLanguageMode)}
+                    onChange={(e) =>
+                      setResponseLanguageMode(e.target.value as ResponseLanguageMode)
+                    }
                   >
                     <option value="match-user">Match current user language</option>
                     <option value="english">Always English</option>
                   </select>
                   <span className={styles.modelHint}>
-                    Applies to assistant chat replies, quick acknowledgements, and reminder messages.
+                    Applies to assistant chat replies, quick acknowledgements, and reminder
+                    messages.
                   </span>
                 </div>
 
@@ -4107,36 +4745,72 @@ const SettingsModal: React.FC<{
                     value={provider}
                     onChange={(e) => handleProviderChange(e.target.value as LLMProvider)}
                   >
-                    <option value="openai">OpenAI</option>
-                    <option value="anthropic">Anthropic</option>
-                    <option value="deepseek">DeepSeek</option>
-                    <option value="llama.cpp">llama.cpp</option>
-                    <option value="minimax">MiniMax</option>
-                    <option value="z.ai">Z.ai</option>
-                    <option value="kimi">Kimi</option>
-                    <option value="openrouter">OpenRouter</option>
+                    {MODEL_PROVIDER_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
 
-                <div className={styles.field}>
-                  <label className={styles.label}>API Key</label>
-                  <input
-                    className={styles.fieldInput}
-                    type="password"
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder="Optional for local servers"
-                  />
-                </div>
+                {isCodexCliProvider(provider) ? (
+                  <div className={styles.field}>
+                    <label className={styles.label}>Command</label>
+                    <input
+                      className={styles.fieldInput}
+                      value={command}
+                      onChange={(e) => setCommand(e.target.value)}
+                      placeholder="codex"
+                    />
+                    <span className={styles.modelHint}>
+                      Uses your local Codex CLI login. Tool calls are not available through this
+                      chat provider.
+                    </span>
+                  </div>
+                ) : (
+                  <>
+                    <div className={styles.field}>
+                      <label className={styles.label}>API Key</label>
+                      <input
+                        className={styles.fieldInput}
+                        type="password"
+                        value={apiKey}
+                        onChange={(e) => setApiKey(e.target.value)}
+                        placeholder={
+                          isOpenCodeProvider(provider)
+                            ? 'OpenCode API key'
+                            : 'Optional for local servers'
+                        }
+                      />
+                    </div>
 
-                <div className={styles.field}>
-                  <label className={styles.label}>Base URL</label>
-                  <input
-                    className={styles.fieldInput}
-                    value={baseUrl}
-                    onChange={(e) => setBaseUrl(e.target.value)}
-                  />
-                </div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Base URL</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={baseUrl}
+                        onChange={(e) => setBaseUrl(e.target.value)}
+                      />
+                    </div>
+
+                    {isOpenCodeProvider(provider) ? (
+                      <div className={styles.field}>
+                        <label className={styles.label}>API style</label>
+                        <select
+                          className={styles.select}
+                          value={apiStyle}
+                          onChange={(e) => setApiStyle(e.target.value as LLMApiStyle | '')}
+                        >
+                          {KIRA_API_STYLE_OPTIONS.map((option) => (
+                            <option key={option.value || 'auto'} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    ) : null}
+                  </>
+                )}
 
                 <div className={styles.field}>
                   <label className={styles.label}>Model</label>
@@ -4148,9 +4822,13 @@ const SettingsModal: React.FC<{
                           value={model}
                           onChange={(e) => handleModelChange(e.target.value)}
                         >
-                          {PROVIDER_MODELS[provider]?.map((m) => (
+                          {!model.trim() ? <option value="">Select a model</option> : null}
+                          {model.trim() && !isPresetModel ? (
+                            <option value={model}>{model} (custom)</option>
+                          ) : null}
+                          {modelOptions.map((m) => (
                             <option key={m} value={m}>
-                              {m}
+                              {formatModelLabel(provider, m)}
                             </option>
                           ))}
                         </select>
@@ -4162,6 +4840,17 @@ const SettingsModal: React.FC<{
                         >
                           <Pencil size={14} />
                         </button>
+                        {provider === 'openrouter' ? (
+                          <button
+                            type="button"
+                            onClick={() => void refreshOpenRouterModels()}
+                            className={styles.manualToggleBtn}
+                            title="Refresh OpenRouter models"
+                            disabled={openRouterModelsStatus === 'loading'}
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        ) : null}
                       </>
                     ) : (
                       <>
@@ -4171,7 +4860,7 @@ const SettingsModal: React.FC<{
                           onChange={(e) => setModel(e.target.value)}
                           placeholder="e.g. gpt-4-turbo"
                         />
-                        {isPresetModel && (
+                        {modelOptions.length > 0 && (
                           <button
                             type="button"
                             onClick={() => setManualModelMode(false)}
@@ -4181,22 +4870,40 @@ const SettingsModal: React.FC<{
                             <List size={14} />
                           </button>
                         )}
+                        {provider === 'openrouter' ? (
+                          <button
+                            type="button"
+                            onClick={() => void refreshOpenRouterModels()}
+                            className={styles.manualToggleBtn}
+                            title="Refresh OpenRouter models"
+                            disabled={openRouterModelsStatus === 'loading'}
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                        ) : null}
                       </>
                     )}
                   </div>
+                  {provider === 'openrouter' ? (
+                    <span className={styles.modelHint}>{openRouterStatusHint}</span>
+                  ) : null}
                 </div>
 
-                <div className={styles.field}>
-                  <label className={styles.label}>Custom Headers (one per line, Key: Value)</label>
-                  <textarea
-                    className={styles.fieldInput}
-                    value={customHeaders}
-                    onChange={(e) => setCustomHeaders(e.target.value)}
-                    placeholder={'X-Custom-Header: value\nAnother-Header: value'}
-                    rows={3}
-                    style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
-                  />
-                </div>
+                {!isCodexCliProvider(provider) ? (
+                  <div className={styles.field}>
+                    <label className={styles.label}>
+                      Custom Headers (one per line, Key: Value)
+                    </label>
+                    <textarea
+                      className={styles.fieldInput}
+                      value={customHeaders}
+                      onChange={(e) => setCustomHeaders(e.target.value)}
+                      placeholder={'X-Custom-Header: value\nAnother-Header: value'}
+                      rows={3}
+                      style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
+                    />
+                  </div>
+                ) : null}
               </div>
 
               <div className={styles.settingsSectionCard}>
@@ -4223,36 +4930,70 @@ const SettingsModal: React.FC<{
                         value={dialogProvider}
                         onChange={(e) => handleDialogProviderChange(e.target.value as LLMProvider)}
                       >
-                        <option value="openai">OpenAI</option>
-                        <option value="anthropic">Anthropic</option>
-                        <option value="deepseek">DeepSeek</option>
-                        <option value="llama.cpp">llama.cpp</option>
-                        <option value="minimax">MiniMax</option>
-                        <option value="z.ai">Z.ai</option>
-                        <option value="kimi">Kimi</option>
-                        <option value="openrouter">OpenRouter</option>
+                        {MODEL_PROVIDER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
                       </select>
                     </div>
 
-                    <div className={styles.field}>
-                      <label className={styles.label}>API Key</label>
-                      <input
-                        className={styles.fieldInput}
-                        type="password"
-                        value={dialogApiKey}
-                        onChange={(e) => setDialogApiKey(e.target.value)}
-                        placeholder="Optional — falls back to main config when blank"
-                      />
-                    </div>
+                    {isCodexCliProvider(dialogProvider) ? (
+                      <div className={styles.field}>
+                        <label className={styles.label}>Command</label>
+                        <input
+                          className={styles.fieldInput}
+                          value={dialogCommand}
+                          onChange={(e) => setDialogCommand(e.target.value)}
+                          placeholder="codex"
+                        />
+                      </div>
+                    ) : (
+                      <>
+                        <div className={styles.field}>
+                          <label className={styles.label}>API Key</label>
+                          <input
+                            className={styles.fieldInput}
+                            type="password"
+                            value={dialogApiKey}
+                            onChange={(e) => setDialogApiKey(e.target.value)}
+                            placeholder={
+                              isOpenCodeProvider(dialogProvider)
+                                ? 'OpenCode API key'
+                                : 'Optional — falls back to main config when blank'
+                            }
+                          />
+                        </div>
 
-                    <div className={styles.field}>
-                      <label className={styles.label}>Base URL</label>
-                      <input
-                        className={styles.fieldInput}
-                        value={dialogBaseUrl}
-                        onChange={(e) => setDialogBaseUrl(e.target.value)}
-                      />
-                    </div>
+                        <div className={styles.field}>
+                          <label className={styles.label}>Base URL</label>
+                          <input
+                            className={styles.fieldInput}
+                            value={dialogBaseUrl}
+                            onChange={(e) => setDialogBaseUrl(e.target.value)}
+                          />
+                        </div>
+
+                        {isOpenCodeProvider(dialogProvider) ? (
+                          <div className={styles.field}>
+                            <label className={styles.label}>API style</label>
+                            <select
+                              className={styles.select}
+                              value={dialogApiStyle}
+                              onChange={(e) =>
+                                setDialogApiStyle(e.target.value as LLMApiStyle | '')
+                              }
+                            >
+                              {KIRA_API_STYLE_OPTIONS.map((option) => (
+                                <option key={option.value || 'auto'} value={option.value}>
+                                  {option.label}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        ) : null}
+                      </>
+                    )}
 
                     <div className={styles.field}>
                       <label className={styles.label}>Model</label>
@@ -4267,9 +5008,15 @@ const SettingsModal: React.FC<{
                                 setDialogManualModelMode(false);
                               }}
                             >
-                              {PROVIDER_MODELS[dialogProvider]?.map((m) => (
+                              {!dialogModel.trim() ? (
+                                <option value="">Select a model</option>
+                              ) : null}
+                              {dialogModel.trim() && !isPresetDialogModel ? (
+                                <option value={dialogModel}>{dialogModel} (custom)</option>
+                              ) : null}
+                              {dialogModelOptions.map((m) => (
                                 <option key={m} value={m}>
-                                  {m}
+                                  {formatModelLabel(dialogProvider, m)}
                                 </option>
                               ))}
                             </select>
@@ -4281,6 +5028,17 @@ const SettingsModal: React.FC<{
                             >
                               <Pencil size={14} />
                             </button>
+                            {dialogProvider === 'openrouter' ? (
+                              <button
+                                type="button"
+                                onClick={() => void refreshOpenRouterModels()}
+                                className={styles.manualToggleBtn}
+                                title="Refresh OpenRouter models"
+                                disabled={openRouterModelsStatus === 'loading'}
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            ) : null}
                           </>
                         ) : (
                           <>
@@ -4290,7 +5048,7 @@ const SettingsModal: React.FC<{
                               onChange={(e) => setDialogModel(e.target.value)}
                               placeholder="e.g. gpt-5-mini"
                             />
-                            {isPresetDialogModel && (
+                            {dialogModelOptions.length > 0 && (
                               <button
                                 type="button"
                                 onClick={() => setDialogManualModelMode(false)}
@@ -4300,29 +5058,119 @@ const SettingsModal: React.FC<{
                                 <List size={14} />
                               </button>
                             )}
+                            {dialogProvider === 'openrouter' ? (
+                              <button
+                                type="button"
+                                onClick={() => void refreshOpenRouterModels()}
+                                className={styles.manualToggleBtn}
+                                title="Refresh OpenRouter models"
+                                disabled={openRouterModelsStatus === 'loading'}
+                              >
+                                <RotateCcw size={14} />
+                              </button>
+                            ) : null}
                           </>
                         )}
                       </div>
+                      {dialogProvider === 'openrouter' ? (
+                        <span className={styles.modelHint}>{openRouterStatusHint}</span>
+                      ) : null}
                       <span className={styles.modelHint}>
-                        Used only for short, tool-light conversation turns. App actions, search,
-                        and richer requests stay on the main model.
+                        Used only for short, tool-light conversation turns. App actions, search, and
+                        richer requests stay on the main model.
                       </span>
                     </div>
 
-                    <div className={styles.field}>
-                      <label className={styles.label}>Custom Headers (optional)</label>
-                      <textarea
-                        className={styles.fieldInput}
-                        value={dialogCustomHeaders}
-                        onChange={(e) => setDialogCustomHeaders(e.target.value)}
-                        placeholder={'X-Custom-Header: value'}
-                        rows={2}
-                        style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
-                      />
-                    </div>
+                    {!isCodexCliProvider(dialogProvider) ? (
+                      <div className={styles.field}>
+                        <label className={styles.label}>Custom Headers (optional)</label>
+                        <textarea
+                          className={styles.fieldInput}
+                          value={dialogCustomHeaders}
+                          onChange={(e) => setDialogCustomHeaders(e.target.value)}
+                          placeholder={'X-Custom-Header: value'}
+                          rows={2}
+                          style={{ resize: 'vertical', fontFamily: 'monospace', fontSize: '12px' }}
+                        />
+                      </div>
+                    ) : null}
                   </>
                 )}
               </div>
+            </div>
+          )}
+
+          {activeTab === 'kira' && (
+            <div className={styles.settingsSection}>
+              <div className={styles.settingsSectionCard}>
+                <div className={styles.settingsSectionTitle}>Kira Automation</div>
+                <div className={styles.field}>
+                  <label className={styles.label}>Work root directory</label>
+                  <input
+                    className={styles.fieldInput}
+                    value={kiraWorkRootDirectory}
+                    onChange={(e) => setKiraWorkRootDirectory(e.target.value)}
+                    placeholder="F:/workspace/project-root"
+                  />
+                  <span className={styles.modelHint}>
+                    Kira lists first-level folders under this directory as local projects.
+                  </span>
+                </div>
+
+                <div className={styles.field}>
+                  <label className={styles.label}>Auto-commit approved attempts</label>
+                  <button
+                    type="button"
+                    className={kiraAutoCommit ? styles.saveBtn : styles.cancelBtn}
+                    onClick={() => setKiraAutoCommit((prev) => !prev)}
+                  >
+                    {kiraAutoCommit ? 'Enabled' : 'Disabled'}
+                  </button>
+                  <span className={styles.modelHint}>
+                    Multi-worker runs still use isolated worktrees. When disabled, the selected
+                    attempt is applied to the primary worktree without committing.
+                  </span>
+                </div>
+              </div>
+
+              <div className={styles.settingsSectionHeader}>
+                <div>
+                  <div className={styles.settingsSectionTitle}>Workers</div>
+                  <span className={styles.modelHint}>
+                    Register 1 to 3 workers. Each one can use a different provider and model.
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={addKiraWorker}
+                  disabled={kiraWorkers.length >= 3}
+                >
+                  <Plus size={14} />
+                  Add worker
+                </button>
+              </div>
+
+              {kiraWorkers.map((worker, index) =>
+                renderKiraRoleFields(
+                  worker,
+                  `Worker ${String.fromCharCode(65 + index)}`,
+                  index === 0
+                    ? 'Default worker used for single-worker mode.'
+                    : 'Additional worker used for isolated competing attempts.',
+                  (patch) => updateKiraWorker(worker.id, patch),
+                  (nextProvider) => handleKiraWorkerProviderChange(worker.id, nextProvider),
+                  true,
+                ),
+              )}
+
+              {renderKiraRoleFields(
+                kiraReviewer,
+                'Reviewer',
+                'Compares worker attempts and selects the best passing solution.',
+                updateKiraReviewer,
+                handleKiraReviewerProviderChange,
+              )}
             </div>
           )}
 
@@ -4432,13 +5280,15 @@ const SettingsModal: React.FC<{
                     <div className={styles.promptBudgetMetric}>
                       <span className={styles.promptBudgetLabel}>Dialog turns</span>
                       <strong>
-                        {promptBudgetOverview.dialogTurnCount} / {promptBudgetOverview.recentTurnCount}
+                        {promptBudgetOverview.dialogTurnCount} /{' '}
+                        {promptBudgetOverview.recentTurnCount}
                       </strong>
                     </div>
                     <div className={styles.promptBudgetMetric}>
                       <span className={styles.promptBudgetLabel}>Main turns</span>
                       <strong>
-                        {promptBudgetOverview.mainTurnCount} / {promptBudgetOverview.recentTurnCount}
+                        {promptBudgetOverview.mainTurnCount} /{' '}
+                        {promptBudgetOverview.recentTurnCount}
                       </strong>
                     </div>
                     <div className={styles.promptBudgetMetric}>
@@ -4479,7 +5329,9 @@ const SettingsModal: React.FC<{
 
                   {promptBudgetEntries.length > 0 && (
                     <div className={styles.promptBudgetSection}>
-                      <span className={styles.promptBudgetSectionTitle}>Recent request snapshots</span>
+                      <span className={styles.promptBudgetSectionTitle}>
+                        Recent request snapshots
+                      </span>
                       <div className={styles.promptBudgetLog}>
                         {promptBudgetEntries
                           .slice()
@@ -4562,7 +5414,9 @@ const SettingsModal: React.FC<{
                         <span className={styles.promptBudgetLabel}>Preview before mutation</span>
                         <button
                           type="button"
-                          className={requirePreviewBeforeMutation ? styles.saveBtn : styles.cancelBtn}
+                          className={
+                            requirePreviewBeforeMutation ? styles.saveBtn : styles.cancelBtn
+                          }
                           onClick={() => setRequirePreviewBeforeMutation((prev) => !prev)}
                         >
                           {requirePreviewBeforeMutation ? 'On' : 'Off'}
@@ -4596,12 +5450,16 @@ const SettingsModal: React.FC<{
                         ))}
                       </ul>
                     ) : (
-                      <p className={styles.modelHint}>No reversible file mutations in this session yet.</p>
+                      <p className={styles.modelHint}>
+                        No reversible file mutations in this session yet.
+                      </p>
                     )}
                   </div>
 
                   <div className={styles.promptBudgetSection}>
-                    <span className={styles.promptBudgetSectionTitle}>Active Background Watches</span>
+                    <span className={styles.promptBudgetSectionTitle}>
+                      Active Background Watches
+                    </span>
                     {activeBackgroundWatches.length > 0 ? (
                       <ul className={styles.promptBudgetList}>
                         {activeBackgroundWatches.map((watch) => (
@@ -4633,12 +5491,18 @@ const SettingsModal: React.FC<{
           <button
             className={styles.saveBtn}
             onClick={() => {
+              const mainIsCodexCli = isCodexCliProvider(provider);
+              const dialogIsCodexCli = isCodexCliProvider(dialogProvider);
               const llmCfg: LLMConfig = {
                 provider,
-                apiKey,
-                baseUrl,
+                apiKey: mainIsCodexCli ? '' : apiKey,
+                baseUrl: mainIsCodexCli ? '' : baseUrl.trim(),
                 model,
-                ...(customHeaders.trim() ? { customHeaders } : {}),
+                ...(mainIsCodexCli && command.trim() && command.trim() !== 'codex'
+                  ? { command: command.trim() }
+                  : {}),
+                ...(!mainIsCodexCli && apiStyle ? { apiStyle } : {}),
+                ...(!mainIsCodexCli && customHeaders.trim() ? { customHeaders } : {}),
               };
               const igCfg: ImageGenConfig | null = igApiKey.trim()
                 ? {
@@ -4650,13 +5514,23 @@ const SettingsModal: React.FC<{
                   }
                 : null;
               const dialogCfg: DialogLlmConfig | null =
-                dialogEnabled && dialogModel.trim() && dialogBaseUrl.trim()
+                dialogEnabled && dialogModel.trim() && (dialogIsCodexCli || dialogBaseUrl.trim())
                   ? {
                       provider: dialogProvider,
                       model: dialogModel.trim(),
-                      baseUrl: dialogBaseUrl.trim(),
-                      ...(dialogApiKey.trim() ? { apiKey: dialogApiKey.trim() } : {}),
-                      ...(dialogCustomHeaders.trim() ? { customHeaders: dialogCustomHeaders } : {}),
+                      baseUrl: dialogIsCodexCli ? '' : dialogBaseUrl.trim(),
+                      ...(dialogIsCodexCli &&
+                      dialogCommand.trim() &&
+                      dialogCommand.trim() !== 'codex'
+                        ? { command: dialogCommand.trim() }
+                        : {}),
+                      ...(!dialogIsCodexCli && dialogApiKey.trim()
+                        ? { apiKey: dialogApiKey.trim() }
+                        : {}),
+                      ...(!dialogIsCodexCli && dialogApiStyle ? { apiStyle: dialogApiStyle } : {}),
+                      ...(!dialogIsCodexCli && dialogCustomHeaders.trim()
+                        ? { customHeaders: dialogCustomHeaders }
+                        : {}),
                     }
                   : null;
               const nextIdaPeConfig: IdaPeConfig | null = {
@@ -4672,11 +5546,22 @@ const SettingsModal: React.FC<{
                 ttsEnabled,
                 ttsPreloadCommonPhrases,
               };
+              const nextKiraConfig: KiraConfig = {
+                ...(kiraWorkRootDirectory.trim()
+                  ? { workRootDirectory: kiraWorkRootDirectory.trim() }
+                  : {}),
+                workers: kiraWorkers.slice(0, 3).map(kiraDraftToConfig),
+                reviewerLlm: kiraDraftToConfig(kiraReviewer),
+                projectDefaults: {
+                  autoCommit: kiraAutoCommit,
+                },
+              };
               onSave(
                 llmCfg,
                 igCfg,
                 dialogCfg,
                 nextIdaPeConfig,
+                nextKiraConfig,
                 nextUserProfile,
                 nextConversationPreferences,
                 {

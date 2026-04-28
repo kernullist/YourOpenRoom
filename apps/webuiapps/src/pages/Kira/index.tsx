@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
+import { ChevronDown, Settings } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
   useFileSystem,
@@ -14,6 +15,13 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import { getSessionPath } from '@/lib/sessionPath';
+import {
+  loadPersistedConfig,
+  savePersistedConfig,
+  type KiraRoleLlmConfig,
+  type PersistedConfig,
+} from '@/lib/configPersistence';
+import { APP_SETTINGS_SAVED_EVENT, dispatchOpenAppSettings } from '@/lib/settingsEvents';
 import './i18n';
 import styles from './index.module.scss';
 import {
@@ -46,6 +54,11 @@ const ATTEMPTS_DIR = '/attempts';
 const REVIEWS_DIR = '/reviews';
 const STATE_FILE = '/state.json';
 const KIRA_LIVE_REFRESH_INTERVAL_MS = 4_000;
+const EDITOR_WIDTH_STORAGE_KEY = 'kira.editorPanelWidth';
+const EDITOR_WIDTH_DEFAULT = 420;
+const EDITOR_WIDTH_MIN = 360;
+const EDITOR_WIDTH_MAX = 760;
+const BOARD_WIDTH_MIN_WHEN_RESIZING = 360;
 
 const kiraFileApi = createAppFileApi(APP_NAME);
 
@@ -109,6 +122,26 @@ type KiraDiscoveryEvent =
   | { type: 'analysis_complete'; message?: string; analysis: KiraProjectDiscoveryAnalysis }
   | { type: 'error'; message: string }
   | { type: 'done' };
+
+function clampEditorWidth(width: number, containerWidth?: number): number {
+  const maxByContainer =
+    containerWidth && containerWidth > 0
+      ? containerWidth -
+        36 -
+        300 -
+        18 -
+        18 -
+        BOARD_WIDTH_MIN_WHEN_RESIZING
+      : EDITOR_WIDTH_MAX;
+  const maxWidth = Math.max(EDITOR_WIDTH_MIN, Math.min(EDITOR_WIDTH_MAX, maxByContainer));
+  return Math.round(Math.min(maxWidth, Math.max(EDITOR_WIDTH_MIN, width)));
+}
+
+function loadStoredEditorWidth(): number {
+  if (typeof window === 'undefined') return EDITOR_WIDTH_DEFAULT;
+  const stored = Number(window.localStorage.getItem(EDITOR_WIDTH_STORAGE_KEY));
+  return Number.isFinite(stored) ? clampEditorWidth(stored) : EDITOR_WIDTH_DEFAULT;
+}
 
 async function consumeSseResponse(
   response: Response,
@@ -180,6 +213,16 @@ function createDraftForm(): TaskFormState {
   };
 }
 
+function createFormFromWork(work: WorkTask): TaskFormState {
+  return {
+    id: work.id,
+    title: work.title,
+    description: work.description,
+    status: work.status,
+    assignee: work.assignee,
+  };
+}
+
 function parseViewState(raw: unknown): KiraViewState {
   if (!raw) return DEFAULT_VIEW_STATE;
 
@@ -204,6 +247,72 @@ function resolveSelection(preferredId: string | null, works: WorkTask[]): string
   return works[0]?.id ?? null;
 }
 
+interface KiraModelReadiness {
+  workerReady: boolean;
+  reviewerReady: boolean;
+  ready: boolean;
+}
+
+const EMPTY_MODEL_READINESS: KiraModelReadiness = {
+  workerReady: false,
+  reviewerReady: false,
+  ready: false,
+};
+
+function hasConfiguredModel(model: string | null | undefined): boolean {
+  return Boolean(model?.trim());
+}
+
+function getBaseLlmModel(config: PersistedConfig | null): {
+  provider?: string;
+  model: string;
+} {
+  const llm = config?.llm;
+  if (!llm?.model?.trim()) {
+    return { model: '' };
+  }
+  if (llm.provider !== 'codex-cli' && !llm.baseUrl?.trim()) {
+    return { model: '' };
+  }
+  return {
+    provider: llm.provider,
+    model: llm.model.trim(),
+  };
+}
+
+function resolveRoleModel(
+  baseLlm: { provider?: string; model: string },
+  roleConfig?: KiraRoleLlmConfig | null,
+  legacyModel?: string | null,
+): string {
+  const overrideProvider = roleConfig?.provider?.trim();
+  const canInheritBaseModel = !overrideProvider || overrideProvider === baseLlm.provider;
+  return (
+    roleConfig?.model?.trim() || legacyModel?.trim() || (canInheritBaseModel ? baseLlm.model : '')
+  );
+}
+
+function resolveKiraModelReadiness(config: PersistedConfig | null): KiraModelReadiness {
+  const baseLlm = getBaseLlmModel(config);
+  const kira = config?.kira;
+  const configuredWorkers = Array.isArray(kira?.workers) ? kira.workers.slice(0, 3) : [];
+  const workerReady =
+    configuredWorkers.length > 0
+      ? configuredWorkers.some((worker) =>
+          hasConfiguredModel(resolveRoleModel(baseLlm, worker, null)),
+        )
+      : hasConfiguredModel(resolveRoleModel(baseLlm, kira?.workerLlm, kira?.workerModel));
+  const reviewerReady = hasConfiguredModel(
+    resolveRoleModel(baseLlm, kira?.reviewerLlm, kira?.reviewerModel),
+  );
+
+  return {
+    workerReady,
+    reviewerReady,
+    ready: workerReady && reviewerReady,
+  };
+}
+
 const KiraPage: React.FC = () => {
   const { t, i18n } = useTranslation('kira');
   const [works, setWorks] = useState<WorkTask[]>([]);
@@ -213,10 +322,15 @@ const KiraPage: React.FC = () => {
   const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
   const [activeProjectName, setActiveProjectName] = useState<string | null>(null);
   const [previewMode, setPreviewMode] = useState(false);
+  const [attemptsCollapsed, setAttemptsCollapsed] = useState(false);
   const [editorOpen, setEditorOpen] = useState(false);
   const [form, setForm] = useState<TaskFormState>(createDraftForm());
+  const [formDirty, setFormDirty] = useState(false);
   const [commentDraft, setCommentDraft] = useState({ author: '', body: '' });
   const [workRootConfig, setWorkRootConfig] = useState<KiraConfigResponse | null>(null);
+  const [workRootDraft, setWorkRootDraft] = useState('');
+  const [workRootSaving, setWorkRootSaving] = useState(false);
+  const [modelReadiness, setModelReadiness] = useState<KiraModelReadiness>(EMPTY_MODEL_READINESS);
   const [isLoading, setIsLoading] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -227,7 +341,11 @@ const KiraPage: React.FC = () => {
   const [discoveryAnalysis, setDiscoveryAnalysis] = useState<KiraProjectDiscoveryAnalysis | null>(
     null,
   );
+  const [editorPanelWidth, setEditorPanelWidth] = useState(loadStoredEditorWidth);
+  const [isEditorResizing, setIsEditorResizing] = useState(false);
+  const appRef = useRef<HTMLDivElement | null>(null);
   const discoveryAbortRef = useRef<AbortController | null>(null);
+  const editorResizeStartRef = useRef({ x: 0, width: EDITOR_WIDTH_DEFAULT });
 
   const { saveFile, syncToCloud, deleteFromCloud, initFromCloud, getChildrenByPath, getByPath } =
     useFileSystem({ fileApi: kiraFileApi });
@@ -302,6 +420,16 @@ const KiraPage: React.FC = () => {
     [saveFile, syncToCloud],
   );
 
+  const loadKiraModelReadiness = useCallback(async () => {
+    const config = await loadPersistedConfig().catch((error) => {
+      console.warn('[Kira] Failed to load model config:', error);
+      return null;
+    });
+    const readiness = resolveKiraModelReadiness(config);
+    setModelReadiness(readiness);
+    return readiness;
+  }, []);
+
   const loadWorkRootConfig = useCallback(async () => {
     try {
       const res = await fetch('/api/kira-config');
@@ -323,6 +451,7 @@ const KiraPage: React.FC = () => {
           : [],
       };
       setWorkRootConfig(normalized);
+      setWorkRootDraft(normalized.workRootDirectory ?? '');
       return normalized;
     } catch (error) {
       console.warn('[Kira] Failed to load work root config:', error);
@@ -333,7 +462,11 @@ const KiraPage: React.FC = () => {
 
   const refreshFromCloud = useCallback(
     async (focus?: FocusTarget) => {
-      const [, nextWorkRootConfig] = await Promise.all([initFromCloud(), loadWorkRootConfig()]);
+      const [, nextWorkRootConfig] = await Promise.all([
+        initFromCloud(),
+        loadWorkRootConfig(),
+        loadKiraModelReadiness(),
+      ]);
 
       const nextWorks = loadWorksFromFS();
       const nextComments = loadCommentsFromFS();
@@ -365,6 +498,7 @@ const KiraPage: React.FC = () => {
       initFromCloud,
       loadAttemptsFromFS,
       loadCommentsFromFS,
+      loadKiraModelReadiness,
       loadReviewsFromFS,
       loadWorkRootConfig,
       loadWorksFromFS,
@@ -449,7 +583,8 @@ const KiraPage: React.FC = () => {
   }, [activeProjectName, isInitialized, previewMode, saveViewState, selectedTaskId]);
 
   useEffect(() => {
-    if (!isInitialized || editorOpen) return;
+    if (!isInitialized) return;
+    if (editorOpen && !selectedTaskId) return;
 
     let disposed = false;
     let running = false;
@@ -487,20 +622,34 @@ const KiraPage: React.FC = () => {
     () => projectScopedWorks.find((work) => work.id === selectedTaskId) ?? null,
     [projectScopedWorks, selectedTaskId],
   );
+  const workRootReady = Boolean(
+    workRootConfig?.configured &&
+    workRootConfig.exists !== false &&
+    (workRootConfig.projects?.length ?? 0) > 0 &&
+    activeProjectName,
+  );
+  const modelConfigRequiredMessage =
+    !modelReadiness.workerReady && !modelReadiness.reviewerReady
+      ? t('messages.modelConfigRequired')
+      : !modelReadiness.workerReady
+        ? t('messages.modelWorkerRequired')
+        : !modelReadiness.reviewerReady
+          ? t('messages.modelReviewerRequired')
+          : null;
+  const automationReady = workRootReady && modelReadiness.ready;
 
   useEffect(() => {
     if (selectedWork) {
-      setForm({
-        id: selectedWork.id,
-        title: selectedWork.title,
-        description: selectedWork.description,
-        status: selectedWork.status,
-        assignee: selectedWork.assignee,
+      setForm((prev) => {
+        if (editorOpen && formDirty && prev.id === selectedWork.id) {
+          return prev;
+        }
+        return createFormFromWork(selectedWork);
       });
       return;
     }
-    setForm(createDraftForm());
-  }, [selectedWork]);
+    setForm((prev) => (editorOpen && formDirty ? prev : createDraftForm()));
+  }, [editorOpen, formDirty, selectedWork]);
 
   useEffect(() => {
     setCommentDraft({ author: '', body: '' });
@@ -519,6 +668,7 @@ const KiraPage: React.FC = () => {
       if (event.key !== 'Escape') return;
       event.preventDefault();
       setEditorOpen(false);
+      setFormDirty(false);
       setErrorText(null);
     };
 
@@ -527,6 +677,86 @@ const KiraPage: React.FC = () => {
       window.removeEventListener('keydown', handleKeyDown);
     };
   }, [editorOpen]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(EDITOR_WIDTH_STORAGE_KEY, String(editorPanelWidth));
+  }, [editorPanelWidth]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setEditorPanelWidth((prev) =>
+        clampEditorWidth(prev, appRef.current?.getBoundingClientRect().width),
+      );
+    };
+
+    handleResize();
+    window.addEventListener('resize', handleResize);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+    };
+  }, []);
+
+  const handleEditorResizeStart = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      editorResizeStartRef.current = { x: event.clientX, width: editorPanelWidth };
+      setIsEditorResizing(true);
+      event.currentTarget.setPointerCapture(event.pointerId);
+      event.preventDefault();
+    },
+    [editorPanelWidth],
+  );
+
+  const handleEditorResizeMove = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (!isEditorResizing) return;
+      const start = editorResizeStartRef.current;
+      const nextWidth = start.width + start.x - event.clientX;
+      setEditorPanelWidth(
+        clampEditorWidth(nextWidth, appRef.current?.getBoundingClientRect().width),
+      );
+      event.preventDefault();
+    },
+    [isEditorResizing],
+  );
+
+  const handleEditorResizeEnd = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
+    if (!isEditorResizing) return;
+    setIsEditorResizing(false);
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+      event.currentTarget.releasePointerCapture(event.pointerId);
+    }
+  }, [isEditorResizing]);
+
+  const handleEditorResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
+    const updateWidth = (nextWidth: number) => {
+      setEditorPanelWidth(
+        clampEditorWidth(nextWidth, appRef.current?.getBoundingClientRect().width),
+      );
+    };
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        updateWidth(editorPanelWidth + 24);
+        event.preventDefault();
+        break;
+      case 'ArrowRight':
+        updateWidth(editorPanelWidth - 24);
+        event.preventDefault();
+        break;
+      case 'Home':
+        updateWidth(EDITOR_WIDTH_MIN);
+        event.preventDefault();
+        break;
+      case 'End':
+        updateWidth(EDITOR_WIDTH_MAX);
+        event.preventDefault();
+        break;
+      default:
+        break;
+    }
+  }, [editorPanelWidth]);
 
   const worksByStatus = useMemo(() => groupWorksByStatus(projectScopedWorks), [projectScopedWorks]);
   const projectScopedTaskIds = useMemo(
@@ -604,18 +834,28 @@ const KiraPage: React.FC = () => {
   const blockedWorks = projectScopedWorks.filter((work) => work.status === 'blocked').length;
 
   const handleOpenCreateTask = useCallback(() => {
+    if (!workRootReady) {
+      setErrorText(t('messages.workRootRequired'));
+      return;
+    }
+    if (!modelReadiness.ready) {
+      setErrorText(modelConfigRequiredMessage ?? t('messages.modelConfigRequired'));
+      return;
+    }
     setSelectedTaskId(null);
     setPreviewMode(false);
     setEditorOpen(true);
     setErrorText(null);
+    setFormDirty(false);
     setForm(createDraftForm());
     reportAction(APP_ID, 'NEW_WORK_DRAFT', {});
-  }, []);
+  }, [modelConfigRequiredMessage, modelReadiness.ready, t, workRootReady]);
 
   const handleSelectWork = useCallback((workId: string) => {
     setSelectedTaskId(workId);
     setEditorOpen(true);
     setErrorText(null);
+    setFormDirty(false);
     reportAction(APP_ID, 'SELECT_WORK', { workId });
   }, []);
 
@@ -623,12 +863,69 @@ const KiraPage: React.FC = () => {
     setActiveProjectName(projectName);
     setSelectedTaskId(null);
     setEditorOpen(false);
+    setFormDirty(false);
     setErrorText(null);
     reportAction(APP_ID, 'SELECT_PROJECT', { projectName });
   }, []);
 
+  const handleSaveWorkRoot = useCallback(async () => {
+    const nextWorkRootDirectory = workRootDraft.trim();
+
+    try {
+      setWorkRootSaving(true);
+      setErrorText(null);
+      const existing = await loadPersistedConfig().catch(() => null);
+      const nextKira = {
+        ...(existing?.kira ?? {}),
+        ...(nextWorkRootDirectory ? { workRootDirectory: nextWorkRootDirectory } : {}),
+      };
+      if (!nextWorkRootDirectory) {
+        delete nextKira.workRootDirectory;
+      }
+      await savePersistedConfig({
+        ...(existing ?? {}),
+        kira: nextKira,
+      });
+      await loadKiraModelReadiness();
+      const nextConfig = await loadWorkRootConfig();
+      const projectNames = nextConfig?.projects?.map((project) => project.name) ?? [];
+      setActiveProjectName((current) =>
+        current && projectNames.includes(current) ? current : (projectNames[0] ?? null),
+      );
+      setSelectedTaskId(null);
+      setEditorOpen(false);
+      setFormDirty(false);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setWorkRootSaving(false);
+    }
+  }, [loadKiraModelReadiness, loadWorkRootConfig, workRootDraft]);
+
+  const handleRefreshWorkRoot = useCallback(async () => {
+    const [nextConfig] = await Promise.all([loadWorkRootConfig(), loadKiraModelReadiness()]);
+    const projectNames = nextConfig?.projects?.map((project) => project.name) ?? [];
+    setActiveProjectName((current) =>
+      current && projectNames.includes(current) ? current : (projectNames[0] ?? null),
+    );
+  }, [loadKiraModelReadiness, loadWorkRootConfig]);
+
+  const handleOpenModelSettings = useCallback(() => {
+    dispatchOpenAppSettings('kira');
+    reportAction(APP_ID, 'OPEN_KIRA_MODEL_SETTINGS', {});
+  }, []);
+
+  useEffect(() => {
+    const handler = () => {
+      void handleRefreshWorkRoot();
+    };
+    window.addEventListener(APP_SETTINGS_SAVED_EVENT, handler);
+    return () => window.removeEventListener(APP_SETTINGS_SAVED_EVENT, handler);
+  }, [handleRefreshWorkRoot]);
+
   const handleCloseEditor = useCallback(() => {
     setEditorOpen(false);
+    setFormDirty(false);
     setErrorText(null);
   }, []);
 
@@ -705,9 +1002,19 @@ const KiraPage: React.FC = () => {
     const projectName = activeProjectName?.trim() ?? '';
     const sessionPath = getSessionPath().trim();
 
+    if (!workRootReady) {
+      setErrorText(t('messages.workRootRequired'));
+      return;
+    }
+    if (!modelReadiness.ready) {
+      setErrorText(modelConfigRequiredMessage ?? t('messages.modelConfigRequired'));
+      return;
+    }
+
     discoveryAbortRef.current?.abort();
     setDiscoveryOpen(true);
     setEditorOpen(false);
+    setFormDirty(false);
     setErrorText(null);
     setDiscoveryLogs([]);
     setDiscoveryAnalysis(null);
@@ -737,7 +1044,14 @@ const KiraPage: React.FC = () => {
     }
 
     runFreshDiscovery(projectName, sessionPath);
-  }, [activeProjectName, runFreshDiscovery, t]);
+  }, [
+    activeProjectName,
+    modelConfigRequiredMessage,
+    modelReadiness.ready,
+    runFreshDiscovery,
+    t,
+    workRootReady,
+  ]);
 
   const handleUseSavedDiscovery = useCallback(() => {
     if (!discoveryAnalysis) return;
@@ -755,6 +1069,16 @@ const KiraPage: React.FC = () => {
   const handleContinueDiscovery = useCallback(async () => {
     const projectName = activeProjectName?.trim() ?? '';
     const sessionPath = getSessionPath().trim();
+    if (!workRootReady) {
+      setDiscoveryStage('error');
+      appendDiscoveryLog(t('messages.workRootRequired'));
+      return;
+    }
+    if (!modelReadiness.ready) {
+      setDiscoveryStage('error');
+      appendDiscoveryLog(modelConfigRequiredMessage ?? t('messages.modelConfigRequired'));
+      return;
+    }
     if (!projectName || !sessionPath || !discoveryAnalysis) return;
 
     try {
@@ -791,9 +1115,27 @@ const KiraPage: React.FC = () => {
       setDiscoveryStage('error');
       appendDiscoveryLog(error instanceof Error ? error.message : String(error));
     }
-  }, [activeProjectName, appendDiscoveryLog, discoveryAnalysis, refreshFromCloud]);
+  }, [
+    activeProjectName,
+    appendDiscoveryLog,
+    discoveryAnalysis,
+    modelConfigRequiredMessage,
+    modelReadiness.ready,
+    refreshFromCloud,
+    t,
+    workRootReady,
+  ]);
 
   const handleSaveTask = useCallback(async () => {
+    if (!workRootReady) {
+      setErrorText(t('messages.workRootRequired'));
+      return;
+    }
+    if (!modelReadiness.ready) {
+      setErrorText(modelConfigRequiredMessage ?? t('messages.modelConfigRequired'));
+      return;
+    }
+
     const title = form.title.trim();
     if (!title) {
       setErrorText(t('messages.validationTitle'));
@@ -825,6 +1167,7 @@ const KiraPage: React.FC = () => {
       );
       setSelectedTaskId(workId);
       setEditorOpen(false);
+      setFormDirty(false);
       reportAction(APP_ID, existing ? 'UPDATE_WORK' : 'CREATE_WORK', {
         filePath,
         focusId: workId,
@@ -833,7 +1176,17 @@ const KiraPage: React.FC = () => {
       console.error('[Kira] Save failed:', error);
       setErrorText(error instanceof Error ? error.message : String(error));
     }
-  }, [activeProjectName, form, saveFile, syncToCloud, t, works]);
+  }, [
+    activeProjectName,
+    form,
+    modelConfigRequiredMessage,
+    modelReadiness.ready,
+    saveFile,
+    syncToCloud,
+    t,
+    workRootReady,
+    works,
+  ]);
 
   const handleDeleteTask = useCallback(async () => {
     if (!selectedTaskId) return;
@@ -871,6 +1224,7 @@ const KiraPage: React.FC = () => {
       setEditorOpen(false);
       setDeleteConfirmOpen(false);
       setForm(createDraftForm());
+      setFormDirty(false);
       setErrorText(null);
       reportAction(APP_ID, 'DELETE_WORK', { workId: selectedTaskId });
     } catch (error) {
@@ -942,6 +1296,10 @@ const KiraPage: React.FC = () => {
     [deleteFromCloud, selectedTaskId],
   );
 
+  const appStyle = {
+    '--kira-editor-width': `${editorPanelWidth}px`,
+  } as React.CSSProperties;
+
   if (isLoading) {
     return (
       <div className={styles.kiraApp}>
@@ -969,6 +1327,9 @@ const KiraPage: React.FC = () => {
         : (workRootConfig.projects?.length ?? 0) === 0
           ? t('root.noProjectsHint')
           : t('root.readyHint');
+  const workRootRequiredHint = workRootReady ? null : t('messages.workRootRequired');
+  const modelRequiredHint = modelReadiness.ready ? null : modelConfigRequiredMessage;
+  const actionBlockedHint = workRootRequiredHint ?? modelRequiredHint;
   const discoveryFooterMessage =
     discoveryStage === 'chooseExisting'
       ? t('messages.discoveryExistingPrompt')
@@ -1000,7 +1361,13 @@ const KiraPage: React.FC = () => {
           : discoveryStepLabels.length - 1;
 
   return (
-    <div className={`${styles.kiraApp} ${editorOpen ? styles.editorOpen : styles.editorClosed}`}>
+    <div
+      ref={appRef}
+      className={`${styles.kiraApp} ${editorOpen ? styles.editorOpen : styles.editorClosed} ${
+        isEditorResizing ? styles.editorResizing : ''
+      }`}
+      style={appStyle}
+    >
       <aside className={styles.sidebar}>
         <div className={styles.brandBlock}>
           <p className={styles.kicker}>{t('kicker')}</p>
@@ -1031,67 +1398,129 @@ const KiraPage: React.FC = () => {
           </div>
         </div>
 
-        {workRootConfig ? (
-          <div className={styles.rootCard}>
-            <div className={styles.rootHeader}>
-              <strong>{t('sections.workRoot')}</strong>
-              <span
-                className={`${styles.rootState} ${
-                  !workRootConfig.configured
-                    ? styles.rootStateIdle
-                    : workRootConfig.exists === false
-                      ? styles.rootStateMissing
-                      : (workRootConfig.projects?.length ?? 0) === 0
-                        ? styles.rootStateIdle
-                        : styles.rootStateReady
-                }`}
-              >
-                {workRootStateLabel}
-              </span>
-            </div>
-            {workRootConfig.workRootDirectory ? (
-              <code className={styles.rootPath}>{workRootConfig.workRootDirectory}</code>
-            ) : null}
-            {workRootHint ? <p className={styles.rootHint}>{workRootHint}</p> : null}
-            {workRootConfig.projects && workRootConfig.projects.length > 0 ? (
-              <div className={styles.projectSection}>
-                <div className={styles.projectHeader}>
-                  <strong>{t('sections.projects')}</strong>
-                  {activeProjectName ? (
-                    <span>
-                      {t('root.activeProject')}: <b>{activeProjectName}</b>
-                    </span>
-                  ) : null}
-                </div>
-                <p className={styles.projectHint}>{t('root.activeProjectHint')}</p>
-                <div className={styles.projectList}>
-                  {workRootConfig.projects.map((project) => (
-                    <button
-                      key={project.name}
-                      type="button"
-                      className={`${styles.projectChip} ${
-                        activeProjectName === project.name ? styles.projectChipActive : ''
-                      }`}
-                      onClick={() => handleSelectProject(project.name)}
-                      title={project.path}
-                    >
-                      <strong>{project.name}</strong>
-                      <span>{project.path}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
-            ) : null}
+        <div className={styles.rootCard}>
+          <div className={styles.rootHeader}>
+            <strong>{t('sections.workRoot')}</strong>
+            <span
+              className={`${styles.rootState} ${
+                !workRootConfig?.configured
+                  ? styles.rootStateIdle
+                  : workRootConfig.exists === false
+                    ? styles.rootStateMissing
+                    : (workRootConfig.projects?.length ?? 0) === 0
+                      ? styles.rootStateIdle
+                      : styles.rootStateReady
+              }`}
+            >
+              {workRootStateLabel ?? t('root.unconfigured')}
+            </span>
           </div>
-        ) : null}
+
+          <form
+            className={styles.rootForm}
+            onSubmit={(event) => {
+              event.preventDefault();
+              void handleSaveWorkRoot();
+            }}
+          >
+            <label className={styles.rootField}>
+              <span>{t('fields.workRootDirectory')}</span>
+              <input
+                value={workRootDraft}
+                onChange={(event) => setWorkRootDraft(event.target.value)}
+                placeholder={t('placeholders.workRootDirectory')}
+                disabled={workRootSaving}
+              />
+            </label>
+            <div className={styles.rootFormActions}>
+              <button type="submit" className={styles.secondaryButton} disabled={workRootSaving}>
+                {workRootSaving ? t('actions.saving') : t('actions.saveWorkRoot')}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => void handleRefreshWorkRoot()}
+                disabled={workRootSaving}
+              >
+                {t('actions.refresh')}
+              </button>
+            </div>
+          </form>
+
+          {workRootHint ? <p className={styles.rootHint}>{workRootHint}</p> : null}
+          {workRootConfig?.projects && workRootConfig.projects.length > 0 ? (
+            <div className={styles.projectSection}>
+              <div className={styles.projectHeader}>
+                <strong>{t('sections.projects')}</strong>
+                {activeProjectName ? (
+                  <span>
+                    {t('root.activeProject')}: <b>{activeProjectName}</b>
+                  </span>
+                ) : null}
+              </div>
+              <p className={styles.projectHint}>{t('root.activeProjectHint')}</p>
+              <div className={styles.projectList}>
+                {workRootConfig.projects.map((project) => (
+                  <button
+                    key={project.name}
+                    type="button"
+                    className={`${styles.projectChip} ${
+                      activeProjectName === project.name ? styles.projectChipActive : ''
+                    }`}
+                    onClick={() => handleSelectProject(project.name)}
+                    title={project.path}
+                  >
+                    <strong>{project.name}</strong>
+                    <span>{project.path}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+
+        <div className={styles.modelSettingsCard}>
+          <div className={styles.modelSettingsHeader}>
+            <div>
+              <strong>{t('sections.modelSettings')}</strong>
+              <p>{t('sections.modelSettingsCopy')}</p>
+            </div>
+            <span
+              className={`${styles.rootState} ${
+                modelReadiness.ready ? styles.rootStateReady : styles.rootStateIdle
+              }`}
+            >
+              {modelReadiness.ready ? t('root.modelsReady') : t('root.modelsNeedSetup')}
+            </span>
+          </div>
+          <button
+            type="button"
+            className={`${styles.secondaryButton} ${styles.modelSettingsButton}`}
+            onClick={handleOpenModelSettings}
+          >
+            <Settings size={15} />
+            <span>{t('actions.configureModels')}</span>
+          </button>
+        </div>
 
         <div className={styles.primaryActions}>
-          <button className={styles.primaryButton} onClick={handleOpenCreateTask}>
+          <button
+            className={styles.primaryButton}
+            onClick={handleOpenCreateTask}
+            disabled={!automationReady}
+            title={actionBlockedHint ?? undefined}
+          >
             {t('actions.createTask')}
           </button>
-          <button className={styles.aoiButton} onClick={handleOpenAoiDiscovery}>
+          <button
+            className={styles.aoiButton}
+            onClick={handleOpenAoiDiscovery}
+            disabled={!automationReady}
+            title={actionBlockedHint ?? undefined}
+          >
             {t('actions.aoiTakeCare')}
           </button>
+          {actionBlockedHint ? <p className={styles.actionHint}>{actionBlockedHint}</p> : null}
         </div>
       </aside>
 
@@ -1176,6 +1605,22 @@ const KiraPage: React.FC = () => {
 
       {editorOpen ? (
         <section className={styles.editorSection}>
+          <button
+            type="button"
+            className={styles.editorResizeHandle}
+            aria-label={t('actions.resizeDetails')}
+            aria-orientation="vertical"
+            aria-valuemin={EDITOR_WIDTH_MIN}
+            aria-valuemax={EDITOR_WIDTH_MAX}
+            aria-valuenow={editorPanelWidth}
+            role="separator"
+            onPointerDown={handleEditorResizeStart}
+            onPointerMove={handleEditorResizeMove}
+            onPointerUp={handleEditorResizeEnd}
+            onPointerCancel={handleEditorResizeEnd}
+            onLostPointerCapture={() => setIsEditorResizing(false)}
+            onKeyDown={handleEditorResizeKeyDown}
+          />
           <div className={styles.editorHeader}>
             <div>
               <p className={styles.kicker}>
@@ -1203,9 +1648,10 @@ const KiraPage: React.FC = () => {
                 <span>{t('fields.status')}</span>
                 <select
                   value={form.status}
-                  onChange={(e) =>
-                    setForm((prev) => ({ ...prev, status: e.target.value as KiraTaskStatus }))
-                  }
+                  onChange={(e) => {
+                    setFormDirty(true);
+                    setForm((prev) => ({ ...prev, status: e.target.value as KiraTaskStatus }));
+                  }}
                 >
                   {STATUS_ORDER.map((status) => (
                     <option key={status} value={status}>
@@ -1227,7 +1673,10 @@ const KiraPage: React.FC = () => {
               <span>{t('fields.title')}</span>
               <input
                 value={form.title}
-                onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+                onChange={(e) => {
+                  setFormDirty(true);
+                  setForm((prev) => ({ ...prev, title: e.target.value }));
+                }}
                 placeholder={t('placeholders.workTitle')}
               />
             </label>
@@ -1245,7 +1694,10 @@ const KiraPage: React.FC = () => {
               ) : (
                 <textarea
                   value={form.description}
-                  onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
+                  onChange={(e) => {
+                    setFormDirty(true);
+                    setForm((prev) => ({ ...prev, description: e.target.value }));
+                  }}
                   placeholder={t('placeholders.workDescription')}
                   rows={12}
                 />
@@ -1258,7 +1710,12 @@ const KiraPage: React.FC = () => {
 
             <div className={styles.saveRow}>
               <span>{t('messages.syncHint')}</span>
-              <button className={styles.primaryButton} onClick={() => void handleSaveTask()}>
+              <button
+                className={styles.primaryButton}
+                onClick={() => void handleSaveTask()}
+                disabled={!automationReady}
+                title={actionBlockedHint ?? undefined}
+              >
                 {t('actions.save')}
               </button>
             </div>
@@ -1267,65 +1724,97 @@ const KiraPage: React.FC = () => {
           {selectedTaskId ? (
             <div className={styles.attemptsPanel}>
               <div className={styles.sectionHeader}>
-                <h3>Attempts</h3>
-                <span>{currentAttempts.length}</span>
-              </div>
-              {selectedWork?.status === 'blocked' && currentAttempts[0]?.blockedReason ? (
-                <div className={styles.blockedNotice}>
-                  <strong>Resume condition</strong>
-                  <span>{currentAttempts[0].blockedReason}</span>
+                <div className={styles.sectionHeaderTitle}>
+                  <h3>{t('sections.attempts')}</h3>
+                  <span>{currentAttempts.length}</span>
                 </div>
-              ) : null}
-              <div className={styles.attemptList}>
-                {currentAttempts.length > 0 ? (
-                  currentAttempts.map((attempt) => {
-                    const review = reviewsByAttempt.get(attempt.attemptNo);
-                    return (
-                      <details key={attempt.id} className={styles.attemptCard}>
-                        <summary>
-                          <span>Attempt {attempt.attemptNo}</span>
-                          <strong>{attempt.status.replace(/_/g, ' ')}</strong>
-                        </summary>
-                        <div className={styles.attemptGrid}>
-                          <div>
-                            <h4>Plan</h4>
-                            <p>{attempt.workerPlan?.summary || 'No plan summary'}</p>
-                            <small>
-                              Files:{' '}
-                              {(attempt.workerPlan?.intendedFiles ?? []).join(', ') || 'none'}
-                            </small>
-                          </div>
-                          <div>
-                            <h4>Changes</h4>
-                            <p>{attempt.changedFiles.join(', ') || 'No changed files recorded'}</p>
-                            <small>
-                              Read: {attempt.readFiles?.join(', ') || 'none'} | Patched:{' '}
-                              {attempt.patchedFiles?.join(', ') || 'none'}
-                            </small>
-                          </div>
-                          <div>
-                            <h4>Validation</h4>
-                            <p>Passed: {attempt.validationReruns?.passed?.join(', ') || 'none'}</p>
-                            <small>
-                              Failed: {attempt.validationReruns?.failed?.join(', ') || 'none'}
-                            </small>
-                          </div>
-                          <div>
-                            <h4>Review</h4>
-                            <p>{review?.summary || 'No review record'}</p>
-                            <small>
-                              Findings: {review?.findings.length ?? 0} | Missing checks:{' '}
-                              {review?.missingValidation.length ?? 0}
-                            </small>
-                          </div>
-                        </div>
-                      </details>
-                    );
-                  })
-                ) : (
-                  <div className={styles.commentEmpty}>No attempt records yet.</div>
-                )}
+                <button
+                  type="button"
+                  className={`${styles.sectionToggle} ${
+                    attemptsCollapsed ? styles.sectionToggleCollapsed : ''
+                  }`}
+                  onClick={() => setAttemptsCollapsed((prev) => !prev)}
+                  aria-expanded={!attemptsCollapsed}
+                  aria-controls="kira-attempts-list"
+                  aria-label={
+                    attemptsCollapsed
+                      ? t('actions.expandAttempts')
+                      : t('actions.collapseAttempts')
+                  }
+                  title={
+                    attemptsCollapsed
+                      ? t('actions.expandAttempts')
+                      : t('actions.collapseAttempts')
+                  }
+                >
+                  <ChevronDown size={16} aria-hidden="true" />
+                </button>
               </div>
+              {!attemptsCollapsed ? (
+                <>
+                  {selectedWork?.status === 'blocked' && currentAttempts[0]?.blockedReason ? (
+                    <div className={styles.blockedNotice}>
+                      <strong>Resume condition</strong>
+                      <span>{currentAttempts[0].blockedReason}</span>
+                    </div>
+                  ) : null}
+                  <div id="kira-attempts-list" className={styles.attemptList}>
+                    {currentAttempts.length > 0 ? (
+                      currentAttempts.map((attempt) => {
+                        const review = reviewsByAttempt.get(attempt.attemptNo);
+                        return (
+                          <details key={attempt.id} className={styles.attemptCard}>
+                            <summary>
+                              <span>Attempt {attempt.attemptNo}</span>
+                              <strong>{attempt.status.replace(/_/g, ' ')}</strong>
+                            </summary>
+                            <div className={styles.attemptGrid}>
+                              <div>
+                                <h4>Plan</h4>
+                                <p>{attempt.workerPlan?.summary || 'No plan summary'}</p>
+                                <small>
+                                  Files:{' '}
+                                  {(attempt.workerPlan?.intendedFiles ?? []).join(', ') || 'none'}
+                                </small>
+                              </div>
+                              <div>
+                                <h4>Changes</h4>
+                                <p>
+                                  {attempt.changedFiles.join(', ') ||
+                                    'No changed files recorded'}
+                                </p>
+                                <small>
+                                  Read: {attempt.readFiles?.join(', ') || 'none'} | Patched:{' '}
+                                  {attempt.patchedFiles?.join(', ') || 'none'}
+                                </small>
+                              </div>
+                              <div>
+                                <h4>Validation</h4>
+                                <p>
+                                  Passed: {attempt.validationReruns?.passed?.join(', ') || 'none'}
+                                </p>
+                                <small>
+                                  Failed: {attempt.validationReruns?.failed?.join(', ') || 'none'}
+                                </small>
+                              </div>
+                              <div>
+                                <h4>Review</h4>
+                                <p>{review?.summary || 'No review record'}</p>
+                                <small>
+                                  Findings: {review?.findings.length ?? 0} | Missing checks:{' '}
+                                  {review?.missingValidation.length ?? 0}
+                                </small>
+                              </div>
+                            </div>
+                          </details>
+                        );
+                      })
+                    ) : (
+                      <div className={styles.commentEmpty}>{t('messages.noAttemptRecords')}</div>
+                    )}
+                  </div>
+                </>
+              ) : null}
             </div>
           ) : null}
 
@@ -1606,6 +2095,8 @@ const KiraPage: React.FC = () => {
                     <button
                       className={styles.primaryButton}
                       onClick={() => void handleContinueDiscovery()}
+                      disabled={!automationReady}
+                      title={actionBlockedHint ?? undefined}
                     >
                       {t('actions.continue')}
                     </button>

@@ -16,7 +16,7 @@ import {
   type ChatMessage,
   type ToolDef,
 } from '../llmClient';
-import { getDefaultProviderConfig, type LLMConfig } from '../llmModels';
+import { getDefaultProviderConfig, PROVIDER_MODELS, type LLMConfig } from '../llmModels';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -58,8 +58,27 @@ const MOCK_TOOLS: ToolDef[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function makeOpenAIResponse(content: string, toolCalls: unknown[] = []) {
-  const body = JSON.stringify({ choices: [{ message: { content, tool_calls: toolCalls } }] });
+function makeOpenAIResponse(
+  content: string,
+  toolCalls: unknown[] = [],
+  messageExtras: Record<string, unknown> = {},
+) {
+  const body = JSON.stringify({
+    choices: [{ message: { content, tool_calls: toolCalls, ...messageExtras } }],
+  });
+  return {
+    ok: true,
+    status: 200,
+    text: () => Promise.resolve(body),
+    json: () => Promise.resolve(JSON.parse(body)),
+  } as unknown as Response;
+}
+
+function makeResponsesApiResponse(content: string, toolCalls: unknown[] = []) {
+  const body = JSON.stringify({
+    output_text: content,
+    output: toolCalls,
+  });
   return {
     ok: true,
     status: 200,
@@ -154,6 +173,43 @@ describe('getDefaultProviderConfig()', () => {
     expect(cfg.provider).toBe('openrouter');
     expect(cfg.baseUrl).toBe('https://openrouter.ai/api/v1');
     expect(cfg.model).toBe('minimax/MiniMax-M2.5');
+  });
+
+  it('returns correct defaults for codex-cli', () => {
+    const cfg = getDefaultProviderConfig('codex-cli');
+    expect(cfg.provider).toBe('codex-cli');
+    expect(cfg.baseUrl).toBe('');
+    expect(cfg.model).toBe('gpt-5.3-codex');
+    expect(cfg.command).toBe('codex');
+  });
+
+  it('includes ChatGPT Pro models available through Codex CLI', () => {
+    expect(PROVIDER_MODELS['codex-cli']).toEqual(expect.arrayContaining(['gpt-5.5']));
+  });
+
+  it('returns correct defaults for opencode', () => {
+    const cfg = getDefaultProviderConfig('opencode');
+    expect(cfg.provider).toBe('opencode');
+    expect(cfg.baseUrl).toBe('https://opencode.ai/zen');
+    expect(cfg.model).toBe('opencode/claude-sonnet-4-6');
+  });
+
+  it('returns correct defaults for opencode-go', () => {
+    const cfg = getDefaultProviderConfig('opencode-go');
+    expect(cfg.provider).toBe('opencode-go');
+    expect(cfg.baseUrl).toBe('https://opencode.ai/zen/go');
+    expect(cfg.model).toBe('opencode-go/kimi-k2.5');
+  });
+
+  it('includes the current OpenCode Go subscription model IDs', () => {
+    expect(PROVIDER_MODELS['opencode-go']).toEqual(
+      expect.arrayContaining([
+        'opencode-go/glm-5.1',
+        'opencode-go/kimi-k2.6',
+        'opencode-go/deepseek-v4-pro',
+        'opencode-go/mimo-v2.5',
+      ]),
+    );
   });
 
   it('returns consistent values for the same provider', () => {
@@ -450,18 +506,11 @@ describe('saveConfig()', () => {
       .mockResolvedValueOnce({ ok: true } as Response);
     globalThis.fetch = mockFetch;
 
-    await saveConfig(
-      MOCK_OPENAI_CONFIG,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      {
-        responseLanguageMode: 'english',
-        ttsEnabled: true,
-        ttsPreloadCommonPhrases: false,
-      },
-    );
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, undefined, {
+      responseLanguageMode: 'english',
+      ttsEnabled: true,
+      ttsPreloadCommonPhrases: false,
+    });
 
     const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
     expect(body.conversationPreferences).toEqual({
@@ -538,6 +587,12 @@ describe('saveConfig()', () => {
               workerLlm: {
                 model: 'openai/gpt-5.4',
               },
+              workers: [
+                {
+                  provider: 'codex-cli',
+                  model: 'gpt-5.3-codex',
+                },
+              ],
               reviewerLlm: {
                 provider: 'anthropic',
                 model: 'claude-sonnet-4.6',
@@ -560,10 +615,74 @@ describe('saveConfig()', () => {
       workerLlm: {
         model: 'openai/gpt-5.4',
       },
+      workers: [
+        {
+          provider: 'codex-cli',
+          model: 'gpt-5.3-codex',
+        },
+      ],
       reviewerLlm: {
         provider: 'anthropic',
         model: 'claude-sonnet-4.6',
       },
+    });
+  });
+
+  it('saves updated kira worker and reviewer settings when provided', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            kira: {
+              workers: [{ provider: 'openrouter', model: 'old-model' }],
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG, undefined, undefined, undefined, undefined, undefined, {
+      workRootDirectory: 'F:/workspace/agent-root',
+      workers: [
+        { provider: 'codex-cli', model: 'gpt-5.3-codex' },
+        {
+          provider: 'opencode-go',
+          apiKey: 'oc-test',
+          baseUrl: 'https://opencode.ai/zen/go',
+          model: 'opencode-go/kimi-k2.5',
+        },
+      ],
+      reviewerLlm: {
+        provider: 'opencode',
+        apiKey: 'oc-review',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/claude-sonnet-4-6',
+      },
+      projectDefaults: { autoCommit: false },
+    });
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.kira).toEqual({
+      workRootDirectory: 'F:/workspace/agent-root',
+      workers: [
+        { provider: 'codex-cli', model: 'gpt-5.3-codex' },
+        {
+          provider: 'opencode-go',
+          apiKey: 'oc-test',
+          baseUrl: 'https://opencode.ai/zen/go',
+          model: 'opencode-go/kimi-k2.5',
+        },
+      ],
+      reviewerLlm: {
+        provider: 'opencode',
+        apiKey: 'oc-review',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/claude-sonnet-4-6',
+      },
+      projectDefaults: { autoCommit: false },
     });
   });
 
@@ -681,6 +800,73 @@ describe('chat()', () => {
 
       expect(result.toolCalls).toHaveLength(1);
       expect(result.toolCalls[0].function.name).toBe('get_weather');
+    });
+
+    it('preserves reasoning_content for Kimi-style multi-step tool calls', async () => {
+      const mockToolCall = {
+        id: 'call_123',
+        type: 'function',
+        function: { name: 'get_weather', arguments: '{"city":"SF"}' },
+      };
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeOpenAIResponse('', [mockToolCall], { reasoning_content: 'Plan the tool call.' }),
+        );
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(
+        [
+          ...MOCK_MESSAGES,
+          {
+            role: 'assistant',
+            content: '',
+            reasoning_content: 'Earlier tool reasoning.',
+            tool_calls: [mockToolCall],
+          },
+          { role: 'tool', content: 'Sunny', tool_call_id: 'call_123' },
+        ],
+        MOCK_TOOLS,
+        MOCK_OPENAI_CONFIG,
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.messages[1].reasoning_content).toBe('Earlier tool reasoning.');
+      expect(result.reasoningContent).toBe('Plan the tool call.');
+    });
+
+    it('adds fallback reasoning_content for Kimi tool-call history when the provider omitted it', async () => {
+      const mockToolCall = {
+        id: 'call_123',
+        type: 'function',
+        function: { name: 'get_weather', arguments: '{"city":"SF"}' },
+      };
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(
+        [
+          ...MOCK_MESSAGES,
+          {
+            role: 'assistant',
+            content: '',
+            tool_calls: [mockToolCall],
+          },
+          { role: 'tool', content: 'Sunny', tool_call_id: 'call_123' },
+        ],
+        MOCK_TOOLS,
+        {
+          provider: 'opencode-go',
+          apiKey: 'oc-go-key',
+          baseUrl: 'https://opencode.ai/zen/go',
+          model: 'opencode-go/kimi-k2.6',
+        },
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.messages[1].reasoning_content).toContain('reasoning_content');
+      expect(body.thinking).toEqual({ type: 'disabled' });
+      expect(body.reasoning).toEqual({ enabled: false });
     });
   });
 
@@ -836,6 +1022,96 @@ respond_to_user
       expect(result.content).toBe('MiniMax response');
       const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
       expect(headers['anthropic-version']).toBe('2023-06-01');
+    });
+  });
+
+  describe('Codex CLI provider', () => {
+    it('routes chat through the local codex cli endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Codex answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.3-codex',
+      });
+
+      expect(result.content).toBe('Codex answer');
+      expect(result.toolCalls).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/codex-cli-chat',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.model).toBe('gpt-5.3-codex');
+      expect(body.command).toBe('codex');
+      expect(body.tools).toHaveLength(1);
+    });
+  });
+
+  describe('OpenCode providers', () => {
+    it('routes Claude models through the Anthropic-compatible path and strips provider prefix', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('OpenCode Claude'));
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, [], {
+        provider: 'opencode',
+        apiKey: 'oc-key',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/claude-sonnet-4-6',
+      });
+
+      expect(result.content).toBe('OpenCode Claude');
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/v1/messages');
+      expect(headers['x-api-key']).toBe('oc-key');
+      expect(body.model).toBe('claude-sonnet-4-6');
+    });
+
+    it('routes GPT models through the Responses API and strips provider prefix', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeResponsesApiResponse('OpenCode GPT'));
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'opencode',
+        apiKey: 'oc-key',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/gpt-5.4',
+      });
+
+      expect(result.content).toBe('OpenCode GPT');
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/v1/responses');
+      expect(headers.Authorization).toBe('Bearer oc-key');
+      expect(body.model).toBe('gpt-5.4');
+      expect(body.tools).toHaveLength(1);
+    });
+
+    it('routes OpenCode Go Kimi models through the OpenAI-compatible path', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('OpenCode Go'));
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, [], {
+        provider: 'opencode-go',
+        apiKey: 'oc-go-key',
+        baseUrl: 'https://opencode.ai/zen/go',
+        model: 'opencode-go/kimi-k2.5',
+      });
+
+      expect(result.content).toBe('OpenCode Go');
+      const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/go/v1/chat/completions');
+      expect(headers.Authorization).toBe('Bearer oc-go-key');
+      expect(body.model).toBe('kimi-k2.5');
+      expect(body.thinking).toEqual({ type: 'disabled' });
     });
   });
 

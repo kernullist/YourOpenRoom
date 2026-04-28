@@ -2,12 +2,14 @@
 
 [中文](./README_zh.md) | English | [한국어](./README_ko.md)
 
-> A fork of OpenRoom that has evolved into a local-first browser desktop for AI-operated apps,
-> real workspace automation, and prompt-driven app workflows.
+> A fork of OpenRoom that has evolved into a local-first browser desktop for AI-operated apps, real
+> workspace automation, and prompt-driven app workflows.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-**[Repository](https://github.com/kernullist/YourOpenRoom)** · **[Issues](https://github.com/kernullist/YourOpenRoom/issues)** · **[Original Fork Source](https://github.com/MiniMax-AI/OpenRoom)**
+**[Repository](https://github.com/kernullist/YourOpenRoom)** ·
+**[Issues](https://github.com/kernullist/YourOpenRoom/issues)** ·
+**[Original Fork Source](https://github.com/MiniMax-AI/OpenRoom)**
 
 ## What This Repo Is Now
 
@@ -16,13 +18,13 @@ browser desktop demo.
 
 Today the project is centered on three connected layers:
 
-- A **browser desktop shell** with draggable windows, a floating chat panel, local state, and a
-  set of built-in apps.
-- An **agent runtime** that can operate apps through `meta.yaml` actions, inspect app state,
-  mutate app storage, and call tooling from the chat panel.
-- A **local project automation stack** built around **Kira** and **Aoi's IDE**, with search,
-  file editing, semantic code tools, diagnostics, checkpoints, safe command execution, and
-  automated worker/reviewer loops.
+- A **browser desktop shell** with draggable windows, a floating chat panel, local state, and a set
+  of built-in apps.
+- An **agent runtime** that can operate apps through `meta.yaml` actions, inspect app state, mutate
+  app storage, and call tooling from the chat panel.
+- A **local project automation stack** built around **Kira** and **Aoi's IDE**, with search, file
+  editing, semantic code tools, diagnostics, checkpoints, safe command execution, and automated
+  worker/reviewer loops.
 
 The main runtime that ships today lives in `apps/webuiapps`.
 
@@ -45,30 +47,30 @@ The main runtime that ships today lives in `apps/webuiapps`.
   original iframe runtime.
 - Vite middleware APIs for Gmail OAuth, browser/article extraction, YouTube search, live cyber news
   RSS aggregation, album folder access, Tavily proxying, OpenVSCode workspace tools, PE Analyst
-  IDA/PE analysis bridging, TTS lab synthesis, Kira
-  automation, config persistence, and session file storage.
+  IDA/PE analysis bridging, TTS lab synthesis, Kira automation, config persistence, and session file
+  storage.
 - The upstream character/mod layer is still present: characters, mods, emotion media, upload-based
   mod generation, and memory injection are part of the current shell and chat experience.
 
 ## Built-in Apps
 
-| App | What it does now |
-| --- | --- |
-| `Twitter` | Local social feed with posts, likes, and comments persisted in app storage |
-| `YouTube` | YouTube search, recent searches, favorite topics, playlists, queue playback, and popup player controls |
-| `Diary` | Markdown journal with mood/weather metadata, calendar navigation, and styled handwritten rendering |
-| `Album` | Read-only local photo gallery backed by `album.photoDirectory` |
-| `FreeCell` | Persistent FreeCell game state with rule-aware moves |
-| `Email` | Real Gmail sync with OAuth desktop flow, inbox/sent/drafts/trash, reply, draft save, archive, star, restore, and delete |
-| `Chess` | Full chess rules, 3D board, local persistence, and agent-turn synchronization |
-| `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data |
-| `CyberNews` | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view |
-| `Calendar` | Local event/reminder planner with reminder metadata saved in app storage |
-| `Notes` | Local markdown notes with tags, pinning, filtering, and preview mode |
-| `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes |
-| `Kira` | Project work board with work items, comments, discovery analysis, and automation handoff |
-| `Aoi's IDE` | Local workspace tree/editor on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands |
-| `PE Analyst` | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
+| App              | What it does now                                                                                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `Twitter`        | Local social feed with posts, likes, and comments persisted in app storage                                                                                                           |
+| `YouTube`        | YouTube search, recent searches, favorite topics, playlists, queue playback, and popup player controls                                                                               |
+| `Diary`          | Markdown journal with mood/weather metadata, calendar navigation, and styled handwritten rendering                                                                                   |
+| `Album`          | Read-only local photo gallery backed by `album.photoDirectory`                                                                                                                       |
+| `FreeCell`       | Persistent FreeCell game state with rule-aware moves                                                                                                                                 |
+| `Email`          | Real Gmail sync with OAuth desktop flow, inbox/sent/drafts/trash, reply, draft save, archive, star, restore, and delete                                                              |
+| `Chess`          | Full chess rules, 3D board, local persistence, and agent-turn synchronization                                                                                                        |
+| `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data                                                                                                    |
+| `CyberNews`      | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view                                                                                                   |
+| `Calendar`       | Local event/reminder planner with reminder metadata saved in app storage                                                                                                             |
+| `Notes`          | Local markdown notes with tags, pinning, filtering, and preview mode                                                                                                                 |
+| `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
+| `Kira`           | Project work board with work items, comments, discovery analysis, and automation handoff                                                                                             |
+| `Aoi's IDE`      | Local workspace tree/editor on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                                                 |
+| `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
 
 ## PE Analyst + IDA MCP
 
@@ -109,7 +111,8 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
 
 - **App runtime tools**
   - `list_apps`, `app_action`, `get_app_state`, `get_app_schema`
-  - schema-aware app storage tools: `file_read`, `file_write`, `file_patch`, `file_list`, `file_delete`
+  - schema-aware app storage tools: `file_read`, `file_write`, `file_patch`, `file_list`,
+    `file_delete`
 - **Web/content tools**
   - `search_web` via Tavily
   - `read_url` for article-style extraction
@@ -141,14 +144,26 @@ This fork invests heavily in local project work, not just built-in app demos.
 ### Kira
 
 Kira stores work items and comments in app storage, shows project-scoped boards, and can run a
-discovery flow against a configured local work root. The Vite plugin in `apps/webuiapps/vite.config.ts`
-also exposes automation endpoints that can:
+discovery flow against a configured local work root. The Vite plugin in
+`apps/webuiapps/vite.config.ts` also exposes automation endpoints that can:
 
 1. scan actionable tasks
 2. plan intended files and validation commands
 3. run worker/reviewer loops
 4. rerun validation
 5. block, retry, or auto-commit based on project settings
+
+Kira can run one worker by default or up to three configured workers. With multiple workers, each
+worker gets its own isolated git worktree and produces an independent attempt. The reviewer compares
+the passing attempts and selects a single winner; if no attempt passes review, all workers receive
+the review feedback and try again.
+
+When `autoCommit` is enabled for a git project, approved work is committed in the winning isolated
+worktree and then integrated back into the primary project worktree with a short project-level
+cherry-pick lock. With multiple workers and `autoCommit` disabled, Kira still uses isolated
+worktrees and integrates the winning diff with `cherry-pick --no-commit`. If the primary worktree
+has overlapping dirty files, staged changes, or a cherry-pick conflict, Kira blocks the task and
+leaves the winning worktree available for manual recovery instead of overwriting local work.
 
 ### Aoi's IDE
 
@@ -172,20 +187,19 @@ The original prompt-driven app workflow is still in this repo under `.claude/`.
 
 - `.claude/commands/vibe.md` is the main entry point
 - `.claude/workflow/` contains staged generation and change workflows
-- `appGeneratorPlugin` in `apps/webuiapps/vite.config.ts` integrates generated apps into the
-  runtime
+- `appGeneratorPlugin` in `apps/webuiapps/vite.config.ts` integrates generated apps into the runtime
 
-This is still useful, but it is no longer the only story. The dominant focus of the current fork
-is the AI desktop plus local workspace automation stack.
+This is still useful, but it is no longer the only story. The dominant focus of the current fork is
+the AI desktop plus local workspace automation stack.
 
 ## Quick Start
 
 ### Prerequisites
 
-| Tool | Version |
-| --- | --- |
-| Node.js | 18+ |
-| pnpm | 9+ |
+| Tool    | Version |
+| ------- | ------- |
+| Node.js | 18+     |
+| pnpm    | 9+      |
 
 ### Run Locally
 
@@ -259,11 +273,27 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
     "projectDefaults": {
       "autoCommit": true
     },
-    "workerLlm": {
-      "model": "openai/gpt-5.4-mini"
-    },
+    "workers": [
+      {
+        "name": "Fast API worker",
+        "model": "openai/gpt-5.4-mini"
+      },
+      {
+        "name": "Codex local worker",
+        "provider": "codex-cli",
+        "model": "gpt-5.3-codex"
+      },
+      {
+        "name": "OpenCode Go worker",
+        "provider": "opencode-go",
+        "apiKey": "YOUR_OPENCODE_API_KEY",
+        "model": "opencode-go/kimi-k2.5"
+      }
+    ],
     "reviewerLlm": {
-      "model": "openai/gpt-5.4"
+      "provider": "opencode",
+      "apiKey": "YOUR_OPENCODE_API_KEY",
+      "model": "opencode/claude-sonnet-4-6"
     }
   },
   "openvscode": {
@@ -292,6 +322,17 @@ Notes:
 - If `openvscode.workspacePath` is omitted, the current code defaults to the repo root.
 - `gmail.clientId` must be a Google OAuth **Desktop App** client ID.
 - `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled.
+- `kira.workRootDirectory` can point either to a project folder itself or to a parent folder that
+  contains multiple project folders. If the root has project markers such as `.git`, `package.json`,
+  or `requirements.txt`, Kira treats that root as one project.
+- `kira.workers` is optional. When omitted, Kira uses the legacy `workerLlm` setting as one worker.
+  When present, Kira uses the first three entries and each worker can choose a different provider or
+  model.
+- `provider: "codex-cli"` runs the local Codex CLI with your existing ChatGPT login. Run
+  `codex login` once outside Kira before using it.
+- `provider: "opencode"` and `"opencode-go"` use OpenCode Zen/Go API keys. Kira defaults their base
+  URLs to `https://opencode.ai/zen` and `https://opencode.ai/zen/go`; set `apiStyle` only when you
+  need to force `openai-chat`, `openai-responses`, or `anthropic-messages`.
 - `userProfile.displayName` lets the chat panel remember how to address the user across launches.
 - `conversationPreferences.responseLanguageMode` supports `match-user` and `english`.
 - `conversationPreferences.ttsEnabled` turns Aoi message playback on or off.
@@ -350,34 +391,35 @@ Inside `apps/webuiapps/src/`:
 
 - `components/` contains the desktop shell, chat panel, and app window chrome
 - `pages/` contains built-in apps
-- `lib/` contains the runtime glue: storage, LLM clients, tools, app registry, plugins, and IDE helpers
+- `lib/` contains the runtime glue: storage, LLM clients, tools, app registry, plugins, and IDE
+  helpers
 - `routers/` defines the browser routes used by the standalone shell
 
 ## Development
 
-| Command | Purpose |
-| --- | --- |
-| `pnpm dev` | Start the local desktop plus Vite middleware APIs at `http://localhost:3000` |
-| `pnpm build` | Build the browser bundle |
-| `pnpm clean` | Clean Turborepo artifacts |
-| `pnpm run lint` | Lint and auto-fix |
-| `pnpm run pretty` | Format source files |
-| `pnpm --filter @openroom/webuiapps test` | Run Vitest unit tests for the desktop app |
-| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage |
-| `pnpm test:e2e` | Run Playwright end-to-end tests |
+| Command                                           | Purpose                                                                      |
+| ------------------------------------------------- | ---------------------------------------------------------------------------- |
+| `pnpm dev`                                        | Start the local desktop plus Vite middleware APIs at `http://localhost:3000` |
+| `pnpm build`                                      | Build the browser bundle                                                     |
+| `pnpm clean`                                      | Clean Turborepo artifacts                                                    |
+| `pnpm run lint`                                   | Lint and auto-fix                                                            |
+| `pnpm run pretty`                                 | Format source files                                                          |
+| `pnpm --filter @openroom/webuiapps test`          | Run Vitest unit tests for the desktop app                                    |
+| `pnpm --filter @openroom/webuiapps test:coverage` | Run Vitest with coverage                                                     |
+| `pnpm test:e2e`                                   | Run Playwright end-to-end tests                                              |
 
 ## Tech Stack
 
-| Area | Current stack |
-| --- | --- |
-| UI | React 18, TypeScript, React Router, Vite |
-| Styling | SCSS and CSS Modules |
-| Motion | Framer Motion |
-| App runtime | Local `@gui/vibe-container` mock, session-data middleware, app `meta.yaml` actions |
+| Area          | Current stack                                                                          |
+| ------------- | -------------------------------------------------------------------------------------- |
+| UI            | React 18, TypeScript, React Router, Vite                                               |
+| Styling       | SCSS and CSS Modules                                                                   |
+| Motion        | Framer Motion                                                                          |
+| App runtime   | Local `@gui/vibe-container` mock, session-data middleware, app `meta.yaml` actions     |
 | Local tooling | Filesystem APIs, TypeScript language service, safe command runner, diagnostics parsers |
-| Integrations | Gmail OAuth, Tavily, image generation, RSS ingestion, YouTube search parsing |
-| Monorepo | pnpm workspaces, Turborepo |
-| Testing | Vitest and Playwright |
+| Integrations  | Gmail OAuth, Tavily, image generation, RSS ingestion, YouTube search parsing           |
+| Monorepo      | pnpm workspaces, Turborepo                                                             |
+| Testing       | Vitest and Playwright                                                                  |
 
 ## Contributing
 

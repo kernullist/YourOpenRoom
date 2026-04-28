@@ -9,7 +9,7 @@ import autoprefixer from 'autoprefixer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import * as fs from 'fs';
 import * as os from 'os';
-import { dirname, join } from 'path';
+import { basename, dirname, join } from 'path';
 import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
@@ -32,6 +32,7 @@ const SESSIONS_DIR = resolve(os.homedir(), '.openroom', 'sessions');
 const CHARACTERS_FILE = resolve(os.homedir(), '.openroom', 'characters.json');
 const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
 const OPENROOM_ROOT = resolve(__dirname, '../..');
+const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
 
 function readPersistedConfigFile(): Record<string, unknown> {
   try {
@@ -56,6 +57,47 @@ function getKiraWorkRootDirectory(): string | null {
   const kira = config.kira as { workRootDirectory?: string } | undefined;
   const dir = kira?.workRootDirectory?.trim();
   return dir ? dir : null;
+}
+
+const KIRA_PROJECT_ROOT_MARKERS = [
+  '.git',
+  'package.json',
+  'pyproject.toml',
+  'Cargo.toml',
+  'go.mod',
+  'requirements.txt',
+  'pom.xml',
+  'build.gradle',
+  'settings.gradle',
+  'deno.json',
+];
+
+function isKiraProjectRoot(directory: string): boolean {
+  try {
+    return KIRA_PROJECT_ROOT_MARKERS.some((marker) => fs.existsSync(join(directory, marker)));
+  } catch {
+    return false;
+  }
+}
+
+function listKiraProjects(resolvedRoot: string): Array<{ name: string; path: string }> {
+  if (isKiraProjectRoot(resolvedRoot)) {
+    return [
+      {
+        name: basename(resolvedRoot),
+        path: resolvedRoot,
+      },
+    ];
+  }
+
+  return fs
+    .readdirSync(resolvedRoot, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
+    .map((entry) => ({
+      name: entry.name,
+      path: resolve(resolvedRoot, entry.name),
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
 }
 
 function getTavilyConfig(): { apiKey: string; baseUrl: string } | null {
@@ -258,16 +300,7 @@ function kiraConfigPlugin(): Plugin {
           const resolvedRoot = resolve(workRootDirectory);
           const exists = fs.existsSync(resolvedRoot) && fs.statSync(resolvedRoot).isDirectory();
 
-          const projects = exists
-            ? fs
-                .readdirSync(resolvedRoot, { withFileTypes: true })
-                .filter((entry) => entry.isDirectory() && !entry.name.startsWith('.'))
-                .map((entry) => ({
-                  name: entry.name,
-                  path: resolve(resolvedRoot, entry.name),
-                }))
-                .sort((a, b) => a.name.localeCompare(b.name))
-            : [];
+          const projects = exists ? listKiraProjects(resolvedRoot) : [];
 
           res.writeHead(200);
           res.end(
@@ -1256,7 +1289,9 @@ function openVscodeManagerPlugin(): Plugin {
           },
           (error) => {
             res.writeHead(400);
-            res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+            res.end(
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+            );
           },
         );
       });
@@ -1517,6 +1552,197 @@ function logServerPlugin(): Plugin {
   };
 }
 
+function buildCodexCliChatPrompt(payload: Record<string, unknown>): string {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const renderedMessages = messages
+    .map((message, index) => {
+      if (typeof message !== 'object' || message === null) return null;
+      const record = message as Record<string, unknown>;
+      const role = typeof record.role === 'string' ? record.role : `message-${index + 1}`;
+      const content = typeof record.content === 'string' ? record.content : '';
+      return `${role.toUpperCase()}:\n${content}`;
+    })
+    .filter((entry): entry is string => Boolean(entry))
+    .join('\n\n');
+
+  return [
+    'You are running as the configured Codex CLI model for OpenRoom.',
+    'Reply directly to the latest user request. Tool calls are not available through this provider in the chat UI.',
+    'Preserve the active character/system instructions from the conversation when they are present.',
+    '',
+    renderedMessages,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function runCodexCliChatProcess(
+  command: string,
+  args: string[],
+  input: string,
+  outputFile: string,
+): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let stdout = '';
+    let stderr = '';
+    const child = spawn(command, args, {
+      cwd: OPENROOM_ROOT,
+      shell: process.platform === 'win32',
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const timeout = setTimeout(() => {
+      child.kill();
+      rejectPromise(new Error('Codex CLI timed out.'));
+    }, 180_000);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      rejectPromise(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        rejectPromise(new Error(stderr.trim() || `Codex CLI exited with code ${code}`));
+        return;
+      }
+      if (fs.existsSync(outputFile)) {
+        resolvePromise(fs.readFileSync(outputFile, 'utf-8').trim());
+        return;
+      }
+      resolvePromise(stdout.trim());
+    });
+    child.stdin?.end(input);
+  });
+}
+
+function isCodexCliModelUpgradeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /requires a newer version of Codex/i.test(message);
+}
+
+function codexCliChatPlugin(): Plugin {
+  return {
+    name: 'codex-cli-chat',
+    configureServer(server) {
+      server.middlewares.use('/api/codex-cli-chat', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const tempDir = fs.mkdtempSync(join(os.tmpdir(), 'openroom-codex-chat-'));
+        const outputFile = join(tempDir, 'last-message.txt');
+        try {
+          const payload = await readJsonBody(req);
+          const command =
+            typeof payload.command === 'string' && payload.command.trim()
+              ? payload.command.trim()
+              : 'codex';
+          const model = typeof payload.model === 'string' ? payload.model.trim() : '';
+          const args = [
+            'exec',
+            '--cd',
+            OPENROOM_ROOT,
+            '--skip-git-repo-check',
+            '--sandbox',
+            'read-only',
+            '--output-last-message',
+            outputFile,
+            '--color',
+            'never',
+          ];
+          if (model) args.push('--model', model);
+          args.push('-');
+
+          const prompt = buildCodexCliChatPrompt(payload);
+          let content: string;
+          try {
+            content = await runCodexCliChatProcess(command, args, prompt, outputFile);
+          } catch (error) {
+            if (model && model !== CODEX_CLI_FALLBACK_MODEL && isCodexCliModelUpgradeError(error)) {
+              const fallbackArgs = args.filter((arg, index) => {
+                if (arg === '--model') return false;
+                return args[index - 1] !== '--model';
+              });
+              fallbackArgs.splice(fallbackArgs.length - 1, 0, '--model', CODEX_CLI_FALLBACK_MODEL);
+              content = await runCodexCliChatProcess(command, fallbackArgs, prompt, outputFile);
+            } else {
+              throw error;
+            }
+          }
+          writeJsonResponse(res, 200, { content });
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
+        }
+      });
+    },
+  };
+}
+
+function openRouterModelsPlugin(): Plugin {
+  let cache: { expiresAt: number; body: string } | null = null;
+
+  return {
+    name: 'openrouter-models',
+    configureServer(server) {
+      server.middlewares.use('/api/openrouter-models', async (req, res) => {
+        if (req.method !== 'GET') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const now = Date.now();
+        if (cache && cache.expiresAt > now) {
+          res.writeHead(200, {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'public, max-age=300',
+          });
+          res.end(cache.body);
+          return;
+        }
+
+        try {
+          const upstream = await fetch('https://openrouter.ai/api/v1/models', {
+            headers: { Accept: 'application/json' },
+          });
+          const body = await upstream.text();
+          if (!upstream.ok) {
+            writeJsonResponse(res, upstream.status, {
+              error: `OpenRouter models API error ${upstream.status}: ${body.slice(0, 500)}`,
+            });
+            return;
+          }
+          cache = {
+            expiresAt: now + 10 * 60 * 1000,
+            body,
+          };
+          res.writeHead(200, {
+            'Content-Type': upstream.headers.get('content-type') || 'application/json',
+            'Cache-Control': 'public, max-age=300',
+          });
+          res.end(body);
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    },
+  };
+}
+
 /** LLM API proxy plugin — resolves browser CORS restrictions */
 function llmProxyPlugin(): Plugin {
   return {
@@ -1680,10 +1906,7 @@ function simplifyElevenVoice(voice: Record<string, unknown>): Record<string, unk
   };
 }
 
-function ttsLabPlugin(options: {
-  geminiApiKey?: string;
-  elevenLabsApiKey?: string;
-}): Plugin {
+function ttsLabPlugin(options: { geminiApiKey?: string; elevenLabsApiKey?: string }): Plugin {
   return {
     name: 'tts-lab',
     configureServer(server) {
@@ -2096,10 +2319,13 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
   const normalizedMode = mode.toLowerCase();
   const resolvedNodeEnv =
     env.NODE_ENV ||
-    (normalizedMode === 'production' ? 'production' : normalizedMode === 'test' ? 'test' : 'development');
+    (normalizedMode === 'production'
+      ? 'production'
+      : normalizedMode === 'test'
+        ? 'test'
+        : 'development');
   const isAnalyze = normalizedMode === 'analyze' || env.ANALYZE === 'analyze';
-  const isProd =
-    normalizedMode === 'production' || isAnalyze || resolvedNodeEnv === 'production';
+  const isProd = normalizedMode === 'production' || isAnalyze || resolvedNodeEnv === 'production';
   const isTest = normalizedMode === 'test' || resolvedNodeEnv === 'test';
   const sentryAuthToken = env.SENTRY_AUTH_TOKEN;
   const bizProjectName = env.BIZ_PROJECT_NAME || '';
@@ -2143,6 +2369,8 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     openVscodeManagerPlugin(),
     openroomResetPlugin(),
     logServerPlugin(),
+    codexCliChatPlugin(),
+    openRouterModelsPlugin(),
     llmProxyPlugin(),
     ttsLabPlugin({
       geminiApiKey: env.GEMINI_API_KEY,

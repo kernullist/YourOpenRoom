@@ -2,27 +2,33 @@
 
 [English](./README.md) | [中文](./README_zh.md) | 한국어
 
-> OpenRoom에서 출발했지만, 지금은 AI가 앱과 실제 로컬 워크스페이스를 다루는 로컬 우선 브라우저 데스크톱으로 발전한 포크입니다.
+> OpenRoom에서 출발했지만, 지금은 AI가 앱과 실제 로컬 워크스페이스를 다루는 로컬 우선 브라우저
+> 데스크톱으로 발전한 포크입니다.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 
-**[저장소](https://github.com/kernullist/YourOpenRoom)** · **[이슈](https://github.com/kernullist/YourOpenRoom/issues)** · **[원본 업스트림](https://github.com/MiniMax-AI/OpenRoom)**
+**[저장소](https://github.com/kernullist/YourOpenRoom)** ·
+**[이슈](https://github.com/kernullist/YourOpenRoom/issues)** ·
+**[원본 업스트림](https://github.com/MiniMax-AI/OpenRoom)**
 
 ## 이 저장소의 현재 방향
 
-YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단순 데모 데스크톱과는 성격이 많이 다릅니다.
+YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단순 데모 데스크톱과는 성격이 많이
+다릅니다.
 
 지금의 중심은 세 가지입니다.
 
 - **브라우저 데스크톱 셸**: 드래그 가능한 창, 데스크톱 아이콘, 플로팅 채팅 패널, 로컬 상태
 - **Agent 런타임**: `meta.yaml` 액션, 앱 상태 조회, 앱 저장소 파일 조작, 채팅 툴 호출
-- **로컬 프로젝트 자동화**: **Kira** 와 **Aoi's IDE** 를 통한 실제 워크스페이스 검색, 편집, 진단, 시맨틱 리네임, 체크포인트, 안전한 명령 실행
+- **로컬 프로젝트 자동화**: **Kira** 와 **Aoi's IDE** 를 통한 실제 워크스페이스 검색, 편집, 진단,
+  시맨틱 리네임, 체크포인트, 안전한 명령 실행
 
 실제로 실행되는 핵심 앱은 `apps/webuiapps` 입니다.
 
 ## 현재 코드에 이미 들어있는 것
 
-- 독립 실행형 브라우저 데스크톱: 창 시스템, 채팅 패널, 데스크톱 아이콘, 라이브 월페이퍼 토글, Kira 자동화 알림
+- 독립 실행형 브라우저 데스크톱: 창 시스템, 채팅 패널, 데스크톱 아이콘, 라이브 월페이퍼 토글, Kira
+  자동화 알림
 - 채팅 패널 기능:
   - OpenAI-compatible / Anthropic-compatible LLM 설정
   - 가벼운 대화용 dialog model 오버라이드
@@ -47,27 +53,28 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - TTS lab 합성 API
   - Kira 자동화 API
   - 설정 및 세션 데이터 저장
-- 업스트림의 캐릭터 / mod 계층도 여전히 남아 있습니다. 캐릭터, mod, 감정 미디어, 업로드 기반 mod 생성, 메모리 주입이 현재 셸 안에 포함되어 있습니다.
+- 업스트림의 캐릭터 / mod 계층도 여전히 남아 있습니다. 캐릭터, mod, 감정 미디어, 업로드 기반 mod
+  생성, 메모리 주입이 현재 셸 안에 포함되어 있습니다.
 
 ## 기본 앱
 
-| 앱 | 현재 실제 기능 |
-| --- | --- |
-| `Twitter` | 로컬 소셜 피드, 게시글/좋아요/댓글 저장 |
-| `YouTube` | YouTube 검색, 최근 검색, 즐겨찾는 주제, 플레이리스트, 큐 재생, 팝업 플레이어 |
-| `Diary` | Markdown 일기, 기분/날씨 메타데이터, 캘린더 탐색, 손글씨 스타일 렌더링 |
-| `Album` | `album.photoDirectory` 를 읽는 로컬 사진 뷰어 |
-| `FreeCell` | 영속화되는 FreeCell 게임 |
-| `Email` | Gmail OAuth 데스크톱 플로우, inbox/sent/drafts/trash, 답장, 초안 저장, 보관, 별표, 복원, 삭제 |
-| `Chess` | 완전한 체스 규칙, 3D 보드, 로컬 저장, Agent 턴 동기화 |
-| `Evidence Vault` | 구조화된 증거/조사 파일을 보는 로컬 자료 보관 앱 |
-| `CyberNews` | RSS 기반 실시간 보안 뉴스와 case-board 조사 화면 |
-| `Calendar` | 로컬 일정 및 리마인더 플래너 |
-| `Notes` | 태그, 고정, 필터, 미리보기가 있는 로컬 Markdown 노트 |
-| `Browser Reader` | 내장 브라우징, reader 추출, 북마크/히스토리, Google 결과 대체 UI, Notes 저장 |
-| `Kira` | 작업 보드, work item/comment, discovery 분석, 자동화 handoff |
-| `Aoi's IDE` | 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령 |
-| `PE Analyst` | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
+| 앱               | 현재 실제 기능                                                                                                                  |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `Twitter`        | 로컬 소셜 피드, 게시글/좋아요/댓글 저장                                                                                         |
+| `YouTube`        | YouTube 검색, 최근 검색, 즐겨찾는 주제, 플레이리스트, 큐 재생, 팝업 플레이어                                                    |
+| `Diary`          | Markdown 일기, 기분/날씨 메타데이터, 캘린더 탐색, 손글씨 스타일 렌더링                                                          |
+| `Album`          | `album.photoDirectory` 를 읽는 로컬 사진 뷰어                                                                                   |
+| `FreeCell`       | 영속화되는 FreeCell 게임                                                                                                        |
+| `Email`          | Gmail OAuth 데스크톱 플로우, inbox/sent/drafts/trash, 답장, 초안 저장, 보관, 별표, 복원, 삭제                                   |
+| `Chess`          | 완전한 체스 규칙, 3D 보드, 로컬 저장, Agent 턴 동기화                                                                           |
+| `Evidence Vault` | 구조화된 증거/조사 파일을 보는 로컬 자료 보관 앱                                                                                |
+| `CyberNews`      | RSS 기반 실시간 보안 뉴스와 case-board 조사 화면                                                                                |
+| `Calendar`       | 로컬 일정 및 리마인더 플래너                                                                                                    |
+| `Notes`          | 태그, 고정, 필터, 미리보기가 있는 로컬 Markdown 노트                                                                            |
+| `Browser Reader` | 내장 브라우징, reader 추출, 북마크/히스토리, Google 결과 대체 UI, Notes 저장                                                    |
+| `Kira`           | 작업 보드, work item/comment, discovery 분석, 자동화 handoff                                                                    |
+| `Aoi's IDE`      | 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령                                          |
+| `PE Analyst`     | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
 
 ## PE Analyst 와 IDA MCP
 
@@ -139,18 +146,31 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 
 ## Kira 와 Aoi's IDE
 
-이 포크에서 가장 달라진 부분은 내장 앱 데모보다 실제 로컬 프로젝트 작업에 훨씬 무게를 둔다는 점입니다.
+이 포크에서 가장 달라진 부분은 내장 앱 데모보다 실제 로컬 프로젝트 작업에 훨씬 무게를 둔다는
+점입니다.
 
 ### Kira
 
-Kira 는 앱 저장소에 work item 과 comment 를 저장하고, 설정된 로컬 프로젝트를 discovery 대상으로 삼을 수 있습니다.
-`apps/webuiapps/vite.config.ts` 안의 자동화 플러그인은 다음까지 수행합니다.
+Kira 는 앱 저장소에 work item 과 comment 를 저장하고, 설정된 로컬 프로젝트를 discovery 대상으로 삼을
+수 있습니다. `apps/webuiapps/vite.config.ts` 안의 자동화 플러그인은 다음까지 수행합니다.
 
 1. 처리할 작업 스캔
 2. 대상 파일 / 검증 명령 계획
 3. worker / reviewer 루프 실행
 4. 검증 재실행
 5. 프로젝트 설정에 따라 block, retry, auto-commit
+
+Kira 는 기본적으로 1개의 worker 를 사용하지만, 설정으로 최대 3개의 worker 를 사용할 수 있습니다.
+여러 worker 를 쓰면 각 worker 는 자기 전용 git worktree 에서 독립적인 attempt 를 만들고, reviewer 가
+검증을 통과한 attempt 들을 비교해 하나의 winner 를 고릅니다. 모두 review 를 통과하지 못하면 같은
+피드백으로 worker 들이 다시 시도합니다.
+
+git 프로젝트에서 `autoCommit` 이 켜져 있으면 승인된 작업은 winning 격리 worktree 에서 먼저 커밋한
+뒤, 짧은 프로젝트 단위 cherry-pick 락을 잡고 기본 프로젝트 worktree 로 통합합니다. 여러 worker 를
+쓰는 경우 `autoCommit` 이 꺼져 있어도 Kira 는 attempt 별 worktree 를 사용하고, 선택된 diff 를
+`cherry-pick --no-commit` 으로 통합합니다. 기본 worktree 에 겹치는 dirty file, staged change,
+cherry-pick 충돌이 있으면 로컬 작업을 덮어쓰지 않고 task 를 blocked 로 전환하며, 수동 복구를 위해
+winning worktree 를 남깁니다.
 
 ### Aoi's IDE
 
@@ -181,10 +201,10 @@ TypeScript / JavaScript 프로젝트에서는 가능한 경우 로컬 TypeScript
 
 ### 필요 조건
 
-| 도구 | 버전 |
-| --- | --- |
-| Node.js | 18+ |
-| pnpm | 9+ |
+| 도구    | 버전 |
+| ------- | ---- |
+| Node.js | 18+  |
+| pnpm    | 9+   |
 
 ### 로컬 실행
 
@@ -215,7 +235,8 @@ pnpm dev
 - TTS lab 합성 API
 - 설정 / 세션 데이터 저장
 
-그래서 `pnpm build` 로 프런트 번들은 만들 수 있어도, 완전한 기능을 유지하려면 같은 백엔드 엔드포인트를 따로 제공해야 합니다.
+그래서 `pnpm build` 로 프런트 번들은 만들 수 있어도, 완전한 기능을 유지하려면 같은 백엔드
+엔드포인트를 따로 제공해야 합니다.
 
 ## 설정
 
@@ -258,11 +279,27 @@ pnpm dev
     "projectDefaults": {
       "autoCommit": true
     },
-    "workerLlm": {
-      "model": "openai/gpt-5.4-mini"
-    },
+    "workers": [
+      {
+        "name": "Fast API worker",
+        "model": "openai/gpt-5.4-mini"
+      },
+      {
+        "name": "Codex local worker",
+        "provider": "codex-cli",
+        "model": "gpt-5.3-codex"
+      },
+      {
+        "name": "OpenCode Go worker",
+        "provider": "opencode-go",
+        "apiKey": "YOUR_OPENCODE_API_KEY",
+        "model": "opencode-go/kimi-k2.5"
+      }
+    ],
     "reviewerLlm": {
-      "model": "openai/gpt-5.4"
+      "provider": "opencode",
+      "apiKey": "YOUR_OPENCODE_API_KEY",
+      "model": "opencode/claude-sonnet-4-6"
     }
   },
   "openvscode": {
@@ -291,12 +328,23 @@ pnpm dev
 - `openvscode.workspacePath` 가 없으면 현재 코드는 저장소 루트를 기본값으로 사용합니다
 - `gmail.clientId` 는 Google OAuth **Desktop App** client ID 여야 합니다
 - `dialogLlm` 을 쓰려면 최소 `baseUrl` 과 `model` 이 필요합니다
+- `kira.workRootDirectory` 는 프로젝트 폴더 자체를 가리켜도 되고, 여러 프로젝트 폴더를 담은 상위
+  폴더를 가리켜도 됩니다. 루트에 `.git`, `package.json`, `requirements.txt` 같은 프로젝트 마커가
+  있으면 Kira 는 그 루트 자체를 하나의 프로젝트로 취급합니다
+- `kira.workers` 는 선택 설정입니다. 없으면 기존 `workerLlm` 을 1개 worker 로 사용하고, 있으면 앞의
+  3개 항목까지만 사용합니다. 각 worker 는 서로 다른 provider/model 을 사용할 수 있습니다
+- `provider: "codex-cli"` 는 로컬 Codex CLI 를 ChatGPT 로그인 세션으로 실행합니다. Kira 에서 쓰기
+  전에 터미널에서 `codex login` 을 한 번 완료해야 합니다
+- `provider: "opencode"` 와 `"opencode-go"` 는 OpenCode Zen/Go API 키를 사용합니다. 기본 base URL 은
+  각각 `https://opencode.ai/zen`, `https://opencode.ai/zen/go` 이며, 필요할 때만 `apiStyle` 로
+  `openai-chat`, `openai-responses`, `anthropic-messages` 중 하나를 강제하면 됩니다
 - `userProfile.displayName` 을 설정하면 채팅 패널이 다음 실행에서도 같은 이름으로 사용자를 부릅니다
 - `conversationPreferences.responseLanguageMode` 는 `match-user` 와 `english` 를 지원합니다
 - `conversationPreferences.ttsEnabled` 로 Aoi 답변 음성 재생을 켜고 끌 수 있습니다
-- `conversationPreferences.ttsPreloadCommonPhrases` 는 짧은 고정 대사와 최근 assistant
-  답변을 미리 생성해서 재생 지연을 줄입니다
-- `conversationPreferences.responseLanguageMode` 가 `english` 이면 일반 답변, 리마인더, 새로 심는 첫 프로로그/추천 답변까지 영어로 맞춥니다
+- `conversationPreferences.ttsPreloadCommonPhrases` 는 짧은 고정 대사와 최근 assistant 답변을 미리
+  생성해서 재생 지연을 줄입니다
+- `conversationPreferences.responseLanguageMode` 가 `english` 이면 일반 답변, 리마인더, 새로 심는 첫
+  프로로그/추천 답변까지 영어로 맞춥니다
 - `imageGen` 은 채팅 패널 이미지 생성 툴의 선택 설정입니다
 - `idaPe.mode` 는 `prescan-only` 와 `mcp-http` 를 지원합니다
 - `idaPe.backendUrl` 은 `ida_pro_mcp` current-IDB 모드라면 `http://127.0.0.1:13337/mcp`,
@@ -352,33 +400,34 @@ YourOpenRoom/
 
 ## 개발 명령
 
-| 명령 | 용도 |
-| --- | --- |
-| `pnpm dev` | 데스크톱과 로컬 middleware API 실행 |
-| `pnpm build` | 프런트 번들 빌드 |
-| `pnpm clean` | Turborepo 산출물 정리 |
-| `pnpm run lint` | 린트 + 자동 수정 |
-| `pnpm run pretty` | 포맷팅 |
-| `pnpm --filter @openroom/webuiapps test` | 데스크톱 앱 Vitest 단위 테스트 |
-| `pnpm --filter @openroom/webuiapps test:coverage` | 커버리지 포함 Vitest |
-| `pnpm test:e2e` | Playwright E2E |
+| 명령                                              | 용도                                |
+| ------------------------------------------------- | ----------------------------------- |
+| `pnpm dev`                                        | 데스크톱과 로컬 middleware API 실행 |
+| `pnpm build`                                      | 프런트 번들 빌드                    |
+| `pnpm clean`                                      | Turborepo 산출물 정리               |
+| `pnpm run lint`                                   | 린트 + 자동 수정                    |
+| `pnpm run pretty`                                 | 포맷팅                              |
+| `pnpm --filter @openroom/webuiapps test`          | 데스크톱 앱 Vitest 단위 테스트      |
+| `pnpm --filter @openroom/webuiapps test:coverage` | 커버리지 포함 Vitest                |
+| `pnpm test:e2e`                                   | Playwright E2E                      |
 
 ## 기술 스택
 
-| 영역 | 현재 구현 |
-| --- | --- |
-| UI | React 18, TypeScript, React Router, Vite |
-| 스타일 | SCSS, CSS Modules |
-| 모션 | Framer Motion |
+| 영역      | 현재 구현                                                                             |
+| --------- | ------------------------------------------------------------------------------------- |
+| UI        | React 18, TypeScript, React Router, Vite                                              |
+| 스타일    | SCSS, CSS Modules                                                                     |
+| 모션      | Framer Motion                                                                         |
 | 앱 런타임 | 로컬 `@gui/vibe-container` mock, session-data middleware, `meta.yaml` 기반 app action |
-| 로컬 툴링 | 파일 시스템 API, TypeScript language service, 안전 명령 실행, 구조화 진단 |
-| 외부 연동 | Gmail OAuth, Tavily, 이미지 생성, RSS 집계, YouTube 검색 파싱 |
-| 모노레포 | pnpm workspaces, Turborepo |
-| 테스트 | Vitest, Playwright |
+| 로컬 툴링 | 파일 시스템 API, TypeScript language service, 안전 명령 실행, 구조화 진단             |
+| 외부 연동 | Gmail OAuth, Tavily, 이미지 생성, RSS 집계, YouTube 검색 파싱                         |
+| 모노레포  | pnpm workspaces, Turborepo                                                            |
+| 테스트    | Vitest, Playwright                                                                    |
 
 ## 기여
 
-이슈, 문서 수정, 툴 개선, 앱 변경, 워크플로 업그레이드 모두 환영합니다. [CONTRIBUTING.md](./CONTRIBUTING.md)를 먼저 참고하세요.
+이슈, 문서 수정, 툴 개선, 앱 변경, 워크플로 업그레이드 모두 환영합니다.
+[CONTRIBUTING.md](./CONTRIBUTING.md)를 먼저 참고하세요.
 
 ## License
 

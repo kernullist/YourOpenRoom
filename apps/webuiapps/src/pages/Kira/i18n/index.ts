@@ -1,16 +1,20 @@
 import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import en from './en';
+import ko from './ko';
 import zh from './zh';
 
 const NAMESPACE = 'kira';
+const resources = {
+  en: { [NAMESPACE]: en },
+  zh: { [NAMESPACE]: zh },
+  ko: { [NAMESPACE]: ko },
+  'ko-KR': { [NAMESPACE]: ko },
+};
 
 if (!i18n.isInitialized) {
   i18n.use(initReactI18next).init({
-    resources: {
-      en: { [NAMESPACE]: en },
-      zh: { [NAMESPACE]: zh },
-    },
+    resources,
     lng: 'en',
     fallbackLng: 'en',
     defaultNS: NAMESPACE,
@@ -20,8 +24,9 @@ if (!i18n.isInitialized) {
     },
   });
 } else {
-  i18n.addResourceBundle('en', NAMESPACE, en, true, true);
-  i18n.addResourceBundle('zh', NAMESPACE, zh, true, true);
+  Object.entries(resources).forEach(([language, bundle]) => {
+    i18n.addResourceBundle(language, NAMESPACE, bundle[NAMESPACE], true, true);
+  });
 }
 
 export { NAMESPACE };

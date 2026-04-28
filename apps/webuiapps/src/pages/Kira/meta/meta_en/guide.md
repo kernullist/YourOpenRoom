@@ -20,17 +20,17 @@
 
 Each work item is stored as one JSON file. The filename must match `id`.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | Unique work ID, same as filename without `.json` |
-| type | string | Yes | Must be `"work"` |
-| projectName | string | Yes | Selected local project name under `kira.workRootDirectory` |
-| title | string | Yes | Work title |
-| description | string | Yes | Markdown implementation brief that sub-agents can later read directly |
-| status | string | Yes | One of `todo`, `in_progress`, `in_review`, `blocked`, `done` |
-| assignee | string | No | Optional owner or agent label |
-| createdAt | number | Yes | Unix timestamp in milliseconds |
-| updatedAt | number | Yes | Unix timestamp in milliseconds |
+| Field       | Type   | Required | Description                                                           |
+| ----------- | ------ | -------- | --------------------------------------------------------------------- |
+| id          | string | Yes      | Unique work ID, same as filename without `.json`                      |
+| type        | string | Yes      | Must be `"work"`                                                      |
+| projectName | string | Yes      | Selected local project name under `kira.workRootDirectory`            |
+| title       | string | Yes      | Work title                                                            |
+| description | string | Yes      | Markdown implementation brief that sub-agents can later read directly |
+| status      | string | Yes      | One of `todo`, `in_progress`, `in_review`, `blocked`, `done`          |
+| assignee    | string | No       | Optional owner or agent label                                         |
+| createdAt   | number | Yes      | Unix timestamp in milliseconds                                        |
+| updatedAt   | number | Yes      | Unix timestamp in milliseconds                                        |
 
 Example:
 
@@ -52,14 +52,14 @@ Example:
 
 Comments are intentionally lightweight and belong to a work.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | Unique comment ID, same as filename without `.json` |
-| taskId | string | Yes | Related work ID |
-| taskType | string | Yes | Must be `"work"` |
-| author | string | Yes | Short author label |
-| body | string | Yes | Plain-text comment body |
-| createdAt | number | Yes | Unix timestamp in milliseconds |
+| Field     | Type   | Required | Description                                         |
+| --------- | ------ | -------- | --------------------------------------------------- |
+| id        | string | Yes      | Unique comment ID, same as filename without `.json` |
+| taskId    | string | Yes      | Related work ID                                     |
+| taskType  | string | Yes      | Must be `"work"`                                    |
+| author    | string | Yes      | Short author label                                  |
+| body      | string | Yes      | Plain-text comment body                             |
+| createdAt | number | Yes      | Unix timestamp in milliseconds                      |
 
 Example:
 
@@ -92,9 +92,9 @@ Kira also reads an optional project-local settings file:
 
 Current fields:
 
-| Field | Type | Default | Description |
-|---|---|---|---|
-| autoCommit | boolean | `true` | If `true`, Kira will try to git-commit approved work using the reviewer’s suggested commit message |
+| Field      | Type    | Default | Description                                                                                        |
+| ---------- | ------- | ------- | -------------------------------------------------------------------------------------------------- |
+| autoCommit | boolean | `true`  | If `true`, Kira will try to git-commit approved work using the reviewer’s suggested commit message |
 
 Example:
 
@@ -104,15 +104,16 @@ Example:
 }
 ```
 
-If the project file is missing, Kira falls back to `kira.projectDefaults` from `~/.openroom/config.json`, and if that is also missing it still defaults to `true`.
+If the project file is missing, Kira falls back to `kira.projectDefaults` from
+`~/.openroom/config.json`, and if that is also missing it still defaults to `true`.
 
 ## State File `/state.json`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| selectedTaskId | string \| null | No | Currently focused work ID |
-| activeProjectName | string \| null | No | Currently selected local project name under `kira.workRootDirectory` |
-| previewMode | boolean | Yes | Whether the detail panel is in markdown preview mode |
+| Field             | Type           | Required | Description                                                          |
+| ----------------- | -------------- | -------- | -------------------------------------------------------------------- |
+| selectedTaskId    | string \| null | No       | Currently focused work ID                                            |
+| activeProjectName | string \| null | No       | Currently selected local project name under `kira.workRootDirectory` |
+| previewMode       | boolean        | Yes      | Whether the detail panel is in markdown preview mode                 |
 
 Example:
 
@@ -130,12 +131,16 @@ Example:
 2. Read this guide
 3. Read existing files in `/works/` and `/comments/`
 4. Write or update the target file in `apps/kira/data/...`
-5. Dispatch `CREATE_WORK`, `UPDATE_WORK`, `DELETE_WORK`, `CREATE_COMMENT`, `DELETE_COMMENT`, or `REFRESH_KIRA`
+5. Dispatch `CREATE_WORK`, `UPDATE_WORK`, `DELETE_WORK`, `CREATE_COMMENT`, `DELETE_COMMENT`, or
+   `REFRESH_KIRA`
 
 Notes:
 
 - Keep work descriptions in markdown, not HTML.
 - Keep each work `projectName` aligned with the active project selected in Kira.
 - Comments are simple text notes; do not overload them with long implementation briefs.
-- Optional local execution root: set `kira.workRootDirectory` in `~/.openroom/config.json` if Kira should point sub-agents at a specific local workspace root.
-- Kira treats the first-level folders under `kira.workRootDirectory` as selectable local projects and stores the current selection in `state.json`.
+- Optional local execution root: set `kira.workRootDirectory` in `~/.openroom/config.json` if Kira
+  should point sub-agents at a specific local workspace root.
+- Kira accepts either a project root or a parent folder containing projects. If the configured root
+  has project markers such as `.git`, `package.json`, or `requirements.txt`, Kira treats that root
+  itself as the selectable project; otherwise it lists first-level folders as projects.

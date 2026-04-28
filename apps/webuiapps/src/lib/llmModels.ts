@@ -6,7 +6,12 @@ export type LLMProvider =
   | 'minimax'
   | 'z.ai'
   | 'kimi'
-  | 'openrouter';
+  | 'openrouter'
+  | 'opencode'
+  | 'opencode-go'
+  | 'codex-cli';
+
+export type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 
 export type ModelCategory = 'flagship' | 'general' | 'coding' | 'lightweight' | 'thinking';
 
@@ -22,6 +27,8 @@ export interface LLMConfig {
   baseUrl: string;
   model: string;
   customHeaders?: string;
+  command?: string;
+  apiStyle?: LLMApiStyle;
 }
 
 export interface ProviderModelConfig {
@@ -148,6 +155,88 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
       { id: 'google/gemini-2.5-pro', name: 'Gemini 2.5 Pro', category: 'flagship' },
     ],
   },
+
+  opencode: {
+    displayName: 'OpenCode',
+    baseUrl: 'https://opencode.ai/zen',
+    defaultModel: 'opencode/claude-sonnet-4-6',
+    models: [
+      { id: 'opencode/gpt-5.5', name: 'GPT-5.5', category: 'flagship' },
+      { id: 'opencode/gpt-5.5-pro', name: 'GPT-5.5 Pro', category: 'flagship' },
+      { id: 'opencode/gpt-5.4', name: 'GPT-5.4', category: 'flagship' },
+      { id: 'opencode/gpt-5.4-pro', name: 'GPT-5.4 Pro', category: 'flagship' },
+      { id: 'opencode/gpt-5.4-mini', name: 'GPT-5.4 Mini', category: 'lightweight' },
+      { id: 'opencode/gpt-5.4-nano', name: 'GPT-5.4 Nano', category: 'lightweight' },
+      { id: 'opencode/gpt-5.3-codex', name: 'GPT-5.3 Codex', category: 'coding' },
+      { id: 'opencode/gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'coding' },
+      { id: 'opencode/gpt-5.2', name: 'GPT-5.2', category: 'flagship' },
+      { id: 'opencode/gpt-5.2-codex', name: 'GPT-5.2 Codex', category: 'coding' },
+      { id: 'opencode/gpt-5.1', name: 'GPT-5.1', category: 'general' },
+      { id: 'opencode/gpt-5.1-codex', name: 'GPT-5.1 Codex', category: 'coding' },
+      { id: 'opencode/gpt-5.1-codex-max', name: 'GPT-5.1 Codex Max', category: 'coding' },
+      { id: 'opencode/gpt-5.1-codex-mini', name: 'GPT-5.1 Codex Mini', category: 'coding' },
+      { id: 'opencode/gpt-5', name: 'GPT-5', category: 'general' },
+      { id: 'opencode/gpt-5-codex', name: 'GPT-5 Codex', category: 'coding' },
+      { id: 'opencode/gpt-5-nano', name: 'GPT-5 Nano', category: 'lightweight' },
+      { id: 'opencode/claude-opus-4-7', name: 'Claude Opus 4.7', category: 'flagship' },
+      { id: 'opencode/claude-opus-4-6', name: 'Claude Opus 4.6', category: 'flagship' },
+      { id: 'opencode/claude-opus-4-5', name: 'Claude Opus 4.5', category: 'flagship' },
+      { id: 'opencode/claude-opus-4-1', name: 'Claude Opus 4.1', category: 'flagship' },
+      { id: 'opencode/claude-sonnet-4-6', name: 'Claude Sonnet 4.6', category: 'general' },
+      { id: 'opencode/claude-sonnet-4-5', name: 'Claude Sonnet 4.5', category: 'general' },
+      { id: 'opencode/claude-sonnet-4', name: 'Claude Sonnet 4', category: 'general' },
+      { id: 'opencode/claude-haiku-4-5', name: 'Claude Haiku 4.5', category: 'lightweight' },
+      { id: 'opencode/claude-3-5-haiku', name: 'Claude Haiku 3.5', category: 'lightweight' },
+      { id: 'opencode/qwen3.6-plus', name: 'Qwen3.6 Plus', category: 'flagship' },
+      { id: 'opencode/qwen3.5-plus', name: 'Qwen3.5 Plus', category: 'general' },
+      { id: 'opencode/minimax-m2.7', name: 'MiniMax M2.7', category: 'flagship' },
+      { id: 'opencode/minimax-m2.5', name: 'MiniMax M2.5', category: 'flagship' },
+      { id: 'opencode/minimax-m2.5-free', name: 'MiniMax M2.5 Free', category: 'general' },
+      { id: 'opencode/glm-5.1', name: 'GLM 5.1', category: 'flagship' },
+      { id: 'opencode/glm-5', name: 'GLM 5', category: 'flagship' },
+      { id: 'opencode/kimi-k2.5', name: 'Kimi K2.5', category: 'flagship' },
+      { id: 'opencode/kimi-k2.6', name: 'Kimi K2.6', category: 'flagship' },
+      { id: 'opencode/big-pickle', name: 'Big Pickle', category: 'general' },
+      { id: 'opencode/ling-2.6-flash', name: 'Ling 2.6 Flash', category: 'lightweight' },
+      { id: 'opencode/hy3-preview-free', name: 'Hy3 Preview Free', category: 'general' },
+      { id: 'opencode/nemotron-3-super-free', name: 'Nemotron 3 Super Free', category: 'general' },
+    ],
+  },
+
+  'opencode-go': {
+    displayName: 'OpenCode Go',
+    baseUrl: 'https://opencode.ai/zen/go',
+    defaultModel: 'opencode-go/kimi-k2.5',
+    models: [
+      { id: 'opencode-go/glm-5.1', name: 'GLM-5.1', category: 'flagship' },
+      { id: 'opencode-go/glm-5', name: 'GLM-5', category: 'flagship' },
+      { id: 'opencode-go/kimi-k2.5', name: 'Kimi K2.5', category: 'flagship' },
+      { id: 'opencode-go/kimi-k2.6', name: 'Kimi K2.6', category: 'flagship' },
+      { id: 'opencode-go/deepseek-v4-pro', name: 'DeepSeek V4 Pro', category: 'flagship' },
+      { id: 'opencode-go/deepseek-v4-flash', name: 'DeepSeek V4 Flash', category: 'general' },
+      { id: 'opencode-go/mimo-v2-pro', name: 'MiMo-V2-Pro', category: 'general' },
+      { id: 'opencode-go/mimo-v2-omni', name: 'MiMo-V2-Omni', category: 'general' },
+      { id: 'opencode-go/mimo-v2.5-pro', name: 'MiMo-V2.5-Pro', category: 'general' },
+      { id: 'opencode-go/mimo-v2.5', name: 'MiMo-V2.5', category: 'general' },
+      { id: 'opencode-go/minimax-m2.7', name: 'MiniMax M2.7', category: 'flagship' },
+      { id: 'opencode-go/minimax-m2.5', name: 'MiniMax M2.5', category: 'flagship' },
+      { id: 'opencode-go/qwen3.6-plus', name: 'Qwen3.6 Plus', category: 'flagship' },
+      { id: 'opencode-go/qwen3.5-plus', name: 'Qwen3.5 Plus', category: 'general' },
+    ],
+  },
+
+  'codex-cli': {
+    displayName: 'Codex CLI',
+    baseUrl: '',
+    defaultModel: 'gpt-5.3-codex',
+    models: [
+      { id: 'gpt-5.5', name: 'GPT-5.5', category: 'flagship' },
+      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', category: 'coding' },
+      { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'coding' },
+      { id: 'gpt-5.4', name: 'GPT-5.4', category: 'flagship' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', category: 'lightweight' },
+    ],
+  },
 };
 
 export const PROVIDER_MODELS: Record<LLMProvider, string[]> = Object.fromEntries(
@@ -163,6 +252,7 @@ export function getDefaultProviderConfig(provider: LLMProvider): Omit<LLMConfig,
     provider,
     baseUrl: config.baseUrl,
     model: config.defaultModel,
+    ...(provider === 'codex-cli' ? { command: 'codex' } : {}),
   };
 }
 

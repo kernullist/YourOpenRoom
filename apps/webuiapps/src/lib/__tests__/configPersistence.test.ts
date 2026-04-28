@@ -42,6 +42,17 @@ const MOCK_PERSISTED: PersistedConfig = {
     workerLlm: {
       model: 'openai/gpt-5.4',
     },
+    workers: [
+      {
+        provider: 'codex-cli',
+        model: 'gpt-5.3-codex',
+      },
+      {
+        provider: 'opencode-go',
+        apiKey: 'oc-test',
+        model: 'opencode-go/kimi-k2.5',
+      },
+    ],
     reviewerLlm: {
       provider: 'anthropic',
       model: 'claude-sonnet-4.6',
@@ -94,6 +105,8 @@ describe('loadPersistedConfig()', () => {
     expect(result?.kira?.workRootDirectory).toBe('F:/workspace/project-root');
     expect(result?.kira?.projectDefaults?.autoCommit).toBe(true);
     expect(result?.kira?.workerLlm?.model).toBe('openai/gpt-5.4');
+    expect(result?.kira?.workers?.[0]?.provider).toBe('codex-cli');
+    expect(result?.kira?.workers?.[1]?.model).toBe('opencode-go/kimi-k2.5');
     expect(result?.kira?.reviewerLlm?.provider).toBe('anthropic');
     expect(result?.kira?.reviewerLlm?.model).toBe('claude-sonnet-4.6');
     expect(result?.dialogLlm?.model).toBe('openai/gpt-5-mini');
@@ -230,6 +243,17 @@ describe('savePersistedConfig()', () => {
       workerLlm: {
         model: 'openai/gpt-5.4',
       },
+      workers: [
+        {
+          provider: 'codex-cli',
+          model: 'gpt-5.3-codex',
+        },
+        {
+          provider: 'opencode-go',
+          apiKey: 'oc-test',
+          model: 'opencode-go/kimi-k2.5',
+        },
+      ],
       reviewerLlm: {
         provider: 'anthropic',
         model: 'claude-sonnet-4.6',

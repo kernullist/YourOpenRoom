@@ -1,7 +1,8 @@
 import * as fs from 'fs';
-import { exec as execCallback, execFile as execFileCallback } from 'child_process';
+import { exec as execCallback, execFile as execFileCallback, spawn } from 'child_process';
+import { tmpdir } from 'os';
 import { promisify } from 'util';
-import { dirname, join, resolve } from 'path';
+import { basename, dirname, join, resolve } from 'path';
 import type { Plugin } from 'vite';
 
 const execAsync = promisify(execCallback);
@@ -15,7 +16,12 @@ type LLMProvider =
   | 'minimax'
   | 'z.ai'
   | 'kimi'
-  | 'openrouter';
+  | 'openrouter'
+  | 'opencode'
+  | 'opencode-go'
+  | 'codex-cli';
+
+type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 
 type KiraTaskStatus = 'todo' | 'in_progress' | 'in_review' | 'blocked' | 'done';
 
@@ -25,12 +31,16 @@ interface LLMConfig {
   baseUrl: string;
   model: string;
   customHeaders?: string;
+  command?: string;
+  apiStyle?: LLMApiStyle;
+  name?: string;
 }
 
 interface KiraSettings {
   workRootDirectory?: string;
   workerModel?: string;
   reviewerModel?: string;
+  workers?: Array<Partial<LLMConfig>>;
   workerLlm?: Partial<LLMConfig>;
   reviewerLlm?: Partial<LLMConfig>;
   projectDefaults?: KiraProjectSettings;
@@ -142,6 +152,8 @@ interface KiraAttemptRecord {
   outOfPlanFiles: string[];
   validationGaps: string[];
   risks: string[];
+  diffExcerpts?: string[];
+  rawWorkerOutput?: string;
   blockedReason?: string;
   rollbackFiles?: string[];
 }
@@ -205,6 +217,54 @@ interface KiraProjectSettings {
   autoCommit?: boolean;
 }
 
+interface KiraWorkspaceSession {
+  primaryRoot: string;
+  projectRoot: string;
+  isolated: boolean;
+  worktreePath?: string;
+  branchName?: string;
+}
+
+interface KiraWorkerLane {
+  id: string;
+  label: string;
+  config: LLMConfig;
+}
+
+interface KiraWorkerAttemptResult {
+  lane: KiraWorkerLane;
+  workspace: KiraWorkspaceSession;
+  attemptNo: number;
+  cycle: number;
+  startedAt: number;
+  projectOverview: string;
+  contextScan: ProjectContextScan;
+  workerPlan: WorkerExecutionPlan;
+  planningState: WorkerAttemptState;
+  attemptState: WorkerAttemptState | null;
+  workerSummary: WorkerSummary;
+  validationPlan: ResolvedValidationPlan;
+  validationReruns: ValidationRerunSummary;
+  outOfPlanFiles: string[];
+  missingValidationCommands: string[];
+  highRiskIssues: string[];
+  diffExcerpts: string[];
+  rawWorkerOutput?: string;
+  status: 'needs_context' | 'validation_failed' | 'blocked' | 'reviewable' | 'failed';
+  feedback: string[];
+  blockedReason?: string;
+}
+
+interface AttemptSelectionSummary {
+  approved: boolean;
+  selectedAttemptNo: number | null;
+  summary: string;
+  issues: string[];
+  nextWorkerInstructions: string[];
+  residualRisk: string[];
+  filesChecked: string[];
+}
+
 interface KiraAutomationEvent {
   id: string;
   workId: string;
@@ -250,21 +310,34 @@ interface WorkerAttemptState {
 
 type AgentMessage =
   | { role: 'user'; content: string }
-  | { role: 'assistant'; content: string; toolCalls?: ToolCall[] }
+  | { role: 'assistant'; content: string; toolCalls?: ToolCall[]; reasoningContent?: string }
   | { role: 'tool'; content: string; toolCallId: string };
+type ToolAgentFinalValidator = (content: string) => string[];
 
+const KIMI_TOOL_CALL_REASONING_FALLBACK =
+  'Kira is continuing a tool-call turn where the provider did not return reasoning_content.';
+const AGENT_TURN_BUDGET_EXHAUSTED_PROMPT = [
+  'The Kira tool-turn budget for this step is exhausted.',
+  'Do not call any more tools.',
+  'Return the final answer now in exactly the structured JSON shape requested by the original Kira prompt.',
+  'Base the answer only on the tool results already available in this conversation.',
+].join(' ');
 const COMMENTS_DIR_NAME = 'comments';
 const WORKS_DIR_NAME = 'works';
 const ANALYSIS_DIR_NAME = 'analysis';
 const ATTEMPTS_DIR_NAME = 'attempts';
 const REVIEWS_DIR_NAME = 'reviews';
+const WORKTREES_DIR_NAME = 'worktrees';
 const PROJECT_SETTINGS_DIR_NAME = '.kira';
 const PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_AGENT_TURNS = 24;
+const MAX_AGENT_REPAIR_TURNS = 2;
+const MAX_AGENT_TIMEOUT_RETRIES = 1;
 const MAX_FILE_BYTES = 80_000;
 const MAX_OVERWRITE_FILE_BYTES = 8_000;
+const MAX_FULL_REWRITE_FILE_BYTES = MAX_FILE_BYTES;
 const MAX_LIST_ENTRIES = 200;
 const MAX_SEARCH_RESULTS = 40;
 const MAX_PLANNED_FILES = 12;
@@ -273,6 +346,8 @@ const MAX_DEFAULT_VALIDATION_COMMANDS = 2;
 const MAX_EFFECTIVE_VALIDATION_COMMANDS = 6;
 const MAX_REVIEW_DIFF_CHARS = 2_400;
 const COMMAND_TIMEOUT_MS = 90_000;
+const LLM_REQUEST_TIMEOUT_MS = 240_000;
+const EXTERNAL_AGENT_TIMEOUT_MS = 10 * 60_000;
 const STALLED_WORK_MS = 15_000;
 const GLOBAL_SCAN_INTERVAL_MS = 10_000;
 const LOCK_HEARTBEAT_MS = 5_000;
@@ -286,6 +361,19 @@ const EVENT_QUEUE_FILE = 'kira-automation-events.json';
 const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
+const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
+const KIRA_PROJECT_ROOT_MARKERS = [
+  '.git',
+  'package.json',
+  'pyproject.toml',
+  'Cargo.toml',
+  'go.mod',
+  'requirements.txt',
+  'pom.xml',
+  'build.gradle',
+  'settings.gradle',
+  'deno.json',
+];
 const SAFE_COMMAND_PATTERNS = [
   /^python\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
   /^py\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
@@ -346,6 +434,19 @@ function normalizePathList(values: unknown[], limit: number): string[] {
   return uniqueStrings(
     values.map((value) => normalizeRelativePath(String(value))).filter((value) => value !== ''),
   ).slice(0, limit);
+}
+
+function formatShellPath(relativePath: string): string {
+  const normalized = normalizeRelativePath(relativePath);
+  return /^[a-zA-Z0-9_./:@+-]+$/.test(normalized)
+    ? normalized
+    : `'${normalized.replace(/'/g, "''")}'`;
+}
+
+function formatIgnoredIntegrationPaths(ignoredFiles: string[]): string {
+  return ignoredFiles.length > 0
+    ? ` Ignored non-stageable reported paths: ${ignoredFiles.join(', ')}.`
+    : '';
 }
 
 function createWorkerAttemptState(
@@ -420,6 +521,37 @@ function getKiraAttemptsDir(sessionsDir: string, sessionPath: string): string {
 
 function getKiraReviewsDir(sessionsDir: string, sessionPath: string): string {
   return join(getKiraDataDir(sessionsDir, sessionPath), REVIEWS_DIR_NAME);
+}
+
+function getKiraWorktreesDir(sessionsDir: string, sessionPath: string): string {
+  return join(getKiraDataDir(sessionsDir, sessionPath), WORKTREES_DIR_NAME);
+}
+
+function isKiraProjectRoot(directory: string): boolean {
+  try {
+    return KIRA_PROJECT_ROOT_MARKERS.some((marker) => fs.existsSync(join(directory, marker)));
+  } catch {
+    return false;
+  }
+}
+
+export function resolveKiraProjectRoot(
+  workRootDirectory: string | null | undefined,
+  projectName: string | null | undefined,
+): string {
+  const root = workRootDirectory?.trim();
+  const project = projectName?.trim();
+  if (!root || !project) return '';
+
+  const resolvedRoot = resolve(root);
+  if (
+    isKiraProjectRoot(resolvedRoot) &&
+    basename(resolvedRoot).toLowerCase() === project.toLowerCase()
+  ) {
+    return resolvedRoot;
+  }
+
+  return resolve(join(resolvedRoot, project));
 }
 
 function getProjectSettingsPath(projectRoot: string): string {
@@ -552,7 +684,8 @@ function loadLlmConfig(configFile: string): LLMConfig | null {
   try {
     if (!fs.existsSync(configFile)) return null;
     const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as { llm?: LLMConfig };
-    if (!raw.llm?.baseUrl?.trim() || !raw.llm.model?.trim()) return null;
+    if (!raw.llm?.model?.trim()) return null;
+    if (raw.llm.provider !== 'codex-cli' && !raw.llm.baseUrl?.trim()) return null;
     return {
       ...raw.llm,
       apiKey: raw.llm.apiKey ?? '',
@@ -590,38 +723,174 @@ function getOptionalString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
+function getOptionalApiStyle(value: unknown): LLMApiStyle | undefined {
+  return value === 'openai-chat' || value === 'openai-responses' || value === 'anthropic-messages'
+    ? value
+    : undefined;
+}
+
+function defaultBaseUrlForProvider(provider: LLMProvider | undefined): string | undefined {
+  if (provider === 'opencode') return 'https://opencode.ai/zen';
+  if (provider === 'opencode-go') return 'https://opencode.ai/zen/go';
+  return undefined;
+}
+
+function isCodexCliProvider(provider: LLMProvider | undefined): boolean {
+  return provider === 'codex-cli';
+}
+
+function isOpenCodeProvider(provider: LLMProvider | undefined): boolean {
+  return provider === 'opencode' || provider === 'opencode-go';
+}
+
+function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): string {
+  const model = config.model.trim();
+  if (config.provider === 'opencode' && model.startsWith('opencode/')) {
+    return model.slice('opencode/'.length);
+  }
+  if (config.provider === 'opencode-go' && model.startsWith('opencode-go/')) {
+    return model.slice('opencode-go/'.length);
+  }
+  return model;
+}
+
+function resolveOpenCodeApiKey(config: LLMConfig): string {
+  if (!isOpenCodeProvider(config.provider) || config.apiKey.trim()) return config.apiKey;
+  return (
+    process.env.OPENCODE_API_KEY ??
+    process.env.OPENCODE_ZEN_API_KEY ??
+    process.env.OPENCODE_GO_API_KEY ??
+    ''
+  );
+}
+
+function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
+  if (config.apiStyle) return config.apiStyle;
+  const model = normalizeProviderModel(config).toLowerCase();
+  if (model.startsWith('gpt-')) return 'openai-responses';
+  if (model.startsWith('claude-')) return 'anthropic-messages';
+  if (config.provider === 'opencode-go' && /^minimax-m2\./.test(model)) {
+    return 'anthropic-messages';
+  }
+  return 'openai-chat';
+}
+
+function isKimiToolReasoningSensitiveModel(config: Pick<LLMConfig, 'provider' | 'model'>): boolean {
+  const model = normalizeProviderModel(config).toLowerCase();
+  return model.includes('kimi-k2');
+}
+
+function shouldDisableOpenAiThinking(config: LLMConfig): boolean {
+  if (!isOpenCodeProvider(config.provider) && config.provider !== 'kimi') return false;
+  return isKimiToolReasoningSensitiveModel(config);
+}
+
+export function getOpenAiAssistantReasoningContent(
+  config: Pick<LLMConfig, 'provider' | 'model'>,
+  message: Pick<Extract<AgentMessage, { role: 'assistant' }>, 'reasoningContent' | 'toolCalls'>,
+): string | undefined {
+  const existing = message.reasoningContent?.trim();
+  if (existing) return existing;
+  if (message.toolCalls?.length && isKimiToolReasoningSensitiveModel(config)) {
+    return KIMI_TOOL_CALL_REASONING_FALLBACK;
+  }
+  return undefined;
+}
+
+function isCodexCliModelUpgradeError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /requires a newer version of Codex/i.test(message);
+}
+
 export function resolveRoleLlmConfig(
   baseConfig: LLMConfig | null,
   override: Partial<LLMConfig> | null | undefined,
   legacyModel: string | null | undefined,
 ): LLMConfig | null {
-  const provider = getOptionalString(override?.provider) ?? baseConfig?.provider;
-  const baseUrl = getOptionalString(override?.baseUrl) ?? baseConfig?.baseUrl;
+  const overrideProvider = getOptionalString(override?.provider) as LLMProvider | undefined;
+  const provider = overrideProvider ?? baseConfig?.provider;
+  const canInheritBaseProviderSettings =
+    !overrideProvider || overrideProvider === baseConfig?.provider;
+  const baseUrl =
+    getOptionalString(override?.baseUrl) ??
+    (canInheritBaseProviderSettings ? baseConfig?.baseUrl : undefined) ??
+    defaultBaseUrlForProvider(provider as LLMProvider | undefined);
   const model =
-    getOptionalString(override?.model) ?? getOptionalString(legacyModel) ?? baseConfig?.model;
-  const apiKey = override?.apiKey ?? baseConfig?.apiKey ?? '';
-  const customHeaders = getOptionalString(override?.customHeaders) ?? baseConfig?.customHeaders;
+    getOptionalString(override?.model) ??
+    getOptionalString(legacyModel) ??
+    (canInheritBaseProviderSettings ? baseConfig?.model : undefined);
+  const apiKey =
+    override?.apiKey ?? (canInheritBaseProviderSettings ? baseConfig?.apiKey : undefined) ?? '';
+  const customHeaders =
+    getOptionalString(override?.customHeaders) ??
+    (canInheritBaseProviderSettings ? baseConfig?.customHeaders : undefined);
+  const command =
+    getOptionalString(override?.command) ??
+    (canInheritBaseProviderSettings ? baseConfig?.command : undefined);
+  const apiStyle =
+    getOptionalApiStyle(override?.apiStyle) ??
+    (canInheritBaseProviderSettings ? baseConfig?.apiStyle : undefined);
+  const name =
+    getOptionalString(override?.name) ??
+    (canInheritBaseProviderSettings ? baseConfig?.name : undefined);
 
-  if (!provider || !baseUrl || !model) return null;
+  if (!provider) return null;
+  if (isCodexCliProvider(provider as LLMProvider)) {
+    return {
+      provider: provider as LLMProvider,
+      apiKey: '',
+      baseUrl: '',
+      model: model ?? '',
+      ...(command ? { command } : {}),
+      ...(name ? { name } : {}),
+    };
+  }
+  if (!baseUrl || !model) return null;
 
   return {
-    provider,
+    provider: provider as LLMProvider,
     apiKey,
     baseUrl,
     model,
     ...(customHeaders ? { customHeaders } : {}),
+    ...(command ? { command } : {}),
+    ...(apiStyle ? { apiStyle } : {}),
+    ...(name ? { name } : {}),
   };
+}
+
+export function resolveWorkerLlmConfigs(
+  baseConfig: LLMConfig | null,
+  kiraSettings: KiraSettings,
+): LLMConfig[] {
+  const rawWorkers = Array.isArray(kiraSettings.workers) ? kiraSettings.workers.slice(0, 3) : [];
+  const workerConfigs =
+    rawWorkers.length > 0
+      ? rawWorkers
+          .map((worker, index) =>
+            resolveRoleLlmConfig(
+              baseConfig,
+              {
+                ...worker,
+                name: worker.name ?? `Worker ${index + 1}`,
+              },
+              null,
+            ),
+          )
+          .filter((config): config is LLMConfig => config !== null)
+      : [resolveRoleLlmConfig(baseConfig, kiraSettings.workerLlm, kiraSettings.workerModel)].filter(
+          (config): config is LLMConfig => config !== null,
+        );
+
+  return workerConfigs.slice(0, 3);
 }
 
 function getKiraRuntimeSettings(configFile: string, fallbackWorkRootDirectory: string | null) {
   const llmConfig = loadLlmConfig(configFile);
   const kiraSettings = loadKiraSettings(configFile);
   const workRootDirectory = kiraSettings.workRootDirectory?.trim() || fallbackWorkRootDirectory;
-  const workerConfig = resolveRoleLlmConfig(
-    llmConfig,
-    kiraSettings.workerLlm,
-    kiraSettings.workerModel,
-  );
+  const workerConfigs = resolveWorkerLlmConfigs(llmConfig, kiraSettings);
+  const workerConfig = workerConfigs[0] ?? null;
   const reviewerConfig = resolveRoleLlmConfig(
     llmConfig,
     kiraSettings.reviewerLlm,
@@ -638,8 +907,21 @@ function getKiraRuntimeSettings(configFile: string, fallbackWorkRootDirectory: s
     workerAuthor: buildAgentLabel(WORKER_AUTHOR, workerModel),
     reviewerAuthor: buildAgentLabel(REVIEWER_AUTHOR, reviewerModel),
     workerConfig,
+    workerConfigs,
     reviewerConfig,
   };
+}
+
+function buildWorkerLanes(workerConfigs: LLMConfig[]): KiraWorkerLane[] {
+  return workerConfigs.slice(0, 3).map((config, index) => {
+    const configuredName = config.name?.trim();
+    const baseLabel = configuredName || `Worker ${String.fromCharCode(65 + index)}`;
+    return {
+      id: `worker-${index + 1}`,
+      label: buildAgentLabel(baseLabel, config.model),
+      config,
+    };
+  });
 }
 
 function joinUrl(baseUrl: string, path: string): string {
@@ -782,19 +1064,67 @@ function toAnthropicTools(tools: ToolDefinition[]) {
   }));
 }
 
+function toResponsesTools(tools: ToolDefinition[]) {
+  return tools.map((tool) => ({
+    type: 'function',
+    name: tool.name,
+    description: tool.description,
+    parameters: (() => {
+      const schema = splitParameterSchema(tool.parameters);
+      return {
+        type: 'object',
+        properties: schema.properties,
+        required: schema.required,
+      };
+    })(),
+  }));
+}
+
+async function fetchLlmWithTimeout(
+  url: string,
+  init: RequestInit,
+  signal?: AbortSignal,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, LLM_REQUEST_TIMEOUT_MS);
+  timeout.unref?.();
+
+  const abortHandler = () => controller.abort();
+  signal?.addEventListener('abort', abortHandler, { once: true });
+
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (timedOut) {
+      throw new Error(`LLM request timed out after ${LLM_REQUEST_TIMEOUT_MS}ms.`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener('abort', abortHandler);
+  }
+}
+
 async function callOpenAiCompatible(
   config: LLMConfig,
   systemPrompt: string,
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
   const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
+  const apiKey = resolveOpenCodeApiKey(config);
   const messages = history.map((message) => {
     if (message.role === 'assistant') {
+      const reasoningContent = getOpenAiAssistantReasoningContent(config, message);
       return {
         role: 'assistant',
         content: message.content,
+        ...(reasoningContent ? { reasoning_content: reasoningContent } : {}),
         ...(message.toolCalls
           ? {
               tool_calls: message.toolCalls.map((toolCall) => ({
@@ -816,24 +1146,31 @@ async function callOpenAiCompatible(
   });
 
   const body: Record<string, unknown> = {
-    model: config.model,
+    model: normalizeProviderModel(config),
     messages: systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages,
     stream: false,
   };
+  if (shouldDisableOpenAiThinking(config)) {
+    body.thinking = { type: 'disabled' };
+    body.reasoning = { enabled: false };
+  }
   if (tools.length > 0) body.tools = toOpenAITools(tools);
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
     ...parseCustomHeaders(config.customHeaders),
   };
-  if (config.apiKey.trim()) headers.Authorization = `Bearer ${config.apiKey}`;
+  if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey}`;
 
-  const res = await fetch(targetUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
+  const res = await fetchLlmWithTimeout(
+    targetUrl,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    },
     signal,
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`LLM API error ${res.status}: ${text}`);
@@ -842,6 +1179,7 @@ async function callOpenAiCompatible(
     choices?: Array<{
       message?: {
         content?: string;
+        reasoning_content?: string;
         tool_calls?: Array<{
           id?: string;
           function?: { name?: string; arguments?: string };
@@ -859,6 +1197,114 @@ async function callOpenAiCompatible(
   return {
     content: message?.content?.trim() || '',
     toolCalls: toolCalls.filter((tool) => tool.name),
+    reasoningContent: message?.reasoning_content,
+  };
+}
+
+async function callOpenAiResponses(
+  config: LLMConfig,
+  systemPrompt: string,
+  history: AgentMessage[],
+  tools: ToolDefinition[],
+  signal?: AbortSignal,
+): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+  const targetUrl = joinUrl(
+    config.baseUrl,
+    hasVersionSuffix(config.baseUrl) ? 'responses' : 'v1/responses',
+  );
+  const apiKey = resolveOpenCodeApiKey(config);
+  const input: Array<Record<string, unknown>> = [];
+
+  for (const message of history) {
+    if (message.role === 'assistant') {
+      if (message.content) {
+        input.push({ role: 'assistant', content: message.content });
+      }
+      for (const toolCall of message.toolCalls ?? []) {
+        input.push({
+          type: 'function_call',
+          call_id: toolCall.id,
+          name: toolCall.name,
+          arguments: JSON.stringify(toolCall.args),
+        });
+      }
+      continue;
+    }
+    if (message.role === 'tool') {
+      input.push({
+        type: 'function_call_output',
+        call_id: message.toolCallId,
+        output: message.content,
+      });
+      continue;
+    }
+    input.push({ role: 'user', content: message.content });
+  }
+
+  const body: Record<string, unknown> = {
+    model: normalizeProviderModel(config),
+    input,
+    stream: false,
+  };
+  if (systemPrompt) body.instructions = systemPrompt;
+  if (tools.length > 0) body.tools = toResponsesTools(tools);
+
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    ...parseCustomHeaders(config.customHeaders),
+  };
+  if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey}`;
+
+  const res = await fetchLlmWithTimeout(
+    targetUrl,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    },
+    signal,
+  );
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Responses API error ${res.status}: ${text}`);
+  }
+  const data = JSON.parse(text) as {
+    output_text?: string;
+    output?: Array<
+      | {
+          type?: 'message';
+          content?: Array<{ type?: string; text?: string; output_text?: string }>;
+        }
+      | {
+          type?: 'function_call';
+          call_id?: string;
+          id?: string;
+          name?: string;
+          arguments?: string;
+        }
+    >;
+  };
+  const contentParts: string[] = [];
+  const toolCalls: ToolCall[] = [];
+  for (const item of data.output ?? []) {
+    if (item.type === 'message') {
+      for (const part of item.content ?? []) {
+        const textPart = part.text ?? part.output_text ?? '';
+        if (textPart) contentParts.push(textPart);
+      }
+    }
+    if (item.type === 'function_call' && item.name) {
+      toolCalls.push({
+        id: item.call_id || item.id || `tool_${toolCalls.length}`,
+        name: item.name,
+        args: normalizeToolArguments(item.arguments || '{}'),
+      });
+    }
+  }
+
+  return {
+    content: (data.output_text || contentParts.join('')).trim(),
+    toolCalls,
   };
 }
 
@@ -868,8 +1314,9 @@ async function callAnthropicCompatible(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
   const targetUrl = joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl));
+  const apiKey = resolveOpenCodeApiKey(config);
   const messages = history.map((message) => {
     if (message.role === 'tool') {
       return {
@@ -901,7 +1348,7 @@ async function callAnthropicCompatible(
   });
 
   const body: Record<string, unknown> = {
-    model: config.model,
+    model: normalizeProviderModel(config),
     max_tokens: 4096,
     messages,
   };
@@ -913,14 +1360,17 @@ async function callAnthropicCompatible(
     'anthropic-version': '2023-06-01',
     ...parseCustomHeaders(config.customHeaders),
   };
-  if (config.apiKey.trim()) headers['x-api-key'] = config.apiKey;
+  if (apiKey.trim()) headers['x-api-key'] = apiKey;
 
-  const res = await fetch(targetUrl, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
+  const res = await fetchLlmWithTimeout(
+    targetUrl,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    },
     signal,
-  });
+  );
   const text = await res.text();
   if (!res.ok) {
     throw new Error(`Anthropic API error ${res.status}: ${text}`);
@@ -962,7 +1412,17 @@ async function callLlm(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[] }> {
+): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+  if (isOpenCodeProvider(config.provider)) {
+    const apiStyle = resolveOpenCodeApiStyle(config);
+    if (apiStyle === 'openai-responses') {
+      return callOpenAiResponses(config, systemPrompt, history, tools, signal);
+    }
+    if (apiStyle === 'anthropic-messages') {
+      return callAnthropicCompatible(config, systemPrompt, history, tools, signal);
+    }
+    return callOpenAiCompatible(config, systemPrompt, history, tools, signal);
+  }
   return isAnthropicProvider(config.provider)
     ? callAnthropicCompatible(config, systemPrompt, history, tools, signal)
     : callOpenAiCompatible(config, systemPrompt, history, tools, signal);
@@ -1040,6 +1500,36 @@ function isProtectedFile(plan: WorkerExecutionPlan | null, relativePath: string)
       protectedFile === normalizedPath ||
       (protectedFile.endsWith('/') && normalizedPath.startsWith(protectedFile)),
   );
+}
+
+function pathMatchesScope(scopes: string[], relativePath: string): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  return scopes.some((scope) => {
+    const normalizedScope = normalizeRelativePath(scope);
+    return (
+      normalizedScope === normalizedPath ||
+      (normalizedScope.endsWith('/') && normalizedPath.startsWith(normalizedScope))
+    );
+  });
+}
+
+export function canUseFullFileRewrite(params: {
+  existingFileSize: number;
+  relativePath: string;
+  intendedFiles: string[];
+  protectedFiles?: string[];
+  readFiles: string[];
+  maxFileBytes?: number;
+}): boolean {
+  const normalizedPath = normalizeRelativePath(params.relativePath);
+  if (!normalizedPath) return false;
+  if (params.existingFileSize > (params.maxFileBytes ?? MAX_FULL_REWRITE_FILE_BYTES)) {
+    return false;
+  }
+  if (!pathMatchesScope(params.readFiles, normalizedPath)) return false;
+  if (!pathMatchesScope(params.intendedFiles, normalizedPath)) return false;
+  if (pathMatchesScope(params.protectedFiles ?? [], normalizedPath)) return false;
+  return true;
 }
 
 function validateWriteTarget(
@@ -1139,9 +1629,50 @@ function recordAttemptRead(
   }
 }
 
-function truncateForReview(value: string, maxChars: number): string {
+function truncateForComment(value: string, maxChars: number, suffix: string): string {
   if (value.length <= maxChars) return value;
-  return `${value.slice(0, Math.max(0, maxChars - 26)).trimEnd()}\n...diff truncated for review`;
+  const suffixWithBreak = `\n${suffix}`;
+  return `${value.slice(0, Math.max(0, maxChars - suffixWithBreak.length)).trimEnd()}${suffixWithBreak}`;
+}
+
+function truncateForReview(value: string, maxChars: number): string {
+  return truncateForComment(value, maxChars, '...diff truncated for review');
+}
+
+export function formatWorkerSubmission(
+  rawWorkerOutput: string | undefined,
+  maxChars = 8_000,
+): string {
+  const normalized = rawWorkerOutput?.trim();
+  if (!normalized) return 'No raw worker submission captured.';
+  return truncateForComment(normalized, maxChars, '...worker submission truncated for comment');
+}
+
+function isLlmTimeoutError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /LLM request timed out/i.test(message);
+}
+
+function buildAgentTimeoutRetryPrompt(writable: boolean): string {
+  return [
+    'The previous Kira LLM request timed out before returning a response.',
+    writable
+      ? 'Continue with a narrower implementation step, use only necessary tools, and keep the final JSON concise.'
+      : 'Continue with a narrower read-only planning step, inspect only the most relevant files, and keep the final JSON concise.',
+    'Do not restart broad repository exploration unless no relevant files have been inspected yet.',
+  ].join(' ');
+}
+
+function buildAgentFinalRepairPrompt(issues: string[], content: string): string {
+  return [
+    'Your previous final response did not satisfy Kira structured output requirements.',
+    `Issues:\n${formatList(issues, 'No detailed issues provided')}`,
+    content.trim()
+      ? `Previous final response:\n${truncateForReview(content, 2_000)}`
+      : 'Previous final response was empty.',
+    'If repository context is missing, call list_files, search_files, or read_file before finalizing.',
+    'Then return only the requested JSON object. Do not use markdown fences or prose.',
+  ].join('\n\n');
 }
 
 function formatCommandOutput(stdout: string, stderr: string): string {
@@ -1302,19 +1833,32 @@ async function executeTool(
       const absolutePath = ensureInsideRoot(projectRoot, filePath);
       const targetError = validateWriteTarget(attemptState, filePath);
       if (targetError) return targetError;
-      captureAttemptFileSnapshot(attemptState, projectRoot, filePath);
       if (containsCorruptionMarker(content)) {
         return 'error: refusing to write placeholder or corruption marker text';
+      }
+      if (hasMergeConflictMarkers(content)) {
+        return 'error: refusing to write merge conflict markers';
+      }
+      if (Buffer.byteLength(content, 'utf-8') > MAX_FULL_REWRITE_FILE_BYTES) {
+        return `error: write_file content is too large; maximum is ${MAX_FULL_REWRITE_FILE_BYTES} bytes`;
       }
       if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
         if (requiresExplicitReadBeforeWrite(projectRoot, filePath, attemptState)) {
           return 'error: high-risk existing files must be read with read_file before overwriting';
         }
         const stat = fs.statSync(absolutePath);
-        if (stat.size > MAX_OVERWRITE_FILE_BYTES) {
-          return 'error: existing file is too large for write_file; use edit_file instead';
+        const canFullRewrite = canUseFullFileRewrite({
+          existingFileSize: stat.size,
+          relativePath: filePath,
+          intendedFiles: attemptState?.plan?.intendedFiles ?? [],
+          protectedFiles: attemptState?.plan?.protectedFiles ?? [],
+          readFiles: Array.from(attemptState?.readFiles ?? []),
+        });
+        if (stat.size > MAX_OVERWRITE_FILE_BYTES && !canFullRewrite) {
+          return 'error: existing file is too large for write_file unless it is listed in intendedFiles and was read with read_file in this attempt';
         }
       }
+      captureAttemptFileSnapshot(attemptState, projectRoot, filePath);
       fs.mkdirSync(dirname(absolutePath), { recursive: true });
       fs.writeFileSync(absolutePath, content, 'utf-8');
       recordAttemptPatch(attemptState, filePath);
@@ -1426,10 +1970,14 @@ function buildToolDefinitions(writable: boolean): ToolDefinition[] {
           {
             name: 'write_file',
             description:
-              'Create a new UTF-8 file or overwrite a small existing file relative to the project root.',
+              'Create a UTF-8 file or write complete final content for an existing file. Existing large files are allowed only when the file is in intendedFiles, was read with read_file in this attempt, and is not protected.',
             parameters: {
               path: { type: 'string', description: 'Relative file path', required: true },
-              content: { type: 'string', description: 'Full file content', required: true },
+              content: {
+                type: 'string',
+                description: 'Complete final file content, not a patch or excerpt',
+                required: true,
+              },
             },
           } satisfies ToolDefinition,
         ]
@@ -1452,6 +2000,172 @@ function buildToolDefinitions(writable: boolean): ToolDefinition[] {
   ];
 }
 
+function buildExternalAgentPrompt(systemPrompt: string, prompt: string): string {
+  return [
+    systemPrompt ? `Kira role instructions:\n${systemPrompt}` : '',
+    'You are running inside Kira automation. Follow the Kira role instructions over your default habits when they are more specific.',
+    'Return the final answer in exactly the structured JSON shape requested by the Kira task prompt.',
+    prompt,
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+export function buildCodexCliArgs(
+  config: LLMConfig,
+  projectRoot: string,
+  writable: boolean,
+  outputFile: string,
+): string[] {
+  const args = [
+    'exec',
+    '--cd',
+    projectRoot,
+    '--skip-git-repo-check',
+    '--sandbox',
+    writable ? 'workspace-write' : 'read-only',
+    '--output-last-message',
+    outputFile,
+    '--color',
+    'never',
+  ];
+  if (config.model.trim()) {
+    args.push('--model', config.model.trim());
+  }
+  args.push('-');
+  return args;
+}
+
+function runProcessWithInput(
+  command: string,
+  args: string[],
+  cwd: string,
+  input: string,
+  signal?: AbortSignal,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolveProcess, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      shell: process.platform === 'win32',
+      windowsHide: true,
+      env: process.env,
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const timeout = setTimeout(() => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
+      }
+    }, timeoutMs);
+    timeout.unref?.();
+
+    const abortHandler = () => {
+      child.kill();
+      if (!settled) {
+        settled = true;
+        clearTimeout(timeout);
+        const error = new Error('Agent run aborted.');
+        error.name = 'AbortError';
+        reject(error);
+      }
+    };
+    signal?.addEventListener('abort', abortHandler, { once: true });
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk);
+      if (stdout.length > 1024 * 1024) stdout = stdout.slice(-1024 * 1024);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk);
+      if (stderr.length > 1024 * 1024) stderr = stderr.slice(-1024 * 1024);
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortHandler);
+      reject(error);
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      signal?.removeEventListener('abort', abortHandler);
+      if (code === 0) {
+        resolveProcess({ stdout, stderr });
+        return;
+      }
+      reject(
+        new Error(
+          [
+            `Command failed with exit code ${code}: ${command}`,
+            truncateForReview(formatCommandOutput(stdout, stderr), 1_200),
+          ].join('\n\n'),
+        ),
+      );
+    });
+    child.stdin?.end(input);
+  });
+}
+
+async function runCodexCliAgent(
+  config: LLMConfig,
+  projectRoot: string,
+  prompt: string,
+  systemPrompt: string,
+  writable: boolean,
+  signal?: AbortSignal,
+): Promise<string> {
+  const tempDir = fs.mkdtempSync(join(tmpdir(), 'kira-codex-'));
+  const outputFile = join(tempDir, 'last-message.txt');
+  try {
+    const command = config.command?.trim() || 'codex';
+    const input = buildExternalAgentPrompt(systemPrompt, prompt);
+    try {
+      await runProcessWithInput(
+        command,
+        buildCodexCliArgs(config, projectRoot, writable, outputFile),
+        projectRoot,
+        input,
+        signal,
+        EXTERNAL_AGENT_TIMEOUT_MS,
+      );
+    } catch (error) {
+      if (
+        config.model.trim() &&
+        config.model.trim() !== CODEX_CLI_FALLBACK_MODEL &&
+        isCodexCliModelUpgradeError(error)
+      ) {
+        await runProcessWithInput(
+          command,
+          buildCodexCliArgs(
+            { ...config, model: CODEX_CLI_FALLBACK_MODEL },
+            projectRoot,
+            writable,
+            outputFile,
+          ),
+          projectRoot,
+          input,
+          signal,
+          EXTERNAL_AGENT_TIMEOUT_MS,
+        );
+      } else {
+        throw error;
+      }
+    }
+    if (fs.existsSync(outputFile)) {
+      return fs.readFileSync(outputFile, 'utf-8').trim();
+    }
+    return '';
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+}
+
 async function runToolAgent(
   config: LLMConfig,
   projectRoot: string,
@@ -1460,9 +2174,23 @@ async function runToolAgent(
   writable: boolean,
   signal?: AbortSignal,
   attemptState?: WorkerAttemptState | null,
+  finalValidator?: ToolAgentFinalValidator,
 ): Promise<string> {
+  if (isCodexCliProvider(config.provider)) {
+    recordAttemptCommand(
+      attemptState,
+      `codex exec --sandbox ${writable ? 'workspace-write' : 'read-only'}${
+        config.model ? ` --model ${config.model}` : ''
+      }`,
+    );
+    recordAttemptExploration(attemptState, `external_agent ${config.provider}`);
+    return runCodexCliAgent(config, projectRoot, prompt, systemPrompt, writable, signal);
+  }
+
   const history: AgentMessage[] = [{ role: 'user', content: prompt }];
   const tools = buildToolDefinitions(writable);
+  let repairTurns = 0;
+  let timeoutRetries = 0;
 
   for (let turn = 0; turn < MAX_AGENT_TURNS; turn += 1) {
     if (signal?.aborted) {
@@ -1470,8 +2198,31 @@ async function runToolAgent(
       error.name = 'AbortError';
       throw error;
     }
-    const response = await callLlm(config, systemPrompt, history, tools, signal);
+    let response: Awaited<ReturnType<typeof callLlm>>;
+    try {
+      response = await callLlm(config, systemPrompt, history, tools, signal);
+    } catch (error) {
+      if (isLlmTimeoutError(error) && timeoutRetries < MAX_AGENT_TIMEOUT_RETRIES) {
+        timeoutRetries += 1;
+        history.push({ role: 'user', content: buildAgentTimeoutRetryPrompt(writable) });
+        continue;
+      }
+      throw error;
+    }
     if (response.toolCalls.length === 0) {
+      const validationIssues = finalValidator?.(response.content) ?? [];
+      if (validationIssues.length > 0 && repairTurns < MAX_AGENT_REPAIR_TURNS) {
+        repairTurns += 1;
+        history.push({
+          role: 'assistant',
+          content: response.content || '(empty final response)',
+        });
+        history.push({
+          role: 'user',
+          content: buildAgentFinalRepairPrompt(validationIssues, response.content),
+        });
+        continue;
+      }
       return response.content;
     }
 
@@ -1479,6 +2230,7 @@ async function runToolAgent(
       role: 'assistant',
       content: response.content,
       toolCalls: response.toolCalls,
+      reasoningContent: response.reasoningContent,
     });
 
     for (const toolCall of response.toolCalls) {
@@ -1502,7 +2254,27 @@ async function runToolAgent(
     }
   }
 
-  throw new Error('Agent exceeded the maximum number of tool turns.');
+  const finalResponse = await callLlm(
+    config,
+    systemPrompt,
+    [...history, { role: 'user', content: AGENT_TURN_BUDGET_EXHAUSTED_PROMPT }],
+    [],
+    signal,
+  );
+  const finalIssues = finalValidator?.(finalResponse.content) ?? [];
+  if (
+    finalResponse.toolCalls.length === 0 &&
+    finalResponse.content.trim() &&
+    finalIssues.length === 0
+  ) {
+    return finalResponse.content;
+  }
+
+  throw new Error(
+    finalIssues.length > 0
+      ? `Agent final response failed structured validation: ${finalIssues.join(' ')}`
+      : 'Agent exceeded the maximum number of tool turns.',
+  );
 }
 
 export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
@@ -1960,6 +2732,24 @@ export function buildDefaultValidationCommands(
   );
   const commands: string[] = [];
 
+  const changedHtmlFile = changedFiles.find((file) => /\.html?$/i.test(file));
+  if (changedHtmlFile) {
+    if (fs.existsSync(join(projectRoot, '.git'))) {
+      commands.push(`git diff --check -- ${formatShellPath(changedHtmlFile)}`);
+    }
+    try {
+      const absolutePath = ensureInsideRoot(projectRoot, changedHtmlFile);
+      if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+        const content = fs.readFileSync(absolutePath, 'utf-8');
+        if (/data-theme/i.test(content)) {
+          commands.push(`rg -n "data-theme" ${formatShellPath(changedHtmlFile)}`);
+        }
+      }
+    } catch {
+      // If the file cannot be read, let the later validation plan continue with other checks.
+    }
+  }
+
   const packageManager = detectNodePackageManager(projectRoot);
   if (packageManager) {
     const scripts = loadPackageScripts(projectRoot);
@@ -2385,14 +3175,28 @@ export function parseGitStatusPorcelain(output: string): GitStatusEntry[] {
     .split(/\r?\n/)
     .map((line) => line.trimEnd())
     .filter(Boolean)
-    .map((line) => {
-      const rawPath = line.slice(3).trim().replace(/\\/g, '/');
+    .map((line): GitStatusEntry | null => {
+      let status = line.slice(0, 2);
+      let rawPath = '';
+
+      if (line.length >= 4 && line[2] === ' ') {
+        rawPath = line.slice(3);
+      } else {
+        const compactMatch = line.match(/^(\S{1,2})\s+(.+)$/);
+        if (!compactMatch) return null;
+        status = compactMatch[1].padEnd(2, ' ');
+        rawPath = compactMatch[2];
+      }
+
+      const normalizedPath = rawPath.trim().replace(/\\/g, '/');
       return {
-        status: line.slice(0, 2),
-        path: rawPath.includes(' -> ') ? (rawPath.split(' -> ').pop() ?? rawPath) : rawPath,
+        status,
+        path: normalizedPath.includes(' -> ')
+          ? (normalizedPath.split(' -> ').pop() ?? normalizedPath)
+          : normalizedPath,
       };
     })
-    .filter((entry) => entry.path !== '');
+    .filter((entry): entry is GitStatusEntry => Boolean(entry?.path));
 }
 
 async function getGitWorktreeEntries(projectRoot: string): Promise<GitStatusEntry[] | null> {
@@ -2402,6 +3206,107 @@ async function getGitWorktreeEntries(projectRoot: string): Promise<GitStatusEntr
     return parseGitStatusPorcelain(output);
   } catch {
     return null;
+  }
+}
+
+async function isGitWorktree(projectRoot: string): Promise<boolean> {
+  try {
+    await runGitCommand(projectRoot, ['rev-parse', '--is-inside-work-tree']);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export function shouldUseKiraIsolatedWorktree(
+  projectRoot: string,
+  projectSettings: { autoCommit?: boolean },
+): boolean {
+  return (
+    Boolean(projectRoot) &&
+    projectSettings.autoCommit === true &&
+    fs.existsSync(join(projectRoot, '.git'))
+  );
+}
+
+export function shouldUseKiraAttemptWorktrees(
+  projectRoot: string,
+  projectSettings: { autoCommit?: boolean },
+  workerCount: number,
+): boolean {
+  return (
+    Boolean(projectRoot) &&
+    fs.existsSync(join(projectRoot, '.git')) &&
+    (projectSettings.autoCommit === true || workerCount > 1)
+  );
+}
+
+function buildKiraWorktreeBranchName(work: WorkTask, label?: string): string {
+  const titleSlug = toKebabCase(work.title) || 'work';
+  const workSlug = sanitizeLockKey(work.id).slice(0, 32);
+  const labelSlug = label ? `-${sanitizeLockKey(label).slice(0, 24)}` : '';
+  return `codex/kira-${titleSlug}-${workSlug}${labelSlug}-${Date.now().toString(36)}`;
+}
+
+async function createKiraWorktreeSession(
+  primaryRoot: string,
+  sessionsDir: string,
+  sessionPath: string,
+  work: WorkTask,
+  projectSettings: { autoCommit: boolean },
+  options: { force?: boolean; label?: string } = {},
+): Promise<KiraWorkspaceSession> {
+  if (!(options.force || projectSettings.autoCommit) || !(await isGitWorktree(primaryRoot))) {
+    return { primaryRoot, projectRoot: primaryRoot, isolated: false };
+  }
+
+  const worktreesDir = getKiraWorktreesDir(sessionsDir, sessionPath);
+  fs.mkdirSync(worktreesDir, { recursive: true });
+  const worktreePath = join(
+    worktreesDir,
+    [
+      sanitizeLockKey(work.projectName),
+      sanitizeLockKey(work.id),
+      options.label ? sanitizeLockKey(options.label) : '',
+      Date.now().toString(36),
+    ]
+      .filter(Boolean)
+      .join('-'),
+  );
+  const branchName = buildKiraWorktreeBranchName(work, options.label);
+
+  try {
+    await runGitCommand(primaryRoot, ['worktree', 'add', '-b', branchName, worktreePath, 'HEAD']);
+    return {
+      primaryRoot,
+      projectRoot: worktreePath,
+      isolated: true,
+      worktreePath,
+      branchName,
+    };
+  } catch {
+    return { primaryRoot, projectRoot: primaryRoot, isolated: false };
+  }
+}
+
+async function cleanupKiraWorktreeSession(session: KiraWorkspaceSession): Promise<void> {
+  if (!session.isolated || !session.worktreePath) return;
+  try {
+    await runGitCommand(session.primaryRoot, [
+      'worktree',
+      'remove',
+      '--force',
+      session.worktreePath,
+    ]);
+  } catch {
+    // Keep going so a stale branch does not block the automation loop cleanup.
+  }
+  if (session.branchName) {
+    try {
+      await runGitCommand(session.primaryRoot, ['branch', '-D', session.branchName]);
+    } catch {
+      // The branch may already be gone or still useful for manual recovery.
+    }
   }
 }
 
@@ -2415,6 +3320,7 @@ export function detectTouchedFilesFromGitStatus(
   const touched = new Set<string>();
 
   for (const entry of after) {
+    if (isGeneratedArtifactPath(entry.path)) continue;
     const previousStatus = beforeMap.get(entry.path);
     if (previousStatus !== entry.status) {
       touched.add(entry.path);
@@ -2424,13 +3330,54 @@ export function detectTouchedFilesFromGitStatus(
   return [...touched].sort();
 }
 
+export function isGeneratedArtifactPath(filePath: string): boolean {
+  const normalized = normalizeRelativePath(filePath).toLowerCase();
+  return (
+    normalized === '.ds_store' ||
+    normalized.endsWith('/.ds_store') ||
+    normalized.startsWith('__pycache__/') ||
+    normalized.includes('/__pycache__/') ||
+    normalized.endsWith('.pyc') ||
+    normalized.startsWith('.pytest_cache/') ||
+    normalized.startsWith('.mypy_cache/')
+  );
+}
+
 export function resolveAttemptChangedFiles(
   touchedFiles: string[],
   reportedFiles: string[],
   patchedFiles: string[],
 ): string[] {
-  const observedFiles = normalizePathList([...touchedFiles, ...patchedFiles], 200);
-  return observedFiles.length > 0 ? observedFiles : normalizePathList(reportedFiles, 200);
+  const observedFiles = normalizePathList([...touchedFiles, ...patchedFiles], 200).filter(
+    (filePath) => !isGeneratedArtifactPath(filePath),
+  );
+  return observedFiles.length > 0
+    ? observedFiles
+    : normalizePathList(reportedFiles, 200).filter(
+        (filePath) => !isGeneratedArtifactPath(filePath),
+      );
+}
+
+export function filterStageableChangedFiles(
+  filesChanged: string[],
+  statusEntries: GitStatusEntry[] | null,
+): { targetFiles: string[]; ignoredFiles: string[] } {
+  const normalizedFiles = normalizePathList(filesChanged, 200).filter(
+    (filePath) => !isGeneratedArtifactPath(filePath),
+  );
+  if (!statusEntries) {
+    return { targetFiles: normalizedFiles, ignoredFiles: [] };
+  }
+
+  const dirtyFiles = new Set(
+    statusEntries
+      .map((entry) => normalizeRelativePath(entry.path))
+      .filter((filePath) => filePath && !isGeneratedArtifactPath(filePath)),
+  );
+  return {
+    targetFiles: normalizedFiles.filter((filePath) => dirtyFiles.has(filePath)),
+    ignoredFiles: normalizedFiles.filter((filePath) => !dirtyFiles.has(filePath)),
+  };
 }
 
 async function getTrackedHeadFile(
@@ -2615,6 +3562,42 @@ async function collectReviewerDiffExcerpts(
   return excerpts;
 }
 
+export function collectAttemptReviewabilityIssues(params: {
+  rawWorkerOutput?: string;
+  workerSummary: Pick<WorkerSummary, 'summary' | 'filesChanged'>;
+  workerPlan?: Pick<WorkerExecutionPlan, 'intendedFiles'> | null;
+  diffExcerpts: string[];
+  gitDiffAvailable: boolean;
+}): string[] {
+  const issues: string[] = [];
+  const raw = params.rawWorkerOutput?.trim() ?? '';
+  const filesChanged = normalizePathList(params.workerSummary.filesChanged ?? [], 200);
+  const intendedFiles = normalizePathList(params.workerPlan?.intendedFiles ?? [], 200);
+  const summary = params.workerSummary.summary.trim();
+
+  if (!raw) {
+    issues.push(
+      'Worker returned an empty final submission, so Kira cannot verify the attempt summary or validation evidence.',
+    );
+  } else if (!summary || summary === 'No worker summary provided.') {
+    issues.push('Worker final submission did not include a usable summary.');
+  }
+
+  if (intendedFiles.length > 0 && filesChanged.length === 0) {
+    issues.push(
+      `Worker planned edits to ${intendedFiles.join(', ')} but produced no changed files.`,
+    );
+  }
+
+  if (params.gitDiffAvailable && filesChanged.length > 0 && params.diffExcerpts.length === 0) {
+    issues.push(
+      `Kira detected changed files (${filesChanged.join(', ')}) but could not collect a git diff; the attempt cannot be reviewed safely.`,
+    );
+  }
+
+  return uniqueStrings(issues);
+}
+
 function collectPlanGuardrailIssues(
   projectRoot: string,
   plan: WorkerExecutionPlan | null,
@@ -2658,7 +3641,12 @@ function collectPlanGuardrailIssues(
 
 function getDirtyWorktreePaths(entries: GitStatusEntry[] | null): string[] {
   if (!entries) return [];
-  return uniqueStrings(entries.map((entry) => normalizeRelativePath(entry.path)).filter(Boolean));
+  return uniqueStrings(
+    entries
+      .map((entry) => normalizeRelativePath(entry.path))
+      .filter(Boolean)
+      .filter((filePath) => !isGeneratedArtifactPath(filePath)),
+  );
 }
 
 function collectDirtyFileGuardrailIssues(
@@ -2734,6 +3722,8 @@ function buildAttemptRecord(params: {
   outOfPlanFiles?: string[];
   validationGaps?: string[];
   risks?: string[];
+  diffExcerpts?: string[];
+  rawWorkerOutput?: string;
   blockedReason?: string;
   rollbackFiles?: string[];
 }): KiraAttemptRecord {
@@ -2758,6 +3748,8 @@ function buildAttemptRecord(params: {
     outOfPlanFiles: params.outOfPlanFiles ?? [],
     validationGaps: params.validationGaps ?? [],
     risks: params.risks ?? [],
+    ...(params.diffExcerpts ? { diffExcerpts: params.diffExcerpts } : {}),
+    ...(params.rawWorkerOutput !== undefined ? { rawWorkerOutput: params.rawWorkerOutput } : {}),
     ...(params.blockedReason ? { blockedReason: params.blockedReason } : {}),
     ...(params.rollbackFiles ? { rollbackFiles: params.rollbackFiles } : {}),
   };
@@ -2824,19 +3816,19 @@ export function resolveUnexpectedAutomationFailure(
 }
 
 async function autoCommitApprovedWork(
-  projectRoot: string,
+  workspace: KiraWorkspaceSession,
   filesChanged: string[],
   commitMessage: string,
   defaultProjectSettings: { autoCommit?: boolean } = {},
+  integrationLockPath?: string,
 ): Promise<{ status: 'committed' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
-  const projectSettings = loadProjectSettings(projectRoot, defaultProjectSettings);
+  const projectRoot = workspace.projectRoot;
+  const projectSettings = loadProjectSettings(workspace.primaryRoot, defaultProjectSettings);
   if (!projectSettings.autoCommit) {
     return { status: 'skipped', message: 'Project settings disabled auto-commit.' };
   }
 
-  const normalizedFiles = [
-    ...new Set(filesChanged.map((filePath) => filePath.trim()).filter(Boolean)),
-  ];
+  const normalizedFiles = normalizePathList(filesChanged, 200);
   if (normalizedFiles.length === 0) {
     return { status: 'skipped', message: 'No changed files were reported for this work.' };
   }
@@ -2847,9 +3839,9 @@ async function autoCommitApprovedWork(
     return { status: 'skipped', message: 'Project root is not a git repository.' };
   }
 
-  let targetFiles: string[] = [];
+  let projectLocalFiles: string[] = [];
   try {
-    targetFiles = normalizedFiles
+    projectLocalFiles = normalizedFiles
       .map((filePath) => ensureInsideRoot(projectRoot, filePath))
       .map((absolutePath) =>
         absolutePath
@@ -2865,8 +3857,17 @@ async function autoCommitApprovedWork(
     };
   }
 
+  const { targetFiles, ignoredFiles } = filterStageableChangedFiles(
+    projectLocalFiles,
+    await getGitWorktreeEntries(projectRoot),
+  );
   if (targetFiles.length === 0) {
-    return { status: 'skipped', message: 'No project-local files were eligible for auto-commit.' };
+    return {
+      status: 'skipped',
+      message: `No stageable project-local files were eligible for auto-commit.${formatIgnoredIntegrationPaths(
+        ignoredFiles,
+      )}`,
+    };
   }
 
   const preStaged = await runGitCommand(projectRoot, ['diff', '--cached', '--name-only']);
@@ -2889,9 +3890,92 @@ async function autoCommitApprovedWork(
 
     await runGitCommand(projectRoot, ['commit', '-m', commitMessage]);
     const commitHash = await runGitCommand(projectRoot, ['rev-parse', '--short', 'HEAD']);
+
+    if (workspace.isolated) {
+      const integrationOwner = `${SERVER_INSTANCE_ID}:${commitHash}:${Date.now()}`;
+      if (
+        integrationLockPath &&
+        !tryAcquireLock(integrationLockPath, {
+          ownerId: integrationOwner,
+          resource: 'project',
+          sessionPath: 'git-integration',
+          targetKey: workspace.primaryRoot,
+        })
+      ) {
+        return {
+          status: 'failed',
+          message:
+            'Auto-commit created an isolated worktree commit, but could not acquire the project integration lock. The Kira worktree was kept for manual recovery.',
+          commitHash: commitHash || undefined,
+        };
+      }
+
+      try {
+        const primaryStaged = await runGitCommand(workspace.primaryRoot, [
+          'diff',
+          '--cached',
+          '--name-only',
+        ]);
+        if (primaryStaged.trim()) {
+          return {
+            status: 'failed',
+            message:
+              'Auto-commit created an isolated worktree commit, but integration was stopped because the primary worktree already has staged changes.',
+            commitHash: commitHash || undefined,
+          };
+        }
+
+        const primaryDirtyEntries = await getGitWorktreeEntries(workspace.primaryRoot);
+        const primaryDirtyFiles = getDirtyWorktreePaths(primaryDirtyEntries);
+        const conflictingDirtyFiles = targetFiles.filter((filePath) =>
+          primaryDirtyFiles.includes(filePath),
+        );
+        if (conflictingDirtyFiles.length > 0) {
+          return {
+            status: 'failed',
+            message: [
+              'Auto-commit created an isolated worktree commit, but integration was stopped because the primary worktree has overlapping dirty files.',
+              `Conflicting files: ${conflictingDirtyFiles.join(', ')}`,
+              'The Kira worktree was kept for manual recovery.',
+            ].join(' '),
+            commitHash: commitHash || undefined,
+          };
+        }
+
+        try {
+          await runGitCommand(workspace.primaryRoot, ['cherry-pick', commitHash]);
+        } catch (error) {
+          try {
+            await runGitCommand(workspace.primaryRoot, ['cherry-pick', '--abort']);
+          } catch {
+            // If abort fails, report the original cherry-pick failure below.
+          }
+          return {
+            status: 'failed',
+            message: [
+              'Auto-commit created an isolated worktree commit, but cherry-pick integration failed.',
+              error instanceof Error ? error.message : String(error),
+              'The Kira worktree was kept for manual conflict recovery.',
+            ].join('\n\n'),
+            commitHash: commitHash || undefined,
+          };
+        }
+      } finally {
+        if (integrationLockPath) {
+          releaseLock(integrationLockPath, integrationOwner);
+        }
+      }
+    }
+
     return {
       status: 'committed',
-      message: `Committed the approved changes as ${commitHash}.`,
+      message: workspace.isolated
+        ? `Committed in an isolated Kira worktree and integrated into the primary worktree as ${commitHash}.${formatIgnoredIntegrationPaths(
+            ignoredFiles,
+          )}`
+        : `Committed the approved changes as ${commitHash}.${formatIgnoredIntegrationPaths(
+            ignoredFiles,
+          )}`,
       commitHash: commitHash || undefined,
     };
   } catch (error) {
@@ -2899,6 +3983,137 @@ async function autoCommitApprovedWork(
       status: 'failed',
       message: error instanceof Error ? error.message : String(error),
     };
+  }
+}
+
+async function ensurePrimaryWorktreeCanIntegrate(
+  workspace: KiraWorkspaceSession,
+  targetFiles: string[],
+): Promise<string | null> {
+  const primaryStaged = await runGitCommand(workspace.primaryRoot, [
+    'diff',
+    '--cached',
+    '--name-only',
+  ]);
+  if (primaryStaged.trim()) {
+    return 'Integration stopped because the primary worktree already has staged changes.';
+  }
+
+  const primaryDirtyEntries = await getGitWorktreeEntries(workspace.primaryRoot);
+  const primaryDirtyFiles = getDirtyWorktreePaths(primaryDirtyEntries);
+  const conflictingDirtyFiles = targetFiles.filter((filePath) =>
+    primaryDirtyFiles.includes(filePath),
+  );
+  if (conflictingDirtyFiles.length > 0) {
+    return [
+      'Integration stopped because the primary worktree has overlapping dirty files.',
+      `Conflicting files: ${conflictingDirtyFiles.join(', ')}`,
+    ].join(' ');
+  }
+
+  return null;
+}
+
+async function integrateApprovedWorktreeChanges(
+  workspace: KiraWorkspaceSession,
+  filesChanged: string[],
+  commitMessage: string,
+  integrationLockPath?: string,
+): Promise<{ status: 'integrated' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
+  if (!workspace.isolated) {
+    return {
+      status: 'skipped',
+      message: 'The approved attempt already ran in the primary worktree.',
+    };
+  }
+
+  const projectLocalFiles = normalizePathList(filesChanged, 200);
+  if (projectLocalFiles.length === 0) {
+    return { status: 'skipped', message: 'No changed files were reported for integration.' };
+  }
+
+  const { targetFiles, ignoredFiles } = filterStageableChangedFiles(
+    projectLocalFiles,
+    await getGitWorktreeEntries(workspace.projectRoot),
+  );
+  if (targetFiles.length === 0) {
+    return {
+      status: 'skipped',
+      message: `No stageable changed files were available to integrate.${formatIgnoredIntegrationPaths(
+        ignoredFiles,
+      )}`,
+    };
+  }
+
+  const integrationOwner = `${SERVER_INSTANCE_ID}:no-commit:${Date.now()}`;
+  if (
+    integrationLockPath &&
+    !tryAcquireLock(integrationLockPath, {
+      ownerId: integrationOwner,
+      resource: 'project',
+      sessionPath: 'git-integration',
+      targetKey: workspace.primaryRoot,
+    })
+  ) {
+    return {
+      status: 'failed',
+      message:
+        'Could not acquire the project integration lock. The winning Kira worktree was kept for manual recovery.',
+    };
+  }
+
+  try {
+    const blocker = await ensurePrimaryWorktreeCanIntegrate(workspace, targetFiles);
+    if (blocker) {
+      return {
+        status: 'failed',
+        message: `${blocker} The winning Kira worktree was kept for manual recovery.`,
+      };
+    }
+
+    await runGitCommand(workspace.projectRoot, ['add', '--', ...targetFiles]);
+    const staged = await runGitCommand(workspace.projectRoot, ['diff', '--cached', '--name-only']);
+    if (!staged.trim()) {
+      return { status: 'skipped', message: 'No staged changes were available to integrate.' };
+    }
+    await runGitCommand(workspace.projectRoot, ['commit', '-m', commitMessage]);
+    const commitHash = await runGitCommand(workspace.projectRoot, ['rev-parse', '--short', 'HEAD']);
+
+    try {
+      await runGitCommand(workspace.primaryRoot, ['cherry-pick', '--no-commit', commitHash]);
+    } catch (error) {
+      try {
+        await runGitCommand(workspace.primaryRoot, ['cherry-pick', '--abort']);
+      } catch {
+        // Preserve the original cherry-pick error below.
+      }
+      return {
+        status: 'failed',
+        message: [
+          'Cherry-pick integration failed.',
+          error instanceof Error ? error.message : String(error),
+          'The winning Kira worktree was kept for manual conflict recovery.',
+        ].join('\n\n'),
+        commitHash: commitHash || undefined,
+      };
+    }
+
+    return {
+      status: 'integrated',
+      message: `Integrated the winning isolated attempt into the primary worktree without creating a final commit. Temporary attempt commit: ${commitHash}.${formatIgnoredIntegrationPaths(
+        ignoredFiles,
+      )}`,
+      commitHash: commitHash || undefined,
+    };
+  } catch (error) {
+    return {
+      status: 'failed',
+      message: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    if (integrationLockPath) {
+      releaseLock(integrationLockPath, integrationOwner);
+    }
   }
 }
 
@@ -2977,7 +4192,7 @@ function getProjectKey(
   sessionPath: string,
 ): string {
   if (workRootDirectory?.trim() && work.projectName.trim()) {
-    return resolve(join(workRootDirectory, work.projectName)).toLowerCase();
+    return resolveKiraProjectRoot(workRootDirectory, work.projectName).toLowerCase();
   }
 
   return `${sanitizeSessionPath(sessionPath)}::${work.projectName.toLowerCase()}`;
@@ -3130,6 +4345,7 @@ export function buildWorkerPlanningPrompt(
       : '',
     'Inspect the project in read-only mode and create a focused implementation plan before any edits happen.',
     'Use the context scan as a starting point, but verify relevant files yourself before planning edits.',
+    'Call at least one read-only tool such as list_files, search_files, or read_file before returning the final plan.',
     'If likely relevant files are empty or weak, search/read the repository before returning a plan.',
     'Treat existing git changes as user or prior automation work unless inspection proves they are part of this task.',
     'List only the files you currently expect to edit; keep the list small and concrete.',
@@ -3150,6 +4366,7 @@ export function buildWorkerPlanningSystemPrompt(): string {
   return [
     'You are Kira Preflight Planner, a careful read-only planning agent.',
     'Before planning, inspect repository structure and relevant files with read-only tools.',
+    'Never return the final plan before using list_files, search_files, or read_file, unless you are an external CLI agent that has already inspected the filesystem directly.',
     'Identify existing user changes and mark files that must not be overwritten as protectedFiles.',
     'Produce a structured plan with intended files, validation commands, risks, and stop conditions.',
     'Do not modify files.',
@@ -3201,7 +4418,8 @@ export function buildWorkerPrompt(
     'Do not touch out-of-plan files unless necessary and explained by the final summary.',
     'Read high-risk existing files with read_file before editing or overwriting them.',
     'For existing files, prefer edit_file with exact replacements.',
-    'Use write_file only for new files or for small files that genuinely need a full rewrite.',
+    'If edit_file cannot match a planned file after you already read it, use write_file with the complete final file content; Kira only permits this full rewrite for read, planned, unprotected files within the file-size limit.',
+    'Use write_file only for new files, small existing files, or a read planned file that genuinely needs a full rewrite.',
     'Do not treat other existing modified or untracked files in the project as something you must clean up unless the task explicitly asks for cleanup.',
     'When you report filesChanged, list the files you intentionally touched for this attempt, not unrelated pre-existing worktree noise.',
     'Run the planned validation commands when practical, plus focused checks needed by the actual changes.',
@@ -3220,6 +4438,7 @@ export function buildWorkerSystemPrompt(): string {
     'Stay focused on the requested work item.',
     'Before editing, inspect repository structure and relevant files.',
     'Identify existing user changes and avoid overwriting them.',
+    'Assume other Kira agents may be working in sibling git worktrees; only rely on the files and tool results in your current project root.',
     'Prefer small targeted edits over broad refactors.',
     'Prefer existing project patterns over new abstractions.',
     'Respect the preflight plan unless inspection shows a clearly necessary small expansion.',
@@ -3227,8 +4446,9 @@ export function buildWorkerSystemPrompt(): string {
     'Never edit protectedFiles; stop and report the blocker instead.',
     'Read high-risk existing files before editing them.',
     'Prefer edit_file for modifying existing files, especially large or critical ones.',
+    'When edit_file cannot safely match text in a file listed in intendedFiles, read the file and then use write_file with the complete final content instead of getting stuck on repeated failed replacements.',
     'Do not try to clean unrelated dirty-worktree files unless the work item explicitly requires it.',
-    'Use write_file only when creating a new file or replacing a genuinely small file.',
+    'Use write_file only when creating a new file, replacing a genuinely small file, or rewriting a read planned file with complete final content.',
     'Use run_command for safe checks only, and run planned validation commands when practical.',
     'Summarize changed files, checks run, failures, and remaining risks.',
     'Never claim a check passed unless you ran it or Kira provided the result.',
@@ -3324,6 +4544,7 @@ export function buildReviewSystemPrompt(): string {
     'Review the implementation carefully against the requested result and real regressions.',
     'Prioritize correctness and requirement coverage.',
     'Then check regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
+    'Treat concurrent-agent integration risks, stale assumptions, and overlapping file edits as review risks when they affect correctness.',
     'Do not approve if validation failed.',
     'Do not approve if the worker summary conflicts with the diff or provided project state.',
     'Do not approve unexplained out-of-plan edits when they create concrete risk or obscure the requested outcome.',
@@ -3333,6 +4554,103 @@ export function buildReviewSystemPrompt(): string {
     'Use read-only tools and safe commands only.',
     'Return only the requested structured JSON.',
   ].join('\n');
+}
+
+function buildAttemptComparisonReviewPrompt(
+  work: WorkTask,
+  attempts: KiraWorkerAttemptResult[],
+): string {
+  return [
+    `Project: ${work.projectName}`,
+    `Work title: ${work.title}`,
+    `Acceptance target:\n${work.description}`,
+    'Multiple isolated Kira workers produced independent attempts for the same work item.',
+    'Compare the attempts against the acceptance target and choose the single best attempt only if it should be integrated.',
+    'If every attempt has correctness, validation, or integration risks that should block integration, set approved to false and selectedAttemptNo to null.',
+    ...attempts.map((attempt) =>
+      [
+        `Attempt ${attempt.attemptNo} (${attempt.lane.label})`,
+        `Isolated worktree: ${attempt.workspace.projectRoot}`,
+        `Plan:\n${attempt.workerPlan.summary}`,
+        `Plan understanding:\n${attempt.workerPlan.understanding}`,
+        `Files changed:\n${formatList(attempt.workerSummary.filesChanged, 'No files reported')}`,
+        `Worker summary:\n${attempt.workerSummary.summary}`,
+        `Validation passed:\n${formatList(attempt.validationReruns.passed, 'No validation reruns passed')}`,
+        `Validation failed:\n${formatList(attempt.validationReruns.failed, 'No validation reruns failed')}`,
+        `Out-of-plan files:\n${formatList(attempt.outOfPlanFiles, 'No out-of-plan files')}`,
+        `Validation gaps:\n${formatList(attempt.missingValidationCommands, 'No missing planned checks')}`,
+        `Risks:\n${formatList(
+          [...attempt.workerSummary.remainingRisks, ...attempt.highRiskIssues],
+          'No risks reported',
+        )}`,
+        attempt.diffExcerpts.length > 0
+          ? `Git diff excerpts:\n${attempt.diffExcerpts.join('\n\n')}`
+          : 'Git diff excerpts:\n- No diff excerpts available',
+      ].join('\n\n'),
+    ),
+    'Selection rules:',
+    '- approved=true requires selecting exactly one attemptNo from the listed attempts.',
+    '- Prefer the attempt that best satisfies the work brief with the least concrete regression risk.',
+    '- Do not approve an attempt only because it is smaller; approve it because it is correct and adequately validated.',
+    '- Do not approve if validation failed, if the summary conflicts with the diff, or if integration risk is concrete.',
+    '- If requesting another worker round, give nextWorkerInstructions that all workers can act on.',
+    'Return only JSON with this shape:',
+    '{"approved":true,"selectedAttemptNo":1,"summary":"string","issues":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"filesChecked":["..."]}',
+  ].join('\n\n');
+}
+
+export function buildAttemptComparisonReviewSystemPrompt(): string {
+  return [
+    'You are Kira Reviewer, an independent code reviewer and attempt judge.',
+    'Compare multiple isolated worker attempts for one task.',
+    'Select one winning attempt only when it satisfies the requested outcome and has no blocking regression, validation, or integration risk.',
+    'If no attempt is good enough, request another worker round with concrete shared instructions.',
+    'Never edit files.',
+    'Return only the requested structured JSON.',
+  ].join('\n');
+}
+
+export function parseAttemptSelectionSummary(
+  raw: string,
+  validAttemptNos: number[],
+): AttemptSelectionSummary {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as Partial<AttemptSelectionSummary>;
+    const selectedAttemptNo =
+      typeof parsed.selectedAttemptNo === 'number' &&
+      validAttemptNos.includes(parsed.selectedAttemptNo)
+        ? parsed.selectedAttemptNo
+        : null;
+    const issues = uniqueStrings(Array.isArray(parsed.issues) ? parsed.issues.map(String) : []);
+    return {
+      approved: Boolean(parsed.approved) && selectedAttemptNo !== null,
+      selectedAttemptNo,
+      summary: parsed.summary?.trim() || 'No attempt comparison summary provided.',
+      issues,
+      nextWorkerInstructions: uniqueStrings(
+        Array.isArray(parsed.nextWorkerInstructions)
+          ? parsed.nextWorkerInstructions.map(String)
+          : [],
+      ),
+      residualRisk: uniqueStrings(
+        Array.isArray(parsed.residualRisk) ? parsed.residualRisk.map(String) : [],
+      ),
+      filesChecked: normalizePathList(
+        Array.isArray(parsed.filesChecked) ? parsed.filesChecked : [],
+        100,
+      ),
+    };
+  } catch {
+    return {
+      approved: false,
+      selectedAttemptNo: null,
+      summary: raw.trim() || 'Attempt comparison parsing failed.',
+      issues: ['Attempt comparison result could not be parsed into structured JSON.'],
+      nextWorkerInstructions: ['Return the attempt comparison result as structured JSON.'],
+      residualRisk: [],
+      filesChecked: [],
+    };
+  }
 }
 
 function updateWork(
@@ -3433,6 +4751,381 @@ function sendSseEvent(
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
+function buildWorkerAttemptFailureResult(params: {
+  lane: KiraWorkerLane;
+  workspace: KiraWorkspaceSession;
+  attemptNo: number;
+  cycle: number;
+  startedAt: number;
+  projectOverview: string;
+  contextScan: ProjectContextScan;
+  message: string;
+}): KiraWorkerAttemptResult {
+  const workerPlan = parseWorkerExecutionPlan(
+    JSON.stringify({
+      understanding: 'Attempt failed before a complete plan was produced.',
+      repoFindings: [],
+      summary: params.message,
+      intendedFiles: [],
+      protectedFiles: [],
+      validationCommands: [],
+      riskNotes: [params.message],
+      stopConditions: [params.message],
+    }),
+  );
+  return {
+    lane: params.lane,
+    workspace: params.workspace,
+    attemptNo: params.attemptNo,
+    cycle: params.cycle,
+    startedAt: params.startedAt,
+    projectOverview: params.projectOverview,
+    contextScan: params.contextScan,
+    workerPlan,
+    planningState: createWorkerAttemptState(null),
+    attemptState: null,
+    workerSummary: {
+      summary: params.message,
+      filesChanged: [],
+      testsRun: [],
+      remainingRisks: [params.message],
+    },
+    validationPlan: {
+      plannerCommands: [],
+      autoAddedCommands: [],
+      effectiveCommands: [],
+      notes: [],
+    },
+    validationReruns: { passed: [], failed: [], failureDetails: [] },
+    outOfPlanFiles: [],
+    missingValidationCommands: [],
+    highRiskIssues: [params.message],
+    diffExcerpts: [],
+    status: 'failed',
+    feedback: [params.message],
+    blockedReason: params.message,
+  };
+}
+
+async function runIsolatedWorkerAttempt(params: {
+  options: KiraAutomationPluginOptions;
+  sessionPath: string;
+  work: WorkTask;
+  lane: KiraWorkerLane;
+  workerCount: number;
+  cycle: number;
+  attemptNo: number;
+  primaryProjectRoot: string;
+  projectSettings: { autoCommit: boolean };
+  feedback: string[];
+  signal?: AbortSignal;
+}): Promise<KiraWorkerAttemptResult> {
+  const attemptStartedAt = Date.now();
+  const laneFeedback = [
+    ...params.feedback,
+    `${params.lane.label}: produce an independent solution in this isolated worktree. Do not coordinate through files outside this worktree.`,
+  ];
+  const fallbackContextScan = await buildProjectContextScan(params.primaryProjectRoot, params.work);
+  const fallbackOverview = buildProjectOverview(params.primaryProjectRoot);
+  const workspace = await createKiraWorktreeSession(
+    params.primaryProjectRoot,
+    params.options.sessionsDir,
+    params.sessionPath,
+    params.work,
+    params.projectSettings,
+    { force: true, label: `${params.lane.id}-attempt-${params.attemptNo}` },
+  );
+
+  if (!workspace.isolated) {
+    return buildWorkerAttemptFailureResult({
+      lane: params.lane,
+      workspace,
+      attemptNo: params.attemptNo,
+      cycle: params.cycle,
+      startedAt: attemptStartedAt,
+      projectOverview: fallbackOverview,
+      contextScan: fallbackContextScan,
+      message: 'Kira could not create an isolated worktree for this worker attempt.',
+    });
+  }
+
+  try {
+    const projectRoot = workspace.projectRoot;
+    const projectOverview = buildProjectOverview(projectRoot);
+    const contextScan = await buildProjectContextScan(projectRoot, params.work);
+    const planningState = createWorkerAttemptState(null);
+    const workerPlanRaw = await runToolAgent(
+      params.lane.config,
+      projectRoot,
+      buildWorkerPlanningPrompt(params.work, projectOverview, contextScan, laneFeedback),
+      buildWorkerPlanningSystemPrompt(),
+      false,
+      params.signal,
+      planningState,
+      (content) =>
+        collectPreflightPlanningIssues(
+          contextScan,
+          parseWorkerExecutionPlan(content),
+          uniqueStrings(planningState.explorationActions),
+        ),
+    );
+    throwIfCanceled(params.options.sessionsDir, params.sessionPath, params.work.id, params.signal);
+    const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
+    const preflightIssues = collectPreflightPlanningIssues(
+      contextScan,
+      workerPlan,
+      uniqueStrings(planningState.explorationActions),
+    );
+    if (preflightIssues.length > 0) {
+      return {
+        lane: params.lane,
+        workspace,
+        attemptNo: params.attemptNo,
+        cycle: params.cycle,
+        startedAt: attemptStartedAt,
+        projectOverview,
+        contextScan,
+        workerPlan,
+        planningState,
+        attemptState: null,
+        workerSummary: {
+          summary: 'Preflight planning needs more repository context.',
+          filesChanged: [],
+          testsRun: [],
+          remainingRisks: preflightIssues,
+        },
+        validationPlan: {
+          plannerCommands: [],
+          autoAddedCommands: [],
+          effectiveCommands: [],
+          notes: [],
+        },
+        validationReruns: { passed: [], failed: [], failureDetails: [] },
+        outOfPlanFiles: [],
+        missingValidationCommands: [],
+        highRiskIssues: [],
+        diffExcerpts: [],
+        status: 'needs_context',
+        feedback: preflightIssues,
+        blockedReason: 'Preflight planning needs more repository context.',
+      };
+    }
+
+    const worktreeBefore = await getGitWorktreeEntries(projectRoot);
+    const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
+    const attemptState = createWorkerAttemptState(workerPlan, dirtyFilesBefore);
+    const workerRaw = await runToolAgent(
+      params.lane.config,
+      projectRoot,
+      buildWorkerPrompt(params.work, projectOverview, contextScan, workerPlan, laneFeedback),
+      buildWorkerSystemPrompt(),
+      true,
+      params.signal,
+      attemptState,
+    );
+    throwIfCanceled(params.options.sessionsDir, params.sessionPath, params.work.id, params.signal);
+
+    const parsedWorkerSummary = parseWorkerSummary(workerRaw);
+    const worktreeAfter = await getGitWorktreeEntries(projectRoot);
+    const touchedFiles = detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter);
+    const resolvedFilesChanged = resolveAttemptChangedFiles(
+      touchedFiles,
+      parsedWorkerSummary.filesChanged,
+      [...attemptState.patchedFiles],
+    );
+    const actualCommandsRun = uniqueStrings(
+      attemptState.commandsRun.map((command) => normalizeWhitespace(command)),
+    );
+    const workerSummary: WorkerSummary = {
+      ...parsedWorkerSummary,
+      filesChanged: resolvedFilesChanged,
+      testsRun: actualCommandsRun.length > 0 ? actualCommandsRun : parsedWorkerSummary.testsRun,
+    };
+    const outOfPlanFiles = findOutOfPlanTouchedFiles(
+      workerPlan.intendedFiles,
+      workerSummary.filesChanged,
+    );
+    const missingValidationCommands = findMissingValidationCommands(
+      workerPlan.validationCommands,
+      workerSummary.testsRun,
+    );
+    const validationPlan = resolveValidationPlan(
+      projectRoot,
+      workerPlan.validationCommands,
+      workerSummary.filesChanged,
+    );
+    const patchValidationIssues = await collectPatchValidationIssues(
+      projectRoot,
+      workerSummary.filesChanged,
+    );
+    const validationReruns = await rerunValidationCommands(
+      projectRoot,
+      validationPlan.effectiveCommands,
+    );
+    const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
+    const reviewabilityIssues = collectAttemptReviewabilityIssues({
+      rawWorkerOutput: workerRaw,
+      workerSummary,
+      workerPlan,
+      diffExcerpts,
+      gitDiffAvailable: worktreeAfter !== null,
+    });
+    const highRiskIssues = [
+      ...(await collectHighRiskAttemptIssues(projectRoot, workerSummary.filesChanged)),
+      ...patchValidationIssues,
+      ...reviewabilityIssues,
+      ...collectDirtyFileGuardrailIssues(workerPlan, dirtyFilesBefore, workerSummary.filesChanged),
+      ...collectPlanGuardrailIssues(
+        projectRoot,
+        workerPlan,
+        workerSummary.filesChanged,
+        workerSummary.testsRun,
+      ),
+    ];
+
+    return {
+      lane: params.lane,
+      workspace,
+      attemptNo: params.attemptNo,
+      cycle: params.cycle,
+      startedAt: attemptStartedAt,
+      projectOverview,
+      contextScan,
+      workerPlan,
+      planningState,
+      attemptState,
+      workerSummary,
+      validationPlan,
+      validationReruns,
+      outOfPlanFiles,
+      missingValidationCommands,
+      highRiskIssues,
+      diffExcerpts,
+      rawWorkerOutput: workerRaw,
+      status:
+        highRiskIssues.length > 0
+          ? 'blocked'
+          : validationReruns.failed.length > 0
+            ? 'validation_failed'
+            : 'reviewable',
+      feedback:
+        highRiskIssues.length > 0
+          ? highRiskIssues
+          : validationReruns.failed.length > 0
+            ? validationReruns.failed.map(
+                (command) => `Planned validation failed when Kira reran it: ${command}`,
+              )
+            : [],
+      blockedReason:
+        highRiskIssues.length > 0
+          ? 'Automated safety validation failed.'
+          : validationReruns.failed.length > 0
+            ? 'Validation reruns failed.'
+            : undefined,
+    };
+  } catch (error) {
+    if (isAbortError(error)) throw error;
+    return buildWorkerAttemptFailureResult({
+      lane: params.lane,
+      workspace,
+      attemptNo: params.attemptNo,
+      cycle: params.cycle,
+      startedAt: attemptStartedAt,
+      projectOverview: fallbackOverview,
+      contextScan: fallbackContextScan,
+      message: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+function saveWorkerAttemptResult(
+  sessionsDir: string,
+  sessionPath: string,
+  workId: string,
+  result: KiraWorkerAttemptResult,
+  status: KiraAttemptRecord['status'],
+  extraRisks: string[] = [],
+): void {
+  saveAttemptRecord(
+    sessionsDir,
+    sessionPath,
+    buildAttemptRecord({
+      workId,
+      attemptNo: result.attemptNo,
+      status,
+      startedAt: result.startedAt,
+      contextScan: result.contextScan,
+      workerPlan: result.workerPlan,
+      planningState: result.planningState,
+      attemptState: result.attemptState,
+      workerSummary: result.workerSummary,
+      validationReruns: result.validationReruns,
+      outOfPlanFiles: result.outOfPlanFiles,
+      validationGaps: result.missingValidationCommands,
+      risks: uniqueStrings([
+        ...result.workerSummary.remainingRisks,
+        ...result.highRiskIssues,
+        ...extraRisks,
+      ]),
+      diffExcerpts: result.diffExcerpts,
+      rawWorkerOutput: result.rawWorkerOutput,
+      blockedReason: result.blockedReason,
+    }),
+  );
+}
+
+function addWorkerAttemptComment(
+  sessionsDir: string,
+  sessionPath: string,
+  work: WorkTask,
+  result: KiraWorkerAttemptResult,
+): void {
+  addComment(sessionsDir, sessionPath, {
+    taskId: work.id,
+    taskType: 'work',
+    author: buildAgentLabel(WORKER_AUTHOR, result.lane.label),
+    body: [
+      `Attempt ${result.attemptNo} finished from ${result.lane.label}.`,
+      '',
+      `Isolated worktree:\n${result.workspace.projectRoot}`,
+      '',
+      `Status:\n${result.status}`,
+      '',
+      `Plan:\n${result.workerPlan.summary}`,
+      '',
+      `Summary:\n${result.workerSummary.summary}`,
+      '',
+      `Files changed:\n${formatList(result.workerSummary.filesChanged, 'No files reported')}`,
+      '',
+      `Checks:\n${formatList(result.workerSummary.testsRun, 'No checks reported')}`,
+      '',
+      `Kira-passed validation reruns:\n${formatList(
+        result.validationReruns.passed,
+        'No validation reruns passed',
+      )}`,
+      '',
+      `Kira validation failures:\n${formatList(
+        result.validationReruns.failed,
+        'No validation reruns failed',
+      )}`,
+      '',
+      `Remaining risks:\n${formatList(
+        [...result.workerSummary.remainingRisks, ...result.highRiskIssues],
+        'None reported',
+      )}`,
+      '',
+      `Validation gaps:\n${formatList(
+        result.missingValidationCommands,
+        'No missing planned checks',
+      )}`,
+      '',
+      `Out-of-plan files:\n${formatList(result.outOfPlanFiles, 'No out-of-plan files')}`,
+      '',
+      `Worker submission:\n${formatWorkerSubmission(result.rawWorkerOutput)}`,
+    ].join('\n'),
+  });
+}
+
 function loadProjectWorks(
   sessionsDir: string,
   sessionPath: string,
@@ -3457,7 +5150,7 @@ async function analyzeProjectForDiscovery(
     throw new Error('No usable LLM config was found in config.json.');
   }
 
-  const projectRoot = runtime.workRootDirectory ? join(runtime.workRootDirectory, projectName) : '';
+  const projectRoot = resolveKiraProjectRoot(runtime.workRootDirectory, projectName);
   if (!runtime.workRootDirectory || !projectName || !fs.existsSync(projectRoot)) {
     throw new Error(`Project root was not found for ${projectName}.`);
   }
@@ -3556,6 +5249,395 @@ function createWorksFromDiscovery(
   return { created, skippedTitles };
 }
 
+async function processWorkWithMultipleWorkers(params: {
+  options: KiraAutomationPluginOptions;
+  sessionPath: string;
+  work: WorkTask;
+  runtime: ReturnType<typeof getKiraRuntimeSettings>;
+  primaryProjectRoot: string;
+  signal?: AbortSignal;
+}): Promise<void> {
+  const { options, sessionPath, work, runtime, primaryProjectRoot, signal } = params;
+  if (!runtime.reviewerConfig) {
+    throw new Error('No usable reviewer LLM config was found in config.json.');
+  }
+  const lanes = buildWorkerLanes(runtime.workerConfigs);
+  const projectSettings = loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings);
+  if (!(await isGitWorktree(primaryProjectRoot))) {
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'blocked',
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        'Automation blocked because multiple workers require git worktree isolation.',
+        '',
+        'Configure one worker for non-git projects, or initialize the project as a git repository before retrying.',
+      ].join('\n'),
+    });
+    enqueueEvent(options.sessionsDir, sessionPath, {
+      id: makeId('event'),
+      workId: work.id,
+      title: work.title,
+      projectName: work.projectName,
+      type: 'needs_attention',
+      createdAt: Date.now(),
+      message: `Kira blocked: "${work.title}" 작업은 여러 worker 격리를 위해 git worktree가 필요해요.`,
+    });
+    return;
+  }
+
+  const safetyIssues = await collectProjectSafetyIssues(primaryProjectRoot);
+  if (safetyIssues.length > 0) {
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'blocked',
+      assignee: current.assignee || runtime.workerAuthor,
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        'Automation blocked before start due to project safety checks.',
+        '',
+        `Issues:\n${formatList(safetyIssues, 'No details provided')}`,
+      ].join('\n'),
+    });
+    return;
+  }
+
+  const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
+  let feedback =
+    work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
+  let previousIssueSignature: string | null = null;
+  let repeatedIssueCount = 0;
+
+  updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+    ...current,
+    status: 'in_progress',
+    assignee: current.assignee || runtime.workerAuthor,
+  }));
+  enqueueEvent(options.sessionsDir, sessionPath, {
+    id: makeId('event'),
+    workId: work.id,
+    title: work.title,
+    projectName: work.projectName,
+    type: work.status === 'in_progress' ? 'resumed' : 'started',
+    createdAt: Date.now(),
+    message:
+      work.status === 'in_progress'
+        ? `Kira 재개: "${work.title}" 작업을 ${lanes.length}개 worker로 다시 진행할게요.`
+        : `Kira 시작: "${work.title}" 작업을 ${lanes.length}개 worker로 자동 시작할게요.`,
+  });
+  addComment(options.sessionsDir, sessionPath, {
+    taskId: work.id,
+    taskType: 'work',
+    author: runtime.workerAuthor,
+    body: [
+      `Picked up the task with ${lanes.length} isolated workers in ${work.projectName}.`,
+      '',
+      `Workers:\n${formatList(
+        lanes.map((lane) => lane.label),
+        'No workers configured',
+      )}`,
+      '',
+      'Each worker will produce an independent attempt in its own git worktree. The reviewer will compare passing attempts and select one winner.',
+    ].join('\n'),
+  });
+
+  for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
+    throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
+    const results = await Promise.all(
+      lanes.map((lane, index) =>
+        runIsolatedWorkerAttempt({
+          options,
+          sessionPath,
+          work,
+          lane,
+          workerCount: lanes.length,
+          cycle,
+          attemptNo: (cycle - 1) * lanes.length + index + 1,
+          primaryProjectRoot,
+          projectSettings,
+          feedback,
+          signal,
+        }),
+      ),
+    );
+    throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
+
+    for (const result of results) {
+      addWorkerAttemptComment(options.sessionsDir, sessionPath, work, result);
+      const attemptStatus: KiraAttemptRecord['status'] =
+        result.status === 'needs_context'
+          ? 'needs_context'
+          : result.status === 'validation_failed'
+            ? 'validation_failed'
+            : result.status === 'reviewable'
+              ? 'reviewable'
+              : 'blocked';
+      saveWorkerAttemptResult(options.sessionsDir, sessionPath, work.id, result, attemptStatus);
+    }
+
+    const reviewableAttempts = results.filter((result) => result.status === 'reviewable');
+    if (reviewableAttempts.length === 0) {
+      feedback = uniqueStrings(results.flatMap((result) => result.feedback)).slice(0, 12);
+      const issueSignature = buildIssueSignature(feedback, 'No worker attempts passed validation.');
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: [
+          `No worker attempts were ready for review after cycle ${cycle}.`,
+          '',
+          `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
+        ].join('\n'),
+      });
+      await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
+      if (issueSignature === previousIssueSignature) {
+        repeatedIssueCount += 1;
+      } else {
+        repeatedIssueCount = 1;
+        previousIssueSignature = issueSignature;
+      }
+      if (repeatedIssueCount >= 2) break;
+      continue;
+    }
+
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'in_review',
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        `Started review for cycle ${cycle}.`,
+        '',
+        `Reviewable attempts:\n${formatList(
+          reviewableAttempts.map(
+            (attempt) => `Attempt ${attempt.attemptNo} from ${attempt.lane.label}`,
+          ),
+          'No reviewable attempts',
+        )}`,
+        '',
+        `Files changed:\n${formatList(
+          uniqueStrings(reviewableAttempts.flatMap((attempt) => attempt.workerSummary.filesChanged)),
+          'No changed files recorded',
+        )}`,
+      ].join('\n'),
+    });
+    const selectionRaw = await runToolAgent(
+      runtime.reviewerConfig,
+      primaryProjectRoot,
+      buildAttemptComparisonReviewPrompt(work, reviewableAttempts),
+      buildAttemptComparisonReviewSystemPrompt(),
+      false,
+      signal,
+    );
+    throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
+    const selection = parseAttemptSelectionSummary(
+      selectionRaw,
+      reviewableAttempts.map((attempt) => attempt.attemptNo),
+    );
+    const selectedAttempt = selection.selectedAttemptNo
+      ? reviewableAttempts.find((attempt) => attempt.attemptNo === selection.selectedAttemptNo)
+      : null;
+
+    if (selection.approved && selectedAttempt) {
+      const reviewRecord = buildReviewRecord(work.id, selectedAttempt.attemptNo, {
+        approved: true,
+        summary: selection.summary,
+        issues: [],
+        filesChecked: selection.filesChecked,
+        findings: [],
+        missingValidation: [],
+        nextWorkerInstructions: [],
+        residualRisk: selection.residualRisk,
+      });
+      saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
+      for (const result of reviewableAttempts) {
+        saveWorkerAttemptResult(
+          options.sessionsDir,
+          sessionPath,
+          work.id,
+          result,
+          result.attemptNo === selectedAttempt.attemptNo ? 'approved' : 'review_requested_changes',
+          result.attemptNo === selectedAttempt.attemptNo
+            ? selection.residualRisk
+            : [`Not selected by reviewer. Winning attempt: ${selectedAttempt.attemptNo}`],
+        );
+      }
+      const suggestedCommitMessage = buildSuggestedCommitMessage(
+        work,
+        selectedAttempt.workerSummary,
+      );
+      const projectLockPath = getProjectLockPath(
+        options.sessionsDir,
+        getProjectKey(runtime.workRootDirectory, work, sessionPath),
+      );
+      const integrationResult = projectSettings.autoCommit
+        ? await autoCommitApprovedWork(
+            selectedAttempt.workspace,
+            selectedAttempt.workerSummary.filesChanged,
+            suggestedCommitMessage,
+            runtime.defaultProjectSettings,
+            projectLockPath,
+          )
+        : await integrateApprovedWorktreeChanges(
+            selectedAttempt.workspace,
+            selectedAttempt.workerSummary.filesChanged,
+            suggestedCommitMessage,
+            projectLockPath,
+          );
+
+      if (integrationResult.status === 'failed') {
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: [
+            `Approved attempt ${selectedAttempt.attemptNo}, but integration failed.`,
+            '',
+            integrationResult.message,
+          ].join('\n'),
+        });
+        await Promise.all(
+          results
+            .filter((result) => result.attemptNo !== selectedAttempt.attemptNo)
+            .map((result) => cleanupKiraWorktreeSession(result.workspace)),
+        );
+        return;
+      }
+
+      updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+        ...current,
+        status: 'done',
+      }));
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: [
+          `Approved attempt ${selectedAttempt.attemptNo}.`,
+          '',
+          selection.summary,
+          '',
+          `Selected worker: ${selectedAttempt.lane.label}`,
+        ].join('\n'),
+      });
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: `Suggested commit message:\n${suggestedCommitMessage}`,
+      });
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: `Integrated winning attempt.\n\n${integrationResult.message}`,
+      });
+      await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
+      enqueueEvent(options.sessionsDir, sessionPath, {
+        id: makeId('event'),
+        workId: work.id,
+        title: work.title,
+        projectName: work.projectName,
+        type: 'completed',
+        createdAt: Date.now(),
+        message: `Kira 완료: "${work.title}" 작업에서 attempt ${selectedAttempt.attemptNo}를 선택해 통합했어요.`,
+      });
+      return;
+    }
+
+    feedback =
+      selection.nextWorkerInstructions.length > 0
+        ? selection.nextWorkerInstructions
+        : selection.issues.length > 0
+          ? selection.issues
+          : [selection.summary];
+    for (const result of reviewableAttempts) {
+      saveWorkerAttemptResult(
+        options.sessionsDir,
+        sessionPath,
+        work.id,
+        result,
+        'review_requested_changes',
+        feedback,
+      );
+    }
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        `Reviewer did not approve any attempts after cycle ${cycle}.`,
+        '',
+        `Summary:\n${selection.summary}`,
+        '',
+        `Issues:\n${formatList(selection.issues, 'No detailed issues provided')}`,
+        '',
+        `Next worker instructions:\n${formatList(
+          selection.nextWorkerInstructions,
+          'No next instructions provided',
+        )}`,
+      ].join('\n'),
+    });
+    await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
+
+    const issueSignature = buildIssueSignature(selection.issues, selection.summary);
+    if (issueSignature === previousIssueSignature) {
+      repeatedIssueCount += 1;
+    } else {
+      repeatedIssueCount = 1;
+      previousIssueSignature = issueSignature;
+    }
+    if (repeatedIssueCount >= 2) break;
+    if (cycle < MAX_REVIEW_CYCLES) {
+      updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+        ...current,
+        status: 'in_progress',
+      }));
+    }
+  }
+
+  updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+    ...current,
+    status: 'blocked',
+  }));
+  addComment(options.sessionsDir, sessionPath, {
+    taskId: work.id,
+    taskType: 'work',
+    author: runtime.reviewerAuthor,
+    body: [
+      `Blocked after ${MAX_REVIEW_CYCLES} multi-worker review cycles.`,
+      '',
+      `Summary:\n${feedback[0] ?? 'No worker attempt satisfied the review requirements.'}`,
+      '',
+      `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
+    ].join('\n'),
+  });
+  enqueueEvent(options.sessionsDir, sessionPath, {
+    id: makeId('event'),
+    workId: work.id,
+    title: work.title,
+    projectName: work.projectName,
+    type: 'needs_attention',
+    createdAt: Date.now(),
+    message: `Kira blocked: "${work.title}" 작업이 여러 worker 재시도 후에도 리뷰를 통과하지 못했어요.`,
+  });
+}
+
 async function processWork(
   options: KiraAutomationPluginOptions,
   sessionPath: string,
@@ -3586,10 +5668,8 @@ async function processWork(
     return;
   }
 
-  const projectRoot = runtime.workRootDirectory
-    ? join(runtime.workRootDirectory, work.projectName)
-    : '';
-  if (!runtime.workRootDirectory || !work.projectName || !fs.existsSync(projectRoot)) {
+  const primaryProjectRoot = resolveKiraProjectRoot(runtime.workRootDirectory, work.projectName);
+  if (!runtime.workRootDirectory || !work.projectName || !fs.existsSync(primaryProjectRoot)) {
     addComment(options.sessionsDir, sessionPath, {
       taskId: work.id,
       taskType: 'work',
@@ -3607,6 +5687,59 @@ async function processWork(
     });
     return;
   }
+
+  if (runtime.workerConfigs.length > 1) {
+    await processWorkWithMultipleWorkers({
+      options,
+      sessionPath,
+      work,
+      runtime,
+      primaryProjectRoot,
+      signal,
+    });
+    return;
+  }
+
+  const workspace = await createKiraWorktreeSession(
+    primaryProjectRoot,
+    options.sessionsDir,
+    sessionPath,
+    work,
+    loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings),
+  );
+  if (
+    !workspace.isolated &&
+    shouldUseKiraIsolatedWorktree(
+      primaryProjectRoot,
+      loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings),
+    )
+  ) {
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'blocked',
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        'Automation blocked because Kira could not create an isolated git worktree.',
+        '',
+        'The task was not run in the primary worktree because auto-commit is enabled and concurrent work requires isolation.',
+      ].join('\n'),
+    });
+    enqueueEvent(options.sessionsDir, sessionPath, {
+      id: makeId('event'),
+      workId: work.id,
+      title: work.title,
+      projectName: work.projectName,
+      type: 'needs_attention',
+      createdAt: Date.now(),
+      message: `Kira blocked: "${work.title}" 작업용 격리 worktree를 만들 수 없어 기본 워크트리를 보호했어요.`,
+    });
+    return;
+  }
+  const projectRoot = workspace.projectRoot;
 
   const safetyIssues = await collectProjectSafetyIssues(projectRoot);
   if (safetyIssues.length > 0) {
@@ -3671,7 +5804,12 @@ async function processWork(
     body:
       work.status === 'in_progress'
         ? `Detected a stalled task and resumed implementation in ${work.projectName}.`
-        : `Picked up the task and started implementation in ${work.projectName}.`,
+        : [
+            `Picked up the task and started implementation in ${work.projectName}.`,
+            workspace.isolated
+              ? `Using isolated git worktree: ${workspace.projectRoot}`
+              : 'Using the primary project worktree.',
+          ].join('\n\n'),
   });
 
   let feedback: string[] = resumeFeedback;
@@ -3688,6 +5826,12 @@ async function processWork(
       false,
       signal,
       planningState,
+      (content) =>
+        collectPreflightPlanningIssues(
+          contextScan,
+          parseWorkerExecutionPlan(content),
+          uniqueStrings(planningState.explorationActions),
+        ),
     );
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
@@ -3817,9 +5961,17 @@ async function processWork(
       validationPlan.effectiveCommands,
     );
     const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
+    const reviewabilityIssues = collectAttemptReviewabilityIssues({
+      rawWorkerOutput: workerRaw,
+      workerSummary,
+      workerPlan,
+      diffExcerpts,
+      gitDiffAvailable: worktreeAfter !== null,
+    });
     const highRiskIssues = [
       ...(await collectHighRiskAttemptIssues(projectRoot, workerSummary.filesChanged)),
       ...patchValidationIssues,
+      ...reviewabilityIssues,
       ...collectDirtyFileGuardrailIssues(workerPlan, dirtyFilesBefore, workerSummary.filesChanged),
       ...collectPlanGuardrailIssues(
         projectRoot,
@@ -3910,6 +6062,8 @@ async function processWork(
         `Validation gaps:\n${formatList(missingValidationCommands, 'No missing planned checks')}`,
         '',
         `Out-of-plan files:\n${formatList(outOfPlanFiles, 'No out-of-plan files')}`,
+        '',
+        `Worker submission:\n${formatWorkerSubmission(workerRaw)}`,
       ].join('\n'),
     });
 
@@ -3935,6 +6089,8 @@ async function processWork(
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
           risks: [...workerSummary.remainingRisks, ...highRiskIssues],
+          diffExcerpts,
+          rawWorkerOutput: workerRaw,
           blockedReason: 'Automated safety validation failed.',
           rollbackFiles: restoredFiles,
         }),
@@ -4000,6 +6156,8 @@ async function processWork(
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
           risks: workerSummary.remainingRisks,
+          diffExcerpts,
+          rawWorkerOutput: workerRaw,
         }),
       );
       addComment(options.sessionsDir, sessionPath, {
@@ -4055,6 +6213,8 @@ async function processWork(
             outOfPlanFiles,
             validationGaps: missingValidationCommands,
             risks: feedback,
+            diffExcerpts,
+            rawWorkerOutput: workerRaw,
             blockedReason: 'Validation failures repeated without progress.',
           }),
         );
@@ -4099,6 +6259,21 @@ async function processWork(
       ...current,
       status: 'in_review',
     }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        `Started review for attempt ${cycle}.`,
+        '',
+        `Files changed:\n${formatList(workerSummary.filesChanged, 'No changed files recorded')}`,
+        '',
+        `Kira-passed validation reruns:\n${formatList(
+          validationReruns.passed,
+          'No validation reruns passed',
+        )}`,
+      ].join('\n'),
+    });
 
     const reviewRaw = await runToolAgent(
       runtime.reviewerConfig,
@@ -4142,6 +6317,8 @@ async function processWork(
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
           risks: [...workerSummary.remainingRisks, ...reviewSummary.residualRisk],
+          diffExcerpts,
+          rawWorkerOutput: workerRaw,
         }),
       );
       const suggestedCommitMessage = buildSuggestedCommitMessage(work, workerSummary);
@@ -4163,10 +6340,14 @@ async function processWork(
       });
 
       const autoCommitResult = await autoCommitApprovedWork(
-        projectRoot,
+        workspace,
         workerSummary.filesChanged,
         suggestedCommitMessage,
         runtime.defaultProjectSettings,
+        getProjectLockPath(
+          options.sessionsDir,
+          getProjectKey(runtime.workRootDirectory, work, sessionPath),
+        ),
       );
       if (autoCommitResult.status === 'committed') {
         addComment(options.sessionsDir, sessionPath, {
@@ -4176,12 +6357,30 @@ async function processWork(
           body: `Committed changes.\n\n${autoCommitResult.message}\n\nCommit message:\n${suggestedCommitMessage}`,
         });
       } else if (autoCommitResult.status === 'failed') {
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
         addComment(options.sessionsDir, sessionPath, {
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: `Auto-commit failed.\n\n${autoCommitResult.message}`,
+          body: [
+            'Auto-commit failed and Kira blocked the task before marking integration complete.',
+            '',
+            autoCommitResult.message,
+          ].join('\n'),
         });
+        enqueueEvent(options.sessionsDir, sessionPath, {
+          id: makeId('event'),
+          workId: work.id,
+          title: work.title,
+          projectName: work.projectName,
+          type: 'needs_attention',
+          createdAt: Date.now(),
+          message: `Kira blocked: "${work.title}" 작업의 승인된 변경을 통합하는 중 충돌 또는 git 상태 문제가 발생했어요.`,
+        });
+        return;
       } else if (autoCommitResult.message) {
         addComment(options.sessionsDir, sessionPath, {
           taskId: work.id,
@@ -4190,6 +6389,8 @@ async function processWork(
           body: `Auto-commit skipped.\n\n${autoCommitResult.message}`,
         });
       }
+
+      await cleanupKiraWorktreeSession(workspace);
 
       enqueueEvent(options.sessionsDir, sessionPath, {
         id: makeId('event'),
@@ -4257,6 +6458,8 @@ async function processWork(
         outOfPlanFiles,
         validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
         risks: [...workerSummary.remainingRisks, ...reviewSummary.issues],
+        diffExcerpts,
+        rawWorkerOutput: workerRaw,
       }),
     );
 
@@ -4292,6 +6495,8 @@ async function processWork(
           outOfPlanFiles,
           validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
           risks: reviewSummary.issues,
+          diffExcerpts,
+          rawWorkerOutput: workerRaw,
           blockedReason: 'Review issues repeated without progress.',
         }),
       );
@@ -4344,6 +6549,8 @@ async function processWork(
       '',
       `Summary:\n${feedback[0] ?? 'The work could not satisfy the review requirements within the allowed retries.'}`,
       '',
+      `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
+      '',
       'Please revise the work brief or resolve the review issues before restarting this task.',
     ].join('\n'),
   });
@@ -4381,14 +6588,25 @@ function startWorkJob(
 
   const projectKey = getProjectKey(options.getWorkRootDirectory(), work, sessionPath);
   const projectLockPath = getProjectLockPath(options.sessionsDir, projectKey);
+  const projectRoot = resolveKiraProjectRoot(runtime.workRootDirectory, work.projectName);
+  const projectSettings = projectRoot
+    ? loadProjectSettings(projectRoot, runtime.defaultProjectSettings)
+    : runtime.defaultProjectSettings;
+  const shouldUseIsolatedWorktree = shouldUseKiraAttemptWorktrees(
+    projectRoot,
+    projectSettings,
+    runtime.workerConfigs.length,
+  );
+  let projectLockAcquired = false;
   if (
-    activeProjectJobs.has(projectKey) ||
-    !tryAcquireLock(projectLockPath, {
-      ownerId: SERVER_INSTANCE_ID,
-      resource: 'project',
-      sessionPath,
-      targetKey: projectKey,
-    })
+    !shouldUseIsolatedWorktree &&
+    (activeProjectJobs.has(projectKey) ||
+      !tryAcquireLock(projectLockPath, {
+        ownerId: SERVER_INSTANCE_ID,
+        resource: 'project',
+        sessionPath,
+        targetKey: projectKey,
+      }))
   ) {
     const comments = loadTaskComments(options.sessionsDir, sessionPath, workId);
     const alreadyQueued = comments.some(
@@ -4407,14 +6625,19 @@ function startWorkJob(
     releaseLock(workLockPath, SERVER_INSTANCE_ID);
     return;
   }
+  projectLockAcquired = !shouldUseIsolatedWorktree;
 
   activeJobs.add(jobKey);
-  activeProjectJobs.add(projectKey);
+  if (projectLockAcquired) {
+    activeProjectJobs.add(projectKey);
+  }
   const controller = new AbortController();
   jobAbortControllers.set(jobKey, controller);
   const heartbeat = setInterval(() => {
     refreshLock(workLockPath, SERVER_INSTANCE_ID);
-    refreshLock(projectLockPath, SERVER_INSTANCE_ID);
+    if (projectLockAcquired) {
+      refreshLock(projectLockPath, SERVER_INSTANCE_ID);
+    }
   }, LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();
   void processWork(options, sessionPath, workId, controller.signal)
@@ -4458,10 +6681,14 @@ function startWorkJob(
     .finally(() => {
       clearInterval(heartbeat);
       activeJobs.delete(jobKey);
-      activeProjectJobs.delete(projectKey);
+      if (projectLockAcquired) {
+        activeProjectJobs.delete(projectKey);
+      }
       jobAbortControllers.delete(jobKey);
       releaseLock(workLockPath, SERVER_INSTANCE_ID);
-      releaseLock(projectLockPath, SERVER_INSTANCE_ID);
+      if (projectLockAcquired) {
+        releaseLock(projectLockPath, SERVER_INSTANCE_ID);
+      }
     });
 }
 

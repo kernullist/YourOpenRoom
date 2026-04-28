@@ -46,6 +46,7 @@ import {
 import type { ModConfig } from '@/lib/modManager';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { logger } from '@/lib/logger';
+import { OPEN_APP_SETTINGS_EVENT } from '@/lib/settingsEvents';
 import styles from './index.module.scss';
 
 function useWindows() {
@@ -290,6 +291,15 @@ const Shell: React.FC = () => {
 
   const bgWallpaper = isVideoUrl(wallpaper) ? STATIC_WALLPAPER : wallpaper;
   const showVideo = liveWallpaper && isVideoUrl(wallpaper);
+
+  useEffect(() => {
+    const handleOpenSettings = () => {
+      setChatOpen(true);
+      setChatZIndex(claimZIndex());
+    };
+    window.addEventListener(OPEN_APP_SETTINGS_EVENT, handleOpenSettings);
+    return () => window.removeEventListener(OPEN_APP_SETTINGS_EVENT, handleOpenSettings);
+  }, []);
 
   const handleToggleReport = useCallback(() => {
     setReportEnabled((prev) => {
