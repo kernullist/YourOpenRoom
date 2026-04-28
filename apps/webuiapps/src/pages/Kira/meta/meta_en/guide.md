@@ -145,6 +145,13 @@ Example:
 If the project file is missing, Kira falls back to `kira.projectDefaults` from
 `~/.openroom/config.json`, and if that is also missing it still defaults to `true`.
 
+## UI and Locale Behavior
+
+- The left project panel is responsive and truncates long paths or project names rather than
+  overlapping the work board.
+- Region-specific browser locales such as `en-US`, `zh-CN`, or `ko-KR` fall back to the supported
+  Kira translation bundles. Unsupported languages fall back to English labels.
+
 ## State File `/state.json`
 
 | Field             | Type           | Required | Description                                                          |

@@ -23,6 +23,7 @@ import {
   Search,
   Tags,
   Trash2,
+  X,
 } from 'lucide-react';
 import {
   useFileSystem,
@@ -110,16 +111,19 @@ function parseTagsInput(raw: string): string[] {
 
 function normalizeNote(raw: unknown): NoteItem | null {
   if (!raw) return null;
-  const parsed = typeof raw === 'string' ? (JSON.parse(raw) as NoteItem) : (raw as NoteItem);
+  const parsed =
+    typeof raw === 'string' ? (JSON.parse(raw) as Partial<NoteItem>) : (raw as Partial<NoteItem>);
   if (!parsed?.id) return null;
+  const now = Date.now();
+
   return {
-    title: '',
-    content: '',
-    tags: [],
-    pinned: false,
-    createdAt: Date.now(),
-    updatedAt: Date.now(),
-    ...parsed,
+    id: parsed.id,
+    title: parsed.title ?? '',
+    content: parsed.content ?? '',
+    tags: parsed.tags ?? [],
+    pinned: parsed.pinned ?? false,
+    createdAt: parsed.createdAt ?? now,
+    updatedAt: parsed.updatedAt ?? now,
   };
 }
 
@@ -193,6 +197,7 @@ function sortNotes(notes: NoteItem[], sortMode: SortMode): NoteItem[] {
 const NotesPage: React.FC = () => {
   const { t, i18n } = useTranslation('notes');
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const titleInputRef = useRef<HTMLInputElement | null>(null);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
@@ -201,6 +206,7 @@ const NotesPage: React.FC = () => {
   const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all');
   const [sortMode, setSortMode] = useState<SortMode>('updated');
   const [form, setForm] = useState<NoteFormState>(DEFAULT_FORM);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
@@ -367,6 +373,14 @@ const NotesPage: React.FC = () => {
   const pinnedCount = notes.filter((note) => note.pinned).length;
   const shouldShowListSection =
     bodyNotes.length > 0 || filteredNotes.length === 0 || collectionFilter === 'pinned';
+  const hasActiveFilters = Boolean(searchQuery.trim() || activeTag || collectionFilter !== 'all');
+  const activeFilterLabels = useMemo(() => {
+    const labels: string[] = [];
+    if (collectionFilter === 'pinned') labels.push(t('pinned'));
+    if (activeTag) labels.push(`#${activeTag}`);
+    if (searchQuery.trim()) labels.push(t('searchFilter', { query: searchQuery.trim() }));
+    return labels;
+  }, [activeTag, collectionFilter, searchQuery, t]);
 
   const formWordCount = useMemo(() => getWordCount(form.content), [form.content]);
   const formReadingMinutes = getReadingMinutes(formWordCount);
@@ -396,12 +410,15 @@ const NotesPage: React.FC = () => {
   const resetForm = useCallback(() => {
     setSelectedNoteId(null);
     setPreviewMode(false);
+    setPendingDeleteId(null);
     setErrorText(null);
     setForm(DEFAULT_FORM);
+    window.requestAnimationFrame(() => titleInputRef.current?.focus());
   }, []);
 
   const handleSelectNote = useCallback((noteId: string) => {
     setSelectedNoteId(noteId);
+    setPendingDeleteId(null);
     setErrorText(null);
     reportAction(APP_ID, 'SELECT_NOTE', { noteId });
   }, []);
@@ -473,6 +490,7 @@ const NotesPage: React.FC = () => {
         await deleteFromCloud(getNoteFilePath(noteId));
         const nextNotes = notes.filter((note) => note.id !== noteId);
         setNotes(nextNotes);
+        setPendingDeleteId(null);
         if (selectedNoteId === noteId) {
           setSelectedNoteId(nextNotes[0]?.id ?? null);
         }
@@ -497,6 +515,12 @@ const NotesPage: React.FC = () => {
   const handleSelectTag = useCallback((tag: string | null) => {
     setCollectionFilter('all');
     setActiveTag(tag);
+  }, []);
+
+  const clearFilters = useCallback(() => {
+    setCollectionFilter('all');
+    setActiveTag(null);
+    setSearchQuery('');
   }, []);
 
   const insertMarkdown = useCallback(
@@ -567,8 +591,12 @@ const NotesPage: React.FC = () => {
       <button
         key={note.id}
         type="button"
-        className={`${styles.noteRow} ${isActive ? styles.noteRowActive : ''}`}
+        className={`${styles.noteRow} ${note.pinned ? styles.noteRowPinned : ''} ${
+          isActive ? styles.noteRowActive : ''
+        }`}
         onClick={() => handleSelectNote(note.id)}
+        aria-current={isActive ? 'true' : undefined}
+        title={note.title || t('untitled')}
       >
         <span className={styles.noteRowTop}>
           <span className={styles.noteGlyph}>
@@ -589,7 +617,9 @@ const NotesPage: React.FC = () => {
               <span>{t('noTags')}</span>
             )}
           </span>
-          <span className={styles.wordCount}>{wordCount}</span>
+          <span className={styles.wordCount}>
+            {wordCount} {t('wordsShort')}
+          </span>
         </span>
       </button>
     );
@@ -598,7 +628,17 @@ const NotesPage: React.FC = () => {
   if (isLoading) {
     return (
       <div className={styles.notesApp}>
-        <div className={styles.loading}>{t('loading')}</div>
+        <div className={styles.loading} aria-live="polite">
+          <span className={styles.loadingMark}>
+            <FileText size={20} />
+          </span>
+          <strong>{t('loading')}</strong>
+          <div className={styles.loadingBars} aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </div>
+        </div>
       </div>
     );
   }
@@ -619,6 +659,7 @@ const NotesPage: React.FC = () => {
             className={styles.iconButton}
             onClick={resetForm}
             title={t('newNote')}
+            aria-label={t('newNote')}
           >
             <Plus size={18} />
           </button>
@@ -632,7 +673,36 @@ const NotesPage: React.FC = () => {
             placeholder={t('searchPlaceholder')}
             aria-label={t('search')}
           />
+          {searchQuery ? (
+            <button
+              type="button"
+              className={styles.searchClear}
+              onClick={(event) => {
+                event.preventDefault();
+                setSearchQuery('');
+              }}
+              aria-label={t('clearSearch')}
+              title={t('clearSearch')}
+            >
+              <X size={14} />
+            </button>
+          ) : null}
         </label>
+
+        <div className={styles.navStats} aria-label={t('noteSummary')}>
+          <span>
+            <strong>{notes.length}</strong>
+            {t('allNotes')}
+          </span>
+          <span>
+            <strong>{pinnedCount}</strong>
+            {t('pinned')}
+          </span>
+          <span>
+            <strong>{tagSummaries.length}</strong>
+            {t('tags')}
+          </span>
+        </div>
 
         <div className={styles.navSection}>
           <div className={styles.navHeading}>{t('library')}</div>
@@ -640,6 +710,7 @@ const NotesPage: React.FC = () => {
             type="button"
             className={`${styles.navItem} ${collectionFilter === 'all' && !activeTag ? styles.navItemActive : ''}`}
             onClick={() => handleSelectCollection('all')}
+            aria-pressed={collectionFilter === 'all' && !activeTag}
           >
             <FileText size={16} />
             <span>{t('allNotes')}</span>
@@ -649,6 +720,7 @@ const NotesPage: React.FC = () => {
             type="button"
             className={`${styles.navItem} ${collectionFilter === 'pinned' ? styles.navItemActive : ''}`}
             onClick={() => handleSelectCollection('pinned')}
+            aria-pressed={collectionFilter === 'pinned'}
           >
             <Pin size={16} />
             <span>{t('pinned')}</span>
@@ -673,6 +745,7 @@ const NotesPage: React.FC = () => {
                   type="button"
                   className={`${styles.tagItem} ${activeTag === tag ? styles.tagItemActive : ''}`}
                   onClick={() => handleSelectTag(tag)}
+                  aria-pressed={activeTag === tag}
                 >
                   <Hash size={14} />
                   <span>{tag}</span>
@@ -709,11 +782,26 @@ const NotesPage: React.FC = () => {
               type="button"
               className={sortMode === option.mode ? styles.sortActive : ''}
               onClick={() => setSortMode(option.mode)}
+              aria-pressed={sortMode === option.mode}
             >
               {t(option.labelKey)}
             </button>
           ))}
         </div>
+
+        {hasActiveFilters ? (
+          <div className={styles.filterSummary}>
+            <div className={styles.filterChips}>
+              {activeFilterLabels.map((label) => (
+                <span key={label}>{label}</span>
+              ))}
+            </div>
+            <button type="button" onClick={clearFilters}>
+              <X size={14} />
+              {t('clearFilters')}
+            </button>
+          </div>
+        ) : null}
 
         <div className={styles.noteListScroller}>
           {showPinnedSection ? (
@@ -753,7 +841,7 @@ const NotesPage: React.FC = () => {
 
       <section className={styles.editorPane}>
         <div className={styles.editorTopBar}>
-          <div className={styles.editorStatus}>
+          <div className={styles.editorStatus} aria-live="polite">
             <span
               className={`${styles.statusDot} ${isDirty ? styles.statusDirty : styles.statusSaved}`}
             />
@@ -765,6 +853,8 @@ const NotesPage: React.FC = () => {
               className={`${styles.iconButton} ${form.pinned ? styles.iconButtonActive : ''}`}
               onClick={handleTogglePinned}
               title={form.pinned ? t('unpinnedAction') : t('pinAction')}
+              aria-label={form.pinned ? t('unpinnedAction') : t('pinAction')}
+              aria-pressed={form.pinned}
             >
               {form.pinned ? <PinOff size={17} /> : <Pin size={17} />}
             </button>
@@ -772,8 +862,10 @@ const NotesPage: React.FC = () => {
               <button
                 type="button"
                 className={`${styles.iconButton} ${styles.dangerButton}`}
-                onClick={() => void handleDelete(selectedNote.id)}
+                onClick={() => setPendingDeleteId(selectedNote.id)}
                 title={t('delete')}
+                aria-label={t('delete')}
+                aria-expanded={pendingDeleteId === selectedNote.id}
               >
                 <Trash2 size={17} />
               </button>
@@ -789,6 +881,30 @@ const NotesPage: React.FC = () => {
             </button>
           </div>
         </div>
+
+        {selectedNote && pendingDeleteId === selectedNote.id ? (
+          <div className={styles.deleteConfirm} role="alert">
+            <span>{t('deleteConfirm')}</span>
+            <div className={styles.deleteConfirmActions}>
+              <button
+                type="button"
+                className={styles.deleteConfirmCancel}
+                onClick={() => setPendingDeleteId(null)}
+              >
+                <X size={14} />
+                {t('cancel')}
+              </button>
+              <button
+                type="button"
+                className={styles.deleteConfirmAction}
+                onClick={() => void handleDelete(selectedNote.id)}
+              >
+                <Trash2 size={14} />
+                {t('delete')}
+              </button>
+            </div>
+          </div>
+        ) : null}
 
         <div className={styles.editorMeta}>
           <span>
@@ -806,6 +922,7 @@ const NotesPage: React.FC = () => {
         </div>
 
         <input
+          ref={titleInputRef}
           className={styles.titleInput}
           value={form.title}
           onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
@@ -829,6 +946,7 @@ const NotesPage: React.FC = () => {
               type="button"
               className={!previewMode ? styles.modeActive : ''}
               onClick={() => setPreviewMode(false)}
+              aria-pressed={!previewMode}
             >
               <PencilLine size={16} />
               {t('writeMode')}
@@ -837,6 +955,7 @@ const NotesPage: React.FC = () => {
               type="button"
               className={previewMode ? styles.modeActive : ''}
               onClick={() => setPreviewMode(true)}
+              aria-pressed={previewMode}
             >
               <Eye size={16} />
               {t('previewMode')}
@@ -875,7 +994,11 @@ const NotesPage: React.FC = () => {
           )}
         </div>
 
-        {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
+        {errorText ? (
+          <div className={styles.errorBox} role="alert">
+            {errorText}
+          </div>
+        ) : null}
       </section>
     </div>
   );

@@ -1138,6 +1138,7 @@ function openVscodeManagerPlugin(): Plugin {
               try {
                 const relativePath = typeof body.path === 'string' ? body.path.trim() : '';
                 const content = typeof body.content === 'string' ? body.content : '';
+                const overwrite = body.overwrite !== false;
                 if (!relativePath) {
                   res.writeHead(400);
                   res.end(JSON.stringify({ error: 'Missing path field' }));
@@ -1145,6 +1146,16 @@ function openVscodeManagerPlugin(): Plugin {
                 }
 
                 const absolutePath = ensureInsideWorkspace(relativePath);
+                if (!overwrite && fs.existsSync(absolutePath)) {
+                  res.writeHead(409);
+                  res.end(JSON.stringify({ error: 'File already exists' }));
+                  return;
+                }
+                if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isDirectory()) {
+                  res.writeHead(409);
+                  res.end(JSON.stringify({ error: 'Path is a directory' }));
+                  return;
+                }
                 fs.mkdirSync(dirname(absolutePath), { recursive: true });
                 fs.writeFileSync(absolutePath, content, 'utf-8');
                 const stat = fs.statSync(absolutePath);

@@ -71,10 +71,10 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 | `Evidence Vault` | 구조화된 증거/조사 파일을 보는 로컬 자료 보관 앱                                                                                |
 | `CyberNews`      | RSS 기반 실시간 보안 뉴스와 case-board 조사 화면                                                                                |
 | `Calendar`       | 월간 탐색, 선택일 agenda, 날짜 선택과 `Date & Time` 동기화, 리마인더 메타데이터를 지원하는 로컬 일정 플래너                     |
-| `Notes`          | 고정 컬렉션, 태그 필터, 정렬, 서식 도구, 저장되는 보기 상태, 미리보기가 있는 로컬 Markdown 노트                                 |
+| `Notes`          | 고정 컬렉션, 태그/검색 필터, 정렬, 서식 도구, 안전한 삭제 확인, 저장되는 보기 상태, 미리보기가 있는 로컬 Markdown 노트           |
 | `Browser Reader` | 내장 브라우징, reader 추출, 북마크/히스토리, Google 결과 대체 UI, Notes 저장                                                    |
 | `Kira`           | 작업 보드, work item/comment, discovery 분석, 워커 배정 전 clarification 질문, 자동화 handoff                                   |
-| `Aoi's IDE`      | 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령                                          |
+| `Aoi's IDE`      | 새 파일 생성이 가능한 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령                    |
 | `PE Analyst`     | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
 
 ## PE Analyst 와 IDA MCP
@@ -184,6 +184,7 @@ winning worktree 를 남깁니다.
 Aoi's IDE 의 프런트엔드는 파일 트리와 에디터지만, 핵심은 `/api/openvscode/*` API 세트입니다.
 
 - 워크스페이스 목록과 파일 읽기/쓰기/삭제
+- 상대 워크스페이스 경로 기반의 빈 파일 생성과 중복 생성 방지
 - 텍스트 검색
 - 심볼 검색
 - 참조 조회

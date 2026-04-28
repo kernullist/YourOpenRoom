@@ -4,11 +4,13 @@ import {
   ChevronDown,
   ChevronRight,
   FileCode2,
+  FilePlus2,
   FolderClosed,
   FolderOpen,
   RefreshCw,
   Save,
   Settings2,
+  X,
 } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
@@ -64,12 +66,50 @@ function getFileExtensionLabel(filePath: string | null): string {
   return fileName.slice(dotIndex + 1).toUpperCase();
 }
 
+function normalizeWorkspacePathInput(value: string): string {
+  return value
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '')
+    .replace(/\/{2,}/g, '/');
+}
+
+function isRelativeWorkspaceFilePath(filePath: string): boolean {
+  if (!filePath || filePath === '.' || filePath.endsWith('/')) return false;
+  if (/^(?:[a-zA-Z]:|\/)/.test(filePath)) return false;
+  if (/(^|\/)\.\.(?:\/|$)/.test(filePath)) return false;
+  if (filePath.split('/').some((segment) => !segment || segment === '.')) return false;
+  return true;
+}
+
+function getParentPath(filePath: string): string {
+  return filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
+}
+
+function getAncestorDirectoryPaths(filePath: string): string[] {
+  const parentPath = getParentPath(filePath);
+  if (!parentPath) return [''];
+  const paths = [''];
+  let current = '';
+  parentPath
+    .split('/')
+    .filter(Boolean)
+    .forEach((segment) => {
+      current = current ? `${current}/${segment}` : segment;
+      paths.push(current);
+    });
+  return paths;
+}
+
 const SimpleIdePage: React.FC = () => {
   const { t } = useTranslation('openvscode');
   const [workspaceRoot, setWorkspaceRoot] = useState('');
   const [workspaceExists, setWorkspaceExists] = useState(true);
   const [workspaceDraft, setWorkspaceDraft] = useState('');
   const [showSettings, setShowSettings] = useState(false);
+  const [showCreateFile, setShowCreateFile] = useState(false);
+  const [newFilePath, setNewFilePath] = useState('');
+  const [createFileError, setCreateFileError] = useState<string | null>(null);
   const [tree, setTree] = useState<Record<string, WorkspaceEntry[]>>({});
   const [expandedDirs, setExpandedDirs] = useState<string[]>(['']);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -79,6 +119,7 @@ const SimpleIdePage: React.FC = () => {
   const [isTreeLoading, setIsTreeLoading] = useState(false);
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [activeLine, setActiveLine] = useState(1);
   const selectedFileRef = useRef<string | null>(null);
@@ -230,6 +271,66 @@ const SimpleIdePage: React.FC = () => {
     }
   }, [fileContent, loadDirectory, selectedFile, tree]);
 
+  const createNewFile = useCallback(
+    async (requestedPath: string): Promise<{ ok: boolean; error?: string }> => {
+      const normalizedPath = normalizeWorkspacePathInput(requestedPath);
+      if (!isRelativeWorkspaceFilePath(normalizedPath)) {
+        const message = t('errors.invalidFilePath');
+        setCreateFileError(message);
+        return { ok: false, error: message };
+      }
+
+      if (isDirty && selectedFile !== normalizedPath) {
+        // eslint-disable-next-line no-alert
+        const shouldDiscard = window.confirm(t('editor.discardConfirm'));
+        if (!shouldDiscard) return { ok: false, error: 'cancelled' };
+      }
+
+      setIsCreatingFile(true);
+      setCreateFileError(null);
+      try {
+        const res = await fetch('/api/openvscode/file', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: normalizedPath, content: '', overwrite: false }),
+        });
+        const data = (await res.json()) as { error?: string };
+        if (!res.ok) {
+          throw new Error(data.error || `Create file API error ${res.status}`);
+        }
+
+        const ancestorDirectories = getAncestorDirectoryPaths(normalizedPath);
+        setExpandedDirs((prev) => Array.from(new Set([...prev, ...ancestorDirectories])));
+        for (const directoryPath of ancestorDirectories) {
+          await loadDirectory(directoryPath);
+        }
+
+        setShowCreateFile(false);
+        setNewFilePath('');
+        await loadFile(normalizedPath);
+        editorRef.current?.focus();
+        setErrorText(null);
+        setCreateFileError(null);
+        return { ok: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCreateFileError(message);
+        return { ok: false, error: message };
+      } finally {
+        setIsCreatingFile(false);
+      }
+    },
+    [isDirty, loadDirectory, loadFile, selectedFile, t],
+  );
+
+  const submitCreateFile = useCallback(
+    (event: React.FormEvent<HTMLFormElement>) => {
+      event.preventDefault();
+      void createNewFile(newFilePath);
+    },
+    [createNewFile, newFilePath],
+  );
+
   const saveWorkspacePath = useCallback(async () => {
     setErrorText(null);
     try {
@@ -272,11 +373,17 @@ const SimpleIdePage: React.FC = () => {
             await refreshWorkspace();
             return 'success';
           }
+          case 'CREATE_FILE': {
+            const path = action.params?.path?.trim();
+            if (!path) return 'error: missing path';
+            const result = await createNewFile(path);
+            return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
+          }
           default:
             return `error: unknown action_type ${action.action_type}`;
         }
       },
-      [openFile, refreshWorkspace],
+      [createNewFile, openFile, refreshWorkspace],
     ),
   );
 
@@ -475,11 +582,68 @@ const SimpleIdePage: React.FC = () => {
       <div className={styles.workspaceShell}>
         <aside className={styles.sidebar}>
           <div className={styles.sidebarHeader}>
-            <span>{t('sidebar.files')}</span>
-            <span className={styles.sidebarMeta}>
-              {workspaceExists ? t('sidebar.ready') : t('sidebar.notReady')}
-            </span>
+            <div className={styles.sidebarHeading}>
+              <span>{t('sidebar.files')}</span>
+              <span className={styles.sidebarMeta}>
+                {workspaceExists ? t('sidebar.ready') : t('sidebar.notReady')}
+              </span>
+            </div>
+            <button
+              type="button"
+              className={`${styles.iconButton} ${showCreateFile ? styles.iconButtonActive : ''}`}
+              onClick={() => {
+                setShowCreateFile((prev) => !prev);
+                setCreateFileError(null);
+                if (showCreateFile) setNewFilePath('');
+              }}
+              disabled={!workspaceExists}
+              title={showCreateFile ? t('actions.cancel') : t('actions.newFile')}
+              aria-label={showCreateFile ? t('actions.cancel') : t('actions.newFile')}
+            >
+              {showCreateFile ? <X size={16} /> : <FilePlus2 size={16} />}
+            </button>
           </div>
+          {showCreateFile ? (
+            <form className={styles.createFileForm} onSubmit={submitCreateFile}>
+              <label className={styles.createFileField}>
+                <span>{t('createFile.label')}</span>
+                <input
+                  className={styles.createFileInput}
+                  value={newFilePath}
+                  onChange={(event) => {
+                    setNewFilePath(event.target.value);
+                    setCreateFileError(null);
+                  }}
+                  placeholder={t('createFile.placeholder')}
+                  disabled={isCreatingFile}
+                  autoFocus
+                />
+              </label>
+              {createFileError ? <p className={styles.createFileError}>{createFileError}</p> : null}
+              <div className={styles.createFileActions}>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => {
+                    setShowCreateFile(false);
+                    setNewFilePath('');
+                    setCreateFileError(null);
+                  }}
+                  disabled={isCreatingFile}
+                >
+                  {t('actions.cancel')}
+                </button>
+                <button
+                  type="submit"
+                  className={`${styles.primaryButton} ${styles.createSubmitButton}`}
+                  disabled={isCreatingFile || !newFilePath.trim()}
+                >
+                  <FilePlus2 size={15} />
+                  <span>{isCreatingFile ? t('actions.creating') : t('actions.createFile')}</span>
+                </button>
+              </div>
+            </form>
+          ) : null}
           <div className={styles.tree}>{renderEntries('')}</div>
         </aside>
 

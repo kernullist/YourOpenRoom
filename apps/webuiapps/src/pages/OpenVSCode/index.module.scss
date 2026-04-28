@@ -9,6 +9,13 @@
   font-family: 'IBM Plex Sans', 'Segoe UI', sans-serif;
 }
 
+.page button,
+.page input,
+.page textarea {
+  min-width: 0;
+  font: inherit;
+}
+
 .topbar {
   display: flex;
   align-items: center;
@@ -190,11 +197,151 @@
   font-weight: 700;
 }
 
+.sidebarHeading {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
 .sidebarMeta {
+  flex: 0 0 auto;
   color: rgba(255, 255, 255, 0.46);
   font-size: 11px;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.iconButton {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: rgba(255, 255, 255, 0.78);
+  background: rgba(255, 255, 255, 0.06);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    border-color 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease,
+    opacity 0.16s ease;
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+    border-color: rgba(56, 189, 248, 0.36);
+    background: rgba(56, 189, 248, 0.14);
+    color: #bae6fd;
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.45;
+  }
+}
+
+.iconButtonActive {
+  border-color: rgba(56, 189, 248, 0.36);
+  background: rgba(56, 189, 248, 0.16);
+  color: #bae6fd;
+}
+
+.createFileForm {
+  margin: 10px 8px 4px;
+  padding: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.045);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.createFileField {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+
+  span {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.58);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+}
+
+.createFileInput {
+  width: 100%;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-sizing: border-box;
+  background: rgba(0, 0, 0, 0.24);
+  color: rgba(255, 255, 255, 0.92);
+  outline: none;
+
+  &:focus {
+    border-color: rgba(56, 189, 248, 0.5);
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.14);
+  }
+}
+
+.createFileError {
+  margin: 0;
+  color: #fca5a5;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.createFileActions {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 8px;
+}
+
+.secondaryButton,
+.createSubmitButton {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  justify-content: center;
+  padding: 0 10px;
+  border-radius: 11px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.secondaryButton {
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(255, 255, 255, 0.82);
+  cursor: pointer;
+  transition:
+    background 0.16s ease,
+    transform 0.16s ease,
+    opacity 0.16s ease;
+
+  &:hover:not(:disabled) {
+    transform: translateY(-1px);
+    background: rgba(255, 255, 255, 0.11);
+  }
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.5;
+  }
+}
+
+.createSubmitButton {
+  span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
 }
 
 .tree {

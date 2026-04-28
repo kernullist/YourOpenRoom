@@ -58,6 +58,15 @@ Example:
 }
 ```
 
+## UI Behavior
+
+- The navigation rail shows note counts and keeps tag/search filters easy to clear.
+- Deleting a note is a two-step flow: selecting delete opens a confirmation bar, and the note is not
+  removed until the user confirms.
+- The editor favors markdown authoring but keeps preview mode available from the toolbar.
+- Loading and empty states are visible in the list/editor so agents should not infer missing files
+  until storage has finished loading.
+
 ## Agent Workflow
 
 1. Read `meta.yaml`

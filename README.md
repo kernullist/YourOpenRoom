@@ -66,10 +66,10 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data                                                                                                    |
 | `CyberNews`      | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view                                                                                                   |
 | `Calendar`       | Local event/reminder planner with month navigation, selected-day agenda, date picker to `Date & Time` sync, and reminder metadata saved in app storage                               |
-| `Notes`          | Local markdown notes with pinned collections, tag filtering, sorting, formatting helpers, autosaved view state, and preview mode                                                     |
+| `Notes`          | Local markdown notes with pinned collections, tag/search filtering, sorting, formatting helpers, safer delete confirmation, autosaved view state, and preview mode                    |
 | `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
 | `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
-| `Aoi's IDE`      | Local workspace tree/editor on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                                                 |
+| `Aoi's IDE`      | Local workspace tree/editor with file creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                               |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
 
 ## PE Analyst + IDA MCP
@@ -178,6 +178,7 @@ Aoi's IDE is a built-in file tree and text editor, but the server side is where 
 lives. The current `/api/openvscode/*` endpoints support:
 
 - workspace listing and file read/write/delete
+- new empty file creation with relative workspace paths and duplicate protection
 - text search
 - symbol search
 - reference lookup

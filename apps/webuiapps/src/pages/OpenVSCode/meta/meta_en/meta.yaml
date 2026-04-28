@@ -11,6 +11,14 @@ actions:
         type: string
         required: true
         description: File path relative to the configured workspace root.
+  - type: CREATE_FILE
+    name: Create File
+    description: Create an empty file in the IDE workspace and open it in the editor.
+    params:
+      - name: path
+        type: string
+        required: true
+        description: File path relative to the configured workspace root.
   - type: REFRESH_WORKSPACE
     name: Refresh Workspace
     description: Reload the workspace tree from disk.

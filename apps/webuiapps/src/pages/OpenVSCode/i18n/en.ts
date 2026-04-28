@@ -4,6 +4,10 @@ const en = {
   loading: 'Loading workspace…',
   actions: {
     settings: 'Workspace',
+    newFile: 'New file',
+    createFile: 'Create file',
+    creating: 'Creating…',
+    cancel: 'Cancel',
     refresh: 'Refresh',
     refreshing: 'Refreshing…',
     save: 'Save file',
@@ -22,6 +26,10 @@ const en = {
     ready: 'Ready',
     notReady: 'Missing',
   },
+  createFile: {
+    label: 'Relative file path',
+    placeholder: 'src/new-file.ts',
+  },
   editor: {
     saved: 'Saved',
     unsaved: 'Unsaved changes',
@@ -35,6 +43,7 @@ const en = {
       'This built-in IDE is meant for quick edits, inspections, and saves without leaving OpenRoom.',
   },
   errors: {
+    invalidFilePath: 'Enter a relative file path inside the workspace.',
     workspaceMissing:
       'The configured workspace folder could not be found. Update the workspace path and refresh.',
   },

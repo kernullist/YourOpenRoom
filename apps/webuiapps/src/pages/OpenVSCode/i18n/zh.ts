@@ -4,6 +4,10 @@ const zh = {
   loading: '正在加载工作区…',
   actions: {
     settings: '工作区',
+    newFile: '新建文件',
+    createFile: '创建文件',
+    creating: '创建中…',
+    cancel: '取消',
     refresh: '刷新',
     refreshing: '刷新中…',
     save: '保存文件',
@@ -21,6 +25,10 @@ const zh = {
     ready: '就绪',
     notReady: '缺失',
   },
+  createFile: {
+    label: '相对文件路径',
+    placeholder: 'src/new-file.ts',
+  },
   editor: {
     saved: '已保存',
     unsaved: '有未保存修改',
@@ -33,6 +41,7 @@ const zh = {
     description: '这个内置 IDE 适合在 OpenRoom 里快速查看、修改并保存项目文件。',
   },
   errors: {
+    invalidFilePath: '请输入工作区内的相对文件路径。',
     workspaceMissing: '当前配置的工作区文件夹不存在。请更新工作区路径后再刷新。',
   },
 };

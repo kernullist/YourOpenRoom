@@ -6,7 +6,7 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including OpenVSCode and PE Analyst
+- built-in apps under `src/pages/`, including Notes, Kira, Aoi's IDE, and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
   Analyst, TTS lab synthesis, session persistence, and config storage work in local development
@@ -88,6 +88,10 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 
 ## Kira Automation Notes
 
+The Kira app shell also supports project roots with long names or paths in its left panel. Regional
+browser locales fall back to the available Kira translations so labels remain readable even when the
+exact locale bundle is not present.
+
 Kira supports one worker by default or up to three configured workers. In multi-worker mode, every
 worker gets a separate git worktree for its attempt, and the reviewer compares all validated
 attempts before selecting one winner. Codex CLI workers/reviewers can be configured with
@@ -155,6 +159,8 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
+- Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders are
+  rejected by the local `/api/openvscode/file` endpoint.
 - `PE Analyst` supports two modes today:
   - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`
   - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as

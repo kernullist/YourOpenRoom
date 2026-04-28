@@ -7,9 +7,18 @@ import zh from './zh';
 const NAMESPACE = 'kira';
 const resources = {
   en: { [NAMESPACE]: en },
+  'en-US': { [NAMESPACE]: en },
+  'en-GB': { [NAMESPACE]: en },
   zh: { [NAMESPACE]: zh },
+  'zh-CN': { [NAMESPACE]: zh },
   ko: { [NAMESPACE]: ko },
   'ko-KR': { [NAMESPACE]: ko },
+  pt: { [NAMESPACE]: en },
+  'pt-BR': { [NAMESPACE]: en },
+  es: { [NAMESPACE]: en },
+  'es-ES': { [NAMESPACE]: en },
+  ja: { [NAMESPACE]: en },
+  'ja-JP': { [NAMESPACE]: en },
 };
 
 if (!i18n.isInitialized) {
