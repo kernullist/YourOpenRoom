@@ -113,13 +113,15 @@ function validatePrimitiveField(
       if (!isInteger(value)) errors.push(`${key} must be an integer`);
       break;
     case 'number':
-      if (typeof value !== 'number' || !Number.isFinite(value)) errors.push(`${key} must be a number`);
+      if (typeof value !== 'number' || !Number.isFinite(value))
+        errors.push(`${key} must be a number`);
       break;
     case 'boolean':
       if (typeof value !== 'boolean') errors.push(`${key} must be a boolean`);
       break;
     case 'nullable-string':
-      if (!(typeof value === 'string' || value === null)) errors.push(`${key} must be a string or null`);
+      if (!(typeof value === 'string' || value === null))
+        errors.push(`${key} must be a string or null`);
       break;
     case 'iso-datetime':
       if (typeof value !== 'string' || !isIsoDateTime(value)) {
@@ -166,7 +168,12 @@ function validateField(
     }
     const normalized: JsonRecord = { ...value };
     for (const [childKey, childSchema] of Object.entries(schema.fields)) {
-      normalized[childKey] = validateField(`${key}.${childKey}`, value[childKey], childSchema, errors);
+      normalized[childKey] = validateField(
+        `${key}.${childKey}`,
+        value[childKey],
+        childSchema,
+        errors,
+      );
     }
     return normalized;
   }
@@ -433,6 +440,29 @@ const APP_SCHEMAS: AppSchemaDocument[] = [
         enum: ['todo', 'in_progress', 'in_review', 'blocked', 'done'],
       }),
       assignee: primitive('string'),
+      clarification: object({
+        status: primitive('string', { required: true, enum: ['pending', 'answered', 'cleared'] }),
+        briefHash: primitive('string', { required: true }),
+        summary: primitive('string', { required: true }),
+        questions: array(
+          object({
+            id: primitive('string', { required: true }),
+            question: primitive('string', { required: true }),
+            options: primitive('string-array', { required: true }),
+            allowCustomAnswer: primitive('boolean', { required: true }),
+          }),
+          { required: true },
+        ),
+        answers: array(
+          object({
+            questionId: primitive('string', { required: true }),
+            question: primitive('string', { required: true }),
+            answer: primitive('string', { required: true }),
+          }),
+        ),
+        createdAt: primitive('integer', { required: true }),
+        answeredAt: primitive('integer'),
+      }),
       createdAt: primitive('integer', { required: true }),
       updatedAt: primitive('integer', { required: true }),
     },
@@ -577,7 +607,11 @@ export function validateAgainstAppSchema(
 
   const idValue = normalized.id;
   if (typeof idValue === 'string') {
-    const fileName = filePath.split('/').pop()?.replace(/\.json$/i, '') || '';
+    const fileName =
+      filePath
+        .split('/')
+        .pop()
+        ?.replace(/\.json$/i, '') || '';
     if (fileName && idValue !== fileName) {
       errors.push(`id must match the filename (${fileName})`);
     }
@@ -600,11 +634,17 @@ export function validateAgainstAppSchema(
       errors.push('remindBeforeMinutes must be >= 0');
     }
     if (!('lastReminderSentAt' in value) && normalized.completed === false) {
-      warnings.push('Consider omitting or resetting lastReminderSentAt when changing event timing.');
+      warnings.push(
+        'Consider omitting or resetting lastReminderSentAt when changing event timing.',
+      );
     }
   }
 
-  if (schema.id === 'twitter-post' && typeof normalized.content === 'string' && normalized.content.length > 280) {
+  if (
+    schema.id === 'twitter-post' &&
+    typeof normalized.content === 'string' &&
+    normalized.content.length > 280
+  ) {
     warnings.push('Twitter post content exceeds the documented 280 character guideline.');
   }
 

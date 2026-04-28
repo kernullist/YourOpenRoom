@@ -14,6 +14,15 @@ export interface WindowState {
   height: number;
   zIndex: number;
   minimized: boolean;
+  maximized?: boolean;
+  restoreBounds?: WindowBounds;
+}
+
+export interface WindowBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 type Listener = () => void;
@@ -26,6 +35,8 @@ let offsetCounter = 0;
 const WINDOW_LAYOUT_KEY = 'openroom_window_layout_v1';
 const BASE_X = 80;
 const BASE_Y = 40;
+const MIN_WINDOW_WIDTH = 300;
+const MIN_WINDOW_HEIGHT = 200;
 
 interface SavedWindowLayout {
   offsetX: number;
@@ -56,6 +67,8 @@ function saveWindowLayouts(layouts: Record<number, SavedWindowLayout>): void {
 }
 
 function persistWindowLayout(win: WindowState): void {
+  if (win.maximized) return;
+
   const layouts = loadWindowLayouts();
   layouts[win.appId] = {
     offsetX: win.x - BASE_X,
@@ -64,6 +77,57 @@ function persistWindowLayout(win: WindowState): void {
     height: win.height,
   };
   saveWindowLayouts(layouts);
+}
+
+function normalizeBounds(bounds: WindowBounds): WindowBounds {
+  return {
+    x: Math.round(bounds.x),
+    y: Math.round(bounds.y),
+    width: Math.max(MIN_WINDOW_WIDTH, Math.round(bounds.width)),
+    height: Math.max(MIN_WINDOW_HEIGHT, Math.round(bounds.height)),
+  };
+}
+
+function applyBounds(win: WindowState, bounds: WindowBounds): void {
+  const normalized = normalizeBounds(bounds);
+  win.x = normalized.x;
+  win.y = normalized.y;
+  win.width = normalized.width;
+  win.height = normalized.height;
+}
+
+export function getMaximizedWindowBounds(): WindowBounds {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return { x: 0, y: 0, width: 1024, height: 768 };
+  }
+
+  const viewportWidth = window.innerWidth || document.documentElement.clientWidth;
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  let left = 0;
+  let right = viewportWidth;
+
+  const chatPanel = document.querySelector('[data-testid="chat-panel"]') as HTMLElement | null;
+  if (chatPanel) {
+    const rect = chatPanel.getBoundingClientRect();
+    const isVisible =
+      rect.width > 0 && rect.height > 0 && rect.right > 0 && rect.left < viewportWidth;
+    const hasRoomBesideChat = viewportWidth - rect.width >= MIN_WINDOW_WIDTH;
+
+    if (isVisible && hasRoomBesideChat) {
+      if (rect.left <= 1) {
+        left = Math.min(viewportWidth, Math.max(0, rect.right));
+      } else if (rect.right >= viewportWidth - 1) {
+        right = Math.max(0, Math.min(viewportWidth, rect.left));
+      }
+    }
+  }
+
+  return normalizeBounds({
+    x: left,
+    y: 0,
+    width: right - left,
+    height: viewportHeight,
+  });
 }
 
 /**
@@ -112,6 +176,7 @@ export function openWindow(appId: number): void {
     height: saved?.height ?? size.height,
     zIndex: ++nextZ,
     minimized: false,
+    maximized: false,
   };
 
   windows = [...windows, win];
@@ -147,9 +212,54 @@ export function minimizeWindow(appId: number): void {
   }
 }
 
+export function toggleMaximizeWindow(appId: number, bounds: WindowBounds): void {
+  const win = windows.find((w) => w.appId === appId);
+  if (!win) return;
+
+  win.zIndex = ++nextZ;
+  win.minimized = false;
+
+  if (win.maximized) {
+    if (win.restoreBounds) {
+      applyBounds(win, win.restoreBounds);
+    }
+    win.maximized = false;
+    persistWindowLayout(win);
+    win.restoreBounds = undefined;
+  } else {
+    win.restoreBounds = {
+      x: win.x,
+      y: win.y,
+      width: win.width,
+      height: win.height,
+    };
+    applyBounds(win, bounds);
+    win.maximized = true;
+  }
+
+  windows = [...windows];
+  notify();
+}
+
+export function updateMaximizedWindows(bounds: WindowBounds = getMaximizedWindowBounds()): void {
+  let changed = false;
+
+  for (const win of windows) {
+    if (!win.maximized) continue;
+    applyBounds(win, bounds);
+    changed = true;
+  }
+
+  if (changed) {
+    windows = [...windows];
+    notify();
+  }
+}
+
 export function moveWindow(appId: number, x: number, y: number): void {
   const win = windows.find((w) => w.appId === appId);
   if (win) {
+    if (win.maximized) return;
     win.x = x;
     win.y = y;
     persistWindowLayout(win);
@@ -161,8 +271,9 @@ export function moveWindow(appId: number, x: number, y: number): void {
 export function resizeWindow(appId: number, width: number, height: number): void {
   const win = windows.find((w) => w.appId === appId);
   if (win) {
-    win.width = Math.max(300, width);
-    win.height = Math.max(200, height);
+    if (win.maximized) return;
+    win.width = Math.max(MIN_WINDOW_WIDTH, width);
+    win.height = Math.max(MIN_WINDOW_HEIGHT, height);
     persistWindowLayout(win);
     windows = [...windows];
     notify();

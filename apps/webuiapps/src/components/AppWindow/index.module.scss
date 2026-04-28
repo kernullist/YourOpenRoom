@@ -1,5 +1,7 @@
 .window {
   position: absolute;
+  top: 0;
+  left: 0;
   border-radius: 10px;
   overflow: hidden;
   background: var(--bg-2, #1c1d20);
@@ -10,6 +12,18 @@
   flex-direction: column;
   min-width: 300px;
   min-height: 200px;
+  contain: layout paint;
+  will-change: transform;
+}
+
+.minimized {
+  visibility: hidden;
+  pointer-events: none;
+  opacity: 0;
+}
+
+.maximized {
+  border-radius: 0;
 }
 
 .titleBar {
@@ -81,6 +95,7 @@
 
   // Override 100vh used by child apps so it maps to container height
   > * {
+    width: 100% !important;
     height: 100% !important;
     max-height: 100%;
   }
@@ -105,6 +120,10 @@
     border-right: 2px solid rgba(255, 255, 255, 0.3);
     border-bottom: 2px solid rgba(255, 255, 255, 0.3);
   }
+}
+
+.maximized .resizeHandle {
+  display: none;
 }
 
 .loading {

@@ -1,18 +1,21 @@
 app_id: 15
 app_name: calendar
 app_display_name: Calendar
-version: "1.0.0"
+version: '1.0.0'
 description: >
-  Calendar app. Events are stored as individual JSON files in events/, and state.json stores the selected event.
-  Supports event CRUD sync actions so the Agent can write files first, then notify the frontend to refresh.
+  Calendar app. Events are stored as individual JSON files in events/, and state.json stores the
+  selected event and selected date. Supports event CRUD sync actions so the Agent can write files
+  first, then notify the frontend to refresh.
 displayDesc: >
-  A focused schedule manager for your major plans, with character reminders before each event.
+  A focused schedule manager with month navigation, selected-day planning, and character reminders
+  before each event.
 
 actions:
   - type: CREATE_EVENT
     name: Create Event
     description: >
-      After the Agent writes a new event JSON file to /events/{id}.json, dispatch this action so the frontend refreshes.
+      After the Agent writes a new event JSON file to /events/{id}.json, dispatch this action so the
+      frontend refreshes.
     params:
       - name: filePath
         type: string

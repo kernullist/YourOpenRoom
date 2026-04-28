@@ -478,6 +478,16 @@ $font-ui:
   margin: 0 auto;
 }
 
+:global([data-window-maximized='true']) {
+  .detailModal {
+    max-width: min(1040px, calc(100% - 48px));
+  }
+
+  .detailInner {
+    max-width: 920px;
+  }
+}
+
 // ========== Metadata Grid ==========
 .metaGrid {
   display: grid;

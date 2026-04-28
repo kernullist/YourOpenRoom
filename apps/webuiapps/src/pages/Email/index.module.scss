@@ -72,7 +72,10 @@ $text-muted: #6e7681;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    border-color 0.15s ease,
+    color 0.15s ease;
 
   &:hover:not(:disabled) {
     background: $bg-hover;
@@ -178,7 +181,9 @@ $text-muted: #6e7681;
   font-size: 13px;
   font-weight: 600;
   cursor: pointer;
-  transition: background-color 0.15s ease, color 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
 
   &:hover {
     color: $email-blue;
@@ -216,7 +221,9 @@ $text-muted: #6e7681;
   padding: 10px 18px;
   border-bottom: 1px solid $border-light;
   cursor: pointer;
-  transition: background-color 0.15s ease, box-shadow 0.15s ease;
+  transition:
+    background-color 0.15s ease,
+    box-shadow 0.15s ease;
 
   &:hover {
     background: $bg-hover;
@@ -444,13 +451,19 @@ $text-muted: #6e7681;
 
 .modalCard {
   width: min(640px, 100%);
-  max-height: calc(100vh - 48px);
+  max-height: calc(100% - 48px);
   overflow: auto;
   border-radius: 22px;
   border: 1px solid $border-color;
   background: $bg-elevated;
   box-shadow: 0 30px 90px rgba(0, 0, 0, 0.4);
   padding: 22px;
+}
+
+:global([data-window-maximized='true']) {
+  .modalCard {
+    width: min(860px, 100%);
+  }
 }
 
 .modalHeader {

@@ -1,19 +1,21 @@
 app_id: 18
 app_name: kira
 app_display_name: Kira
-version: "1.0.0"
+version: '1.0.0'
 description: >
-  Lightweight task management app for implementation-sized works. Each work has a status,
-  markdown brief, optional assignee, and lightweight comments. Supports file-based CRUD sync
-  actions so an Agent can write task files first and then refresh the UI.
+  Lightweight task management app for implementation-sized works. Each work has a status, markdown
+  brief, optional assignee, optional clarification state, and lightweight comments. Supports
+  file-based CRUD sync actions so an Agent can write task files first and then refresh the UI.
 displayDesc: >
-  A compact orchestration board for project-scoped works, markdown briefs, and simple comments.
+  A compact orchestration board for project-scoped works, pre-worker clarification, markdown briefs,
+  and simple comments.
 
 actions:
   - type: CREATE_WORK
     name: Create Work
     description: >
-      After the Agent writes a new work JSON file to /works/{id}.json, dispatch this action so the frontend refreshes.
+      After the Agent writes a new work JSON file to /works/{id}.json, dispatch this action so the
+      frontend refreshes.
     params:
       - name: filePath
         type: string
@@ -51,7 +53,8 @@ actions:
   - type: CREATE_COMMENT
     name: Create Comment
     description: >
-      After the Agent writes a new comment JSON file to /comments/{id}.json, dispatch this action so the frontend refreshes.
+      After the Agent writes a new comment JSON file to /comments/{id}.json, dispatch this action so
+      the frontend refreshes.
     params:
       - name: commentId
         type: string

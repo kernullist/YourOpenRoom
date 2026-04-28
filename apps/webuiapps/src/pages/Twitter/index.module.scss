@@ -40,6 +40,16 @@ $retweet-bg: rgba(0, 186, 124, 0.15);
   border-right: 1px solid $border-color;
 }
 
+:global([data-window-maximized='true']) {
+  .twitter {
+    max-width: min(760px, 100%);
+  }
+
+  .postActions {
+    max-width: 560px;
+  }
+}
+
 // Post form styles
 .createPostForm {
   padding: 12px 16px;

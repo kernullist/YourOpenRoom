@@ -1,18 +1,21 @@
 app_id: 16
 app_name: notes
 app_display_name: Notes
-version: "1.0.0"
+version: '1.0.0'
 description: >
-  Notes app. Each note is stored as an individual JSON file in notes/, and state.json stores selected note and current filters.
-  Supports note CRUD sync actions so the Agent can write files first and then ask the frontend to refresh.
+  Notes app. Each note is stored as an individual JSON file in notes/, and state.json stores
+  selected note and current filters. Supports note CRUD sync actions so the Agent can write files
+  first and then ask the frontend to refresh.
 displayDesc: >
-  A fast, card-driven notes workspace with tags, search, pinning, and markdown preview.
+  A focused notes workspace with pinned collections, tags, search, sorting, markdown helpers, and
+  preview.
 
 actions:
   - type: CREATE_NOTE
     name: Create Note
     description: >
-      After the Agent writes a new note JSON file to /notes/{id}.json, dispatch this action so the frontend refreshes.
+      After the Agent writes a new note JSON file to /notes/{id}.json, dispatch this action so the
+      frontend refreshes.
     params:
       - name: filePath
         type: string
@@ -26,7 +29,8 @@ actions:
   - type: UPDATE_NOTE
     name: Update Note
     description: >
-      After the Agent updates an existing note JSON file, dispatch this action so the frontend refreshes.
+      After the Agent updates an existing note JSON file, dispatch this action so the frontend
+      refreshes.
     params:
       - name: filePath
         type: string

@@ -44,6 +44,84 @@ describe('Kira model helpers', () => {
     });
   });
 
+  it('normalizes pending clarification questions on work records', () => {
+    const work = normalizeWorkTask({
+      id: 'work-1',
+      title: 'Ship Kira',
+      description: 'Make it better',
+      clarification: {
+        status: 'pending',
+        briefHash: 'abc123',
+        summary: 'One decision is missing.',
+        questions: [
+          {
+            question: 'Which UX should be used?',
+            options: ['Compact', 'Guided'],
+            allowCustomAnswer: false,
+          },
+        ],
+        createdAt: 123,
+      },
+    });
+
+    expect(work?.clarification).toMatchObject({
+      status: 'pending',
+      briefHash: 'abc123',
+      questions: [
+        {
+          id: 'q-1',
+          question: 'Which UX should be used?',
+          options: ['Compact', 'Guided'],
+          allowCustomAnswer: false,
+        },
+      ],
+    });
+  });
+
+  it('deduplicates clarification question ids on work records', () => {
+    const work = normalizeWorkTask({
+      id: 'work-1',
+      clarification: {
+        status: 'pending',
+        briefHash: 'abc123',
+        summary: 'Two decisions are missing.',
+        questions: [
+          { id: 'choice', question: 'First decision?', options: [] },
+          { id: 'choice', question: 'Second decision?', options: [] },
+        ],
+        createdAt: 123,
+      },
+    });
+
+    expect(work?.clarification?.questions.map((question) => question.id)).toEqual([
+      'choice',
+      'q-2',
+    ]);
+  });
+
+  it('adds a fallback question for pending clarification records without usable questions', () => {
+    const work = normalizeWorkTask({
+      id: 'work-1',
+      clarification: {
+        status: 'pending',
+        briefHash: 'abc123',
+        summary: 'Question data was malformed.',
+        questions: [{ id: 'bad', question: '   ', options: ['A'] }],
+        createdAt: 123,
+      },
+    });
+
+    expect(work?.clarification?.questions).toEqual([
+      {
+        id: 'q-1',
+        question:
+          'Kira could not load the clarification questions for this work. What should be clarified or changed before a worker starts?',
+        options: [],
+        allowCustomAnswer: true,
+      },
+    ]);
+  });
+
   it('groups works by status', () => {
     const works = [
       normalizeWorkTask({

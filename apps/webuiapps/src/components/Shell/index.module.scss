@@ -101,6 +101,10 @@
   align-content: flex-start;
 }
 
+.iconGridDragging {
+  cursor: grabbing;
+}
+
 .appIcon {
   display: flex;
   flex-direction: column;
@@ -112,9 +116,14 @@
   border-radius: 10px;
   cursor: pointer;
   color: rgba(255, 255, 255, 0.85);
-  transition: background 0.15s;
+  transition:
+    background 0.15s,
+    box-shadow 0.15s,
+    opacity 0.15s,
+    transform 0.15s;
   user-select: none;
   width: 80px;
+  position: relative;
 
   &:hover {
     background: rgba(255, 255, 255, 0.06);
@@ -123,6 +132,19 @@
   &:active {
     background: rgba(255, 255, 255, 0.1);
   }
+}
+
+.appIconDragging {
+  cursor: grabbing;
+  opacity: 0.48;
+  transform: scale(0.96);
+}
+
+.appIconDropTarget {
+  background: rgba(255, 255, 255, 0.1);
+  box-shadow:
+    inset 0 0 0 1px rgba(250, 234, 95, 0.42),
+    0 10px 28px rgba(0, 0, 0, 0.28);
 }
 
 .iconCircle {

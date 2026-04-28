@@ -84,6 +84,7 @@ const ko = {
     queued: '대기 중',
     running: '실행 중',
     reviewPending: '리뷰 필요',
+    clarification: '질문 필요',
   },
   comments: {
     empty: '아직 댓글이 없습니다.',
@@ -153,6 +154,18 @@ const ko = {
     discoveryStepMap: '프로젝트 표면 매핑',
     discoveryStepInspect: '코드 경로 점검',
     discoveryStepShape: '다음 작업 구체화',
+  },
+  clarification: {
+    title: '확인할 내용이 있습니다',
+    copy: 'Aoi가 worker 시작 전에 결정해야 할 모호한 지점을 찾았습니다.',
+    pending: '답변 대기',
+    answerRequired: '계속하기 전에 모든 확인 질문에 답해 주세요.',
+    customPlaceholder: '또는 직접 답변을 입력하세요...',
+    freeformPlaceholder: '답변을 입력하세요...',
+    submitAnswers: '답변 제출',
+    proceedAnyway: '현재 브리프로 진행',
+    commentTitle: '확인 질문 답변을 제출했습니다.',
+    proceedComment: '사용자가 추가 확인 없이 현재 브리프로 진행하기로 했습니다.',
   },
 };
 

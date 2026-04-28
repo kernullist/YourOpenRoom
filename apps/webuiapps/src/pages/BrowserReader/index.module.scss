@@ -239,6 +239,12 @@
   box-shadow: 0 24px 48px rgba(3, 8, 16, 0.24);
 }
 
+:global([data-window-maximized='true']) {
+  .googleCard {
+    max-width: min(1120px, 100%);
+  }
+}
+
 .googleCard h2 {
   margin: 0 0 10px;
 }

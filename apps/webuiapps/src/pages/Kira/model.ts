@@ -1,5 +1,29 @@
 export type KiraTaskStatus = 'todo' | 'in_progress' | 'in_review' | 'blocked' | 'done';
 export type KiraTaskKind = 'work';
+export type WorkClarificationStatus = 'pending' | 'answered' | 'cleared';
+
+export interface WorkClarificationQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  allowCustomAnswer: boolean;
+}
+
+export interface WorkClarificationAnswer {
+  questionId: string;
+  question: string;
+  answer: string;
+}
+
+export interface WorkClarificationState {
+  status: WorkClarificationStatus;
+  briefHash: string;
+  summary: string;
+  questions: WorkClarificationQuestion[];
+  answers?: WorkClarificationAnswer[];
+  createdAt: number;
+  answeredAt?: number;
+}
 
 export interface WorkTask {
   id: string;
@@ -9,6 +33,7 @@ export interface WorkTask {
   description: string;
   status: KiraTaskStatus;
   assignee: string;
+  clarification?: WorkClarificationState;
   createdAt: number;
   updatedAt: number;
 }
@@ -109,6 +134,98 @@ function normalizeStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
 }
 
+function normalizeClarificationStatus(value: unknown): WorkClarificationStatus {
+  return value === 'pending' || value === 'answered' || value === 'cleared' ? value : 'cleared';
+}
+
+function buildFallbackClarificationQuestion(): WorkClarificationQuestion {
+  return {
+    id: 'q-1',
+    question:
+      'Kira could not load the clarification questions for this work. What should be clarified or changed before a worker starts?',
+    options: [],
+    allowCustomAnswer: true,
+  };
+}
+
+function normalizeClarificationQuestionId(
+  rawId: unknown,
+  index: number,
+  usedIds: Set<string>,
+): string {
+  const fallbackId = `q-${index + 1}`;
+  let nextId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : fallbackId;
+  if (usedIds.has(nextId)) nextId = fallbackId;
+  let suffix = 2;
+  while (usedIds.has(nextId)) {
+    nextId = `${fallbackId}-${suffix}`;
+    suffix += 1;
+  }
+  usedIds.add(nextId);
+  return nextId;
+}
+
+function normalizeClarificationQuestions(value: unknown): WorkClarificationQuestion[] {
+  if (!Array.isArray(value)) return [];
+  const usedIds = new Set<string>();
+  return value
+    .map((item, index) => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<WorkClarificationQuestion>;
+      const question = typeof raw.question === 'string' ? raw.question.trim() : '';
+      if (!question) return null;
+      const options = normalizeStringList(raw.options)
+        .map((option) => option.trim())
+        .filter(Boolean)
+        .slice(0, 5);
+      return {
+        id: normalizeClarificationQuestionId(raw.id, index, usedIds),
+        question,
+        options,
+        allowCustomAnswer: options.length === 0 || raw.allowCustomAnswer !== false,
+      };
+    })
+    .filter((item): item is WorkClarificationQuestion => item !== null);
+}
+
+function normalizeClarificationAnswers(value: unknown): WorkClarificationAnswer[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<WorkClarificationAnswer>;
+      const questionId = typeof raw.questionId === 'string' ? raw.questionId.trim() : '';
+      const question = typeof raw.question === 'string' ? raw.question.trim() : '';
+      const answer = typeof raw.answer === 'string' ? raw.answer.trim() : '';
+      if (!questionId || !question || !answer) return null;
+      return { questionId, question, answer };
+    })
+    .filter((item): item is WorkClarificationAnswer => item !== null);
+}
+
+function normalizeWorkClarification(value: unknown): WorkClarificationState | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Partial<WorkClarificationState>;
+  const briefHash = typeof raw.briefHash === 'string' ? raw.briefHash.trim() : '';
+  if (!briefHash) return undefined;
+  const answers = normalizeClarificationAnswers(raw.answers);
+  const status = normalizeClarificationStatus(raw.status);
+  const questions = normalizeClarificationQuestions(raw.questions);
+
+  return {
+    status,
+    briefHash,
+    summary: typeof raw.summary === 'string' ? raw.summary.trim() : '',
+    questions:
+      status === 'pending' && questions.length === 0
+        ? [buildFallbackClarificationQuestion()]
+        : questions,
+    ...(answers.length > 0 ? { answers } : {}),
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : Date.now(),
+    ...(typeof raw.answeredAt === 'number' ? { answeredAt: raw.answeredAt } : {}),
+  };
+}
+
 function normalizeReviewFindings(value: unknown): KiraReviewRecord['findings'] {
   if (!Array.isArray(value)) return [];
   return value
@@ -135,6 +252,7 @@ export function normalizeWorkTask(raw: unknown): WorkTask | null {
   if (!parsed?.id) return null;
 
   const now = Date.now();
+  const clarification = normalizeWorkClarification(parsed.clarification);
 
   return {
     id: parsed.id,
@@ -144,6 +262,7 @@ export function normalizeWorkTask(raw: unknown): WorkTask | null {
     description: parsed.description ?? '',
     status: isStatus(parsed.status) ? parsed.status : 'todo',
     assignee: parsed.assignee ?? '',
+    ...(clarification ? { clarification } : {}),
     createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : now,
     updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : now,
   };

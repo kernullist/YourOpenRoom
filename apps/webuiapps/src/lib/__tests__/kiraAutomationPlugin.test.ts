@@ -30,6 +30,7 @@ import {
   parseProjectDiscoveryAnalysis,
   parseAttemptSelectionSummary,
   parseStoredWorkerAttemptComment,
+  parseWorkClarificationAnalysis,
   parseWorkerExecutionPlan,
   resolveAttemptChangedFiles,
   resolveUnexpectedAutomationFailure,
@@ -348,6 +349,95 @@ describe('parseAttemptSelectionSummary()', () => {
         [1, 2, 3],
       ).approved,
     ).toBe(false);
+  });
+});
+
+describe('parseWorkClarificationAnalysis()', () => {
+  it('normalizes bounded multiple-choice questions', () => {
+    const analysis = parseWorkClarificationAnalysis(
+      JSON.stringify({
+        needsClarification: true,
+        confidence: 0.92,
+        summary: 'Target behavior is ambiguous.',
+        questions: [
+          {
+            question: 'Which UX should the worker implement?',
+            options: ['Compact', 'Guided', 'Guided'],
+            allowCustomAnswer: false,
+          },
+        ],
+      }),
+    );
+
+    expect(analysis).toEqual({
+      needsClarification: true,
+      confidence: 0.92,
+      summary: 'Target behavior is ambiguous.',
+      questions: [
+        {
+          id: 'q-1',
+          question: 'Which UX should the worker implement?',
+          options: ['Compact', 'Guided'],
+          allowCustomAnswer: false,
+        },
+      ],
+    });
+  });
+
+  it('blocks assignment with a fallback question when clarification output is malformed', () => {
+    const analysis = parseWorkClarificationAnalysis('not json');
+
+    expect(analysis.needsClarification).toBe(true);
+    expect(analysis.confidence).toBe(0);
+    expect(analysis.questions).toEqual([
+      {
+        id: 'q-1',
+        question:
+          'Kira could not read the main model clarification result. What should be clarified or changed in the brief before a worker starts?',
+        options: [],
+        allowCustomAnswer: true,
+      },
+    ]);
+  });
+
+  it('keeps clarification blocking when the model omits usable questions', () => {
+    const analysis = parseWorkClarificationAnalysis(
+      JSON.stringify({
+        needsClarification: true,
+        confidence: 0.7,
+        summary: 'The target flow is unclear.',
+        questions: [],
+      }),
+    );
+
+    expect(analysis).toMatchObject({
+      needsClarification: true,
+      confidence: 0.7,
+      summary: 'The target flow is unclear.',
+      questions: [
+        {
+          id: 'q-1',
+          options: [],
+          allowCustomAnswer: true,
+        },
+      ],
+    });
+  });
+
+  it('deduplicates model-provided question ids', () => {
+    const analysis = parseWorkClarificationAnalysis(
+      JSON.stringify({
+        needsClarification: true,
+        confidence: 0.9,
+        summary: 'Two decisions are missing.',
+        questions: [
+          { id: 'choice', question: 'First decision?', options: [] },
+          { id: 'choice', question: 'Second decision?', options: [] },
+        ],
+      }),
+    );
+
+    expect(analysis.questions.map((question) => question.id)).toEqual(['choice', 'q-2']);
   });
 });
 

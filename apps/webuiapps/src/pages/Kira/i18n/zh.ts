@@ -84,6 +84,7 @@ const zh = {
     queued: '排队中',
     running: '执行中',
     reviewPending: '待复核',
+    clarification: '需要澄清',
   },
   comments: {
     empty: '还没有评论。',
@@ -143,6 +144,18 @@ const zh = {
     discoveryStepMap: '梳理项目表面',
     discoveryStepInspect: '检查代码路径',
     discoveryStepShape: '整理下一步任务',
+  },
+  clarification: {
+    title: '需要确认信息',
+    copy: 'Aoi 发现 worker 开始前需要先确定的关键点。',
+    pending: '等待回答',
+    answerRequired: '继续前请回答所有澄清问题。',
+    customPlaceholder: '或输入自定义答案...',
+    freeformPlaceholder: '输入你的答案...',
+    submitAnswers: '提交答案',
+    proceedAnyway: '按当前说明继续',
+    commentTitle: '已提交澄清问题的答案。',
+    proceedComment: '用户选择不补充澄清信息，直接按当前说明继续。',
   },
 };
 

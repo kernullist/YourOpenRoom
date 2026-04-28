@@ -30,6 +30,8 @@ import {
   type KiraReviewRecord,
   type KiraViewState,
   type TaskComment,
+  type WorkClarificationAnswer,
+  type WorkClarificationState,
   type WorkTask,
   DEFAULT_VIEW_STATE,
   STATUS_ORDER,
@@ -126,12 +128,7 @@ type KiraDiscoveryEvent =
 function clampEditorWidth(width: number, containerWidth?: number): number {
   const maxByContainer =
     containerWidth && containerWidth > 0
-      ? containerWidth -
-        36 -
-        300 -
-        18 -
-        18 -
-        BOARD_WIDTH_MIN_WHEN_RESIZING
+      ? containerWidth - 36 - 300 - 18 - 18 - BOARD_WIDTH_MIN_WHEN_RESIZING
       : EDITOR_WIDTH_MAX;
   const maxWidth = Math.max(EDITOR_WIDTH_MIN, Math.min(EDITOR_WIDTH_MAX, maxByContainer));
   return Math.round(Math.min(maxWidth, Math.max(EDITOR_WIDTH_MIN, width)));
@@ -221,6 +218,38 @@ function createFormFromWork(work: WorkTask): TaskFormState {
     status: work.status,
     assignee: work.assignee,
   };
+}
+
+const CLARIFICATION_ANSWERS_HEADING = '## Clarification Answers';
+
+function buildClarificationAnswerBlock(answers: WorkClarificationAnswer[]): string {
+  return [
+    CLARIFICATION_ANSWERS_HEADING,
+    '',
+    ...answers.flatMap((answer) => [`- ${answer.question}`, `  - Answer: ${answer.answer}`]),
+  ].join('\n');
+}
+
+function stripClarificationAnswerBlock(description: string): string {
+  const headingIndex = description.lastIndexOf(CLARIFICATION_ANSWERS_HEADING);
+  if (headingIndex < 0) return description.trim();
+
+  const blockBody = description.slice(headingIndex + CLARIFICATION_ANSWERS_HEADING.length);
+  const looksLikeGeneratedAnswerBlock =
+    blockBody.includes('\n- ') && blockBody.includes('\n  - Answer: ');
+
+  return looksLikeGeneratedAnswerBlock
+    ? description.slice(0, headingIndex).trim()
+    : description.trim();
+}
+
+function appendClarificationAnswers(
+  description: string,
+  answers: WorkClarificationAnswer[],
+): string {
+  const trimmed = stripClarificationAnswerBlock(description);
+  const answerBlock = buildClarificationAnswerBlock(answers);
+  return trimmed ? `${trimmed}\n\n${answerBlock}` : answerBlock;
 }
 
 function parseViewState(raw: unknown): KiraViewState {
@@ -327,6 +356,7 @@ const KiraPage: React.FC = () => {
   const [form, setForm] = useState<TaskFormState>(createDraftForm());
   const [formDirty, setFormDirty] = useState(false);
   const [commentDraft, setCommentDraft] = useState({ author: '', body: '' });
+  const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [workRootConfig, setWorkRootConfig] = useState<KiraConfigResponse | null>(null);
   const [workRootDraft, setWorkRootDraft] = useState('');
   const [workRootSaving, setWorkRootSaving] = useState(false);
@@ -622,6 +652,9 @@ const KiraPage: React.FC = () => {
     () => projectScopedWorks.find((work) => work.id === selectedTaskId) ?? null,
     [projectScopedWorks, selectedTaskId],
   );
+  const pendingClarification = useMemo<WorkClarificationState | null>(() => {
+    return selectedWork?.clarification?.status === 'pending' ? selectedWork.clarification : null;
+  }, [selectedWork]);
   const workRootReady = Boolean(
     workRootConfig?.configured &&
     workRootConfig.exists !== false &&
@@ -654,6 +687,21 @@ const KiraPage: React.FC = () => {
   useEffect(() => {
     setCommentDraft({ author: '', body: '' });
   }, [selectedTaskId]);
+
+  useEffect(() => {
+    if (!pendingClarification) {
+      setClarificationAnswers({});
+      return;
+    }
+
+    setClarificationAnswers((prev) => {
+      const next: Record<string, string> = {};
+      for (const question of pendingClarification.questions) {
+        next[question.id] = prev[question.id] ?? '';
+      }
+      return next;
+    });
+  }, [pendingClarification]);
 
   useEffect(() => {
     if (!activeProjectName) return;
@@ -721,42 +769,48 @@ const KiraPage: React.FC = () => {
     [isEditorResizing],
   );
 
-  const handleEditorResizeEnd = useCallback((event: React.PointerEvent<HTMLButtonElement>) => {
-    if (!isEditorResizing) return;
-    setIsEditorResizing(false);
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
-    }
-  }, [isEditorResizing]);
+  const handleEditorResizeEnd = useCallback(
+    (event: React.PointerEvent<HTMLButtonElement>) => {
+      if (!isEditorResizing) return;
+      setIsEditorResizing(false);
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+    },
+    [isEditorResizing],
+  );
 
-  const handleEditorResizeKeyDown = useCallback((event: React.KeyboardEvent<HTMLButtonElement>) => {
-    const updateWidth = (nextWidth: number) => {
-      setEditorPanelWidth(
-        clampEditorWidth(nextWidth, appRef.current?.getBoundingClientRect().width),
-      );
-    };
+  const handleEditorResizeKeyDown = useCallback(
+    (event: React.KeyboardEvent<HTMLButtonElement>) => {
+      const updateWidth = (nextWidth: number) => {
+        setEditorPanelWidth(
+          clampEditorWidth(nextWidth, appRef.current?.getBoundingClientRect().width),
+        );
+      };
 
-    switch (event.key) {
-      case 'ArrowLeft':
-        updateWidth(editorPanelWidth + 24);
-        event.preventDefault();
-        break;
-      case 'ArrowRight':
-        updateWidth(editorPanelWidth - 24);
-        event.preventDefault();
-        break;
-      case 'Home':
-        updateWidth(EDITOR_WIDTH_MIN);
-        event.preventDefault();
-        break;
-      case 'End':
-        updateWidth(EDITOR_WIDTH_MAX);
-        event.preventDefault();
-        break;
-      default:
-        break;
-    }
-  }, [editorPanelWidth]);
+      switch (event.key) {
+        case 'ArrowLeft':
+          updateWidth(editorPanelWidth + 24);
+          event.preventDefault();
+          break;
+        case 'ArrowRight':
+          updateWidth(editorPanelWidth - 24);
+          event.preventDefault();
+          break;
+        case 'Home':
+          updateWidth(EDITOR_WIDTH_MIN);
+          event.preventDefault();
+          break;
+        case 'End':
+          updateWidth(EDITOR_WIDTH_MAX);
+          event.preventDefault();
+          break;
+        default:
+          break;
+      }
+    },
+    [editorPanelWidth],
+  );
 
   const worksByStatus = useMemo(() => groupWorksByStatus(projectScopedWorks), [projectScopedWorks]);
   const projectScopedTaskIds = useMemo(
@@ -799,8 +853,14 @@ const KiraPage: React.FC = () => {
     return map;
   }, [reviews, selectedTaskId]);
   const automationBadgeByTask = useMemo(() => {
-    const map = new Map<string, 'queued' | 'running' | 'reviewPending'>();
+    const map = new Map<string, 'queued' | 'running' | 'reviewPending' | 'clarification'>();
     const latestByTask = new Map<string, TaskComment>();
+
+    for (const work of projectScopedWorks) {
+      if (work.clarification?.status === 'pending') {
+        map.set(work.id, 'clarification');
+      }
+    }
 
     for (const comment of projectScopedComments) {
       const previous = latestByTask.get(comment.taskId);
@@ -810,6 +870,7 @@ const KiraPage: React.FC = () => {
     }
 
     for (const [taskId, comment] of latestByTask.entries()) {
+      if (map.has(taskId)) continue;
       if (
         comment.body.startsWith('Queued: waiting for another work in the same project to finish.')
       ) {
@@ -825,13 +886,17 @@ const KiraPage: React.FC = () => {
     }
 
     return map;
-  }, [projectScopedComments]);
+  }, [projectScopedComments, projectScopedWorks]);
 
   const totalWorks = projectScopedWorks.length;
   const todoWorks = projectScopedWorks.filter((work) => work.status === 'todo').length;
   const doneWorks = projectScopedWorks.filter((work) => work.status === 'done').length;
   const reviewWorks = projectScopedWorks.filter((work) => work.status === 'in_review').length;
   const blockedWorks = projectScopedWorks.filter((work) => work.status === 'blocked').length;
+  const clarificationReady = Boolean(
+    pendingClarification?.questions.length &&
+    pendingClarification.questions.every((question) => clarificationAnswers[question.id]?.trim()),
+  );
 
   const handleOpenCreateTask = useCallback(() => {
     if (!workRootReady) {
@@ -1147,14 +1212,22 @@ const KiraPage: React.FC = () => {
       const now = Date.now();
       const workId = form.id ?? generateId();
       const existing = works.find((work) => work.id === workId);
+      const nextDescription = form.description.trim();
+      const briefChanged = existing
+        ? existing.title !== title || existing.description !== nextDescription
+        : true;
+      const nextClarification =
+        existing && !briefChanged && existing.clarification ? existing.clarification : undefined;
       const nextWork: WorkTask = {
         id: workId,
         type: 'work',
         projectName: activeProjectName ?? existing?.projectName ?? '',
         title,
-        description: form.description.trim(),
-        status: form.status,
+        description: nextDescription,
+        status:
+          existing?.clarification?.status === 'pending' && briefChanged ? 'todo' : form.status,
         assignee: existing?.assignee ?? form.assignee.trim(),
+        ...(nextClarification ? { clarification: nextClarification } : {}),
         createdAt: existing?.createdAt ?? now,
         updatedAt: now,
       };
@@ -1172,6 +1245,14 @@ const KiraPage: React.FC = () => {
         filePath,
         focusId: workId,
       });
+      const sessionPath = getSessionPath().trim();
+      if (sessionPath) {
+        await fetch('/api/kira-automation/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionPath }),
+        }).catch(() => undefined);
+      }
     } catch (error) {
       console.error('[Kira] Save failed:', error);
       setErrorText(error instanceof Error ? error.message : String(error));
@@ -1187,6 +1268,131 @@ const KiraPage: React.FC = () => {
     workRootReady,
     works,
   ]);
+
+  const handleSubmitClarificationAnswers = useCallback(async () => {
+    if (!selectedWork || !pendingClarification) return;
+
+    const answers: WorkClarificationAnswer[] = pendingClarification.questions.map((question) => ({
+      questionId: question.id,
+      question: question.question,
+      answer: clarificationAnswers[question.id]?.trim() ?? '',
+    }));
+
+    if (answers.some((answer) => !answer.answer)) {
+      setErrorText(t('clarification.answerRequired'));
+      return;
+    }
+
+    try {
+      const now = Date.now();
+      const nextClarification: WorkClarificationState = {
+        ...pendingClarification,
+        status: 'answered',
+        answers,
+        answeredAt: now,
+      };
+      const nextWork: WorkTask = {
+        ...selectedWork,
+        description: appendClarificationAnswers(selectedWork.description, answers),
+        status: 'todo',
+        clarification: nextClarification,
+        updatedAt: now,
+      };
+      const nextComment: TaskComment = {
+        id: generateId(),
+        taskId: selectedWork.id,
+        taskType: 'work',
+        author: t('comments.defaultAuthor'),
+        body: [
+          t('clarification.commentTitle'),
+          '',
+          ...answers.flatMap((answer) => [`- ${answer.question}`, `  - ${answer.answer}`]),
+        ].join('\n'),
+        createdAt: now,
+      };
+
+      const workPath = getWorkFilePath(nextWork.id);
+      const commentPath = getCommentFilePath(nextComment.id);
+      saveFile(workPath, nextWork);
+      saveFile(commentPath, nextComment);
+      await Promise.all([syncToCloud(workPath, nextWork), syncToCloud(commentPath, nextComment)]);
+      setWorks((prev) =>
+        sortByUpdatedAtDesc([...prev.filter((work) => work.id !== nextWork.id), nextWork]),
+      );
+      setComments((prev) => sortByCreatedAtDesc([...prev, nextComment]));
+      setForm(createFormFromWork(nextWork));
+      setFormDirty(false);
+      setErrorText(null);
+      reportAction(APP_ID, 'ANSWER_CLARIFICATION', {
+        workId: nextWork.id,
+        questionCount: answers.length,
+      });
+
+      const sessionPath = getSessionPath().trim();
+      if (sessionPath) {
+        await fetch('/api/kira-automation/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionPath }),
+        }).catch(() => undefined);
+      }
+    } catch (error) {
+      console.error('[Kira] Clarification save failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    }
+  }, [clarificationAnswers, pendingClarification, saveFile, selectedWork, syncToCloud, t]);
+
+  const handleProceedWithCurrentBrief = useCallback(async () => {
+    if (!selectedWork || !pendingClarification) return;
+
+    try {
+      const now = Date.now();
+      const nextWork: WorkTask = {
+        ...selectedWork,
+        status: 'todo',
+        clarification: {
+          ...pendingClarification,
+          status: 'cleared',
+          answeredAt: now,
+        },
+        updatedAt: now,
+      };
+      const nextComment: TaskComment = {
+        id: generateId(),
+        taskId: selectedWork.id,
+        taskType: 'work',
+        author: t('comments.defaultAuthor'),
+        body: t('clarification.proceedComment'),
+        createdAt: now,
+      };
+
+      const workPath = getWorkFilePath(nextWork.id);
+      const commentPath = getCommentFilePath(nextComment.id);
+      saveFile(workPath, nextWork);
+      saveFile(commentPath, nextComment);
+      await Promise.all([syncToCloud(workPath, nextWork), syncToCloud(commentPath, nextComment)]);
+      setWorks((prev) =>
+        sortByUpdatedAtDesc([...prev.filter((work) => work.id !== nextWork.id), nextWork]),
+      );
+      setComments((prev) => sortByCreatedAtDesc([...prev, nextComment]));
+      setForm(createFormFromWork(nextWork));
+      setFormDirty(false);
+      setErrorText(null);
+      reportAction(APP_ID, 'SKIP_CLARIFICATION', { workId: nextWork.id });
+
+      const sessionPath = getSessionPath().trim();
+      if (sessionPath) {
+        await fetch('/api/kira-automation/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionPath }),
+        }).catch(() => undefined);
+      }
+    } catch (error) {
+      console.error('[Kira] Clarification skip failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    }
+  }, [pendingClarification, saveFile, selectedWork, syncToCloud, t]);
 
   const handleDeleteTask = useCallback(async () => {
     if (!selectedTaskId) return;
@@ -1583,7 +1789,9 @@ const KiraPage: React.FC = () => {
                                 ? t('board.queued')
                                 : automationBadge === 'running'
                                   ? t('board.running')
-                                  : t('board.reviewPending')}
+                                  : automationBadge === 'reviewPending'
+                                    ? t('board.reviewPending')
+                                    : t('board.clarification')}
                             </span>
                           </div>
                         ) : null}
@@ -1706,6 +1914,94 @@ const KiraPage: React.FC = () => {
 
             <p className={styles.inlineHint}>{t('messages.markdownHint')}</p>
 
+            {pendingClarification ? (
+              <div className={styles.clarificationPanel}>
+                <div className={styles.clarificationHeader}>
+                  <div>
+                    <strong>{t('clarification.title')}</strong>
+                    <p>{t('clarification.copy')}</p>
+                  </div>
+                  <span>{t('clarification.pending')}</span>
+                </div>
+                {pendingClarification.summary ? (
+                  <p className={styles.clarificationSummary}>{pendingClarification.summary}</p>
+                ) : null}
+                <div className={styles.clarificationList}>
+                  {pendingClarification.questions.map((question, index) => {
+                    const currentAnswer = clarificationAnswers[question.id] ?? '';
+                    const selectedOption = question.options.includes(currentAnswer)
+                      ? currentAnswer
+                      : '';
+                    const customAnswer =
+                      question.options.length > 0 && selectedOption ? '' : currentAnswer;
+
+                    return (
+                      <div key={question.id} className={styles.clarificationQuestion}>
+                        <div className={styles.clarificationQuestionText}>
+                          <span>{index + 1}</span>
+                          <strong>{question.question}</strong>
+                        </div>
+                        {question.options.length > 0 ? (
+                          <div className={styles.clarificationOptions}>
+                            {question.options.map((option) => (
+                              <button
+                                key={option}
+                                type="button"
+                                className={
+                                  selectedOption === option ? styles.clarificationOptionActive : ''
+                                }
+                                onClick={() =>
+                                  setClarificationAnswers((prev) => ({
+                                    ...prev,
+                                    [question.id]: option,
+                                  }))
+                                }
+                              >
+                                {option}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                        {question.allowCustomAnswer ? (
+                          <textarea
+                            className={styles.clarificationTextarea}
+                            value={customAnswer}
+                            onChange={(event) =>
+                              setClarificationAnswers((prev) => ({
+                                ...prev,
+                                [question.id]: event.target.value,
+                              }))
+                            }
+                            placeholder={
+                              question.options.length > 0
+                                ? t('clarification.customPlaceholder')
+                                : t('clarification.freeformPlaceholder')
+                            }
+                            rows={2}
+                          />
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className={styles.clarificationActions}>
+                  <button
+                    className={styles.secondaryButton}
+                    onClick={() => void handleProceedWithCurrentBrief()}
+                  >
+                    {t('clarification.proceedAnyway')}
+                  </button>
+                  <button
+                    className={styles.primaryButton}
+                    onClick={() => void handleSubmitClarificationAnswers()}
+                    disabled={!clarificationReady}
+                  >
+                    {t('clarification.submitAnswers')}
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
             {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
 
             <div className={styles.saveRow}>
@@ -1737,14 +2033,10 @@ const KiraPage: React.FC = () => {
                   aria-expanded={!attemptsCollapsed}
                   aria-controls="kira-attempts-list"
                   aria-label={
-                    attemptsCollapsed
-                      ? t('actions.expandAttempts')
-                      : t('actions.collapseAttempts')
+                    attemptsCollapsed ? t('actions.expandAttempts') : t('actions.collapseAttempts')
                   }
                   title={
-                    attemptsCollapsed
-                      ? t('actions.expandAttempts')
-                      : t('actions.collapseAttempts')
+                    attemptsCollapsed ? t('actions.expandAttempts') : t('actions.collapseAttempts')
                   }
                 >
                   <ChevronDown size={16} aria-hidden="true" />
@@ -1780,8 +2072,7 @@ const KiraPage: React.FC = () => {
                               <div>
                                 <h4>Changes</h4>
                                 <p>
-                                  {attempt.changedFiles.join(', ') ||
-                                    'No changed files recorded'}
+                                  {attempt.changedFiles.join(', ') || 'No changed files recorded'}
                                 </p>
                                 <small>
                                   Read: {attempt.readFiles?.join(', ') || 'none'} | Patched:{' '}

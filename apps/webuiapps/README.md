@@ -4,7 +4,7 @@ Main browser desktop runtime for YourOpenRoom.
 
 This package is **not** a stock Vite starter anymore. It is the app that currently delivers:
 
-- the desktop shell and window manager
+- the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
 - built-in apps under `src/pages/`, including OpenVSCode and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
@@ -94,6 +94,11 @@ attempts before selecting one winner. Codex CLI workers/reviewers can be configu
 `provider: "codex-cli"` after `codex login`; OpenCode Zen/Go workers/reviewers can be configured
 with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key.
 
+Before worker assignment, Kira runs a clarification analysis over the work title, description, and
+project context. If a material ambiguity would likely send workers in the wrong direction, Kira
+marks the work `blocked`, asks concise questions with multiple-choice options where possible, and
+only returns the work to `todo` after the user's answers are saved back into the brief.
+
 For git projects with Kira `autoCommit` enabled, automation commits approved work in the winning
 temporary git worktree. The primary project worktree is touched only during the final locked
 cherry-pick integration. With multiple workers and `autoCommit` disabled, Kira still isolates
@@ -102,6 +107,15 @@ overlapping dirty files, or existing staged changes block the task and keep the 
 worktree for manual recovery.
 
 If you run only a static build without equivalent backend endpoints, these features will not work.
+
+## Desktop UX Notes
+
+- Desktop icons can be rearranged with drag and drop. The order is stored in browser local storage
+  and normalized so newly added apps appear after the user's saved order.
+- App windows expose minimize, maximize/restore, and close controls. Maximized windows use the
+  available desktop area outside the chat panel.
+- Minimized app windows remain mounted so long-running in-app behavior, such as YouTube playback,
+  continues while the window is hidden.
 
 ## Commands
 

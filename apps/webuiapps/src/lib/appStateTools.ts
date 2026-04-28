@@ -12,7 +12,10 @@ async function countFiles(directory: string): Promise<number> {
   return result.files.filter((entry) => entry.type === 0).length;
 }
 
-async function buildStateSummary(appName: string, state: unknown): Promise<Record<string, unknown> | null> {
+async function buildStateSummary(
+  appName: string,
+  state: unknown,
+): Promise<Record<string, unknown> | null> {
   const normalizedState =
     state && typeof state === 'object' && !Array.isArray(state)
       ? (state as Record<string, unknown>)
@@ -75,7 +78,9 @@ async function buildStateSummary(appName: string, state: unknown): Promise<Recor
     case 'twitter':
       return {
         draft_content_length:
-          typeof normalizedState?.draftContent === 'string' ? normalizedState.draftContent.length : 0,
+          typeof normalizedState?.draftContent === 'string'
+            ? normalizedState.draftContent.length
+            : 0,
         current_user: normalizedState?.currentUser ?? null,
         post_count: await countFiles('apps/twitter/data/posts'),
       };
@@ -140,6 +145,7 @@ function buildWindowSummary(appId: number) {
       height: windowState.height,
       z_index: windowState.zIndex,
       minimized: windowState.minimized,
+      maximized: !!windowState.maximized,
     }));
 }
 
@@ -160,6 +166,7 @@ function buildAllWindowSummaries() {
           display_name: app?.displayName || windowState.title,
           title: windowState.title,
           minimized: windowState.minimized,
+          maximized: !!windowState.maximized,
           z_index: windowState.zIndex,
           x: windowState.x,
           y: windowState.y,
@@ -184,7 +191,8 @@ export function getAppStateToolDefinitions(): ToolDef[] {
           properties: {
             app_name: {
               type: 'string',
-              description: 'Optional target appName from list_apps, for example "notes" or "browser".',
+              description:
+                'Optional target appName from list_apps, for example "notes" or "browser".',
             },
             include_state: {
               type: 'boolean',

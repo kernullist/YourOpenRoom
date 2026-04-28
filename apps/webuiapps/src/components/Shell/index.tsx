@@ -1,4 +1,11 @@
-import React, { useState, useCallback, useEffect, useRef, useSyncExternalStore } from 'react';
+import React, {
+  useState,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useSyncExternalStore,
+} from 'react';
 import {
   MessageCircle,
   Twitter,
@@ -28,7 +35,14 @@ import {
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
 import AppWindow from '../AppWindow';
-import { getWindows, subscribe, openWindow, claimZIndex } from '@/lib/windowManager';
+import {
+  claimZIndex,
+  getMaximizedWindowBounds,
+  getWindows,
+  openWindow,
+  subscribe,
+  updateMaximizedWindows,
+} from '@/lib/windowManager';
 import { getDesktopApps } from '@/lib/appRegistry';
 import { dispatchAgentAction, reportUserOsAction, onOSEvent } from '@/lib/vibeContainerMock';
 import { setReportUserActions, extractCard } from '@/lib';
@@ -88,6 +102,7 @@ const STATIC_WALLPAPER =
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+const DESKTOP_ICON_ORDER_KEY = 'openroom-desktop-icon-order-v1';
 const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
 const KIRA_APP_ID = 18;
 const KIRA_NOTICE_TIMEOUT_MS = 12_000;
@@ -115,6 +130,64 @@ function isVideoUrl(url: string): boolean {
   }
 }
 
+function normalizeDesktopIconOrder(value: unknown): number[] {
+  const availableIds = new Set(DESKTOP_APPS.map((app) => app.appId));
+  const nextOrder: number[] = [];
+
+  if (Array.isArray(value)) {
+    for (const rawId of value) {
+      const appId = Number(rawId);
+      if (availableIds.has(appId) && !nextOrder.includes(appId)) {
+        nextOrder.push(appId);
+      }
+    }
+  }
+
+  for (const app of DESKTOP_APPS) {
+    if (!nextOrder.includes(app.appId)) {
+      nextOrder.push(app.appId);
+    }
+  }
+
+  return nextOrder;
+}
+
+function loadDesktopIconOrder(): number[] {
+  try {
+    return normalizeDesktopIconOrder(
+      JSON.parse(localStorage.getItem(DESKTOP_ICON_ORDER_KEY) ?? '[]'),
+    );
+  } catch {
+    return normalizeDesktopIconOrder([]);
+  }
+}
+
+function saveDesktopIconOrder(order: number[]): void {
+  try {
+    localStorage.setItem(DESKTOP_ICON_ORDER_KEY, JSON.stringify(normalizeDesktopIconOrder(order)));
+  } catch {
+    // ignore persistence failures
+  }
+}
+
+function orderDesktopApps(order: number[]): typeof DESKTOP_APPS {
+  const appById = new Map(DESKTOP_APPS.map((app) => [app.appId, app]));
+  return normalizeDesktopIconOrder(order)
+    .map((appId) => appById.get(appId))
+    .filter((app): app is (typeof DESKTOP_APPS)[number] => Boolean(app));
+}
+
+function moveDesktopIcon(order: number[], draggedAppId: number, targetAppId: number): number[] {
+  if (draggedAppId === targetAppId) return order;
+
+  const nextOrder = normalizeDesktopIconOrder(order).filter((appId) => appId !== draggedAppId);
+  const targetIndex = nextOrder.indexOf(targetAppId);
+  if (targetIndex < 0) return order;
+
+  nextOrder.splice(targetIndex, 0, draggedAppId);
+  return nextOrder;
+}
+
 const Shell: React.FC = () => {
   const [chatOpen, setChatOpen] = useState(true);
   const [chatDockSide, setChatDockSide] = useState<'left' | 'right'>(() => {
@@ -133,8 +206,16 @@ const Shell: React.FC = () => {
   const [modGenerating, setModGenerating] = useState(false);
   const [kiraNotices, setKiraNotices] = useState<KiraAutomationNotice[]>([]);
   const [kiraUnreadCount, setKiraUnreadCount] = useState(0);
+  const [desktopIconOrder, setDesktopIconOrder] = useState(loadDesktopIconOrder);
+  const [draggingAppId, setDraggingAppId] = useState<number | null>(null);
+  const [dragOverAppId, setDragOverAppId] = useState<number | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const kiraNoticeTimersRef = useRef<Map<string, number>>(new Map());
+  const draggedAppIdRef = useRef<number | null>(null);
+  const desktopIconOrderRef = useRef<number[]>(desktopIconOrder);
+  const dragStartIconOrderRef = useRef<number[] | null>(null);
+  const dragCommittedRef = useRef(false);
+  const orderedDesktopApps = useMemo(() => orderDesktopApps(desktopIconOrder), [desktopIconOrder]);
 
   const handleFileChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -149,6 +230,99 @@ const Shell: React.FC = () => {
     setUploadedFile(null);
     setExtractResult(null);
   }, []);
+
+  useEffect(() => {
+    desktopIconOrderRef.current = desktopIconOrder;
+  }, [desktopIconOrder]);
+
+  const handleDesktopIconDragStart = useCallback(
+    (event: React.DragEvent<HTMLButtonElement>, appId: number) => {
+      draggedAppIdRef.current = appId;
+      dragStartIconOrderRef.current = desktopIconOrderRef.current;
+      dragCommittedRef.current = false;
+      setDraggingAppId(appId);
+      setDragOverAppId(appId);
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(appId));
+    },
+    [],
+  );
+
+  const handleDesktopIconDragEnter = useCallback(
+    (event: React.DragEvent<HTMLButtonElement>, targetAppId: number) => {
+      event.preventDefault();
+      const draggedAppId = draggedAppIdRef.current;
+      if (!draggedAppId) return;
+
+      setDragOverAppId(targetAppId);
+      setDesktopIconOrder((previousOrder) =>
+        moveDesktopIcon(previousOrder, draggedAppId, targetAppId),
+      );
+    },
+    [],
+  );
+
+  const handleDesktopIconDragOver = useCallback((event: React.DragEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = 'move';
+  }, []);
+
+  const resetDesktopIconDrag = useCallback(() => {
+    draggedAppIdRef.current = null;
+    setDraggingAppId(null);
+    setDragOverAppId(null);
+  }, []);
+
+  const handleDesktopIconDragEnd = useCallback(() => {
+    if (!dragCommittedRef.current && dragStartIconOrderRef.current) {
+      setDesktopIconOrder(dragStartIconOrderRef.current);
+    }
+    dragStartIconOrderRef.current = null;
+    dragCommittedRef.current = false;
+    resetDesktopIconDrag();
+  }, [resetDesktopIconDrag]);
+
+  const handleDesktopIconDrop = useCallback(
+    (event: React.DragEvent<HTMLButtonElement>, targetAppId: number) => {
+      event.preventDefault();
+      event.stopPropagation();
+
+      const draggedAppId =
+        draggedAppIdRef.current || Number(event.dataTransfer.getData('text/plain'));
+      if (draggedAppId) {
+        dragCommittedRef.current = true;
+        setDesktopIconOrder((previousOrder) => {
+          const nextOrder = moveDesktopIcon(previousOrder, draggedAppId, targetAppId);
+          saveDesktopIconOrder(nextOrder);
+          return nextOrder;
+        });
+      }
+      resetDesktopIconDrag();
+    },
+    [resetDesktopIconDrag],
+  );
+
+  const handleDesktopGridDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      const draggedAppId =
+        draggedAppIdRef.current || Number(event.dataTransfer.getData('text/plain'));
+
+      if (draggedAppId) {
+        dragCommittedRef.current = true;
+        setDesktopIconOrder((previousOrder) => {
+          const nextOrder = [
+            ...normalizeDesktopIconOrder(previousOrder).filter((appId) => appId !== draggedAppId),
+            draggedAppId,
+          ];
+          saveDesktopIconOrder(nextOrder);
+          return nextOrder;
+        });
+      }
+      resetDesktopIconDrag();
+    },
+    [resetDesktopIconDrag],
+  );
 
   const dismissKiraNotice = useCallback((localId: string) => {
     const timer = kiraNoticeTimersRef.current.get(localId);
@@ -293,6 +467,20 @@ const Shell: React.FC = () => {
   const showVideo = liveWallpaper && isVideoUrl(wallpaper);
 
   useEffect(() => {
+    const syncMaximizedWindows = () => {
+      updateMaximizedWindows(getMaximizedWindowBounds());
+    };
+
+    const frame = window.requestAnimationFrame(syncMaximizedWindows);
+    window.addEventListener('resize', syncMaximizedWindows);
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener('resize', syncMaximizedWindows);
+    };
+  }, [chatOpen, chatDockSide, showVideo]);
+
+  useEffect(() => {
     const handleOpenSettings = () => {
       setChatOpen(true);
       setChatZIndex(claimZIndex());
@@ -414,17 +602,30 @@ const Shell: React.FC = () => {
         }`}
         data-testid="desktop"
       >
-        <div className={styles.iconGrid}>
-          {DESKTOP_APPS.map((app) => (
+        <div
+          className={`${styles.iconGrid} ${draggingAppId ? styles.iconGridDragging : ''}`}
+          onDragOver={handleDesktopIconDragOver}
+          onDrop={handleDesktopGridDrop}
+        >
+          {orderedDesktopApps.map((app) => (
             <button
               key={app.appId}
-              className={styles.appIcon}
+              className={`${styles.appIcon} ${
+                draggingAppId === app.appId ? styles.appIconDragging : ''
+              } ${dragOverAppId === app.appId ? styles.appIconDropTarget : ''}`}
               data-testid={`app-icon-${app.appId}`}
+              draggable
+              aria-grabbed={draggingAppId === app.appId}
+              onDragStart={(event) => handleDesktopIconDragStart(event, app.appId)}
+              onDragEnter={(event) => handleDesktopIconDragEnter(event, app.appId)}
+              onDragOver={handleDesktopIconDragOver}
+              onDrop={(event) => handleDesktopIconDrop(event, app.appId)}
+              onDragEnd={handleDesktopIconDragEnd}
               onDoubleClick={() => {
                 openWindow(app.appId);
                 reportUserOsAction('OPEN_APP', { app_id: String(app.appId) });
               }}
-              title={`Double-click to open ${app.displayName}`}
+              title={`Drag to rearrange. Double-click to open ${app.displayName}`}
             >
               <div
                 className={styles.iconCircle}

@@ -14,17 +14,17 @@
 
 Each event is stored as one JSON file. The filename must match `id`.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | Unique event ID, same as filename without `.json` |
-| title | string | Yes | Event title |
-| notes | string | Yes | Optional reminder context and notes |
-| startAt | string | Yes | ISO datetime string for when the event starts |
-| remindBeforeMinutes | number | Yes | Minutes before `startAt` when the reminder should trigger |
-| completed | boolean | Yes | Whether the event is completed |
-| createdAt | number | Yes | Unix timestamp in milliseconds |
-| updatedAt | number | Yes | Unix timestamp in milliseconds |
-| lastReminderSentAt | number | No | Unix timestamp in milliseconds for the last proactive reminder |
+| Field               | Type    | Required | Description                                                    |
+| ------------------- | ------- | -------- | -------------------------------------------------------------- |
+| id                  | string  | Yes      | Unique event ID, same as filename without `.json`              |
+| title               | string  | Yes      | Event title                                                    |
+| notes               | string  | Yes      | Optional reminder context and notes                            |
+| startAt             | string  | Yes      | ISO datetime string for when the event starts                  |
+| remindBeforeMinutes | number  | Yes      | Minutes before `startAt` when the reminder should trigger      |
+| completed           | boolean | Yes      | Whether the event is completed                                 |
+| createdAt           | number  | Yes      | Unix timestamp in milliseconds                                 |
+| updatedAt           | number  | Yes      | Unix timestamp in milliseconds                                 |
+| lastReminderSentAt  | number  | No       | Unix timestamp in milliseconds for the last proactive reminder |
 
 Example:
 
@@ -43,15 +43,17 @@ Example:
 
 ## State File `/state.json`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| selectedEventId | string \| null | No | Currently focused event |
+| Field           | Type           | Required | Description                                   |
+| --------------- | -------------- | -------- | --------------------------------------------- |
+| selectedEventId | string \| null | No       | Currently focused event                       |
+| selectedDateKey | string         | No       | Selected calendar date in `YYYY-MM-DD` format |
 
 Example:
 
 ```json
 {
-  "selectedEventId": "launch-review"
+  "selectedEventId": "launch-review",
+  "selectedDateKey": "2026-04-15"
 }
 ```
 
@@ -66,5 +68,8 @@ Example:
 Notes:
 
 - Always write `startAt` as a valid ISO string.
+- Keep `selectedDateKey` aligned with the event date when focusing or creating an event from a
+  calendar day.
 - Do not invent extra folders.
-- When an event's time changes, omit `lastReminderSentAt` or reset it so reminders can trigger again.
+- When an event's time changes, omit `lastReminderSentAt` or reset it so reminders can trigger
+  again.

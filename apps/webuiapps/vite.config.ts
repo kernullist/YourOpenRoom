@@ -199,31 +199,51 @@ function albumFolderPlugin(): Plugin {
           const rootDir = getAlbumPhotoDirectory();
           if (!rootDir) {
             res.writeHead(200);
-            res.end(JSON.stringify({ configured: false, files: [] }));
+            res.end(JSON.stringify({ configured: false, photoDirectory: null, files: [] }));
             return;
           }
 
           const resolvedRoot = resolve(rootDir);
           if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) {
             res.writeHead(200);
-            res.end(JSON.stringify({ configured: true, exists: false, files: [] }));
+            res.end(
+              JSON.stringify({
+                configured: true,
+                exists: false,
+                photoDirectory: resolvedRoot,
+                files: [],
+              }),
+            );
             return;
           }
 
           const files = walkImages(resolvedRoot, resolvedRoot)
             .map(({ relativePath, absolutePath }) => {
               const stat = fs.statSync(absolutePath);
+              const folder = relativePath.includes('/')
+                ? relativePath.slice(0, relativePath.lastIndexOf('/'))
+                : '';
               return {
                 id: relativePath,
                 name: relativePath.split('/').pop() || relativePath,
+                relativePath,
+                folder,
                 src: `/api/album-file?path=${encodeURIComponent(relativePath)}`,
                 createdAt: stat.mtimeMs,
+                size: stat.size,
               };
             })
             .sort((a, b) => b.createdAt - a.createdAt);
 
           res.writeHead(200);
-          res.end(JSON.stringify({ configured: true, exists: true, files }));
+          res.end(
+            JSON.stringify({
+              configured: true,
+              exists: true,
+              photoDirectory: resolvedRoot,
+              files,
+            }),
+          );
         } catch (err) {
           res.writeHead(500);
           res.end(JSON.stringify({ error: String(err) }));

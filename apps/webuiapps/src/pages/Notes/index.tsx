@@ -1,8 +1,29 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
+import {
+  Bold,
+  CheckCircle2,
+  Clock3,
+  Code2,
+  Eye,
+  FileText,
+  Hash,
+  Heading1,
+  Italic,
+  List,
+  ListChecks,
+  PencilLine,
+  Pin,
+  PinOff,
+  Plus,
+  Save,
+  Search,
+  Tags,
+  Trash2,
+} from 'lucide-react';
 import {
   useFileSystem,
   useAgentActionListener,
@@ -22,6 +43,9 @@ const NOTES_DIR = '/notes';
 const STATE_FILE = '/state.json';
 
 const notesFileApi = createAppFileApi(APP_NAME);
+
+type CollectionFilter = 'all' | 'pinned';
+type SortMode = 'updated' | 'created' | 'title';
 
 interface NoteItem {
   id: string;
@@ -63,6 +87,12 @@ const DEFAULT_FORM: NoteFormState = {
   pinned: false,
 };
 
+const SORT_OPTIONS: Array<{ mode: SortMode; labelKey: string }> = [
+  { mode: 'updated', labelKey: 'sortUpdated' },
+  { mode: 'created', labelKey: 'sortCreated' },
+  { mode: 'title', labelKey: 'sortTitle' },
+];
+
 function getNoteFilePath(noteId: string): string {
   return `${NOTES_DIR}/${noteId}.json`;
 }
@@ -93,9 +123,12 @@ function normalizeNote(raw: unknown): NoteItem | null {
   };
 }
 
+function getLocale(language: string): string {
+  return language === 'zh' ? 'zh-CN' : language === 'ko' ? 'ko-KR' : 'en-US';
+}
+
 function formatUpdatedAt(timestamp: number, language: string): string {
-  const locale = language === 'zh' ? 'zh-CN' : language === 'ko' ? 'ko-KR' : 'en-US';
-  return new Intl.DateTimeFormat(locale, {
+  return new Intl.DateTimeFormat(getLocale(language), {
     month: 'short',
     day: 'numeric',
     hour: '2-digit',
@@ -103,18 +136,70 @@ function formatUpdatedAt(timestamp: number, language: string): string {
   }).format(timestamp);
 }
 
+function formatFullDate(timestamp: number, language: string): string {
+  return new Intl.DateTimeFormat(getLocale(language), {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  }).format(timestamp);
+}
+
+function stripMarkdown(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/[#>*`~_\-[\]()]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
 function buildExcerpt(content: string): string {
-  const plain = content.replace(/[#>*`~_\-\[\]\(\)]/g, ' ').replace(/\s+/g, ' ').trim();
+  const plain = stripMarkdown(content);
   return plain.length > 120 ? `${plain.slice(0, 120)}...` : plain;
+}
+
+function getWordCount(content: string): number {
+  const plain = stripMarkdown(content);
+  if (!plain) return 0;
+
+  const cjkCharacters =
+    plain.match(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/g) ?? [];
+  const latinWords = plain
+    .replace(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/g, ' ')
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return cjkCharacters.length + latinWords.length;
+}
+
+function getReadingMinutes(wordCount: number): number {
+  if (wordCount === 0) return 0;
+  return Math.max(1, Math.ceil(wordCount / 220));
+}
+
+function sortNotes(notes: NoteItem[], sortMode: SortMode): NoteItem[] {
+  return [...notes].sort((a, b) => {
+    if (sortMode === 'title') {
+      return (a.title || '').localeCompare(b.title || '');
+    }
+    if (sortMode === 'created') {
+      return b.createdAt - a.createdAt;
+    }
+    return b.updatedAt - a.updatedAt;
+  });
 }
 
 const NotesPage: React.FC = () => {
   const { t, i18n } = useTranslation('notes');
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [notes, setNotes] = useState<NoteItem[]>([]);
   const [selectedNoteId, setSelectedNoteId] = useState<string | null>(null);
   const [activeTag, setActiveTag] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [previewMode, setPreviewMode] = useState(false);
+  const [collectionFilter, setCollectionFilter] = useState<CollectionFilter>('all');
+  const [sortMode, setSortMode] = useState<SortMode>('updated');
   const [form, setForm] = useState<NoteFormState>(DEFAULT_FORM);
   const [isLoading, setIsLoading] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -251,45 +336,80 @@ const NotesPage: React.FC = () => {
     });
   }, [selectedNote]);
 
-  const allTags = useMemo(
-    () =>
-      Array.from(new Set(notes.flatMap((note) => note.tags)))
-        .sort((a, b) => a.localeCompare(b))
-        .slice(0, 18),
-    [notes],
-  );
+  const tagSummaries = useMemo(() => {
+    const counts = new Map<string, number>();
+    notes.forEach((note) => {
+      note.tags.forEach((tag) => counts.set(tag, (counts.get(tag) ?? 0) + 1));
+    });
+
+    return Array.from(counts, ([tag, count]) => ({ tag, count })).sort((a, b) =>
+      a.tag.localeCompare(b.tag),
+    );
+  }, [notes]);
 
   const filteredNotes = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
-    return notes.filter((note) => {
+    const nextNotes = notes.filter((note) => {
+      const matchesCollection = collectionFilter === 'pinned' ? note.pinned : true;
       const matchesTag = activeTag ? note.tags.includes(activeTag) : true;
       const haystack = `${note.title}\n${note.content}\n${note.tags.join(' ')}`.toLowerCase();
       const matchesQuery = query ? haystack.includes(query) : true;
-      return matchesTag && matchesQuery;
+      return matchesCollection && matchesTag && matchesQuery;
     });
-  }, [activeTag, notes, searchQuery]);
+
+    return sortNotes(nextNotes, sortMode);
+  }, [activeTag, collectionFilter, notes, searchQuery, sortMode]);
 
   const pinnedNotes = filteredNotes.filter((note) => note.pinned);
   const regularNotes = filteredNotes.filter((note) => !note.pinned);
+  const bodyNotes = collectionFilter === 'pinned' ? pinnedNotes : regularNotes;
+  const showPinnedSection = collectionFilter !== 'pinned' && pinnedNotes.length > 0;
+  const pinnedCount = notes.filter((note) => note.pinned).length;
+  const shouldShowListSection =
+    bodyNotes.length > 0 || filteredNotes.length === 0 || collectionFilter === 'pinned';
+
+  const formWordCount = useMemo(() => getWordCount(form.content), [form.content]);
+  const formReadingMinutes = getReadingMinutes(formWordCount);
+  const parsedFormTags = useMemo(() => parseTagsInput(form.tagsInput), [form.tagsInput]);
+  const isDraftStarted = Boolean(
+    form.title.trim() || form.content.trim() || form.tagsInput.trim() || form.pinned,
+  );
+  const isDirty = useMemo(() => {
+    if (!selectedNote) return isDraftStarted;
+
+    return (
+      selectedNote.title !== form.title.trim() ||
+      selectedNote.content !== form.content ||
+      selectedNote.pinned !== form.pinned ||
+      selectedNote.tags.join('\u0000') !== parsedFormTags.join('\u0000')
+    );
+  }, [form.content, form.pinned, form.title, isDraftStarted, parsedFormTags, selectedNote]);
+  const canSave = Boolean(form.title.trim() || form.content.trim());
+  const listTitle = activeTag
+    ? `#${activeTag}`
+    : collectionFilter === 'pinned'
+      ? t('pinnedStrip')
+      : t('workspaceTitle');
+  const statusLabel =
+    !selectedNote && !isDraftStarted ? t('ready') : isDirty ? t('unsaved') : t('saved');
 
   const resetForm = useCallback(() => {
     setSelectedNoteId(null);
     setPreviewMode(false);
+    setErrorText(null);
     setForm(DEFAULT_FORM);
   }, []);
 
-  const handleSelectNote = useCallback(
-    (noteId: string) => {
-      setSelectedNoteId(noteId);
-      reportAction(APP_ID, 'SELECT_NOTE', { noteId });
-    },
-    [],
-  );
+  const handleSelectNote = useCallback((noteId: string) => {
+    setSelectedNoteId(noteId);
+    setErrorText(null);
+    reportAction(APP_ID, 'SELECT_NOTE', { noteId });
+  }, []);
 
   const handleSave = useCallback(async () => {
     const title = form.title.trim();
-    const content = form.content.trim();
-    if (!title && !content) {
+    const content = form.content;
+    if (!title && !content.trim()) {
       setErrorText(t('validation'));
       return;
     }
@@ -318,6 +438,13 @@ const NotesPage: React.FC = () => {
       });
       setNotes(nextNotes);
       setSelectedNoteId(noteId);
+      setForm({
+        id: nextNote.id,
+        title: nextNote.title,
+        content: nextNote.content,
+        tagsInput: nextNote.tags.join(', '),
+        pinned: nextNote.pinned,
+      });
       reportAction(APP_ID, existing ? 'UPDATE_NOTE' : 'CREATE_NOTE', {
         filePath,
         focusId: noteId,
@@ -327,6 +454,18 @@ const NotesPage: React.FC = () => {
       setErrorText(error instanceof Error ? error.message : String(error));
     }
   }, [form, notes, saveFile, syncToCloud, t]);
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 's') {
+        event.preventDefault();
+        void handleSave();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [handleSave]);
 
   const handleDelete = useCallback(
     async (noteId: string) => {
@@ -346,57 +485,115 @@ const NotesPage: React.FC = () => {
     [deleteFromCloud, notes, selectedNoteId],
   );
 
-  const handleTogglePinned = useCallback(async () => {
-    if (!selectedNote && !form.id) {
-      setForm((prev) => ({ ...prev, pinned: !prev.pinned }));
-      return;
-    }
+  const handleTogglePinned = useCallback(() => {
+    setForm((prev) => ({ ...prev, pinned: !prev.pinned }));
+  }, []);
 
-    if (!selectedNote) return;
-    const nextNote: NoteItem = {
-      ...selectedNote,
-      pinned: !selectedNote.pinned,
-      updatedAt: Date.now(),
-    };
-    try {
-      const filePath = getNoteFilePath(nextNote.id);
-      saveFile(filePath, nextNote);
-      await syncToCloud(filePath, nextNote);
-      setNotes((prev) =>
-        prev
-          .map((note) => (note.id === nextNote.id ? nextNote : note))
-          .sort((a, b) => {
-            if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-            return b.updatedAt - a.updatedAt;
-          }),
-      );
-      setForm((prev) => ({ ...prev, pinned: nextNote.pinned }));
-      reportAction(APP_ID, nextNote.pinned ? 'PIN_NOTE' : 'UNPIN_NOTE', { noteId: nextNote.id });
-    } catch (error) {
-      console.error('[Notes] Pin toggle failed:', error);
-      setErrorText(error instanceof Error ? error.message : String(error));
-    }
-  }, [form.id, saveFile, selectedNote, syncToCloud]);
+  const handleSelectCollection = useCallback((nextFilter: CollectionFilter) => {
+    setCollectionFilter(nextFilter);
+    setActiveTag(null);
+  }, []);
 
-  const renderNoteCard = (note: NoteItem) => (
-    <button
-      key={note.id}
-      className={`${styles.noteCard} ${selectedNoteId === note.id ? styles.noteCardActive : ''}`}
-      onClick={() => handleSelectNote(note.id)}
-    >
-      <div className={styles.noteCardHeader}>
-        <div className={styles.noteMetaGroup}>
-          {note.pinned ? <span className={styles.pillAccent}>{t('pinned')}</span> : null}
-          <span className={styles.noteUpdated}>{formatUpdatedAt(note.updatedAt, i18n.language)}</span>
-        </div>
-        <strong className={styles.noteCardTitle}>{note.title || t('untitled')}</strong>
-      </div>
-      <p className={styles.noteExcerpt}>{buildExcerpt(note.content) || t('emptyNote')}</p>
-      <div className={styles.noteTags}>
-        {note.tags.length > 0 ? note.tags.slice(0, 3).map((tag) => <span key={tag}>#{tag}</span>) : <span>{t('noTags')}</span>}
-      </div>
-    </button>
+  const handleSelectTag = useCallback((tag: string | null) => {
+    setCollectionFilter('all');
+    setActiveTag(tag);
+  }, []);
+
+  const insertMarkdown = useCallback(
+    (prefix: string, suffix = '', fallback?: string) => {
+      setPreviewMode(false);
+      setForm((prev) => {
+        const value = prev.content;
+        const textarea = textareaRef.current;
+        const start = textarea?.selectionStart ?? value.length;
+        const end = textarea?.selectionEnd ?? value.length;
+        const selectedText = value.slice(start, end);
+        const insertion = selectedText || fallback || t('formatPlaceholder');
+        const nextContent = `${value.slice(0, start)}${prefix}${insertion}${suffix}${value.slice(end)}`;
+        const selectionStart = start + prefix.length;
+        const selectionEnd = selectionStart + insertion.length;
+
+        window.requestAnimationFrame(() => {
+          const nextTextarea = textareaRef.current;
+          nextTextarea?.focus();
+          nextTextarea?.setSelectionRange(selectionStart, selectionEnd);
+        });
+
+        return { ...prev, content: nextContent };
+      });
+    },
+    [t],
   );
+
+  const formatActions = [
+    {
+      label: t('formatHeading'),
+      icon: <Heading1 size={16} />,
+      action: () => insertMarkdown('# ', '', t('formatHeadingPlaceholder')),
+    },
+    {
+      label: t('formatBold'),
+      icon: <Bold size={16} />,
+      action: () => insertMarkdown('**', '**', t('formatTextPlaceholder')),
+    },
+    {
+      label: t('formatItalic'),
+      icon: <Italic size={16} />,
+      action: () => insertMarkdown('*', '*', t('formatTextPlaceholder')),
+    },
+    {
+      label: t('formatBullet'),
+      icon: <List size={16} />,
+      action: () => insertMarkdown('\n- ', '', t('formatListPlaceholder')),
+    },
+    {
+      label: t('formatTask'),
+      icon: <ListChecks size={16} />,
+      action: () => insertMarkdown('\n- [ ] ', '', t('formatTaskPlaceholder')),
+    },
+    {
+      label: t('formatCode'),
+      icon: <Code2 size={16} />,
+      action: () => insertMarkdown('```\n', '\n```', t('formatCodePlaceholder')),
+    },
+  ];
+
+  const renderNoteRow = (note: NoteItem) => {
+    const excerpt = buildExcerpt(note.content);
+    const wordCount = getWordCount(note.content);
+    const isActive = selectedNoteId === note.id;
+
+    return (
+      <button
+        key={note.id}
+        type="button"
+        className={`${styles.noteRow} ${isActive ? styles.noteRowActive : ''}`}
+        onClick={() => handleSelectNote(note.id)}
+      >
+        <span className={styles.noteRowTop}>
+          <span className={styles.noteGlyph}>
+            {note.pinned ? <Pin size={15} /> : <FileText size={15} />}
+          </span>
+          <span className={styles.noteUpdated}>
+            <Clock3 size={13} />
+            {formatUpdatedAt(note.updatedAt, i18n.language)}
+          </span>
+        </span>
+        <strong className={styles.noteRowTitle}>{note.title || t('untitled')}</strong>
+        <span className={styles.noteExcerpt}>{excerpt || t('emptyNote')}</span>
+        <span className={styles.noteRowFooter}>
+          <span className={styles.noteTags}>
+            {note.tags.length > 0 ? (
+              note.tags.slice(0, 3).map((tag) => <span key={tag}>#{tag}</span>)
+            ) : (
+              <span>{t('noTags')}</span>
+            )}
+          </span>
+          <span className={styles.wordCount}>{wordCount}</span>
+        </span>
+      </button>
+    );
+  };
 
   if (isLoading) {
     return (
@@ -408,167 +605,277 @@ const NotesPage: React.FC = () => {
 
   return (
     <div className={styles.notesApp}>
-      <aside className={styles.sidebar}>
-        <div className={styles.brandBlock}>
-          <p className={styles.kicker}>{t('kicker')}</p>
-          <h1>{t('title')}</h1>
-          <p className={styles.brandCopy}>{t('subtitle')}</p>
-        </div>
-
-        <div className={styles.statGrid}>
-          <div className={styles.statCard}>
-            <span>{t('allNotes')}</span>
-            <strong>{notes.length}</strong>
+      <aside className={styles.navigator}>
+        <div className={styles.appHeader}>
+          <span className={styles.appMark}>
+            <FileText size={18} />
+          </span>
+          <div>
+            <p className={styles.kicker}>{t('kicker')}</p>
+            <h1>{t('title')}</h1>
           </div>
-          <div className={styles.statCard}>
-            <span>{t('pinned')}</span>
-            <strong>{notes.filter((note) => note.pinned).length}</strong>
-          </div>
+          <button
+            type="button"
+            className={styles.iconButton}
+            onClick={resetForm}
+            title={t('newNote')}
+          >
+            <Plus size={18} />
+          </button>
         </div>
 
         <label className={styles.searchBox}>
-          <span>{t('search')}</span>
+          <Search size={16} />
           <input
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
             placeholder={t('searchPlaceholder')}
+            aria-label={t('search')}
           />
         </label>
 
-        <div className={styles.filterBlock}>
-          <div className={styles.filterHeader}>
-            <h2>{t('tags')}</h2>
-            <button onClick={() => setActiveTag(null)}>{t('reset')}</button>
-          </div>
-          <div className={styles.tagCloud}>
-            <button
-              className={!activeTag ? styles.tagActive : ''}
-              onClick={() => setActiveTag(null)}
-            >
-              {t('allTags')}
-            </button>
-            {allTags.map((tag) => (
-              <button
-                key={tag}
-                className={activeTag === tag ? styles.tagActive : ''}
-                onClick={() => setActiveTag(tag)}
-              >
-                #{tag}
+        <div className={styles.navSection}>
+          <div className={styles.navHeading}>{t('library')}</div>
+          <button
+            type="button"
+            className={`${styles.navItem} ${collectionFilter === 'all' && !activeTag ? styles.navItemActive : ''}`}
+            onClick={() => handleSelectCollection('all')}
+          >
+            <FileText size={16} />
+            <span>{t('allNotes')}</span>
+            <strong>{notes.length}</strong>
+          </button>
+          <button
+            type="button"
+            className={`${styles.navItem} ${collectionFilter === 'pinned' ? styles.navItemActive : ''}`}
+            onClick={() => handleSelectCollection('pinned')}
+          >
+            <Pin size={16} />
+            <span>{t('pinned')}</span>
+            <strong>{pinnedCount}</strong>
+          </button>
+        </div>
+
+        <div className={styles.navSection}>
+          <div className={styles.navHeading}>
+            <span>{t('tags')}</span>
+            {activeTag ? (
+              <button type="button" onClick={() => handleSelectTag(null)}>
+                {t('reset')}
               </button>
-            ))}
+            ) : null}
+          </div>
+          <div className={styles.tagList}>
+            {tagSummaries.length > 0 ? (
+              tagSummaries.slice(0, 22).map(({ tag, count }) => (
+                <button
+                  key={tag}
+                  type="button"
+                  className={`${styles.tagItem} ${activeTag === tag ? styles.tagItemActive : ''}`}
+                  onClick={() => handleSelectTag(tag)}
+                >
+                  <Hash size={14} />
+                  <span>{tag}</span>
+                  <strong>{count}</strong>
+                </button>
+              ))
+            ) : (
+              <div className={styles.navEmpty}>{t('noTags')}</div>
+            )}
           </div>
         </div>
 
-        <button className={styles.createButton} onClick={resetForm}>
+        <button type="button" className={styles.newNoteButton} onClick={resetForm}>
+          <Plus size={17} />
           {t('newNote')}
         </button>
       </aside>
 
-      <section className={styles.canvas}>
-        <div className={styles.canvasHeader}>
+      <section className={styles.listPane}>
+        <div className={styles.listHeader}>
           <div>
             <p className={styles.kicker}>{t('workspace')}</p>
-            <h2>{activeTag ? `#${activeTag}` : t('workspaceTitle')}</h2>
+            <h2>{listTitle}</h2>
           </div>
           <span className={styles.resultCount}>
             {filteredNotes.length} {t('results')}
           </span>
         </div>
 
-        {pinnedNotes.length > 0 ? (
-          <div className={styles.pinRail}>
-            <div className={styles.railHeader}>
-              <h3>{t('pinnedStrip')}</h3>
-            </div>
-            <div className={styles.pinScroller}>{pinnedNotes.map(renderNoteCard)}</div>
-          </div>
-        ) : null}
+        <div className={styles.sortBar} aria-label={t('sortBy')}>
+          {SORT_OPTIONS.map((option) => (
+            <button
+              key={option.mode}
+              type="button"
+              className={sortMode === option.mode ? styles.sortActive : ''}
+              onClick={() => setSortMode(option.mode)}
+            >
+              {t(option.labelKey)}
+            </button>
+          ))}
+        </div>
 
-        <div className={styles.listSection}>
-          <div className={styles.railHeader}>
-            <h3>{t('recent')}</h3>
-          </div>
-          <div className={styles.noteGrid}>
-            {regularNotes.length > 0 ? (
-              regularNotes.map(renderNoteCard)
-            ) : (
-              <div className={styles.emptyState}>
-                <strong>{t('emptyTitle')}</strong>
-                <p>{t('emptyBody')}</p>
+        <div className={styles.noteListScroller}>
+          {showPinnedSection ? (
+            <section className={styles.noteGroup}>
+              <div className={styles.groupHeader}>
+                <Pin size={15} />
+                <h3>{t('pinnedStrip')}</h3>
               </div>
-            )}
-          </div>
+              <div className={styles.noteList}>{pinnedNotes.map(renderNoteRow)}</div>
+            </section>
+          ) : null}
+
+          {shouldShowListSection ? (
+            <section className={styles.noteGroup}>
+              <div className={styles.groupHeader}>
+                <FileText size={15} />
+                <h3>{collectionFilter === 'pinned' ? t('pinnedStrip') : t('recent')}</h3>
+              </div>
+              <div className={styles.noteList}>
+                {bodyNotes.length > 0 ? (
+                  bodyNotes.map(renderNoteRow)
+                ) : (
+                  <div className={styles.emptyState}>
+                    <strong>{t('emptyTitle')}</strong>
+                    <p>{t('emptyBody')}</p>
+                    <button type="button" onClick={resetForm}>
+                      <Plus size={16} />
+                      {t('newNote')}
+                    </button>
+                  </div>
+                )}
+              </div>
+            </section>
+          ) : null}
         </div>
       </section>
 
-      <section className={styles.editorPanel}>
-        <div className={styles.editorCard}>
-          <div className={styles.editorHeader}>
-            <div>
-              <p className={styles.kicker}>{selectedNote ? t('editing') : t('draft')}</p>
-              <h2>{selectedNote ? selectedNote.title || t('untitled') : t('editorTitle')}</h2>
-            </div>
-            <div className={styles.editorActions}>
-              <button onClick={() => setPreviewMode((prev) => !prev)}>
-                {previewMode ? t('writeMode') : t('previewMode')}
-              </button>
-              <button onClick={() => void handleTogglePinned()}>
-                {form.pinned ? t('unpinnedAction') : t('pinAction')}
-              </button>
-              {selectedNote ? (
-                <button onClick={() => void handleDelete(selectedNote.id)}>{t('delete')}</button>
-              ) : null}
-            </div>
-          </div>
-
-          <label className={styles.field}>
-            <span>{t('noteTitle')}</span>
-            <input
-              value={form.title}
-              onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
-              placeholder={t('noteTitlePlaceholder')}
+      <section className={styles.editorPane}>
+        <div className={styles.editorTopBar}>
+          <div className={styles.editorStatus}>
+            <span
+              className={`${styles.statusDot} ${isDirty ? styles.statusDirty : styles.statusSaved}`}
             />
-          </label>
-
-          <label className={styles.field}>
-            <span>{t('tagInput')}</span>
-            <input
-              value={form.tagsInput}
-              onChange={(e) => setForm((prev) => ({ ...prev, tagsInput: e.target.value }))}
-              placeholder={t('tagPlaceholder')}
-            />
-          </label>
-
-          <div className={styles.editorSurface}>
-            {previewMode ? (
-              <div className={styles.previewPane}>
-                {form.content.trim() ? (
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>{form.content}</ReactMarkdown>
-                ) : (
-                  <div className={styles.previewEmpty}>{t('previewEmpty')}</div>
-                )}
-              </div>
-            ) : (
-              <label className={styles.fieldGrow}>
-                <span>{t('body')}</span>
-                <textarea
-                  value={form.content}
-                  onChange={(e) => setForm((prev) => ({ ...prev, content: e.target.value }))}
-                  placeholder={t('bodyPlaceholder')}
-                />
-              </label>
-            )}
+            <span>{statusLabel}</span>
           </div>
-
-          {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
-
-          <div className={styles.bottomBar}>
-            <span>{t('syncHint')}</span>
-            <button className={styles.saveButton} onClick={() => void handleSave()}>
+          <div className={styles.editorActions}>
+            <button
+              type="button"
+              className={`${styles.iconButton} ${form.pinned ? styles.iconButtonActive : ''}`}
+              onClick={handleTogglePinned}
+              title={form.pinned ? t('unpinnedAction') : t('pinAction')}
+            >
+              {form.pinned ? <PinOff size={17} /> : <Pin size={17} />}
+            </button>
+            {selectedNote ? (
+              <button
+                type="button"
+                className={`${styles.iconButton} ${styles.dangerButton}`}
+                onClick={() => void handleDelete(selectedNote.id)}
+                title={t('delete')}
+              >
+                <Trash2 size={17} />
+              </button>
+            ) : null}
+            <button
+              type="button"
+              className={styles.saveButton}
+              disabled={!canSave}
+              onClick={() => void handleSave()}
+            >
+              <Save size={17} />
               {selectedNote ? t('saveChanges') : t('saveNote')}
             </button>
           </div>
         </div>
+
+        <div className={styles.editorMeta}>
+          <span>
+            <Clock3 size={14} />
+            {selectedNote ? formatFullDate(selectedNote.updatedAt, i18n.language) : t('draft')}
+          </span>
+          <span>
+            <CheckCircle2 size={14} />
+            {formWordCount} {t('words')}
+          </span>
+          <span>
+            <FileText size={14} />
+            {formReadingMinutes} {t('minutes')}
+          </span>
+        </div>
+
+        <input
+          className={styles.titleInput}
+          value={form.title}
+          onChange={(e) => setForm((prev) => ({ ...prev, title: e.target.value }))}
+          placeholder={t('noteTitlePlaceholder')}
+          aria-label={t('noteTitle')}
+        />
+
+        <label className={styles.tagEditor}>
+          <Tags size={16} />
+          <input
+            value={form.tagsInput}
+            onChange={(e) => setForm((prev) => ({ ...prev, tagsInput: e.target.value }))}
+            placeholder={t('tagPlaceholder')}
+            aria-label={t('tagInput')}
+          />
+        </label>
+
+        <div className={styles.modeToolbar}>
+          <div className={styles.modeSwitch}>
+            <button
+              type="button"
+              className={!previewMode ? styles.modeActive : ''}
+              onClick={() => setPreviewMode(false)}
+            >
+              <PencilLine size={16} />
+              {t('writeMode')}
+            </button>
+            <button
+              type="button"
+              className={previewMode ? styles.modeActive : ''}
+              onClick={() => setPreviewMode(true)}
+            >
+              <Eye size={16} />
+              {t('previewMode')}
+            </button>
+          </div>
+
+          {!previewMode ? (
+            <div className={styles.formatToolbar} aria-label={t('markdownTools')}>
+              {formatActions.map((item) => (
+                <button key={item.label} type="button" onClick={item.action} title={item.label}>
+                  {item.icon}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div className={styles.editorSurface}>
+          {previewMode ? (
+            <div className={styles.previewPane}>
+              {form.content.trim() ? (
+                <ReactMarkdown remarkPlugins={[remarkGfm]}>{form.content}</ReactMarkdown>
+              ) : (
+                <div className={styles.previewEmpty}>{t('previewEmpty')}</div>
+              )}
+            </div>
+          ) : (
+            <textarea
+              ref={textareaRef}
+              className={styles.bodyInput}
+              value={form.content}
+              onChange={(e) => setForm((prev) => ({ ...prev, content: e.target.value }))}
+              placeholder={t('bodyPlaceholder')}
+              aria-label={t('body')}
+            />
+          )}
+        </div>
+
+        {errorText ? <div className={styles.errorBox}>{errorText}</div> : null}
       </section>
     </div>
   );

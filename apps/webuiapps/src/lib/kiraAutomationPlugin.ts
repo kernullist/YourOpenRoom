@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { exec as execCallback, execFile as execFileCallback, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
 import { basename, dirname, join, resolve } from 'path';
@@ -24,6 +25,7 @@ type LLMProvider =
 type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 
 type KiraTaskStatus = 'todo' | 'in_progress' | 'in_review' | 'blocked' | 'done';
+type WorkClarificationStatus = 'pending' | 'answered' | 'cleared';
 
 interface LLMConfig {
   provider: LLMProvider;
@@ -54,8 +56,39 @@ interface WorkTask {
   description: string;
   status: KiraTaskStatus;
   assignee: string;
+  clarification?: WorkClarificationState;
   createdAt: number;
   updatedAt: number;
+}
+
+interface WorkClarificationQuestion {
+  id: string;
+  question: string;
+  options: string[];
+  allowCustomAnswer: boolean;
+}
+
+interface WorkClarificationAnswer {
+  questionId: string;
+  question: string;
+  answer: string;
+}
+
+interface WorkClarificationState {
+  status: WorkClarificationStatus;
+  briefHash: string;
+  summary: string;
+  questions: WorkClarificationQuestion[];
+  answers?: WorkClarificationAnswer[];
+  createdAt: number;
+  answeredAt?: number;
+}
+
+interface WorkClarificationAnalysis {
+  needsClarification: boolean;
+  confidence: number;
+  summary: string;
+  questions: WorkClarificationQuestion[];
 }
 
 interface TaskComment {
@@ -332,6 +365,8 @@ const PROJECT_SETTINGS_DIR_NAME = '.kira';
 const PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
+const MAX_CLARIFICATION_QUESTIONS = 3;
+const MAX_CLARIFICATION_OPTIONS = 4;
 const MAX_AGENT_TURNS = 24;
 const MAX_AGENT_REPAIR_TURNS = 2;
 const MAX_AGENT_TIMEOUT_RETRIES = 1;
@@ -2989,6 +3024,300 @@ export function parseProjectDiscoveryAnalysis(
   }
 }
 
+function hashWorkBrief(work: Pick<WorkTask, 'title' | 'description' | 'projectName'>): string {
+  return createHash('sha256')
+    .update(JSON.stringify([work.projectName, work.title.trim(), work.description.trim()]))
+    .digest('hex')
+    .slice(0, 20);
+}
+
+function normalizeClarificationQuestionId(
+  rawId: unknown,
+  index: number,
+  usedIds: Set<string>,
+): string {
+  const fallbackId = `q-${index + 1}`;
+  let nextId = typeof rawId === 'string' && rawId.trim() ? rawId.trim() : fallbackId;
+  if (usedIds.has(nextId)) nextId = fallbackId;
+  let suffix = 2;
+  while (usedIds.has(nextId)) {
+    nextId = `${fallbackId}-${suffix}`;
+    suffix += 1;
+  }
+  usedIds.add(nextId);
+  return nextId;
+}
+
+function normalizeClarificationSummary(value: unknown, fallback: string): string {
+  return typeof value === 'string' && value.trim() ? normalizeWhitespace(value) : fallback;
+}
+
+function buildFallbackClarificationQuestion(
+  question: string,
+  index = 0,
+): WorkClarificationQuestion {
+  return {
+    id: `q-${index + 1}`,
+    question,
+    options: [],
+    allowCustomAnswer: true,
+  };
+}
+
+function normalizeClarificationQuestion(
+  raw: Partial<WorkClarificationQuestion> | null | undefined,
+  index: number,
+  usedIds: Set<string>,
+): WorkClarificationQuestion | null {
+  const question = typeof raw?.question === 'string' ? raw.question.trim() : '';
+  if (!question) return null;
+  const options = uniqueStrings(
+    (Array.isArray(raw?.options) ? raw.options : [])
+      .map((option) => normalizeWhitespace(String(option)))
+      .filter(Boolean),
+  ).slice(0, MAX_CLARIFICATION_OPTIONS);
+
+  return {
+    id: normalizeClarificationQuestionId(raw?.id, index, usedIds),
+    question,
+    options,
+    allowCustomAnswer: options.length === 0 || raw?.allowCustomAnswer !== false,
+  };
+}
+
+export function parseWorkClarificationAnalysis(raw: string): WorkClarificationAnalysis {
+  try {
+    const parsed = JSON.parse(extractJson(raw)) as Partial<WorkClarificationAnalysis> & {
+      questions?: Array<Partial<WorkClarificationQuestion>>;
+    };
+    const usedIds = new Set<string>();
+    const questions = (Array.isArray(parsed.questions) ? parsed.questions : [])
+      .slice(0, MAX_CLARIFICATION_QUESTIONS)
+      .map((question, index) => normalizeClarificationQuestion(question, index, usedIds))
+      .filter((question): question is WorkClarificationQuestion => question !== null);
+    const needsClarification = parsed.needsClarification === true;
+    const summary = normalizeClarificationSummary(
+      parsed.summary,
+      needsClarification
+        ? 'The brief needs clarification before worker assignment.'
+        : 'The brief is ready for worker assignment.',
+    );
+
+    return {
+      needsClarification,
+      confidence:
+        typeof parsed.confidence === 'number' && Number.isFinite(parsed.confidence)
+          ? Math.max(0, Math.min(1, parsed.confidence))
+          : 0.5,
+      summary,
+      questions:
+        needsClarification && questions.length === 0
+          ? [
+              buildFallbackClarificationQuestion(
+                'The main model said this work needs clarification but did not return usable questions. What detail should be added before a worker starts?',
+              ),
+            ]
+          : questions,
+    };
+  } catch {
+    return {
+      needsClarification: true,
+      confidence: 0,
+      summary:
+        'Clarification analysis could not be parsed, so Kira is blocking worker assignment instead of proceeding with an unchecked brief.',
+      questions: [
+        buildFallbackClarificationQuestion(
+          'Kira could not read the main model clarification result. What should be clarified or changed in the brief before a worker starts?',
+        ),
+      ],
+    };
+  }
+}
+
+function validateWorkClarificationAnalysisFinal(content: string): string[] {
+  const issues: string[] = [];
+  let parsed: Partial<WorkClarificationAnalysis> & {
+    questions?: Array<Partial<WorkClarificationQuestion>>;
+  };
+
+  try {
+    parsed = JSON.parse(extractJson(content)) as Partial<WorkClarificationAnalysis> & {
+      questions?: Array<Partial<WorkClarificationQuestion>>;
+    };
+  } catch {
+    return [
+      'Return a valid JSON object with needsClarification, confidence, summary, and questions.',
+    ];
+  }
+
+  if (typeof parsed.needsClarification !== 'boolean') {
+    issues.push('needsClarification must be a boolean.');
+  }
+  if (typeof parsed.confidence !== 'number' || !Number.isFinite(parsed.confidence)) {
+    issues.push('confidence must be a finite number between 0 and 1.');
+  }
+  if (typeof parsed.summary !== 'string' || !parsed.summary.trim()) {
+    issues.push('summary must be a non-empty string.');
+  }
+  if (!Array.isArray(parsed.questions)) {
+    issues.push('questions must be an array.');
+  }
+
+  if (parsed.needsClarification === true) {
+    const usableQuestions = (Array.isArray(parsed.questions) ? parsed.questions : []).filter(
+      (question) => typeof question?.question === 'string' && question.question.trim(),
+    );
+    if (usableQuestions.length === 0) {
+      issues.push('When needsClarification is true, include at least one usable question.');
+    }
+  }
+
+  return issues;
+}
+
+function buildWorkClarificationPrompt(work: WorkTask, projectOverview: string): string {
+  return [
+    `Project: ${work.projectName}`,
+    `Work title: ${work.title}`,
+    `Work brief:\n${work.description || '(empty)'}`,
+    `Project overview:\n${projectOverview}`,
+    'Decide whether this work item is ready to hand to implementation workers.',
+    'Ask clarification questions only when ambiguity would likely cause a worker to implement the wrong behavior, miss a key constraint, or choose between materially different product outcomes.',
+    'Do not ask about details that a worker can safely infer from existing project code, tests, style, or common implementation practice.',
+    `If clarification is needed, ask at most ${MAX_CLARIFICATION_QUESTIONS} high-signal questions.`,
+    `Prefer multiple-choice questions with 2-${MAX_CLARIFICATION_OPTIONS} concise options whenever possible.`,
+    'Use allowCustomAnswer=true when none of the options can safely cover the decision.',
+    'Match the language of the work brief when writing questions and options.',
+    'Return only JSON with this shape:',
+    '{"needsClarification":true,"confidence":0.82,"summary":"string","questions":[{"id":"q1","question":"string","options":["..."],"allowCustomAnswer":true}]}',
+    'If no clarification is needed, return:',
+    '{"needsClarification":false,"confidence":0.9,"summary":"The brief is ready for worker assignment.","questions":[]}',
+  ].join('\n\n');
+}
+
+function buildWorkClarificationSystemPrompt(): string {
+  return [
+    'You are Aoi, the main Kira orchestration model.',
+    'Your job is to prevent bad worker assignments caused by underspecified or ambiguous work briefs.',
+    'Be decisive: only interrupt the user for information that meaningfully changes implementation.',
+    'Prefer objective multiple-choice questions over open-ended questions.',
+    'Do not modify files.',
+    'Do not wrap the final JSON in markdown fences.',
+  ].join('\n');
+}
+
+function buildClarificationRequestComment(analysis: WorkClarificationAnalysis): string {
+  return [
+    'Clarification requested before worker assignment.',
+    '',
+    `Summary:\n${analysis.summary}`,
+    '',
+    `Questions:\n${analysis.questions
+      .map((question, index) => {
+        const options =
+          question.options.length > 0
+            ? question.options.map((option) => `  - ${option}`).join('\n')
+            : '  - Free-form answer needed';
+        return `${index + 1}. ${question.question}\n${options}`;
+      })
+      .join('\n\n')}`,
+    '',
+    'Answer in the Kira clarification panel, or update the work brief and save it again.',
+  ].join('\n');
+}
+
+async function ensureWorkClarification(
+  options: KiraAutomationPluginOptions,
+  sessionPath: string,
+  work: WorkTask,
+  runtime: ReturnType<typeof getKiraRuntimeSettings>,
+  projectRoot: string,
+  signal?: AbortSignal,
+): Promise<WorkTask | null> {
+  if (work.status !== 'todo') return work;
+
+  const briefHash = hashWorkBrief(work);
+  const current = work.clarification;
+  if (current?.briefHash === briefHash && current.status !== 'pending') {
+    return work;
+  }
+  if (current?.briefHash === briefHash && current.status === 'pending') {
+    updateWork(options.sessionsDir, sessionPath, work.id, (existing) => ({
+      ...existing,
+      status: 'blocked',
+    }));
+    return null;
+  }
+
+  const projectOverview = buildProjectOverview(projectRoot);
+  const raw = await runToolAgent(
+    runtime.reviewerConfig!,
+    projectRoot,
+    buildWorkClarificationPrompt(work, projectOverview),
+    buildWorkClarificationSystemPrompt(),
+    false,
+    signal,
+    undefined,
+    validateWorkClarificationAnalysisFinal,
+  );
+  const analysis = parseWorkClarificationAnalysis(raw);
+
+  if (!analysis.needsClarification) {
+    return (
+      updateWork(options.sessionsDir, sessionPath, work.id, (existing) => ({
+        ...existing,
+        clarification: {
+          status: 'cleared',
+          briefHash,
+          summary: analysis.summary,
+          questions: [],
+          createdAt: Date.now(),
+        },
+      })) ?? {
+        ...work,
+        clarification: {
+          status: 'cleared',
+          briefHash,
+          summary: analysis.summary,
+          questions: [],
+          createdAt: Date.now(),
+        },
+      }
+    );
+  }
+
+  const clarification: WorkClarificationState = {
+    status: 'pending',
+    briefHash,
+    summary: analysis.summary,
+    questions: analysis.questions,
+    createdAt: Date.now(),
+  };
+
+  const updated = updateWork(options.sessionsDir, sessionPath, work.id, (existing) => ({
+    ...existing,
+    status: 'blocked',
+    clarification,
+  }));
+  addComment(options.sessionsDir, sessionPath, {
+    taskId: work.id,
+    taskType: 'work',
+    author: runtime.reviewerAuthor,
+    body: buildClarificationRequestComment(analysis),
+  });
+  enqueueEvent(options.sessionsDir, sessionPath, {
+    id: makeId('event'),
+    workId: work.id,
+    title: work.title,
+    projectName: work.projectName,
+    type: 'needs_attention',
+    createdAt: Date.now(),
+    message: `Kira 질문 필요: "${work.title}" 작업을 worker에게 넘기기 전에 확인할 내용이 있어요.`,
+  });
+
+  return updated?.status === 'todo' ? updated : null;
+}
+
 function formatList(items: string[], emptyLabel: string): string {
   if (items.length === 0) return `- ${emptyLabel}`;
   return items.map((item) => `- ${item}`).join('\n');
@@ -4663,8 +4992,10 @@ function updateWork(
   const current = readJsonFile<WorkTask>(workPath);
   if (!current) return null;
   const next = updater(current);
-  writeJsonFile(workPath, { ...next, updatedAt: Date.now() });
-  return { ...next, updatedAt: Date.now() };
+  const updatedAt = Date.now();
+  const persisted = { ...next, updatedAt };
+  writeJsonFile(workPath, persisted);
+  return persisted;
 }
 
 function addComment(
@@ -5427,7 +5758,9 @@ async function processWorkWithMultipleWorkers(params: {
         )}`,
         '',
         `Files changed:\n${formatList(
-          uniqueStrings(reviewableAttempts.flatMap((attempt) => attempt.workerSummary.filesChanged)),
+          uniqueStrings(
+            reviewableAttempts.flatMap((attempt) => attempt.workerSummary.filesChanged),
+          ),
           'No changed files recorded',
         )}`,
       ].join('\n'),
@@ -5646,7 +5979,7 @@ async function processWork(
 ): Promise<void> {
   const runtime = getKiraRuntimeSettings(options.configFile, options.getWorkRootDirectory());
   const dataDir = getKiraDataDir(options.sessionsDir, sessionPath);
-  const work = readJsonFile<WorkTask>(join(dataDir, WORKS_DIR_NAME, `${workId}.json`));
+  let work = readJsonFile<WorkTask>(join(dataDir, WORKS_DIR_NAME, `${workId}.json`));
   if (!work || (work.status !== 'todo' && work.status !== 'in_progress')) return;
 
   if (!runtime.workerConfig || !runtime.reviewerConfig) {
@@ -5687,6 +6020,17 @@ async function processWork(
     });
     return;
   }
+
+  const clarifiedWork = await ensureWorkClarification(
+    options,
+    sessionPath,
+    work,
+    runtime,
+    primaryProjectRoot,
+    signal,
+  );
+  if (!clarifiedWork) return;
+  work = clarifiedWork;
 
   if (runtime.workerConfigs.length > 1) {
     await processWorkWithMultipleWorkers({

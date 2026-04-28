@@ -87,6 +87,7 @@ const en = {
     queued: 'Queued',
     running: 'Running',
     reviewPending: 'Needs review',
+    clarification: 'Needs clarification',
   },
   comments: {
     empty: 'No comments yet.',
@@ -158,6 +159,18 @@ const en = {
     discoveryStepMap: 'Map project surface',
     discoveryStepInspect: 'Inspect code paths',
     discoveryStepShape: 'Shape next tasks',
+  },
+  clarification: {
+    title: 'Clarification needed',
+    copy: 'Aoi found a decision that should be resolved before a worker starts.',
+    pending: 'Waiting',
+    answerRequired: 'Answer every clarification question before continuing.',
+    customPlaceholder: 'Or write a custom answer...',
+    freeformPlaceholder: 'Write your answer...',
+    submitAnswers: 'Submit answers',
+    proceedAnyway: 'Use current brief',
+    commentTitle: 'Clarification answers submitted.',
+    proceedComment: 'User chose to proceed with the current brief without extra clarification.',
   },
 };
 

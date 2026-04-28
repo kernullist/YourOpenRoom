@@ -18,8 +18,8 @@ browser desktop demo.
 
 Today the project is centered on three connected layers:
 
-- A **browser desktop shell** with draggable windows, a floating chat panel, local state, and a set
-  of built-in apps.
+- A **browser desktop shell** with draggable/maximizable windows, reorderable desktop icons, a
+  floating chat panel, local state, and a set of built-in apps.
 - An **agent runtime** that can operate apps through `meta.yaml` actions, inspect app state, mutate
   app storage, and call tooling from the chat panel.
 - A **local project automation stack** built around **Kira** and **Aoi's IDE**, with search, file
@@ -30,8 +30,8 @@ The main runtime that ships today lives in `apps/webuiapps`.
 
 ## What Actually Ships Today
 
-- A standalone browser desktop with floating windows, desktop icons, chat docking, live wallpaper
-  toggles, and Kira automation notices.
+- A standalone browser desktop with floating windows, persistent drag-and-drop desktop icon order,
+  chat-aware maximize/restore, chat docking, live wallpaper toggles, and Kira automation notices.
 - A configurable chat panel with:
   - main LLM routing for OpenAI-compatible or Anthropic-compatible backends
   - optional cheaper dialog-model override for light chat turns
@@ -59,16 +59,16 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Twitter`        | Local social feed with posts, likes, and comments persisted in app storage                                                                                                           |
 | `YouTube`        | YouTube search, recent searches, favorite topics, playlists, queue playback, and popup player controls                                                                               |
 | `Diary`          | Markdown journal with mood/weather metadata, calendar navigation, and styled handwritten rendering                                                                                   |
-| `Album`          | Read-only local photo gallery backed by `album.photoDirectory`                                                                                                                       |
+| `Album`          | Modern local photo gallery with folder picking, saved folder paths, search, sort, grid density controls, and preview metadata                                                        |
 | `FreeCell`       | Persistent FreeCell game state with rule-aware moves                                                                                                                                 |
 | `Email`          | Real Gmail sync with OAuth desktop flow, inbox/sent/drafts/trash, reply, draft save, archive, star, restore, and delete                                                              |
 | `Chess`          | Full chess rules, 3D board, local persistence, and agent-turn synchronization                                                                                                        |
 | `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data                                                                                                    |
 | `CyberNews`      | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view                                                                                                   |
-| `Calendar`       | Local event/reminder planner with reminder metadata saved in app storage                                                                                                             |
-| `Notes`          | Local markdown notes with tags, pinning, filtering, and preview mode                                                                                                                 |
+| `Calendar`       | Local event/reminder planner with month navigation, selected-day agenda, date picker to `Date & Time` sync, and reminder metadata saved in app storage                               |
+| `Notes`          | Local markdown notes with pinned collections, tag filtering, sorting, formatting helpers, autosaved view state, and preview mode                                                     |
 | `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
-| `Kira`           | Project work board with work items, comments, discovery analysis, and automation handoff                                                                                             |
+| `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
 | `Aoi's IDE`      | Local workspace tree/editor on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                                                 |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
 
@@ -148,10 +148,17 @@ discovery flow against a configured local work root. The Vite plugin in
 `apps/webuiapps/vite.config.ts` also exposes automation endpoints that can:
 
 1. scan actionable tasks
-2. plan intended files and validation commands
-3. run worker/reviewer loops
-4. rerun validation
-5. block, retry, or auto-commit based on project settings
+2. analyze whether the brief is specific enough for worker assignment
+3. ask clarification questions and block handoff when the brief is ambiguous
+4. plan intended files and validation commands
+5. run worker/reviewer loops
+6. rerun validation
+7. block, retry, or auto-commit based on project settings
+
+Clarification runs before workers receive a task. If Kira determines that the title/description
+leave a material product or implementation choice open, the work is moved to `blocked` with
+multiple-choice questions when possible. User answers are saved back onto the work item and appended
+to the markdown brief before the work returns to `todo`.
 
 Kira can run one worker by default or up to three configured workers. With multiple workers, each
 worker gets its own isolated git worktree and produces an independent attempt. The reviewer compares

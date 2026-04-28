@@ -755,6 +755,12 @@ $tilt-upper-right: -1.2deg;
   max-width: 780px;
 }
 
+:global([data-window-maximized='true']) {
+  .articleContainer {
+    max-width: min(1040px, 100%);
+  }
+}
+
 .articleImageWrap {
   width: 100%;
   aspect-ratio: 21 / 9;

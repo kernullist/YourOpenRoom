@@ -1,10 +1,60 @@
 const zh = {
-  empty: '暂无图片',
-  notConfigured: '请在 config.json 中设置 album.photoDirectory，以显示本地文件夹中的照片。',
-  folderMissing: '配置的照片文件夹不存在。',
+  kicker: '本地相册',
+  title: 'Album',
+  subtitle: '浏览本地照片文件夹，支持快速搜索、清爽预览和更舒适的图库界面。',
+  galleryLabel: '照片图库',
   back: '返回',
   prev: '上一张',
   next: '下一张',
+  actions: {
+    pickFolder: '选择文件夹',
+    refresh: '刷新',
+    refreshing: '刷新中',
+    savePath: '保存路径',
+    saving: '保存中',
+    clear: '清除',
+  },
+  source: {
+    configuredFolder: '来自配置的已保存文件夹',
+    sessionFolder: '本次会话选择的文件夹',
+    noFolder: '尚未保存文件夹',
+    pickedFolder: '已选择的文件夹',
+    rootFolder: '根目录',
+    folderLabelFallback: '照片来源',
+  },
+  fields: {
+    photoDirectory: '已保存的本地文件夹',
+    photoDirectoryPlaceholder: '粘贴绝对文件夹路径，重启后仍可使用',
+    search: '搜索照片、文件夹或文件名',
+    thumbSize: '缩略图大小',
+  },
+  stats: {
+    photos: '照片',
+    folders: '文件夹',
+    latest: '最新',
+    size: '大小',
+  },
+  sort: {
+    newest: '最新优先',
+    oldest: '最旧优先',
+    name: '名称',
+    folder: '文件夹',
+  },
+  empty: {
+    notConfiguredTitle: '选择文件夹开始',
+    notConfiguredCopy: '可以为本次会话选择文件夹，也可以粘贴本地路径并保存，方便下次自动打开。',
+    folderMissingTitle: '已保存的文件夹不存在',
+    folderMissingCopy: '找不到配置中的文件夹。请选择其他文件夹或更新已保存路径。',
+    noImagesTitle: '未找到图片',
+    noImagesCopy: 'Album 已扫描所选文件夹，但没有找到支持的图片文件。',
+    noResultsTitle: '没有匹配的照片',
+    noResultsCopy: '换一个文件名、日期或文件夹关键词试试。',
+  },
+  info: {
+    date: '日期',
+    folder: '文件夹',
+    size: '文件大小',
+  },
 };
 
 export default zh;
