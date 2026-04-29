@@ -15,7 +15,12 @@ import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
 import { gmailPlugin } from './src/lib/gmailPlugin';
 import { idaPePlugin } from './src/lib/idaPePlugin';
-import { kiraAutomationPlugin } from './src/lib/kiraAutomationPlugin';
+import {
+  getProjectProfilePath,
+  loadProjectIntelligenceProfile,
+  kiraAutomationPlugin,
+  refreshProjectIntelligenceProfile,
+} from './src/lib/kiraAutomationPlugin';
 import { searchOpenVscodeWorkspace } from './src/lib/openVscodeSearch';
 import {
   applyWorkspaceRename,
@@ -71,6 +76,90 @@ const KIRA_PROJECT_ROOT_MARKERS = [
   'settings.gradle',
   'deno.json',
 ];
+const KIRA_PROJECT_SETTINGS_DIR_NAME = '.kira';
+const KIRA_PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
+const MAX_KIRA_PROJECT_REQUIRED_INSTRUCTIONS_CHARS = 12000;
+
+type KiraRunMode = 'quick' | 'standard' | 'deep';
+
+interface KiraRulePackSetting {
+  id: string;
+  enabled: boolean;
+}
+
+const KIRA_RULE_PACK_PRESETS = [
+  {
+    id: 'strict-typescript',
+    label: 'Strict TypeScript',
+    description: 'Prefer explicit contracts, typed boundaries, and no avoidable any casts.',
+    instructions: [
+      'Preserve strict TypeScript safety; do not introduce implicit any, broad any casts, or unchecked optional access.',
+      'When changing exported APIs, update related types, normalizers, and tests together.',
+    ],
+  },
+  {
+    id: 'small-patch',
+    label: 'Small Patch',
+    description: 'Keep changes narrow, reversible, and directly tied to the task.',
+    instructions: [
+      'Keep patches tightly scoped to the work brief and avoid opportunistic refactors.',
+      'Explain any out-of-plan file change and treat broad rewrites as review-blocking unless justified by the brief.',
+    ],
+  },
+  {
+    id: 'validation-first',
+    label: 'Validation First',
+    description: 'Require concrete verification evidence before approval.',
+    instructions: [
+      'Prefer existing test, lint, typecheck, or build commands and record exact validation evidence.',
+      'Do not approve unless failed checks are fixed or the validation gap is explicitly justified as non-applicable.',
+    ],
+  },
+  {
+    id: 'frontend-runtime',
+    label: 'Frontend Runtime',
+    description: 'For UI changes, inspect runtime behavior when a dev server already exists.',
+    instructions: [
+      'For frontend-visible changes, verify rendering or runtime reachability when a dev server is already running.',
+      'Do not start a dev server automatically; only use an already-running local server for runtime checks.',
+    ],
+  },
+  {
+    id: 'safe-refactor',
+    label: 'Safe Refactor',
+    description: 'Protect behavior while changing structure.',
+    instructions: [
+      'For refactors, preserve public behavior and call sites unless the brief explicitly changes them.',
+      'Reviewer must compare before/after intent and reject behavior drift without evidence.',
+    ],
+  },
+  {
+    id: 'docs-safe',
+    label: 'Docs Safe',
+    description: 'Keep docs, examples, and code references synchronized.',
+    instructions: [
+      'When behavior or commands change, update adjacent docs, examples, or comments that would become misleading.',
+      'Do not add docs claims that are not backed by the actual implementation.',
+    ],
+  },
+];
+
+interface KiraProjectSettingsFile {
+  autoCommit?: boolean;
+  requiredInstructions?: string;
+  runMode?: KiraRunMode;
+  rulePacks?: unknown;
+  [key: string]: unknown;
+}
+
+function getKiraProjectDefaultSettings(): KiraProjectSettingsFile {
+  const config = readPersistedConfigFile();
+  const kira = config.kira as { projectDefaults?: KiraProjectSettingsFile } | undefined;
+  const defaults = kira?.projectDefaults;
+  return typeof defaults === 'object' && defaults !== null && !Array.isArray(defaults)
+    ? defaults
+    : {};
+}
 
 function isKiraProjectRoot(directory: string): boolean {
   try {
@@ -98,6 +187,152 @@ function listKiraProjects(resolvedRoot: string): Array<{ name: string; path: str
       path: resolve(resolvedRoot, entry.name),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+function normalizeKiraRequiredInstructions(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim()
+    .slice(0, MAX_KIRA_PROJECT_REQUIRED_INSTRUCTIONS_CHARS);
+}
+
+function normalizeKiraRunMode(value: unknown, fallback: KiraRunMode = 'standard'): KiraRunMode {
+  return value === 'quick' || value === 'standard' || value === 'deep' ? value : fallback;
+}
+
+function normalizeKiraRulePacks(
+  value: unknown,
+  fallback: KiraRulePackSetting[] = [],
+): KiraRulePackSetting[] {
+  const fallbackEnabled = new Map(fallback.map((item) => [item.id, item.enabled]));
+  const rawEnabled = new Map<string, boolean>();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') {
+        rawEnabled.set(item, true);
+        continue;
+      }
+      if (!item || typeof item !== 'object') continue;
+      const parsed = item as Partial<KiraRulePackSetting>;
+      if (typeof parsed.id === 'string' && parsed.id.trim()) {
+        rawEnabled.set(parsed.id.trim(), parsed.enabled !== false);
+      }
+    }
+  }
+  return KIRA_RULE_PACK_PRESETS.map((preset) => ({
+    id: preset.id,
+    enabled: rawEnabled.has(preset.id)
+      ? Boolean(rawEnabled.get(preset.id))
+      : Boolean(fallbackEnabled.get(preset.id)),
+  }));
+}
+
+function buildKiraEffectiveInstructions(
+  requiredInstructions: string,
+  rulePacks: KiraRulePackSetting[],
+): string {
+  const enabled = new Set(rulePacks.filter((item) => item.enabled).map((item) => item.id));
+  const presetInstructions = KIRA_RULE_PACK_PRESETS.filter((preset) =>
+    enabled.has(preset.id),
+  ).flatMap((preset) => [
+    `Rule pack: ${preset.label}`,
+    ...preset.instructions.map((instruction) => `- ${instruction}`),
+  ]);
+  return [requiredInstructions, presetInstructions.join('\n')]
+    .map((section) => section.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function readKiraProjectSettingsFile(settingsPath: string): KiraProjectSettingsFile {
+  try {
+    if (!fs.existsSync(settingsPath)) return {};
+    const raw = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    return typeof raw === 'object' && raw !== null && !Array.isArray(raw)
+      ? (raw as KiraProjectSettingsFile)
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function getKiraProjectSettingsPath(projectRoot: string): string {
+  return join(projectRoot, KIRA_PROJECT_SETTINGS_DIR_NAME, KIRA_PROJECT_SETTINGS_FILE_NAME);
+}
+
+function resolveKiraProjectEntry(
+  projectName: string,
+): { name: string; path: string; workRootDirectory: string } | null {
+  const workRootDirectory = getKiraWorkRootDirectory();
+  if (!workRootDirectory) return null;
+
+  const resolvedRoot = resolve(workRootDirectory);
+  if (!fs.existsSync(resolvedRoot) || !fs.statSync(resolvedRoot).isDirectory()) return null;
+
+  const normalizedName = projectName.trim().toLowerCase();
+  const project = listKiraProjects(resolvedRoot).find(
+    (entry) => entry.name.toLowerCase() === normalizedName,
+  );
+  return project ? { ...project, workRootDirectory: resolvedRoot } : null;
+}
+
+function buildKiraProjectSettingsResponse(project: { name: string; path: string }) {
+  const settingsPath = getKiraProjectSettingsPath(project.path);
+  const raw = readKiraProjectSettingsFile(settingsPath);
+  const defaults = getKiraProjectDefaultSettings();
+  const hasLocalRequiredInstructions = Object.prototype.hasOwnProperty.call(
+    raw,
+    'requiredInstructions',
+  );
+  const localRequiredInstructions = hasLocalRequiredInstructions
+    ? normalizeKiraRequiredInstructions(raw.requiredInstructions)
+    : '';
+  const inheritedRequiredInstructions = hasLocalRequiredInstructions
+    ? ''
+    : normalizeKiraRequiredInstructions(defaults.requiredInstructions);
+  const runMode = normalizeKiraRunMode(raw.runMode, normalizeKiraRunMode(defaults.runMode));
+  const hasLocalRulePacks = Object.prototype.hasOwnProperty.call(raw, 'rulePacks');
+  const rulePacks = normalizeKiraRulePacks(
+    raw.rulePacks,
+    hasLocalRulePacks ? [] : normalizeKiraRulePacks(defaults.rulePacks),
+  );
+  const requiredInstructions = hasLocalRequiredInstructions
+    ? localRequiredInstructions
+    : inheritedRequiredInstructions;
+  return {
+    projectName: project.name,
+    projectRoot: project.path,
+    settingsPath,
+    exists: fs.existsSync(settingsPath),
+    hasLocalRequiredInstructions,
+    inheritedRequiredInstructions,
+    rulePackPresets: KIRA_RULE_PACK_PRESETS,
+    settings: {
+      autoCommit:
+        typeof raw.autoCommit === 'boolean'
+          ? raw.autoCommit
+          : typeof defaults.autoCommit === 'boolean'
+            ? defaults.autoCommit
+            : true,
+      requiredInstructions,
+      effectiveInstructions: buildKiraEffectiveInstructions(requiredInstructions, rulePacks),
+      runMode,
+      rulePacks,
+    },
+  };
+}
+
+function buildKiraProjectProfileResponse(project: { name: string; path: string }) {
+  const profile = loadProjectIntelligenceProfile(project.path);
+  return {
+    projectName: project.name,
+    projectRoot: project.path,
+    profilePath: getProjectProfilePath(project.path),
+    exists: fs.existsSync(getProjectProfilePath(project.path)),
+    profile,
+  };
 }
 
 function getTavilyConfig(): { apiKey: string; baseUrl: string } | null {
@@ -335,6 +570,164 @@ function kiraConfigPlugin(): Plugin {
           res.writeHead(500);
           res.end(JSON.stringify({ error: String(err) }));
         }
+      });
+
+      server.middlewares.use('/api/kira-project-settings', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method === 'GET') {
+          try {
+            const url = new URL(req.url || '', 'http://localhost');
+            const projectName = url.searchParams.get('projectName')?.trim() || '';
+            if (!projectName) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Missing projectName' }));
+              return;
+            }
+
+            const project = resolveKiraProjectEntry(projectName);
+            if (!project) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'Project not found' }));
+              return;
+            }
+
+            res.writeHead(200);
+            res.end(JSON.stringify(buildKiraProjectSettingsResponse(project)));
+          } catch (err) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          }
+          return;
+        }
+
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as Record<
+                string,
+                unknown
+              >;
+              const projectName =
+                typeof body.projectName === 'string' ? body.projectName.trim() : '';
+              if (!projectName) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Missing projectName' }));
+                return;
+              }
+
+              const project = resolveKiraProjectEntry(projectName);
+              if (!project) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Project not found' }));
+                return;
+              }
+
+              const settingsPath = getKiraProjectSettingsPath(project.path);
+              const nextSettings = readKiraProjectSettingsFile(settingsPath);
+              if (typeof body.autoCommit === 'boolean') {
+                nextSettings.autoCommit = body.autoCommit;
+              }
+
+              if (Object.prototype.hasOwnProperty.call(body, 'requiredInstructions')) {
+                nextSettings.requiredInstructions = normalizeKiraRequiredInstructions(
+                  body.requiredInstructions,
+                );
+              }
+
+              if (Object.prototype.hasOwnProperty.call(body, 'runMode')) {
+                nextSettings.runMode = normalizeKiraRunMode(body.runMode);
+              }
+
+              if (Object.prototype.hasOwnProperty.call(body, 'rulePacks')) {
+                nextSettings.rulePacks = normalizeKiraRulePacks(body.rulePacks);
+              }
+
+              fs.mkdirSync(dirname(settingsPath), { recursive: true });
+              fs.writeFileSync(settingsPath, JSON.stringify(nextSettings, null, 2), 'utf-8');
+
+              res.writeHead(200);
+              res.end(JSON.stringify(buildKiraProjectSettingsResponse(project)));
+            } catch (err) {
+              res.writeHead(500);
+              res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+            }
+          });
+          return;
+        }
+
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
+      });
+
+      server.middlewares.use('/api/kira-project-profile', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method === 'GET') {
+          try {
+            const url = new URL(req.url || '', 'http://localhost');
+            const projectName = url.searchParams.get('projectName')?.trim() || '';
+            if (!projectName) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Missing projectName' }));
+              return;
+            }
+
+            const project = resolveKiraProjectEntry(projectName);
+            if (!project) {
+              res.writeHead(404);
+              res.end(JSON.stringify({ error: 'Project not found' }));
+              return;
+            }
+
+            res.writeHead(200);
+            res.end(JSON.stringify(buildKiraProjectProfileResponse(project)));
+          } catch (err) {
+            res.writeHead(500);
+            res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+          }
+          return;
+        }
+
+        if (req.method === 'POST') {
+          const chunks: Buffer[] = [];
+          req.on('data', (chunk: Buffer) => chunks.push(chunk));
+          req.on('end', () => {
+            try {
+              const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as Record<
+                string,
+                unknown
+              >;
+              const projectName =
+                typeof body.projectName === 'string' ? body.projectName.trim() : '';
+              if (!projectName) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Missing projectName' }));
+                return;
+              }
+
+              const project = resolveKiraProjectEntry(projectName);
+              if (!project) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Project not found' }));
+                return;
+              }
+
+              refreshProjectIntelligenceProfile(project.path, project.name);
+              res.writeHead(200);
+              res.end(JSON.stringify(buildKiraProjectProfileResponse(project)));
+            } catch (err) {
+              res.writeHead(500);
+              res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
+            }
+          });
+          return;
+        }
+
+        res.writeHead(405);
+        res.end(JSON.stringify({ error: 'Method not allowed' }));
       });
     },
   };

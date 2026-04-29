@@ -28,7 +28,13 @@
   "kira": {
     "workRootDirectory": "C:\\Users\\your-name\\workspace",
     "projectDefaults": {
-      "autoCommit": true
+      "autoCommit": true,
+      "requiredInstructions": "Follow the existing coding style, keep public APIs backward compatible, and reject attempts that skip required validation.",
+      "runMode": "standard",
+      "rulePacks": [
+        { "id": "strict-typescript", "enabled": true },
+        { "id": "validation-first", "enabled": true }
+      ]
     },
     "workers": [
       {

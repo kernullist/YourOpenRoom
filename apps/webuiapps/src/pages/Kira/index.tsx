@@ -61,6 +61,57 @@ const EDITOR_WIDTH_DEFAULT = 420;
 const EDITOR_WIDTH_MIN = 360;
 const EDITOR_WIDTH_MAX = 760;
 const BOARD_WIDTH_MIN_WHEN_RESIZING = 360;
+const RUN_MODES: Array<{ value: KiraRunMode; label: string; description: string }> = [
+  {
+    value: 'quick',
+    label: 'Quick',
+    description: 'Focused local change with standard safety gates.',
+  },
+  {
+    value: 'standard',
+    label: 'Standard',
+    description: 'Balanced planning, validation, and review.',
+  },
+  { value: 'deep', label: 'Deep', description: 'Evidence-heavy orchestration for risky work.' },
+];
+const DEFAULT_RULE_PACK_PRESETS: KiraRulePackPreset[] = [
+  {
+    id: 'strict-typescript',
+    label: 'Strict TypeScript',
+    description: 'Typed contracts and no avoidable broad casts.',
+    instructions: [],
+  },
+  {
+    id: 'small-patch',
+    label: 'Small Patch',
+    description: 'Keep patches narrow and explicitly scoped.',
+    instructions: [],
+  },
+  {
+    id: 'validation-first',
+    label: 'Validation First',
+    description: 'Require concrete verification evidence.',
+    instructions: [],
+  },
+  {
+    id: 'frontend-runtime',
+    label: 'Frontend Runtime',
+    description: 'Check UI runtime when a dev server is already running.',
+    instructions: [],
+  },
+  {
+    id: 'safe-refactor',
+    label: 'Safe Refactor',
+    description: 'Preserve behavior through structural changes.',
+    instructions: [],
+  },
+  {
+    id: 'docs-safe',
+    label: 'Docs Safe',
+    description: 'Keep docs and examples synchronized.',
+    instructions: [],
+  },
+];
 
 const kiraFileApi = createAppFileApi(APP_NAME);
 
@@ -79,6 +130,66 @@ interface FocusTarget {
 interface KiraProjectEntry {
   name: string;
   path: string;
+}
+
+type KiraRunMode = 'quick' | 'standard' | 'deep';
+
+interface KiraRulePackPreset {
+  id: string;
+  label: string;
+  description: string;
+  instructions: string[];
+}
+
+interface KiraRulePackSelection {
+  id: string;
+  enabled: boolean;
+}
+
+interface KiraProjectSettings {
+  autoCommit: boolean;
+  requiredInstructions: string;
+  effectiveInstructions?: string;
+  runMode: KiraRunMode;
+  rulePacks: KiraRulePackSelection[];
+}
+
+interface KiraProjectSettingsResponse {
+  projectName: string;
+  projectRoot: string;
+  settingsPath: string;
+  exists: boolean;
+  rulePackPresets?: KiraRulePackPreset[];
+  settings: KiraProjectSettings;
+}
+
+interface KiraProjectProfileResponse {
+  projectName: string;
+  projectRoot: string;
+  profilePath: string;
+  exists: boolean;
+  profile: {
+    updatedAt?: number;
+    repoMap?: {
+      sourceRoots?: string[];
+      testRoots?: string[];
+    };
+    conventions?: {
+      styleSignals?: string[];
+    };
+    validation?: {
+      candidateCommands?: string[];
+    };
+    learning?: {
+      recentReviewFailures?: string[];
+      recentValidationFailures?: string[];
+      workerGuidanceRules?: string[];
+      successfulPatterns?: string[];
+    };
+    workers?: {
+      recommendedProfiles?: string[];
+    };
+  } | null;
 }
 
 interface KiraConfigResponse {
@@ -132,6 +243,55 @@ function clampEditorWidth(width: number, containerWidth?: number): number {
       : EDITOR_WIDTH_MAX;
   const maxWidth = Math.max(EDITOR_WIDTH_MIN, Math.min(EDITOR_WIDTH_MAX, maxByContainer));
   return Math.round(Math.min(maxWidth, Math.max(EDITOR_WIDTH_MIN, width)));
+}
+
+function normalizeRunMode(value: unknown): KiraRunMode {
+  return value === 'quick' || value === 'standard' || value === 'deep' ? value : 'standard';
+}
+
+function normalizeRulePackSelections(
+  value: unknown,
+  presets: KiraRulePackPreset[] = DEFAULT_RULE_PACK_PRESETS,
+): KiraRulePackSelection[] {
+  const rawEnabled = new Map<string, boolean>();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') {
+        rawEnabled.set(item, true);
+        continue;
+      }
+      if (!item || typeof item !== 'object') continue;
+      const raw = item as Partial<KiraRulePackSelection>;
+      if (typeof raw.id === 'string' && raw.id.trim()) {
+        rawEnabled.set(raw.id.trim(), raw.enabled !== false);
+      }
+    }
+  }
+  return presets.map((preset) => ({
+    id: preset.id,
+    enabled: Boolean(rawEnabled.get(preset.id)),
+  }));
+}
+
+function normalizeProjectSettingsResponse(
+  data: KiraProjectSettingsResponse & { error?: string },
+): KiraProjectSettingsResponse {
+  const presets = data.rulePackPresets?.length ? data.rulePackPresets : DEFAULT_RULE_PACK_PRESETS;
+  const rulePacks = normalizeRulePackSelections(data.settings?.rulePacks, presets);
+  return {
+    projectName: data.projectName,
+    projectRoot: data.projectRoot,
+    settingsPath: data.settingsPath,
+    exists: Boolean(data.exists),
+    rulePackPresets: presets,
+    settings: {
+      autoCommit: data.settings?.autoCommit !== false,
+      requiredInstructions: data.settings?.requiredInstructions?.trim() || '',
+      effectiveInstructions: data.settings?.effectiveInstructions?.trim() || '',
+      runMode: normalizeRunMode(data.settings?.runMode),
+      rulePacks,
+    },
+  };
 }
 
 function loadStoredEditorWidth(): number {
@@ -360,6 +520,22 @@ const KiraPage: React.FC = () => {
   const [workRootConfig, setWorkRootConfig] = useState<KiraConfigResponse | null>(null);
   const [workRootDraft, setWorkRootDraft] = useState('');
   const [workRootSaving, setWorkRootSaving] = useState(false);
+  const [projectSettings, setProjectSettings] = useState<KiraProjectSettingsResponse | null>(null);
+  const [projectInstructionsDraft, setProjectInstructionsDraft] = useState('');
+  const [projectRunModeDraft, setProjectRunModeDraft] = useState<KiraRunMode>('standard');
+  const [projectRulePackDrafts, setProjectRulePackDrafts] = useState<KiraRulePackSelection[]>(
+    normalizeRulePackSelections([]),
+  );
+  const [projectSettingsLoading, setProjectSettingsLoading] = useState(false);
+  const [projectSettingsSaving, setProjectSettingsSaving] = useState(false);
+  const [manualEvidenceDraft, setManualEvidenceDraft] = useState({
+    kind: 'manual',
+    body: '',
+    riskAccepted: false,
+  });
+  const [projectProfile, setProjectProfile] = useState<KiraProjectProfileResponse | null>(null);
+  const [projectProfileLoading, setProjectProfileLoading] = useState(false);
+  const [projectProfileRefreshing, setProjectProfileRefreshing] = useState(false);
   const [modelReadiness, setModelReadiness] = useState<KiraModelReadiness>(EMPTY_MODEL_READINESS);
   const [isLoading, setIsLoading] = useState(true);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -487,6 +663,64 @@ const KiraPage: React.FC = () => {
       console.warn('[Kira] Failed to load work root config:', error);
       setWorkRootConfig(null);
       return null;
+    }
+  }, []);
+
+  const loadProjectSettings = useCallback(async (projectName: string) => {
+    if (!projectName.trim()) {
+      setProjectSettings(null);
+      setProjectInstructionsDraft('');
+      setProjectRunModeDraft('standard');
+      setProjectRulePackDrafts(normalizeRulePackSelections([]));
+      return null;
+    }
+
+    try {
+      setProjectSettingsLoading(true);
+      const res = await fetch(
+        `/api/kira-project-settings?projectName=${encodeURIComponent(projectName)}`,
+      );
+      const data = (await res.json()) as KiraProjectSettingsResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error || `Kira project settings API error ${res.status}`);
+      const normalized = normalizeProjectSettingsResponse(data);
+      setProjectSettings(normalized);
+      setProjectInstructionsDraft(normalized.settings.requiredInstructions);
+      setProjectRunModeDraft(normalized.settings.runMode);
+      setProjectRulePackDrafts(normalized.settings.rulePacks);
+      return normalized;
+    } catch (error) {
+      console.warn('[Kira] Failed to load project settings:', error);
+      setProjectSettings(null);
+      setProjectInstructionsDraft('');
+      setProjectRunModeDraft('standard');
+      setProjectRulePackDrafts(normalizeRulePackSelections([]));
+      return null;
+    } finally {
+      setProjectSettingsLoading(false);
+    }
+  }, []);
+
+  const loadProjectProfile = useCallback(async (projectName: string) => {
+    if (!projectName.trim()) {
+      setProjectProfile(null);
+      return null;
+    }
+
+    try {
+      setProjectProfileLoading(true);
+      const res = await fetch(
+        `/api/kira-project-profile?projectName=${encodeURIComponent(projectName)}`,
+      );
+      const data = (await res.json()) as KiraProjectProfileResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error || `Kira project profile API error ${res.status}`);
+      setProjectProfile(data);
+      return data;
+    } catch (error) {
+      console.warn('[Kira] Failed to load project profile:', error);
+      setProjectProfile(null);
+      return null;
+    } finally {
+      setProjectProfileLoading(false);
     }
   }, []);
 
@@ -672,6 +906,17 @@ const KiraPage: React.FC = () => {
   const automationReady = workRootReady && modelReadiness.ready;
 
   useEffect(() => {
+    if (!workRootReady || !activeProjectName) {
+      setProjectSettings(null);
+      setProjectInstructionsDraft('');
+      setProjectProfile(null);
+      return;
+    }
+    void loadProjectSettings(activeProjectName);
+    void loadProjectProfile(activeProjectName);
+  }, [activeProjectName, loadProjectProfile, loadProjectSettings, workRootReady]);
+
+  useEffect(() => {
     if (selectedWork) {
       setForm((prev) => {
         if (editorOpen && formDirty && prev.id === selectedWork.id) {
@@ -852,6 +1097,52 @@ const KiraPage: React.FC = () => {
     }
     return map;
   }, [reviews, selectedTaskId]);
+  const activeRulePackPresets = projectSettings?.rulePackPresets?.length
+    ? projectSettings.rulePackPresets
+    : DEFAULT_RULE_PACK_PRESETS;
+  const enabledRulePackCount = projectRulePackDrafts.filter((item) => item.enabled).length;
+  const projectSettingsConfigured =
+    Boolean(projectInstructionsDraft.trim()) ||
+    enabledRulePackCount > 0 ||
+    projectRunModeDraft !== 'standard';
+  const attemptComparisonRows = useMemo(
+    () =>
+      currentAttempts.map((attempt) => {
+        const review = reviewsByAttempt.get(attempt.attemptNo);
+        const readiness = attempt.evidenceLedger?.approvalReadiness;
+        return {
+          attempt,
+          review,
+          readiness,
+          openTriage: review?.triage?.filter((item) => item.status === 'open').length ?? 0,
+          evidenceCount: attempt.evidenceLedger?.items.length ?? 0,
+        };
+      }),
+    [currentAttempts, reviewsByAttempt],
+  );
+  const triageBoardItems = useMemo(
+    () =>
+      currentAttempts.flatMap((attempt) => {
+        const review = reviewsByAttempt.get(attempt.attemptNo);
+        return (review?.triage ?? []).map((item) => ({
+          ...item,
+          attemptNo: attempt.attemptNo,
+        }));
+      }),
+    [currentAttempts, reviewsByAttempt],
+  );
+  const triageBoardCounts = useMemo(
+    () =>
+      triageBoardItems.reduce(
+        (acc, item) => {
+          const status = item.status || 'open';
+          acc[status] = (acc[status] ?? 0) + 1;
+          return acc;
+        },
+        {} as Record<string, number>,
+      ),
+    [triageBoardItems],
+  );
   const automationBadgeByTask = useMemo(() => {
     const map = new Map<string, 'queued' | 'running' | 'reviewPending' | 'clarification'>();
     const latestByTask = new Map<string, TaskComment>();
@@ -974,6 +1265,70 @@ const KiraPage: React.FC = () => {
       current && projectNames.includes(current) ? current : (projectNames[0] ?? null),
     );
   }, [loadKiraModelReadiness, loadWorkRootConfig]);
+
+  const handleSaveProjectSettings = useCallback(async () => {
+    if (!activeProjectName) return;
+
+    try {
+      setProjectSettingsSaving(true);
+      setErrorText(null);
+      const res = await fetch('/api/kira-project-settings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          projectName: activeProjectName,
+          requiredInstructions: projectInstructionsDraft,
+          runMode: projectRunModeDraft,
+          rulePacks: projectRulePackDrafts,
+        }),
+      });
+      const data = (await res.json()) as KiraProjectSettingsResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error || `Kira project settings API error ${res.status}`);
+      const normalized = normalizeProjectSettingsResponse(data);
+      setProjectSettings(normalized);
+      setProjectInstructionsDraft(normalized.settings.requiredInstructions);
+      setProjectRunModeDraft(normalized.settings.runMode);
+      setProjectRulePackDrafts(normalized.settings.rulePacks);
+      reportAction(APP_ID, 'SAVE_PROJECT_SETTINGS', {
+        projectName: activeProjectName,
+        hasRequiredInstructions: String(Boolean(normalized.settings.requiredInstructions)),
+        runMode: normalized.settings.runMode,
+        enabledRulePacks: normalized.settings.rulePacks
+          .filter((item) => item.enabled)
+          .map((item) => item.id)
+          .join(','),
+      });
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectSettingsSaving(false);
+    }
+  }, [activeProjectName, projectInstructionsDraft, projectRulePackDrafts, projectRunModeDraft]);
+
+  const handleRefreshProjectProfile = useCallback(async () => {
+    if (!activeProjectName) return;
+
+    try {
+      setProjectProfileRefreshing(true);
+      setErrorText(null);
+      const res = await fetch('/api/kira-project-profile', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName: activeProjectName }),
+      });
+      const data = (await res.json()) as KiraProjectProfileResponse & { error?: string };
+      if (!res.ok) throw new Error(data.error || `Kira project profile API error ${res.status}`);
+      setProjectProfile(data);
+      reportAction(APP_ID, 'REFRESH_PROJECT_PROFILE', {
+        projectName: activeProjectName,
+        exists: String(Boolean(data.exists)),
+      });
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectProfileRefreshing(false);
+    }
+  }, [activeProjectName]);
 
   const handleOpenModelSettings = useCallback(() => {
     dispatchOpenAppSettings('kira');
@@ -1325,7 +1680,7 @@ const KiraPage: React.FC = () => {
       setErrorText(null);
       reportAction(APP_ID, 'ANSWER_CLARIFICATION', {
         workId: nextWork.id,
-        questionCount: answers.length,
+        questionCount: String(answers.length),
       });
 
       const sessionPath = getSessionPath().trim();
@@ -1447,6 +1802,49 @@ const KiraPage: React.FC = () => {
     }
     void handleDeleteTask();
   }, [handleDeleteTask, selectedWork]);
+
+  const handleAddManualEvidence = useCallback(async () => {
+    if (!selectedTaskId) {
+      setErrorText(t('comments.saveFirst'));
+      return;
+    }
+
+    const summary = manualEvidenceDraft.body.trim();
+    if (!summary) return;
+
+    try {
+      const nextComment: TaskComment = {
+        id: generateId(),
+        taskId: selectedTaskId,
+        taskType: 'work',
+        author: 'Operator Evidence',
+        body: [
+          '[Kira manual evidence]',
+          `Kind: ${manualEvidenceDraft.kind}`,
+          `Risk accepted: ${manualEvidenceDraft.riskAccepted ? 'yes' : 'no'}`,
+          'Summary:',
+          summary,
+        ].join('\n'),
+        createdAt: Date.now(),
+      };
+
+      const filePath = getCommentFilePath(nextComment.id);
+      saveFile(filePath, nextComment);
+      await syncToCloud(filePath, nextComment);
+      setComments((prev) => sortByCreatedAtDesc([...prev, nextComment]));
+      setManualEvidenceDraft({ kind: 'manual', body: '', riskAccepted: false });
+      setErrorText(null);
+      reportAction(APP_ID, 'CREATE_MANUAL_EVIDENCE', {
+        commentId: nextComment.id,
+        taskId: selectedTaskId,
+        kind: manualEvidenceDraft.kind,
+        riskAccepted: String(manualEvidenceDraft.riskAccepted),
+      });
+    } catch (error) {
+      console.error('[Kira] Manual evidence save failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    }
+  }, [manualEvidenceDraft, saveFile, selectedTaskId, syncToCloud, t]);
 
   const handleAddComment = useCallback(async () => {
     if (!selectedTaskId) {
@@ -1684,6 +2082,198 @@ const KiraPage: React.FC = () => {
             </div>
           ) : null}
         </div>
+
+        {activeProjectName ? (
+          <div className={styles.projectSettingsCard}>
+            <div className={styles.projectSettingsHeader}>
+              <div>
+                <strong>{t('sections.projectSettings')}</strong>
+                <p>{t('sections.projectSettingsCopy')}</p>
+              </div>
+              <span
+                className={`${styles.rootState} ${
+                  projectSettingsConfigured ? styles.rootStateReady : styles.rootStateIdle
+                }`}
+              >
+                {projectSettingsConfigured
+                  ? t('root.instructionsSet')
+                  : t('root.instructionsEmpty')}
+              </span>
+            </div>
+
+            <form
+              className={styles.projectSettingsForm}
+              onSubmit={(event) => {
+                event.preventDefault();
+                void handleSaveProjectSettings();
+              }}
+            >
+              <label className={styles.projectInstructionsField}>
+                <span>{t('fields.requiredInstructions')}</span>
+                <textarea
+                  value={projectInstructionsDraft}
+                  onChange={(event) => setProjectInstructionsDraft(event.target.value)}
+                  placeholder={t('placeholders.requiredInstructions')}
+                  rows={7}
+                  maxLength={12000}
+                  disabled={projectSettingsLoading || projectSettingsSaving}
+                />
+              </label>
+              <div className={styles.runModeGroup}>
+                <span>{t('fields.runMode')}</span>
+                <div className={styles.segmentedControl}>
+                  {RUN_MODES.map((mode) => (
+                    <button
+                      key={mode.value}
+                      type="button"
+                      className={projectRunModeDraft === mode.value ? styles.segmentActive : ''}
+                      onClick={() => setProjectRunModeDraft(mode.value)}
+                      disabled={projectSettingsLoading || projectSettingsSaving}
+                      title={mode.description}
+                    >
+                      {mode.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className={styles.rulePackGrid}>
+                <span>{t('fields.rulePacks')}</span>
+                {activeRulePackPresets.map((preset) => {
+                  const checked = projectRulePackDrafts.some(
+                    (item) => item.id === preset.id && item.enabled,
+                  );
+                  return (
+                    <label key={preset.id} className={styles.rulePackItem}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={projectSettingsLoading || projectSettingsSaving}
+                        onChange={(event) =>
+                          setProjectRulePackDrafts((prev) =>
+                            prev.map((item) =>
+                              item.id === preset.id
+                                ? { ...item, enabled: event.target.checked }
+                                : item,
+                            ),
+                          )
+                        }
+                      />
+                      <span>
+                        <strong>{preset.label}</strong>
+                        <small>{preset.description}</small>
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+              <div className={styles.projectSettingsActions}>
+                <button
+                  type="submit"
+                  className={styles.secondaryButton}
+                  disabled={projectSettingsLoading || projectSettingsSaving}
+                >
+                  {projectSettingsSaving ? t('actions.saving') : t('actions.saveProjectSettings')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => void loadProjectSettings(activeProjectName)}
+                  disabled={projectSettingsLoading || projectSettingsSaving}
+                >
+                  {t('actions.refresh')}
+                </button>
+              </div>
+            </form>
+
+            <p className={styles.rootHint}>
+              {t('root.requiredInstructionsHint')}{' '}
+              {t('root.rulePackHint', {
+                count: enabledRulePackCount,
+                mode: projectRunModeDraft,
+              })}
+            </p>
+            {projectSettings?.settingsPath ? (
+              <span className={styles.projectSettingsPath}>{projectSettings.settingsPath}</span>
+            ) : null}
+          </div>
+        ) : null}
+
+        {activeProjectName ? (
+          <div className={styles.projectSettingsCard}>
+            <div className={styles.projectSettingsHeader}>
+              <div>
+                <strong>{t('sections.projectIntelligence')}</strong>
+                <p>{t('sections.projectIntelligenceCopy')}</p>
+              </div>
+              <span
+                className={`${styles.rootState} ${
+                  projectProfile?.exists ? styles.rootStateReady : styles.rootStateIdle
+                }`}
+              >
+                {projectProfile?.exists ? t('root.profileReady') : t('root.profileMissing')}
+              </span>
+            </div>
+
+            <div className={styles.projectIntelligenceGrid}>
+              <span>
+                {t('fields.workerProfiles')}
+                <strong>
+                  {projectProfile?.profile?.workers?.recommendedProfiles?.slice(0, 3).join(', ') ||
+                    t('root.profileNone')}
+                </strong>
+              </span>
+              <span>
+                {t('fields.validationHints')}
+                <strong>
+                  {projectProfile?.profile?.validation?.candidateCommands?.length ?? 0}
+                </strong>
+              </span>
+              <span>
+                {t('fields.reviewMemory')}
+                <strong>
+                  {(projectProfile?.profile?.learning?.recentReviewFailures?.length ?? 0) +
+                    (projectProfile?.profile?.learning?.recentValidationFailures?.length ?? 0) +
+                    (projectProfile?.profile?.learning?.workerGuidanceRules?.length ?? 0) +
+                    (projectProfile?.profile?.learning?.successfulPatterns?.length ?? 0) || 0}
+                </strong>
+              </span>
+            </div>
+
+            <div className={styles.projectSettingsActions}>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => void handleRefreshProjectProfile()}
+                disabled={projectProfileLoading || projectProfileRefreshing}
+              >
+                {projectProfileRefreshing
+                  ? t('actions.saving')
+                  : projectProfile?.exists
+                    ? t('actions.refreshProfile')
+                    : t('actions.generateProfile')}
+              </button>
+              <button
+                type="button"
+                className={styles.secondaryButton}
+                onClick={() => void loadProjectProfile(activeProjectName)}
+                disabled={projectProfileLoading || projectProfileRefreshing}
+              >
+                {t('actions.refresh')}
+              </button>
+            </div>
+
+            <p className={styles.rootHint}>
+              {projectProfile?.profile?.updatedAt
+                ? t('root.profileUpdated', {
+                    time: new Date(projectProfile.profile.updatedAt).toLocaleString(),
+                  })
+                : t('root.profileHint')}
+            </p>
+            {projectProfile?.profilePath ? (
+              <span className={styles.projectSettingsPath}>{projectProfile.profilePath}</span>
+            ) : null}
+          </div>
+        ) : null}
 
         <div className={styles.modelSettingsCard}>
           <div className={styles.modelSettingsHeader}>
@@ -2050,6 +2640,62 @@ const KiraPage: React.FC = () => {
                       <span>{currentAttempts[0].blockedReason}</span>
                     </div>
                   ) : null}
+                  {attemptComparisonRows.length > 0 ? (
+                    <div className={styles.attemptComparison}>
+                      <div className={styles.panelSubhead}>
+                        <strong>Attempt comparison</strong>
+                        <span>{attemptComparisonRows.length} recorded</span>
+                      </div>
+                      <div className={styles.comparisonRows}>
+                        {attemptComparisonRows.map(
+                          ({ attempt, review, readiness, openTriage, evidenceCount }) => (
+                            <div key={attempt.id} className={styles.comparisonRow}>
+                              <strong>#{attempt.attemptNo}</strong>
+                              <span>{attempt.status.replace(/_/g, ' ')}</span>
+                              <span>
+                                Ready {readiness?.score ?? 0}/{readiness?.status ?? 'unknown'}
+                              </span>
+                              <span>
+                                Diff {attempt.diffStats?.files ?? attempt.changedFiles.length}
+                              </span>
+                              <span>
+                                Val {attempt.validationReruns?.passed?.length ?? 0}/
+                                {attempt.validationReruns?.failed?.length ?? 0}
+                              </span>
+                              <span>Evidence {evidenceCount}</span>
+                              <span>Triage {openTriage} open</span>
+                              <span>{review?.approved ? 'approved' : 'not approved'}</span>
+                            </div>
+                          ),
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                  {triageBoardItems.length > 0 ? (
+                    <div className={styles.triageBoard}>
+                      <div className={styles.panelSubhead}>
+                        <strong>Triage board</strong>
+                        <span>
+                          open {triageBoardCounts.open ?? 0} | fixed {triageBoardCounts.fixed ?? 0}{' '}
+                          | accepted {triageBoardCounts.acknowledged ?? 0}
+                        </span>
+                      </div>
+                      <div className={styles.triageItems}>
+                        {triageBoardItems
+                          .filter((item) => item.status === 'open')
+                          .slice(0, 8)
+                          .map((item) => (
+                            <div key={`${item.attemptNo}-${item.id}`}>
+                              <strong>
+                                #{item.attemptNo} {item.severity} {item.source}
+                              </strong>
+                              <span>{item.title}</span>
+                              {item.file ? <small>{item.file}</small> : null}
+                            </div>
+                          ))}
+                      </div>
+                    </div>
+                  ) : null}
                   <div id="kira-attempts-list" className={styles.attemptList}>
                     {currentAttempts.length > 0 ? (
                       currentAttempts.map((attempt) => {
@@ -2065,9 +2711,55 @@ const KiraPage: React.FC = () => {
                                 <h4>Plan</h4>
                                 <p>{attempt.workerPlan?.summary || 'No plan summary'}</p>
                                 <small>
+                                  Type: {attempt.workerPlan?.taskType || 'generalist'} | Risk:{' '}
+                                  {attempt.riskPolicy?.level || 'unknown'}
+                                </small>
+                                <small>
                                   Files:{' '}
                                   {(attempt.workerPlan?.intendedFiles ?? []).join(', ') || 'none'}
                                 </small>
+                                {attempt.changeDesign ? (
+                                  <small>
+                                    Design:{' '}
+                                    {(attempt.changeDesign.targetFiles ?? []).join(', ') ||
+                                      'no target files'}
+                                  </small>
+                                ) : null}
+                                {attempt.approachAlternatives?.length ? (
+                                  <small>
+                                    Approach:{' '}
+                                    {attempt.approachAlternatives.find((item) => item.selected)
+                                      ?.name || 'not selected'}
+                                  </small>
+                                ) : null}
+                                {attempt.semanticGraph?.length ? (
+                                  <small>
+                                    Graph: {attempt.semanticGraph.length} nodes | Dependents:{' '}
+                                    {attempt.semanticGraph.reduce(
+                                      (total, node) => total + (node.dependents?.length ?? 0),
+                                      0,
+                                    )}
+                                  </small>
+                                ) : null}
+                                {attempt.clarificationGate?.decision ? (
+                                  <small>
+                                    Clarification gate: {attempt.clarificationGate.decision} (
+                                    {attempt.clarificationGate.confidence?.toFixed(2) ?? 'n/a'})
+                                  </small>
+                                ) : null}
+                                {attempt.designReviewGate?.status ? (
+                                  <small>
+                                    Design gate: {attempt.designReviewGate.status} | Changes:{' '}
+                                    {attempt.designReviewGate.requiredChanges?.length ?? 0}
+                                  </small>
+                                ) : null}
+                                {attempt.orchestrationPlan ? (
+                                  <small>
+                                    Orchestration: {attempt.orchestrationPlan.runMode} |{' '}
+                                    {attempt.orchestrationPlan.reviewDepth} review | Threshold{' '}
+                                    {attempt.orchestrationPlan.approvalThreshold}
+                                  </small>
+                                ) : null}
                               </div>
                               <div>
                                 <h4>Changes</h4>
@@ -2078,6 +2770,22 @@ const KiraPage: React.FC = () => {
                                   Read: {attempt.readFiles?.join(', ') || 'none'} | Patched:{' '}
                                   {attempt.patchedFiles?.join(', ') || 'none'}
                                 </small>
+                                {attempt.diffStats ? (
+                                  <small>
+                                    Diff: {attempt.diffStats.files ?? 0} files, +
+                                    {attempt.diffStats.additions ?? 0}/-
+                                    {attempt.diffStats.deletions ?? 0},{' '}
+                                    {attempt.diffStats.hunks ?? 0} hunks
+                                  </small>
+                                ) : null}
+                                {attempt.patchIntentVerification ? (
+                                  <small>
+                                    Intent: {attempt.patchIntentVerification.status || 'unknown'}{' '}
+                                    {attempt.patchIntentVerification.issues?.length
+                                      ? `| ${attempt.patchIntentVerification.issues.length} issue(s)`
+                                      : ''}
+                                  </small>
+                                ) : null}
                               </div>
                               <div>
                                 <h4>Validation</h4>
@@ -2087,6 +2795,45 @@ const KiraPage: React.FC = () => {
                                 <small>
                                   Failed: {attempt.validationReruns?.failed?.join(', ') || 'none'}
                                 </small>
+                                {attempt.validationPlan?.autoAddedCommands?.length ? (
+                                  <small>
+                                    Auto:{' '}
+                                    {attempt.validationPlan.autoAddedCommands.join(', ') || 'none'}
+                                  </small>
+                                ) : null}
+                                {attempt.runtimeValidation?.applicable ? (
+                                  <small>
+                                    Runtime: {attempt.runtimeValidation.status || 'unknown'}{' '}
+                                    {attempt.runtimeValidation.url
+                                      ? `@ ${attempt.runtimeValidation.url}`
+                                      : ''}
+                                  </small>
+                                ) : null}
+                                {attempt.failureAnalysis?.length ? (
+                                  <small>
+                                    Failure hints:{' '}
+                                    {attempt.failureAnalysis
+                                      .map((item) => `${item.category}: ${item.command}`)
+                                      .join(' | ')}
+                                  </small>
+                                ) : null}
+                                {attempt.testImpact?.length ? (
+                                  <small>
+                                    Impacted tests:{' '}
+                                    {attempt.testImpact
+                                      .flatMap((item) => item.impactedTests ?? [])
+                                      .slice(0, 3)
+                                      .join(', ') || 'none'}
+                                  </small>
+                                ) : null}
+                                {attempt.runtimeValidation?.httpStatus ? (
+                                  <small>
+                                    HTTP: {attempt.runtimeValidation.httpStatus}{' '}
+                                    {attempt.runtimeValidation.title
+                                      ? `| ${attempt.runtimeValidation.title}`
+                                      : ''}
+                                  </small>
+                                ) : null}
                               </div>
                               <div>
                                 <h4>Review</h4>
@@ -2095,8 +2842,109 @@ const KiraPage: React.FC = () => {
                                   Findings: {review?.findings.length ?? 0} | Missing checks:{' '}
                                   {review?.missingValidation.length ?? 0}
                                 </small>
+                                <small>
+                                  Evidence: {review?.evidenceChecked.length ?? 0} | Requirements:{' '}
+                                  {review?.requirementVerdicts.length ??
+                                    attempt.requirementTrace?.length ??
+                                    0}
+                                </small>
+                                <small>
+                                  Modes:{' '}
+                                  {(
+                                    review?.adversarialChecks.map((item) => item.mode) ??
+                                    attempt.reviewAdversarialPlan?.modes ??
+                                    []
+                                  ).join(', ') || 'none'}
+                                </small>
+                                {attempt.reviewerCalibration?.strictness ? (
+                                  <small>
+                                    Calibration: {attempt.reviewerCalibration.strictness} | Min
+                                    evidence: {attempt.reviewerCalibration.evidenceMinimum ?? 'n/a'}
+                                  </small>
+                                ) : null}
+                                {attempt.observability?.timeline?.length ? (
+                                  <small>
+                                    Trace: {attempt.observability.timeline.slice(0, 3).join(' | ')}
+                                  </small>
+                                ) : null}
+                                {attempt.observability?.metrics ? (
+                                  <small>
+                                    Metrics:{' '}
+                                    {attempt.observability.metrics.durationMs
+                                      ? `${Math.round(
+                                          attempt.observability.metrics.durationMs / 1000,
+                                        )}s`
+                                      : 'n/a'}{' '}
+                                    | Evidence:{' '}
+                                    {attempt.observability.metrics.evidenceSignalCount ?? 0} |
+                                    Tokens:{' '}
+                                    {attempt.observability.metrics.estimatedWorkerOutputTokens ?? 0}
+                                  </small>
+                                ) : null}
+                                {review?.triage?.length ? (
+                                  <small>
+                                    Triage:{' '}
+                                    {review.triage.filter((item) => item.status === 'open').length}{' '}
+                                    open / {review.triage.length} total
+                                  </small>
+                                ) : null}
+                                {review?.reviewerDiscourse?.length ? (
+                                  <small>
+                                    Discourse:{' '}
+                                    {review.reviewerDiscourse
+                                      .map((item) => `${item.role}:${item.position}`)
+                                      .slice(0, 4)
+                                      .join(', ')}
+                                  </small>
+                                ) : null}
+                                {review?.observability ? (
+                                  <small>
+                                    Review trace:{' '}
+                                    {review.observability.durationMs
+                                      ? `${Math.round(review.observability.durationMs / 1000)}s`
+                                      : 'n/a'}{' '}
+                                    | Output tokens:{' '}
+                                    {review.observability.estimatedReviewOutputTokens ?? 0}
+                                  </small>
+                                ) : null}
+                                {attempt.evidenceLedger?.approvalReadiness ? (
+                                  <small>
+                                    Approval readiness:{' '}
+                                    {attempt.evidenceLedger.approvalReadiness.score}/100 (
+                                    {attempt.evidenceLedger.approvalReadiness.status}) | Blockers:{' '}
+                                    {attempt.evidenceLedger.approvalReadiness.blockers.length} |
+                                    Missing:{' '}
+                                    {
+                                      attempt.evidenceLedger.approvalReadiness.missingEvidence
+                                        .length
+                                    }
+                                  </small>
+                                ) : null}
                               </div>
                             </div>
+                            {attempt.evidenceLedger?.items.length ? (
+                              <div className={styles.evidenceLedger}>
+                                <div className={styles.panelSubhead}>
+                                  <strong>Evidence ledger</strong>
+                                  <span>
+                                    {attempt.evidenceLedger.approvalReadiness.observedEvidenceCount}
+                                    /
+                                    {attempt.evidenceLedger.approvalReadiness.requiredEvidenceCount}{' '}
+                                    passing
+                                  </span>
+                                </div>
+                                <div className={styles.evidenceItems}>
+                                  {attempt.evidenceLedger.items.slice(0, 8).map((item) => (
+                                    <div key={item.id}>
+                                      <strong>
+                                        {item.kind} · {item.status}
+                                      </strong>
+                                      <span>{item.summary}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ) : null}
                           </details>
                         );
                       })
@@ -2117,6 +2965,63 @@ const KiraPage: React.FC = () => {
 
             {selectedTaskId ? (
               <>
+                <div className={styles.manualEvidenceComposer}>
+                  <div className={styles.panelSubhead}>
+                    <strong>Manual evidence</strong>
+                    <span>Used by Kira on the next run</span>
+                  </div>
+                  <div className={styles.manualEvidenceControls}>
+                    <select
+                      value={manualEvidenceDraft.kind}
+                      onChange={(event) =>
+                        setManualEvidenceDraft((prev) => ({
+                          ...prev,
+                          kind: event.target.value,
+                          riskAccepted:
+                            event.target.value === 'risk-acceptance' ? true : prev.riskAccepted,
+                        }))
+                      }
+                    >
+                      <option value="manual">Manual note</option>
+                      <option value="test">Test evidence</option>
+                      <option value="runtime">Runtime evidence</option>
+                      <option value="review">Review evidence</option>
+                      <option value="risk-acceptance">Risk acceptance</option>
+                    </select>
+                    <label>
+                      <input
+                        type="checkbox"
+                        checked={manualEvidenceDraft.riskAccepted}
+                        onChange={(event) =>
+                          setManualEvidenceDraft((prev) => ({
+                            ...prev,
+                            riskAccepted: event.target.checked,
+                          }))
+                        }
+                      />
+                      <span>Risk accepted</span>
+                    </label>
+                  </div>
+                  <textarea
+                    value={manualEvidenceDraft.body}
+                    onChange={(event) =>
+                      setManualEvidenceDraft((prev) => ({ ...prev, body: event.target.value }))
+                    }
+                    placeholder="Record a manual test result, runtime observation, review note, or accepted residual risk."
+                    rows={3}
+                  />
+                  <div className={styles.commentActions}>
+                    <span>Manual evidence is stored as a structured comment.</span>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => void handleAddManualEvidence()}
+                      disabled={!manualEvidenceDraft.body.trim()}
+                    >
+                      Add evidence
+                    </button>
+                  </div>
+                </div>
                 <div className={styles.commentComposer}>
                   <label className={styles.field}>
                     <span>{t('fields.commentAuthor')}</span>

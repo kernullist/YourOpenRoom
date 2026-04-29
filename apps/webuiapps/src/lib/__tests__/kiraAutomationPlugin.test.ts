@@ -1,9 +1,11 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
+  buildDesignReviewGate,
   buildCodexCliArgs,
   buildIssueSignature,
   buildProjectContextScan,
@@ -12,6 +14,10 @@ import {
   buildAttemptComparisonReviewSystemPrompt,
   canUseFullFileRewrite,
   collectAttemptReviewabilityIssues,
+  collectDesignReviewGateIssues,
+  collectGitDiffStats,
+  collectReviewerDiffExcerpts,
+  collectWorkerSelfCheckIssues,
   buildWorkerPlanningPrompt,
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
@@ -23,8 +29,11 @@ import {
   findOutOfPlanTouchedFiles,
   formatWorkerSubmission,
   getOpenAiAssistantReasoningContent,
+  getProjectProfilePath,
   hasMergeConflictMarkers,
   isGeneratedArtifactPath,
+  isRecoverableAutomationLockMessage,
+  isRecoverableLockError,
   isSafeCommandAllowed,
   parseGitStatusPorcelain,
   parseProjectDiscoveryAnalysis,
@@ -39,8 +48,12 @@ import {
   resolveRoleLlmConfig,
   resolveKiraProjectRoot,
   resolveWorkerLlmConfigs,
+  recommendWorkDecomposition,
+  refreshProjectIntelligenceProfile,
   shouldUseKiraAttemptWorktrees,
   shouldUseKiraIsolatedWorktree,
+  tryAcquireLock,
+  verifyPatchIntent,
 } from '../kiraAutomationPlugin';
 
 function makeTempDir(prefix: string): string {
@@ -86,9 +99,55 @@ function makePlan() {
     summary: 'Update Kira prompt builders.',
     intendedFiles: ['src/kira.ts'],
     protectedFiles: ['src/user-work.ts'],
+    changeDesign: {
+      targetFiles: ['src/kira.ts'],
+      invariants: ['Do not weaken Kira safety guardrails.'],
+      expectedImpact: ['Prompt behavior becomes safer for workers and reviewers.'],
+      validationStrategy: ['Run pnpm test.'],
+      rollbackStrategy: ['Revert src/kira.ts if prompts regress.'],
+    },
     validationCommands: ['pnpm test'],
     riskNotes: ['Prompt drift could weaken guardrails.'],
     stopConditions: ['Protected files must change.'],
+    confidence: 0.8,
+    uncertainties: [],
+    decomposition: {
+      shouldSplit: false,
+      confidence: 0.2,
+      reason: 'No split needed.',
+      suggestedWorks: [],
+      signals: [],
+    },
+    workerProfile: 'generalist',
+    taskType: 'tooling-config' as const,
+    requirementTrace: [
+      {
+        id: 'R1',
+        source: 'brief' as const,
+        text: 'Make worker and reviewer behavior safer.',
+        status: 'planned' as const,
+        evidence: ['Update prompt builders and tests.'],
+      },
+    ],
+    approachAlternatives: [
+      {
+        name: 'Tighten prompt contracts',
+        selected: true,
+        rationale: 'Keeps the behavior change scoped to Kira automation prompts.',
+        tradeoffs: ['Prompt wording must remain precise.'],
+      },
+      {
+        name: 'Rewrite automation flow',
+        selected: false,
+        rationale: 'Too broad for this targeted safety task.',
+        tradeoffs: ['Higher regression risk.'],
+      },
+    ],
+    escalation: {
+      shouldAsk: false,
+      questions: [],
+      blockers: [],
+    },
   };
 }
 
@@ -249,6 +308,7 @@ describe('Kira Codex-grade prompts', () => {
       'package.json\nsrc/kira.ts',
       makeContextScan(),
       ['Address review feedback.'],
+      'Use strict TypeScript and keep exported APIs backward compatible.',
     );
     const workerPrompt = buildWorkerPrompt(
       makeWork(),
@@ -256,16 +316,30 @@ describe('Kira Codex-grade prompts', () => {
       makeContextScan(),
       makePlan(),
       [],
+      'Use strict TypeScript and keep exported APIs backward compatible.',
     );
 
+    expect(planningPrompt).toContain('Mandatory project instructions:');
+    expect(planningPrompt).toContain('Use strict TypeScript');
     expect(planningPrompt).toContain('"understanding":"string"');
     expect(planningPrompt).toContain('"repoFindings":["..."]');
     expect(planningPrompt).toContain('"protectedFiles":["..."]');
+    expect(planningPrompt).toContain('"changeDesign"');
+    expect(planningPrompt).toContain('"requirementTrace"');
+    expect(planningPrompt).toContain('"approachAlternatives"');
+    expect(planningPrompt).toContain('"escalation"');
     expect(planningPrompt).toContain('"stopConditions":["..."]');
     expect(planningPrompt).toContain('Call at least one read-only tool');
+    expect(workerPrompt).toContain('Mandatory project instructions:');
+    expect(workerPrompt).toContain('binding acceptance criteria');
+    expect(workerPrompt).toContain('Change design:');
+    expect(workerPrompt).toContain('Requirement trace:');
+    expect(workerPrompt).toContain('Patch alternatives:');
     expect(workerPrompt).toContain('Never edit protectedFiles.');
     expect(workerPrompt).toContain('Run the planned validation commands when practical');
     expect(workerPrompt).toContain('complete final file content');
+    expect(workerPrompt).toContain('"diffHunkReview"');
+    expect(workerPrompt).toContain('"requirementTrace"');
     expect(workerPrompt).toContain('"remainingRisks":["..."]');
   });
 
@@ -296,21 +370,101 @@ describe('Kira Codex-grade prompts', () => {
         failureDetails: [],
       },
       ['diff -- src/kira.ts'],
+      'Use strict TypeScript and keep exported APIs backward compatible.',
     );
 
     expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
+    expect(reviewerSystem).toContain('enforce them as binding acceptance criteria');
+    expect(reviewerSystem).toContain(
+      'If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
+    );
+    expect(reviewerSystem).not.toContain('unless following them would conflict');
     expect(reviewerSystem).toContain('Prioritize correctness and requirement coverage.');
     expect(reviewerSystem).toContain('concurrent-agent integration risks');
     expect(reviewerSystem).toContain('Do not approve if validation failed.');
     expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('attempt judge');
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
+    expect(reviewPrompt).toContain('Mandatory project instructions:');
+    expect(reviewPrompt).toContain('Review the changeDesign against the actual diff');
+    expect(reviewPrompt).toContain('Do not approve patch intent drift');
+    expect(reviewPrompt).toContain('Review the requirementTrace.');
+    expect(reviewPrompt).toContain('Risk review policy:');
+    expect(reviewPrompt).toContain('Do not approve if the implementation violates');
     expect(reviewPrompt).toContain(
       'Do not approve if the worker summary conflicts with the diff excerpts.',
     );
     expect(reviewPrompt).toContain('"missingValidation":["..."]');
     expect(reviewPrompt).toContain('"nextWorkerInstructions":["..."]');
     expect(reviewPrompt).toContain('"residualRisk":["..."]');
+    expect(reviewPrompt).toContain('"evidenceChecked"');
+    expect(reviewPrompt).toContain('"adversarialChecks"');
+    expect(reviewPrompt).toContain('"reviewerDiscourse"');
+    expect(reviewPrompt).toContain('"requirementVerdicts"');
+  });
+});
+
+describe('buildDesignReviewGate()', () => {
+  it('blocks implementation plans that ignore mandatory project instructions', () => {
+    const gate = buildDesignReviewGate({
+      work: makeWork(),
+      contextScan: {
+        ...makeContextScan(),
+        requirementTrace: [
+          {
+            id: 'R1',
+            source: 'brief',
+            text: 'Make worker and reviewer behavior safer.',
+            status: 'planned',
+            evidence: [],
+          },
+          {
+            id: 'R2',
+            source: 'project-instruction',
+            text: 'Use strict TypeScript.',
+            status: 'planned',
+            evidence: [],
+          },
+        ],
+        candidateChecks: ['pnpm test'],
+      },
+      workerPlan: makePlan(),
+      requiredInstructions: 'Use strict TypeScript.',
+    });
+
+    expect(gate.status).toBe('blocked');
+    expect(collectDesignReviewGateIssues(gate).join('\n')).toContain(
+      'mandatory project instructions',
+    );
+  });
+
+  it('passes focused plans with requirements, scope, validation, and rollback covered', () => {
+    const plan = {
+      ...makePlan(),
+      requirementTrace: [
+        ...makePlan().requirementTrace,
+        {
+          id: 'R2',
+          source: 'project-instruction' as const,
+          text: 'Use strict TypeScript.',
+          status: 'planned' as const,
+          evidence: ['Keep existing TypeScript prompt builder style.'],
+        },
+      ],
+    };
+    const gate = buildDesignReviewGate({
+      work: makeWork(),
+      contextScan: {
+        ...makeContextScan(),
+        requirementTrace: plan.requirementTrace,
+        candidateChecks: ['pnpm test'],
+      },
+      workerPlan: plan,
+      requiredInstructions: 'Use strict TypeScript.',
+    });
+
+    expect(gate.status).toBe('passed');
+    expect(collectDesignReviewGateIssues(gate)).toEqual([]);
   });
 });
 
@@ -337,6 +491,9 @@ describe('parseAttemptSelectionSummary()', () => {
       nextWorkerInstructions: [],
       residualRisk: ['Watch release notes.'],
       filesChecked: ['src/kira.ts'],
+      evidenceChecked: [],
+      adversarialChecks: [],
+      requirementVerdicts: [],
     });
 
     expect(
@@ -347,6 +504,19 @@ describe('parseAttemptSelectionSummary()', () => {
           summary: 'Invalid winner.',
         }),
         [1, 2, 3],
+      ).approved,
+    ).toBe(false);
+  });
+
+  it('does not treat the string "false" as approval', () => {
+    expect(
+      parseAttemptSelectionSummary(
+        JSON.stringify({
+          approved: 'false',
+          selectedAttemptNo: 1,
+          summary: 'The attempt still needs changes.',
+        }),
+        [1],
       ).approved,
     ).toBe(false);
   });
@@ -442,6 +612,40 @@ describe('parseWorkClarificationAnalysis()', () => {
 });
 
 describe('parseWorkerExecutionPlan()', () => {
+  it('does not treat the string "false" as a split recommendation', () => {
+    const plan = parseWorkerExecutionPlan(
+      JSON.stringify({
+        ...makePlan(),
+        decomposition: {
+          shouldSplit: 'false',
+          confidence: 0.9,
+          reason: 'The work can stay in one small patch.',
+          suggestedWorks: ['Part A', 'Part B'],
+          signals: ['two suggested labels only'],
+        },
+      }),
+    );
+
+    expect(plan.decomposition.shouldSplit).toBe(false);
+  });
+
+  it('requires exactly one selected patch alternative', () => {
+    const plan = parseWorkerExecutionPlan(
+      JSON.stringify({
+        ...makePlan(),
+        approachAlternatives: makePlan().approachAlternatives.map((item) => ({
+          ...item,
+          selected: true,
+        })),
+      }),
+    );
+
+    expect(plan.valid).toBe(false);
+    expect(plan.parseIssues).toContain(
+      'Missing required field: approachAlternatives with one selected option',
+    );
+  });
+
   it('normalizes files and filters unsafe planned commands into risk notes', () => {
     const plan = parseWorkerExecutionPlan(
       JSON.stringify({
@@ -464,6 +668,13 @@ describe('parseWorkerExecutionPlan()', () => {
         'Missing required field: understanding',
         'Missing required field: repoFindings',
         'Missing required field: stopConditions',
+        'Missing required field: changeDesign.targetFiles',
+        'Missing required field: changeDesign.invariants',
+        'Missing required field: changeDesign.expectedImpact',
+        'Missing required field: changeDesign.validationStrategy',
+        'Missing required field: changeDesign.rollbackStrategy',
+        'Missing required field: requirementTrace',
+        'Missing required field: approachAlternatives with one selected option',
       ],
       understanding: 'No requirement understanding provided.',
       repoFindings: [],
@@ -481,6 +692,31 @@ describe('parseWorkerExecutionPlan()', () => {
         'Planner suggested an unsafe validation command that was removed: npm install',
       ],
       stopConditions: [],
+      confidence: 0.3,
+      uncertainties: [],
+      decomposition: {
+        shouldSplit: false,
+        confidence: 0.3,
+        reason: 'No split recommended.',
+        suggestedWorks: [],
+        signals: [],
+      },
+      workerProfile: 'generalist',
+      changeDesign: {
+        targetFiles: [],
+        invariants: [],
+        expectedImpact: [],
+        validationStrategy: [],
+        rollbackStrategy: [],
+      },
+      taskType: 'generalist',
+      requirementTrace: [],
+      approachAlternatives: [],
+      escalation: {
+        shouldAsk: false,
+        questions: [],
+        blockers: [],
+      },
     });
   });
 
@@ -636,6 +872,64 @@ describe('project default validation helpers', () => {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
   });
+
+  it('selects nearby tests for changed source files before broad checks', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-targeted-tests-'));
+    fs.mkdirSync(join(projectRoot, 'src', 'lib', '__tests__'), { recursive: true });
+    fs.writeFileSync(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@9.0.0',
+        scripts: {
+          test: 'vitest run',
+          typecheck: 'tsc --noEmit',
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9', 'utf-8');
+    fs.writeFileSync(join(projectRoot, 'src', 'lib', 'foo.ts'), 'export const foo = 1;\n');
+    fs.writeFileSync(join(projectRoot, 'src', 'lib', '__tests__', 'foo.test.ts'), 'test("foo")');
+
+    try {
+      expect(buildDefaultValidationCommands(projectRoot, ['src/lib/foo.ts'])).toEqual([
+        'pnpm exec vitest src/lib/__tests__/foo.test.ts',
+        'pnpm run typecheck',
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('keeps targeted tests and typecheck when git diff validation is added', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-targeted-git-tests-'));
+    fs.mkdirSync(join(projectRoot, 'src', 'lib', '__tests__'), { recursive: true });
+    execFileSync('git', ['init'], { cwd: projectRoot, stdio: 'ignore' });
+    fs.writeFileSync(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@9.0.0',
+        scripts: {
+          test: 'vitest run',
+          typecheck: 'tsc --noEmit',
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9', 'utf-8');
+    fs.writeFileSync(join(projectRoot, 'src', 'lib', 'foo.ts'), 'export const foo = 1;\n');
+    fs.writeFileSync(join(projectRoot, 'src', 'lib', '__tests__', 'foo.test.ts'), 'test("foo")');
+
+    try {
+      expect(buildDefaultValidationCommands(projectRoot, ['src/lib/foo.ts'])).toEqual([
+        'git diff --check -- src/lib/foo.ts',
+        'pnpm exec vitest src/lib/__tests__/foo.test.ts',
+        'pnpm run typecheck',
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('buildProjectContextScan()', () => {
@@ -668,17 +962,21 @@ describe('buildProjectContextScan()', () => {
     );
 
     try {
-      const scan = await buildProjectContextScan(projectRoot, {
-        id: 'work-1',
-        type: 'work',
-        projectName: 'Demo',
-        title: 'Improve Kira model handling',
-        description: 'Update src/pages/Kira/model.ts so Kira handles model state safely.',
-        status: 'todo',
-        assignee: '',
-        createdAt: 1,
-        updatedAt: 1,
-      });
+      const scan = await buildProjectContextScan(
+        projectRoot,
+        {
+          id: 'work-1',
+          type: 'work',
+          projectName: 'Demo',
+          title: 'Improve Kira model handling',
+          description: 'Update frontend UI model handling in src/pages/Kira/model.ts safely.',
+          status: 'todo',
+          assignee: '',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+        'Follow existing TypeScript style.',
+      );
 
       expect(scan.packageManager).toBe('pnpm');
       expect(scan.workspaceFiles).toContain('package.json');
@@ -689,9 +987,324 @@ describe('buildProjectContextScan()', () => {
       expect(scan.likelyFiles.some((item) => item.includes('src/pages/Kira/model.ts'))).toBe(true);
       expect(scan.relatedDocs).toContain('README.md');
       expect(scan.testFiles).toContain('src/pages/Kira/model.test.ts');
+      expect(fs.existsSync(getProjectProfilePath(projectRoot))).toBe(true);
+      expect(scan.projectProfile?.projectName).toBe('Demo');
+      expect(scan.profileSummary?.join('\n')).toContain('Source roots');
+      expect(scan.workerProfile).toBeTruthy();
+      expect(scan.taskPlaybook?.taskType).toBeTruthy();
+      expect(scan.dependencyMap?.some((item) => item.file === 'src/pages/Kira/model.ts')).toBe(
+        true,
+      );
+      expect(scan.semanticGraph?.some((item) => item.file === 'src/pages/Kira/model.ts')).toBe(
+        true,
+      );
+      expect(scan.testImpact?.[0]?.impactedTests).toContain('src/pages/Kira/model.test.ts');
+      expect(scan.reviewAdversarialPlan?.modes).toContain('correctness');
+      expect(scan.clarificationGate?.decision).toBeTruthy();
+      expect(scan.reviewerCalibration?.strictness).toBeTruthy();
+      expect(scan.requirementTrace?.[0]?.id).toBe('R1');
+      expect(scan.requirementTrace?.some((item) => item.source === 'project-instruction')).toBe(
+        true,
+      );
+      expect(scan.riskPolicy?.evidenceMinimum).toBeGreaterThanOrEqual(1);
+      expect(typeof scan.runtimeValidation?.applicable).toBe('boolean');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('review diff collection', () => {
+  it('builds review evidence and stats for untracked new files', async () => {
+    const projectRoot = makeTempDir('kira-untracked-diff-');
+    try {
+      execFileSync('git', ['init'], { cwd: projectRoot, stdio: 'ignore' });
+      fs.mkdirSync(join(projectRoot, 'src'), { recursive: true });
+      fs.writeFileSync(
+        join(projectRoot, 'src', 'new-feature.ts'),
+        'export const feature = true;\n',
+        'utf-8',
+      );
+
+      const excerpts = await collectReviewerDiffExcerpts(projectRoot, ['src/new-feature.ts']);
+      const stats = await collectGitDiffStats(projectRoot, ['src/new-feature.ts']);
+
+      expect(excerpts.join('\n')).toContain('new file mode 100644');
+      expect(excerpts.join('\n')).toContain('+export const feature = true;');
+      expect(stats).toEqual({
+        files: 1,
+        additions: 1,
+        deletions: 0,
+        hunks: 1,
+      });
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('project intelligence profile', () => {
+  it('builds a reusable profile for worker specialization and validation memory', () => {
+    const projectRoot = makeTempDir('kira-profile-');
+    try {
+      fs.mkdirSync(join(projectRoot, 'src', 'components'), { recursive: true });
+      fs.mkdirSync(join(projectRoot, 'src', '__tests__'), { recursive: true });
+      fs.writeFileSync(
+        join(projectRoot, 'package.json'),
+        JSON.stringify({ scripts: { test: 'vitest run', typecheck: 'tsc --noEmit' } }),
+        'utf-8',
+      );
+      fs.writeFileSync(join(projectRoot, 'tsconfig.json'), '{}', 'utf-8');
+      fs.writeFileSync(
+        join(projectRoot, 'src', 'components', 'App.tsx'),
+        'export function App() {}',
+      );
+      fs.writeFileSync(join(projectRoot, 'src', '__tests__', 'App.test.tsx'), 'test("app",()=>{})');
+      fs.writeFileSync(join(projectRoot, 'README.md'), '# Demo');
+
+      const profile = refreshProjectIntelligenceProfile(projectRoot, 'Demo');
+
+      expect(fs.existsSync(getProjectProfilePath(projectRoot))).toBe(true);
+      expect(profile.workers.recommendedProfiles).toContain('frontend-ui');
+      expect(profile.workers.recommendedProfiles).toContain('test-validation');
+      expect(profile.validation.candidateCommands.length).toBeGreaterThan(0);
+      expect(profile.conventions.styleSignals.join('\n')).toContain('TypeScript');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('recommendWorkDecomposition()', () => {
+  it('recommends splitting broad multi-surface work', () => {
+    const recommendation = recommendWorkDecomposition(
+      {
+        ...makeWork(),
+        description: [
+          '# Brief',
+          '- Update frontend UI',
+          '- Add backend API',
+          '- Add database migration',
+          '- Add tests',
+          '- Update docs',
+          '- Handle auth',
+          '- Update validation',
+          '- Ship integration',
+        ].join('\n'),
+      },
+      {
+        likelyFiles: Array.from({ length: 12 }, (_, index) => `src/file-${index}.ts`),
+        testFiles: ['src/file.test.ts'],
+        relatedDocs: ['README.md'],
+        candidateChecks: ['pnpm test'],
+      },
+    );
+
+    expect(recommendation.shouldSplit).toBe(true);
+    expect(recommendation.suggestedWorks.length).toBeGreaterThanOrEqual(2);
+    expect(recommendation.signals.join('\n')).toContain('Multiple implementation surfaces');
+  });
+});
+
+describe('collectWorkerSelfCheckIssues()', () => {
+  it('requires workers to submit a meaningful final self-check', () => {
+    expect(
+      collectWorkerSelfCheckIssues({
+        workerSummary: {
+          summary: 'Updated files.',
+          filesChanged: ['src/app.ts'],
+          testsRun: [],
+          remainingRisks: [],
+        },
+        workerPlan: makePlan(),
+        requiredInstructions: 'Use strict TypeScript.',
+        validationPlan: {
+          plannerCommands: ['pnpm test'],
+          autoAddedCommands: [],
+          effectiveCommands: ['pnpm test'],
+          notes: [],
+        },
+        filesChanged: ['src/app.ts'],
+      }),
+    ).toEqual([
+      'Worker final JSON did not include selfCheck; rerun with an explicit diff, plan, project-instruction, and validation self-check.',
+    ]);
+
+    expect(
+      collectWorkerSelfCheckIssues({
+        workerSummary: {
+          summary: 'Updated files.',
+          filesChanged: ['src/app.ts'],
+          testsRun: ['pnpm test'],
+          remainingRisks: [],
+          selfCheck: {
+            reviewedDiff: true,
+            followedProjectInstructions: true,
+            matchedPlan: true,
+            ranOrExplainedValidation: true,
+            diffHunkReview: [
+              {
+                file: 'src/app.ts',
+                intent: 'Update app behavior.',
+                risk: 'Low risk.',
+              },
+            ],
+            requirementTrace: [
+              {
+                id: 'R1',
+                source: 'brief',
+                text: 'Make worker and reviewer behavior safer.',
+                status: 'satisfied',
+                evidence: ['src/app.ts updated.'],
+              },
+            ],
+            uncertainty: [],
+            notes: ['Diff reviewed.'],
+          },
+        },
+        workerPlan: makePlan(),
+        requiredInstructions: 'Use strict TypeScript.',
+        validationPlan: {
+          plannerCommands: ['pnpm test'],
+          autoAddedCommands: [],
+          effectiveCommands: ['pnpm test'],
+          notes: [],
+        },
+        filesChanged: ['src/app.ts'],
+      }),
+    ).toEqual([]);
+  });
+
+  it('requires diff hunk review for changed files', () => {
+    expect(
+      collectWorkerSelfCheckIssues({
+        workerSummary: {
+          summary: 'Updated files.',
+          filesChanged: ['src/app.ts'],
+          testsRun: ['pnpm test'],
+          remainingRisks: [],
+          selfCheck: {
+            reviewedDiff: true,
+            followedProjectInstructions: true,
+            matchedPlan: true,
+            ranOrExplainedValidation: true,
+            diffHunkReview: [],
+            requirementTrace: [
+              {
+                id: 'R1',
+                source: 'brief',
+                text: 'Make worker and reviewer behavior safer.',
+                status: 'satisfied',
+                evidence: ['src/app.ts updated.'],
+              },
+            ],
+            uncertainty: [],
+            notes: [],
+          },
+        },
+        workerPlan: makePlan(),
+        requiredInstructions: '',
+        validationPlan: {
+          plannerCommands: ['pnpm test'],
+          autoAddedCommands: [],
+          effectiveCommands: ['pnpm test'],
+          notes: [],
+        },
+        filesChanged: ['src/app.ts'],
+      }),
+    ).toContain('Worker self-check did not include diffHunkReview for the final patch.');
+  });
+
+  it('does not accept planned or evidence-free requirement trace entries as completed work', () => {
+    const issues = collectWorkerSelfCheckIssues({
+      workerSummary: {
+        summary: 'Updated files.',
+        filesChanged: ['src/app.ts'],
+        testsRun: ['pnpm test'],
+        remainingRisks: [],
+        selfCheck: {
+          reviewedDiff: true,
+          followedProjectInstructions: true,
+          matchedPlan: true,
+          ranOrExplainedValidation: true,
+          diffHunkReview: [
+            {
+              file: 'src/app.ts',
+              intent: 'Update app behavior.',
+              risk: 'Low risk.',
+            },
+          ],
+          requirementTrace: [
+            {
+              id: 'R1',
+              source: 'brief',
+              text: 'Make worker and reviewer behavior safer.',
+              status: 'planned',
+              evidence: [],
+            },
+          ],
+          uncertainty: [],
+          notes: [],
+        },
+      },
+      workerPlan: makePlan(),
+      requiredInstructions: '',
+      validationPlan: {
+        plannerCommands: ['pnpm test'],
+        autoAddedCommands: [],
+        effectiveCommands: ['pnpm test'],
+        notes: [],
+      },
+      filesChanged: ['src/app.ts'],
+    });
+
+    expect(issues.join('\n')).toContain(
+      'Worker self-check requirementTrace is incomplete for R1: status=planned without evidence.',
+    );
+  });
+});
+
+describe('verifyPatchIntent()', () => {
+  it('flags changed files that drift from the preflight plan', () => {
+    const verification = verifyPatchIntent({
+      workerPlan: makePlan(),
+      workerSummary: {
+        summary: 'Updated the app.',
+        filesChanged: ['src/other.ts'],
+        testsRun: ['pnpm test'],
+        remainingRisks: [],
+        selfCheck: {
+          reviewedDiff: true,
+          followedProjectInstructions: true,
+          matchedPlan: true,
+          ranOrExplainedValidation: true,
+          diffHunkReview: [
+            {
+              file: 'src/other.ts',
+              intent: 'Change unrelated file.',
+              risk: 'Unexpected scope.',
+            },
+          ],
+          requirementTrace: [
+            {
+              id: 'R1',
+              source: 'brief',
+              text: 'Make worker and reviewer behavior safer.',
+              status: 'satisfied',
+              evidence: ['src/other.ts updated.'],
+            },
+          ],
+          uncertainty: [],
+          notes: [],
+        },
+      },
+      outOfPlanFiles: ['src/other.ts'],
+      diffStats: { files: 1, additions: 3, deletions: 0, hunks: 1 },
+      diffExcerpts: ['diff -- src/other.ts'],
+    });
+
+    expect(verification.status).toBe('drift');
+    expect(verification.issues.join('\n')).toContain('outside the planned intent');
   });
 });
 
@@ -1018,16 +1631,86 @@ describe('getOpenAiAssistantReasoningContent()', () => {
 
 describe('resolveProjectSettings()', () => {
   it('defaults autoCommit to true when the project settings file is absent or empty', () => {
-    expect(resolveProjectSettings(null)).toEqual({ autoCommit: true });
-    expect(resolveProjectSettings({})).toEqual({ autoCommit: true });
+    expect(resolveProjectSettings(null)).toMatchObject({
+      autoCommit: true,
+      requiredInstructions: '',
+      effectiveInstructions: '',
+      runMode: 'standard',
+    });
+    expect(resolveProjectSettings({})).toMatchObject({
+      autoCommit: true,
+      requiredInstructions: '',
+      effectiveInstructions: '',
+      runMode: 'standard',
+    });
   });
 
   it('respects an explicit autoCommit false value', () => {
-    expect(resolveProjectSettings({ autoCommit: false })).toEqual({ autoCommit: false });
+    expect(resolveProjectSettings({ autoCommit: false })).toMatchObject({
+      autoCommit: false,
+      requiredInstructions: '',
+      effectiveInstructions: '',
+      runMode: 'standard',
+    });
   });
 
   it('uses the provided fallback when the project file does not define autoCommit', () => {
-    expect(resolveProjectSettings({}, { autoCommit: false })).toEqual({ autoCommit: false });
+    expect(resolveProjectSettings({}, { autoCommit: false })).toMatchObject({
+      autoCommit: false,
+      requiredInstructions: '',
+      effectiveInstructions: '',
+      runMode: 'standard',
+    });
+  });
+
+  it('resolves mandatory project instructions with project-local precedence', () => {
+    expect(
+      resolveProjectSettings(
+        { requiredInstructions: 'Use tabs for Makefiles.' },
+        { requiredInstructions: 'Use spaces.' },
+      ),
+    ).toMatchObject({
+      autoCommit: true,
+      requiredInstructions: 'Use tabs for Makefiles.',
+      effectiveInstructions: 'Use tabs for Makefiles.',
+    });
+
+    expect(resolveProjectSettings({}, { requiredInstructions: 'Use spaces.' })).toMatchObject({
+      autoCommit: true,
+      requiredInstructions: 'Use spaces.',
+      effectiveInstructions: 'Use spaces.',
+    });
+
+    expect(
+      resolveProjectSettings({ requiredInstructions: '' }, { requiredInstructions: 'Use spaces.' }),
+    ).toMatchObject({
+      autoCommit: true,
+      requiredInstructions: '',
+      effectiveInstructions: '',
+    });
+  });
+
+  it('merges run mode and enabled rule packs into effective instructions', () => {
+    const settings = resolveProjectSettings({
+      runMode: 'deep',
+      requiredInstructions: 'Use project conventions.',
+      rulePacks: [{ id: 'small-patch', enabled: true }],
+    });
+
+    expect(settings.runMode).toBe('deep');
+    expect(settings.rulePacks.find((item) => item.id === 'small-patch')?.enabled).toBe(true);
+    expect(settings.effectiveInstructions).toContain('Use project conventions.');
+    expect(settings.effectiveInstructions).toContain('Rule pack: Small Patch');
+  });
+
+  it('lets a project-local rule pack list override inherited defaults', () => {
+    const settings = resolveProjectSettings(
+      { rulePacks: [] },
+      { rulePacks: [{ id: 'validation-first', enabled: true }] },
+    );
+
+    expect(settings.rulePacks.find((item) => item.id === 'validation-first')?.enabled).toBe(false);
+    expect(settings.effectiveInstructions).not.toContain('Rule pack: Validation First');
   });
 });
 
@@ -1250,6 +1933,47 @@ describe('buildIssueSignature()', () => {
     const a = buildIssueSignature(['B issue', 'A issue'], 'summary');
     const b = buildIssueSignature(['A issue', 'B issue'], 'another summary');
     expect(a).toBe(b);
+  });
+});
+
+describe('automation locks', () => {
+  it('treats inaccessible lock paths as unavailable instead of throwing', () => {
+    const tempDir = makeTempDir('kira-locks-');
+    try {
+      const parentFile = join(tempDir, 'automation-locks');
+      fs.writeFileSync(parentFile, 'not a directory', 'utf-8');
+
+      expect(
+        tryAcquireLock(join(parentFile, 'work-1.json'), {
+          ownerId: 'test-owner',
+          resource: 'work',
+          sessionPath: 'test/session',
+          targetKey: 'work-1',
+        }),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('recognizes lock EPERM messages even when the error has no code', () => {
+    const message =
+      "EPERM: operation not permitted, open 'C:\\Users\\kernulist\\.openroom\\sessions\\aoi\\space_adventure\\apps\\kira\\data\\automation-locks\\work-1777350905817-pthsqi2so.json'";
+
+    expect(isRecoverableAutomationLockMessage(`Kira 자동 스캔 오류: ${message}`)).toBe(true);
+    expect(isRecoverableLockError(new Error(message))).toBe(true);
+  });
+
+  it('does not hide unrelated filesystem errors with recoverable codes', () => {
+    const error = Object.assign(
+      new Error("ENOENT: no such file or directory, open 'missing.json'"),
+      {
+        code: 'ENOENT',
+        path: 'missing.json',
+      },
+    );
+
+    expect(isRecoverableLockError(error)).toBe(false);
   });
 });
 

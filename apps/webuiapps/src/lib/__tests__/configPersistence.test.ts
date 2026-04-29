@@ -38,6 +38,7 @@ const MOCK_PERSISTED: PersistedConfig = {
     workRootDirectory: 'F:/workspace/project-root',
     projectDefaults: {
       autoCommit: true,
+      requiredInstructions: 'Use strict TypeScript and keep UI copy concise.',
     },
     workerLlm: {
       model: 'openai/gpt-5.4',
@@ -104,6 +105,9 @@ describe('loadPersistedConfig()', () => {
     expect(result?.imageGen).toEqual(MOCK_IMAGEGEN_CONFIG);
     expect(result?.kira?.workRootDirectory).toBe('F:/workspace/project-root');
     expect(result?.kira?.projectDefaults?.autoCommit).toBe(true);
+    expect(result?.kira?.projectDefaults?.requiredInstructions).toBe(
+      'Use strict TypeScript and keep UI copy concise.',
+    );
     expect(result?.kira?.workerLlm?.model).toBe('openai/gpt-5.4');
     expect(result?.kira?.workers?.[0]?.provider).toBe('codex-cli');
     expect(result?.kira?.workers?.[1]?.model).toBe('opencode-go/kimi-k2.5');
@@ -181,7 +185,7 @@ describe('loadPersistedConfig()', () => {
     const result = await loadPersistedConfig();
 
     expect(result).toEqual({ llm: MOCK_LLM_CONFIG });
-    expect(result?.llm.provider).toBe('openai');
+    expect(result?.llm?.provider).toBe('openai');
     expect(result?.imageGen).toBeUndefined();
   });
 
@@ -239,6 +243,7 @@ describe('savePersistedConfig()', () => {
       workRootDirectory: 'F:/workspace/project-root',
       projectDefaults: {
         autoCommit: true,
+        requiredInstructions: 'Use strict TypeScript and keep UI copy concise.',
       },
       workerLlm: {
         model: 'openai/gpt-5.4',

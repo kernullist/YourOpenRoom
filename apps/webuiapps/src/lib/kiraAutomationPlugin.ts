@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import * as net from 'net';
 import { exec as execCallback, execFile as execFileCallback, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
@@ -114,6 +115,330 @@ interface WorkerSummary {
   filesChanged: string[];
   testsRun: string[];
   remainingRisks: string[];
+  selfCheck?: WorkerSelfCheck;
+}
+
+interface DiffHunkReview {
+  file: string;
+  intent: string;
+  risk: string;
+}
+
+interface WorkerSelfCheck {
+  reviewedDiff: boolean;
+  followedProjectInstructions: boolean;
+  matchedPlan: boolean;
+  ranOrExplainedValidation: boolean;
+  diffHunkReview: DiffHunkReview[];
+  requirementTrace: RequirementTraceItem[];
+  uncertainty: string[];
+  notes: string[];
+}
+
+interface ChangeDesign {
+  targetFiles: string[];
+  invariants: string[];
+  expectedImpact: string[];
+  validationStrategy: string[];
+  rollbackStrategy: string[];
+}
+
+interface WorkDecompositionRecommendation {
+  shouldSplit: boolean;
+  confidence: number;
+  reason: string;
+  suggestedWorks: string[];
+  signals: string[];
+}
+
+type KiraTaskType =
+  | 'frontend-ui'
+  | 'backend-api'
+  | 'test-validation'
+  | 'tooling-config'
+  | 'docs-maintainer'
+  | 'data-migration'
+  | 'security-auth'
+  | 'generalist';
+
+interface TaskPlaybook {
+  taskType: KiraTaskType;
+  confidence: number;
+  inspectFocus: string[];
+  validationFocus: string[];
+  reviewChecklist: string[];
+  riskSignals: string[];
+}
+
+interface DependencyInsight {
+  file: string;
+  imports: string[];
+  importedBy: string[];
+  nearbyTests: string[];
+}
+
+interface RequirementTraceItem {
+  id: string;
+  source: 'brief' | 'project-instruction' | 'change-design' | 'review';
+  text: string;
+  status?: 'planned' | 'satisfied' | 'partial' | 'blocked' | 'not_applicable';
+  evidence: string[];
+}
+
+interface PatchAlternative {
+  name: string;
+  selected: boolean;
+  rationale: string;
+  tradeoffs: string[];
+}
+
+interface EscalationSignal {
+  severity: 'low' | 'medium' | 'high';
+  reason: string;
+  suggestedQuestion: string;
+}
+
+interface UncertaintyEscalation {
+  shouldAsk: boolean;
+  questions: string[];
+  blockers: string[];
+}
+
+interface RiskReviewPolicy {
+  level: 'low' | 'medium' | 'high';
+  reasons: string[];
+  evidenceMinimum: number;
+  requiresRuntimeValidation: boolean;
+  requiresSecondPass: boolean;
+}
+
+interface RuntimeValidationSignal {
+  applicable: boolean;
+  reason: string;
+  suggestedUrls: string[];
+}
+
+type SemanticGraphNodeRole = 'source' | 'test' | 'entrypoint' | 'config' | 'doc' | 'unknown';
+
+interface SemanticGraphNode {
+  file: string;
+  role: SemanticGraphNodeRole;
+  imports: string[];
+  exports: string[];
+  symbols: string[];
+  dependents: string[];
+  tests: string[];
+}
+
+interface TestImpactTarget {
+  file: string;
+  impactedTests: string[];
+  commands: string[];
+  rationale: string;
+  confidence: number;
+}
+
+type ReviewerAdversarialMode =
+  | 'correctness'
+  | 'regression'
+  | 'security'
+  | 'runtime-ux'
+  | 'data-safety'
+  | 'integration'
+  | 'maintainability';
+
+interface ReviewAdversarialPlan {
+  modes: ReviewerAdversarialMode[];
+  rationale: string[];
+  requiredEvidence: string[];
+}
+
+interface ReviewAdversarialCheck {
+  mode: ReviewerAdversarialMode;
+  result: 'passed' | 'failed' | 'not_applicable';
+  evidence: string[];
+  concern?: string;
+}
+
+interface RuntimeValidationResult {
+  checked: boolean;
+  applicable: boolean;
+  serverDetected: boolean;
+  url: string | null;
+  status: 'skipped' | 'not_running' | 'reachable';
+  notes: string[];
+  httpStatus?: number;
+  contentType?: string;
+  title?: string;
+  bodySnippet?: string;
+  evidence: string[];
+}
+
+interface FailureReproductionStep {
+  command: string;
+  reason: string;
+  expectedSignal: string;
+}
+
+interface FailureAnalysis {
+  command: string;
+  category:
+    | 'typecheck'
+    | 'unit-test'
+    | 'lint'
+    | 'build'
+    | 'runtime'
+    | 'environment'
+    | 'safety'
+    | 'unknown';
+  summary: string;
+  guidance: string;
+  reproductionSteps: FailureReproductionStep[];
+}
+
+interface ScoredMemorySignal {
+  text: string;
+  score: number;
+  hits: number;
+  source: 'review' | 'validation' | 'pattern' | 'guidance' | 'success';
+  lastSeenAt: number;
+}
+
+type KiraRunMode = 'quick' | 'standard' | 'deep';
+
+interface KiraRulePackSetting {
+  id: string;
+  enabled: boolean;
+}
+
+interface KiraRulePackDefinition {
+  id: string;
+  label: string;
+  description: string;
+  instructions: string[];
+}
+
+interface OrchestrationPlan {
+  runMode: KiraRunMode;
+  taskType: KiraTaskType;
+  workerCount: number;
+  validationDepth: 'focused' | 'standard' | 'deep';
+  reviewDepth: 'focused' | 'adversarial' | 'evidence-heavy';
+  approvalThreshold: number;
+  summary: string;
+  lanes: Array<{
+    id: string;
+    role: string;
+    goal: string;
+    requiredEvidence: string[];
+  }>;
+  checkpoints: string[];
+  stopRules: string[];
+}
+
+interface ManualEvidenceItem {
+  id: string;
+  kind: 'manual' | 'test' | 'runtime' | 'review' | 'risk-acceptance';
+  author: string;
+  summary: string;
+  riskAccepted: boolean;
+  createdAt: number;
+}
+
+interface EvidenceLedgerItem {
+  id: string;
+  kind:
+    | 'plan'
+    | 'diff'
+    | 'validation'
+    | 'runtime'
+    | 'intent'
+    | 'review'
+    | 'manual'
+    | 'risk-acceptance'
+    | 'design';
+  status: 'pass' | 'warn' | 'fail' | 'info';
+  summary: string;
+  target?: string;
+  evidence: string[];
+  createdBy: 'kira' | 'worker' | 'reviewer' | 'operator';
+  confidence: number;
+  createdAt: number;
+}
+
+interface ApprovalReadiness {
+  score: number;
+  status: 'ready' | 'needs_evidence' | 'blocked';
+  blockers: string[];
+  missingEvidence: string[];
+  requiredEvidenceCount: number;
+  observedEvidenceCount: number;
+}
+
+interface EvidenceLedger {
+  items: EvidenceLedgerItem[];
+  approvalReadiness: ApprovalReadiness;
+}
+
+interface PatchIntentVerification {
+  status: 'aligned' | 'drift' | 'unknown';
+  confidence: number;
+  checkedFiles: string[];
+  evidence: string[];
+  issues: string[];
+}
+
+interface AttemptSynthesisRecommendation {
+  canSynthesize: boolean;
+  summary: string;
+  candidateParts: string[];
+  risks: string[];
+}
+
+interface ClarificationQualityGate {
+  decision: 'proceed' | 'needs_clarification' | 'split' | 'blocked';
+  confidence: number;
+  reasons: string[];
+  questions: string[];
+}
+
+interface ReviewerCalibration {
+  strictness: 'normal' | 'heightened' | 'evidence-heavy';
+  reasons: string[];
+  focusMemories: string[];
+  evidenceMinimum: number;
+}
+
+type DesignReviewRole = 'product' | 'architecture' | 'validation' | 'risk' | 'integration';
+
+interface DesignReviewCheck {
+  role: DesignReviewRole;
+  verdict: 'pass' | 'warn' | 'block';
+  concern: string;
+  evidence: string[];
+  requiredChanges: string[];
+}
+
+interface DesignReviewGate {
+  status: 'passed' | 'warning' | 'blocked';
+  summary: string;
+  checks: DesignReviewCheck[];
+  requiredChanges: string[];
+  createdAt: number;
+}
+
+interface ReviewEvidenceChecked {
+  file: string;
+  reason: string;
+  method: string;
+}
+
+interface ReviewerDiscourseEntry {
+  role: ReviewerAdversarialMode | 'design-gate' | 'validation';
+  position: 'support' | 'challenge' | 'resolved';
+  argument: string;
+  evidence: string[];
+  response?: string;
 }
 
 interface WorkerExecutionPlan {
@@ -127,6 +452,64 @@ interface WorkerExecutionPlan {
   validationCommands: string[];
   riskNotes: string[];
   stopConditions: string[];
+  confidence: number;
+  uncertainties: string[];
+  decomposition: WorkDecompositionRecommendation;
+  workerProfile: string;
+  changeDesign: ChangeDesign;
+  taskType: KiraTaskType;
+  requirementTrace: RequirementTraceItem[];
+  approachAlternatives: PatchAlternative[];
+  escalation: UncertaintyEscalation;
+}
+
+interface KiraProjectProfile {
+  schemaVersion: number;
+  projectName: string;
+  projectRoot: string;
+  generatedAt: number;
+  updatedAt: number;
+  repoMap: {
+    topLevelDirectories: string[];
+    sourceRoots: string[];
+    testRoots: string[];
+    docs: string[];
+    configFiles: string[];
+    entrypoints: string[];
+  };
+  conventions: {
+    packageManager: string | null;
+    scripts: string[];
+    styleSignals: string[];
+    architectureNotes: string[];
+  };
+  validation: {
+    candidateCommands: string[];
+    testFiles: string[];
+    notes: string[];
+  };
+  risk: {
+    highRiskFiles: string[];
+    generatedPaths: string[];
+    concurrencyNotes: string[];
+  };
+  workers: {
+    recommendedProfiles: string[];
+    specializationHints: string[];
+  };
+  decomposition: {
+    hints: string[];
+    lastRecommendations: string[];
+  };
+  learning: {
+    recentReviewFailures: string[];
+    recentValidationFailures: string[];
+    repeatedPatterns: string[];
+    workerGuidanceRules: string[];
+    successfulPatterns: string[];
+    scoredMemories: ScoredMemorySignal[];
+    lastUpdatedAt?: number;
+  };
 }
 
 interface ProjectContextScan {
@@ -141,6 +524,25 @@ interface ProjectContextScan {
   testFiles: string[];
   candidateChecks: string[];
   notes: string[];
+  projectProfile?: KiraProjectProfile | null;
+  profileSummary?: string[];
+  recentFeedback?: string[];
+  decomposition?: WorkDecompositionRecommendation;
+  workerProfile?: string;
+  taskPlaybook?: TaskPlaybook;
+  dependencyMap?: DependencyInsight[];
+  semanticGraph?: SemanticGraphNode[];
+  testImpact?: TestImpactTarget[];
+  requirementTrace?: RequirementTraceItem[];
+  riskPolicy?: RiskReviewPolicy;
+  reviewAdversarialPlan?: ReviewAdversarialPlan;
+  runtimeValidation?: RuntimeValidationSignal;
+  escalationSignals?: EscalationSignal[];
+  clarificationGate?: ClarificationQualityGate;
+  reviewerCalibration?: ReviewerCalibration;
+  designReviewGate?: DesignReviewGate;
+  orchestrationPlan?: OrchestrationPlan;
+  manualEvidence?: ManualEvidenceItem[];
 }
 
 interface ReviewSummary {
@@ -152,6 +554,10 @@ interface ReviewSummary {
   missingValidation: string[];
   nextWorkerInstructions: string[];
   residualRisk: string[];
+  evidenceChecked: ReviewEvidenceChecked[];
+  requirementVerdicts: RequirementTraceItem[];
+  adversarialChecks: ReviewAdversarialCheck[];
+  reviewerDiscourse: ReviewerDiscourseEntry[];
 }
 
 interface ReviewFinding {
@@ -159,6 +565,19 @@ interface ReviewFinding {
   line: number | null;
   severity: 'low' | 'medium' | 'high';
   message: string;
+}
+
+interface ReviewFindingTriageItem {
+  id: string;
+  source: 'review' | 'validation' | 'runtime' | 'design' | 'intent';
+  status: 'open' | 'fixed' | 'acknowledged' | 'dismissed';
+  severity: ReviewFinding['severity'];
+  title: string;
+  file?: string;
+  line?: number | null;
+  evidence: string[];
+  owner: 'worker' | 'reviewer' | 'operator';
+  createdAt: number;
 }
 
 interface KiraAttemptRecord {
@@ -169,6 +588,7 @@ interface KiraAttemptRecord {
     | 'planned'
     | 'needs_context'
     | 'validation_failed'
+    | 'reviewable'
     | 'review_requested_changes'
     | 'blocked'
     | 'approved';
@@ -185,6 +605,25 @@ interface KiraAttemptRecord {
   outOfPlanFiles: string[];
   validationGaps: string[];
   risks: string[];
+  changeDesign?: ChangeDesign;
+  diffHunkReview?: DiffHunkReview[];
+  validationPlan?: ResolvedValidationPlan;
+  diffStats?: DiffStats;
+  observability?: KiraAttemptObservability;
+  failureAnalysis?: FailureAnalysis[];
+  runtimeValidation?: RuntimeValidationResult;
+  riskPolicy?: RiskReviewPolicy;
+  semanticGraph?: SemanticGraphNode[];
+  testImpact?: TestImpactTarget[];
+  reviewAdversarialPlan?: ReviewAdversarialPlan;
+  patchIntentVerification?: PatchIntentVerification;
+  clarificationGate?: ClarificationQualityGate;
+  reviewerCalibration?: ReviewerCalibration;
+  designReviewGate?: DesignReviewGate;
+  orchestrationPlan?: OrchestrationPlan;
+  evidenceLedger?: EvidenceLedger;
+  requirementTrace?: RequirementTraceItem[];
+  approachAlternatives?: PatchAlternative[];
   diffExcerpts?: string[];
   rawWorkerOutput?: string;
   blockedReason?: string;
@@ -203,12 +642,27 @@ interface KiraReviewRecord {
   nextWorkerInstructions: string[];
   residualRisk: string[];
   filesChecked: string[];
+  evidenceChecked: ReviewEvidenceChecked[];
+  requirementVerdicts: RequirementTraceItem[];
+  adversarialChecks: ReviewAdversarialCheck[];
+  reviewerDiscourse?: ReviewerDiscourseEntry[];
+  triage?: ReviewFindingTriageItem[];
+  reviewAdversarialPlan?: ReviewAdversarialPlan;
+  attemptSynthesis?: AttemptSynthesisRecommendation;
+  observability?: KiraReviewObservability;
 }
 
 interface ValidationRerunSummary {
   passed: string[];
   failed: string[];
   failureDetails: string[];
+}
+
+interface DiffStats {
+  files: number;
+  additions: number;
+  deletions: number;
+  hunks: number;
 }
 
 interface ResolvedValidationPlan {
@@ -248,6 +702,17 @@ interface ProjectDiscoveryAnalysis {
 
 interface KiraProjectSettings {
   autoCommit?: boolean;
+  requiredInstructions?: string;
+  runMode?: KiraRunMode;
+  rulePacks?: unknown;
+}
+
+interface ResolvedKiraProjectSettings {
+  autoCommit: boolean;
+  requiredInstructions: string;
+  effectiveInstructions: string;
+  runMode: KiraRunMode;
+  rulePacks: KiraRulePackSetting[];
 }
 
 interface KiraWorkspaceSession {
@@ -278,6 +743,10 @@ interface KiraWorkerAttemptResult {
   workerSummary: WorkerSummary;
   validationPlan: ResolvedValidationPlan;
   validationReruns: ValidationRerunSummary;
+  failureAnalysis: FailureAnalysis[];
+  runtimeValidation: RuntimeValidationResult;
+  patchIntentVerification: PatchIntentVerification;
+  diffStats: DiffStats;
   outOfPlanFiles: string[];
   missingValidationCommands: string[];
   highRiskIssues: string[];
@@ -288,6 +757,37 @@ interface KiraWorkerAttemptResult {
   blockedReason?: string;
 }
 
+interface KiraAttemptObservability {
+  stage: KiraAttemptRecord['status'];
+  metrics: {
+    preflightExplorationCount: number;
+    readFileCount: number;
+    patchedFileCount: number;
+    changedFileCount: number;
+    commandRunCount: number;
+    validationPassedCount: number;
+    validationFailedCount: number;
+    diffFileCount: number;
+    diffAdditions: number;
+    diffDeletions: number;
+    diffHunks: number;
+    durationMs: number;
+    evidenceSignalCount: number;
+    estimatedWorkerOutputTokens: number;
+  };
+  timeline: string[];
+  notes: string[];
+}
+
+interface KiraReviewObservability {
+  durationMs: number;
+  findingCount: number;
+  triageOpenCount: number;
+  discourseCount: number;
+  evidenceCount: number;
+  estimatedReviewOutputTokens: number;
+}
+
 interface AttemptSelectionSummary {
   approved: boolean;
   selectedAttemptNo: number | null;
@@ -296,6 +796,9 @@ interface AttemptSelectionSummary {
   nextWorkerInstructions: string[];
   residualRisk: string[];
   filesChecked: string[];
+  evidenceChecked: ReviewEvidenceChecked[];
+  requirementVerdicts: RequirementTraceItem[];
+  adversarialChecks: ReviewAdversarialCheck[];
 }
 
 interface KiraAutomationEvent {
@@ -363,6 +866,8 @@ const REVIEWS_DIR_NAME = 'reviews';
 const WORKTREES_DIR_NAME = 'worktrees';
 const PROJECT_SETTINGS_DIR_NAME = '.kira';
 const PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
+const PROJECT_PROFILE_FILE_NAME = 'project-profile.json';
+const PROJECT_PROFILE_SCHEMA_VERSION = 1;
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_CLARIFICATION_QUESTIONS = 3;
@@ -377,9 +882,26 @@ const MAX_LIST_ENTRIES = 200;
 const MAX_SEARCH_RESULTS = 40;
 const MAX_PLANNED_FILES = 12;
 const MAX_PLANNER_VALIDATION_COMMANDS = 4;
-const MAX_DEFAULT_VALIDATION_COMMANDS = 2;
+const MAX_DEFAULT_VALIDATION_COMMANDS = 3;
 const MAX_EFFECTIVE_VALIDATION_COMMANDS = 6;
 const MAX_REVIEW_DIFF_CHARS = 2_400;
+const MAX_PROJECT_REQUIRED_INSTRUCTIONS_CHARS = 12_000;
+const MAX_PROJECT_PROFILE_LIST_ITEMS = 20;
+const MAX_PROJECT_LEARNING_ITEMS = 12;
+const MAX_DIFF_HUNK_REVIEW_ITEMS = 24;
+const MAX_DEPENDENCY_INSIGHTS = 8;
+const MAX_REQUIREMENT_TRACE_ITEMS = 12;
+const MAX_FAILURE_ANALYSIS_ITEMS = 8;
+const MAX_PATCH_ALTERNATIVES = 4;
+const MAX_SEMANTIC_GRAPH_NODES = 12;
+const MAX_TEST_IMPACT_TARGETS = 8;
+const MAX_RUNTIME_EVIDENCE_CHARS = 700;
+const MAX_SCORED_MEMORY_ITEMS = 18;
+const SMALL_PATCH_FILE_LIMIT = 10;
+const SMALL_PATCH_LINE_LIMIT = 900;
+const SMALL_PATCH_PLAN_FILE_LIMIT = 8;
+const COMMON_DEV_SERVER_PORTS = [5173, 3000, 4173, 5174, 8080];
+const RUNTIME_PROBE_TIMEOUT_MS = 450;
 const COMMAND_TIMEOUT_MS = 90_000;
 const LLM_REQUEST_TIMEOUT_MS = 240_000;
 const EXTERNAL_AGENT_TIMEOUT_MS = 10 * 60_000;
@@ -389,6 +911,14 @@ const LOCK_HEARTBEAT_MS = 5_000;
 const LOCK_STALE_MS = 10 * 60_000;
 const WORKER_AUTHOR = 'Kira Worker';
 const REVIEWER_AUTHOR = 'Main AI Reviewer';
+const RECOVERABLE_LOCK_ERROR_CODES = new Set([
+  'EACCES',
+  'EBUSY',
+  'EEXIST',
+  'ENOENT',
+  'ENOTDIR',
+  'EPERM',
+]);
 const activeJobs = new Set<string>();
 const activeProjectJobs = new Set<string>();
 const jobAbortControllers = new Map<string, AbortController>();
@@ -397,6 +927,62 @@ const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
 const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
+const KIRA_RULE_PACK_PRESETS: KiraRulePackDefinition[] = [
+  {
+    id: 'strict-typescript',
+    label: 'Strict TypeScript',
+    description: 'Prefer explicit contracts, typed boundaries, and no avoidable any casts.',
+    instructions: [
+      'Preserve strict TypeScript safety; do not introduce implicit any, broad any casts, or unchecked optional access.',
+      'When changing exported APIs, update related types, normalizers, and tests together.',
+    ],
+  },
+  {
+    id: 'small-patch',
+    label: 'Small Patch',
+    description: 'Keep changes narrow, reversible, and directly tied to the task.',
+    instructions: [
+      'Keep patches tightly scoped to the work brief and avoid opportunistic refactors.',
+      'Explain any out-of-plan file change and treat broad rewrites as review-blocking unless justified by the brief.',
+    ],
+  },
+  {
+    id: 'validation-first',
+    label: 'Validation First',
+    description: 'Require concrete verification evidence before approval.',
+    instructions: [
+      'Prefer existing test, lint, typecheck, or build commands and record exact validation evidence.',
+      'Do not approve unless failed checks are fixed or the validation gap is explicitly justified as non-applicable.',
+    ],
+  },
+  {
+    id: 'frontend-runtime',
+    label: 'Frontend Runtime',
+    description: 'For UI changes, inspect runtime behavior when a dev server already exists.',
+    instructions: [
+      'For frontend-visible changes, verify rendering or runtime reachability when a dev server is already running.',
+      'Do not start a dev server automatically; only use an already-running local server for runtime checks.',
+    ],
+  },
+  {
+    id: 'safe-refactor',
+    label: 'Safe Refactor',
+    description: 'Protect behavior while changing structure.',
+    instructions: [
+      'For refactors, preserve public behavior and call sites unless the brief explicitly changes them.',
+      'Reviewer must compare before/after intent and reject behavior drift without evidence.',
+    ],
+  },
+  {
+    id: 'docs-safe',
+    label: 'Docs Safe',
+    description: 'Keep docs, examples, and code references synchronized.',
+    instructions: [
+      'When behavior or commands change, update adjacent docs, examples, or comments that would become misleading.',
+      'Do not add docs claims that are not backed by the actual implementation.',
+    ],
+  },
+];
 const KIRA_PROJECT_ROOT_MARKERS = [
   '.git',
   'package.json',
@@ -448,8 +1034,445 @@ function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
 }
 
+function estimateTokenCount(value: string): number {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) return 0;
+  return Math.max(1, Math.ceil(normalized.length / 4));
+}
+
+function normalizeProjectRequiredInstructions(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .trim()
+    .slice(0, MAX_PROJECT_REQUIRED_INSTRUCTIONS_CHARS);
+}
+
+function normalizeRunMode(value: unknown, fallback: KiraRunMode = 'standard'): KiraRunMode {
+  return value === 'quick' || value === 'standard' || value === 'deep' ? value : fallback;
+}
+
+function normalizeRulePackSettings(
+  value: unknown,
+  fallback: KiraRulePackSetting[] = [],
+): KiraRulePackSetting[] {
+  const fallbackEnabled = new Map(fallback.map((item) => [item.id, item.enabled]));
+  const rawEnabled = new Map<string, boolean>();
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (typeof item === 'string') {
+        rawEnabled.set(item, true);
+        continue;
+      }
+      if (!item || typeof item !== 'object') continue;
+      const parsed = item as Partial<KiraRulePackSetting>;
+      if (typeof parsed.id === 'string' && parsed.id.trim()) {
+        rawEnabled.set(parsed.id.trim(), parsed.enabled !== false);
+      }
+    }
+  }
+
+  return KIRA_RULE_PACK_PRESETS.map((preset) => ({
+    id: preset.id,
+    enabled: rawEnabled.has(preset.id)
+      ? Boolean(rawEnabled.get(preset.id))
+      : Boolean(fallbackEnabled.get(preset.id)),
+  }));
+}
+
+function buildRulePackInstructions(rulePacks: KiraRulePackSetting[]): string {
+  const enabled = new Set(rulePacks.filter((item) => item.enabled).map((item) => item.id));
+  const lines = KIRA_RULE_PACK_PRESETS.filter((preset) => enabled.has(preset.id)).flatMap(
+    (preset) => [
+      `Rule pack: ${preset.label}`,
+      ...preset.instructions.map((instruction) => `- ${instruction}`),
+    ],
+  );
+  return lines.join('\n');
+}
+
+function buildEffectiveProjectInstructions(
+  requiredInstructions: string,
+  rulePacks: KiraRulePackSetting[],
+): string {
+  return [requiredInstructions, buildRulePackInstructions(rulePacks)]
+    .map((section) => section.trim())
+    .filter(Boolean)
+    .join('\n\n');
+}
+
+function collectManualEvidenceFromComments(comments: TaskComment[]): ManualEvidenceItem[] {
+  return comments
+    .filter((comment) => comment.body.includes('[Kira manual evidence]'))
+    .map((comment): ManualEvidenceItem | null => {
+      const kindMatch = comment.body.match(/^Kind:\s*(.+)$/im);
+      const riskMatch = comment.body.match(/^Risk accepted:\s*(yes|no|true|false)$/im);
+      const summaryMatch = comment.body.match(/Summary:\s*([\s\S]*)$/im);
+      const kindValue = (kindMatch?.[1] ?? 'manual').trim().toLowerCase();
+      const kind: ManualEvidenceItem['kind'] =
+        kindValue === 'test' ||
+        kindValue === 'runtime' ||
+        kindValue === 'review' ||
+        kindValue === 'risk-acceptance'
+          ? kindValue
+          : 'manual';
+      const summary = normalizeProjectRequiredInstructions(summaryMatch?.[1] ?? comment.body);
+      if (!summary) return null;
+      return {
+        id: comment.id,
+        kind,
+        author: comment.author || 'Operator',
+        summary,
+        riskAccepted:
+          kind === 'risk-acceptance' || /^(yes|true)$/i.test((riskMatch?.[1] ?? '').trim()),
+        createdAt: comment.createdAt,
+      };
+    })
+    .filter((item): item is ManualEvidenceItem => item !== null)
+    .slice(-20);
+}
+
+function clampConfidence(value: unknown, fallback = 0.5): number {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseFloat(value)
+        : Number.NaN;
+  if (!Number.isFinite(numeric)) return fallback;
+  return Math.min(1, Math.max(0, numeric));
+}
+
+function normalizeBoolean(value: unknown, fallback = false): boolean {
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (['true', '1', 'yes', 'y'].includes(normalized)) return true;
+    if (['false', '0', 'no', 'n', ''].includes(normalized)) return false;
+  }
+  return fallback;
+}
+
 function uniqueStrings(values: string[]): string[] {
   return [...new Set(values.filter(Boolean))];
+}
+
+function limitedUniqueStrings(values: string[], limit = MAX_PROJECT_PROFILE_LIST_ITEMS): string[] {
+  return uniqueStrings(values.map((value) => normalizeWhitespace(value)).filter(Boolean)).slice(
+    0,
+    limit,
+  );
+}
+
+function stringArrayFrom(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String) : [];
+}
+
+function normalizeDecompositionRecommendation(raw: unknown): WorkDecompositionRecommendation {
+  const value =
+    typeof raw === 'object' && raw !== null
+      ? (raw as Partial<WorkDecompositionRecommendation>)
+      : {};
+  const suggestedWorks = Array.isArray(value.suggestedWorks)
+    ? value.suggestedWorks.map(String)
+    : [];
+  const signals = Array.isArray(value.signals) ? value.signals.map(String) : [];
+  return {
+    shouldSplit: normalizeBoolean(value.shouldSplit) && suggestedWorks.length >= 2,
+    confidence: clampConfidence(value.confidence, suggestedWorks.length >= 2 ? 0.7 : 0.3),
+    reason:
+      typeof value.reason === 'string' && value.reason.trim()
+        ? normalizeWhitespace(value.reason)
+        : suggestedWorks.length >= 2
+          ? 'The work appears large enough to split into smaller implementation tasks.'
+          : 'No split recommended.',
+    suggestedWorks: limitedUniqueStrings(suggestedWorks, 6),
+    signals: limitedUniqueStrings(signals, 8),
+  };
+}
+
+function normalizeTaskType(value: unknown): KiraTaskType {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (
+    [
+      'frontend-ui',
+      'backend-api',
+      'test-validation',
+      'tooling-config',
+      'docs-maintainer',
+      'data-migration',
+      'security-auth',
+      'generalist',
+    ].includes(normalized)
+  ) {
+    return normalized as KiraTaskType;
+  }
+  return 'generalist';
+}
+
+function normalizeRequirementTrace(raw: unknown): RequirementTraceItem[] {
+  if (!Array.isArray(raw)) return [];
+  const usedIds = new Set<string>();
+  return raw
+    .map((item, index): RequirementTraceItem | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<RequirementTraceItem>) : {};
+      const rawId =
+        typeof value.id === 'string' && value.id.trim() ? value.id.trim() : `R${index + 1}`;
+      const id = rawId.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 32) || `R${index + 1}`;
+      const text =
+        typeof value.text === 'string' && value.text.trim() ? normalizeWhitespace(value.text) : '';
+      if (!text || usedIds.has(id)) return null;
+      usedIds.add(id);
+      const source =
+        value.source === 'project-instruction' ||
+        value.source === 'change-design' ||
+        value.source === 'review'
+          ? value.source
+          : 'brief';
+      const status =
+        value.status === 'satisfied' ||
+        value.status === 'partial' ||
+        value.status === 'blocked' ||
+        value.status === 'not_applicable'
+          ? value.status
+          : value.status === 'planned'
+            ? 'planned'
+            : undefined;
+      return {
+        id,
+        source,
+        text,
+        ...(status ? { status } : {}),
+        evidence: limitedUniqueStrings(
+          Array.isArray(value.evidence) ? value.evidence.map(String) : [],
+          6,
+        ),
+      };
+    })
+    .filter((item): item is RequirementTraceItem => item !== null)
+    .slice(0, MAX_REQUIREMENT_TRACE_ITEMS);
+}
+
+function normalizePatchAlternatives(raw: unknown): PatchAlternative[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item): PatchAlternative | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<PatchAlternative>) : {};
+      const name =
+        typeof value.name === 'string' && value.name.trim() ? normalizeWhitespace(value.name) : '';
+      const rationale =
+        typeof value.rationale === 'string' && value.rationale.trim()
+          ? normalizeWhitespace(value.rationale)
+          : '';
+      if (!name || !rationale) return null;
+      return {
+        name,
+        selected: normalizeBoolean(value.selected),
+        rationale,
+        tradeoffs: limitedUniqueStrings(
+          Array.isArray(value.tradeoffs) ? value.tradeoffs.map(String) : [],
+          6,
+        ),
+      };
+    })
+    .filter((item): item is PatchAlternative => item !== null)
+    .slice(0, MAX_PATCH_ALTERNATIVES);
+}
+
+function normalizeUncertaintyEscalation(raw: unknown): UncertaintyEscalation {
+  const value =
+    typeof raw === 'object' && raw !== null ? (raw as Partial<UncertaintyEscalation>) : {};
+  const questions = limitedUniqueStrings(
+    Array.isArray(value.questions) ? value.questions.map(String) : [],
+    MAX_CLARIFICATION_QUESTIONS,
+  );
+  const blockers = limitedUniqueStrings(
+    Array.isArray(value.blockers) ? value.blockers.map(String) : [],
+    6,
+  );
+  return {
+    shouldAsk: normalizeBoolean(value.shouldAsk) || blockers.length > 0,
+    questions,
+    blockers,
+  };
+}
+
+function normalizeReviewEvidenceChecked(raw: unknown): ReviewEvidenceChecked[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item): ReviewEvidenceChecked | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<ReviewEvidenceChecked>) : {};
+      const file = typeof value.file === 'string' ? normalizeRelativePath(value.file) : '';
+      const reason =
+        typeof value.reason === 'string' && value.reason.trim()
+          ? normalizeWhitespace(value.reason)
+          : '';
+      const method =
+        typeof value.method === 'string' && value.method.trim()
+          ? normalizeWhitespace(value.method)
+          : '';
+      return file && reason && method ? { file, reason, method } : null;
+    })
+    .filter((item): item is ReviewEvidenceChecked => item !== null)
+    .slice(0, 40);
+}
+
+function normalizeReviewerAdversarialMode(value: unknown): ReviewerAdversarialMode | null {
+  const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+  if (
+    [
+      'correctness',
+      'regression',
+      'security',
+      'runtime-ux',
+      'data-safety',
+      'integration',
+      'maintainability',
+    ].includes(normalized)
+  ) {
+    return normalized as ReviewerAdversarialMode;
+  }
+  return null;
+}
+
+function normalizeReviewAdversarialCheck(raw: unknown): ReviewAdversarialCheck | null {
+  const value =
+    typeof raw === 'object' && raw !== null ? (raw as Partial<ReviewAdversarialCheck>) : {};
+  const mode = normalizeReviewerAdversarialMode(value.mode);
+  if (!mode) return null;
+  const result =
+    value.result === 'passed' || value.result === 'failed' || value.result === 'not_applicable'
+      ? value.result
+      : 'failed';
+  return {
+    mode,
+    result,
+    evidence: limitedUniqueStrings(
+      Array.isArray(value.evidence) ? value.evidence.map(String) : [],
+      6,
+    ),
+    ...(typeof value.concern === 'string' && value.concern.trim()
+      ? { concern: normalizeWhitespace(value.concern) }
+      : {}),
+  };
+}
+
+function normalizeReviewAdversarialChecks(raw: unknown): ReviewAdversarialCheck[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => normalizeReviewAdversarialCheck(item))
+    .filter((item): item is ReviewAdversarialCheck => item !== null)
+    .slice(0, 12);
+}
+
+function normalizeReviewerDiscourse(raw: unknown): ReviewerDiscourseEntry[] {
+  if (!Array.isArray(raw)) return [];
+  const validRoles = new Set<string>([
+    'correctness',
+    'regression',
+    'security',
+    'runtime-ux',
+    'data-safety',
+    'integration',
+    'maintainability',
+    'design-gate',
+    'validation',
+  ]);
+  return raw
+    .map((item): ReviewerDiscourseEntry | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<ReviewerDiscourseEntry>) : {};
+      const role = typeof value.role === 'string' ? value.role.trim() : '';
+      const argument =
+        typeof value.argument === 'string' ? normalizeWhitespace(value.argument) : '';
+      if (!validRoles.has(role) || !argument) return null;
+      const position =
+        value.position === 'support' ||
+        value.position === 'challenge' ||
+        value.position === 'resolved'
+          ? value.position
+          : 'challenge';
+      const response =
+        typeof value.response === 'string' && value.response.trim()
+          ? normalizeWhitespace(value.response)
+          : undefined;
+      return {
+        role: role as ReviewerDiscourseEntry['role'],
+        position,
+        argument,
+        evidence: limitedUniqueStrings(
+          Array.isArray(value.evidence) ? value.evidence.map(String) : [],
+          8,
+        ),
+        ...(response ? { response } : {}),
+      };
+    })
+    .filter((item): item is ReviewerDiscourseEntry => item !== null)
+    .slice(0, 12);
+}
+
+function normalizeChangeDesign(raw: unknown): ChangeDesign {
+  const value = typeof raw === 'object' && raw !== null ? (raw as Partial<ChangeDesign>) : {};
+  return {
+    targetFiles: normalizePathList(Array.isArray(value.targetFiles) ? value.targetFiles : [], 20),
+    invariants: limitedUniqueStrings(
+      Array.isArray(value.invariants) ? value.invariants.map(String) : [],
+      10,
+    ),
+    expectedImpact: limitedUniqueStrings(
+      Array.isArray(value.expectedImpact) ? value.expectedImpact.map(String) : [],
+      10,
+    ),
+    validationStrategy: limitedUniqueStrings(
+      Array.isArray(value.validationStrategy) ? value.validationStrategy.map(String) : [],
+      10,
+    ),
+    rollbackStrategy: limitedUniqueStrings(
+      Array.isArray(value.rollbackStrategy) ? value.rollbackStrategy.map(String) : [],
+      10,
+    ),
+  };
+}
+
+function normalizeDiffHunkReview(raw: unknown): DiffHunkReview[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item) => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<DiffHunkReview>) : {};
+      const file = typeof value.file === 'string' ? normalizeRelativePath(value.file) : '';
+      const intent =
+        typeof value.intent === 'string' && value.intent.trim()
+          ? normalizeWhitespace(value.intent)
+          : '';
+      const risk =
+        typeof value.risk === 'string' && value.risk.trim() ? normalizeWhitespace(value.risk) : '';
+      return file && intent ? { file, intent, risk: risk || 'No specific risk noted.' } : null;
+    })
+    .filter((item): item is DiffHunkReview => item !== null)
+    .slice(0, MAX_DIFF_HUNK_REVIEW_ITEMS);
+}
+
+function normalizeWorkerSelfCheck(raw: unknown): WorkerSelfCheck | undefined {
+  if (typeof raw !== 'object' || raw === null) return undefined;
+  const value = raw as Partial<WorkerSelfCheck>;
+  return {
+    reviewedDiff: normalizeBoolean(value.reviewedDiff),
+    followedProjectInstructions: normalizeBoolean(value.followedProjectInstructions),
+    matchedPlan: normalizeBoolean(value.matchedPlan),
+    ranOrExplainedValidation: normalizeBoolean(value.ranOrExplainedValidation),
+    diffHunkReview: normalizeDiffHunkReview(value.diffHunkReview),
+    requirementTrace: normalizeRequirementTrace(value.requirementTrace),
+    uncertainty: limitedUniqueStrings(
+      Array.isArray(value.uncertainty) ? value.uncertainty.map(String) : [],
+      8,
+    ),
+    notes: limitedUniqueStrings(Array.isArray(value.notes) ? value.notes.map(String) : [], 8),
+  };
 }
 
 function normalizeRelativePath(value: string): string {
@@ -535,11 +1558,16 @@ function writeJsonFile(filePath: string, value: unknown): void {
 }
 
 function listJsonFiles(dirPath: string): string[] {
-  if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
-  return fs
-    .readdirSync(dirPath, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
-    .map((entry) => join(dirPath, entry.name));
+  try {
+    if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
+    return fs
+      .readdirSync(dirPath, { withFileTypes: true })
+      .filter((entry) => entry.isFile() && entry.name.endsWith('.json'))
+      .map((entry) => join(dirPath, entry.name));
+  } catch (error) {
+    if (isRecoverableLockError(error)) return [];
+    throw error;
+  }
 }
 
 function getKiraDataDir(sessionsDir: string, sessionPath: string): string {
@@ -593,6 +1621,10 @@ function getProjectSettingsPath(projectRoot: string): string {
   return join(projectRoot, PROJECT_SETTINGS_DIR_NAME, PROJECT_SETTINGS_FILE_NAME);
 }
 
+export function getProjectProfilePath(projectRoot: string): string {
+  return join(projectRoot, PROJECT_SETTINGS_DIR_NAME, PROJECT_PROFILE_FILE_NAME);
+}
+
 function getWorkFileAbsolutePath(sessionsDir: string, sessionPath: string, workId: string): string {
   return join(getKiraDataDir(sessionsDir, sessionPath), WORKS_DIR_NAME, `${workId}.json`);
 }
@@ -610,9 +1642,26 @@ function getProjectDiscoveryFilePath(
 
 export function resolveProjectSettings(
   raw: unknown,
-  fallback: { autoCommit?: boolean } = {},
-): { autoCommit: boolean } {
+  fallback: Partial<KiraProjectSettings> = {},
+): ResolvedKiraProjectSettings {
   const parsed = typeof raw === 'object' && raw !== null ? (raw as KiraProjectSettings) : {};
+  const hasProjectRequiredInstructions = Object.prototype.hasOwnProperty.call(
+    parsed,
+    'requiredInstructions',
+  );
+  const projectRequiredInstructions = hasProjectRequiredInstructions
+    ? normalizeProjectRequiredInstructions(parsed.requiredInstructions)
+    : null;
+  const hasProjectRulePacks = Object.prototype.hasOwnProperty.call(parsed, 'rulePacks');
+  const fallbackRulePacks = normalizeRulePackSettings(fallback.rulePacks);
+  const rulePacks = normalizeRulePackSettings(
+    parsed.rulePacks,
+    hasProjectRulePacks ? [] : fallbackRulePacks,
+  );
+  const requiredInstructions =
+    projectRequiredInstructions ??
+    normalizeProjectRequiredInstructions(fallback.requiredInstructions);
+  const runMode = normalizeRunMode(parsed.runMode, normalizeRunMode(fallback.runMode));
   return {
     autoCommit:
       typeof parsed.autoCommit === 'boolean'
@@ -620,13 +1669,17 @@ export function resolveProjectSettings(
         : typeof fallback.autoCommit === 'boolean'
           ? fallback.autoCommit
           : true,
+    requiredInstructions,
+    effectiveInstructions: buildEffectiveProjectInstructions(requiredInstructions, rulePacks),
+    runMode,
+    rulePacks,
   };
 }
 
 function loadProjectSettings(
   projectRoot: string,
-  fallback: { autoCommit?: boolean } = {},
-): { autoCommit: boolean } {
+  fallback: Partial<KiraProjectSettings> = {},
+): ResolvedKiraProjectSettings {
   const raw = readJsonFile<KiraProjectSettings>(getProjectSettingsPath(projectRoot));
   return resolveProjectSettings(raw, fallback);
 }
@@ -671,9 +1724,20 @@ function loadAutomationEvents(sessionsDir: string, sessionPath: string): KiraAut
   return readJsonFile<KiraAutomationEvent[]>(queuePath) ?? [];
 }
 
+function shouldSuppressAutomationEvent(event: KiraAutomationEvent): boolean {
+  return (
+    event.title === 'Kira automation scan' &&
+    event.type === 'needs_attention' &&
+    isRecoverableAutomationLockMessage(event.message)
+  );
+}
+
 function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutomationEvent): void {
+  if (shouldSuppressAutomationEvent(event)) return;
   const queuePath = getAutomationEventQueuePath(sessionsDir, sessionPath);
-  const queue = loadAutomationEvents(sessionsDir, sessionPath);
+  const queue = loadAutomationEvents(sessionsDir, sessionPath).filter(
+    (item) => !shouldSuppressAutomationEvent(item),
+  );
   queue.push(event);
   writeJsonFile(queuePath, queue);
 }
@@ -684,16 +1748,23 @@ function drainEvents(sessionsDir: string, sessionPath: string): KiraAutomationEv
   if (events.length > 0) {
     writeJsonFile(queuePath, []);
   }
-  return events;
+  return events.filter((event) => !shouldSuppressAutomationEvent(event));
 }
 
 function discoverSessionPaths(sessionsDir: string): string[] {
   const found = new Set<string>();
 
   const walk = (currentDir: string) => {
-    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch (error) {
+      if (isRecoverableLockError(error)) return;
+      throw error;
+    }
     for (const dirent of dirents) {
       if (!dirent.isDirectory()) continue;
+      if (dirent.name === LOCKS_DIR_NAME || dirent.name === GLOBAL_LOCKS_DIR_NAME) continue;
       const absolutePath = join(currentDir, dirent.name);
       const relativePath = absolutePath.slice(sessionsDir.length).replace(/^[\\/]+/, '');
       const normalized = relativePath.replace(/\\/g, '/');
@@ -709,8 +1780,12 @@ function discoverSessionPaths(sessionsDir: string): string[] {
     }
   };
 
-  if (fs.existsSync(sessionsDir) && fs.statSync(sessionsDir).isDirectory()) {
-    walk(sessionsDir);
+  try {
+    if (fs.existsSync(sessionsDir) && fs.statSync(sessionsDir).isDirectory()) {
+      walk(sessionsDir);
+    }
+  } catch (error) {
+    if (!isRecoverableLockError(error)) throw error;
   }
   return [...found];
 }
@@ -2337,6 +3412,34 @@ export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
     if (!Array.isArray(parsed.stopConditions) || parsed.stopConditions.length === 0) {
       parseIssues.push('Missing required field: stopConditions');
     }
+    const changeDesign = normalizeChangeDesign(parsed.changeDesign);
+    if (changeDesign.targetFiles.length === 0) {
+      parseIssues.push('Missing required field: changeDesign.targetFiles');
+    }
+    if (changeDesign.invariants.length === 0) {
+      parseIssues.push('Missing required field: changeDesign.invariants');
+    }
+    if (changeDesign.expectedImpact.length === 0) {
+      parseIssues.push('Missing required field: changeDesign.expectedImpact');
+    }
+    if (changeDesign.validationStrategy.length === 0) {
+      parseIssues.push('Missing required field: changeDesign.validationStrategy');
+    }
+    if (changeDesign.rollbackStrategy.length === 0) {
+      parseIssues.push('Missing required field: changeDesign.rollbackStrategy');
+    }
+    const requirementTrace = normalizeRequirementTrace(parsed.requirementTrace);
+    if (requirementTrace.length === 0) {
+      parseIssues.push('Missing required field: requirementTrace');
+    }
+    const approachAlternatives = normalizePatchAlternatives(parsed.approachAlternatives);
+    if (
+      approachAlternatives.length < 2 ||
+      approachAlternatives.filter((item) => item.selected).length !== 1
+    ) {
+      parseIssues.push('Missing required field: approachAlternatives with one selected option');
+    }
+    const escalation = normalizeUncertaintyEscalation(parsed.escalation);
 
     return {
       valid: parseIssues.length === 0,
@@ -2370,6 +3473,21 @@ export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
       stopConditions: uniqueStrings(
         Array.isArray(parsed.stopConditions) ? parsed.stopConditions.map(String) : [],
       ),
+      confidence: clampConfidence(parsed.confidence, parseIssues.length === 0 ? 0.7 : 0.3),
+      uncertainties: limitedUniqueStrings(
+        Array.isArray(parsed.uncertainties) ? parsed.uncertainties.map(String) : [],
+        8,
+      ),
+      decomposition: normalizeDecompositionRecommendation(parsed.decomposition),
+      workerProfile:
+        typeof parsed.workerProfile === 'string' && parsed.workerProfile.trim()
+          ? normalizeWhitespace(parsed.workerProfile)
+          : 'generalist',
+      changeDesign,
+      taskType: normalizeTaskType(parsed.taskType),
+      requirementTrace,
+      approachAlternatives,
+      escalation,
     };
   } catch {
     return {
@@ -2383,6 +3501,15 @@ export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {
       validationCommands: [],
       riskNotes: [],
       stopConditions: [],
+      confidence: 0,
+      uncertainties: [],
+      decomposition: normalizeDecompositionRecommendation(null),
+      workerProfile: 'generalist',
+      changeDesign: normalizeChangeDesign(null),
+      taskType: 'generalist',
+      requirementTrace: [],
+      approachAlternatives: [],
+      escalation: normalizeUncertaintyEscalation(null),
     };
   }
 }
@@ -2404,6 +3531,7 @@ function parseWorkerSummary(raw: string): WorkerSummary {
       remainingRisks: uniqueStrings(
         Array.isArray(parsed.remainingRisks) ? parsed.remainingRisks.map(String) : [],
       ),
+      selfCheck: normalizeWorkerSelfCheck(parsed.selfCheck),
     };
   } catch {
     return {
@@ -2411,6 +3539,7 @@ function parseWorkerSummary(raw: string): WorkerSummary {
       filesChanged: [],
       testsRun: [],
       remainingRisks: [],
+      selfCheck: undefined,
     };
   }
 }
@@ -2431,7 +3560,7 @@ function parseReviewSummary(raw: string): ReviewSummary {
       Array.isArray(parsed.residualRisk) ? parsed.residualRisk.map(String) : [],
     );
     return {
-      approved: Boolean(parsed.approved),
+      approved: normalizeBoolean(parsed.approved),
       summary: parsed.summary?.trim() || 'No review summary provided.',
       issues: uniqueStrings([
         ...(Array.isArray(parsed.issues) ? parsed.issues.map(String) : []),
@@ -2447,6 +3576,10 @@ function parseReviewSummary(raw: string): ReviewSummary {
       missingValidation,
       nextWorkerInstructions,
       residualRisk,
+      evidenceChecked: normalizeReviewEvidenceChecked(parsed.evidenceChecked),
+      requirementVerdicts: normalizeRequirementTrace(parsed.requirementVerdicts),
+      adversarialChecks: normalizeReviewAdversarialChecks(parsed.adversarialChecks),
+      reviewerDiscourse: normalizeReviewerDiscourse(parsed.reviewerDiscourse),
     };
   } catch {
     return {
@@ -2458,6 +3591,10 @@ function parseReviewSummary(raw: string): ReviewSummary {
       missingValidation: [],
       nextWorkerInstructions: ['Return the review result as structured JSON.'],
       residualRisk: [],
+      evidenceChecked: [],
+      requirementVerdicts: [],
+      adversarialChecks: [],
+      reviewerDiscourse: [],
     };
   }
 }
@@ -2626,10 +3763,22 @@ function collectProjectPaths(
   const results: string[] = [];
   const walk = (currentDir: string) => {
     if (results.length >= limit) return;
-    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const dirent of dirents) {
       if (results.length >= limit) return;
-      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') {
+      if (
+        dirent.name === '.git' ||
+        dirent.name === '.kira' ||
+        dirent.name === '.openroom' ||
+        dirent.name === 'node_modules' ||
+        dirent.name === '.venv' ||
+        dirent.name === 'automation-locks'
+      ) {
         continue;
       }
       const absolutePath = join(currentDir, dirent.name);
@@ -2693,6 +3842,1963 @@ function collectRelatedTests(projectRoot: string, work: WorkTask): string[] {
   );
 }
 
+function extractSearchResultPath(entry: string): string {
+  const normalized = normalizeRelativePath(entry.replace(/^\[(?:file|dir)\]\s+/i, ''));
+  const colonIndex = normalized.indexOf(':');
+  return colonIndex >= 0 ? normalizeRelativePath(normalized.slice(0, colonIndex)) : normalized;
+}
+
+function extractSearchResultPaths(entries: string[]): string[] {
+  return normalizePathList(
+    entries.map((entry) => extractSearchResultPath(entry)),
+    40,
+  );
+}
+
+function stripKnownSourceExtension(relativePath: string): string {
+  return normalizeRelativePath(relativePath).replace(
+    /\.(test|spec)?\.?(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|cs)$/i,
+    '',
+  );
+}
+
+function collectRelatedTestsForFiles(projectRoot: string, files: string[]): string[] {
+  const normalizedFiles = normalizePathList(files, 40).filter(
+    (file) => !/\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file),
+  );
+  if (normalizedFiles.length === 0) return [];
+
+  const bases = uniqueStrings(
+    normalizedFiles
+      .map((file) => basename(stripKnownSourceExtension(file)).toLowerCase())
+      .filter((item) => item.length >= 2),
+  );
+  if (bases.length === 0) return [];
+
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      const lowerPath = relativePath.toLowerCase();
+      const isTestPath =
+        lowerPath.includes('/__tests__/') ||
+        lowerPath.includes('/tests/') ||
+        /\.(test|spec)\.[a-z0-9]+$/.test(lowerPath) ||
+        /^tests?\//.test(lowerPath);
+      if (!isTestPath) return false;
+      return bases.some((base) => basename(stripKnownSourceExtension(lowerPath)).includes(base));
+    },
+    12,
+  );
+}
+
+function inferTaskType(work: WorkTask, files: string[] = []): KiraTaskType {
+  const source = `${work.title}\n${work.description}\n${files.join('\n')}`.toLowerCase();
+  if (/\b(auth|oauth|login|permission|security|token|session|csrf|xss|crypto)\b/.test(source)) {
+    return 'security-auth';
+  }
+  if (/\b(migration|schema|database|db|sql|prisma|typeorm|knex)\b/.test(source)) {
+    return 'data-migration';
+  }
+  if (/\b(api|route|endpoint|server|controller|service|backend)\b/.test(source)) {
+    return 'backend-api';
+  }
+  if (/\b(test|spec|vitest|jest|pytest|coverage|validation)\b/.test(source)) {
+    return 'test-validation';
+  }
+  if (/\b(config|vite|webpack|tsconfig|eslint|lint|build|package|tooling|ci)\b/.test(source)) {
+    return 'tooling-config';
+  }
+  if (
+    /\b(doc|readme|guide|markdown|mdx)\b/.test(source) ||
+    files.every((file) => /\.(md|mdx|txt|rst)$/i.test(file))
+  ) {
+    return 'docs-maintainer';
+  }
+  if (
+    /\b(ui|ux|screen|page|component|style|css|scss|layout|button|modal|form|react)\b/.test(source)
+  ) {
+    return 'frontend-ui';
+  }
+  return 'generalist';
+}
+
+function buildTaskPlaybook(taskType: KiraTaskType, confidence = 0.65): TaskPlaybook {
+  const shared = {
+    confidence,
+    inspectFocus: ['changed files', 'nearest callers', 'nearest tests'],
+    validationFocus: ['targeted tests for changed files', 'type or build checks when available'],
+    reviewChecklist: [
+      'requirements covered',
+      'actual diff matches summary',
+      'validation evidence is credible',
+    ],
+    riskSignals: ['unplanned file edits', 'skipped validation', 'unclear requirement tradeoffs'],
+  };
+  const byType: Record<KiraTaskType, Omit<TaskPlaybook, 'taskType' | 'confidence'>> = {
+    'frontend-ui': {
+      inspectFocus: [
+        'component files',
+        'stylesheets',
+        'state hooks',
+        'rendering entry points',
+        'nearby UI tests',
+      ],
+      validationFocus: [
+        'targeted component tests',
+        'typecheck',
+        'build',
+        'runtime smoke check if a dev server is already running',
+      ],
+      reviewChecklist: [
+        'responsive layout',
+        'copy fits containers',
+        'console/runtime errors',
+        'accessibility states',
+      ],
+      riskSignals: [
+        'layout overlap',
+        'missing empty/loading/error states',
+        'runtime render failure',
+      ],
+    },
+    'backend-api': {
+      inspectFocus: [
+        'route handlers',
+        'service layer',
+        'data contracts',
+        'callers/clients',
+        'API tests',
+      ],
+      validationFocus: ['targeted API tests', 'typecheck/build', 'contract or integration checks'],
+      reviewChecklist: [
+        'request validation',
+        'error handling',
+        'backward compatibility',
+        'data flow correctness',
+      ],
+      riskSignals: [
+        'contract drift',
+        'missing error branch',
+        'unvalidated input',
+        'hidden side effects',
+      ],
+    },
+    'test-validation': {
+      inspectFocus: ['failing tests', 'test helpers', 'implementation under test', 'fixtures'],
+      validationFocus: ['specific failing test', 'related test file', 'minimal broader suite'],
+      reviewChecklist: [
+        'test asserts behavior not implementation trivia',
+        'no weakened assertions',
+        'failure reproduced conceptually',
+      ],
+      riskSignals: ['deleted assertions', 'over-mocking', 'snapshot churn', 'test-only workaround'],
+    },
+    'tooling-config': {
+      inspectFocus: [
+        'package scripts',
+        'config files',
+        'workspace boundaries',
+        'CI-sensitive files',
+      ],
+      validationFocus: ['config-specific command', 'typecheck/build', 'lint where relevant'],
+      reviewChecklist: [
+        'tool compatibility',
+        'workspace scope',
+        'script safety',
+        'developer workflow impact',
+      ],
+      riskSignals: ['lockfile churn', 'broad config blast radius', 'version mismatch'],
+    },
+    'docs-maintainer': {
+      inspectFocus: ['related docs', 'examples', 'referenced code paths'],
+      validationFocus: ['link/example sanity', 'formatting where configured'],
+      reviewChecklist: ['accuracy against current code', 'clear scope', 'no stale commands'],
+      riskSignals: ['invented behavior', 'stale API name', 'unverified command'],
+    },
+    'data-migration': {
+      inspectFocus: [
+        'schema/migration files',
+        'models',
+        'read/write paths',
+        'rollback story',
+        'data tests',
+      ],
+      validationFocus: ['migration check', 'model tests', 'type/build checks'],
+      reviewChecklist: ['data loss risk', 'backward compatibility', 'rollback path', 'idempotency'],
+      riskSignals: ['destructive schema change', 'missing rollback', 'silent data conversion'],
+    },
+    'security-auth': {
+      inspectFocus: [
+        'auth flows',
+        'permission checks',
+        'token/session handling',
+        'security-sensitive tests',
+      ],
+      validationFocus: ['targeted auth/security tests', 'typecheck/build', 'negative-path tests'],
+      reviewChecklist: [
+        'authorization boundaries',
+        'secret handling',
+        'failure modes',
+        'least privilege',
+      ],
+      riskSignals: [
+        'permission bypass',
+        'secret exposure',
+        'unsafe default',
+        'missing negative test',
+      ],
+    },
+    generalist: shared,
+  };
+  return { taskType, confidence, ...byType[taskType] };
+}
+
+function extractRequirementLines(value: string): string[] {
+  return limitedUniqueStrings(
+    value
+      .split(/\r?\n/)
+      .map((line) =>
+        line
+          .replace(/^#{1,6}\s*/, '')
+          .replace(/^\s*[-*+]\s*/, '')
+          .replace(/^\s*\d+[.)]\s*/, '')
+          .trim(),
+      )
+      .filter((line) => line.length >= 8 && !/^brief$/i.test(line)),
+    MAX_REQUIREMENT_TRACE_ITEMS,
+  );
+}
+
+function buildRequirementTrace(work: WorkTask, requiredInstructions = ''): RequirementTraceItem[] {
+  const briefItems = extractRequirementLines(`${work.title}\n${work.description}`).map(
+    (text, index): RequirementTraceItem => ({
+      id: `R${index + 1}`,
+      source: 'brief',
+      text,
+      status: 'planned',
+      evidence: [],
+    }),
+  );
+  const instructionItems = extractRequirementLines(requiredInstructions).map(
+    (text, index): RequirementTraceItem => ({
+      id: `P${index + 1}`,
+      source: 'project-instruction',
+      text,
+      status: 'planned',
+      evidence: [],
+    }),
+  );
+  return [...briefItems, ...instructionItems].slice(0, MAX_REQUIREMENT_TRACE_ITEMS);
+}
+
+function extractImportSpecifiers(content: string): string[] {
+  const imports: string[] = [];
+  const patterns = [
+    /\bimport\s+(?:[^'"]+\s+from\s+)?['"]([^'"]+)['"]/g,
+    /\brequire\(\s*['"]([^'"]+)['"]\s*\)/g,
+    /\bfrom\s+['"]([^'"]+)['"]/g,
+  ];
+  for (const pattern of patterns) {
+    for (const match of content.matchAll(pattern)) {
+      if (match[1]) imports.push(match[1]);
+    }
+  }
+  return limitedUniqueStrings(imports, 12);
+}
+
+function collectDependencyInsights(projectRoot: string, files: string[]): DependencyInsight[] {
+  const normalizedFiles = normalizePathList(files, MAX_DEPENDENCY_INSIGHTS);
+  if (normalizedFiles.length === 0) return [];
+  const projectFiles = collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isFile() && /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py)$/.test(relativePath),
+    300,
+  );
+
+  return normalizedFiles
+    .map((file): DependencyInsight | null => {
+      const absolutePath = join(projectRoot, file);
+      let imports: string[] = [];
+      try {
+        if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
+          imports = extractImportSpecifiers(fs.readFileSync(absolutePath, 'utf-8'));
+        }
+      } catch {
+        imports = [];
+      }
+      const stem = basename(stripKnownSourceExtension(file));
+      const importedBy = projectFiles
+        .filter((candidate) => candidate !== file)
+        .filter((candidate) => {
+          try {
+            const content = fs.readFileSync(join(projectRoot, candidate), 'utf-8');
+            return (
+              content.includes(stem) || content.includes(file.replace(/\.(ts|tsx|js|jsx)$/i, ''))
+            );
+          } catch {
+            return false;
+          }
+        })
+        .slice(0, 6);
+      return {
+        file,
+        imports,
+        importedBy,
+        nearbyTests: collectRelatedTestsForFiles(projectRoot, [file]).slice(0, 4),
+      };
+    })
+    .filter((item): item is DependencyInsight => item !== null);
+}
+
+function inferSemanticNodeRole(
+  relativePath: string,
+  entrypoints: string[] = [],
+): SemanticGraphNodeRole {
+  const lowerPath = relativePath.toLowerCase();
+  if (/\.(test|spec)\.[a-z0-9]+$/.test(lowerPath) || lowerPath.includes('/__tests__/')) {
+    return 'test';
+  }
+  if (entrypoints.includes(relativePath)) return 'entrypoint';
+  if (/\.(json|ya?ml|toml|config\.[jt]s|config\.mjs)$/i.test(relativePath)) return 'config';
+  if (/\.(md|mdx|txt|rst)$/i.test(relativePath)) return 'doc';
+  if (/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|cs)$/i.test(relativePath)) return 'source';
+  return 'unknown';
+}
+
+function extractExportedSymbols(content: string): string[] {
+  const symbols: string[] = [];
+  const directExportPattern =
+    /\bexport\s+(?:default\s+)?(?:async\s+)?(?:const|let|var|function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)/g;
+  for (const match of content.matchAll(directExportPattern)) {
+    if (match[1]) symbols.push(match[1]);
+  }
+  for (const match of content.matchAll(/\bexport\s*\{([^}]+)\}/g)) {
+    symbols.push(
+      ...match[1]
+        .split(',')
+        .map((item) => item.replace(/\bas\b.+$/i, '').trim())
+        .filter(Boolean),
+    );
+  }
+  if (/\bmodule\.exports\b/.test(content)) symbols.push('module.exports');
+  return limitedUniqueStrings(symbols, 12);
+}
+
+function extractDeclaredSymbols(content: string): string[] {
+  const symbols: string[] = [];
+  const declarationPattern =
+    /\b(?:async\s+)?(?:function|class|interface|type|enum)\s+([A-Za-z_$][\w$]*)|\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=/g;
+  for (const match of content.matchAll(declarationPattern)) {
+    const symbol = match[1] || match[2];
+    if (symbol) symbols.push(symbol);
+  }
+  return limitedUniqueStrings(symbols, 16);
+}
+
+function collectSemanticCodeGraph(
+  projectRoot: string,
+  files: string[],
+  profile?: KiraProjectProfile | null,
+): SemanticGraphNode[] {
+  const seedFiles = normalizePathList(
+    [
+      ...files,
+      ...(profile?.repoMap.entrypoints ?? []).slice(0, 4),
+      ...(profile?.validation.testFiles ?? []).slice(0, 4),
+    ],
+    MAX_SEMANTIC_GRAPH_NODES,
+  );
+  if (seedFiles.length === 0) return [];
+
+  const projectFiles = collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isFile() && /\.(ts|tsx|js|jsx|mjs|cjs|mts|cts|py|go|rs|cs)$/.test(relativePath),
+    400,
+  );
+  const entrypoints = profile?.repoMap.entrypoints ?? collectProjectEntrypoints(projectRoot);
+
+  return seedFiles
+    .map((file): SemanticGraphNode | null => {
+      const absolutePath = join(projectRoot, file);
+      if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) return null;
+      let content = '';
+      try {
+        content = fs.readFileSync(absolutePath, 'utf-8');
+      } catch {
+        return null;
+      }
+      const imports = extractImportSpecifiers(content);
+      const exports = extractExportedSymbols(content);
+      const symbols = extractDeclaredSymbols(content);
+      const stem = basename(stripKnownSourceExtension(file));
+      const importNeedles = uniqueStrings([
+        stem,
+        file.replace(/\.(ts|tsx|js|jsx|mjs|cjs|mts|cts)$/i, ''),
+        `/${stem}`,
+      ]).filter((item) => item.length >= 2);
+      const dependents = projectFiles
+        .filter((candidate) => candidate !== file)
+        .filter((candidate) => {
+          try {
+            const candidateContent = fs.readFileSync(join(projectRoot, candidate), 'utf-8');
+            return importNeedles.some((needle) => candidateContent.includes(needle));
+          } catch {
+            return false;
+          }
+        })
+        .slice(0, 8);
+      return {
+        file,
+        role: inferSemanticNodeRole(file, entrypoints),
+        imports,
+        exports,
+        symbols,
+        dependents,
+        tests: collectRelatedTestsForFiles(projectRoot, [file]).slice(0, 6),
+      };
+    })
+    .filter((item): item is SemanticGraphNode => item !== null)
+    .slice(0, MAX_SEMANTIC_GRAPH_NODES);
+}
+
+function buildTestCommand(packageManager: 'pnpm' | 'npm' | null, testFiles: string[]): string {
+  const formattedTests = testFiles.map(formatShellPath).join(' ');
+  return packageManager === 'pnpm'
+    ? `pnpm exec vitest ${formattedTests}`
+    : `npm test -- ${formattedTests}`;
+}
+
+function buildTestImpactAnalysis(
+  projectRoot: string,
+  files: string[],
+  packageManager: 'pnpm' | 'npm' | null,
+): TestImpactTarget[] {
+  const normalizedFiles = normalizePathList(files, MAX_TEST_IMPACT_TARGETS);
+  if (normalizedFiles.length === 0) return [];
+
+  return normalizedFiles
+    .map((file): TestImpactTarget | null => {
+      const isTestFile = /\.(test|spec)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(file);
+      const impactedTests = isTestFile
+        ? [file]
+        : collectRelatedTestsForFiles(projectRoot, [file]).slice(0, 5);
+      const commands =
+        packageManager && impactedTests.length > 0
+          ? [buildTestCommand(packageManager, impactedTests.slice(0, 3))]
+          : [];
+      const rationale = impactedTests.length
+        ? `Nearest tests were inferred from filename/path affinity for ${file}.`
+        : `No direct test file was found for ${file}; reviewer should require another focused validation signal.`;
+      return {
+        file,
+        impactedTests,
+        commands,
+        rationale,
+        confidence: impactedTests.length > 0 ? 0.72 : 0.38,
+      };
+    })
+    .filter((item): item is TestImpactTarget => item !== null)
+    .slice(0, MAX_TEST_IMPACT_TARGETS);
+}
+
+function buildReviewAdversarialPlan(params: {
+  taskType: KiraTaskType;
+  files: string[];
+  riskPolicy?: RiskReviewPolicy;
+  runtimeValidation?: RuntimeValidationSignal;
+  diffStats?: DiffStats;
+  semanticGraph?: SemanticGraphNode[];
+}): ReviewAdversarialPlan {
+  const modes: ReviewerAdversarialMode[] = ['correctness', 'regression'];
+  const rationale: string[] = [
+    'Every attempt must prove requirement coverage and avoid regressions.',
+  ];
+  const source = params.files.join('\n').toLowerCase();
+  if (
+    params.taskType === 'security-auth' ||
+    /\b(auth|token|secret|permission|session)\b/.test(source)
+  ) {
+    modes.push('security');
+    rationale.push(
+      'Security/auth signals require adversarial permission and secret handling checks.',
+    );
+  }
+  if (
+    params.taskType === 'data-migration' ||
+    /\b(migration|schema|database|sql|prisma)\b/.test(source)
+  ) {
+    modes.push('data-safety');
+    rationale.push('Data-changing surfaces require destructive-change and rollback scrutiny.');
+  }
+  if (params.runtimeValidation?.applicable || params.taskType === 'frontend-ui') {
+    modes.push('runtime-ux');
+    rationale.push(
+      'Frontend/runtime-facing changes need render, reachable-server, and user-visible smoke evidence.',
+    );
+  }
+  if ((params.semanticGraph ?? []).some((node) => node.dependents.length > 0)) {
+    modes.push('integration');
+    rationale.push(
+      'Semantic graph dependents indicate callers may break even when local tests pass.',
+    );
+  }
+  if (
+    params.riskPolicy?.level === 'high' ||
+    (params.diffStats?.files ?? 0) > SMALL_PATCH_FILE_LIMIT ||
+    (params.diffStats?.additions ?? 0) + (params.diffStats?.deletions ?? 0) > SMALL_PATCH_LINE_LIMIT
+  ) {
+    modes.push('maintainability');
+    rationale.push(
+      'High-risk or broad patches need maintainability and review-surface pressure testing.',
+    );
+  }
+
+  const uniqueModes = uniqueStrings(modes) as ReviewerAdversarialMode[];
+  return {
+    modes: uniqueModes,
+    rationale: limitedUniqueStrings(rationale, 10),
+    requiredEvidence: uniqueModes.map((mode) => {
+      switch (mode) {
+        case 'security':
+          return 'Security mode: verify authorization boundaries, secret handling, and negative paths.';
+        case 'data-safety':
+          return 'Data-safety mode: verify non-destructive behavior, migration safety, and rollback intent.';
+        case 'runtime-ux':
+          return 'Runtime-UX mode: verify render/reachability evidence or a concrete reason it is unavailable.';
+        case 'integration':
+          return 'Integration mode: verify callers, exports, and nearby tests from the semantic graph.';
+        case 'maintainability':
+          return 'Maintainability mode: verify patch size, local conventions, and avoid broad incidental churn.';
+        case 'regression':
+          return 'Regression mode: verify changed files against tests, callers, and existing behavior.';
+        default:
+          return 'Correctness mode: verify every requirement has concrete implementation evidence.';
+      }
+    }),
+  };
+}
+
+function buildClarificationQualityGate(
+  work: WorkTask,
+  contextScan: Pick<
+    ProjectContextScan,
+    'likelyFiles' | 'candidateChecks' | 'escalationSignals' | 'decomposition' | 'riskPolicy'
+  >,
+): ClarificationQualityGate {
+  const reasons: string[] = [];
+  const questions: string[] = [];
+  const highSignals =
+    contextScan.escalationSignals?.filter((signal) => signal.severity === 'high') ?? [];
+  const briefText = `${work.title}\n${work.description}`.trim();
+  let decision: ClarificationQualityGate['decision'] = 'proceed';
+  let confidence = 0.72;
+
+  if (contextScan.decomposition?.shouldSplit && contextScan.decomposition.confidence >= 0.88) {
+    decision = 'split';
+    confidence = Math.max(confidence, contextScan.decomposition.confidence);
+    reasons.push(contextScan.decomposition.reason);
+  }
+  if (highSignals.length > 0) {
+    decision = decision === 'split' ? decision : 'needs_clarification';
+    confidence = Math.max(confidence, 0.86);
+    reasons.push(...highSignals.map((signal) => signal.reason));
+    questions.push(...highSignals.map((signal) => signal.suggestedQuestion));
+  }
+  if (briefText.length < 40 && contextScan.likelyFiles.length === 0) {
+    decision = decision === 'split' ? decision : 'needs_clarification';
+    confidence = Math.max(confidence, 0.78);
+    reasons.push('The brief is too short to identify the implementation surface.');
+    questions.push('Which concrete files, screen, API, or behavior should the worker change?');
+  }
+  if (contextScan.riskPolicy?.level === 'high' && contextScan.candidateChecks.length === 0) {
+    decision = decision === 'split' ? decision : 'needs_clarification';
+    confidence = Math.max(confidence, 0.8);
+    reasons.push('High-risk work lacks an obvious validation path.');
+    questions.push('What validation signal should be considered mandatory before approval?');
+  }
+
+  return {
+    decision,
+    confidence,
+    reasons: limitedUniqueStrings(reasons, 8),
+    questions: limitedUniqueStrings(questions, MAX_CLARIFICATION_QUESTIONS),
+  };
+}
+
+function buildReviewerCalibration(
+  profile: KiraProjectProfile | null | undefined,
+  riskPolicy: RiskReviewPolicy | undefined,
+  adversarialPlan: ReviewAdversarialPlan | undefined,
+): ReviewerCalibration {
+  const highValueMemories = (profile?.learning.scoredMemories ?? [])
+    .filter((memory) => memory.score >= 0.55)
+    .sort((a, b) => b.score - a.score || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, 6)
+    .map((memory) => `${memory.source}/${memory.score.toFixed(2)}: ${memory.text}`);
+  const reasons = limitedUniqueStrings(
+    [
+      ...(riskPolicy?.level === 'high' ? ['High-risk review policy is active.'] : []),
+      ...(riskPolicy?.requiresRuntimeValidation
+        ? ['Runtime validation evidence is required.']
+        : []),
+      ...(profile?.learning.recentReviewFailures.length
+        ? ['Recent review failures exist in project memory.']
+        : []),
+      ...(adversarialPlan?.modes.includes('security')
+        ? ['Security adversarial mode is active.']
+        : []),
+      ...(adversarialPlan?.modes.includes('data-safety')
+        ? ['Data-safety adversarial mode is active.']
+        : []),
+    ],
+    8,
+  );
+  const strictness: ReviewerCalibration['strictness'] =
+    riskPolicy?.level === 'high' || adversarialPlan?.modes.includes('security')
+      ? 'evidence-heavy'
+      : reasons.length > 0 || highValueMemories.length > 0
+        ? 'heightened'
+        : 'normal';
+  return {
+    strictness,
+    reasons,
+    focusMemories: highValueMemories,
+    evidenceMinimum: riskPolicy?.evidenceMinimum ?? 1,
+  };
+}
+
+export function buildDesignReviewGate(params: {
+  work: WorkTask;
+  contextScan: ProjectContextScan;
+  workerPlan: WorkerExecutionPlan;
+  requiredInstructions?: string;
+}): DesignReviewGate {
+  const checks: DesignReviewCheck[] = [];
+  const addCheck = (
+    role: DesignReviewRole,
+    verdict: DesignReviewCheck['verdict'],
+    concern: string,
+    evidence: string[],
+    requiredChanges: string[] = [],
+  ) => {
+    checks.push({
+      role,
+      verdict,
+      concern,
+      evidence: limitedUniqueStrings(evidence, 8),
+      requiredChanges: limitedUniqueStrings(requiredChanges, 6),
+    });
+  };
+
+  const plan = params.workerPlan;
+  const requiredInstructions = params.requiredInstructions?.trim() ?? '';
+  const plannedRequirementIds = new Set(plan.requirementTrace.map((item) => item.id));
+  const missingDetectedRequirements = (params.contextScan.requirementTrace ?? []).filter(
+    (item) => !plannedRequirementIds.has(item.id),
+  );
+  const hasProjectInstructionTrace = plan.requirementTrace.some(
+    (item) => item.source === 'project-instruction',
+  );
+  addCheck(
+    'product',
+    !plan.valid ||
+      plan.requirementTrace.length === 0 ||
+      missingDetectedRequirements.length > 0 ||
+      (requiredInstructions.length > 0 && !hasProjectInstructionTrace)
+      ? 'block'
+      : plan.confidence < 0.58
+        ? 'warn'
+        : 'pass',
+    'Validate that the plan covers the requested behavior and mandatory project instructions before editing.',
+    [
+      `Plan valid: ${plan.valid}`,
+      `Requirement trace entries: ${plan.requirementTrace.length}`,
+      `Missing detected requirements: ${formatInlineList(
+        missingDetectedRequirements.map((item) => item.id),
+      )}`,
+      `Plan confidence: ${plan.confidence.toFixed(2)}`,
+    ],
+    [
+      ...(!plan.valid ? ['Return a valid structured worker plan before implementation.'] : []),
+      ...(plan.requirementTrace.length === 0
+        ? ['Add a requirementTrace that maps every requested behavior to planned evidence.']
+        : []),
+      ...missingDetectedRequirements.map(
+        (item) => `Cover detected requirement ${item.id}: ${item.text}`,
+      ),
+      ...(requiredInstructions.length > 0 && !hasProjectInstructionTrace
+        ? ['Map mandatory project instructions into requirementTrace before editing.']
+        : []),
+      ...(plan.confidence < 0.58
+        ? ['Inspect more repository context or narrow the plan before implementation.']
+        : []),
+    ],
+  );
+
+  const protectedAndPlanned = plan.intendedFiles.filter((file) => isProtectedFile(plan, file));
+  const designTargetsOutsidePlan = plan.changeDesign.targetFiles.filter(
+    (file) => !pathMatchesScope(plan.intendedFiles, file),
+  );
+  addCheck(
+    'architecture',
+    protectedAndPlanned.length > 0 ||
+      designTargetsOutsidePlan.length > 0 ||
+      plan.intendedFiles.length === 0 ||
+      plan.changeDesign.targetFiles.length === 0
+      ? 'block'
+      : plan.intendedFiles.length > SMALL_PATCH_PLAN_FILE_LIMIT
+        ? 'warn'
+        : 'pass',
+    'Validate planned ownership, file scope, and change design consistency.',
+    [
+      `Intended files: ${formatInlineList(plan.intendedFiles)}`,
+      `Target files: ${formatInlineList(plan.changeDesign.targetFiles)}`,
+      `Protected collisions: ${formatInlineList(protectedAndPlanned)}`,
+      `Targets outside intendedFiles: ${formatInlineList(designTargetsOutsidePlan)}`,
+    ],
+    [
+      ...(plan.intendedFiles.length === 0 ? ['Identify intendedFiles before implementation.'] : []),
+      ...(plan.changeDesign.targetFiles.length === 0
+        ? ['Identify changeDesign.targetFiles before implementation.']
+        : []),
+      ...protectedAndPlanned.map((file) => `Remove protected file from intendedFiles: ${file}`),
+      ...designTargetsOutsidePlan.map(
+        (file) => `Either add ${file} to intendedFiles or remove it from changeDesign.targetFiles.`,
+      ),
+      ...(plan.intendedFiles.length > SMALL_PATCH_PLAN_FILE_LIMIT
+        ? ['Narrow intendedFiles or split the task before implementation.']
+        : []),
+    ],
+  );
+
+  const impactedCommands = params.contextScan.testImpact?.flatMap((item) => item.commands) ?? [];
+  const missingValidation =
+    params.contextScan.candidateChecks.length > 0 && plan.validationCommands.length === 0;
+  const plannedCommands = plan.validationCommands.join('\n').toLowerCase();
+  const missingImpactCommands = impactedCommands.filter(
+    (command) => !plannedCommands.includes(command.toLowerCase()),
+  );
+  addCheck(
+    'validation',
+    missingValidation ||
+      (params.contextScan.riskPolicy?.level === 'high' && plan.validationCommands.length === 0)
+      ? 'block'
+      : missingImpactCommands.length > 0 && plan.validationCommands.length < 2
+        ? 'warn'
+        : 'pass',
+    'Validate that the plan has an executable proof strategy before code changes begin.',
+    [
+      `Planned commands: ${formatInlineList(plan.validationCommands)}`,
+      `Candidate checks: ${formatInlineList(params.contextScan.candidateChecks)}`,
+      `Impacted-test commands: ${formatInlineList(impactedCommands)}`,
+    ],
+    [
+      ...(missingValidation
+        ? [
+            'Add at least one safe validation command or explain a concrete non-command validation signal.',
+          ]
+        : []),
+      ...missingImpactCommands
+        .slice(0, 3)
+        .map((command) => `Consider impacted-test validation: ${command}`),
+    ],
+  );
+
+  const highRiskNoRollback =
+    params.contextScan.riskPolicy?.level === 'high' &&
+    plan.changeDesign.rollbackStrategy.length === 0;
+  addCheck(
+    'risk',
+    plan.escalation.shouldAsk || plan.escalation.blockers.length > 0 || highRiskNoRollback
+      ? 'block'
+      : plan.riskNotes.length === 0 && (params.contextScan.riskPolicy?.level ?? 'low') !== 'low'
+        ? 'warn'
+        : 'pass',
+    'Validate that known risks, uncertainty, and rollback expectations are resolved before editing.',
+    [
+      `Risk level: ${params.contextScan.riskPolicy?.level ?? 'unknown'}`,
+      `Risk notes: ${formatInlineList(plan.riskNotes)}`,
+      `Escalation questions: ${formatInlineList(plan.escalation.questions)}`,
+      `Escalation blockers: ${formatInlineList(plan.escalation.blockers)}`,
+    ],
+    [
+      ...(plan.escalation.shouldAsk || plan.escalation.blockers.length > 0
+        ? [
+            `Resolve or ask about escalation before implementation: ${formatInlineList([
+              ...plan.escalation.questions,
+              ...plan.escalation.blockers,
+            ])}`,
+          ]
+        : []),
+      ...(highRiskNoRollback
+        ? ['Add a rollbackStrategy for the high-risk change before implementation.']
+        : []),
+      ...(plan.riskNotes.length === 0 && (params.contextScan.riskPolicy?.level ?? 'low') !== 'low'
+        ? ['Record concrete riskNotes for the reviewer.']
+        : []),
+    ],
+  );
+
+  const likelyFiles = extractSearchResultPaths(params.contextScan.likelyFiles);
+  const ignoredLikelyFiles = likelyFiles
+    .slice(0, 8)
+    .filter((file) => !pathMatchesScope(plan.intendedFiles, file));
+  addCheck(
+    'integration',
+    params.contextScan.decomposition?.shouldSplit &&
+      params.contextScan.decomposition.confidence >= 0.9 &&
+      !plan.decomposition.shouldSplit
+      ? 'block'
+      : ignoredLikelyFiles.length > 0 && plan.intendedFiles.length <= 2
+        ? 'warn'
+        : 'pass',
+    'Validate that the plan accounts for likely callers, adjacent files, and decomposition signals.',
+    [
+      `Likely files not in intendedFiles: ${formatInlineList(ignoredLikelyFiles)}`,
+      `Semantic graph nodes: ${params.contextScan.semanticGraph?.length ?? 0}`,
+      `Decomposition: ${params.contextScan.decomposition?.reason ?? 'not available'}`,
+    ],
+    [
+      ...(params.contextScan.decomposition?.shouldSplit &&
+      params.contextScan.decomposition.confidence >= 0.9 &&
+      !plan.decomposition.shouldSplit
+        ? ['Split the task or explicitly narrow the work to one safe slice.']
+        : []),
+      ...(ignoredLikelyFiles.length > 0 && plan.intendedFiles.length <= 2
+        ? [`Explain why likely files are out of scope: ${formatInlineList(ignoredLikelyFiles)}`]
+        : []),
+    ],
+  );
+
+  const requiredChanges = limitedUniqueStrings(
+    checks.flatMap((check) => check.requiredChanges),
+    12,
+  );
+  const blockedCount = checks.filter((check) => check.verdict === 'block').length;
+  const warnCount = checks.filter((check) => check.verdict === 'warn').length;
+  const status: DesignReviewGate['status'] =
+    blockedCount > 0 ? 'blocked' : warnCount > 0 ? 'warning' : 'passed';
+  return {
+    status,
+    summary:
+      status === 'passed'
+        ? 'Design review gate passed; implementation may proceed with the recorded plan.'
+        : status === 'warning'
+          ? `Design review gate found ${warnCount} warning(s); implementation may proceed but the worker and reviewer must address them.`
+          : `Design review gate blocked implementation with ${blockedCount} blocking issue(s).`,
+    checks,
+    requiredChanges,
+    createdAt: Date.now(),
+  };
+}
+
+export function collectDesignReviewGateIssues(gate: DesignReviewGate | undefined): string[] {
+  if (!gate || gate.status !== 'blocked') return [];
+  return limitedUniqueStrings(
+    gate.checks
+      .filter((check) => check.verdict === 'block')
+      .flatMap((check) =>
+        check.requiredChanges.length > 0
+          ? check.requiredChanges.map((change) => `Design review ${check.role}: ${change}`)
+          : [`Design review ${check.role}: ${check.concern}`],
+      ),
+    12,
+  );
+}
+
+function detectEscalationSignals(work: WorkTask, taskType: KiraTaskType): EscalationSignal[] {
+  const source = `${work.title}\n${work.description}`.toLowerCase();
+  const signals: EscalationSignal[] = [];
+  if (/\b(tbd|todo|unclear|maybe|somehow|figure out|as appropriate|etc\.?)\b/.test(source)) {
+    signals.push({
+      severity: 'medium',
+      reason: 'The brief contains ambiguous implementation language.',
+      suggestedQuestion:
+        'Which concrete behavior should be implemented before the worker edits code?',
+    });
+  }
+  if (
+    taskType === 'data-migration' &&
+    !/\brollback|backup|preserve|non-destructive\b/.test(source)
+  ) {
+    signals.push({
+      severity: 'high',
+      reason: 'Data migration work does not state a rollback or data preservation expectation.',
+      suggestedQuestion:
+        'Should this migration be strictly non-destructive, and what rollback behavior is required?',
+    });
+  }
+  if (
+    taskType === 'security-auth' &&
+    !/\b(role|permission|allow|deny|policy|scope)\b/.test(source)
+  ) {
+    signals.push({
+      severity: 'high',
+      reason: 'Security/auth work lacks explicit authorization boundary details.',
+      suggestedQuestion:
+        'Which users, roles, or scopes should be allowed and denied after this change?',
+    });
+  }
+  return signals.slice(0, MAX_CLARIFICATION_QUESTIONS);
+}
+
+function buildRuntimeValidationSignal(
+  taskType: KiraTaskType,
+  files: string[],
+): RuntimeValidationSignal {
+  const frontendSignals =
+    taskType === 'frontend-ui' ||
+    files.some((file) => /\.(tsx|jsx|css|scss|sass|html?)$/i.test(file));
+  if (!frontendSignals) {
+    return {
+      applicable: false,
+      reason: 'Runtime UI validation is not applicable to this task type or file set.',
+      suggestedUrls: [],
+    };
+  }
+  return {
+    applicable: true,
+    reason:
+      'Frontend-facing files changed; if a dev server is already running, Kira should perform a runtime reachability smoke check without starting a server.',
+    suggestedUrls: COMMON_DEV_SERVER_PORTS.map((port) => `http://127.0.0.1:${port}`),
+  };
+}
+
+function assessRiskReviewPolicy(params: {
+  projectRoot: string;
+  work: WorkTask;
+  taskType: KiraTaskType;
+  files: string[];
+  diffStats?: DiffStats;
+  runtimeValidation?: RuntimeValidationSignal;
+  runMode?: KiraRunMode;
+}): RiskReviewPolicy {
+  const reasons: string[] = [];
+  const source =
+    `${params.work.title}\n${params.work.description}\n${params.files.join('\n')}`.toLowerCase();
+  if (params.taskType === 'security-auth') reasons.push('Security/auth task type.');
+  if (params.taskType === 'data-migration') reasons.push('Data migration task type.');
+  if (/\b(auth|token|secret|permission|payment|billing|migration|schema|lockfile)\b/.test(source)) {
+    reasons.push('High-risk wording or files detected.');
+  }
+  if (params.files.some((file) => isHighRiskFile(params.projectRoot, file))) {
+    reasons.push('High-risk file pattern detected.');
+  }
+  if (
+    (params.diffStats?.files ?? 0) >= 6 ||
+    (params.diffStats?.additions ?? 0) + (params.diffStats?.deletions ?? 0) >= 400
+  ) {
+    reasons.push('Large patch review surface.');
+  }
+  const level: RiskReviewPolicy['level'] =
+    reasons.some((item) => /security|migration|high-risk/i.test(item)) || reasons.length >= 2
+      ? 'high'
+      : reasons.length === 1 || params.runtimeValidation?.applicable
+        ? 'medium'
+        : 'low';
+  const runMode = params.runMode ?? 'standard';
+  if (runMode === 'deep') {
+    reasons.push('Deep run mode requires stronger independent review evidence.');
+  }
+  const evidenceMinimum = level === 'high' ? 3 : level === 'medium' ? 2 : 1;
+  return {
+    level,
+    reasons: limitedUniqueStrings(reasons, 8),
+    evidenceMinimum: runMode === 'deep' ? Math.min(5, evidenceMinimum + 1) : evidenceMinimum,
+    requiresRuntimeValidation: Boolean(params.runtimeValidation?.applicable),
+    requiresSecondPass: level === 'high' || runMode === 'deep',
+  };
+}
+
+function buildOrchestrationPlan(params: {
+  work: WorkTask;
+  taskType: KiraTaskType;
+  runMode: KiraRunMode;
+  workerCount: number;
+  riskPolicy: RiskReviewPolicy;
+  runtimeValidation: RuntimeValidationSignal;
+}): OrchestrationPlan {
+  const runtimeEvidence = params.runtimeValidation.applicable
+    ? ['runtime reachability or clear non-applicable note']
+    : [];
+  const baseEvidence = ['diff evidence', 'validation rerun evidence', ...runtimeEvidence];
+  const lanes =
+    params.runMode === 'quick'
+      ? [
+          {
+            id: 'implement',
+            role: 'focused implementer',
+            goal: 'Make the smallest correct change and record validation evidence.',
+            requiredEvidence: baseEvidence.slice(0, 2),
+          },
+        ]
+      : params.runMode === 'deep'
+        ? [
+            {
+              id: 'plan',
+              role: 'planner',
+              goal: 'Identify scope, invariants, and stop conditions before editing.',
+              requiredEvidence: ['preflight repository reads', 'change design'],
+            },
+            {
+              id: 'implement',
+              role: 'implementer',
+              goal: 'Apply the planned patch while preserving project rules.',
+              requiredEvidence: baseEvidence,
+            },
+            {
+              id: 'challenge',
+              role: 'adversarial reviewer',
+              goal: 'Challenge correctness, regression, and integration assumptions.',
+              requiredEvidence: ['adversarialChecks', 'reviewerDiscourse'],
+            },
+            {
+              id: 'approval',
+              role: 'approval judge',
+              goal: 'Approve only when the evidence ledger is ready and blockers are clear.',
+              requiredEvidence: ['evidenceChecked', 'requirementVerdicts'],
+            },
+          ]
+        : [
+            {
+              id: 'plan',
+              role: 'planner',
+              goal: 'Map likely files, validation commands, and patch boundaries.',
+              requiredEvidence: ['preflight repository reads', 'change design'],
+            },
+            {
+              id: 'implement',
+              role: 'implementer',
+              goal: 'Implement the scoped change and produce worker self-check evidence.',
+              requiredEvidence: baseEvidence,
+            },
+            {
+              id: 'review',
+              role: 'reviewer',
+              goal: 'Review changed files, validation, requirements, and concrete risks.',
+              requiredEvidence: ['filesChecked', 'evidenceChecked'],
+            },
+          ];
+  const checkpoints = [
+    'preflight plan before edits',
+    'design review gate before implementation',
+    'Kira validation reruns after implementation',
+    'patch intent verification before approval',
+    ...(params.runMode === 'deep' ? ['evidence ledger readiness before completion'] : []),
+  ];
+  return {
+    runMode: params.runMode,
+    taskType: params.taskType,
+    workerCount: Math.max(1, params.workerCount),
+    validationDepth:
+      params.runMode === 'deep' ? 'deep' : params.runMode === 'quick' ? 'focused' : 'standard',
+    reviewDepth:
+      params.runMode === 'deep'
+        ? 'evidence-heavy'
+        : params.riskPolicy.level === 'low' && params.runMode === 'quick'
+          ? 'focused'
+          : 'adversarial',
+    approvalThreshold: params.runMode === 'deep' ? 88 : params.runMode === 'quick' ? 72 : 80,
+    summary: `${params.runMode} orchestration for "${params.work.title}" (${params.taskType}): ${lanes.length} lane(s), ${params.riskPolicy.evidenceMinimum}+ evidence item(s) required.`,
+    lanes,
+    checkpoints,
+    stopRules: [
+      'Stop if validation reruns fail and the failure is actionable.',
+      'Stop if patch intent drifts from the accepted plan.',
+      'Stop if mandatory project instructions or enabled rule packs are violated.',
+      ...(params.riskPolicy.requiresRuntimeValidation
+        ? ['Stop on failed runtime validation when a dev server is detected.']
+        : []),
+    ],
+  };
+}
+
+function emptyRuntimeValidationResult(signal?: RuntimeValidationSignal): RuntimeValidationResult {
+  return {
+    checked: false,
+    applicable: Boolean(signal?.applicable),
+    serverDetected: false,
+    url: null,
+    status: signal?.applicable ? 'not_running' : 'skipped',
+    notes: signal?.applicable
+      ? ['No running dev server was detected; Kira did not start one.']
+      : ['Runtime validation was not applicable.'],
+    evidence: [],
+  };
+}
+
+function probeTcpPort(port: number): Promise<boolean> {
+  return new Promise((resolveProbe) => {
+    const socket = net.createConnection({ host: '127.0.0.1', port });
+    const done = (result: boolean) => {
+      socket.removeAllListeners();
+      socket.destroy();
+      resolveProbe(result);
+    };
+    socket.setTimeout(RUNTIME_PROBE_TIMEOUT_MS);
+    socket.once('connect', () => done(true));
+    socket.once('timeout', () => done(false));
+    socket.once('error', () => done(false));
+  });
+}
+
+function stripHtmlForEvidence(value: string): string {
+  return normalizeWhitespace(
+    value
+      .replace(/<script\b[^>]*>[\s\S]*?<\/script>/gi, ' ')
+      .replace(/<style\b[^>]*>[\s\S]*?<\/style>/gi, ' ')
+      .replace(/<[^>]+>/g, ' ')
+      .replace(/&nbsp;/gi, ' '),
+  );
+}
+
+async function collectRuntimeHttpEvidence(
+  url: string,
+): Promise<
+  Pick<RuntimeValidationResult, 'httpStatus' | 'contentType' | 'title' | 'bodySnippet' | 'evidence'>
+> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), RUNTIME_PROBE_TIMEOUT_MS * 3);
+  try {
+    const response = await fetch(url, {
+      method: 'GET',
+      redirect: 'manual',
+      signal: controller.signal,
+    });
+    const contentType = response.headers.get('content-type') ?? undefined;
+    const body = await response.text();
+    const title = /<title[^>]*>([\s\S]*?)<\/title>/i.exec(body)?.[1];
+    const bodySnippet = stripHtmlForEvidence(body).slice(0, MAX_RUNTIME_EVIDENCE_CHARS);
+    return {
+      httpStatus: response.status,
+      ...(contentType ? { contentType } : {}),
+      ...(title ? { title: stripHtmlForEvidence(title).slice(0, 160) } : {}),
+      ...(bodySnippet ? { bodySnippet } : {}),
+      evidence: [
+        `HTTP GET ${url} returned ${response.status}.`,
+        ...(contentType ? [`Content-Type: ${contentType}`] : []),
+        ...(title ? [`Page title: ${stripHtmlForEvidence(title).slice(0, 160)}`] : []),
+      ],
+    };
+  } catch (error) {
+    return {
+      evidence: [
+        `TCP port was reachable at ${url}, but HTTP evidence capture failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      ],
+    };
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function collectRuntimeValidationResult(
+  signal: RuntimeValidationSignal | undefined,
+): Promise<RuntimeValidationResult> {
+  if (!signal?.applicable) return emptyRuntimeValidationResult(signal);
+  for (const port of COMMON_DEV_SERVER_PORTS) {
+    if (await probeTcpPort(port)) {
+      const url = `http://127.0.0.1:${port}`;
+      const evidence = await collectRuntimeHttpEvidence(url);
+      const httpReachable = typeof evidence.httpStatus === 'number';
+      return {
+        checked: true,
+        applicable: true,
+        serverDetected: true,
+        url,
+        status: httpReachable ? 'reachable' : 'not_running',
+        notes: [
+          'Detected an already-running dev server; Kira did not start a server.',
+          ...(httpReachable
+            ? [`Captured HTTP status ${evidence.httpStatus}.`]
+            : ['The port accepted TCP connections, but HTTP evidence capture failed.']),
+        ],
+        ...evidence,
+      };
+    }
+  }
+  return emptyRuntimeValidationResult(signal);
+}
+
+function collectTopLevelDirectories(projectRoot: string): string[] {
+  try {
+    return fs
+      .readdirSync(projectRoot, { withFileTypes: true })
+      .filter(
+        (entry) =>
+          entry.isDirectory() &&
+          !entry.name.startsWith('.') &&
+          !['node_modules', 'dist', 'build', 'coverage'].includes(entry.name),
+      )
+      .map((entry) => entry.name)
+      .sort()
+      .slice(0, MAX_PROJECT_PROFILE_LIST_ITEMS);
+  } catch {
+    return [];
+  }
+}
+
+function collectDirectoryMatches(projectRoot: string, patterns: RegExp[], limit = 20): string[] {
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isDirectory() && patterns.some((pattern) => pattern.test(relativePath)),
+    limit,
+  );
+}
+
+function collectProjectEntrypoints(projectRoot: string): string[] {
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      return /(^|\/)(main|index|app|server|client|routes?|pages?)\.(ts|tsx|js|jsx|mjs|cjs|py|go|rs)$/i.test(
+        relativePath,
+      );
+    },
+    20,
+  );
+}
+
+function collectHighRiskProjectFiles(projectRoot: string): string[] {
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      const lowerPath = relativePath.toLowerCase();
+      return (
+        lowerPath.includes('auth') ||
+        lowerPath.includes('security') ||
+        lowerPath.includes('payment') ||
+        lowerPath.includes('permission') ||
+        lowerPath.includes('migration') ||
+        lowerPath.endsWith('.env') ||
+        lowerPath.endsWith('.lock') ||
+        /(^|\/)(package-lock|pnpm-lock|yarn\.lock|bun\.lockb)$/.test(lowerPath)
+      );
+    },
+    20,
+  );
+}
+
+function detectGeneratedPaths(projectRoot: string): string[] {
+  return collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isDirectory() && !dirent.isFile()) return false;
+      return /(^|\/)(dist|build|coverage|generated|__generated__|\.next|out)(\/|$)/i.test(
+        relativePath,
+      );
+    },
+    20,
+  );
+}
+
+function detectStyleSignals(projectRoot: string): string[] {
+  const signals: string[] = [];
+  const knownFiles: Array<[string, string]> = [
+    ['tsconfig.json', 'TypeScript project; prefer explicit public API typing.'],
+    ['.eslintrc', 'ESLint configuration present.'],
+    ['eslint.config.js', 'Flat ESLint configuration present.'],
+    ['eslint.config.mjs', 'Flat ESLint configuration present.'],
+    ['.prettierrc', 'Prettier formatting configuration present.'],
+    ['prettier.config.js', 'Prettier formatting configuration present.'],
+    ['biome.json', 'Biome formatting/linting configuration present.'],
+    ['tailwind.config.js', 'Tailwind CSS conventions may apply.'],
+    ['stylelint.config.js', 'Stylelint configuration present.'],
+    ['pyproject.toml', 'Python tooling is configured in pyproject.toml.'],
+    ['ruff.toml', 'Ruff linting configuration present.'],
+  ];
+  for (const [relativePath, signal] of knownFiles) {
+    if (projectHasFile(projectRoot, relativePath)) signals.push(signal);
+  }
+  if (projectHasDirectory(projectRoot, 'src/components')) {
+    signals.push('Component conventions likely live under src/components.');
+  }
+  if (projectHasDirectory(projectRoot, 'apps')) {
+    signals.push('Multi-app layout detected; preserve app ownership boundaries.');
+  }
+  return limitedUniqueStrings(signals);
+}
+
+function inferProjectWorkerProfiles(projectRoot: string): string[] {
+  const profiles: string[] = ['generalist'];
+  if (
+    projectHasDirectory(projectRoot, 'src/components') ||
+    projectHasDirectory(projectRoot, 'pages')
+  ) {
+    profiles.push('frontend-ui');
+  }
+  if (
+    projectHasDirectory(projectRoot, 'server') ||
+    projectHasDirectory(projectRoot, 'api') ||
+    projectHasDirectory(projectRoot, 'src/server') ||
+    projectHasDirectory(projectRoot, 'src/api')
+  ) {
+    profiles.push('backend-api');
+  }
+  if (
+    projectHasDirectory(projectRoot, 'tests') ||
+    projectHasDirectory(projectRoot, '__tests__') ||
+    projectHasDirectory(projectRoot, 'src/tests') ||
+    projectHasDirectory(projectRoot, 'src/__tests__')
+  ) {
+    profiles.push('test-validation');
+  }
+  if (
+    projectHasFile(projectRoot, 'package.json') ||
+    projectHasFile(projectRoot, 'pyproject.toml')
+  ) {
+    profiles.push('tooling-config');
+  }
+  if (projectHasFile(projectRoot, 'README.md') || projectHasDirectory(projectRoot, 'docs')) {
+    profiles.push('docs-maintainer');
+  }
+  return limitedUniqueStrings(profiles, 8);
+}
+
+function normalizeScoredMemories(raw: unknown): ScoredMemorySignal[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .map((item): ScoredMemorySignal | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<ScoredMemorySignal>) : {};
+      const text =
+        typeof value.text === 'string' && value.text.trim() ? normalizeWhitespace(value.text) : '';
+      if (!text) return null;
+      const source =
+        value.source === 'review' ||
+        value.source === 'validation' ||
+        value.source === 'pattern' ||
+        value.source === 'guidance' ||
+        value.source === 'success'
+          ? value.source
+          : 'pattern';
+      const score =
+        typeof value.score === 'number' && Number.isFinite(value.score)
+          ? Math.min(1, Math.max(0, value.score))
+          : 0.45;
+      const hits =
+        typeof value.hits === 'number' && Number.isFinite(value.hits)
+          ? Math.max(1, Math.round(value.hits))
+          : 1;
+      const lastSeenAt =
+        typeof value.lastSeenAt === 'number' && Number.isFinite(value.lastSeenAt)
+          ? value.lastSeenAt
+          : Date.now();
+      return { text, score, hits, source, lastSeenAt };
+    })
+    .filter((item): item is ScoredMemorySignal => item !== null)
+    .sort((a, b) => b.score - a.score || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, MAX_SCORED_MEMORY_ITEMS);
+}
+
+function normalizeProjectProfile(raw: unknown, projectRoot: string): KiraProjectProfile | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const value = raw as Partial<KiraProjectProfile>;
+  const now = Date.now();
+  return {
+    schemaVersion: PROJECT_PROFILE_SCHEMA_VERSION,
+    projectName:
+      typeof value.projectName === 'string' && value.projectName.trim()
+        ? value.projectName.trim()
+        : basename(projectRoot),
+    projectRoot:
+      typeof value.projectRoot === 'string' && value.projectRoot.trim()
+        ? value.projectRoot.trim()
+        : projectRoot,
+    generatedAt:
+      typeof value.generatedAt === 'number' && Number.isFinite(value.generatedAt)
+        ? value.generatedAt
+        : now,
+    updatedAt:
+      typeof value.updatedAt === 'number' && Number.isFinite(value.updatedAt)
+        ? value.updatedAt
+        : now,
+    repoMap: {
+      topLevelDirectories: limitedUniqueStrings(
+        stringArrayFrom(value.repoMap?.topLevelDirectories),
+      ),
+      sourceRoots: limitedUniqueStrings(stringArrayFrom(value.repoMap?.sourceRoots)),
+      testRoots: limitedUniqueStrings(stringArrayFrom(value.repoMap?.testRoots)),
+      docs: limitedUniqueStrings(stringArrayFrom(value.repoMap?.docs)),
+      configFiles: limitedUniqueStrings(stringArrayFrom(value.repoMap?.configFiles)),
+      entrypoints: limitedUniqueStrings(stringArrayFrom(value.repoMap?.entrypoints)),
+    },
+    conventions: {
+      packageManager:
+        typeof value.conventions?.packageManager === 'string'
+          ? value.conventions.packageManager
+          : null,
+      scripts: limitedUniqueStrings(stringArrayFrom(value.conventions?.scripts)),
+      styleSignals: limitedUniqueStrings(stringArrayFrom(value.conventions?.styleSignals)),
+      architectureNotes: limitedUniqueStrings(
+        stringArrayFrom(value.conventions?.architectureNotes),
+      ),
+    },
+    validation: {
+      candidateCommands: limitedUniqueStrings(stringArrayFrom(value.validation?.candidateCommands)),
+      testFiles: limitedUniqueStrings(stringArrayFrom(value.validation?.testFiles)),
+      notes: limitedUniqueStrings(stringArrayFrom(value.validation?.notes)),
+    },
+    risk: {
+      highRiskFiles: limitedUniqueStrings(stringArrayFrom(value.risk?.highRiskFiles)),
+      generatedPaths: limitedUniqueStrings(stringArrayFrom(value.risk?.generatedPaths)),
+      concurrencyNotes: limitedUniqueStrings(stringArrayFrom(value.risk?.concurrencyNotes)),
+    },
+    workers: {
+      recommendedProfiles: limitedUniqueStrings(
+        stringArrayFrom(value.workers?.recommendedProfiles),
+      ),
+      specializationHints: limitedUniqueStrings(
+        stringArrayFrom(value.workers?.specializationHints),
+      ),
+    },
+    decomposition: {
+      hints: limitedUniqueStrings(stringArrayFrom(value.decomposition?.hints)),
+      lastRecommendations: limitedUniqueStrings(
+        stringArrayFrom(value.decomposition?.lastRecommendations),
+      ),
+    },
+    learning: {
+      recentReviewFailures: limitedUniqueStrings(
+        stringArrayFrom(value.learning?.recentReviewFailures),
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      recentValidationFailures: limitedUniqueStrings(
+        stringArrayFrom(value.learning?.recentValidationFailures),
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      repeatedPatterns: limitedUniqueStrings(
+        stringArrayFrom(value.learning?.repeatedPatterns),
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      workerGuidanceRules: limitedUniqueStrings(
+        stringArrayFrom(value.learning?.workerGuidanceRules),
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      successfulPatterns: limitedUniqueStrings(
+        stringArrayFrom(value.learning?.successfulPatterns),
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      scoredMemories: normalizeScoredMemories(value.learning?.scoredMemories),
+      lastUpdatedAt:
+        typeof value.learning?.lastUpdatedAt === 'number'
+          ? value.learning.lastUpdatedAt
+          : undefined,
+    },
+  };
+}
+
+export function loadProjectIntelligenceProfile(projectRoot: string): KiraProjectProfile | null {
+  const raw = readJsonFile<KiraProjectProfile>(getProjectProfilePath(projectRoot));
+  return normalizeProjectProfile(raw, projectRoot);
+}
+
+export function refreshProjectIntelligenceProfile(
+  projectRoot: string,
+  projectName = basename(projectRoot),
+): KiraProjectProfile {
+  const previous = loadProjectIntelligenceProfile(projectRoot);
+  const packageManager = detectNodePackageManager(projectRoot);
+  const scripts = loadPackageScripts(projectRoot);
+  const sourceRoots = collectDirectoryMatches(projectRoot, [
+    /(^|\/)(src|app|apps|packages|lib|server|client|components)(\/|$)/i,
+  ]);
+  const testRoots = collectDirectoryMatches(projectRoot, [
+    /(^|\/)(__tests__|tests?|spec|e2e)(\/|$)/i,
+  ]);
+  const docs = collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isFile() &&
+      /(^|\/)(readme|contributing|architecture|guide|docs?)[^/]*\.(md|mdx|rst|txt)$/i.test(
+        relativePath,
+      ),
+    20,
+  );
+  const candidateCommands = buildDefaultValidationCommands(projectRoot, []);
+  const testFiles = collectProjectPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isFile() &&
+      (relativePath.includes('/__tests__/') ||
+        relativePath.includes('/tests/') ||
+        /\.(test|spec)\.[a-z0-9]+$/i.test(relativePath) ||
+        /^tests?\//i.test(relativePath)),
+    20,
+  );
+  const now = Date.now();
+  const profile: KiraProjectProfile = {
+    schemaVersion: PROJECT_PROFILE_SCHEMA_VERSION,
+    projectName,
+    projectRoot,
+    generatedAt: previous?.generatedAt ?? now,
+    updatedAt: now,
+    repoMap: {
+      topLevelDirectories: collectTopLevelDirectories(projectRoot),
+      sourceRoots,
+      testRoots,
+      docs,
+      configFiles: detectWorkspaceFiles(projectRoot),
+      entrypoints: collectProjectEntrypoints(projectRoot),
+    },
+    conventions: {
+      packageManager,
+      scripts: formatPackageScripts(scripts),
+      styleSignals: detectStyleSignals(projectRoot),
+      architectureNotes: limitedUniqueStrings([
+        ...(projectHasDirectory(projectRoot, 'apps')
+          ? [
+              'App/workspace boundaries exist; avoid cross-app edits unless the task explicitly requires them.',
+            ]
+          : []),
+        ...(projectHasDirectory(projectRoot, 'packages')
+          ? [
+              'Package boundaries exist; check exported APIs and downstream imports before changing shared code.',
+            ]
+          : []),
+        ...(projectHasFile(projectRoot, 'tsconfig.json')
+          ? ['TypeScript type contracts are part of the architecture surface.']
+          : []),
+      ]),
+    },
+    validation: {
+      candidateCommands: candidateCommands.filter((command) => isSafeCommandAllowed(command)),
+      testFiles,
+      notes: limitedUniqueStrings([
+        ...(candidateCommands.length === 0
+          ? ['No default validation command was detected; workers must explain validation choice.']
+          : []),
+        ...(testFiles.length === 0
+          ? [
+              'No obvious test files were found; prefer targeted build/type/lint checks where available.',
+            ]
+          : []),
+      ]),
+    },
+    risk: {
+      highRiskFiles: collectHighRiskProjectFiles(projectRoot),
+      generatedPaths: detectGeneratedPaths(projectRoot),
+      concurrencyNotes: limitedUniqueStrings([
+        'Preserve unrelated user changes and generated outputs.',
+        'Treat lockfiles, migrations, auth, and security-sensitive files as high-risk edit surfaces.',
+      ]),
+    },
+    workers: {
+      recommendedProfiles: inferProjectWorkerProfiles(projectRoot),
+      specializationHints: limitedUniqueStrings([
+        'frontend-ui: UI, layout, copy, accessibility, visual regressions.',
+        'backend-api: server routes, data flow, persistence, API contracts.',
+        'test-validation: tests, type checks, validation gaps, regressions.',
+        'tooling-config: build scripts, package/config changes, CI-sensitive files.',
+        'docs-maintainer: docs, examples, developer guides.',
+      ]),
+    },
+    decomposition: {
+      hints: limitedUniqueStrings([
+        'Split work that spans unrelated UI, backend, data migration, and validation surfaces.',
+        'Split work when a task touches many high-risk files or requires independent rollout steps.',
+      ]),
+      lastRecommendations: previous?.decomposition.lastRecommendations ?? [],
+    },
+    learning: previous?.learning ?? {
+      recentReviewFailures: [],
+      recentValidationFailures: [],
+      repeatedPatterns: [],
+      workerGuidanceRules: [],
+      successfulPatterns: [],
+      scoredMemories: [],
+    },
+  };
+
+  writeJsonFile(getProjectProfilePath(projectRoot), profile);
+  return profile;
+}
+
+function ensureProjectIntelligenceProfile(
+  projectRoot: string,
+  projectName = basename(projectRoot),
+): KiraProjectProfile | null {
+  try {
+    return refreshProjectIntelligenceProfile(projectRoot, projectName);
+  } catch {
+    return loadProjectIntelligenceProfile(projectRoot);
+  }
+}
+
+function summarizeProjectProfile(profile: KiraProjectProfile | null | undefined): string[] {
+  if (!profile) return [];
+  return limitedUniqueStrings(
+    [
+      `Source roots: ${formatInlineList(profile.repoMap.sourceRoots)}`,
+      `Test roots: ${formatInlineList(profile.repoMap.testRoots)}`,
+      `Validation: ${formatInlineList(profile.validation.candidateCommands)}`,
+      `Style signals: ${formatInlineList(profile.conventions.styleSignals)}`,
+      `Risk surfaces: ${formatInlineList(profile.risk.highRiskFiles)}`,
+      `Worker profiles: ${formatInlineList(profile.workers.recommendedProfiles)}`,
+      `Guidance rules: ${formatInlineList(profile.learning.workerGuidanceRules)}`,
+      `Successful patterns: ${formatInlineList(profile.learning.successfulPatterns)}`,
+      `Weighted memories: ${formatInlineList(
+        profile.learning.scoredMemories.slice(0, 4).map((item) => item.text),
+      )}`,
+    ].filter((item) => !item.endsWith(': none')),
+    8,
+  );
+}
+
+function deriveWorkerGuidanceRules(items: string[]): string[] {
+  const source = items.join('\n').toLowerCase();
+  const rules: string[] = [];
+  if (/\bself-check|selfcheck|diffhunkreview|hunk\b/.test(source)) {
+    rules.push('Before final JSON, inspect the final diff and include per-file diffHunkReview.');
+  }
+  if (/\bvalidation|rerun|missing check|test|typecheck|lint\b/.test(source)) {
+    rules.push(
+      'Select and run targeted validation for the changed files; explain any skipped check.',
+    );
+  }
+  if (/\bprotected|dirty|out-of-plan|unrelated\b/.test(source)) {
+    rules.push(
+      'Keep edits inside intendedFiles and never modify protected or pre-existing dirty files.',
+    );
+  }
+  if (/\bwide|broad|scope|too many|split|decomposition|small-patch\b/.test(source)) {
+    rules.push('Keep patches small; split broad work before editing unrelated surfaces.');
+  }
+  if (/\binstruction|coding style|architecture|mandatory\b/.test(source)) {
+    rules.push(
+      'Confirm mandatory project instructions explicitly in the change design and self-check.',
+    );
+  }
+  if (/\bdiff|summary conflicts|reviewable|files checked\b/.test(source)) {
+    rules.push('Make the final summary match the actual diff and call out every risky hunk.');
+  }
+  if (/\block|eperm|automation-locks\b/.test(source)) {
+    rules.push(
+      'Treat transient Kira lock errors as recoverable automation noise, not task failure.',
+    );
+  }
+  return limitedUniqueStrings(rules, MAX_PROJECT_LEARNING_ITEMS);
+}
+
+function memorySourceWeight(source: ScoredMemorySignal['source']): number {
+  switch (source) {
+    case 'review':
+      return 0.76;
+    case 'validation':
+      return 0.74;
+    case 'guidance':
+      return 0.68;
+    case 'success':
+      return 0.58;
+    default:
+      return 0.62;
+  }
+}
+
+function buildScoredMemoryUpdates(
+  updates: {
+    reviewFailures?: string[];
+    validationFailures?: string[];
+    repeatedPatterns?: string[];
+    workerGuidanceRules?: string[];
+    successfulPatterns?: string[];
+  },
+  now: number,
+): ScoredMemorySignal[] {
+  const pairs: Array<[ScoredMemorySignal['source'], string]> = [
+    ...(updates.reviewFailures ?? []).map((item): [ScoredMemorySignal['source'], string] => [
+      'review',
+      item,
+    ]),
+    ...(updates.validationFailures ?? []).map((item): [ScoredMemorySignal['source'], string] => [
+      'validation',
+      item,
+    ]),
+    ...(updates.repeatedPatterns ?? []).map((item): [ScoredMemorySignal['source'], string] => [
+      'pattern',
+      item,
+    ]),
+    ...(updates.workerGuidanceRules ?? []).map((item): [ScoredMemorySignal['source'], string] => [
+      'guidance',
+      item,
+    ]),
+    ...(updates.successfulPatterns ?? []).map((item): [ScoredMemorySignal['source'], string] => [
+      'success',
+      item,
+    ]),
+  ];
+  return pairs
+    .map(([source, rawText]) => {
+      const text = normalizeWhitespace(rawText);
+      if (!text) return null;
+      return {
+        text,
+        source,
+        score: memorySourceWeight(source),
+        hits: 1,
+        lastSeenAt: now,
+      };
+    })
+    .filter((memory): memory is ScoredMemorySignal => memory !== null);
+}
+
+function mergeScoredMemories(
+  existing: ScoredMemorySignal[],
+  incoming: ScoredMemorySignal[],
+  now: number,
+): ScoredMemorySignal[] {
+  const byText = new Map<string, ScoredMemorySignal>();
+  for (const memory of [...existing, ...incoming]) {
+    const key = memory.text.toLowerCase();
+    const previous = byText.get(key);
+    if (!previous) {
+      byText.set(key, { ...memory });
+      continue;
+    }
+    const hits = previous.hits + memory.hits;
+    const recencyBoost = memory.lastSeenAt >= previous.lastSeenAt ? 0.06 : 0;
+    byText.set(key, {
+      text: previous.text,
+      source: previous.score >= memory.score ? previous.source : memory.source,
+      hits,
+      score: Math.min(
+        1,
+        Math.max(previous.score, memory.score) + Math.min(0.18, hits * 0.02) + recencyBoost,
+      ),
+      lastSeenAt: Math.max(previous.lastSeenAt, memory.lastSeenAt),
+    });
+  }
+  return [...byText.values()]
+    .map((memory) => {
+      const ageDays = Math.max(0, (now - memory.lastSeenAt) / 86_400_000);
+      const decay = Math.max(0.78, 1 - ageDays * 0.01);
+      return { ...memory, score: Math.min(1, Math.max(0.05, memory.score * decay)) };
+    })
+    .sort((a, b) => b.score - a.score || b.hits - a.hits || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, MAX_SCORED_MEMORY_ITEMS);
+}
+
+function updateProjectProfileLearning(
+  projectRoot: string,
+  updates: {
+    reviewFailures?: string[];
+    validationFailures?: string[];
+    repeatedPatterns?: string[];
+    decompositionRecommendations?: string[];
+    workerGuidanceRules?: string[];
+    successfulPatterns?: string[];
+  },
+): void {
+  try {
+    const profile =
+      loadProjectIntelligenceProfile(projectRoot) ?? refreshProjectIntelligenceProfile(projectRoot);
+    const now = Date.now();
+    const derivedGuidance = deriveWorkerGuidanceRules([
+      ...(updates.reviewFailures ?? []),
+      ...(updates.validationFailures ?? []),
+      ...(updates.repeatedPatterns ?? []),
+    ]);
+    profile.learning = {
+      recentReviewFailures: limitedUniqueStrings(
+        [...(updates.reviewFailures ?? []), ...profile.learning.recentReviewFailures],
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      recentValidationFailures: limitedUniqueStrings(
+        [...(updates.validationFailures ?? []), ...profile.learning.recentValidationFailures],
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      repeatedPatterns: limitedUniqueStrings(
+        [...(updates.repeatedPatterns ?? []), ...profile.learning.repeatedPatterns],
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      workerGuidanceRules: limitedUniqueStrings(
+        [
+          ...(updates.workerGuidanceRules ?? []),
+          ...derivedGuidance,
+          ...profile.learning.workerGuidanceRules,
+        ],
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      successfulPatterns: limitedUniqueStrings(
+        [...(updates.successfulPatterns ?? []), ...profile.learning.successfulPatterns],
+        MAX_PROJECT_LEARNING_ITEMS,
+      ),
+      scoredMemories: mergeScoredMemories(
+        profile.learning.scoredMemories ?? [],
+        buildScoredMemoryUpdates(
+          {
+            ...updates,
+            workerGuidanceRules: [...(updates.workerGuidanceRules ?? []), ...derivedGuidance],
+          },
+          now,
+        ),
+        now,
+      ),
+      lastUpdatedAt: now,
+    };
+    profile.decomposition.lastRecommendations = limitedUniqueStrings(
+      [
+        ...(updates.decompositionRecommendations ?? []),
+        ...profile.decomposition.lastRecommendations,
+      ],
+      MAX_PROJECT_LEARNING_ITEMS,
+    );
+    profile.updatedAt = now;
+    writeJsonFile(getProjectProfilePath(projectRoot), profile);
+  } catch {
+    // Learning is helpful context, not a reason to fail an active Kira run.
+  }
+}
+
+function getProjectRecentFeedback(profile: KiraProjectProfile | null | undefined): string[] {
+  if (!profile) return [];
+  return limitedUniqueStrings(
+    [
+      ...profile.learning.recentReviewFailures.map((item) => `Recent review issue: ${item}`),
+      ...profile.learning.recentValidationFailures.map(
+        (item) => `Recent validation issue: ${item}`,
+      ),
+      ...profile.learning.repeatedPatterns.map((item) => `Repeated pattern: ${item}`),
+      ...profile.learning.workerGuidanceRules.map((item) => `Guidance rule: ${item}`),
+      ...profile.learning.successfulPatterns.map((item) => `Successful pattern: ${item}`),
+      ...profile.learning.scoredMemories
+        .slice(0, 6)
+        .map((item) => `Weighted memory ${item.source}/${item.score.toFixed(2)}: ${item.text}`),
+    ],
+    MAX_PROJECT_LEARNING_ITEMS,
+  );
+}
+
+export function recommendWorkDecomposition(
+  work: WorkTask,
+  contextScan: Pick<
+    ProjectContextScan,
+    'likelyFiles' | 'testFiles' | 'relatedDocs' | 'candidateChecks'
+  >,
+  profile?: KiraProjectProfile | null,
+): WorkDecompositionRecommendation {
+  const source = `${work.title}\n${work.description}`;
+  const bullets = (source.match(/^\s*[-*]\s+/gm) ?? []).length;
+  const headings = (source.match(/^#{1,3}\s+/gm) ?? []).length;
+  const explicitMultiSurface = /\b(frontend|ui|backend|api|database|migration|auth|test|docs?)\b/gi;
+  const surfaceSignals = uniqueStrings(
+    [...source.matchAll(explicitMultiSurface)].map((match) => match[0].toLowerCase()),
+  );
+  const signals: string[] = [];
+  if (source.length > 2600) signals.push('Long task brief');
+  if (bullets >= 8) signals.push('Many checklist/bullet items');
+  if (headings >= 4) signals.push('Many brief sections');
+  if (contextScan.likelyFiles.length >= 10) signals.push('Many likely implementation files');
+  if (contextScan.testFiles.length >= 6) signals.push('Many related test files');
+  if (surfaceSignals.length >= 3) {
+    signals.push(`Multiple implementation surfaces: ${surfaceSignals.slice(0, 5).join(', ')}`);
+  }
+  if ((profile?.risk.highRiskFiles.length ?? 0) >= 8 && contextScan.likelyFiles.length >= 5) {
+    signals.push('High-risk project surface intersects a broad file set');
+  }
+
+  const shouldSplit =
+    signals.length >= 2 || source.length > 4200 || contextScan.likelyFiles.length >= 14;
+  const suggestedWorks = shouldSplit
+    ? limitedUniqueStrings(
+        [
+          surfaceSignals.includes('frontend') || surfaceSignals.includes('ui')
+            ? 'Implement the UI-facing changes and visual/accessibility checks'
+            : '',
+          surfaceSignals.includes('backend') || surfaceSignals.includes('api')
+            ? 'Implement the backend/API contract changes'
+            : '',
+          surfaceSignals.includes('database') || surfaceSignals.includes('migration')
+            ? 'Handle data model or migration work with rollback notes'
+            : '',
+          surfaceSignals.includes('test') || contextScan.candidateChecks.length > 0
+            ? 'Add or update targeted validation coverage'
+            : '',
+          surfaceSignals.includes('docs') ? 'Update documentation and examples' : '',
+          'Integrate the final path and run the project-level validation plan',
+        ],
+        6,
+      ).filter(Boolean)
+    : [];
+
+  return {
+    shouldSplit,
+    confidence: shouldSplit ? Math.min(0.95, 0.55 + signals.length * 0.1) : 0.35,
+    reason: shouldSplit
+      ? `This work has ${signals.length} split signals and is likely safer as smaller tasks.`
+      : 'The work appears small enough for one worker attempt.',
+    suggestedWorks,
+    signals: limitedUniqueStrings(signals, 8),
+  };
+}
+
+function inferWorkerProfile(
+  work: WorkTask,
+  contextScan: Pick<ProjectContextScan, 'likelyFiles' | 'testFiles' | 'relatedDocs'>,
+  profile?: KiraProjectProfile | null,
+): string {
+  const source =
+    `${work.title}\n${work.description}\n${contextScan.likelyFiles.join('\n')}`.toLowerCase();
+  const projectProfiles = profile?.workers.recommendedProfiles ?? [];
+  if (/\b(css|scss|style|layout|component|react|vue|svelte|ui|ux|accessibility)\b/.test(source)) {
+    return projectProfiles.includes('frontend-ui') ? 'frontend-ui' : 'frontend-focused generalist';
+  }
+  if (
+    /\b(api|route|server|database|db|auth|permission|backend|controller|service)\b/.test(source)
+  ) {
+    return projectProfiles.includes('backend-api') ? 'backend-api' : 'backend-focused generalist';
+  }
+  if (/\b(test|spec|validation|coverage|lint|typecheck|regression)\b/.test(source)) {
+    return projectProfiles.includes('test-validation')
+      ? 'test-validation'
+      : 'validation-focused generalist';
+  }
+  if (/\b(package|config|vite|webpack|eslint|prettier|ci|build|script)\b/.test(source)) {
+    return projectProfiles.includes('tooling-config')
+      ? 'tooling-config'
+      : 'tooling-focused generalist';
+  }
+  if (/\b(readme|docs?|guide|example)\b/.test(source)) {
+    return projectProfiles.includes('docs-maintainer')
+      ? 'docs-maintainer'
+      : 'docs-focused generalist';
+  }
+  return projectProfiles[0] ?? 'generalist';
+}
+
+function selectLaneWorkerProfile(
+  lane: KiraWorkerLane,
+  work: WorkTask,
+  contextScan: ProjectContextScan,
+  workerCount: number,
+  attemptNo: number,
+): string {
+  const label = lane.label.toLowerCase();
+  if (label.includes('test') || label.includes('review') || label.includes('validation')) {
+    return 'test-validation';
+  }
+  if (label.includes('front') || label.includes('ui')) return 'frontend-ui';
+  if (label.includes('back') || label.includes('api')) return 'backend-api';
+  if (label.includes('docs')) return 'docs-maintainer';
+  if (workerCount <= 1)
+    return (
+      contextScan.workerProfile ?? inferWorkerProfile(work, contextScan, contextScan.projectProfile)
+    );
+
+  const laneIndex = Math.max(0, attemptNo - 1) % workerCount;
+  const baseProfile =
+    contextScan.workerProfile ?? inferWorkerProfile(work, contextScan, contextScan.projectProfile);
+  if (laneIndex === 0) return baseProfile;
+  if (laneIndex === 1) return 'test-validation challenger';
+  return 'minimal-risk integration reviewer';
+}
+
 function formatGitStatusEntries(entries: GitStatusEntry[] | null): string[] {
   if (!entries) return ['Git status unavailable'];
   return entries.map((entry) => `${entry.status.trim() || 'modified'} ${entry.path}`).slice(0, 40);
@@ -2701,7 +5807,11 @@ function formatGitStatusEntries(entries: GitStatusEntry[] | null): string[] {
 export async function buildProjectContextScan(
   projectRoot: string,
   work: WorkTask,
+  requiredInstructions = '',
+  runMode: KiraRunMode = 'standard',
+  workerCount = 1,
 ): Promise<ProjectContextScan> {
+  const projectProfile = ensureProjectIntelligenceProfile(projectRoot, work.projectName);
   const packageManager = detectNodePackageManager(projectRoot);
   const scripts = loadPackageScripts(projectRoot);
   const existingChanges = formatGitStatusEntries(await getGitWorktreeEntries(projectRoot));
@@ -2709,8 +5819,46 @@ export async function buildProjectContextScan(
   const likelyFiles = collectLikelyFilesForWork(projectRoot, work);
   const relatedDocs = collectRelatedDocs(projectRoot, work);
   const testFiles = collectRelatedTests(projectRoot, work);
+  const likelyFilePaths = extractSearchResultPaths(likelyFiles);
+  const taskType = inferTaskType(work, likelyFilePaths);
+  const taskPlaybook = buildTaskPlaybook(taskType);
+  const dependencyMap = collectDependencyInsights(projectRoot, likelyFilePaths);
+  const semanticGraph = collectSemanticCodeGraph(projectRoot, likelyFilePaths, projectProfile);
+  const testImpact = buildTestImpactAnalysis(projectRoot, likelyFilePaths, packageManager);
+  const requirementTrace = buildRequirementTrace(work, requiredInstructions);
+  const runtimeValidation = buildRuntimeValidationSignal(taskType, likelyFilePaths);
+  const escalationSignals = detectEscalationSignals(work, taskType);
+  const riskPolicy = assessRiskReviewPolicy({
+    projectRoot,
+    work,
+    taskType,
+    files: likelyFilePaths,
+    runtimeValidation,
+    runMode,
+  });
+  const orchestrationPlan = buildOrchestrationPlan({
+    work,
+    taskType,
+    runMode,
+    workerCount,
+    riskPolicy,
+    runtimeValidation,
+  });
+  const reviewAdversarialPlan = buildReviewAdversarialPlan({
+    taskType,
+    files: likelyFilePaths,
+    riskPolicy,
+    runtimeValidation,
+    semanticGraph,
+  });
+  const reviewerCalibration = buildReviewerCalibration(
+    projectProfile,
+    riskPolicy,
+    reviewAdversarialPlan,
+  );
   const candidateChecks = uniqueStrings([
-    ...buildDefaultValidationCommands(projectRoot, []),
+    ...buildDefaultValidationCommands(projectRoot, likelyFilePaths),
+    ...testImpact.flatMap((item) => item.commands),
     ...(['test', 'lint', 'typecheck', 'build'] as const)
       .filter((scriptName) => scripts[scriptName])
       .map((scriptName) =>
@@ -2740,7 +5888,7 @@ export async function buildProjectContextScan(
     );
   }
 
-  return {
+  const baseScan = {
     projectRoot,
     packageManager,
     workspaceFiles: detectWorkspaceFiles(projectRoot),
@@ -2752,6 +5900,33 @@ export async function buildProjectContextScan(
     testFiles,
     candidateChecks,
     notes,
+    projectProfile,
+    profileSummary: summarizeProjectProfile(projectProfile),
+    recentFeedback: getProjectRecentFeedback(projectProfile),
+    taskPlaybook,
+    dependencyMap,
+    requirementTrace,
+    riskPolicy,
+    reviewAdversarialPlan,
+    runtimeValidation,
+    escalationSignals,
+    semanticGraph,
+    testImpact,
+    reviewerCalibration,
+    orchestrationPlan,
+  };
+  const decomposition = recommendWorkDecomposition(work, baseScan, projectProfile);
+  const workerProfile = inferWorkerProfile(work, baseScan, projectProfile);
+  const clarificationGate = buildClarificationQualityGate(work, {
+    ...baseScan,
+    decomposition,
+  });
+
+  return {
+    ...baseScan,
+    decomposition,
+    workerProfile,
+    clarificationGate,
   };
 }
 
@@ -2767,11 +5942,14 @@ export function buildDefaultValidationCommands(
   );
   const commands: string[] = [];
 
+  if (changedFiles.length > 0 && fs.existsSync(join(projectRoot, '.git'))) {
+    commands.push(
+      `git diff --check -- ${changedFiles.slice(0, 12).map(formatShellPath).join(' ')}`,
+    );
+  }
+
   const changedHtmlFile = changedFiles.find((file) => /\.html?$/i.test(file));
   if (changedHtmlFile) {
-    if (fs.existsSync(join(projectRoot, '.git'))) {
-      commands.push(`git diff --check -- ${formatShellPath(changedHtmlFile)}`);
-    }
     try {
       const absolutePath = ensureInsideRoot(projectRoot, changedHtmlFile);
       if (fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile()) {
@@ -2794,8 +5972,16 @@ export function buildDefaultValidationCommands(
     if (changedTestFile) {
       commands.push(
         packageManager === 'pnpm'
-          ? `pnpm exec vitest ${changedTestFile}`
-          : `npm test -- ${changedTestFile}`,
+          ? `pnpm exec vitest ${formatShellPath(changedTestFile)}`
+          : `npm test -- ${formatShellPath(changedTestFile)}`,
+      );
+    }
+    const relatedTestFiles = collectRelatedTestsForFiles(projectRoot, changedFiles).slice(0, 3);
+    if (!changedTestFile && relatedTestFiles.length > 0) {
+      commands.push(
+        packageManager === 'pnpm'
+          ? `pnpm exec vitest ${relatedTestFiles.map(formatShellPath).join(' ')}`
+          : `npm test -- ${relatedTestFiles.map(formatShellPath).join(' ')}`,
       );
     }
     const hasNodeSignals =
@@ -3323,11 +6509,329 @@ function formatList(items: string[], emptyLabel: string): string {
   return items.map((item) => `- ${item}`).join('\n');
 }
 
+function formatInlineList(items: string[], emptyLabel = 'none'): string {
+  return items.length > 0 ? items.slice(0, 6).join(', ') : emptyLabel;
+}
+
+function formatProjectProfileBlock(profile: KiraProjectProfile | null | undefined): string {
+  if (!profile) return 'Project intelligence profile:\n- No saved profile available';
+  return [
+    'Project intelligence profile:',
+    `- Updated: ${new Date(profile.updatedAt).toISOString()}`,
+    `- Source roots: ${formatInlineList(profile.repoMap.sourceRoots)}`,
+    `- Test roots: ${formatInlineList(profile.repoMap.testRoots)}`,
+    `- Style signals: ${formatInlineList(profile.conventions.styleSignals)}`,
+    `- Architecture notes: ${formatInlineList(profile.conventions.architectureNotes)}`,
+    `- High-risk files: ${formatInlineList(profile.risk.highRiskFiles)}`,
+    `- Worker profiles: ${formatInlineList(profile.workers.recommendedProfiles)}`,
+    `- Recent review learning: ${formatInlineList(profile.learning.recentReviewFailures)}`,
+    `- Recent validation learning: ${formatInlineList(profile.learning.recentValidationFailures)}`,
+    `- Worker guidance rules: ${formatInlineList(profile.learning.workerGuidanceRules)}`,
+    `- Weighted memories: ${formatInlineList(
+      profile.learning.scoredMemories
+        .slice(0, 4)
+        .map((item) => `${item.source}/${item.score.toFixed(2)} ${item.text}`),
+    )}`,
+  ].join('\n');
+}
+
+function formatDecompositionRecommendation(
+  recommendation: WorkDecompositionRecommendation | undefined,
+): string {
+  if (!recommendation) return 'Work decomposition:\n- No decomposition analysis available';
+  return [
+    'Work decomposition:',
+    `- Recommendation: ${recommendation.shouldSplit ? 'split before implementation' : 'single focused task is acceptable'}`,
+    `- Confidence: ${recommendation.confidence.toFixed(2)}`,
+    `- Reason: ${recommendation.reason}`,
+    `- Signals:\n${formatList(recommendation.signals, 'No split signals detected')}`,
+    `- Suggested subworks:\n${formatList(recommendation.suggestedWorks, 'No split suggested')}`,
+  ].join('\n');
+}
+
+function formatTaskPlaybook(playbook: TaskPlaybook | undefined): string {
+  if (!playbook) return 'Task playbook:\n- No task playbook available';
+  return [
+    'Task playbook:',
+    `- Type: ${playbook.taskType} (${playbook.confidence.toFixed(2)} confidence)`,
+    `- Inspect focus:\n${formatList(playbook.inspectFocus, 'No inspect focus')}`,
+    `- Validation focus:\n${formatList(playbook.validationFocus, 'No validation focus')}`,
+    `- Review checklist:\n${formatList(playbook.reviewChecklist, 'No review checklist')}`,
+    `- Risk signals:\n${formatList(playbook.riskSignals, 'No risk signals')}`,
+  ].join('\n');
+}
+
+function formatDependencyMap(insights: DependencyInsight[] | undefined): string {
+  if (!insights?.length) return 'Dependency map:\n- No dependency insights available';
+  return [
+    'Dependency map:',
+    ...insights
+      .slice(0, MAX_DEPENDENCY_INSIGHTS)
+      .map((item) =>
+        [
+          `- ${item.file}`,
+          `  imports: ${formatInlineList(item.imports)}`,
+          `  importedBy: ${formatInlineList(item.importedBy)}`,
+          `  nearbyTests: ${formatInlineList(item.nearbyTests)}`,
+        ].join('\n'),
+      ),
+  ].join('\n');
+}
+
+function formatSemanticGraph(nodes: SemanticGraphNode[] | undefined): string {
+  if (!nodes?.length) return 'Semantic code graph:\n- No semantic graph nodes available';
+  return [
+    'Semantic code graph:',
+    ...nodes
+      .slice(0, MAX_SEMANTIC_GRAPH_NODES)
+      .map((node) =>
+        [
+          `- ${node.file} [${node.role}]`,
+          `  symbols: ${formatInlineList(node.symbols)}`,
+          `  exports: ${formatInlineList(node.exports)}`,
+          `  imports: ${formatInlineList(node.imports)}`,
+          `  dependents: ${formatInlineList(node.dependents)}`,
+          `  tests: ${formatInlineList(node.tests)}`,
+        ].join('\n'),
+      ),
+  ].join('\n');
+}
+
+function formatTestImpactAnalysis(items: TestImpactTarget[] | undefined): string {
+  if (!items?.length) return 'Test impact analysis:\n- No impacted tests inferred';
+  return [
+    'Test impact analysis:',
+    ...items
+      .slice(0, MAX_TEST_IMPACT_TARGETS)
+      .map((item) =>
+        [
+          `- ${item.file} (${item.confidence.toFixed(2)} confidence)`,
+          `  impactedTests: ${formatInlineList(item.impactedTests)}`,
+          `  commands: ${formatInlineList(item.commands)}`,
+          `  rationale: ${item.rationale}`,
+        ].join('\n'),
+      ),
+  ].join('\n');
+}
+
+function formatReviewAdversarialPlan(plan: ReviewAdversarialPlan | undefined): string {
+  if (!plan) return 'Review adversarial plan:\n- No adversarial review plan available';
+  return [
+    'Review adversarial plan:',
+    `- Modes: ${formatInlineList(plan.modes)}`,
+    `- Rationale:\n${formatList(plan.rationale, 'No rationale')}`,
+    `- Required evidence:\n${formatList(plan.requiredEvidence, 'No required evidence')}`,
+  ].join('\n');
+}
+
+function formatClarificationQualityGate(gate: ClarificationQualityGate | undefined): string {
+  if (!gate) return 'Clarification quality gate:\n- No clarification gate available';
+  return [
+    'Clarification quality gate:',
+    `- Decision: ${gate.decision}`,
+    `- Confidence: ${gate.confidence.toFixed(2)}`,
+    `- Reasons:\n${formatList(gate.reasons, 'No gate concerns')}`,
+    `- Questions:\n${formatList(gate.questions, 'No clarification questions')}`,
+  ].join('\n');
+}
+
+function formatReviewerCalibration(calibration: ReviewerCalibration | undefined): string {
+  if (!calibration) return 'Reviewer calibration:\n- No calibration available';
+  return [
+    'Reviewer calibration:',
+    `- Strictness: ${calibration.strictness}`,
+    `- Evidence minimum: ${calibration.evidenceMinimum}`,
+    `- Reasons:\n${formatList(calibration.reasons, 'No strictness reasons')}`,
+    `- Focus memories:\n${formatList(calibration.focusMemories, 'No weighted memory focus')}`,
+  ].join('\n');
+}
+
+function formatDesignReviewGate(gate: DesignReviewGate | undefined): string {
+  if (!gate) return 'Design review gate:\n- Not run yet';
+  return [
+    'Design review gate:',
+    `- Status: ${gate.status}`,
+    `- Summary: ${gate.summary}`,
+    `- Required changes:\n${formatList(gate.requiredChanges, 'No required changes')}`,
+    ...gate.checks.map((check) =>
+      [
+        `- ${check.role}: ${check.verdict}`,
+        `  concern: ${check.concern}`,
+        `  evidence: ${formatInlineList(check.evidence)}`,
+        `  requiredChanges: ${formatInlineList(check.requiredChanges)}`,
+      ].join('\n'),
+    ),
+  ].join('\n');
+}
+
+function formatRequirementTrace(trace: RequirementTraceItem[] | undefined): string {
+  if (!trace?.length) return 'Requirement trace:\n- No requirement trace available';
+  return [
+    'Requirement trace:',
+    ...trace
+      .slice(0, MAX_REQUIREMENT_TRACE_ITEMS)
+      .map(
+        (item) =>
+          `- ${item.id} [${item.source}${item.status ? `/${item.status}` : ''}]: ${item.text}${
+            item.evidence.length ? ` Evidence: ${item.evidence.join('; ')}` : ''
+          }`,
+      ),
+  ].join('\n');
+}
+
+function formatPatchAlternatives(alternatives: PatchAlternative[] | undefined): string {
+  if (!alternatives?.length) return 'Patch alternatives:\n- No alternatives recorded';
+  return [
+    'Patch alternatives:',
+    ...alternatives.map((item) =>
+      [
+        `- ${item.selected ? '[selected]' : '[rejected]'} ${item.name}: ${item.rationale}`,
+        `  tradeoffs: ${formatInlineList(item.tradeoffs)}`,
+      ].join('\n'),
+    ),
+  ].join('\n');
+}
+
+function formatRiskReviewPolicy(policy: RiskReviewPolicy | undefined): string {
+  if (!policy) return 'Risk review policy:\n- No risk policy available';
+  return [
+    'Risk review policy:',
+    `- Level: ${policy.level}`,
+    `- Evidence minimum: ${policy.evidenceMinimum}`,
+    `- Runtime validation required: ${policy.requiresRuntimeValidation}`,
+    `- Second-pass review required: ${policy.requiresSecondPass}`,
+    `- Reasons:\n${formatList(policy.reasons, 'No risk reasons')}`,
+  ].join('\n');
+}
+
+function formatOrchestrationPlan(plan: OrchestrationPlan | undefined): string {
+  if (!plan) return 'Orchestration plan:\n- No orchestration plan available';
+  return [
+    'Orchestration plan:',
+    `- Run mode: ${plan.runMode}`,
+    `- Task type: ${plan.taskType}`,
+    `- Worker count: ${plan.workerCount}`,
+    `- Validation depth: ${plan.validationDepth}`,
+    `- Review depth: ${plan.reviewDepth}`,
+    `- Approval threshold: ${plan.approvalThreshold}`,
+    `- Summary: ${plan.summary}`,
+    `- Lanes:\n${formatList(
+      plan.lanes.map(
+        (lane) =>
+          `${lane.id} (${lane.role}): ${lane.goal} Evidence: ${formatInlineList(
+            lane.requiredEvidence,
+          )}`,
+      ),
+      'No orchestration lanes',
+    )}`,
+    `- Checkpoints:\n${formatList(plan.checkpoints, 'No checkpoints')}`,
+    `- Stop rules:\n${formatList(plan.stopRules, 'No stop rules')}`,
+  ].join('\n');
+}
+
+function formatManualEvidence(items: ManualEvidenceItem[] | undefined): string {
+  if (!items?.length)
+    return 'Manual evidence and risk acceptance:\n- No operator evidence recorded';
+  return [
+    'Manual evidence and risk acceptance:',
+    ...items.map(
+      (item) =>
+        `- ${item.kind}${item.riskAccepted ? ' (risk accepted)' : ''} by ${item.author}: ${
+          item.summary
+        }`,
+    ),
+  ].join('\n');
+}
+
+function formatRuntimeValidationSignal(signal: RuntimeValidationSignal | undefined): string {
+  if (!signal) return 'Runtime validation:\n- No runtime validation signal available';
+  return [
+    'Runtime validation:',
+    `- Applicable: ${signal.applicable}`,
+    `- Reason: ${signal.reason}`,
+    `- Suggested running dev server URLs:\n${formatList(signal.suggestedUrls, 'No suggested URLs')}`,
+  ].join('\n');
+}
+
+function formatRuntimeValidationResult(result: RuntimeValidationResult | undefined): string {
+  if (!result) return 'Runtime validation result:\n- No runtime validation result recorded';
+  return [
+    'Runtime validation result:',
+    `- Checked: ${result.checked}`,
+    `- Applicable: ${result.applicable}`,
+    `- Server detected: ${result.serverDetected}`,
+    `- URL: ${result.url ?? 'none'}`,
+    `- Status: ${result.status}`,
+    ...(result.httpStatus ? [`- HTTP status: ${result.httpStatus}`] : []),
+    ...(result.contentType ? [`- Content-Type: ${result.contentType}`] : []),
+    ...(result.title ? [`- Title: ${result.title}`] : []),
+    ...(result.bodySnippet ? [`- Body snippet: ${result.bodySnippet}`] : []),
+    `- Evidence:\n${formatList(result.evidence, 'No runtime evidence captured')}`,
+    `- Notes:\n${formatList(result.notes, 'No runtime validation notes')}`,
+  ].join('\n');
+}
+
+function formatEscalationSignals(signals: EscalationSignal[] | undefined): string {
+  if (!signals?.length) return 'Uncertainty escalation signals:\n- No escalation signals detected';
+  return [
+    'Uncertainty escalation signals:',
+    ...signals.map(
+      (item) => `- [${item.severity}] ${item.reason} Suggested question: ${item.suggestedQuestion}`,
+    ),
+  ].join('\n');
+}
+
+function formatFailureAnalysis(items: FailureAnalysis[] | undefined): string {
+  if (!items?.length) return 'Failure analysis:\n- No validation failures analyzed';
+  return [
+    'Failure analysis:',
+    ...items.map((item) =>
+      [
+        `- ${item.command} [${item.category}]: ${item.summary}`,
+        `  Guidance: ${item.guidance}`,
+        `  Reproduce:\n${formatList(
+          item.reproductionSteps.map(
+            (step) => `${step.command} -> ${step.expectedSignal} (${step.reason})`,
+          ),
+          'No reproduction steps',
+        )}`,
+      ].join('\n'),
+    ),
+  ].join('\n');
+}
+
+function formatPatchIntentVerification(verification: PatchIntentVerification | undefined): string {
+  if (!verification) return 'Patch intent verification:\n- No patch intent verification recorded';
+  return [
+    'Patch intent verification:',
+    `- Status: ${verification.status}`,
+    `- Confidence: ${verification.confidence.toFixed(2)}`,
+    `- Checked files: ${formatInlineList(verification.checkedFiles)}`,
+    `- Evidence:\n${formatList(verification.evidence, 'No intent evidence')}`,
+    `- Issues:\n${formatList(verification.issues, 'No intent issues')}`,
+  ].join('\n');
+}
+
+function formatAttemptSynthesisRecommendation(
+  recommendation: AttemptSynthesisRecommendation | undefined,
+): string {
+  if (!recommendation) return 'Cross-attempt synthesis:\n- No synthesis analysis available';
+  return [
+    'Cross-attempt synthesis:',
+    `- Can synthesize: ${recommendation.canSynthesize}`,
+    `- Summary: ${recommendation.summary}`,
+    `- Candidate parts:\n${formatList(recommendation.candidateParts, 'No candidate parts')}`,
+    `- Risks:\n${formatList(recommendation.risks, 'No synthesis risks')}`,
+  ].join('\n');
+}
+
 function formatProjectContextScan(scan: ProjectContextScan): string {
   return [
     `Project context:\n- Root: ${scan.projectRoot}\n- Package manager: ${
       scan.packageManager ?? 'not detected'
     }`,
+    formatProjectProfileBlock(scan.projectProfile),
+    `Project profile summary:\n${formatList(scan.profileSummary ?? [], 'No profile summary available')}`,
     `Workspace/config files:\n${formatList(scan.workspaceFiles, 'No common workspace files detected')}`,
     `Important package scripts:\n${formatList(scan.packageScripts, 'No test/lint/build/typecheck scripts detected')}`,
     `Existing changes:\n${formatList(scan.existingChanges, 'Clean worktree or no git changes detected')}`,
@@ -3336,6 +6840,23 @@ function formatProjectContextScan(scan: ProjectContextScan): string {
     `Related docs:\n${formatList(scan.relatedDocs, 'No related docs detected')}`,
     `Related tests:\n${formatList(scan.testFiles, 'No related tests detected')}`,
     `Candidate checks:\n${formatList(scan.candidateChecks, 'No candidate checks detected')}`,
+    formatTaskPlaybook(scan.taskPlaybook),
+    formatDependencyMap(scan.dependencyMap),
+    formatSemanticGraph(scan.semanticGraph),
+    formatTestImpactAnalysis(scan.testImpact),
+    formatRequirementTrace(scan.requirementTrace),
+    formatRiskReviewPolicy(scan.riskPolicy),
+    formatOrchestrationPlan(scan.orchestrationPlan),
+    formatReviewAdversarialPlan(scan.reviewAdversarialPlan),
+    formatRuntimeValidationSignal(scan.runtimeValidation),
+    formatEscalationSignals(scan.escalationSignals),
+    formatClarificationQualityGate(scan.clarificationGate),
+    formatReviewerCalibration(scan.reviewerCalibration),
+    formatDesignReviewGate(scan.designReviewGate),
+    formatManualEvidence(scan.manualEvidence),
+    `Recommended worker profile:\n- ${scan.workerProfile ?? 'generalist'}`,
+    formatDecompositionRecommendation(scan.decomposition),
+    `Recent project feedback memory:\n${formatList(scan.recentFeedback ?? [], 'No learned review or validation feedback yet')}`,
     `Context notes:\n${formatList(scan.notes, 'No context notes')}`,
   ].join('\n\n');
 }
@@ -3363,6 +6884,154 @@ function collectPreflightPlanningIssues(
 
   if (plan.intendedFiles.length === 0) {
     issues.push('The preflight plan did not identify any intended files to inspect or edit.');
+  }
+
+  const design = plan.changeDesign;
+  if (design.targetFiles.length === 0) {
+    issues.push('The preflight plan did not include changeDesign.targetFiles.');
+  }
+  if (design.invariants.length === 0) {
+    issues.push('The preflight plan did not include changeDesign.invariants.');
+  }
+  if (design.expectedImpact.length === 0) {
+    issues.push('The preflight plan did not include changeDesign.expectedImpact.');
+  }
+  if (design.validationStrategy.length === 0) {
+    issues.push('The preflight plan did not include changeDesign.validationStrategy.');
+  }
+  if (design.rollbackStrategy.length === 0) {
+    issues.push('The preflight plan did not include changeDesign.rollbackStrategy.');
+  }
+  const designTargetsOutsidePlan = design.targetFiles.filter(
+    (file) => !pathMatchesScope(plan.intendedFiles, file),
+  );
+  if (designTargetsOutsidePlan.length > 0) {
+    issues.push(
+      `changeDesign.targetFiles includes files outside intendedFiles: ${designTargetsOutsidePlan.join(', ')}`,
+    );
+  }
+
+  if (plan.repoFindings.length === 0) {
+    issues.push('The preflight plan did not record concrete repository findings.');
+  }
+
+  if (contextScan.candidateChecks.length > 0 && plan.validationCommands.length === 0) {
+    issues.push(
+      'The preflight plan omitted validation commands even though Kira detected candidate checks.',
+    );
+  }
+  const clarificationGate = contextScan.clarificationGate;
+  const highConfidenceGate =
+    clarificationGate &&
+    clarificationGate.confidence >= 0.8 &&
+    clarificationGate.decision !== 'proceed';
+  if (highConfidenceGate && plan.uncertainties.length === 0 && !plan.escalation.shouldAsk) {
+    issues.push(
+      `The clarification quality gate is ${clarificationGate.decision}, but the preflight plan did not resolve or escalate it: ${clarificationGate.reasons.join('; ')}`,
+    );
+  }
+  if (
+    contextScan.testImpact?.some((item) => item.impactedTests.length > 0) &&
+    plan.validationCommands.length > 0
+  ) {
+    const planned = plan.validationCommands.join('\n').toLowerCase();
+    const hasBroadTestCommand = /\b(pnpm|npm)\s+(run\s+)?test\b|\bvitest\b(?!\s+\S)/.test(planned);
+    const missingImpactCommands = contextScan.testImpact
+      .flatMap((item) => item.commands)
+      .filter((command) => !planned.includes(command.toLowerCase()));
+    if (
+      missingImpactCommands.length > 0 &&
+      plan.validationCommands.length < 2 &&
+      !hasBroadTestCommand
+    ) {
+      issues.push(
+        `The preflight plan did not include inferred impacted-test validation: ${missingImpactCommands
+          .slice(0, 2)
+          .join(', ')}`,
+      );
+    }
+  }
+
+  if (plan.confidence < 0.45) {
+    issues.push(
+      `The preflight plan confidence is too low (${plan.confidence.toFixed(2)}); gather more context or ask for clarification.`,
+    );
+  }
+
+  if (plan.taskType !== contextScan.taskPlaybook?.taskType && plan.taskType === 'generalist') {
+    issues.push(
+      `The preflight plan did not adopt the detected task playbook type (${contextScan.taskPlaybook?.taskType ?? 'unknown'}).`,
+    );
+  }
+  if (plan.requirementTrace.length === 0) {
+    issues.push('The preflight plan did not include a requirementTrace matrix.');
+  }
+  if (contextScan.requirementTrace?.length && plan.requirementTrace.length > 0) {
+    const plannedIds = new Set(plan.requirementTrace.map((item) => item.id));
+    const missingRequirements = contextScan.requirementTrace
+      .slice(0, 6)
+      .filter((item) => !plannedIds.has(item.id));
+    if (missingRequirements.length > 0) {
+      issues.push(
+        `The preflight requirementTrace did not cover detected requirements: ${missingRequirements
+          .map((item) => item.id)
+          .join(', ')}`,
+      );
+    }
+  }
+  if (
+    plan.approachAlternatives.length < 2 ||
+    plan.approachAlternatives.filter((item) => item.selected).length !== 1
+  ) {
+    issues.push(
+      'The preflight plan must compare at least two patch approaches and mark exactly one selected approach.',
+    );
+  }
+  if (plan.escalation.shouldAsk || plan.escalation.blockers.length > 0) {
+    issues.push(
+      `The preflight plan escalated unresolved uncertainty: ${[
+        ...plan.escalation.questions,
+        ...plan.escalation.blockers,
+      ].join('; ')}`,
+    );
+  }
+  const highEscalationSignals =
+    contextScan.escalationSignals?.filter((item) => item.severity === 'high') ?? [];
+  if (highEscalationSignals.length > 0 && plan.uncertainties.length === 0) {
+    issues.push(
+      `Kira detected high-severity uncertainty; the plan must explicitly resolve or escalate: ${highEscalationSignals
+        .map((item) => item.reason)
+        .join('; ')}`,
+    );
+  }
+
+  const blockingUncertainties = plan.uncertainties.filter((item) =>
+    /\b(blocked|cannot|can't|unknown|unclear|conflict|unsafe|not sure)\b/i.test(item),
+  );
+  issues.push(
+    ...blockingUncertainties.map(
+      (item) => `The preflight plan reported blocking uncertainty: ${item}`,
+    ),
+  );
+
+  if (plan.decomposition.shouldSplit) {
+    issues.push(
+      `The preflight planner recommended splitting this work before implementation: ${plan.decomposition.reason}`,
+    );
+  } else if (
+    contextScan.decomposition?.shouldSplit &&
+    contextScan.decomposition.confidence >= 0.85 &&
+    plan.intendedFiles.length >= 8
+  ) {
+    issues.push(
+      `Kira's decomposition analysis recommends splitting this broad work: ${contextScan.decomposition.reason}`,
+    );
+  }
+
+  if (plan.intendedFiles.length > SMALL_PATCH_PLAN_FILE_LIMIT && !plan.decomposition.shouldSplit) {
+    issues.push(
+      `The preflight plan is too broad for Kira small-patch policy (${plan.intendedFiles.length} intended files); split the work or narrow intendedFiles.`,
+    );
   }
 
   const protectedAndPlanned = plan.intendedFiles.filter((plannedFile) =>
@@ -3862,7 +7531,160 @@ async function rerunValidationCommands(
   return { passed, failed, failureDetails };
 }
 
-async function collectReviewerDiffExcerpts(
+function classifyFailure(command: string, detail: string): FailureAnalysis['category'] {
+  const source = `${command}\n${detail}`.toLowerCase();
+  if (/rejected by kira safety|unsafe|permission denied/.test(source)) return 'safety';
+  if (/tsc|type error|typescript|not assignable|property .* does not exist/.test(source)) {
+    return 'typecheck';
+  }
+  if (/eslint|lint|prettier|biome|ruff|mypy/.test(source)) return 'lint';
+  if (/vitest|jest|pytest|unittest|test failed|expect\(|assert/.test(source)) return 'unit-test';
+  if (/vite build|webpack|rollup|build failed|failed to compile/.test(source)) return 'build';
+  if (/eaddrinuse|localhost|connection refused|runtime|browser|console error/.test(source)) {
+    return 'runtime';
+  }
+  if (/enoent|not found|missing|cannot find module|command .* not recognized|spawn/.test(source)) {
+    return 'environment';
+  }
+  return 'unknown';
+}
+
+function guidanceForFailure(category: FailureAnalysis['category']): string {
+  switch (category) {
+    case 'typecheck':
+      return 'Fix the type contract at the reported file/line, then rerun the same targeted typecheck.';
+    case 'unit-test':
+      return 'Identify the failing assertion and fix behavior first; do not weaken the test unless the requirement changed.';
+    case 'lint':
+      return 'Apply the project lint/style convention locally and rerun the same lint command.';
+    case 'build':
+      return 'Trace the build failure to imports, exports, or bundler config touched by the patch.';
+    case 'runtime':
+      return 'Reproduce the runtime path, inspect console/server errors, and fix the user-visible failure.';
+    case 'environment':
+      return 'Confirm the command exists in this project; choose an available equivalent if the environment lacks the tool.';
+    case 'safety':
+      return 'Replace the unsafe command with a diagnostic-only validation command allowed by Kira.';
+    default:
+      return 'Read the failure detail, narrow it to the changed files, and rerun the smallest useful check.';
+  }
+}
+
+function buildFailureReproductionSteps(
+  command: string,
+  category: FailureAnalysis['category'],
+): FailureReproductionStep[] {
+  const safeCommand = isSafeCommandAllowed(command) ? command : '';
+  const steps: FailureReproductionStep[] = safeCommand
+    ? [
+        {
+          command: safeCommand,
+          reason: 'Reproduce the exact Kira validation failure before changing more code.',
+          expectedSignal: 'The same failure appears, or the command passes after the fix.',
+        },
+      ]
+    : [];
+
+  if (category === 'unit-test') {
+    steps.push({
+      command: 'git diff --check',
+      reason:
+        'Confirm the patch does not introduce whitespace or conflict-marker issues before rerunning the focused test.',
+      expectedSignal: 'No diff formatting errors are reported.',
+    });
+  }
+  if (category === 'typecheck' || category === 'build') {
+    steps.push({
+      command: 'git diff --name-only',
+      reason: 'Narrow the failure to changed files and their exported/imported contracts.',
+      expectedSignal: 'Changed files match the suspected contract surface.',
+    });
+  }
+  if (category === 'runtime') {
+    steps.push({
+      command: 'git diff --name-only',
+      reason: 'Identify the runtime-facing files that need a browser or dev-server smoke path.',
+      expectedSignal: 'Runtime-facing files are clear enough to inspect and retest.',
+    });
+  }
+
+  return steps.slice(0, 3);
+}
+
+function analyzeValidationFailures(summary: ValidationRerunSummary): FailureAnalysis[] {
+  return summary.failureDetails
+    .map((detail): FailureAnalysis | null => {
+      const command =
+        /^Command:\s*(.+)$/m.exec(detail)?.[1]?.trim() || summary.failed[0] || 'unknown';
+      const category = classifyFailure(command, detail);
+      const firstSignal =
+        detail
+          .split(/\r?\n/)
+          .map((line) => line.trim())
+          .find((line) => line && !/^Command:|^stdout:|^stderr:|^\(empty\)$/i.test(line)) ??
+        'Validation failed without a concise error line.';
+      return {
+        command,
+        category,
+        summary: truncateForReview(firstSignal, 220),
+        guidance: guidanceForFailure(category),
+        reproductionSteps: buildFailureReproductionSteps(command, category),
+      };
+    })
+    .filter((item): item is FailureAnalysis => item !== null)
+    .slice(0, MAX_FAILURE_ANALYSIS_ITEMS);
+}
+
+async function getTrackedGitFiles(projectRoot: string, files: string[]): Promise<Set<string>> {
+  if (files.length === 0) return new Set();
+  try {
+    const tracked = await runGitCommand(projectRoot, ['ls-files', '--', ...files]);
+    return new Set(
+      tracked
+        .split(/\r?\n/)
+        .map((line) => normalizeRelativePath(line))
+        .filter(Boolean),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function countTextLines(content: string): number {
+  if (!content) return 0;
+  const lines = content.split(/\r?\n/);
+  return content.endsWith('\n') || content.endsWith('\r')
+    ? Math.max(0, lines.length - 1)
+    : lines.length;
+}
+
+function buildSyntheticNewFileDiff(projectRoot: string, relativePath: string): string | null {
+  try {
+    const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+    if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) return null;
+    const content = fs.readFileSync(absolutePath, 'utf-8');
+    const lineCount = countTextLines(content);
+    const previewLines = content
+      .split(/\r?\n/)
+      .slice(0, 80)
+      .map((line) => `+${line}`)
+      .join('\n');
+    const hunk =
+      lineCount > 0 ? `@@ -0,0 +1,${lineCount} @@\n${previewLines}` : '@@ -0,0 +0,0 @@\n';
+    return [
+      `File: ${relativePath}`,
+      `diff --git a/${relativePath} b/${relativePath}`,
+      'new file mode 100644',
+      '--- /dev/null',
+      `+++ b/${relativePath}`,
+      hunk,
+    ].join('\n');
+  } catch {
+    return null;
+  }
+}
+
+export async function collectReviewerDiffExcerpts(
   projectRoot: string,
   filesChanged: string[],
 ): Promise<string[]> {
@@ -3877,18 +7699,132 @@ async function collectReviewerDiffExcerpts(
     return [];
   }
 
+  const trackedFiles = await getTrackedGitFiles(projectRoot, normalizedFiles);
   const excerpts: string[] = [];
   for (const relativePath of normalizedFiles) {
     try {
       const diff = await runGitCommand(projectRoot, ['diff', '--unified=1', '--', relativePath]);
-      if (!diff.trim()) continue;
-      excerpts.push(`File: ${relativePath}\n${truncateForReview(diff, MAX_REVIEW_DIFF_CHARS)}`);
+      if (diff.trim()) {
+        excerpts.push(`File: ${relativePath}\n${truncateForReview(diff, MAX_REVIEW_DIFF_CHARS)}`);
+        continue;
+      }
+      if (!trackedFiles.has(relativePath)) {
+        const syntheticDiff = buildSyntheticNewFileDiff(projectRoot, relativePath);
+        if (syntheticDiff) {
+          excerpts.push(truncateForReview(syntheticDiff, MAX_REVIEW_DIFF_CHARS));
+        }
+      }
     } catch {
       // Ignore per-file diff failures and continue collecting what is available.
     }
   }
 
   return excerpts;
+}
+
+export async function collectGitDiffStats(
+  projectRoot: string,
+  filesChanged: string[],
+): Promise<DiffStats> {
+  const normalizedFiles = uniqueStrings(
+    filesChanged.map((file) => normalizeRelativePath(file)),
+  ).filter(Boolean);
+  if (normalizedFiles.length === 0) return { files: 0, additions: 0, deletions: 0, hunks: 0 };
+
+  try {
+    await runGitCommand(projectRoot, ['rev-parse', '--is-inside-work-tree']);
+  } catch {
+    return { files: normalizedFiles.length, additions: 0, deletions: 0, hunks: 0 };
+  }
+
+  let additions = 0;
+  let deletions = 0;
+  let hunks = 0;
+  const trackedFiles = await getTrackedGitFiles(projectRoot, normalizedFiles);
+  try {
+    const numstat = await runGitCommand(projectRoot, [
+      'diff',
+      '--numstat',
+      '--',
+      ...normalizedFiles,
+    ]);
+    for (const line of numstat.split(/\r?\n/)) {
+      const [added, deleted] = line.trim().split(/\s+/);
+      const addedCount = Number.parseInt(added, 10);
+      const deletedCount = Number.parseInt(deleted, 10);
+      if (Number.isFinite(addedCount)) additions += addedCount;
+      if (Number.isFinite(deletedCount)) deletions += deletedCount;
+    }
+  } catch {
+    // Keep file count even when numstat is unavailable.
+  }
+
+  try {
+    const diff = await runGitCommand(projectRoot, [
+      'diff',
+      '--unified=0',
+      '--',
+      ...normalizedFiles,
+    ]);
+    hunks = (diff.match(/^@@\s/gm) ?? []).length;
+  } catch {
+    // Hunk count is advisory.
+  }
+
+  const untrackedFiles = normalizedFiles.filter((relativePath) => !trackedFiles.has(relativePath));
+  for (const relativePath of untrackedFiles) {
+    try {
+      const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+      if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+      const content = fs.readFileSync(absolutePath, 'utf-8');
+      const lineCount = countTextLines(content);
+      additions += lineCount;
+      if (lineCount > 0) hunks += 1;
+    } catch {
+      // Keep tracked diff stats even when an untracked file cannot be read.
+    }
+  }
+
+  return {
+    files: normalizedFiles.length,
+    additions,
+    deletions,
+    hunks,
+  };
+}
+
+function collectPatchScopeIssues(params: {
+  workerPlan: WorkerExecutionPlan | null;
+  filesChanged: string[];
+  diffStats: DiffStats;
+}): string[] {
+  const issues: string[] = [];
+  const changedFiles = normalizePathList(params.filesChanged, 200);
+  const changedLineCount = params.diffStats.additions + params.diffStats.deletions;
+  const docOnly =
+    changedFiles.length > 0 && changedFiles.every((file) => /\.(md|mdx|txt|rst)$/i.test(file));
+
+  if (!docOnly && changedFiles.length > SMALL_PATCH_FILE_LIMIT) {
+    issues.push(
+      `Patch exceeds Kira small-patch policy: ${changedFiles.length} files changed; split the work or narrow the next attempt to ${SMALL_PATCH_FILE_LIMIT} files or fewer.`,
+    );
+  }
+  if (!docOnly && changedLineCount > SMALL_PATCH_LINE_LIMIT) {
+    issues.push(
+      `Patch exceeds Kira small-patch policy: ${changedLineCount} changed lines; split broad refactors or reduce the patch size before review.`,
+    );
+  }
+  if (
+    params.workerPlan &&
+    params.workerPlan.intendedFiles.length > SMALL_PATCH_PLAN_FILE_LIMIT &&
+    !params.workerPlan.decomposition.shouldSplit
+  ) {
+    issues.push(
+      `Preflight plan listed ${params.workerPlan.intendedFiles.length} intended files without splitting the work; keep the plan smaller or decompose the task.`,
+    );
+  }
+
+  return uniqueStrings(issues);
 }
 
 export function collectAttemptReviewabilityIssues(params: {
@@ -3925,6 +7861,232 @@ export function collectAttemptReviewabilityIssues(params: {
   }
 
   return uniqueStrings(issues);
+}
+
+export function collectWorkerSelfCheckIssues(params: {
+  workerSummary: WorkerSummary;
+  workerPlan: WorkerExecutionPlan | null;
+  requiredInstructions: string;
+  validationPlan: ResolvedValidationPlan;
+  filesChanged: string[];
+  diffExcerpts?: string[];
+}): string[] {
+  const issues: string[] = [];
+  const selfCheck = params.workerSummary.selfCheck;
+  const hasChangedFiles = params.filesChanged.length > 0;
+  const hasValidationCommands = params.validationPlan.effectiveCommands.length > 0;
+
+  if (!selfCheck) {
+    issues.push(
+      'Worker final JSON did not include selfCheck; rerun with an explicit diff, plan, project-instruction, and validation self-check.',
+    );
+    return issues;
+  }
+
+  if (hasChangedFiles && !selfCheck.reviewedDiff) {
+    issues.push('Worker self-check says the final diff was not reviewed before submission.');
+  }
+  if (hasChangedFiles && selfCheck.diffHunkReview.length === 0) {
+    issues.push('Worker self-check did not include diffHunkReview for the final patch.');
+  }
+  if (hasChangedFiles && params.filesChanged.length <= 4 && selfCheck.diffHunkReview.length > 0) {
+    const reviewedFiles = selfCheck.diffHunkReview.map((item) => item.file);
+    const unreviewedFiles = normalizePathList(params.filesChanged, 20).filter(
+      (file) => !pathMatchesScope(reviewedFiles, file),
+    );
+    if (unreviewedFiles.length > 0) {
+      issues.push(
+        `Worker diffHunkReview did not cover changed files: ${unreviewedFiles.join(', ')}`,
+      );
+    }
+  }
+  const plannedRequirementTrace = params.workerPlan?.requirementTrace ?? [];
+  const selfCheckRequirementTrace = selfCheck.requirementTrace ?? [];
+  if (plannedRequirementTrace.length > 0 && selfCheckRequirementTrace.length === 0) {
+    issues.push('Worker self-check did not include requirementTrace evidence for the final patch.');
+  }
+  if (plannedRequirementTrace.length > 0 && selfCheckRequirementTrace.length > 0) {
+    issues.push(
+      ...collectIncompleteRequirementTraceIssues(selfCheckRequirementTrace, 'Worker self-check'),
+      ...collectMissingRequirementTraceIds(
+        plannedRequirementTrace,
+        selfCheckRequirementTrace,
+        'Worker self-check',
+      ),
+    );
+  }
+  if (params.requiredInstructions.trim() && !selfCheck.followedProjectInstructions) {
+    issues.push('Worker self-check says mandatory project instructions were not confirmed.');
+  }
+  if (params.workerPlan && !selfCheck.matchedPlan) {
+    issues.push('Worker self-check says the implementation does not match the approved plan.');
+  }
+  if (hasValidationCommands && !selfCheck.ranOrExplainedValidation) {
+    issues.push(
+      'Worker self-check did not confirm that planned validation was run or explicitly explained.',
+    );
+  }
+
+  const blockingUncertainty = selfCheck.uncertainty.filter((item) =>
+    /\b(blocked|cannot|can't|unknown|unclear|conflict|unsafe|not sure)\b/i.test(item),
+  );
+  issues.push(...blockingUncertainty.map((item) => `Blocking worker uncertainty: ${item}`));
+
+  return uniqueStrings(issues);
+}
+
+export function verifyPatchIntent(params: {
+  workerPlan: WorkerExecutionPlan | null;
+  workerSummary: WorkerSummary;
+  outOfPlanFiles: string[];
+  diffStats: DiffStats;
+  diffExcerpts: string[];
+}): PatchIntentVerification {
+  const issues: string[] = [];
+  const evidence: string[] = [];
+  const changedFiles = normalizePathList(params.workerSummary.filesChanged, 200);
+  const intendedFiles = normalizePathList(params.workerPlan?.intendedFiles ?? [], 200);
+  const targetFiles = normalizePathList(params.workerPlan?.changeDesign.targetFiles ?? [], 200);
+  const expectedScope = uniqueStrings([...intendedFiles, ...targetFiles]);
+  const hasExplainedScopeExpansion =
+    params.outOfPlanFiles.length > 0 && params.workerSummary.remainingRisks.length > 0;
+
+  if (!params.workerPlan) {
+    return {
+      status: 'unknown',
+      confidence: 0.2,
+      checkedFiles: changedFiles,
+      evidence: ['No worker plan was available for patch intent verification.'],
+      issues: ['Kira could not compare the patch to a preflight plan.'],
+    };
+  }
+
+  if (changedFiles.length === 0 && expectedScope.length > 0) {
+    issues.push(
+      `Worker planned edits to ${expectedScope.slice(0, 6).join(', ')} but produced no changed files.`,
+    );
+  }
+  const unscopedFiles = changedFiles.filter((file) => !pathMatchesScope(expectedScope, file));
+  if (unscopedFiles.length > 0) {
+    issues.push(
+      hasExplainedScopeExpansion
+        ? `Changed files expanded beyond the planned intent and require reviewer confirmation: ${unscopedFiles.join(
+            ', ',
+          )}`
+        : `Changed files are outside the planned intent: ${unscopedFiles.join(', ')}`,
+    );
+  }
+  if (params.outOfPlanFiles.length > 0 && !params.workerSummary.remainingRisks.length) {
+    issues.push(
+      `Out-of-plan edits were not explained in remainingRisks: ${params.outOfPlanFiles.join(', ')}`,
+    );
+  }
+  if (params.workerSummary.selfCheck && !params.workerSummary.selfCheck.matchedPlan) {
+    issues.push('Worker self-check says the implementation does not match the approved plan.');
+  }
+  if (changedFiles.length > 0 && params.diffExcerpts.length === 0) {
+    issues.push('Changed files exist, but Kira could not collect diff evidence for intent review.');
+  }
+
+  evidence.push(
+    `Plan intended files: ${formatInlineList(intendedFiles)}`,
+    `Change design targets: ${formatInlineList(targetFiles)}`,
+    `Changed files: ${formatInlineList(changedFiles)}`,
+    `Diff stats: ${params.diffStats.files} files, ${params.diffStats.additions} additions, ${params.diffStats.deletions} deletions, ${params.diffStats.hunks} hunks`,
+  );
+
+  const status: PatchIntentVerification['status'] =
+    issues.length === 0
+      ? 'aligned'
+      : changedFiles.length === 0 ||
+          (unscopedFiles.length > 0 && !hasExplainedScopeExpansion) ||
+          params.workerSummary.selfCheck?.matchedPlan === false
+        ? 'drift'
+        : 'unknown';
+  const confidence =
+    params.diffExcerpts.length > 0 || changedFiles.length === 0
+      ? status === 'aligned'
+        ? 0.82
+        : 0.78
+      : 0.48;
+  return {
+    status,
+    confidence,
+    checkedFiles: changedFiles,
+    evidence: limitedUniqueStrings(evidence, 8),
+    issues: limitedUniqueStrings(issues, 8),
+  };
+}
+
+function emptyPatchIntentVerification(message: string): PatchIntentVerification {
+  return {
+    status: 'unknown',
+    confidence: 0.2,
+    checkedFiles: [],
+    evidence: [message],
+    issues: [message],
+  };
+}
+
+function buildAttemptSynthesisRecommendation(
+  attempts: KiraWorkerAttemptResult[],
+): AttemptSynthesisRecommendation {
+  if (attempts.length < 2) {
+    return {
+      canSynthesize: false,
+      summary: 'Only one reviewable attempt is available; no cross-attempt synthesis is possible.',
+      candidateParts: [],
+      risks: [],
+    };
+  }
+
+  const fileOwners = new Map<string, number[]>();
+  for (const attempt of attempts) {
+    for (const file of attempt.workerSummary.filesChanged) {
+      const normalized = normalizeRelativePath(file);
+      fileOwners.set(normalized, [...(fileOwners.get(normalized) ?? []), attempt.attemptNo]);
+    }
+  }
+  const overlappingFiles = [...fileOwners.entries()]
+    .filter(([, owners]) => owners.length > 1)
+    .map(([file, owners]) => `${file} (${owners.join(', ')})`);
+  const passingAttempts = attempts.filter(
+    (attempt) => attempt.validationReruns.failed.length === 0,
+  );
+  const canSynthesize =
+    passingAttempts.length >= 2 &&
+    overlappingFiles.length === 0 &&
+    attempts.every((attempt) => attempt.patchIntentVerification.status === 'aligned');
+
+  return {
+    canSynthesize,
+    summary: canSynthesize
+      ? 'Attempts touch disjoint aligned surfaces; reviewer may use them as synthesis guidance, but Kira will still integrate one selected winner.'
+      : 'Synthesis is advisory only; overlapping files, validation gaps, or intent drift make single-winner selection safer.',
+    candidateParts: passingAttempts
+      .map(
+        (attempt) =>
+          `Attempt ${attempt.attemptNo} (${attempt.lane.label}): ${formatInlineList(
+            attempt.workerSummary.filesChanged,
+          )}`,
+      )
+      .slice(0, 8),
+    risks: limitedUniqueStrings(
+      [
+        ...overlappingFiles.map((file) => `Overlapping changed file: ${file}`),
+        ...attempts
+          .filter((attempt) => attempt.validationReruns.failed.length > 0)
+          .map((attempt) => `Attempt ${attempt.attemptNo} has failed validation.`),
+        ...attempts
+          .filter((attempt) => attempt.patchIntentVerification.status !== 'aligned')
+          .map(
+            (attempt) =>
+              `Attempt ${attempt.attemptNo} patch intent is ${attempt.patchIntentVerification.status}.`,
+          ),
+      ],
+      10,
+    ),
+  };
 }
 
 function collectPlanGuardrailIssues(
@@ -3997,27 +8159,462 @@ function collectDirtyFileGuardrailIssues(
   ];
 }
 
+function collectMissingRequirementTraceIds(
+  expectedTrace: RequirementTraceItem[],
+  actualTrace: RequirementTraceItem[],
+  actor: string,
+): string[] {
+  if (expectedTrace.length === 0 || actualTrace.length === 0) return [];
+  const expectedIds = new Set(expectedTrace.map((item) => item.id));
+  const actualIds = new Set(actualTrace.map((item) => item.id));
+  const missingIds = [...expectedIds].filter((id) => !actualIds.has(id)).slice(0, 6);
+  return missingIds.length > 0
+    ? [`${actor} requirementTrace missed planned requirements: ${missingIds.join(', ')}`]
+    : [];
+}
+
+function collectIncompleteRequirementTraceIssues(
+  trace: RequirementTraceItem[],
+  actor: string,
+): string[] {
+  return trace
+    .filter((item) => {
+      const completed = item.status === 'satisfied' || item.status === 'not_applicable';
+      return !completed || item.evidence.length === 0;
+    })
+    .map((item) => {
+      const status = item.status ?? 'missing';
+      const evidenceNote = item.evidence.length === 0 ? ' without evidence' : '';
+      return `${actor} requirementTrace is incomplete for ${item.id}: status=${status}${evidenceNote}. ${item.text}`;
+    });
+}
+
+function buildReviewFindingTriage(
+  reviewSummary: ReviewSummary,
+  extras: {
+    designReviewGate?: DesignReviewGate;
+    patchIntentVerification?: PatchIntentVerification;
+    runtimeValidation?: RuntimeValidationResult;
+  } = {},
+): ReviewFindingTriageItem[] {
+  const now = Date.now();
+  const items: ReviewFindingTriageItem[] = [];
+  const addItem = (
+    source: ReviewFindingTriageItem['source'],
+    severity: ReviewFinding['severity'],
+    title: string,
+    evidence: string[],
+    file?: string,
+    line?: number | null,
+  ) => {
+    const key = normalizeWhitespace(`${source}:${severity}:${file ?? ''}:${line ?? ''}:${title}`);
+    items.push({
+      id: `triage-${createHash('sha1').update(key).digest('hex').slice(0, 12)}`,
+      source,
+      status: reviewSummary.approved ? 'fixed' : 'open',
+      severity,
+      title,
+      ...(file ? { file } : {}),
+      ...(line !== undefined ? { line } : {}),
+      evidence: limitedUniqueStrings(evidence, 6),
+      owner: reviewSummary.approved ? 'reviewer' : 'worker',
+      createdAt: now,
+    });
+  };
+
+  for (const finding of reviewSummary.findings) {
+    addItem(
+      'review',
+      finding.severity,
+      finding.message,
+      [reviewSummary.summary],
+      finding.file,
+      finding.line,
+    );
+  }
+  for (const command of reviewSummary.missingValidation) {
+    addItem('validation', 'medium', `Missing validation: ${command}`, [command]);
+  }
+  for (const issue of reviewSummary.issues) {
+    addItem('review', 'medium', issue, [reviewSummary.summary]);
+  }
+  for (const change of extras.designReviewGate?.requiredChanges ?? []) {
+    addItem('design', 'medium', change, [extras.designReviewGate?.summary ?? 'Design review gate']);
+  }
+  for (const issue of extras.patchIntentVerification?.issues ?? []) {
+    addItem('intent', 'high', issue, extras.patchIntentVerification?.evidence ?? []);
+  }
+  if (
+    extras.runtimeValidation?.applicable &&
+    extras.runtimeValidation.serverDetected &&
+    extras.runtimeValidation.status !== 'reachable'
+  ) {
+    addItem(
+      'runtime',
+      'high',
+      'Runtime validation failed on a detected dev server.',
+      extras.runtimeValidation.evidence,
+      extras.runtimeValidation.url ?? undefined,
+    );
+  }
+
+  const byId = new Map<string, ReviewFindingTriageItem>();
+  for (const item of items) {
+    byId.set(item.id, item);
+  }
+  return [...byId.values()].slice(0, 30);
+}
+
+function buildReviewObservability(params: {
+  startedAt: number;
+  finishedAt: number;
+  reviewRaw: string;
+  reviewSummary: ReviewSummary;
+  triage: ReviewFindingTriageItem[];
+}): KiraReviewObservability {
+  return {
+    durationMs: Math.max(0, params.finishedAt - params.startedAt),
+    findingCount: params.reviewSummary.findings.length,
+    triageOpenCount: params.triage.filter((item) => item.status === 'open').length,
+    discourseCount: params.reviewSummary.reviewerDiscourse.length,
+    evidenceCount: params.reviewSummary.evidenceChecked.length,
+    estimatedReviewOutputTokens: estimateTokenCount(params.reviewRaw),
+  };
+}
+
+function buildEvidenceLedger(params: {
+  contextScan: ProjectContextScan;
+  workerPlan: WorkerExecutionPlan;
+  workerSummary?: WorkerSummary;
+  validationReruns?: ValidationRerunSummary;
+  diffStats?: DiffStats;
+  runtimeValidation?: RuntimeValidationResult;
+  patchIntentVerification?: PatchIntentVerification;
+  designReviewGate?: DesignReviewGate;
+  reviewSummary?: ReviewSummary;
+  riskPolicy?: RiskReviewPolicy;
+}): EvidenceLedger {
+  const createdAt = Date.now();
+  const items: EvidenceLedgerItem[] = [];
+  const addItem = (
+    kind: EvidenceLedgerItem['kind'],
+    status: EvidenceLedgerItem['status'],
+    summary: string,
+    evidence: string[],
+    createdBy: EvidenceLedgerItem['createdBy'],
+    confidence: number,
+    target?: string,
+  ) => {
+    const key = normalizeWhitespace(`${kind}:${status}:${target ?? ''}:${summary}`);
+    items.push({
+      id: `evidence-${createHash('sha1').update(key).digest('hex').slice(0, 12)}`,
+      kind,
+      status,
+      summary,
+      ...(target ? { target } : {}),
+      evidence: limitedUniqueStrings(evidence, 8),
+      createdBy,
+      confidence: clampConfidence(confidence, 0.5),
+      createdAt,
+    });
+  };
+
+  addItem(
+    'plan',
+    params.workerPlan.valid ? 'pass' : 'warn',
+    params.workerPlan.summary || 'Worker plan recorded.',
+    [
+      `Task type: ${params.workerPlan.taskType}`,
+      `Intended files: ${formatInlineList(params.workerPlan.intendedFiles)}`,
+      `Confidence: ${params.workerPlan.confidence.toFixed(2)}`,
+    ],
+    'worker',
+    params.workerPlan.confidence,
+  );
+
+  if (params.diffStats) {
+    addItem(
+      'diff',
+      params.diffStats.files > 0 ? 'pass' : 'warn',
+      `${params.diffStats.files} changed file(s), ${params.diffStats.hunks} hunk(s).`,
+      [
+        `+${params.diffStats.additions}/-${params.diffStats.deletions}`,
+        `Reported files: ${formatInlineList(params.workerSummary?.filesChanged ?? [])}`,
+      ],
+      'kira',
+      params.diffStats.files > 0 ? 0.8 : 0.45,
+    );
+  }
+
+  const validation = params.validationReruns;
+  if (validation) {
+    addItem(
+      'validation',
+      validation.failed.length > 0 ? 'fail' : validation.passed.length > 0 ? 'pass' : 'warn',
+      `${validation.passed.length} validation rerun(s) passed, ${validation.failed.length} failed.`,
+      [
+        ...validation.passed.map((item) => `passed: ${item}`),
+        ...validation.failed.map((item) => `failed: ${item}`),
+      ],
+      'kira',
+      validation.failed.length > 0 ? 0.95 : validation.passed.length > 0 ? 0.82 : 0.35,
+    );
+  }
+
+  if (params.runtimeValidation) {
+    const runtimeStatus: EvidenceLedgerItem['status'] =
+      params.runtimeValidation.status === 'reachable'
+        ? 'pass'
+        : params.runtimeValidation.applicable && params.runtimeValidation.serverDetected
+          ? 'fail'
+          : params.runtimeValidation.applicable
+            ? 'warn'
+            : 'info';
+    addItem(
+      'runtime',
+      runtimeStatus,
+      `Runtime validation ${params.runtimeValidation.status}.`,
+      [...params.runtimeValidation.evidence, ...params.runtimeValidation.notes],
+      'kira',
+      runtimeStatus === 'pass' ? 0.85 : runtimeStatus === 'fail' ? 0.9 : 0.45,
+      params.runtimeValidation.url ?? undefined,
+    );
+  }
+
+  if (params.patchIntentVerification) {
+    addItem(
+      'intent',
+      params.patchIntentVerification.status === 'aligned'
+        ? 'pass'
+        : params.patchIntentVerification.status === 'drift'
+          ? 'fail'
+          : 'warn',
+      `Patch intent is ${params.patchIntentVerification.status}.`,
+      [...params.patchIntentVerification.evidence, ...params.patchIntentVerification.issues],
+      'kira',
+      params.patchIntentVerification.confidence,
+    );
+  }
+
+  const designGate = params.designReviewGate ?? params.contextScan.designReviewGate;
+  if (designGate) {
+    addItem(
+      'design',
+      designGate.status === 'blocked' ? 'fail' : designGate.status === 'warning' ? 'warn' : 'pass',
+      designGate.summary,
+      designGate.requiredChanges.length > 0 ? designGate.requiredChanges : [designGate.summary],
+      'kira',
+      designGate.status === 'passed' ? 0.8 : 0.7,
+    );
+  }
+
+  if (params.reviewSummary) {
+    addItem(
+      'review',
+      params.reviewSummary.approved ? 'pass' : 'warn',
+      params.reviewSummary.summary,
+      [
+        ...params.reviewSummary.filesChecked.map((item) => `checked: ${item}`),
+        ...params.reviewSummary.evidenceChecked.map(
+          (item) => `${item.method}: ${item.file} (${item.reason})`,
+        ),
+        ...params.reviewSummary.issues,
+      ],
+      'reviewer',
+      params.reviewSummary.approved ? 0.86 : 0.65,
+    );
+  }
+
+  for (const manual of params.contextScan.manualEvidence ?? []) {
+    addItem(
+      manual.riskAccepted ? 'risk-acceptance' : 'manual',
+      manual.riskAccepted ? 'warn' : 'info',
+      manual.summary,
+      [manual.summary],
+      'operator',
+      manual.riskAccepted ? 0.65 : 0.55,
+      manual.author,
+    );
+  }
+
+  const blockers = limitedUniqueStrings(
+    [
+      ...(validation?.failed.length ? [`Validation failed: ${validation.failed.join(', ')}`] : []),
+      ...(params.patchIntentVerification?.status === 'drift'
+        ? params.patchIntentVerification.issues.map((issue) => `Patch intent drift: ${issue}`)
+        : []),
+      ...(designGate?.status === 'blocked'
+        ? designGate.requiredChanges.map((item) => `Design gate blocked: ${item}`)
+        : []),
+      ...(params.runtimeValidation?.applicable &&
+      params.runtimeValidation.serverDetected &&
+      params.runtimeValidation.status !== 'reachable'
+        ? ['Runtime validation failed on a detected dev server.']
+        : []),
+    ],
+    12,
+  );
+  const observedEvidenceCount = items.filter((item) => item.status === 'pass').length;
+  const requiredEvidenceCount =
+    params.riskPolicy?.evidenceMinimum ?? params.contextScan.riskPolicy?.evidenceMinimum ?? 1;
+  const missingEvidence = limitedUniqueStrings(
+    [
+      ...(observedEvidenceCount < requiredEvidenceCount
+        ? [`Need ${requiredEvidenceCount - observedEvidenceCount} more passing evidence item(s).`]
+        : []),
+      ...(!validation || validation.passed.length === 0
+        ? ['No passed Kira validation rerun recorded.']
+        : []),
+      ...(params.workerSummary?.filesChanged.length && !params.diffStats
+        ? ['Changed files exist but diff stats are missing.']
+        : []),
+      ...(params.reviewSummary && params.reviewSummary.evidenceChecked.length === 0
+        ? ['Reviewer did not record evidenceChecked entries.']
+        : []),
+    ],
+    8,
+  );
+  const riskAcceptanceBonus = (params.contextScan.manualEvidence ?? []).some(
+    (item) => item.riskAccepted,
+  )
+    ? 6
+    : 0;
+  const score = Math.max(
+    0,
+    Math.min(
+      100,
+      items.reduce((total, item) => {
+        const base =
+          item.status === 'pass'
+            ? 14
+            : item.status === 'info'
+              ? 5
+              : item.status === 'warn'
+                ? 2
+                : -18;
+        return total + base * item.confidence;
+      }, 20) +
+        riskAcceptanceBonus -
+        blockers.length * 12 -
+        missingEvidence.length * 4,
+    ),
+  );
+  return {
+    items,
+    approvalReadiness: {
+      score: Math.round(score),
+      status:
+        blockers.length > 0
+          ? 'blocked'
+          : missingEvidence.length > 0 || score < 80
+            ? 'needs_evidence'
+            : 'ready',
+      blockers,
+      missingEvidence,
+      requiredEvidenceCount,
+      observedEvidenceCount,
+    },
+  };
+}
+
 function buildReviewRecord(
   workId: string,
   attemptNo: number,
   reviewSummary: ReviewSummary,
+  extras: {
+    reviewAdversarialPlan?: ReviewAdversarialPlan;
+    attemptSynthesis?: AttemptSynthesisRecommendation;
+    designReviewGate?: DesignReviewGate;
+    patchIntentVerification?: PatchIntentVerification;
+    runtimeValidation?: RuntimeValidationResult;
+    observability?: KiraReviewObservability;
+  } = {},
 ): KiraReviewRecord {
+  const normalizedSummary = ensureReviewerDiscourse(reviewSummary, extras);
+  const triage = buildReviewFindingTriage(normalizedSummary, extras);
   return {
     id: `${workId}-${attemptNo}`,
     workId,
     attemptNo,
-    approved: reviewSummary.approved,
+    approved: normalizedSummary.approved,
     createdAt: Date.now(),
-    summary: reviewSummary.summary,
-    findings: reviewSummary.findings,
-    missingValidation: reviewSummary.missingValidation,
-    nextWorkerInstructions: reviewSummary.nextWorkerInstructions,
-    residualRisk: reviewSummary.residualRisk,
-    filesChecked: reviewSummary.filesChecked,
+    summary: normalizedSummary.summary,
+    findings: normalizedSummary.findings,
+    missingValidation: normalizedSummary.missingValidation,
+    nextWorkerInstructions: normalizedSummary.nextWorkerInstructions,
+    residualRisk: normalizedSummary.residualRisk,
+    filesChecked: normalizedSummary.filesChecked,
+    evidenceChecked: normalizedSummary.evidenceChecked,
+    requirementVerdicts: normalizedSummary.requirementVerdicts,
+    adversarialChecks: normalizedSummary.adversarialChecks,
+    reviewerDiscourse: normalizedSummary.reviewerDiscourse,
+    triage,
+    ...(extras.reviewAdversarialPlan
+      ? { reviewAdversarialPlan: extras.reviewAdversarialPlan }
+      : {}),
+    ...(extras.attemptSynthesis ? { attemptSynthesis: extras.attemptSynthesis } : {}),
+    ...(extras.observability ? { observability: extras.observability } : {}),
   };
 }
 
-function enforceReviewDecision(summary: ReviewSummary): ReviewSummary {
+function ensureReviewerDiscourse(
+  summary: ReviewSummary,
+  evidence?: {
+    reviewAdversarialPlan?: ReviewAdversarialPlan;
+  },
+): ReviewSummary {
+  if (summary.reviewerDiscourse.length > 0) return summary;
+  const fromChecks = summary.adversarialChecks.slice(0, 4).map((check): ReviewerDiscourseEntry => {
+    const challenge = check.result === 'failed';
+    return {
+      role: check.mode,
+      position: challenge ? 'challenge' : 'support',
+      argument:
+        check.concern ||
+        `${check.mode} review ${check.result === 'passed' ? 'found no blocking issue' : 'needs attention'}.`,
+      evidence: check.evidence,
+      ...(challenge ? {} : { response: 'No blocking issue remained for this mode.' }),
+    };
+  });
+  const fallbackMode = evidence?.reviewAdversarialPlan?.modes[0] ?? 'correctness';
+  const discourse =
+    fromChecks.length > 0
+      ? fromChecks
+      : [
+          {
+            role: fallbackMode,
+            position: summary.approved ? 'resolved' : 'challenge',
+            argument: summary.approved
+              ? 'Reviewer found the implementation acceptable after checking the required evidence.'
+              : 'Reviewer could not approve because blocking evidence was missing or incomplete.',
+            evidence: summary.evidenceChecked.map(
+              (item) => `${item.method} ${item.file}: ${item.reason}`,
+            ),
+            ...(summary.approved ? { response: summary.summary } : {}),
+          } satisfies ReviewerDiscourseEntry,
+        ];
+  return {
+    ...summary,
+    reviewerDiscourse: discourse,
+  };
+}
+
+function enforceReviewDecision(
+  summary: ReviewSummary,
+  evidence?: {
+    workerSummary?: WorkerSummary;
+    validationReruns?: ValidationRerunSummary;
+    diffExcerpts?: string[];
+    requiredInstructions?: string;
+    riskPolicy?: RiskReviewPolicy;
+    requirementTrace?: RequirementTraceItem[];
+    runtimeValidation?: RuntimeValidationResult;
+    reviewAdversarialPlan?: ReviewAdversarialPlan;
+    patchIntentVerification?: PatchIntentVerification;
+    designReviewGate?: DesignReviewGate;
+  },
+): ReviewSummary {
+  summary = ensureReviewerDiscourse(summary, evidence);
   const blockingIssues = [
     ...summary.findings.map((finding) =>
       [finding.file, finding.line ? `line ${finding.line}` : '', finding.message]
@@ -4026,6 +8623,157 @@ function enforceReviewDecision(summary: ReviewSummary): ReviewSummary {
     ),
     ...summary.missingValidation.map((command) => `Missing validation: ${command}`),
   ];
+  const changedFiles = normalizePathList(evidence?.workerSummary?.filesChanged ?? [], 200);
+  const filesChecked = normalizePathList(summary.filesChecked, 200);
+  const evidenceChecked = summary.evidenceChecked;
+  const riskPolicy = evidence?.riskPolicy;
+  if (summary.approved && evidence?.validationReruns?.failed.length) {
+    blockingIssues.push(
+      `Reviewer approved despite failed Kira validation reruns: ${evidence.validationReruns.failed.join(', ')}`,
+    );
+  }
+  if (summary.approved && changedFiles.length > 0 && (evidence?.diffExcerpts?.length ?? 0) > 0) {
+    if (filesChecked.length === 0) {
+      blockingIssues.push(
+        'Reviewer approved without recording filesChecked for the changed files.',
+      );
+    } else {
+      const uncheckedFiles = changedFiles
+        .slice(0, 8)
+        .filter((file) => !pathMatchesScope(filesChecked, file));
+      if (uncheckedFiles.length > 0) {
+        blockingIssues.push(
+          `Reviewer filesChecked did not cover changed files: ${uncheckedFiles.join(', ')}`,
+        );
+      }
+    }
+  }
+  if (
+    summary.approved &&
+    evidence?.workerSummary &&
+    changedFiles.length > 0 &&
+    (!evidence.workerSummary.selfCheck ||
+      evidence.workerSummary.selfCheck.diffHunkReview.length === 0)
+  ) {
+    blockingIssues.push('Reviewer approved an attempt without worker diffHunkReview evidence.');
+  }
+  if (
+    summary.approved &&
+    evidence?.requiredInstructions?.trim() &&
+    evidence.workerSummary?.selfCheck &&
+    !evidence.workerSummary.selfCheck.followedProjectInstructions
+  ) {
+    blockingIssues.push(
+      'Reviewer approved even though worker self-check did not confirm mandatory project instructions.',
+    );
+  }
+  if (summary.approved && evidenceChecked.length < (riskPolicy?.evidenceMinimum ?? 1)) {
+    blockingIssues.push(
+      `Reviewer approved with insufficient evidenceChecked entries for ${riskPolicy?.level ?? 'low'} risk review: ${evidenceChecked.length}/${riskPolicy?.evidenceMinimum ?? 1}.`,
+    );
+  }
+  if (
+    summary.approved &&
+    changedFiles.length > 0 &&
+    evidenceChecked.length > 0 &&
+    changedFiles.slice(0, 8).some(
+      (file) =>
+        !pathMatchesScope(
+          evidenceChecked.map((item) => item.file),
+          file,
+        ),
+    )
+  ) {
+    const uncheckedEvidenceFiles = changedFiles.slice(0, 8).filter(
+      (file) =>
+        !pathMatchesScope(
+          evidenceChecked.map((item) => item.file),
+          file,
+        ),
+    );
+    blockingIssues.push(
+      `Reviewer evidenceChecked did not cover changed files: ${uncheckedEvidenceFiles.join(', ')}`,
+    );
+  }
+  if (
+    summary.approved &&
+    (evidence?.requirementTrace?.length ?? 0) > 0 &&
+    summary.requirementVerdicts.length === 0
+  ) {
+    blockingIssues.push('Reviewer approved without requirementVerdicts for the requirement trace.');
+  }
+  if (
+    summary.approved &&
+    (evidence?.requirementTrace?.length ?? 0) > 0 &&
+    summary.requirementVerdicts.length > 0
+  ) {
+    blockingIssues.push(
+      ...collectIncompleteRequirementTraceIssues(summary.requirementVerdicts, 'Reviewer'),
+      ...collectMissingRequirementTraceIds(
+        evidence?.requirementTrace ?? [],
+        summary.requirementVerdicts,
+        'Reviewer',
+      ),
+    );
+  }
+  if (
+    summary.approved &&
+    riskPolicy?.requiresRuntimeValidation &&
+    evidence?.runtimeValidation?.serverDetected &&
+    evidence.runtimeValidation.status !== 'reachable'
+  ) {
+    blockingIssues.push(
+      'Reviewer approved despite failed runtime validation on a detected dev server.',
+    );
+  }
+  if (summary.approved && evidence?.patchIntentVerification?.status === 'drift') {
+    blockingIssues.push(
+      `Reviewer approved despite patch intent drift: ${evidence.patchIntentVerification.issues.join('; ')}`,
+    );
+  }
+  if (summary.approved && evidence?.designReviewGate?.status === 'blocked') {
+    blockingIssues.push(
+      `Reviewer approved despite a blocked design review gate: ${evidence.designReviewGate.requiredChanges.join('; ')}`,
+    );
+  }
+  if (summary.approved && (evidence?.reviewAdversarialPlan?.modes.length ?? 0) > 0) {
+    const expectedModes = evidence?.reviewAdversarialPlan?.modes ?? [];
+    const checkedModes = new Set(summary.adversarialChecks.map((item) => item.mode));
+    const missingModes = expectedModes.filter((mode) => !checkedModes.has(mode));
+    if (missingModes.length > 0) {
+      blockingIssues.push(
+        `Reviewer approved without adversarialChecks for modes: ${missingModes.join(', ')}`,
+      );
+    }
+    const failedModes = summary.adversarialChecks.filter(
+      (item) => item.result === 'failed' || item.evidence.length === 0,
+    );
+    if (failedModes.length > 0) {
+      blockingIssues.push(
+        `Reviewer adversarialChecks were not passing/evidenced: ${failedModes
+          .map((item) => item.mode)
+          .join(', ')}`,
+      );
+    }
+    if (summary.reviewerDiscourse.length === 0) {
+      blockingIssues.push(
+        'Reviewer approved without reviewerDiscourse for the adversarial review modes.',
+      );
+    }
+  }
+  if (
+    summary.approved &&
+    summary.reviewerDiscourse.some(
+      (entry) => entry.position === 'challenge' && !entry.response?.trim(),
+    )
+  ) {
+    blockingIssues.push('Reviewer approved with unresolved reviewerDiscourse challenge entries.');
+  }
+  if (summary.approved && riskPolicy?.requiresSecondPass && summary.evidenceChecked.length < 3) {
+    blockingIssues.push(
+      'Reviewer approved a high-risk task without enough independent evidence for the required second-pass review.',
+    );
+  }
   if (summary.approved && blockingIssues.length > 0) {
     return {
       ...summary,
@@ -4035,6 +8783,92 @@ function enforceReviewDecision(summary: ReviewSummary): ReviewSummary {
     };
   }
   return summary;
+}
+
+function buildAttemptObservability(params: {
+  status: KiraAttemptRecord['status'];
+  startedAt: number;
+  finishedAt: number;
+  planningState: WorkerAttemptState;
+  attemptState: WorkerAttemptState | null;
+  workerSummary?: WorkerSummary;
+  validationReruns?: ValidationRerunSummary;
+  diffStats?: DiffStats;
+  failureAnalysis?: FailureAnalysis[];
+  runtimeValidation?: RuntimeValidationResult;
+  patchIntentVerification?: PatchIntentVerification;
+  rawWorkerOutput?: string;
+  risks?: string[];
+}): KiraAttemptObservability {
+  const attemptState = params.attemptState ?? null;
+  const validationReruns = params.validationReruns ?? {
+    passed: [],
+    failed: [],
+    failureDetails: [],
+  };
+  const diffStats = params.diffStats ?? { files: 0, additions: 0, deletions: 0, hunks: 0 };
+  const changedFiles = params.workerSummary?.filesChanged ?? [];
+  const notes = uniqueStrings([
+    ...(params.risks ?? []),
+    ...(validationReruns.failed.length > 0
+      ? [`Validation failed: ${validationReruns.failed.join(', ')}`]
+      : []),
+    ...(params.failureAnalysis ?? []).map((item) => `Failure ${item.category}: ${item.summary}`),
+    ...(params.runtimeValidation?.applicable
+      ? [
+          params.runtimeValidation.serverDetected
+            ? `Runtime validation reachable at ${params.runtimeValidation.url}`
+            : 'Runtime validation applicable but no running dev server was detected.',
+        ]
+      : []),
+    ...(params.patchIntentVerification
+      ? [
+          `Patch intent ${params.patchIntentVerification.status}: ${params.patchIntentVerification.issues.join('; ') || 'aligned'}`,
+        ]
+      : []),
+    ...(diffStats.files > SMALL_PATCH_FILE_LIMIT ||
+    diffStats.additions + diffStats.deletions > SMALL_PATCH_LINE_LIMIT
+      ? ['Small-patch policy needs attention for this attempt.']
+      : []),
+  ]).slice(0, 12);
+
+  return {
+    stage: params.status,
+    metrics: {
+      preflightExplorationCount: uniqueStrings(params.planningState.explorationActions).length,
+      readFileCount: attemptState ? attemptState.readFiles.size : 0,
+      patchedFileCount: attemptState ? attemptState.patchedFiles.size : 0,
+      changedFileCount: changedFiles.length,
+      commandRunCount: attemptState
+        ? uniqueStrings(attemptState.commandsRun).length
+        : uniqueStrings(params.planningState.commandsRun).length,
+      validationPassedCount: validationReruns.passed.length,
+      validationFailedCount: validationReruns.failed.length,
+      diffFileCount: diffStats.files,
+      diffAdditions: diffStats.additions,
+      diffDeletions: diffStats.deletions,
+      diffHunks: diffStats.hunks,
+      durationMs: Math.max(0, params.finishedAt - params.startedAt),
+      evidenceSignalCount:
+        validationReruns.passed.length +
+        validationReruns.failed.length +
+        (params.diffStats?.files ?? 0) +
+        (params.runtimeValidation?.evidence.length ?? 0) +
+        (params.patchIntentVerification?.evidence.length ?? 0),
+      estimatedWorkerOutputTokens: estimateTokenCount(
+        params.rawWorkerOutput ?? params.workerSummary?.summary ?? '',
+      ),
+    },
+    timeline: [
+      `started ${new Date(params.startedAt).toISOString()}`,
+      `finished ${new Date(params.finishedAt).toISOString()}`,
+      `stage ${params.status}`,
+      `exploration ${uniqueStrings(params.planningState.explorationActions).length}`,
+      `changedFiles ${changedFiles.length}`,
+      `validation ${validationReruns.passed.length} passed / ${validationReruns.failed.length} failed`,
+    ],
+    notes,
+  };
 }
 
 function buildAttemptRecord(params: {
@@ -4047,7 +8881,13 @@ function buildAttemptRecord(params: {
   planningState: WorkerAttemptState;
   attemptState?: WorkerAttemptState | null;
   workerSummary?: WorkerSummary;
+  validationPlan?: ResolvedValidationPlan;
   validationReruns?: ValidationRerunSummary;
+  diffStats?: DiffStats;
+  failureAnalysis?: FailureAnalysis[];
+  runtimeValidation?: RuntimeValidationResult;
+  riskPolicy?: RiskReviewPolicy;
+  patchIntentVerification?: PatchIntentVerification;
   outOfPlanFiles?: string[];
   validationGaps?: string[];
   risks?: string[];
@@ -4055,15 +8895,29 @@ function buildAttemptRecord(params: {
   rawWorkerOutput?: string;
   blockedReason?: string;
   rollbackFiles?: string[];
+  reviewSummary?: ReviewSummary;
 }): KiraAttemptRecord {
   const attemptState = params.attemptState ?? null;
+  const finishedAt = Date.now();
+  const evidenceLedger = buildEvidenceLedger({
+    contextScan: params.contextScan,
+    workerPlan: params.workerPlan,
+    workerSummary: params.workerSummary,
+    validationReruns: params.validationReruns,
+    diffStats: params.diffStats,
+    runtimeValidation: params.runtimeValidation,
+    patchIntentVerification: params.patchIntentVerification,
+    designReviewGate: params.contextScan.designReviewGate,
+    reviewSummary: params.reviewSummary,
+    riskPolicy: params.riskPolicy,
+  });
   return {
     id: `${params.workId}-${params.attemptNo}`,
     workId: params.workId,
     attemptNo: params.attemptNo,
     status: params.status,
     startedAt: params.startedAt,
-    finishedAt: Date.now(),
+    finishedAt,
     contextScan: params.contextScan,
     workerPlan: params.workerPlan,
     preflightExploration: uniqueStrings(params.planningState.explorationActions),
@@ -4077,6 +8931,57 @@ function buildAttemptRecord(params: {
     outOfPlanFiles: params.outOfPlanFiles ?? [],
     validationGaps: params.validationGaps ?? [],
     risks: params.risks ?? [],
+    ...(params.workerPlan.changeDesign ? { changeDesign: params.workerPlan.changeDesign } : {}),
+    ...(params.workerSummary?.selfCheck?.diffHunkReview
+      ? { diffHunkReview: params.workerSummary.selfCheck.diffHunkReview }
+      : {}),
+    ...(params.validationPlan ? { validationPlan: params.validationPlan } : {}),
+    ...(params.diffStats ? { diffStats: params.diffStats } : {}),
+    ...(params.failureAnalysis ? { failureAnalysis: params.failureAnalysis } : {}),
+    ...(params.runtimeValidation ? { runtimeValidation: params.runtimeValidation } : {}),
+    ...(params.riskPolicy ? { riskPolicy: params.riskPolicy } : {}),
+    ...(params.contextScan.semanticGraph
+      ? { semanticGraph: params.contextScan.semanticGraph }
+      : {}),
+    ...(params.contextScan.testImpact ? { testImpact: params.contextScan.testImpact } : {}),
+    ...(params.contextScan.reviewAdversarialPlan
+      ? { reviewAdversarialPlan: params.contextScan.reviewAdversarialPlan }
+      : {}),
+    ...(params.contextScan.clarificationGate
+      ? { clarificationGate: params.contextScan.clarificationGate }
+      : {}),
+    ...(params.contextScan.reviewerCalibration
+      ? { reviewerCalibration: params.contextScan.reviewerCalibration }
+      : {}),
+    ...(params.contextScan.designReviewGate
+      ? { designReviewGate: params.contextScan.designReviewGate }
+      : {}),
+    ...(params.contextScan.orchestrationPlan
+      ? { orchestrationPlan: params.contextScan.orchestrationPlan }
+      : {}),
+    evidenceLedger,
+    ...(params.patchIntentVerification
+      ? { patchIntentVerification: params.patchIntentVerification }
+      : {}),
+    requirementTrace: params.workerSummary?.selfCheck?.requirementTrace.length
+      ? params.workerSummary.selfCheck.requirementTrace
+      : params.workerPlan.requirementTrace,
+    approachAlternatives: params.workerPlan.approachAlternatives,
+    observability: buildAttemptObservability({
+      status: params.status,
+      startedAt: params.startedAt,
+      finishedAt,
+      planningState: params.planningState,
+      attemptState,
+      workerSummary: params.workerSummary,
+      validationReruns: params.validationReruns,
+      diffStats: params.diffStats,
+      failureAnalysis: params.failureAnalysis,
+      runtimeValidation: params.runtimeValidation,
+      patchIntentVerification: params.patchIntentVerification,
+      rawWorkerOutput: params.rawWorkerOutput,
+      risks: params.risks,
+    }),
     ...(params.diffExcerpts ? { diffExcerpts: params.diffExcerpts } : {}),
     ...(params.rawWorkerOutput !== undefined ? { rawWorkerOutput: params.rawWorkerOutput } : {}),
     ...(params.blockedReason ? { blockedReason: params.blockedReason } : {}),
@@ -4148,7 +9053,7 @@ async function autoCommitApprovedWork(
   workspace: KiraWorkspaceSession,
   filesChanged: string[],
   commitMessage: string,
-  defaultProjectSettings: { autoCommit?: boolean } = {},
+  defaultProjectSettings: Partial<KiraProjectSettings> = {},
   integrationLockPath?: string,
 ): Promise<{ status: 'committed' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
   const projectRoot = workspace.projectRoot;
@@ -4458,7 +9363,41 @@ function writeLockRecord(lockPath: string, record: AutomationLockRecord): void {
   writeJsonFile(lockPath, record);
 }
 
-function tryAcquireLock(
+function getErrorCode(error: unknown): string {
+  return error instanceof Error && 'code' in error ? String(error.code) : '';
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function getErrorPath(error: unknown): string {
+  return error instanceof Error && 'path' in error ? String(error.path ?? '') : '';
+}
+
+function hasLockErrorSource(error: unknown): boolean {
+  const source = `${getErrorMessage(error)}\n${getErrorPath(error)}`;
+  return /\b(?:automation-locks|kira-automation-locks|lock)\b/i.test(source);
+}
+
+export function isRecoverableAutomationLockMessage(message: string): boolean {
+  return (
+    /\b(EACCES|EBUSY|EEXIST|ENOENT|ENOTDIR|EPERM)\b/i.test(message) &&
+    /\b(?:automation-locks|kira-automation-locks)\b/i.test(message)
+  );
+}
+
+export function isRecoverableLockError(error: unknown): boolean {
+  const code = getErrorCode(error).toUpperCase();
+  const message = getErrorMessage(error);
+  const hasRecoverableCode =
+    Boolean(code) && RECOVERABLE_LOCK_ERROR_CODES.has(code) && hasLockErrorSource(error);
+  if (hasRecoverableCode) return true;
+
+  return isRecoverableAutomationLockMessage(`${message}\n${getErrorPath(error)}`);
+}
+
+export function tryAcquireLock(
   lockPath: string,
   record: Omit<AutomationLockRecord, 'acquiredAt' | 'heartbeatAt'>,
 ): boolean {
@@ -4469,7 +9408,12 @@ function tryAcquireLock(
     heartbeatAt: now,
   };
 
-  fs.mkdirSync(dirname(lockPath), { recursive: true });
+  try {
+    fs.mkdirSync(dirname(lockPath), { recursive: true });
+  } catch (error) {
+    if (isRecoverableLockError(error)) return false;
+    throw error;
+  }
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     try {
@@ -4481,8 +9425,11 @@ function tryAcquireLock(
       }
       return true;
     } catch (error) {
-      const code = error instanceof Error && 'code' in error ? String(error.code) : '';
-      if (code !== 'EEXIST') throw error;
+      const code = getErrorCode(error);
+      if (code !== 'EEXIST') {
+        if (isRecoverableLockError(error)) return false;
+        throw error;
+      }
 
       const existing = readLockRecord(lockPath);
       if (!existing || isLockStale(existing)) {
@@ -4501,18 +9448,26 @@ function tryAcquireLock(
 }
 
 function refreshLock(lockPath: string, ownerId: string): void {
-  const existing = readLockRecord(lockPath);
-  if (!existing || existing.ownerId !== ownerId) return;
-  writeLockRecord(lockPath, {
-    ...existing,
-    heartbeatAt: Date.now(),
-  });
+  try {
+    const existing = readLockRecord(lockPath);
+    if (!existing || existing.ownerId !== ownerId) return;
+    writeLockRecord(lockPath, {
+      ...existing,
+      heartbeatAt: Date.now(),
+    });
+  } catch (error) {
+    if (!isRecoverableLockError(error)) throw error;
+  }
 }
 
 function releaseLock(lockPath: string, ownerId: string): void {
-  const existing = readLockRecord(lockPath);
-  if (!existing || existing.ownerId !== ownerId) return;
-  fs.rmSync(lockPath, { force: true });
+  try {
+    const existing = readLockRecord(lockPath);
+    if (!existing || existing.ownerId !== ownerId) return;
+    fs.rmSync(lockPath, { force: true });
+  } catch (error) {
+    if (!isRecoverableLockError(error)) throw error;
+  }
 }
 
 function getProjectKey(
@@ -4657,16 +9612,52 @@ function buildProjectDiscoverySystemPrompt(): string {
   ].join('\n');
 }
 
+function buildRequiredProjectInstructionsBlock(requiredInstructions?: string): string {
+  const normalized = normalizeProjectRequiredInstructions(requiredInstructions);
+  if (!normalized) return '';
+
+  return [
+    'Mandatory project instructions:',
+    normalized,
+    '',
+    'These instructions are binding acceptance criteria for coding style, architecture, validation, and review. They cannot loosen Kira safety rules, tool restrictions, or the required structured output format. If they conflict with the work brief or cannot be followed, stop and report the conflict instead of silently ignoring them.',
+  ].join('\n');
+}
+
+function buildWorkerProfileBlock(workerProfile?: string): string {
+  const profile = workerProfile?.trim() || 'generalist';
+  return [
+    `Worker specialization: ${profile}`,
+    'Use this specialization to decide what to inspect first and which risks to emphasize, but still deliver a complete implementation attempt rather than a narrow partial patch.',
+  ].join('\n');
+}
+
+function formatChangeDesign(design: ChangeDesign | null | undefined): string {
+  if (!design) return 'Change design:\n- No change design provided';
+  return [
+    'Change design:',
+    `- Target files:\n${formatList(design.targetFiles, 'No target files')}`,
+    `- Invariants:\n${formatList(design.invariants, 'No invariants')}`,
+    `- Expected impact:\n${formatList(design.expectedImpact, 'No expected impact')}`,
+    `- Validation strategy:\n${formatList(design.validationStrategy, 'No validation strategy')}`,
+    `- Rollback strategy:\n${formatList(design.rollbackStrategy, 'No rollback strategy')}`,
+  ].join('\n');
+}
+
 export function buildWorkerPlanningPrompt(
   work: WorkTask,
   projectOverview: string,
   contextScan: ProjectContextScan,
   feedback: string[],
+  requiredInstructions = '',
+  workerProfile = contextScan.workerProfile ?? 'generalist',
 ): string {
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
     `Work brief:\n${work.description}`,
+    buildRequiredProjectInstructionsBlock(requiredInstructions),
+    buildWorkerProfileBlock(workerProfile),
     `Project overview:\n${projectOverview}`,
     `Project context scan:\n${formatProjectContextScan(contextScan)}`,
     feedback.length > 0
@@ -4678,6 +9669,12 @@ export function buildWorkerPlanningPrompt(
     'If likely relevant files are empty or weak, search/read the repository before returning a plan.',
     'Treat existing git changes as user or prior automation work unless inspection proves they are part of this task.',
     'List only the files you currently expect to edit; keep the list small and concrete.',
+    'Create changeDesign before implementation: targetFiles, invariants that must stay true, expectedImpact, validationStrategy, and rollbackStrategy.',
+    'Use the task playbook to classify taskType and choose inspection, validation, and review focus.',
+    'Create requirementTrace using the provided requirement IDs; every acceptance requirement must map to intended evidence or validation.',
+    'Compare at least two implementation approaches in approachAlternatives and mark exactly one selected approach.',
+    'Use escalation.shouldAsk=true with concrete questions when requirements, data loss risk, authorization boundaries, or architecture tradeoffs cannot be resolved from code inspection.',
+    'The changeDesign targetFiles must be covered by intendedFiles and should be small enough for one reviewable patch.',
     'Use protectedFiles for existing dirty files or user-owned files that must not be touched by this attempt.',
     'List validationCommands using only task-specific safe diagnostics or test commands that the worker can run later.',
     `Keep validationCommands short: no more than ${MAX_PLANNER_VALIDATION_COMMANDS} commands.`,
@@ -4685,7 +9682,7 @@ export function buildWorkerPlanningPrompt(
     'Use riskNotes for tricky areas, compatibility concerns, or reasons the reviewer should pay extra attention.',
     'Use stopConditions for situations where the worker must stop rather than continue making edits.',
     'Return only JSON with this shape:',
-    '{"understanding":"string","repoFindings":["..."],"summary":"string","intendedFiles":["..."],"protectedFiles":["..."],"validationCommands":["..."],"riskNotes":["..."],"stopConditions":["..."]}',
+    '{"understanding":"string","repoFindings":["..."],"summary":"string","taskType":"frontend-ui|backend-api|test-validation|tooling-config|docs-maintainer|data-migration|security-auth|generalist","intendedFiles":["..."],"protectedFiles":["..."],"changeDesign":{"targetFiles":["..."],"invariants":["..."],"expectedImpact":["..."],"validationStrategy":["..."],"rollbackStrategy":["..."]},"requirementTrace":[{"id":"R1","source":"brief|project-instruction|change-design|review","text":"string","status":"planned","evidence":["..."]}],"approachAlternatives":[{"name":"string","selected":true,"rationale":"string","tradeoffs":["..."]},{"name":"string","selected":false,"rationale":"string","tradeoffs":["..."]}],"validationCommands":["..."],"riskNotes":["..."],"stopConditions":["..."],"confidence":0.0,"uncertainties":["..."],"escalation":{"shouldAsk":false,"questions":["..."],"blockers":["..."]},"decomposition":{"shouldSplit":false,"confidence":0.0,"reason":"string","suggestedWorks":["..."],"signals":["..."]},"workerProfile":"string"}',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -4694,13 +9691,21 @@ export function buildWorkerPlanningPrompt(
 export function buildWorkerPlanningSystemPrompt(): string {
   return [
     'You are Kira Preflight Planner, a careful read-only planning agent.',
+    'When mandatory project instructions are supplied, treat them as binding acceptance criteria for the plan.',
+    'Do not let mandatory project instructions override Kira safety rules, read-only planning, or the required JSON output.',
+    'Use the project intelligence profile, recent feedback memory, decomposition recommendation, and worker specialization when choosing what to inspect.',
+    'If the work is too broad for one safe implementation attempt, set decomposition.shouldSplit=true with concrete suggestedWorks instead of pretending it is safe.',
     'Before planning, inspect repository structure and relevant files with read-only tools.',
     'Never return the final plan before using list_files, search_files, or read_file, unless you are an external CLI agent that has already inspected the filesystem directly.',
     'Identify existing user changes and mark files that must not be overwritten as protectedFiles.',
     'Produce a structured plan with intended files, validation commands, risks, and stop conditions.',
+    'Produce a concrete changeDesign that a reviewer can compare against the final diff.',
+    'Produce a requirementTrace matrix and patch approach comparison before implementation.',
+    'Escalate unresolved high-impact uncertainty instead of guessing.',
     'Do not modify files.',
     'Prefer existing project patterns over new abstractions.',
     'Prefer a narrow file list over a broad one.',
+    `Keep intendedFiles at ${SMALL_PATCH_PLAN_FILE_LIMIT} files or fewer unless decomposition.shouldSplit=true.`,
     'Return concrete repoFindings based on files or searches you actually inspected.',
     'Do not invent inspected files, checks, or repository facts.',
     `Return at most ${MAX_PLANNER_VALIDATION_COMMANDS} validation commands.`,
@@ -4716,16 +9721,24 @@ export function buildWorkerPrompt(
   contextScan: ProjectContextScan,
   plan: WorkerExecutionPlan | null,
   feedback: string[],
+  requiredInstructions = '',
+  workerProfile = contextScan.workerProfile ?? plan?.workerProfile ?? 'generalist',
 ): string {
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
     `Work brief:\n${work.description}`,
+    buildRequiredProjectInstructionsBlock(requiredInstructions),
+    buildWorkerProfileBlock(workerProfile),
     `Project overview:\n${projectOverview}`,
     `Project context scan:\n${formatProjectContextScan(contextScan)}`,
     plan ? `Plan understanding:\n${plan.understanding}` : '',
     plan ? `Plan repo findings:\n${formatList(plan.repoFindings, 'No repo findings')}` : '',
     plan ? `Execution plan summary:\n${plan.summary}` : '',
+    plan ? `Task type:\n${plan.taskType}` : '',
+    plan ? formatPatchAlternatives(plan.approachAlternatives) : '',
+    plan ? formatRequirementTrace(plan.requirementTrace) : '',
+    plan ? formatChangeDesign(plan.changeDesign) : '',
     plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
     plan ? `Protected files:\n${formatList(plan.protectedFiles, 'No protected files')}` : '',
     plan
@@ -4742,7 +9755,12 @@ export function buildWorkerPrompt(
     'Modify the project directly using the available tools.',
     'Before editing, inspect the files that matter for this task, especially files from the context scan and planned file list.',
     'Use existing project patterns and local helpers before introducing new abstractions.',
+    'Treat the design review gate as binding context: satisfy its requiredChanges before editing, and address warnings in remainingRisks or selfCheck notes.',
     'Stay within the planned files whenever practical. If you must expand scope, inspect the extra file first and keep the change justified and minimal.',
+    'Follow the changeDesign. Preserve every invariant, keep expectedImpact narrow, use the validationStrategy, and keep rollbackStrategy true.',
+    'Follow the requirementTrace. In the final selfCheck, mark every requirement satisfied, partial, blocked, or not_applicable and cite concrete evidence.',
+    'Implement the selected approachAlternative. If inspection proves it wrong, explain the change in remainingRisks and selfCheck notes.',
+    'If unresolved uncertainty would change product behavior, authorization, data safety, or architecture, stop and report it instead of guessing.',
     'Never edit protectedFiles. Stop and report the blocker if a protected file must change.',
     'Do not touch out-of-plan files unless necessary and explained by the final summary.',
     'Read high-risk existing files with read_file before editing or overwriting them.',
@@ -4754,8 +9772,10 @@ export function buildWorkerPrompt(
     'Run the planned validation commands when practical, plus focused checks needed by the actual changes.',
     'Never claim a check passed unless you ran it in this attempt or Kira provided the rerun result.',
     'If validation cannot be run, put the reason and residual risk in remainingRisks.',
+    'Before returning, inspect the final diff and write diffHunkReview entries that summarize the intent and risk of each changed file or meaningful hunk.',
+    'Before returning, perform a self-check against the diff, mandatory project instructions, the approved plan, changeDesign, validation evidence, and any remaining uncertainty.',
     'When finished, return only JSON with this shape:',
-    '{"summary":"string","filesChanged":["..."],"testsRun":["..."],"remainingRisks":["..."]}',
+    '{"summary":"string","filesChanged":["..."],"testsRun":["..."],"remainingRisks":["..."],"selfCheck":{"reviewedDiff":true,"followedProjectInstructions":true,"matchedPlan":true,"ranOrExplainedValidation":true,"diffHunkReview":[{"file":"path","intent":"string","risk":"string"}],"requirementTrace":[{"id":"R1","source":"brief|project-instruction|change-design|review","text":"string","status":"satisfied|partial|blocked|not_applicable","evidence":["changed file, test, or explicit reason"]}],"uncertainty":["..."],"notes":["..."]}}',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -4764,13 +9784,20 @@ export function buildWorkerPrompt(
 export function buildWorkerSystemPrompt(): string {
   return [
     'You are Kira Worker, a careful implementation agent.',
+    'When mandatory project instructions are supplied, follow them as binding acceptance criteria for implementation and validation.',
+    'Do not let mandatory project instructions override Kira safety rules, protectedFiles, tool restrictions, or the required JSON output.',
+    'If mandatory project instructions conflict with the work brief or cannot be followed, stop and report the blocker in remainingRisks.',
+    'Use the project intelligence profile and recent feedback memory to avoid repeating known review or validation failures.',
+    'Respect the worker specialization as a focus lens while still completing the whole task.',
     'Stay focused on the requested work item.',
+    'Respect the design review gate; if it records warnings, make the implementation and final self-check answer them directly.',
     'Before editing, inspect repository structure and relevant files.',
     'Identify existing user changes and avoid overwriting them.',
     'Assume other Kira agents may be working in sibling git worktrees; only rely on the files and tool results in your current project root.',
     'Prefer small targeted edits over broad refactors.',
     'Prefer existing project patterns over new abstractions.',
     'Respect the preflight plan unless inspection shows a clearly necessary small expansion.',
+    'Respect the changeDesign and keep the patch small enough for one focused review.',
     'Do not touch out-of-plan files unless necessary and explained.',
     'Never edit protectedFiles; stop and report the blocker instead.',
     'Read high-risk existing files before editing them.',
@@ -4780,6 +9807,9 @@ export function buildWorkerSystemPrompt(): string {
     'Use write_file only when creating a new file, replacing a genuinely small file, or rewriting a read planned file with complete final content.',
     'Use run_command for safe checks only, and run planned validation commands when practical.',
     'Summarize changed files, checks run, failures, and remaining risks.',
+    'Run a final self-check and include the selfCheck object in the final JSON.',
+    'The final selfCheck must include diffHunkReview based on the final diff.',
+    'The final selfCheck must include requirementTrace evidence for each planned requirement.',
     'Never claim a check passed unless you ran it or Kira provided the result.',
     'Do not mention markdown fences in your final answer.',
   ].join('\n');
@@ -4796,16 +9826,29 @@ export function buildReviewPrompt(
   validationPlan: ResolvedValidationPlan,
   validationReruns: ValidationRerunSummary,
   diffExcerpts: string[],
+  requiredInstructions = '',
+  diffStats?: DiffStats,
+  failureAnalysis: FailureAnalysis[] = [],
+  runtimeValidation?: RuntimeValidationResult,
+  patchIntentVerification?: PatchIntentVerification,
 ): string {
+  const requirementTrace = workerSummary.selfCheck?.requirementTrace.length
+    ? workerSummary.selfCheck.requirementTrace
+    : (plan?.requirementTrace ?? contextScan.requirementTrace ?? []);
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
     `Acceptance target:\n${work.description}`,
+    buildRequiredProjectInstructionsBlock(requiredInstructions),
     `Project overview:\n${projectOverview}`,
     `Project context scan:\n${formatProjectContextScan(contextScan)}`,
     plan ? `Preflight understanding:\n${plan.understanding}` : '',
     plan ? `Repo findings:\n${formatList(plan.repoFindings, 'No repo findings')}` : '',
     plan ? `Preflight plan summary:\n${plan.summary}` : '',
+    plan ? `Task type:\n${plan.taskType}` : '',
+    plan ? formatPatchAlternatives(plan.approachAlternatives) : '',
+    formatRequirementTrace(requirementTrace),
+    plan ? formatChangeDesign(plan.changeDesign) : '',
     plan ? `Planned files:\n${formatList(plan.intendedFiles, 'No planned files')}` : '',
     plan ? `Protected files:\n${formatList(plan.protectedFiles, 'No protected files')}` : '',
     plan ? `Planned checks:\n${formatList(plan.validationCommands, 'No planned checks')}` : '',
@@ -4814,6 +9857,28 @@ export function buildReviewPrompt(
     `Latest worker summary:\n${workerSummary.summary}`,
     `Files reported changed:\n${formatList(workerSummary.filesChanged, 'No files reported')}`,
     `Worker-reported checks:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
+    workerSummary.selfCheck
+      ? `Worker self-check:\n${formatList(
+          [
+            `reviewedDiff=${workerSummary.selfCheck.reviewedDiff}`,
+            `followedProjectInstructions=${workerSummary.selfCheck.followedProjectInstructions}`,
+            `matchedPlan=${workerSummary.selfCheck.matchedPlan}`,
+            `ranOrExplainedValidation=${workerSummary.selfCheck.ranOrExplainedValidation}`,
+            ...workerSummary.selfCheck.diffHunkReview.map(
+              (item) => `diffHunkReview ${item.file}: ${item.intent} Risk: ${item.risk}`,
+            ),
+            ...workerSummary.selfCheck.requirementTrace.map(
+              (item) =>
+                `requirementTrace ${item.id}=${item.status ?? 'unknown'}: ${
+                  item.evidence.join('; ') || item.text
+                }`,
+            ),
+            ...workerSummary.selfCheck.uncertainty.map((item) => `uncertainty: ${item}`),
+            ...workerSummary.selfCheck.notes.map((item) => `note: ${item}`),
+          ],
+          'No self-check values reported',
+        )}`
+      : 'Worker self-check:\n- Missing self-check object',
     `Kira auto-added validation checks:\n${formatList(
       validationPlan.autoAddedCommands,
       'No auto-added validation checks',
@@ -4844,24 +9909,50 @@ export function buildReviewPrompt(
           'No missing planned checks',
         )}`
       : '',
+    diffStats
+      ? `Diff stats:\n- files=${diffStats.files}\n- additions=${diffStats.additions}\n- deletions=${diffStats.deletions}\n- hunks=${diffStats.hunks}`
+      : '',
+    formatRiskReviewPolicy(contextScan.riskPolicy),
+    formatReviewAdversarialPlan(contextScan.reviewAdversarialPlan),
+    formatReviewerCalibration(contextScan.reviewerCalibration),
+    formatDesignReviewGate(contextScan.designReviewGate),
+    formatRuntimeValidationSignal(contextScan.runtimeValidation),
+    formatRuntimeValidationResult(runtimeValidation),
+    formatPatchIntentVerification(patchIntentVerification),
+    formatFailureAnalysis(failureAnalysis),
     diffExcerpts.length > 0
       ? `Git diff excerpts for this attempt:\n${diffExcerpts.join('\n\n')}`
       : '',
     'Review the current project state. Do not modify files.',
+    'Review mandatory project instructions as required acceptance criteria.',
+    'Review the changeDesign against the actual diff. Do not approve if the diff violates stated invariants or broadens expectedImpact without a clear reason.',
+    'Review patchIntentVerification. Do not approve patch intent drift; request a new worker attempt with corrected scope or explicit plan alignment.',
+    'Review the selected patch alternative against the actual diff. Do not approve if the worker silently chose a different approach and the risk is unexplained.',
+    'Run the review adversarial plan. For every listed mode, return an adversarialChecks entry with passed, failed, or not_applicable and concrete evidence.',
+    'Run reviewerDiscourse before approving: include at least one challenge perspective and one support or resolved perspective, with evidence and responses for any challenge.',
+    'Review the requirementTrace. For every listed requirement, return a requirementVerdicts entry with satisfied, partial, blocked, or not_applicable and concrete evidence.',
+    'Review worker diffHunkReview against the git diff excerpts. Do not approve if the hunk review is missing or contradicts the actual patch.',
+    'Do not approve if the implementation violates mandatory project instructions; report the violation in findings or nextWorkerInstructions.',
     'Review priorities: correctness and requirement coverage first, then regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
     'Only the Kira-passed validation reruns count as verification evidence.',
+    'Use failureAnalysis to decide the next concrete worker fix when validation failed.',
+    'If runtime validation is applicable and a dev server is detected, treat an unreachable runtime check as blocking unless the work is clearly non-runtime.',
     'Do not treat worker-reported checks as proof unless they also appear in the Kira-passed rerun list.',
     'Do not approve if Kira validation reruns failed or if missingValidation is required for confidence.',
     'Do not approve if the worker summary conflicts with the diff excerpts.',
+    'Do not approve if filesChecked is empty while changed files or diff excerpts are present; independent review must record what was checked.',
+    'Record evidenceChecked with one entry per independently checked file or runtime/test signal, including the method used and why it was checked.',
+    'Triage every finding, missing validation, design-gate concern, and intent/runtime blocker in your own reasoning; Kira will store the triage state from your structured output and enforcement result.',
+    'Meet the risk review policy evidence minimum before approving; high-risk reviews need stronger, independent evidence.',
     'Do not approve unexplained out-of-plan edits when they create concrete risk or obscure the requested outcome.',
-    'Do NOT reject only because multiple project-local files changed, because the worker touched a file you did not expect, or because the git working tree already contains unrelated modified/untracked files.',
+    'Do NOT reject only because multiple project-local files changed, because the worker touched a file you did not expect, or because the git working tree already contains unrelated modified/untracked files, unless Kira small-patch policy or concrete risk is flagged.',
     'Treat out-of-plan edits or missing planned checks as risk signals to scrutinize, not automatic rejection reasons on their own.',
-    'Do NOT enforce minimal-diff purity as a standalone requirement.',
+    'Do NOT enforce minimal-diff purity as a standalone requirement, but do enforce explicit Kira small-patch policy issues.',
     'Approve when the requested outcome is achieved and there is no clear regression or harmful side effect.',
     'Only request changes when the acceptance target is not met, the implementation is clearly risky, or there is a concrete user-facing/code-level regression.',
     'When requesting changes, provide concrete nextWorkerInstructions that the worker can execute immediately.',
     'Return only JSON with this shape:',
-    '{"approved":true,"summary":"string","findings":[{"file":"path","line":1,"severity":"low|medium|high","message":"string"}],"missingValidation":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"issues":["..."],"filesChecked":["..."]}',
+    '{"approved":true,"summary":"string","findings":[{"file":"path","line":1,"severity":"low|medium|high","message":"string"}],"missingValidation":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"issues":["..."],"filesChecked":["..."],"evidenceChecked":[{"file":"path-or-runtime","reason":"string","method":"read_file|diff|test|runtime|other"}],"adversarialChecks":[{"mode":"correctness|regression|security|runtime-ux|data-safety|integration|maintainability","result":"passed|failed|not_applicable","evidence":["..."],"concern":"string"}],"reviewerDiscourse":[{"role":"correctness|regression|security|runtime-ux|data-safety|integration|maintainability|design-gate|validation","position":"support|challenge|resolved","argument":"string","evidence":["..."],"response":"string"}],"requirementVerdicts":[{"id":"R1","source":"brief|project-instruction|change-design|review","text":"string","status":"satisfied|partial|blocked|not_applicable","evidence":["..."]}]}',
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -4870,15 +9961,28 @@ export function buildReviewPrompt(
 export function buildReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer.',
+    'When mandatory project instructions are supplied, enforce them as binding acceptance criteria.',
+    'Do not approve work that violates mandatory project instructions. If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
+    'Use the project intelligence profile and recent feedback memory to catch repeated mistakes, project-specific style drift, and validation gaps.',
+    'Respect reviewer calibration: higher strictness requires more independent evidence before approval.',
+    'Apply every requested adversarial review mode and record adversarialChecks with evidence.',
+    'Simulate reviewer discourse: challenge the patch from at least one skeptical perspective, then resolve or answer the challenge before approval.',
+    'Treat design-gate concerns and finding triage as first-class review artifacts.',
+    'Treat a missing or failed worker self-check as review evidence that must be addressed before approval.',
+    'Independently compare the changeDesign, worker self-check, filesChanged, and git diff excerpts instead of trusting the worker summary.',
+    'Independently verify requirementTrace items and return requirementVerdicts with evidence.',
+    'Record evidenceChecked for files, tests, runtime checks, or other concrete signals you actually inspected.',
     'Review the implementation carefully against the requested result and real regressions.',
     'Prioritize correctness and requirement coverage.',
     'Then check regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
     'Treat concurrent-agent integration risks, stale assumptions, and overlapping file edits as review risks when they affect correctness.',
     'Do not approve if validation failed.',
     'Do not approve if the worker summary conflicts with the diff or provided project state.',
+    'Do not approve without recording filesChecked for the changed files you reviewed.',
+    'Do not approve without enough evidenceChecked entries for the supplied risk review policy.',
     'Do not approve unexplained out-of-plan edits when they create concrete risk or obscure the requested outcome.',
     'Provide concrete nextWorkerInstructions when requesting changes.',
-    'Do not fail a review only for scope broadness, extra project-local file edits, or unrelated pre-existing dirty-worktree files.',
+    'Do not fail a review only for scope broadness, extra project-local file edits, or unrelated pre-existing dirty-worktree files unless Kira small-patch policy or concrete risk is flagged.',
     'Never edit files.',
     'Use read-only tools and safe commands only.',
     'Return only the requested structured JSON.',
@@ -4888,24 +9992,53 @@ export function buildReviewSystemPrompt(): string {
 function buildAttemptComparisonReviewPrompt(
   work: WorkTask,
   attempts: KiraWorkerAttemptResult[],
+  requiredInstructions = '',
+  synthesisRecommendation = buildAttemptSynthesisRecommendation(attempts),
 ): string {
   return [
     `Project: ${work.projectName}`,
     `Work title: ${work.title}`,
     `Acceptance target:\n${work.description}`,
+    buildRequiredProjectInstructionsBlock(requiredInstructions),
     'Multiple isolated Kira workers produced independent attempts for the same work item.',
     'Compare the attempts against the acceptance target and choose the single best attempt only if it should be integrated.',
     'If every attempt has correctness, validation, or integration risks that should block integration, set approved to false and selectedAttemptNo to null.',
+    formatAttemptSynthesisRecommendation(synthesisRecommendation),
     ...attempts.map((attempt) =>
       [
         `Attempt ${attempt.attemptNo} (${attempt.lane.label})`,
         `Isolated worktree: ${attempt.workspace.projectRoot}`,
+        `Task type: ${attempt.workerPlan.taskType}`,
         `Plan:\n${attempt.workerPlan.summary}`,
         `Plan understanding:\n${attempt.workerPlan.understanding}`,
+        formatPatchAlternatives(attempt.workerPlan.approachAlternatives),
+        formatRequirementTrace(
+          attempt.workerSummary.selfCheck?.requirementTrace.length
+            ? attempt.workerSummary.selfCheck.requirementTrace
+            : attempt.workerPlan.requirementTrace,
+        ),
+        formatOrchestrationPlan(attempt.contextScan.orchestrationPlan),
+        formatManualEvidence(attempt.contextScan.manualEvidence),
+        formatChangeDesign(attempt.workerPlan.changeDesign),
+        formatDesignReviewGate(attempt.contextScan.designReviewGate),
+        formatReviewAdversarialPlan(attempt.contextScan.reviewAdversarialPlan),
         `Files changed:\n${formatList(attempt.workerSummary.filesChanged, 'No files reported')}`,
         `Worker summary:\n${attempt.workerSummary.summary}`,
+        attempt.workerSummary.selfCheck
+          ? `Worker diffHunkReview:\n${formatList(
+              attempt.workerSummary.selfCheck.diffHunkReview.map(
+                (item) => `${item.file}: ${item.intent} Risk: ${item.risk}`,
+              ),
+              'No diff hunk review reported',
+            )}`
+          : 'Worker diffHunkReview:\n- Missing self-check',
         `Validation passed:\n${formatList(attempt.validationReruns.passed, 'No validation reruns passed')}`,
         `Validation failed:\n${formatList(attempt.validationReruns.failed, 'No validation reruns failed')}`,
+        formatRiskReviewPolicy(attempt.contextScan.riskPolicy),
+        formatRuntimeValidationResult(attempt.runtimeValidation),
+        formatPatchIntentVerification(attempt.patchIntentVerification),
+        formatFailureAnalysis(attempt.failureAnalysis),
+        `Diff stats:\n- files=${attempt.diffStats.files}\n- additions=${attempt.diffStats.additions}\n- deletions=${attempt.diffStats.deletions}\n- hunks=${attempt.diffStats.hunks}`,
         `Out-of-plan files:\n${formatList(attempt.outOfPlanFiles, 'No out-of-plan files')}`,
         `Validation gaps:\n${formatList(attempt.missingValidationCommands, 'No missing planned checks')}`,
         `Risks:\n${formatList(
@@ -4920,19 +10053,34 @@ function buildAttemptComparisonReviewPrompt(
     'Selection rules:',
     '- approved=true requires selecting exactly one attemptNo from the listed attempts.',
     '- Prefer the attempt that best satisfies the work brief with the least concrete regression risk.',
+    '- Do not select or approve an attempt that violates mandatory project instructions.',
+    '- Do not select or approve an attempt with a blocked design review gate.',
+    '- Treat operator manual evidence and risk acceptance as review context, not as a substitute for required Kira validation evidence.',
+    '- Compare each attempt changeDesign and diffHunkReview against the actual diff excerpts.',
+    '- Compare each attempt patchIntentVerification against the actual changed files.',
+    '- Do not approve an attempt with patch intent drift; request another round with corrected scope or plan alignment.',
+    '- Apply the selected attempt review adversarial plan and return adversarialChecks for each mode.',
+    '- Compare each attempt requirementTrace against its diff, validation reruns, and runtime validation result.',
+    '- Do not approve without recording filesChecked for the selected attempt.',
+    '- Do not approve without evidenceChecked coverage for the selected attempt and enough entries for its risk policy.',
+    '- Return requirementVerdicts for the selected attempt before approving.',
     '- Do not approve an attempt only because it is smaller; approve it because it is correct and adequately validated.',
     '- Do not approve if validation failed, if the summary conflicts with the diff, or if integration risk is concrete.',
     '- If requesting another worker round, give nextWorkerInstructions that all workers can act on.',
     'Return only JSON with this shape:',
-    '{"approved":true,"selectedAttemptNo":1,"summary":"string","issues":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"filesChecked":["..."]}',
+    '{"approved":true,"selectedAttemptNo":1,"summary":"string","issues":["..."],"nextWorkerInstructions":["..."],"residualRisk":["..."],"filesChecked":["..."],"evidenceChecked":[{"file":"path-or-runtime","reason":"string","method":"read_file|diff|test|runtime|other"}],"adversarialChecks":[{"mode":"correctness|regression|security|runtime-ux|data-safety|integration|maintainability","result":"passed|failed|not_applicable","evidence":["..."],"concern":"string"}],"requirementVerdicts":[{"id":"R1","source":"brief|project-instruction|change-design|review","text":"string","status":"satisfied|partial|blocked|not_applicable","evidence":["..."]}]}',
   ].join('\n\n');
 }
 
 export function buildAttemptComparisonReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer and attempt judge.',
+    'When mandatory project instructions are supplied, enforce them as binding acceptance criteria for attempt selection.',
     'Compare multiple isolated worker attempts for one task.',
     'Select one winning attempt only when it satisfies the requested outcome and has no blocking regression, validation, or integration risk.',
+    'Use cross-attempt synthesis only as review guidance; Kira still integrates one selected winning attempt.',
+    'Apply the selected attempt adversarial review modes and record adversarialChecks with evidence.',
+    'Use requirementVerdicts and evidenceChecked to justify any approval.',
     'If no attempt is good enough, request another worker round with concrete shared instructions.',
     'Never edit files.',
     'Return only the requested structured JSON.',
@@ -4952,7 +10100,7 @@ export function parseAttemptSelectionSummary(
         : null;
     const issues = uniqueStrings(Array.isArray(parsed.issues) ? parsed.issues.map(String) : []);
     return {
-      approved: Boolean(parsed.approved) && selectedAttemptNo !== null,
+      approved: normalizeBoolean(parsed.approved) && selectedAttemptNo !== null,
       selectedAttemptNo,
       summary: parsed.summary?.trim() || 'No attempt comparison summary provided.',
       issues,
@@ -4968,6 +10116,9 @@ export function parseAttemptSelectionSummary(
         Array.isArray(parsed.filesChecked) ? parsed.filesChecked : [],
         100,
       ),
+      evidenceChecked: normalizeReviewEvidenceChecked(parsed.evidenceChecked),
+      requirementVerdicts: normalizeRequirementTrace(parsed.requirementVerdicts),
+      adversarialChecks: normalizeReviewAdversarialChecks(parsed.adversarialChecks),
     };
   } catch {
     return {
@@ -4978,8 +10129,195 @@ export function parseAttemptSelectionSummary(
       nextWorkerInstructions: ['Return the attempt comparison result as structured JSON.'],
       residualRisk: [],
       filesChecked: [],
+      evidenceChecked: [],
+      requirementVerdicts: [],
+      adversarialChecks: [],
     };
   }
+}
+
+function buildAttemptSelectionReviewSummary(
+  selection: AttemptSelectionSummary,
+  approved: boolean,
+  overrides: Partial<ReviewSummary> = {},
+): ReviewSummary {
+  const summary: ReviewSummary = {
+    approved,
+    summary: selection.summary,
+    issues: approved ? [] : selection.issues,
+    filesChecked: selection.filesChecked,
+    findings: [],
+    missingValidation: [],
+    nextWorkerInstructions: approved ? [] : selection.nextWorkerInstructions,
+    residualRisk: selection.residualRisk,
+    evidenceChecked: selection.evidenceChecked,
+    requirementVerdicts: selection.requirementVerdicts,
+    adversarialChecks: selection.adversarialChecks,
+    reviewerDiscourse: [],
+    ...overrides,
+  };
+  return {
+    ...summary,
+    issues: uniqueStrings(summary.issues),
+    filesChecked: normalizePathList(summary.filesChecked, 200),
+    missingValidation: uniqueStrings(summary.missingValidation),
+    nextWorkerInstructions: uniqueStrings(summary.nextWorkerInstructions),
+    residualRisk: uniqueStrings(summary.residualRisk),
+  };
+}
+
+function buildAttemptSelectionReviewRecord(params: {
+  workId: string;
+  attempt: KiraWorkerAttemptResult;
+  reviewSummary: ReviewSummary;
+  attemptSynthesis: AttemptSynthesisRecommendation;
+  startedAt: number;
+  finishedAt: number;
+  reviewRaw: string;
+}): { record: KiraReviewRecord; reviewSummary: ReviewSummary } {
+  const reviewSummary = ensureReviewerDiscourse(params.reviewSummary, {
+    reviewAdversarialPlan: params.attempt.contextScan.reviewAdversarialPlan,
+  });
+  const triage = buildReviewFindingTriage(reviewSummary, {
+    designReviewGate: params.attempt.contextScan.designReviewGate,
+    patchIntentVerification: params.attempt.patchIntentVerification,
+    runtimeValidation: params.attempt.runtimeValidation,
+  });
+  return {
+    record: buildReviewRecord(params.workId, params.attempt.attemptNo, reviewSummary, {
+      reviewAdversarialPlan: params.attempt.contextScan.reviewAdversarialPlan,
+      attemptSynthesis: params.attemptSynthesis,
+      designReviewGate: params.attempt.contextScan.designReviewGate,
+      patchIntentVerification: params.attempt.patchIntentVerification,
+      runtimeValidation: params.attempt.runtimeValidation,
+      observability: buildReviewObservability({
+        startedAt: params.startedAt,
+        finishedAt: params.finishedAt,
+        reviewRaw: params.reviewRaw,
+        reviewSummary,
+        triage,
+      }),
+    }),
+    reviewSummary,
+  };
+}
+
+function enforceAttemptSelectionDecision(
+  summary: AttemptSelectionSummary,
+  selectedAttempt: KiraWorkerAttemptResult | null,
+): AttemptSelectionSummary {
+  if (!summary.approved || !selectedAttempt) return summary;
+
+  const issues: string[] = [];
+  if (selectedAttempt.validationReruns.failed.length > 0) {
+    issues.push(
+      `Selected attempt has failed Kira validation reruns: ${selectedAttempt.validationReruns.failed.join(', ')}`,
+    );
+  }
+  if (
+    !selectedAttempt.workerSummary.selfCheck ||
+    selectedAttempt.workerSummary.selfCheck.diffHunkReview.length === 0
+  ) {
+    issues.push('Selected attempt is missing worker diffHunkReview evidence.');
+  }
+  const filesChecked = normalizePathList(summary.filesChecked, 200);
+  const evidenceCheckedFiles = summary.evidenceChecked.map((item) => item.file);
+  const uncheckedFiles = selectedAttempt.workerSummary.filesChanged
+    .slice(0, 8)
+    .filter((file) => !pathMatchesScope(filesChecked, file));
+  if (selectedAttempt.workerSummary.filesChanged.length > 0 && filesChecked.length === 0) {
+    issues.push('Attempt judge approved without recording filesChecked.');
+  } else if (uncheckedFiles.length > 0) {
+    issues.push(`Attempt judge filesChecked did not cover: ${uncheckedFiles.join(', ')}`);
+  }
+  const selectedRiskPolicy = selectedAttempt.contextScan.riskPolicy ?? {
+    level: 'low' as const,
+    evidenceMinimum: 1,
+    reasons: [],
+    requiresRuntimeValidation: false,
+    requiresSecondPass: false,
+  };
+  if (summary.evidenceChecked.length < selectedRiskPolicy.evidenceMinimum) {
+    issues.push(
+      `Attempt judge evidenceChecked is insufficient for ${selectedRiskPolicy.level} risk: ${summary.evidenceChecked.length}/${selectedRiskPolicy.evidenceMinimum}`,
+    );
+  }
+  const evidenceMissing = selectedAttempt.workerSummary.filesChanged
+    .slice(0, 8)
+    .filter((file) => !pathMatchesScope(evidenceCheckedFiles, file));
+  if (selectedAttempt.workerSummary.filesChanged.length > 0 && evidenceMissing.length > 0) {
+    issues.push(`Attempt judge evidenceChecked did not cover: ${evidenceMissing.join(', ')}`);
+  }
+  if (
+    selectedAttempt.workerPlan.requirementTrace.length > 0 &&
+    summary.requirementVerdicts.length === 0
+  ) {
+    issues.push('Attempt judge approved without requirementVerdicts.');
+  }
+  if (
+    selectedAttempt.workerPlan.requirementTrace.length > 0 &&
+    summary.requirementVerdicts.length > 0
+  ) {
+    issues.push(
+      ...collectIncompleteRequirementTraceIssues(summary.requirementVerdicts, 'Attempt judge'),
+      ...collectMissingRequirementTraceIds(
+        selectedAttempt.workerPlan.requirementTrace,
+        summary.requirementVerdicts,
+        'Attempt judge',
+      ),
+    );
+  }
+  if (
+    selectedRiskPolicy.requiresRuntimeValidation &&
+    selectedAttempt.runtimeValidation.serverDetected &&
+    selectedAttempt.runtimeValidation.status !== 'reachable'
+  ) {
+    issues.push('Selected attempt failed runtime validation on a detected dev server.');
+  }
+  if (selectedAttempt.patchIntentVerification.status === 'drift') {
+    issues.push(
+      `Selected attempt has patch intent drift: ${selectedAttempt.patchIntentVerification.issues.join('; ')}`,
+    );
+  }
+  if (selectedAttempt.contextScan.designReviewGate?.status === 'blocked') {
+    issues.push(
+      `Selected attempt has a blocked design review gate: ${selectedAttempt.contextScan.designReviewGate.requiredChanges.join('; ')}`,
+    );
+  }
+  const expectedModes = selectedAttempt.contextScan.reviewAdversarialPlan?.modes ?? [];
+  if (expectedModes.length > 0) {
+    const checkedModes = new Set(summary.adversarialChecks.map((item) => item.mode));
+    const missingModes = expectedModes.filter((mode) => !checkedModes.has(mode));
+    if (missingModes.length > 0) {
+      issues.push(
+        `Attempt judge approved without adversarialChecks for modes: ${missingModes.join(', ')}`,
+      );
+    }
+    const failedModes = summary.adversarialChecks.filter(
+      (item) => item.result === 'failed' || item.evidence.length === 0,
+    );
+    if (failedModes.length > 0) {
+      issues.push(
+        `Attempt judge adversarialChecks were not passing/evidenced: ${failedModes
+          .map((item) => item.mode)
+          .join(', ')}`,
+      );
+    }
+  }
+
+  if (issues.length === 0) return summary;
+
+  return {
+    ...summary,
+    approved: false,
+    selectedAttemptNo: null,
+    issues: uniqueStrings([...summary.issues, ...issues]),
+    nextWorkerInstructions: uniqueStrings([
+      ...summary.nextWorkerInstructions,
+      'Run another worker round with complete diffHunkReview, validation evidence, and reviewer filesChecked coverage.',
+    ]),
+    summary: `${summary.summary}\n\nKira changed this attempt selection to request changes because independent review evidence was incomplete.`,
+  };
 }
 
 function updateWork(
@@ -5099,9 +10437,41 @@ function buildWorkerAttemptFailureResult(params: {
       summary: params.message,
       intendedFiles: [],
       protectedFiles: [],
+      changeDesign: {
+        targetFiles: [],
+        invariants: [params.message],
+        expectedImpact: [params.message],
+        validationStrategy: [params.message],
+        rollbackStrategy: [params.message],
+      },
       validationCommands: [],
       riskNotes: [params.message],
       stopConditions: [params.message],
+      confidence: 0,
+      uncertainties: [params.message],
+      decomposition: normalizeDecompositionRecommendation(null),
+      workerProfile: 'generalist',
+      taskType: params.contextScan.taskPlaybook?.taskType ?? 'generalist',
+      requirementTrace: params.contextScan.requirementTrace ?? [],
+      approachAlternatives: [
+        {
+          name: 'No implementation attempted',
+          selected: true,
+          rationale: params.message,
+          tradeoffs: [params.message],
+        },
+        {
+          name: 'Retry after blocker is resolved',
+          selected: false,
+          rationale: 'A complete attempt requires resolving the blocker first.',
+          tradeoffs: ['No patch is safer than an unverifiable patch.'],
+        },
+      ],
+      escalation: {
+        shouldAsk: true,
+        questions: [params.message],
+        blockers: [params.message],
+      },
     }),
   );
   return {
@@ -5128,6 +10498,10 @@ function buildWorkerAttemptFailureResult(params: {
       notes: [],
     },
     validationReruns: { passed: [], failed: [], failureDetails: [] },
+    failureAnalysis: [],
+    runtimeValidation: emptyRuntimeValidationResult(params.contextScan.runtimeValidation),
+    patchIntentVerification: emptyPatchIntentVerification(params.message),
+    diffStats: { files: 0, additions: 0, deletions: 0, hunks: 0 },
     outOfPlanFiles: [],
     missingValidationCommands: [],
     highRiskIssues: [params.message],
@@ -5147,8 +10521,9 @@ async function runIsolatedWorkerAttempt(params: {
   cycle: number;
   attemptNo: number;
   primaryProjectRoot: string;
-  projectSettings: { autoCommit: boolean };
+  projectSettings: ResolvedKiraProjectSettings;
   feedback: string[];
+  manualEvidence?: ManualEvidenceItem[];
   signal?: AbortSignal;
 }): Promise<KiraWorkerAttemptResult> {
   const attemptStartedAt = Date.now();
@@ -5156,7 +10531,14 @@ async function runIsolatedWorkerAttempt(params: {
     ...params.feedback,
     `${params.lane.label}: produce an independent solution in this isolated worktree. Do not coordinate through files outside this worktree.`,
   ];
-  const fallbackContextScan = await buildProjectContextScan(params.primaryProjectRoot, params.work);
+  const fallbackContextScan = await buildProjectContextScan(
+    params.primaryProjectRoot,
+    params.work,
+    params.projectSettings.effectiveInstructions,
+    params.projectSettings.runMode,
+    params.workerCount,
+  );
+  fallbackContextScan.manualEvidence = params.manualEvidence ?? [];
   const fallbackOverview = buildProjectOverview(params.primaryProjectRoot);
   const workspace = await createKiraWorktreeSession(
     params.primaryProjectRoot,
@@ -5183,12 +10565,33 @@ async function runIsolatedWorkerAttempt(params: {
   try {
     const projectRoot = workspace.projectRoot;
     const projectOverview = buildProjectOverview(projectRoot);
-    const contextScan = await buildProjectContextScan(projectRoot, params.work);
+    const contextScan = await buildProjectContextScan(
+      projectRoot,
+      params.work,
+      params.projectSettings.effectiveInstructions,
+      params.projectSettings.runMode,
+      params.workerCount,
+    );
+    contextScan.manualEvidence = params.manualEvidence ?? [];
+    const laneWorkerProfile = selectLaneWorkerProfile(
+      params.lane,
+      params.work,
+      contextScan,
+      params.workerCount,
+      params.attemptNo,
+    );
     const planningState = createWorkerAttemptState(null);
     const workerPlanRaw = await runToolAgent(
       params.lane.config,
       projectRoot,
-      buildWorkerPlanningPrompt(params.work, projectOverview, contextScan, laneFeedback),
+      buildWorkerPlanningPrompt(
+        params.work,
+        projectOverview,
+        contextScan,
+        laneFeedback,
+        params.projectSettings.effectiveInstructions,
+        laneWorkerProfile,
+      ),
       buildWorkerPlanningSystemPrompt(),
       false,
       params.signal,
@@ -5232,6 +10635,12 @@ async function runIsolatedWorkerAttempt(params: {
           notes: [],
         },
         validationReruns: { passed: [], failed: [], failureDetails: [] },
+        failureAnalysis: [],
+        runtimeValidation: emptyRuntimeValidationResult(contextScan.runtimeValidation),
+        patchIntentVerification: emptyPatchIntentVerification(
+          'Preflight planning needs more repository context.',
+        ),
+        diffStats: { files: 0, additions: 0, deletions: 0, hunks: 0 },
         outOfPlanFiles: [],
         missingValidationCommands: [],
         highRiskIssues: [],
@@ -5241,6 +10650,54 @@ async function runIsolatedWorkerAttempt(params: {
         blockedReason: 'Preflight planning needs more repository context.',
       };
     }
+    const designReviewGate = buildDesignReviewGate({
+      work: params.work,
+      contextScan,
+      workerPlan,
+      requiredInstructions: params.projectSettings.effectiveInstructions,
+    });
+    contextScan.designReviewGate = designReviewGate;
+    const designReviewIssues = collectDesignReviewGateIssues(designReviewGate);
+    if (designReviewIssues.length > 0) {
+      return {
+        lane: params.lane,
+        workspace,
+        attemptNo: params.attemptNo,
+        cycle: params.cycle,
+        startedAt: attemptStartedAt,
+        projectOverview,
+        contextScan,
+        workerPlan,
+        planningState,
+        attemptState: null,
+        workerSummary: {
+          summary: 'Design review gate blocked implementation before editing.',
+          filesChanged: [],
+          testsRun: [],
+          remainingRisks: designReviewIssues,
+        },
+        validationPlan: {
+          plannerCommands: [],
+          autoAddedCommands: [],
+          effectiveCommands: [],
+          notes: ['Implementation did not start because the design review gate blocked the plan.'],
+        },
+        validationReruns: { passed: [], failed: [], failureDetails: [] },
+        failureAnalysis: [],
+        runtimeValidation: emptyRuntimeValidationResult(contextScan.runtimeValidation),
+        patchIntentVerification: emptyPatchIntentVerification(
+          'Design review gate blocked implementation before editing.',
+        ),
+        diffStats: { files: 0, additions: 0, deletions: 0, hunks: 0 },
+        outOfPlanFiles: [],
+        missingValidationCommands: [],
+        highRiskIssues: designReviewIssues,
+        diffExcerpts: [],
+        status: 'needs_context',
+        feedback: designReviewIssues,
+        blockedReason: 'Design review gate blocked implementation before editing.',
+      };
+    }
 
     const worktreeBefore = await getGitWorktreeEntries(projectRoot);
     const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
@@ -5248,7 +10705,15 @@ async function runIsolatedWorkerAttempt(params: {
     const workerRaw = await runToolAgent(
       params.lane.config,
       projectRoot,
-      buildWorkerPrompt(params.work, projectOverview, contextScan, workerPlan, laneFeedback),
+      buildWorkerPrompt(
+        params.work,
+        projectOverview,
+        contextScan,
+        workerPlan,
+        laneFeedback,
+        params.projectSettings.effectiveInstructions,
+        laneWorkerProfile,
+      ),
       buildWorkerSystemPrompt(),
       true,
       params.signal,
@@ -5294,6 +10759,60 @@ async function runIsolatedWorkerAttempt(params: {
       validationPlan.effectiveCommands,
     );
     const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
+    const diffStats = await collectGitDiffStats(projectRoot, workerSummary.filesChanged);
+    const runtimeSignal = buildRuntimeValidationSignal(
+      workerPlan.taskType,
+      workerSummary.filesChanged,
+    );
+    const runtimeValidation = await collectRuntimeValidationResult(runtimeSignal);
+    const riskPolicy = assessRiskReviewPolicy({
+      projectRoot,
+      work: params.work,
+      taskType: workerPlan.taskType,
+      files: workerSummary.filesChanged,
+      diffStats,
+      runtimeValidation: runtimeSignal,
+      runMode: params.projectSettings.runMode,
+    });
+    contextScan.runtimeValidation = runtimeSignal;
+    contextScan.riskPolicy = riskPolicy;
+    contextScan.orchestrationPlan = buildOrchestrationPlan({
+      work: params.work,
+      taskType: workerPlan.taskType,
+      runMode: params.projectSettings.runMode,
+      workerCount: params.workerCount,
+      riskPolicy,
+      runtimeValidation: runtimeSignal,
+    });
+    contextScan.reviewAdversarialPlan = buildReviewAdversarialPlan({
+      taskType: workerPlan.taskType,
+      files: workerSummary.filesChanged,
+      riskPolicy,
+      runtimeValidation: runtimeSignal,
+      diffStats,
+      semanticGraph: contextScan.semanticGraph,
+    });
+    contextScan.reviewerCalibration = buildReviewerCalibration(
+      contextScan.projectProfile,
+      riskPolicy,
+      contextScan.reviewAdversarialPlan,
+    );
+    const failureAnalysis = analyzeValidationFailures(validationReruns);
+    const patchIntentVerification = verifyPatchIntent({
+      workerPlan,
+      workerSummary,
+      outOfPlanFiles,
+      diffStats,
+      diffExcerpts,
+    });
+    const selfCheckIssues = collectWorkerSelfCheckIssues({
+      workerSummary,
+      workerPlan,
+      requiredInstructions: params.projectSettings.effectiveInstructions,
+      validationPlan,
+      filesChanged: workerSummary.filesChanged,
+      diffExcerpts,
+    });
     const reviewabilityIssues = collectAttemptReviewabilityIssues({
       rawWorkerOutput: workerRaw,
       workerSummary,
@@ -5312,6 +10831,19 @@ async function runIsolatedWorkerAttempt(params: {
         workerSummary.filesChanged,
         workerSummary.testsRun,
       ),
+      ...collectPatchScopeIssues({
+        workerPlan,
+        filesChanged: workerSummary.filesChanged,
+        diffStats,
+      }),
+      ...(patchIntentVerification.status === 'drift'
+        ? patchIntentVerification.issues.map((issue) => `Patch intent drift: ${issue}`)
+        : []),
+      ...(runtimeValidation.applicable &&
+      runtimeValidation.serverDetected &&
+      runtimeValidation.status !== 'reachable'
+        ? ['Runtime validation failed even though a dev server was detected.']
+        : []),
     ];
 
     return {
@@ -5328,6 +10860,10 @@ async function runIsolatedWorkerAttempt(params: {
       workerSummary,
       validationPlan,
       validationReruns,
+      failureAnalysis,
+      runtimeValidation,
+      patchIntentVerification,
+      diffStats,
       outOfPlanFiles,
       missingValidationCommands,
       highRiskIssues,
@@ -5336,22 +10872,28 @@ async function runIsolatedWorkerAttempt(params: {
       status:
         highRiskIssues.length > 0
           ? 'blocked'
-          : validationReruns.failed.length > 0
+          : validationReruns.failed.length > 0 || selfCheckIssues.length > 0
             ? 'validation_failed'
             : 'reviewable',
       feedback:
         highRiskIssues.length > 0
           ? highRiskIssues
-          : validationReruns.failed.length > 0
-            ? validationReruns.failed.map(
-                (command) => `Planned validation failed when Kira reran it: ${command}`,
-              )
+          : validationReruns.failed.length > 0 || selfCheckIssues.length > 0
+            ? [
+                ...validationReruns.failed.map(
+                  (command) => `Planned validation failed when Kira reran it: ${command}`,
+                ),
+                ...failureAnalysis.map(
+                  (item) => `Failure analysis (${item.category}): ${item.guidance}`,
+                ),
+                ...selfCheckIssues,
+              ]
             : [],
       blockedReason:
         highRiskIssues.length > 0
           ? 'Automated safety validation failed.'
-          : validationReruns.failed.length > 0
-            ? 'Validation reruns failed.'
+          : validationReruns.failed.length > 0 || selfCheckIssues.length > 0
+            ? 'Validation or worker self-check failed.'
             : undefined,
     };
   } catch (error) {
@@ -5376,6 +10918,7 @@ function saveWorkerAttemptResult(
   result: KiraWorkerAttemptResult,
   status: KiraAttemptRecord['status'],
   extraRisks: string[] = [],
+  reviewSummary?: ReviewSummary,
 ): void {
   saveAttemptRecord(
     sessionsDir,
@@ -5390,17 +10933,25 @@ function saveWorkerAttemptResult(
       planningState: result.planningState,
       attemptState: result.attemptState,
       workerSummary: result.workerSummary,
+      validationPlan: result.validationPlan,
       validationReruns: result.validationReruns,
+      failureAnalysis: result.failureAnalysis,
+      runtimeValidation: result.runtimeValidation,
+      riskPolicy: result.contextScan.riskPolicy,
+      patchIntentVerification: result.patchIntentVerification,
+      diffStats: result.diffStats,
       outOfPlanFiles: result.outOfPlanFiles,
       validationGaps: result.missingValidationCommands,
       risks: uniqueStrings([
         ...result.workerSummary.remainingRisks,
         ...result.highRiskIssues,
+        ...result.feedback,
         ...extraRisks,
       ]),
       diffExcerpts: result.diffExcerpts,
       rawWorkerOutput: result.rawWorkerOutput,
       blockedReason: result.blockedReason,
+      reviewSummary,
     }),
   );
 }
@@ -5424,11 +10975,49 @@ function addWorkerAttemptComment(
       '',
       `Plan:\n${result.workerPlan.summary}`,
       '',
+      `Task type:\n${result.workerPlan.taskType}`,
+      '',
+      formatPatchAlternatives(result.workerPlan.approachAlternatives),
+      '',
+      formatRequirementTrace(
+        result.workerSummary.selfCheck?.requirementTrace.length
+          ? result.workerSummary.selfCheck.requirementTrace
+          : result.workerPlan.requirementTrace,
+      ),
+      '',
       `Summary:\n${result.workerSummary.summary}`,
       '',
       `Files changed:\n${formatList(result.workerSummary.filesChanged, 'No files reported')}`,
       '',
       `Checks:\n${formatList(result.workerSummary.testsRun, 'No checks reported')}`,
+      '',
+      result.workerSummary.selfCheck
+        ? `Self-check:\n${formatList(
+            [
+              `reviewedDiff=${result.workerSummary.selfCheck.reviewedDiff}`,
+              `followedProjectInstructions=${result.workerSummary.selfCheck.followedProjectInstructions}`,
+              `matchedPlan=${result.workerSummary.selfCheck.matchedPlan}`,
+              `ranOrExplainedValidation=${result.workerSummary.selfCheck.ranOrExplainedValidation}`,
+              ...result.workerSummary.selfCheck.diffHunkReview.map(
+                (item) => `diffHunkReview ${item.file}: ${item.intent} Risk: ${item.risk}`,
+              ),
+              ...result.workerSummary.selfCheck.uncertainty.map((item) => `uncertainty: ${item}`),
+            ],
+            'No self-check details',
+          )}`
+        : 'Self-check:\n- Missing self-check object',
+      '',
+      `Diff stats:\n- files=${result.diffStats.files}\n- additions=${result.diffStats.additions}\n- deletions=${result.diffStats.deletions}\n- hunks=${result.diffStats.hunks}`,
+      '',
+      formatRiskReviewPolicy(result.contextScan.riskPolicy),
+      '',
+      formatDesignReviewGate(result.contextScan.designReviewGate),
+      '',
+      formatReviewAdversarialPlan(result.contextScan.reviewAdversarialPlan),
+      '',
+      formatRuntimeValidationResult(result.runtimeValidation),
+      '',
+      formatPatchIntentVerification(result.patchIntentVerification),
       '',
       `Kira-passed validation reruns:\n${formatList(
         result.validationReruns.passed,
@@ -5440,8 +11029,10 @@ function addWorkerAttemptComment(
         'No validation reruns failed',
       )}`,
       '',
+      formatFailureAnalysis(result.failureAnalysis),
+      '',
       `Remaining risks:\n${formatList(
-        [...result.workerSummary.remainingRisks, ...result.highRiskIssues],
+        [...result.workerSummary.remainingRisks, ...result.highRiskIssues, ...result.feedback],
         'None reported',
       )}`,
       '',
@@ -5580,6 +11171,72 @@ function createWorksFromDiscovery(
   return { created, skippedTitles };
 }
 
+function shouldAutoDecomposeWork(recommendation: WorkDecompositionRecommendation): boolean {
+  return (
+    recommendation.shouldSplit &&
+    recommendation.confidence >= 0.88 &&
+    recommendation.suggestedWorks.length >= 2
+  );
+}
+
+function createWorksFromDecomposition(
+  options: KiraAutomationPluginOptions,
+  sessionPath: string,
+  parentWork: WorkTask,
+  recommendation: WorkDecompositionRecommendation,
+): { created: WorkTask[]; skippedTitles: string[] } {
+  const worksDir = join(getKiraDataDir(options.sessionsDir, sessionPath), WORKS_DIR_NAME);
+  fs.mkdirSync(worksDir, { recursive: true });
+  const existingTitles = new Set(
+    loadProjectWorks(options.sessionsDir, sessionPath, parentWork.projectName).map((work) =>
+      work.title.trim().toLowerCase(),
+    ),
+  );
+  const created: WorkTask[] = [];
+  const skippedTitles: string[] = [];
+
+  for (const [index, suggestedWork] of recommendation.suggestedWorks.entries()) {
+    const title = `${parentWork.title}: ${suggestedWork}`.slice(0, 180);
+    const normalizedTitle = title.trim().toLowerCase();
+    if (!normalizedTitle || existingTitles.has(normalizedTitle)) {
+      skippedTitles.push(title);
+      continue;
+    }
+    const now = Date.now();
+    const work: WorkTask = {
+      id: makeId('work'),
+      type: 'work',
+      projectName: parentWork.projectName,
+      title,
+      description: [
+        `# Brief`,
+        suggestedWork,
+        '',
+        `# Parent work`,
+        `- ${parentWork.title}`,
+        '',
+        `# Parent acceptance target`,
+        parentWork.description,
+        '',
+        `# Decomposition context`,
+        recommendation.reason,
+        '',
+        `# Ordering note`,
+        `This is split item ${index + 1} of ${recommendation.suggestedWorks.length}. Keep the patch independently reviewable and avoid taking over sibling split items unless required for integration.`,
+      ].join('\n'),
+      status: 'todo',
+      assignee: '',
+      createdAt: now,
+      updatedAt: now,
+    };
+    writeJsonFile(join(worksDir, `${work.id}.json`), work);
+    created.push(work);
+    existingTitles.add(normalizedTitle);
+  }
+
+  return { created, skippedTitles };
+}
+
 async function processWorkWithMultipleWorkers(params: {
   options: KiraAutomationPluginOptions;
   sessionPath: string;
@@ -5642,6 +11299,7 @@ async function processWorkWithMultipleWorkers(params: {
   }
 
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
+  const manualEvidence = collectManualEvidenceFromComments(existingComments);
   let feedback =
     work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
   let previousIssueSignature: string | null = null;
@@ -5695,6 +11353,7 @@ async function processWorkWithMultipleWorkers(params: {
           primaryProjectRoot,
           projectSettings,
           feedback,
+          manualEvidence,
           signal,
         }),
       ),
@@ -5717,6 +11376,14 @@ async function processWorkWithMultipleWorkers(params: {
     const reviewableAttempts = results.filter((result) => result.status === 'reviewable');
     if (reviewableAttempts.length === 0) {
       feedback = uniqueStrings(results.flatMap((result) => result.feedback)).slice(0, 12);
+      updateProjectProfileLearning(primaryProjectRoot, {
+        validationFailures: feedback,
+        repeatedPatterns: feedback.filter((item) =>
+          /\b(validation|self-check|high-risk|protected|out-of-plan|small-patch|split)\b/i.test(
+            item,
+          ),
+        ),
+      });
       const issueSignature = buildIssueSignature(feedback, 'No worker attempts passed validation.');
       addComment(options.sessionsDir, sessionPath, {
         taskId: work.id,
@@ -5765,36 +11432,82 @@ async function processWorkWithMultipleWorkers(params: {
         )}`,
       ].join('\n'),
     });
+    const synthesisRecommendation = buildAttemptSynthesisRecommendation(reviewableAttempts);
+    const selectionStartedAt = Date.now();
     const selectionRaw = await runToolAgent(
       runtime.reviewerConfig,
       primaryProjectRoot,
-      buildAttemptComparisonReviewPrompt(work, reviewableAttempts),
+      buildAttemptComparisonReviewPrompt(
+        work,
+        reviewableAttempts,
+        projectSettings.effectiveInstructions,
+        synthesisRecommendation,
+      ),
       buildAttemptComparisonReviewSystemPrompt(),
       false,
       signal,
     );
+    const selectionFinishedAt = Date.now();
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
-    const selection = parseAttemptSelectionSummary(
+    let selection = parseAttemptSelectionSummary(
       selectionRaw,
       reviewableAttempts.map((attempt) => attempt.attemptNo),
     );
-    const selectedAttempt = selection.selectedAttemptNo
+    let selectedAttempt = selection.selectedAttemptNo
+      ? reviewableAttempts.find((attempt) => attempt.attemptNo === selection.selectedAttemptNo)
+      : null;
+    selection = enforceAttemptSelectionDecision(selection, selectedAttempt ?? null);
+    selectedAttempt = selection.selectedAttemptNo
       ? reviewableAttempts.find((attempt) => attempt.attemptNo === selection.selectedAttemptNo)
       : null;
 
     if (selection.approved && selectedAttempt) {
-      const reviewRecord = buildReviewRecord(work.id, selectedAttempt.attemptNo, {
-        approved: true,
-        summary: selection.summary,
-        issues: [],
-        filesChecked: selection.filesChecked,
-        findings: [],
-        missingValidation: [],
-        nextWorkerInstructions: [],
-        residualRisk: selection.residualRisk,
+      const selectedReview = buildAttemptSelectionReviewRecord({
+        workId: work.id,
+        attempt: selectedAttempt,
+        reviewSummary: buildAttemptSelectionReviewSummary(selection, true),
+        attemptSynthesis: synthesisRecommendation,
+        startedAt: selectionStartedAt,
+        finishedAt: selectionFinishedAt,
+        reviewRaw: selectionRaw,
       });
-      saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
+      updateProjectProfileLearning(primaryProjectRoot, {
+        successfulPatterns: [
+          `${selectedAttempt.workerPlan.taskType}: selected attempt ${selectedAttempt.attemptNo} with ${selectedAttempt.validationReruns.passed.length} validation checks and ${selection.evidenceChecked.length} judge evidence entries.`,
+        ],
+      });
+      saveReviewRecord(options.sessionsDir, sessionPath, selectedReview.record);
       for (const result of reviewableAttempts) {
+        const reviewForAttempt =
+          result.attemptNo === selectedAttempt.attemptNo
+            ? selectedReview
+            : buildAttemptSelectionReviewRecord({
+                workId: work.id,
+                attempt: result,
+                reviewSummary: buildAttemptSelectionReviewSummary(selection, false, {
+                  summary: [
+                    `Not selected by reviewer. Winning attempt: ${selectedAttempt.attemptNo}.`,
+                    '',
+                    selection.summary,
+                  ].join('\n'),
+                  issues: [
+                    `Not selected by reviewer. Winning attempt: ${selectedAttempt.attemptNo}.`,
+                  ],
+                  filesChecked: [],
+                  evidenceChecked: [],
+                  requirementVerdicts: [],
+                  adversarialChecks: [],
+                  nextWorkerInstructions: [],
+                  residualRisk: [],
+                }),
+                attemptSynthesis: synthesisRecommendation,
+                startedAt: selectionStartedAt,
+                finishedAt: selectionFinishedAt,
+                reviewRaw: selectionRaw,
+              });
+        if (result.attemptNo !== selectedAttempt.attemptNo) {
+          saveReviewRecord(options.sessionsDir, sessionPath, reviewForAttempt.record);
+        }
         saveWorkerAttemptResult(
           options.sessionsDir,
           sessionPath,
@@ -5804,6 +11517,7 @@ async function processWorkWithMultipleWorkers(params: {
           result.attemptNo === selectedAttempt.attemptNo
             ? selection.residualRisk
             : [`Not selected by reviewer. Winning attempt: ${selectedAttempt.attemptNo}`],
+          reviewForAttempt.reviewSummary,
         );
       }
       const suggestedCommitMessage = buildSuggestedCommitMessage(
@@ -5899,7 +11613,25 @@ async function processWorkWithMultipleWorkers(params: {
         : selection.issues.length > 0
           ? selection.issues
           : [selection.summary];
+    updateProjectProfileLearning(primaryProjectRoot, {
+      reviewFailures: uniqueStrings([...selection.issues, ...selection.nextWorkerInstructions]),
+      repeatedPatterns: selection.issues.filter((item) =>
+        /\b(validation|regression|risk|missing|violates|instruction|diffhunkreview|fileschecked|small-patch|split)\b/i.test(
+          item,
+        ),
+      ),
+    });
     for (const result of reviewableAttempts) {
+      const rejectedReview = buildAttemptSelectionReviewRecord({
+        workId: work.id,
+        attempt: result,
+        reviewSummary: buildAttemptSelectionReviewSummary(selection, false),
+        attemptSynthesis: synthesisRecommendation,
+        startedAt: selectionStartedAt,
+        finishedAt: selectionFinishedAt,
+        reviewRaw: selectionRaw,
+      });
+      saveReviewRecord(options.sessionsDir, sessionPath, rejectedReview.record);
       saveWorkerAttemptResult(
         options.sessionsDir,
         sessionPath,
@@ -5907,6 +11639,7 @@ async function processWorkWithMultipleWorkers(params: {
         result,
         'review_requested_changes',
         feedback,
+        rejectedReview.reviewSummary,
       );
     }
     addComment(options.sessionsDir, sessionPath, {
@@ -5915,6 +11648,8 @@ async function processWorkWithMultipleWorkers(params: {
       author: runtime.reviewerAuthor,
       body: [
         `Reviewer did not approve any attempts after cycle ${cycle}.`,
+        '',
+        formatAttemptSynthesisRecommendation(synthesisRecommendation),
         '',
         `Summary:\n${selection.summary}`,
         '',
@@ -6032,7 +11767,65 @@ async function processWork(
   if (!clarifiedWork) return;
   work = clarifiedWork;
 
-  if (runtime.workerConfigs.length > 1) {
+  const projectSettings = loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings);
+  const initialContextScan = await buildProjectContextScan(
+    primaryProjectRoot,
+    work,
+    projectSettings.effectiveInstructions,
+    projectSettings.runMode,
+    projectSettings.runMode === 'quick' ? 1 : runtime.workerConfigs.length,
+  );
+  if (
+    initialContextScan.decomposition &&
+    shouldAutoDecomposeWork(initialContextScan.decomposition)
+  ) {
+    const { created, skippedTitles } = createWorksFromDecomposition(
+      options,
+      sessionPath,
+      work,
+      initialContextScan.decomposition,
+    );
+    updateProjectProfileLearning(primaryProjectRoot, {
+      decompositionRecommendations: initialContextScan.decomposition.suggestedWorks,
+    });
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'blocked',
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        'Kira decomposed this broad work before assigning workers.',
+        '',
+        `Reason:\n${initialContextScan.decomposition.reason}`,
+        '',
+        `Signals:\n${formatList(initialContextScan.decomposition.signals, 'No split signals')}`,
+        '',
+        `Created split works:\n${formatList(
+          created.map((item) => item.title),
+          'No split works were created',
+        )}`,
+        '',
+        `Skipped duplicates:\n${formatList(skippedTitles, 'No duplicate split works skipped')}`,
+        '',
+        'The original work is blocked so the smaller tasks can be handled independently.',
+      ].join('\n'),
+    });
+    enqueueEvent(options.sessionsDir, sessionPath, {
+      id: makeId('event'),
+      workId: work.id,
+      title: work.title,
+      projectName: work.projectName,
+      type: 'needs_attention',
+      createdAt: Date.now(),
+      message: `Kira 분해: "${work.title}" 작업이 너무 넓어 ${created.length}개의 작은 작업으로 나눴어요.`,
+    });
+    return;
+  }
+
+  if (runtime.workerConfigs.length > 1 && projectSettings.runMode !== 'quick') {
     await processWorkWithMultipleWorkers({
       options,
       sessionPath,
@@ -6049,15 +11842,9 @@ async function processWork(
     options.sessionsDir,
     sessionPath,
     work,
-    loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings),
+    projectSettings,
   );
-  if (
-    !workspace.isolated &&
-    shouldUseKiraIsolatedWorktree(
-      primaryProjectRoot,
-      loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings),
-    )
-  ) {
+  if (!workspace.isolated && shouldUseKiraIsolatedWorktree(primaryProjectRoot, projectSettings)) {
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
       status: 'blocked',
@@ -6117,8 +11904,15 @@ async function processWork(
   }
 
   const projectOverview = buildProjectOverview(projectRoot);
-  const contextScan = await buildProjectContextScan(projectRoot, work);
+  const contextScan = await buildProjectContextScan(
+    projectRoot,
+    work,
+    projectSettings.effectiveInstructions,
+    projectSettings.runMode,
+    1,
+  );
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
+  contextScan.manualEvidence = collectManualEvidenceFromComments(existingComments);
   const resumeFeedback =
     work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
 
@@ -6165,7 +11959,13 @@ async function processWork(
     const workerPlanRaw = await runToolAgent(
       runtime.workerConfig,
       projectRoot,
-      buildWorkerPlanningPrompt(work, projectOverview, contextScan, feedback),
+      buildWorkerPlanningPrompt(
+        work,
+        projectOverview,
+        contextScan,
+        feedback,
+        projectSettings.effectiveInstructions,
+      ),
       buildWorkerPlanningSystemPrompt(),
       false,
       signal,
@@ -6220,6 +12020,45 @@ async function processWork(
       feedback = preflightIssues;
       continue;
     }
+    const designReviewGate = buildDesignReviewGate({
+      work,
+      contextScan,
+      workerPlan,
+      requiredInstructions: projectSettings.effectiveInstructions,
+    });
+    contextScan.designReviewGate = designReviewGate;
+    const designReviewIssues = collectDesignReviewGateIssues(designReviewGate);
+    if (designReviewIssues.length > 0) {
+      saveAttemptRecord(
+        options.sessionsDir,
+        sessionPath,
+        buildAttemptRecord({
+          workId: work.id,
+          attemptNo: cycle,
+          status: 'needs_context',
+          startedAt: attemptStartedAt,
+          contextScan,
+          workerPlan,
+          planningState,
+          risks: designReviewIssues,
+          blockedReason: 'Design review gate blocked implementation before editing.',
+        }),
+      );
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: [
+          `Design review gate blocked attempt ${cycle} before implementation.`,
+          '',
+          formatDesignReviewGate(designReviewGate),
+          '',
+          `Required changes:\n${formatList(designReviewIssues, 'No required changes')}`,
+        ].join('\n'),
+      });
+      feedback = designReviewIssues;
+      continue;
+    }
     const worktreeBefore = await getGitWorktreeEntries(projectRoot);
     const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
     const attemptState = createWorkerAttemptState(workerPlan, dirtyFilesBefore);
@@ -6228,7 +12067,14 @@ async function processWork(
       workerRaw = await runToolAgent(
         runtime.workerConfig,
         projectRoot,
-        buildWorkerPrompt(work, projectOverview, contextScan, workerPlan, feedback),
+        buildWorkerPrompt(
+          work,
+          projectOverview,
+          contextScan,
+          workerPlan,
+          feedback,
+          projectSettings.effectiveInstructions,
+        ),
         buildWorkerSystemPrompt(),
         true,
         signal,
@@ -6305,6 +12151,60 @@ async function processWork(
       validationPlan.effectiveCommands,
     );
     const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
+    const diffStats = await collectGitDiffStats(projectRoot, workerSummary.filesChanged);
+    const runtimeSignal = buildRuntimeValidationSignal(
+      workerPlan.taskType,
+      workerSummary.filesChanged,
+    );
+    const runtimeValidation = await collectRuntimeValidationResult(runtimeSignal);
+    const riskPolicy = assessRiskReviewPolicy({
+      projectRoot,
+      work,
+      taskType: workerPlan.taskType,
+      files: workerSummary.filesChanged,
+      diffStats,
+      runtimeValidation: runtimeSignal,
+      runMode: projectSettings.runMode,
+    });
+    contextScan.runtimeValidation = runtimeSignal;
+    contextScan.riskPolicy = riskPolicy;
+    contextScan.orchestrationPlan = buildOrchestrationPlan({
+      work,
+      taskType: workerPlan.taskType,
+      runMode: projectSettings.runMode,
+      workerCount: 1,
+      riskPolicy,
+      runtimeValidation: runtimeSignal,
+    });
+    contextScan.reviewAdversarialPlan = buildReviewAdversarialPlan({
+      taskType: workerPlan.taskType,
+      files: workerSummary.filesChanged,
+      riskPolicy,
+      runtimeValidation: runtimeSignal,
+      diffStats,
+      semanticGraph: contextScan.semanticGraph,
+    });
+    contextScan.reviewerCalibration = buildReviewerCalibration(
+      contextScan.projectProfile,
+      riskPolicy,
+      contextScan.reviewAdversarialPlan,
+    );
+    const failureAnalysis = analyzeValidationFailures(validationReruns);
+    const patchIntentVerification = verifyPatchIntent({
+      workerPlan,
+      workerSummary,
+      outOfPlanFiles,
+      diffStats,
+      diffExcerpts,
+    });
+    const selfCheckIssues = collectWorkerSelfCheckIssues({
+      workerSummary,
+      workerPlan,
+      requiredInstructions: projectSettings.effectiveInstructions,
+      validationPlan,
+      filesChanged: workerSummary.filesChanged,
+      diffExcerpts,
+    });
     const reviewabilityIssues = collectAttemptReviewabilityIssues({
       rawWorkerOutput: workerRaw,
       workerSummary,
@@ -6323,6 +12223,19 @@ async function processWork(
         workerSummary.filesChanged,
         workerSummary.testsRun,
       ),
+      ...collectPatchScopeIssues({
+        workerPlan,
+        filesChanged: workerSummary.filesChanged,
+        diffStats,
+      }),
+      ...(patchIntentVerification.status === 'drift'
+        ? patchIntentVerification.issues.map((issue) => `Patch intent drift: ${issue}`)
+        : []),
+      ...(runtimeValidation.applicable &&
+      runtimeValidation.serverDetected &&
+      runtimeValidation.status !== 'reachable'
+        ? ['Runtime validation failed even though a dev server was detected.']
+        : []),
     ];
 
     addComment(options.sessionsDir, sessionPath, {
@@ -6360,6 +12273,18 @@ async function processWork(
         '',
         `Repo findings:\n${formatList(workerPlan.repoFindings, 'No repo findings')}`,
         '',
+        `Task type:\n${workerPlan.taskType}`,
+        '',
+        formatPatchAlternatives(workerPlan.approachAlternatives),
+        '',
+        formatRequirementTrace(
+          workerSummary.selfCheck?.requirementTrace.length
+            ? workerSummary.selfCheck.requirementTrace
+            : workerPlan.requirementTrace,
+        ),
+        '',
+        formatChangeDesign(workerPlan.changeDesign),
+        '',
         `Planned files:\n${formatList(workerPlan.intendedFiles, 'No planned files')}`,
         '',
         `Protected files:\n${formatList(workerPlan.protectedFiles, 'No protected files')}`,
@@ -6388,6 +12313,35 @@ async function processWork(
         '',
         `Checks:\n${formatList(workerSummary.testsRun, 'No checks reported')}`,
         '',
+        workerSummary.selfCheck
+          ? `Self-check:\n${formatList(
+              [
+                `reviewedDiff=${workerSummary.selfCheck.reviewedDiff}`,
+                `followedProjectInstructions=${workerSummary.selfCheck.followedProjectInstructions}`,
+                `matchedPlan=${workerSummary.selfCheck.matchedPlan}`,
+                `ranOrExplainedValidation=${workerSummary.selfCheck.ranOrExplainedValidation}`,
+                ...workerSummary.selfCheck.diffHunkReview.map(
+                  (item) => `diffHunkReview ${item.file}: ${item.intent} Risk: ${item.risk}`,
+                ),
+                ...workerSummary.selfCheck.uncertainty.map((item) => `uncertainty: ${item}`),
+                ...workerSummary.selfCheck.notes.map((item) => `note: ${item}`),
+              ],
+              'No self-check details',
+            )}`
+          : 'Self-check:\n- Missing self-check object',
+        '',
+        `Diff stats:\n- files=${diffStats.files}\n- additions=${diffStats.additions}\n- deletions=${diffStats.deletions}\n- hunks=${diffStats.hunks}`,
+        '',
+        formatRiskReviewPolicy(riskPolicy),
+        '',
+        formatDesignReviewGate(contextScan.designReviewGate),
+        '',
+        formatReviewAdversarialPlan(contextScan.reviewAdversarialPlan),
+        '',
+        formatRuntimeValidationResult(runtimeValidation),
+        '',
+        formatPatchIntentVerification(patchIntentVerification),
+        '',
         `Kira-passed validation reruns:\n${formatList(
           validationReruns.passed,
           'No validation reruns passed',
@@ -6398,8 +12352,10 @@ async function processWork(
           'No validation reruns failed',
         )}`,
         '',
+        formatFailureAnalysis(failureAnalysis),
+        '',
         `Remaining risks:\n${formatList(
-          [...workerSummary.remainingRisks, ...highRiskIssues],
+          [...workerSummary.remainingRisks, ...highRiskIssues, ...selfCheckIssues],
           'None reported',
         )}`,
         '',
@@ -6412,6 +12368,14 @@ async function processWork(
     });
 
     if (highRiskIssues.length > 0) {
+      updateProjectProfileLearning(projectRoot, {
+        reviewFailures: highRiskIssues,
+        repeatedPatterns: highRiskIssues.filter((issue) =>
+          /\b(protected|high-risk|out-of-plan|unsafe|diff|reviewable|small-patch|split)\b/i.test(
+            issue,
+          ),
+        ),
+      });
       const { restoredFiles, error: restoreError } = tryRestoreAttemptFiles(
         projectRoot,
         attemptState,
@@ -6429,7 +12393,13 @@ async function processWork(
           planningState,
           attemptState,
           workerSummary,
+          validationPlan,
           validationReruns,
+          failureAnalysis,
+          runtimeValidation,
+          riskPolicy,
+          patchIntentVerification,
+          diffStats,
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
           risks: [...workerSummary.remainingRisks, ...highRiskIssues],
@@ -6482,7 +12452,14 @@ async function processWork(
       return;
     }
 
-    if (validationReruns.failed.length > 0) {
+    if (validationReruns.failed.length > 0 || selfCheckIssues.length > 0) {
+      updateProjectProfileLearning(projectRoot, {
+        validationFailures: [
+          ...validationReruns.failed.map((command) => `Kira rerun failed for ${command}`),
+          ...failureAnalysis.map((item) => `${item.category}: ${item.guidance}`),
+          ...selfCheckIssues,
+        ],
+      });
       saveAttemptRecord(
         options.sessionsDir,
         sessionPath,
@@ -6496,10 +12473,16 @@ async function processWork(
           planningState,
           attemptState,
           workerSummary,
+          validationPlan,
           validationReruns,
+          failureAnalysis,
+          runtimeValidation,
+          riskPolicy,
+          patchIntentVerification,
+          diffStats,
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
-          risks: workerSummary.remainingRisks,
+          risks: [...workerSummary.remainingRisks, ...selfCheckIssues],
           diffExcerpts,
           rawWorkerOutput: workerRaw,
         }),
@@ -6520,17 +12503,28 @@ async function processWork(
             'No validation failure details provided',
           )}`,
           '',
+          formatFailureAnalysis(failureAnalysis),
+          '',
+          `Worker self-check issues:\n${formatList(
+            selfCheckIssues,
+            'No worker self-check issues',
+          )}`,
+          '',
           'Kira reran the planned validation commands itself and will not send this attempt to final review until they pass.',
         ].join('\n'),
       });
 
-      feedback = validationReruns.failed.map(
-        (command) => `Planned validation failed when Kira reran it: ${command}`,
-      );
+      feedback = [
+        ...validationReruns.failed.map(
+          (command) => `Planned validation failed when Kira reran it: ${command}`,
+        ),
+        ...failureAnalysis.map((item) => `Failure analysis (${item.category}): ${item.guidance}`),
+        ...selfCheckIssues,
+      ];
       const validationSummary =
         validationReruns.failed.length > 0
           ? `Validation reruns failed: ${validationReruns.failed.join(', ')}`
-          : 'Validation reruns failed.';
+          : 'Worker self-check failed.';
       const issueSignature = buildIssueSignature(feedback, validationSummary);
       if (issueSignature === previousIssueSignature) {
         repeatedIssueCount += 1;
@@ -6553,7 +12547,13 @@ async function processWork(
             planningState,
             attemptState,
             workerSummary,
+            validationPlan,
             validationReruns,
+            failureAnalysis,
+            runtimeValidation,
+            riskPolicy,
+            patchIntentVerification,
+            diffStats,
             outOfPlanFiles,
             validationGaps: missingValidationCommands,
             risks: feedback,
@@ -6619,6 +12619,7 @@ async function processWork(
       ].join('\n'),
     });
 
+    const reviewStartedAt = Date.now();
     const reviewRaw = await runToolAgent(
       runtime.reviewerConfig,
       projectRoot,
@@ -6633,17 +12634,56 @@ async function processWork(
         validationPlan,
         validationReruns,
         diffExcerpts,
+        projectSettings.effectiveInstructions,
+        diffStats,
+        failureAnalysis,
+        runtimeValidation,
+        patchIntentVerification,
       ),
       buildReviewSystemPrompt(),
       false,
       signal,
     );
+    const reviewFinishedAt = Date.now();
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
-    const reviewSummary = enforceReviewDecision(parseReviewSummary(reviewRaw));
-    const reviewRecord = buildReviewRecord(work.id, cycle, reviewSummary);
+    const reviewSummary = enforceReviewDecision(parseReviewSummary(reviewRaw), {
+      workerSummary,
+      validationReruns,
+      diffExcerpts,
+      requiredInstructions: projectSettings.effectiveInstructions,
+      riskPolicy,
+      requirementTrace: workerPlan.requirementTrace,
+      runtimeValidation,
+      reviewAdversarialPlan: contextScan.reviewAdversarialPlan,
+      patchIntentVerification,
+      designReviewGate: contextScan.designReviewGate,
+    });
+    const reviewTriage = buildReviewFindingTriage(reviewSummary, {
+      designReviewGate: contextScan.designReviewGate,
+      patchIntentVerification,
+      runtimeValidation,
+    });
+    const reviewRecord = buildReviewRecord(work.id, cycle, reviewSummary, {
+      reviewAdversarialPlan: contextScan.reviewAdversarialPlan,
+      designReviewGate: contextScan.designReviewGate,
+      patchIntentVerification,
+      runtimeValidation,
+      observability: buildReviewObservability({
+        startedAt: reviewStartedAt,
+        finishedAt: reviewFinishedAt,
+        reviewRaw,
+        reviewSummary,
+        triage: reviewTriage,
+      }),
+    });
     saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
 
     if (reviewSummary.approved) {
+      updateProjectProfileLearning(projectRoot, {
+        successfulPatterns: [
+          `${workerPlan.taskType}: approved with ${validationReruns.passed.length} validation checks and ${reviewSummary.evidenceChecked.length} review evidence entries.`,
+        ],
+      });
       saveAttemptRecord(
         options.sessionsDir,
         sessionPath,
@@ -6657,12 +12697,19 @@ async function processWork(
           planningState,
           attemptState,
           workerSummary,
+          validationPlan,
           validationReruns,
+          failureAnalysis,
+          runtimeValidation,
+          riskPolicy,
+          patchIntentVerification,
+          diffStats,
           outOfPlanFiles,
           validationGaps: missingValidationCommands,
           risks: [...workerSummary.remainingRisks, ...reviewSummary.residualRisk],
           diffExcerpts,
           rawWorkerOutput: workerRaw,
+          reviewSummary,
         }),
       );
       const suggestedCommitMessage = buildSuggestedCommitMessage(work, workerSummary);
@@ -6748,6 +12795,18 @@ async function processWork(
       return;
     }
 
+    updateProjectProfileLearning(projectRoot, {
+      reviewFailures: uniqueStrings([
+        ...reviewSummary.issues,
+        ...reviewSummary.nextWorkerInstructions,
+      ]),
+      validationFailures: reviewSummary.missingValidation,
+      repeatedPatterns:
+        repeatedIssueCount > 0
+          ? uniqueStrings(reviewSummary.issues).slice(0, MAX_PROJECT_LEARNING_ITEMS)
+          : [],
+    });
+
     addComment(options.sessionsDir, sessionPath, {
       taskId: work.id,
       taskType: 'work',
@@ -6798,12 +12857,19 @@ async function processWork(
         planningState,
         attemptState,
         workerSummary,
+        validationPlan,
         validationReruns,
+        failureAnalysis,
+        runtimeValidation,
+        riskPolicy,
+        patchIntentVerification,
+        diffStats,
         outOfPlanFiles,
         validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
         risks: [...workerSummary.remainingRisks, ...reviewSummary.issues],
         diffExcerpts,
         rawWorkerOutput: workerRaw,
+        reviewSummary,
       }),
     );
 
@@ -6835,13 +12901,20 @@ async function processWork(
           planningState,
           attemptState,
           workerSummary,
+          validationPlan,
           validationReruns,
+          failureAnalysis,
+          runtimeValidation,
+          riskPolicy,
+          patchIntentVerification,
+          diffStats,
           outOfPlanFiles,
           validationGaps: [...missingValidationCommands, ...reviewSummary.missingValidation],
           risks: reviewSummary.issues,
           diffExcerpts,
           rawWorkerOutput: workerRaw,
           blockedReason: 'Review issues repeated without progress.',
+          reviewSummary,
         }),
       );
       updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
@@ -7059,6 +13132,7 @@ function scanActionableWorks(options: KiraAutomationPluginOptions, sessionPath: 
   try {
     scanTodoWorks(options, sessionPath);
   } catch (error) {
+    if (isRecoverableLockError(error)) return;
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
       workId: '',

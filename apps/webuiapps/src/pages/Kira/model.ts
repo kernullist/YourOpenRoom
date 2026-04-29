@@ -47,6 +47,200 @@ export interface TaskComment {
   createdAt: number;
 }
 
+export interface KiraRequirementTraceItem {
+  id: string;
+  source: string;
+  text: string;
+  status?: string;
+  evidence: string[];
+}
+
+export interface KiraPatchAlternative {
+  name: string;
+  selected: boolean;
+  rationale: string;
+  tradeoffs: string[];
+}
+
+export interface KiraRiskReviewPolicy {
+  level?: string;
+  reasons?: string[];
+  evidenceMinimum?: number;
+  requiresRuntimeValidation?: boolean;
+  requiresSecondPass?: boolean;
+}
+
+export interface KiraRuntimeValidationResult {
+  checked?: boolean;
+  applicable?: boolean;
+  serverDetected?: boolean;
+  url?: string | null;
+  status?: string;
+  notes?: string[];
+  httpStatus?: number;
+  contentType?: string;
+  title?: string;
+  bodySnippet?: string;
+  evidence?: string[];
+}
+
+export interface KiraFailureReproductionStep {
+  command: string;
+  reason: string;
+  expectedSignal: string;
+}
+
+export interface KiraFailureAnalysisItem {
+  command: string;
+  category: string;
+  summary: string;
+  guidance: string;
+  reproductionSteps?: KiraFailureReproductionStep[];
+}
+
+export interface KiraReviewEvidenceChecked {
+  file: string;
+  reason: string;
+  method: string;
+}
+
+export interface KiraSemanticGraphNode {
+  file: string;
+  role: string;
+  imports?: string[];
+  exports?: string[];
+  symbols?: string[];
+  dependents?: string[];
+  tests?: string[];
+}
+
+export interface KiraTestImpactTarget {
+  file: string;
+  impactedTests?: string[];
+  commands?: string[];
+  rationale?: string;
+  confidence?: number;
+}
+
+export interface KiraReviewAdversarialPlan {
+  modes?: string[];
+  rationale?: string[];
+  requiredEvidence?: string[];
+}
+
+export interface KiraReviewAdversarialCheck {
+  mode: string;
+  result: string;
+  evidence: string[];
+  concern?: string;
+}
+
+export interface KiraPatchIntentVerification {
+  status?: string;
+  confidence?: number;
+  checkedFiles?: string[];
+  evidence?: string[];
+  issues?: string[];
+}
+
+export interface KiraClarificationQualityGate {
+  decision?: string;
+  confidence?: number;
+  reasons?: string[];
+  questions?: string[];
+}
+
+export interface KiraReviewerCalibration {
+  strictness?: string;
+  reasons?: string[];
+  focusMemories?: string[];
+  evidenceMinimum?: number;
+}
+
+export interface KiraDesignReviewCheck {
+  role: string;
+  verdict: string;
+  concern: string;
+  evidence: string[];
+  requiredChanges: string[];
+}
+
+export interface KiraDesignReviewGate {
+  status?: string;
+  summary?: string;
+  checks?: KiraDesignReviewCheck[];
+  requiredChanges?: string[];
+  createdAt?: number;
+}
+
+export interface KiraAttemptSynthesisRecommendation {
+  canSynthesize?: boolean;
+  summary?: string;
+  candidateParts?: string[];
+  risks?: string[];
+}
+
+export interface KiraReviewerDiscourseEntry {
+  role: string;
+  position: string;
+  argument: string;
+  evidence: string[];
+  response?: string;
+}
+
+export interface KiraReviewFindingTriageItem {
+  id: string;
+  source: string;
+  status: string;
+  severity: string;
+  title: string;
+  file?: string;
+  line?: number | null;
+  evidence: string[];
+  owner: string;
+  createdAt: number;
+}
+
+export interface KiraOrchestrationPlan {
+  runMode: string;
+  taskType: string;
+  workerCount: number;
+  validationDepth: string;
+  reviewDepth: string;
+  approvalThreshold: number;
+  summary: string;
+  lanes: Array<{
+    id: string;
+    role: string;
+    goal: string;
+    requiredEvidence: string[];
+  }>;
+  checkpoints: string[];
+  stopRules: string[];
+}
+
+export interface KiraEvidenceLedger {
+  items: Array<{
+    id: string;
+    kind: string;
+    status: string;
+    summary: string;
+    target?: string;
+    evidence: string[];
+    createdBy: string;
+    confidence: number;
+    createdAt: number;
+  }>;
+  approvalReadiness: {
+    score: number;
+    status: string;
+    blockers: string[];
+    missingEvidence: string[];
+    requiredEvidenceCount: number;
+    observedEvidenceCount: number;
+  };
+}
+
 export interface KiraAttemptRecord {
   id: string;
   workId: string;
@@ -59,11 +253,56 @@ export interface KiraAttemptRecord {
   outOfPlanFiles: string[];
   validationGaps: string[];
   risks: string[];
+  changeDesign?: {
+    targetFiles?: string[];
+    invariants?: string[];
+    expectedImpact?: string[];
+    validationStrategy?: string[];
+    rollbackStrategy?: string[];
+  };
+  diffHunkReview?: Array<{
+    file: string;
+    intent: string;
+    risk: string;
+  }>;
+  validationPlan?: {
+    plannerCommands?: string[];
+    autoAddedCommands?: string[];
+    effectiveCommands?: string[];
+    notes?: string[];
+  };
+  diffStats?: {
+    files?: number;
+    additions?: number;
+    deletions?: number;
+    hunks?: number;
+  };
+  observability?: {
+    stage?: string;
+    metrics?: Record<string, number>;
+    timeline?: string[];
+    notes?: string[];
+  };
+  failureAnalysis?: KiraFailureAnalysisItem[];
+  runtimeValidation?: KiraRuntimeValidationResult;
+  riskPolicy?: KiraRiskReviewPolicy;
+  semanticGraph?: KiraSemanticGraphNode[];
+  testImpact?: KiraTestImpactTarget[];
+  reviewAdversarialPlan?: KiraReviewAdversarialPlan;
+  patchIntentVerification?: KiraPatchIntentVerification;
+  clarificationGate?: KiraClarificationQualityGate;
+  reviewerCalibration?: KiraReviewerCalibration;
+  designReviewGate?: KiraDesignReviewGate;
+  orchestrationPlan?: KiraOrchestrationPlan;
+  evidenceLedger?: KiraEvidenceLedger;
+  requirementTrace?: KiraRequirementTraceItem[];
+  approachAlternatives?: KiraPatchAlternative[];
   diffExcerpts?: string[];
   blockedReason?: string;
   rollbackFiles?: string[];
   workerPlan?: {
     summary?: string;
+    taskType?: string;
     intendedFiles?: string[];
     protectedFiles?: string[];
     riskNotes?: string[];
@@ -96,6 +335,21 @@ export interface KiraReviewRecord {
   nextWorkerInstructions: string[];
   residualRisk: string[];
   filesChecked: string[];
+  evidenceChecked: KiraReviewEvidenceChecked[];
+  requirementVerdicts: KiraRequirementTraceItem[];
+  adversarialChecks: KiraReviewAdversarialCheck[];
+  reviewerDiscourse?: KiraReviewerDiscourseEntry[];
+  triage?: KiraReviewFindingTriageItem[];
+  reviewAdversarialPlan?: KiraReviewAdversarialPlan;
+  attemptSynthesis?: KiraAttemptSynthesisRecommendation;
+  observability?: {
+    durationMs?: number;
+    findingCount?: number;
+    triageOpenCount?: number;
+    discourseCount?: number;
+    evidenceCount?: number;
+    estimatedReviewOutputTokens?: number;
+  };
 }
 
 export interface KiraViewState {
@@ -132,6 +386,270 @@ function parseRecord<T>(raw: unknown): T | null {
 
 function normalizeStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function normalizeRequirementTrace(value: unknown): KiraRequirementTraceItem[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraRequirementTraceItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraRequirementTraceItem>;
+      const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+      const text = typeof raw.text === 'string' ? raw.text.trim() : '';
+      if (!id || !text) return null;
+      const status = typeof raw.status === 'string' ? raw.status : undefined;
+      return {
+        id,
+        source: typeof raw.source === 'string' ? raw.source : 'brief',
+        text,
+        ...(status ? { status } : {}),
+        evidence: normalizeStringList(raw.evidence),
+      };
+    })
+    .filter((item): item is KiraRequirementTraceItem => item !== null);
+}
+
+function normalizePatchAlternatives(value: unknown): KiraPatchAlternative[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraPatchAlternative | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraPatchAlternative>;
+      const name = typeof raw.name === 'string' ? raw.name.trim() : '';
+      if (!name) return null;
+      return {
+        name,
+        selected: raw.selected === true,
+        rationale: typeof raw.rationale === 'string' ? raw.rationale.trim() : '',
+        tradeoffs: normalizeStringList(raw.tradeoffs),
+      };
+    })
+    .filter((item): item is KiraPatchAlternative => item !== null);
+}
+
+function normalizeFailureAnalysis(value: unknown): KiraFailureAnalysisItem[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraFailureAnalysisItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraFailureAnalysisItem>;
+      const command = typeof raw.command === 'string' ? raw.command.trim() : '';
+      if (!command) return null;
+      return {
+        command,
+        category: typeof raw.category === 'string' ? raw.category : 'unknown',
+        summary: typeof raw.summary === 'string' ? raw.summary.trim() : '',
+        guidance: typeof raw.guidance === 'string' ? raw.guidance.trim() : '',
+        reproductionSteps: Array.isArray(raw.reproductionSteps)
+          ? raw.reproductionSteps
+              .map((step): KiraFailureReproductionStep | null => {
+                if (!step || typeof step !== 'object') return null;
+                const stepRaw = step as Partial<KiraFailureReproductionStep>;
+                const stepCommand =
+                  typeof stepRaw.command === 'string' ? stepRaw.command.trim() : '';
+                if (!stepCommand) return null;
+                return {
+                  command: stepCommand,
+                  reason: typeof stepRaw.reason === 'string' ? stepRaw.reason.trim() : '',
+                  expectedSignal:
+                    typeof stepRaw.expectedSignal === 'string' ? stepRaw.expectedSignal.trim() : '',
+                };
+              })
+              .filter((step): step is KiraFailureReproductionStep => step !== null)
+          : [],
+      };
+    })
+    .filter((item): item is KiraFailureAnalysisItem => item !== null);
+}
+
+function normalizeReviewEvidenceChecked(value: unknown): KiraReviewEvidenceChecked[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraReviewEvidenceChecked>;
+      const file = typeof raw.file === 'string' ? raw.file.trim() : '';
+      if (!file) return null;
+      return {
+        file,
+        reason: typeof raw.reason === 'string' ? raw.reason.trim() : '',
+        method: typeof raw.method === 'string' ? raw.method.trim() : '',
+      };
+    })
+    .filter((item): item is KiraReviewEvidenceChecked => item !== null);
+}
+
+function normalizeReviewAdversarialChecks(value: unknown): KiraReviewAdversarialCheck[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraReviewAdversarialCheck | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraReviewAdversarialCheck>;
+      const mode = typeof raw.mode === 'string' ? raw.mode.trim() : '';
+      if (!mode) return null;
+      return {
+        mode,
+        result: typeof raw.result === 'string' ? raw.result.trim() : 'failed',
+        evidence: normalizeStringList(raw.evidence),
+        ...(typeof raw.concern === 'string' && raw.concern.trim()
+          ? { concern: raw.concern.trim() }
+          : {}),
+      };
+    })
+    .filter((item): item is KiraReviewAdversarialCheck => item !== null);
+}
+
+function normalizeDesignReviewGate(value: unknown): KiraDesignReviewGate | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Partial<KiraDesignReviewGate>;
+  const checks = Array.isArray(raw.checks)
+    ? raw.checks
+        .map((item): KiraDesignReviewCheck | null => {
+          if (!item || typeof item !== 'object') return null;
+          const check = item as Partial<KiraDesignReviewCheck>;
+          const role = typeof check.role === 'string' ? check.role.trim() : '';
+          if (!role) return null;
+          return {
+            role,
+            verdict: typeof check.verdict === 'string' ? check.verdict.trim() : 'warn',
+            concern: typeof check.concern === 'string' ? check.concern.trim() : '',
+            evidence: normalizeStringList(check.evidence),
+            requiredChanges: normalizeStringList(check.requiredChanges),
+          };
+        })
+        .filter((item): item is KiraDesignReviewCheck => item !== null)
+    : [];
+  return {
+    status: typeof raw.status === 'string' ? raw.status.trim() : undefined,
+    summary: typeof raw.summary === 'string' ? raw.summary.trim() : undefined,
+    checks,
+    requiredChanges: normalizeStringList(raw.requiredChanges),
+    createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : undefined,
+  };
+}
+
+function normalizeReviewerDiscourse(value: unknown): KiraReviewerDiscourseEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraReviewerDiscourseEntry | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraReviewerDiscourseEntry>;
+      const role = typeof raw.role === 'string' ? raw.role.trim() : '';
+      const argument = typeof raw.argument === 'string' ? raw.argument.trim() : '';
+      if (!role || !argument) return null;
+      return {
+        role,
+        position: typeof raw.position === 'string' ? raw.position.trim() : 'challenge',
+        argument,
+        evidence: normalizeStringList(raw.evidence),
+        ...(typeof raw.response === 'string' && raw.response.trim()
+          ? { response: raw.response.trim() }
+          : {}),
+      };
+    })
+    .filter((item): item is KiraReviewerDiscourseEntry => item !== null);
+}
+
+function normalizeReviewTriage(value: unknown): KiraReviewFindingTriageItem[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item): KiraReviewFindingTriageItem | null => {
+      if (!item || typeof item !== 'object') return null;
+      const raw = item as Partial<KiraReviewFindingTriageItem>;
+      const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+      const title = typeof raw.title === 'string' ? raw.title.trim() : '';
+      if (!id || !title) return null;
+      return {
+        id,
+        source: typeof raw.source === 'string' ? raw.source.trim() : 'review',
+        status: typeof raw.status === 'string' ? raw.status.trim() : 'open',
+        severity: typeof raw.severity === 'string' ? raw.severity.trim() : 'medium',
+        title,
+        ...(typeof raw.file === 'string' && raw.file.trim() ? { file: raw.file.trim() } : {}),
+        line: typeof raw.line === 'number' && Number.isFinite(raw.line) ? raw.line : null,
+        evidence: normalizeStringList(raw.evidence),
+        owner: typeof raw.owner === 'string' ? raw.owner.trim() : 'worker',
+        createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
+      };
+    })
+    .filter((item): item is KiraReviewFindingTriageItem => item !== null);
+}
+
+function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | undefined {
+  const parsed = parseRecord<Partial<KiraOrchestrationPlan>>(value);
+  if (!parsed?.runMode) return undefined;
+  return {
+    runMode: String(parsed.runMode),
+    taskType: typeof parsed.taskType === 'string' ? parsed.taskType : 'generalist',
+    workerCount: typeof parsed.workerCount === 'number' ? parsed.workerCount : 1,
+    validationDepth:
+      typeof parsed.validationDepth === 'string' ? parsed.validationDepth : 'standard',
+    reviewDepth: typeof parsed.reviewDepth === 'string' ? parsed.reviewDepth : 'adversarial',
+    approvalThreshold: typeof parsed.approvalThreshold === 'number' ? parsed.approvalThreshold : 80,
+    summary: typeof parsed.summary === 'string' ? parsed.summary : '',
+    lanes: Array.isArray(parsed.lanes)
+      ? parsed.lanes
+          .map((lane): KiraOrchestrationPlan['lanes'][number] | null => {
+            if (!lane || typeof lane !== 'object') return null;
+            const raw = lane as Partial<KiraOrchestrationPlan['lanes'][number]>;
+            return {
+              id: typeof raw.id === 'string' ? raw.id : '',
+              role: typeof raw.role === 'string' ? raw.role : '',
+              goal: typeof raw.goal === 'string' ? raw.goal : '',
+              requiredEvidence: normalizeStringList(raw.requiredEvidence),
+            };
+          })
+          .filter((lane): lane is KiraOrchestrationPlan['lanes'][number] => Boolean(lane?.id))
+      : [],
+    checkpoints: normalizeStringList(parsed.checkpoints),
+    stopRules: normalizeStringList(parsed.stopRules),
+  };
+}
+
+function normalizeEvidenceLedger(value: unknown): KiraEvidenceLedger | undefined {
+  const parsed = parseRecord<Partial<KiraEvidenceLedger>>(value);
+  if (!parsed?.approvalReadiness) return undefined;
+  return {
+    items: Array.isArray(parsed.items)
+      ? parsed.items
+          .map((item): KiraEvidenceLedger['items'][number] | null => {
+            if (!item || typeof item !== 'object') return null;
+            const raw = item as Partial<KiraEvidenceLedger['items'][number]>;
+            const id = typeof raw.id === 'string' ? raw.id : '';
+            if (!id) return null;
+            return {
+              id,
+              kind: typeof raw.kind === 'string' ? raw.kind : 'manual',
+              status: typeof raw.status === 'string' ? raw.status : 'info',
+              summary: typeof raw.summary === 'string' ? raw.summary : '',
+              ...(typeof raw.target === 'string' ? { target: raw.target } : {}),
+              evidence: normalizeStringList(raw.evidence),
+              createdBy: typeof raw.createdBy === 'string' ? raw.createdBy : 'kira',
+              confidence: typeof raw.confidence === 'number' ? raw.confidence : 0.5,
+              createdAt: typeof raw.createdAt === 'number' ? raw.createdAt : 0,
+            };
+          })
+          .filter((item): item is KiraEvidenceLedger['items'][number] => item !== null)
+      : [],
+    approvalReadiness: {
+      score:
+        typeof parsed.approvalReadiness.score === 'number' ? parsed.approvalReadiness.score : 0,
+      status:
+        typeof parsed.approvalReadiness.status === 'string'
+          ? parsed.approvalReadiness.status
+          : 'needs_evidence',
+      blockers: normalizeStringList(parsed.approvalReadiness.blockers),
+      missingEvidence: normalizeStringList(parsed.approvalReadiness.missingEvidence),
+      requiredEvidenceCount:
+        typeof parsed.approvalReadiness.requiredEvidenceCount === 'number'
+          ? parsed.approvalReadiness.requiredEvidenceCount
+          : 1,
+      observedEvidenceCount:
+        typeof parsed.approvalReadiness.observedEvidenceCount === 'number'
+          ? parsed.approvalReadiness.observedEvidenceCount
+          : 0,
+    },
+  };
 }
 
 function normalizeClarificationStatus(value: unknown): WorkClarificationStatus {
@@ -297,6 +815,25 @@ export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
     outOfPlanFiles: normalizeStringList(parsed.outOfPlanFiles),
     validationGaps: normalizeStringList(parsed.validationGaps),
     risks: normalizeStringList(parsed.risks),
+    changeDesign: parsed.changeDesign,
+    diffHunkReview: Array.isArray(parsed.diffHunkReview) ? parsed.diffHunkReview : [],
+    validationPlan: parsed.validationPlan,
+    diffStats: parsed.diffStats,
+    observability: parsed.observability,
+    failureAnalysis: normalizeFailureAnalysis(parsed.failureAnalysis),
+    runtimeValidation: parsed.runtimeValidation,
+    riskPolicy: parsed.riskPolicy,
+    semanticGraph: Array.isArray(parsed.semanticGraph) ? parsed.semanticGraph : [],
+    testImpact: Array.isArray(parsed.testImpact) ? parsed.testImpact : [],
+    reviewAdversarialPlan: parsed.reviewAdversarialPlan,
+    patchIntentVerification: parsed.patchIntentVerification,
+    clarificationGate: parsed.clarificationGate,
+    reviewerCalibration: parsed.reviewerCalibration,
+    designReviewGate: normalizeDesignReviewGate(parsed.designReviewGate),
+    orchestrationPlan: normalizeOrchestrationPlan(parsed.orchestrationPlan),
+    evidenceLedger: normalizeEvidenceLedger(parsed.evidenceLedger),
+    requirementTrace: normalizeRequirementTrace(parsed.requirementTrace),
+    approachAlternatives: normalizePatchAlternatives(parsed.approachAlternatives),
     diffExcerpts: normalizeStringList(parsed.diffExcerpts),
     blockedReason: typeof parsed.blockedReason === 'string' ? parsed.blockedReason : undefined,
     rollbackFiles: normalizeStringList(parsed.rollbackFiles),
@@ -325,6 +862,14 @@ export function normalizeKiraReview(raw: unknown): KiraReviewRecord | null {
     nextWorkerInstructions: normalizeStringList(parsed.nextWorkerInstructions),
     residualRisk: normalizeStringList(parsed.residualRisk),
     filesChecked: normalizeStringList(parsed.filesChecked),
+    evidenceChecked: normalizeReviewEvidenceChecked(parsed.evidenceChecked),
+    requirementVerdicts: normalizeRequirementTrace(parsed.requirementVerdicts),
+    adversarialChecks: normalizeReviewAdversarialChecks(parsed.adversarialChecks),
+    reviewerDiscourse: normalizeReviewerDiscourse(parsed.reviewerDiscourse),
+    triage: normalizeReviewTriage(parsed.triage),
+    reviewAdversarialPlan: parsed.reviewAdversarialPlan,
+    attemptSynthesis: parsed.attemptSynthesis,
+    observability: parsed.observability,
   };
 }
 

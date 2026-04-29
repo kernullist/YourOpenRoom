@@ -24,6 +24,9 @@ const ko = {
     close: '닫기',
     refresh: '새로고침',
     saveWorkRoot: '루트 저장',
+    saveProjectSettings: '설정 저장',
+    generateProfile: '지식팩 생성',
+    refreshProfile: '지식팩 갱신',
     saving: '저장 중...',
     configureModels: 'Kira 모델 설정',
     resizeDetails: '작업 상세 패널 폭 조절',
@@ -34,6 +37,11 @@ const ko = {
     workRoot: '작업 루트',
     modelSettings: '모델 설정',
     modelSettingsCopy: 'worker와 reviewer의 제공자, 모델, worker 수를 선택하세요.',
+    projectSettings: '프로젝트 설정',
+    projectSettingsCopy: '이 프로젝트의 모든 worker와 reviewer가 반드시 지켜야 할 지침입니다.',
+    projectIntelligence: '프로젝트 지식팩',
+    projectIntelligenceCopy:
+      'worker가 프로젝트 구조, 검증, 리뷰 메모, 전문화 힌트를 기억하도록 만드는 자동 프로필입니다.',
     projects: '프로젝트',
     boardEyebrow: '실행 보드',
     boardAllTitle: '전체 작업',
@@ -57,6 +65,12 @@ const ko = {
     commentAuthor: '작성자',
     commentBody: '댓글',
     workRootDirectory: '로컬 작업 루트 폴더',
+    requiredInstructions: 'worker/reviewer 필수 지침',
+    runMode: '실행 모드',
+    rulePacks: '룰팩 프리셋',
+    workerProfiles: '전문화',
+    validationHints: '검증 힌트',
+    reviewMemory: '리뷰 메모리',
   },
   placeholders: {
     workTitle: '작업 상세 동기화 구현',
@@ -65,6 +79,8 @@ const ko = {
     commentAuthor: '나, orchestrator, reviewer...',
     commentBody: '짧은 메모, 리뷰 의견, 인계 내용을 적어 주세요.',
     workRootDirectory: 'F:/workspace',
+    requiredInstructions:
+      '예: 기존 컴포넌트 스타일을 따르고, export API에는 명시적 타입을 선호하며, 검증을 생략한 코드는 반려하세요.',
   },
   drafts: {
     task: '작업 초안',
@@ -107,8 +123,18 @@ const ko = {
     activeProject: '활성 프로젝트',
     modelsReady: '준비됨',
     modelsNeedSetup: '설정 필요',
+    instructionsSet: '설정됨',
+    instructionsEmpty: '비어 있음',
+    profileReady: '준비됨',
+    profileMissing: '없음',
+    profileNone: '없음',
+    profileHint: '지식팩을 갱신하면 Kira가 프로젝트 구조와 검증 힌트를 저장합니다.',
+    profileUpdated: '마지막 갱신: {{time}}',
     activeProjectHint:
       'Kira가 계획과 에이전트 인계의 현재 실행 대상으로 사용할 로컬 프로젝트를 선택하세요.',
+    requiredInstructionsHint:
+      '이 필드에 내용이 있으면 Kira가 worker, reviewer, multi-worker 선택 프롬프트에 필수 수용 기준으로 주입합니다.',
+    rulePackHint: '현재 {{mode}} 모드, 룰팩 {{count}}개가 함께 적용됩니다.',
   },
   messages: {
     loading: 'Kira를 불러오는 중...',

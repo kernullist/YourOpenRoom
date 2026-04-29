@@ -272,7 +272,18 @@ async function drainKiraAutomationEvents(sessionPath: string): Promise<KiraAutom
   );
   if (!res.ok) throw new Error(`Kira automation event API error ${res.status}`);
   const data = (await res.json()) as { events?: KiraAutomationEvent[] };
-  return Array.isArray(data.events) ? data.events : [];
+  return Array.isArray(data.events)
+    ? data.events.filter((event) => !isRecoverableKiraAutomationLockNotice(event))
+    : [];
+}
+
+function isRecoverableKiraAutomationLockNotice(event: KiraAutomationEvent): boolean {
+  return (
+    event.title === 'Kira automation scan' &&
+    event.type === 'needs_attention' &&
+    /\b(EACCES|EBUSY|EEXIST|ENOENT|ENOTDIR|EPERM)\b/i.test(event.message) &&
+    /\b(?:automation-locks|kira-automation-locks)\b/i.test(event.message)
+  );
 }
 
 function hasPersistedConversation(data: ChatHistoryData | null): boolean {
@@ -794,10 +805,10 @@ async function loadDueCalendarReminderEvents(nowMs: number): Promise<CalendarRem
               : (raw as CalendarReminderEvent);
           if (!parsed?.id || !parsed?.title || !parsed?.startAt) return null;
           return {
-            notes: '',
-            remindBeforeMinutes: 15,
-            completed: false,
             ...parsed,
+            notes: parsed.notes ?? '',
+            remindBeforeMinutes: parsed.remindBeforeMinutes ?? 15,
+            completed: parsed.completed ?? false,
           };
         } catch (error) {
           console.warn('[ChatPanel] Failed to parse calendar reminder event', node.path, error);
@@ -1271,6 +1282,7 @@ const ChatPanel: React.FC<{
   const [dialogLlmConfig, setDialogLlmConfig] = useState<DialogLlmConfig | null>(null);
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
   const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
+  const [persistedConfigLoaded, setPersistedConfigLoaded] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfileConfig | null>(
     loadUserProfileConfigSync,
   );
@@ -1526,25 +1538,35 @@ const ChatPanel: React.FC<{
     loadConfig().then((fileConfig) => {
       if (fileConfig) setConfig(fileConfig);
     });
-    loadPersistedConfig().then((persisted) => {
-      if (persisted?.dialogLlm) {
-        setDialogLlmConfig(persisted.dialogLlm);
-      }
-      if (persisted?.idaPe) {
-        setIdaPeConfig(persisted.idaPe);
-      }
-      setKiraConfig(persisted?.kira ?? null);
-      const nextUserProfile = persisted
-        ? (persisted.userProfile ?? null)
-        : loadUserProfileConfigSync();
-      const nextConversationPreferences = persisted
-        ? (persisted.conversationPreferences ?? null)
-        : loadConversationPreferencesSync();
-      setUserProfile(nextUserProfile);
-      setConversationPreferences(nextConversationPreferences);
-      saveUserProfileConfig(nextUserProfile);
-      saveConversationPreferences(nextConversationPreferences);
-    });
+    loadPersistedConfig()
+      .then((persisted) => {
+        if (persisted?.llm) {
+          setConfig(persisted.llm);
+        }
+        if (persisted?.imageGen) {
+          setImageGenConfig(persisted.imageGen);
+        }
+        if (persisted?.dialogLlm) {
+          setDialogLlmConfig(persisted.dialogLlm);
+        }
+        if (persisted?.idaPe) {
+          setIdaPeConfig(persisted.idaPe);
+        }
+        setKiraConfig(persisted?.kira ?? null);
+        const nextUserProfile = persisted
+          ? (persisted.userProfile ?? null)
+          : loadUserProfileConfigSync();
+        const nextConversationPreferences = persisted
+          ? (persisted.conversationPreferences ?? null)
+          : loadConversationPreferencesSync();
+        setUserProfile(nextUserProfile);
+        setConversationPreferences(nextConversationPreferences);
+        saveUserProfileConfig(nextUserProfile);
+        saveConversationPreferences(nextConversationPreferences);
+      })
+      .finally(() => {
+        setPersistedConfigLoaded(true);
+      });
     loadImageGenConfig().then((fileConfig) => {
       if (fileConfig) setImageGenConfig(fileConfig);
     });
@@ -2105,8 +2127,9 @@ const ChatPanel: React.FC<{
         liveMainConfig,
         liveDialogConfig,
       );
+      const selectedConfig = selectedConversationModel.config;
 
-      if (!hasUsableLLMConfig(selectedConversationModel.config)) {
+      if (!selectedConfig || !hasUsableLLMConfig(selectedConfig)) {
         console.info('[ChatPanel] Missing usable LLM config, opening settings modal');
         setSettingsInitialTab('models');
         setShowSettings(true);
@@ -2119,9 +2142,9 @@ const ChatPanel: React.FC<{
       stopAoiTtsPlayback();
       console.info('[ChatPanel] Sending user message', {
         text,
-        provider: config.provider,
-        model: config.model,
-        baseUrl: config.baseUrl,
+        provider: selectedConfig.provider,
+        model: selectedConfig.model,
+        baseUrl: selectedConfig.baseUrl,
       });
 
       const userDisplay: CharacterDisplayMessage = {
@@ -2289,7 +2312,7 @@ const ChatPanel: React.FC<{
 
       setLoading(true);
       try {
-        await runConversation(newHistory, selectedConversationModel.config, liveDialogConfig);
+        await runConversation(newHistory, selectedConfig, liveDialogConfig);
       } catch (err) {
         console.error('[ChatPanel] runConversation failed', err);
         logger.error('ChatPanel', 'Error:', err);
@@ -2335,6 +2358,7 @@ const ChatPanel: React.FC<{
     if (!hasUsableLLMConfig(activeCfg)) {
       throw new Error('No usable LLM config was found for this conversation turn.');
     }
+    const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const includeAppTools = !useDialogModel && shouldEnableAppTools(latestUserMessage, history);
     const condensedHistory = condenseConversationHistory(history);
 
@@ -2407,7 +2431,7 @@ const ChatPanel: React.FC<{
         ...prev,
         {
           label: 'conversation-seed',
-          modelRoute: useDialogModel ? 'dialog' : 'main',
+          modelRoute: activeModelRoute,
           modelId: activeCfg.model,
           snapshot: seedBudgetSnapshot,
           createdAt: Date.now(),
@@ -2463,7 +2487,7 @@ const ChatPanel: React.FC<{
           {
             label: 'iteration-request',
             iteration: iterations,
-            modelRoute: useDialogModel ? 'dialog' : 'main',
+            modelRoute: activeModelRoute,
             modelId: activeCfg.model,
             snapshot: iterationBudgetSnapshot,
             createdAt: Date.now(),
@@ -3773,7 +3797,31 @@ const ChatPanel: React.FC<{
         </div>
       </div>
 
-      {showSettings && (
+      {showSettings && !persistedConfigLoaded && (
+        <div className={styles.overlay}>
+          <div className={styles.settingsModal} data-testid="settings-loading-modal">
+            <div className={styles.settingsHeader}>
+              <div className={styles.settingsHeading}>
+                <div className={styles.settingsTitle}>Settings</div>
+                <div className={styles.settingsSubtitle}>Loading saved settings...</div>
+              </div>
+              <button className={styles.cancelBtn} onClick={() => setShowSettings(false)}>
+                Close
+              </button>
+            </div>
+            <div className={styles.settingsBody}>
+              <div className={styles.settingsSection}>
+                <span className={styles.modelHint}>
+                  Saved configuration is still loading. The settings form will open after the
+                  persisted config is ready.
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showSettings && persistedConfigLoaded && (
         <SettingsModal
           config={config}
           dialogConfig={dialogLlmConfig}
@@ -4175,6 +4223,9 @@ const SettingsModal: React.FC<{
   );
   const [kiraAutoCommit, setKiraAutoCommit] = useState(
     kiraConfig?.projectDefaults?.autoCommit !== false,
+  );
+  const [kiraRequiredInstructions, setKiraRequiredInstructions] = useState(
+    kiraConfig?.projectDefaults?.requiredInstructions || '',
   );
   const [kiraWorkers, setKiraWorkers] = useState<KiraRoleDraft[]>(() =>
     resolveInitialKiraWorkers(kiraConfig, config),
@@ -5131,6 +5182,25 @@ const SettingsModal: React.FC<{
                     attempt is applied to the primary worktree without committing.
                   </span>
                 </div>
+
+                <div className={styles.field}>
+                  <label className={styles.label}>
+                    Default required worker/reviewer instructions
+                  </label>
+                  <textarea
+                    className={styles.fieldInput}
+                    value={kiraRequiredInstructions}
+                    onChange={(e) => setKiraRequiredInstructions(e.target.value)}
+                    placeholder="Coding style, architecture rules, naming conventions, validation expectations..."
+                    rows={5}
+                    maxLength={12000}
+                    style={{ resize: 'vertical' }}
+                  />
+                  <span className={styles.modelHint}>
+                    Applied as binding project defaults unless a project-local .kira settings file
+                    overrides them.
+                  </span>
+                </div>
               </div>
 
               <div className={styles.settingsSectionHeader}>
@@ -5546,15 +5616,22 @@ const SettingsModal: React.FC<{
                 ttsEnabled,
                 ttsPreloadCommonPhrases,
               };
+              const nextKiraProjectDefaults: NonNullable<KiraConfig['projectDefaults']> = {
+                ...(kiraConfig?.projectDefaults ?? {}),
+                autoCommit: kiraAutoCommit,
+              };
+              if (kiraRequiredInstructions.trim()) {
+                nextKiraProjectDefaults.requiredInstructions = kiraRequiredInstructions.trim();
+              } else {
+                delete nextKiraProjectDefaults.requiredInstructions;
+              }
               const nextKiraConfig: KiraConfig = {
                 ...(kiraWorkRootDirectory.trim()
                   ? { workRootDirectory: kiraWorkRootDirectory.trim() }
                   : {}),
                 workers: kiraWorkers.slice(0, 3).map(kiraDraftToConfig),
                 reviewerLlm: kiraDraftToConfig(kiraReviewer),
-                projectDefaults: {
-                  autoCommit: kiraAutoCommit,
-                },
+                projectDefaults: nextKiraProjectDefaults,
               };
               onSave(
                 llmCfg,

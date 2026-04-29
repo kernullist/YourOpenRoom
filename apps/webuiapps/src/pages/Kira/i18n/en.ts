@@ -25,6 +25,9 @@ const en = {
     close: 'Close',
     refresh: 'Refresh',
     saveWorkRoot: 'Save root',
+    saveProjectSettings: 'Save settings',
+    generateProfile: 'Generate profile',
+    refreshProfile: 'Refresh profile',
     saving: 'Saving...',
     configureModels: 'Configure Kira models',
     resizeDetails: 'Resize task detail panel',
@@ -35,6 +38,11 @@ const en = {
     workRoot: 'Work Root',
     modelSettings: 'Model settings',
     modelSettingsCopy: 'Choose worker and reviewer providers, models, and worker count.',
+    projectSettings: 'Project settings',
+    projectSettingsCopy: 'Required instructions for every worker and reviewer on this project.',
+    projectIntelligence: 'Project intelligence',
+    projectIntelligenceCopy:
+      'An automatic profile that helps workers remember structure, validation, review memory, and specialization hints.',
     projects: 'Projects',
     boardEyebrow: 'Execution board',
     boardAllTitle: 'All tasks',
@@ -59,6 +67,12 @@ const en = {
     commentAuthor: 'Author',
     commentBody: 'Comment',
     workRootDirectory: 'Local work root folder',
+    requiredInstructions: 'Required worker/reviewer instructions',
+    runMode: 'Run mode',
+    rulePacks: 'Rule pack presets',
+    workerProfiles: 'Specialization',
+    validationHints: 'Validation hints',
+    reviewMemory: 'Review memory',
   },
   placeholders: {
     workTitle: 'Implement work detail sync',
@@ -68,6 +82,8 @@ const en = {
     commentAuthor: 'You, orchestrator, reviewer...',
     commentBody: 'Short note, review remark, or handoff update.',
     workRootDirectory: 'F:/workspace',
+    requiredInstructions:
+      'Example: Follow the existing component style, prefer explicit types on exported APIs, and reject code that skips validation.',
   },
   drafts: {
     task: 'Task draft',
@@ -110,8 +126,18 @@ const en = {
     activeProject: 'Active project',
     modelsReady: 'Ready',
     modelsNeedSetup: 'Needs setup',
+    instructionsSet: 'Set',
+    instructionsEmpty: 'Empty',
+    profileReady: 'Ready',
+    profileMissing: 'Missing',
+    profileNone: 'None',
+    profileHint: 'Refresh the profile to save project structure and validation hints for Kira.',
+    profileUpdated: 'Last updated: {{time}}',
     activeProjectHint:
       'Pick the local project Kira should treat as the current execution target for planning and agent handoff.',
+    requiredInstructionsHint:
+      'When this field is not empty, Kira injects it into worker, reviewer, and multi-worker selection prompts as binding acceptance criteria.',
+    rulePackHint: '{{mode}} mode is active with {{count}} rule pack(s).',
   },
   messages: {
     loading: 'Loading Kira...',

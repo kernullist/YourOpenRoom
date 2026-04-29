@@ -26,6 +26,9 @@ export interface KiraRoleLlmConfig extends Partial<Omit<LLMConfig, 'provider'>> 
 
 export interface KiraProjectDefaults {
   autoCommit?: boolean;
+  requiredInstructions?: string;
+  runMode?: 'quick' | 'standard' | 'deep';
+  rulePacks?: Array<{ id: string; enabled?: boolean }>;
 }
 
 export interface KiraConfig {

@@ -201,6 +201,228 @@
   border: 1px solid var(--line-soft);
 }
 
+.projectSettingsCard {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px;
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--line-soft);
+}
+
+.projectSettingsHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+
+  > div {
+    min-width: 0;
+  }
+
+  strong {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 14px;
+    letter-spacing: -0.02em;
+  }
+
+  p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+}
+
+.projectSettingsForm {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.projectInstructionsField {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+
+  span {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+
+  textarea {
+    width: 100%;
+    min-height: 142px;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    border-radius: 14px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(6, 10, 14, 0.55);
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.55;
+    outline: none;
+    resize: vertical;
+
+    &:focus {
+      border-color: rgba(255, 143, 61, 0.42);
+      box-shadow: 0 0 0 3px rgba(255, 143, 61, 0.14);
+    }
+  }
+}
+
+.projectSettingsActions {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+
+  button {
+    min-height: 36px;
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.runModeGroup,
+.rulePackGrid {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+
+  > span {
+    color: var(--text-muted);
+    font-size: 12px;
+    font-weight: 700;
+  }
+}
+
+.segmentedControl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  padding: 4px;
+  border-radius: 14px;
+  background: rgba(6, 10, 14, 0.42);
+
+  button {
+    min-width: 0;
+    min-height: 34px;
+    padding: 0 8px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 800;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.segmentActive {
+  border-color: rgba(255, 143, 61, 0.5);
+  background: rgba(255, 143, 61, 0.18);
+  color: #ffd7ae;
+}
+
+.rulePackGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.rulePackGrid > span {
+  grid-column: 1 / -1;
+}
+
+.rulePackItem {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(6, 10, 14, 0.34);
+
+  input {
+    margin-top: 2px;
+  }
+
+  span {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  strong,
+  small {
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    color: var(--text-main);
+    font-size: 12px;
+  }
+
+  small {
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+}
+
+.projectIntelligenceGrid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+
+  span {
+    display: flex;
+    min-width: 0;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-radius: 12px;
+    background: rgba(6, 10, 14, 0.34);
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+
+  strong {
+    min-width: 0;
+    color: var(--text-main);
+    font-size: 12px;
+    text-align: right;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+}
+
+.projectSettingsPath {
+  display: block;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(6, 10, 14, 0.42);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+  word-break: break-all;
+}
+
 .modelSettingsHeader {
   display: flex;
   align-items: flex-start;
@@ -973,6 +1195,94 @@
   gap: 10px;
 }
 
+.panelSubhead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+
+  strong {
+    font-size: 13px;
+  }
+
+  span {
+    color: var(--text-muted);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.attemptComparison,
+.triageBoard,
+.evidenceLedger,
+.manualEvidenceComposer {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border-radius: 16px;
+  border: 1px solid var(--line-soft);
+  background: rgba(6, 10, 14, 0.28);
+}
+
+.comparisonRows,
+.triageItems,
+.evidenceItems {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.comparisonRow {
+  display: grid;
+  grid-template-columns: 44px repeat(7, minmax(0, 1fr));
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+
+  strong,
+  span {
+    min-width: 0;
+    font-size: 12px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  span {
+    color: var(--text-muted);
+  }
+}
+
+.triageItems div,
+.evidenceItems div {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+  padding: 8px 10px;
+  border-radius: 12px;
+  background: rgba(255, 255, 255, 0.035);
+
+  strong {
+    font-size: 12px;
+  }
+
+  span,
+  small {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+}
+
 .attemptCard {
   min-width: 0;
   max-width: 100%;
@@ -1367,6 +1677,47 @@
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+.manualEvidenceControls {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+
+  select {
+    min-width: 0;
+    min-height: 36px;
+    padding: 0 10px;
+    border-radius: 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    background: rgba(6, 10, 14, 0.55);
+    color: var(--text-main);
+  }
+
+  label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+  }
+}
+
+.manualEvidenceComposer textarea {
+  width: 100%;
+  min-height: 82px;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(6, 10, 14, 0.55);
+  color: var(--text-main);
+  font-size: 12px;
+  line-height: 1.55;
+  outline: none;
+  resize: vertical;
 }
 
 .commentActions {
@@ -1891,7 +2242,17 @@
 
   .formGrid,
   .primaryActions,
-  .statGrid {
+  .statGrid,
+  .rulePackGrid,
+  .attemptGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .comparisonRow {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .manualEvidenceControls {
     grid-template-columns: 1fr;
   }
 
