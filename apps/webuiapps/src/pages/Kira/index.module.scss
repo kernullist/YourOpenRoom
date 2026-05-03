@@ -294,6 +294,107 @@
   }
 }
 
+.contractTools {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: stretch;
+
+  button {
+    min-height: 34px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 700;
+  }
+}
+
+.contractStatusReady,
+.contractStatusError,
+.contractSchema,
+.contractIssues {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  background: rgba(6, 10, 14, 0.36);
+  border: 1px solid var(--line-soft);
+  overflow: hidden;
+}
+
+.contractStatusReady,
+.contractStatusError {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+
+  strong {
+    font-size: 12px;
+  }
+
+  span {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.35;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contractStatusReady {
+  border-color: rgba(74, 222, 128, 0.22);
+}
+
+.contractStatusError {
+  border-color: rgba(248, 113, 113, 0.28);
+  background: rgba(248, 113, 113, 0.08);
+}
+
+.contractSchema {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-content: flex-start;
+
+  code {
+    padding: 3px 6px;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-muted);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+  }
+}
+
+.contractIssues {
+  grid-column: 1 / -1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  border-color: rgba(248, 113, 113, 0.24);
+  background: rgba(248, 113, 113, 0.07);
+
+  span {
+    min-width: 0;
+  }
+
+  strong,
+  small {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    color: var(--text-main);
+    font-size: 11px;
+  }
+
+  small {
+    margin-top: 2px;
+    color: var(--text-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+}
+
 .runModeGroup,
 .rulePackGrid {
   display: flex;
@@ -341,6 +442,39 @@
 
 .rulePackGrid > span {
   grid-column: 1 / -1;
+}
+
+.qualityDrilldown {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 8px;
+
+  span {
+    min-width: 0;
+    padding: 10px;
+    border-radius: 12px;
+    background: rgba(6, 10, 14, 0.32);
+    border: 1px solid var(--line-soft);
+  }
+
+  strong,
+  small {
+    display: block;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  small {
+    margin-top: 4px;
+    color: var(--text-muted);
+    font-size: 12px;
+  }
 }
 
 .rulePackItem {
@@ -2243,6 +2377,9 @@
   .formGrid,
   .primaryActions,
   .statGrid,
+  .contractTools,
+  .contractIssues,
+  .qualityDrilldown,
   .rulePackGrid,
   .attemptGrid {
     grid-template-columns: 1fr;

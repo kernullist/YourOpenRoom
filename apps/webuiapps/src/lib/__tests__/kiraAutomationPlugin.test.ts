@@ -13,6 +13,7 @@ import {
   buildReviewSystemPrompt,
   buildAttemptComparisonReviewSystemPrompt,
   canUseFullFileRewrite,
+  captureDirtyFileSnapshots,
   collectAttemptReviewabilityIssues,
   collectDesignReviewGateIssues,
   collectGitDiffStats,
@@ -22,7 +23,9 @@ import {
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
   buildWorkerSystemPrompt,
+  detectTouchedFilesFromDirtySnapshots,
   detectTouchedFilesFromGitStatus,
+  evaluateExecutionPolicy,
   filterStageableChangedFiles,
   findMissingValidationCommands,
   findSuggestedCommitBackfillSummary,
@@ -53,6 +56,7 @@ import {
   shouldUseKiraAttemptWorktrees,
   shouldUseKiraIsolatedWorktree,
   tryAcquireLock,
+  validateKiraOrchestrationContract,
   verifyPatchIntent,
 } from '../kiraAutomationPlugin';
 
@@ -293,6 +297,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(planner).toContain('stopConditions');
     expect(planner).toContain('Do not invent inspected files');
     expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
+    expect(worker).toContain('Kira prompt contract version: 2.');
     expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
     expect(worker).toContain('sibling git worktrees');
     expect(worker).toContain('Do not touch out-of-plan files unless necessary and explained.');
@@ -374,6 +379,7 @@ describe('Kira Codex-grade prompts', () => {
     );
 
     expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
+    expect(reviewerSystem).toContain('Kira prompt contract version: 2.');
     expect(reviewerSystem).toContain('enforce them as binding acceptance criteria');
     expect(reviewerSystem).toContain(
       'If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
@@ -384,6 +390,9 @@ describe('Kira Codex-grade prompts', () => {
     expect(reviewerSystem).toContain('Do not approve if validation failed.');
     expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('attempt judge');
+    expect(buildAttemptComparisonReviewSystemPrompt()).toContain(
+      'Kira prompt contract version: 2.',
+    );
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
     expect(reviewPrompt).toContain('Mandatory project instructions:');
     expect(reviewPrompt).toContain('Review the changeDesign against the actual diff');
@@ -1008,6 +1017,12 @@ describe('buildProjectContextScan()', () => {
       );
       expect(scan.riskPolicy?.evidenceMinimum).toBeGreaterThanOrEqual(1);
       expect(typeof scan.runtimeValidation?.applicable).toBe('boolean');
+      expect(scan.executionPolicy?.mode).toBe('balanced');
+      expect(scan.environmentContract?.runner).toBe('local');
+      expect(scan.subagentRegistry?.some((agent) => agent.id === 'implementer')).toBe(true);
+      expect(scan.workflowDag?.criticalPath).toContain('validate');
+      expect(scan.pluginConnectors?.some((connector) => connector.id === 'github')).toBe(true);
+      expect(scan.orchestrationPlan?.subagentIds).toContain('implementer');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
@@ -1712,6 +1727,188 @@ describe('resolveProjectSettings()', () => {
     expect(settings.rulePacks.find((item) => item.id === 'validation-first')?.enabled).toBe(false);
     expect(settings.effectiveInstructions).not.toContain('Rule pack: Validation First');
   });
+
+  it('normalizes orchestration settings for policy, environment, subagents, workflow, and plugins', () => {
+    const settings = resolveProjectSettings({
+      executionPolicy: {
+        mode: 'locked-down',
+        maxChangedFiles: 3,
+        maxDiffLines: 120,
+        protectedPaths: ['secrets/**'],
+        commandDenylist: ['pnpm add'],
+      },
+      environment: {
+        runner: 'remote-command',
+        remoteCommand: 'ssh builder -- {command}',
+        validationCommands: ['pnpm run typecheck'],
+        requiredEnv: ['KIRA_TOKEN'],
+      },
+      subagents: [{ id: 'docs', label: 'Docs', profile: 'docs-maintainer', enabled: true }],
+      workflow: {
+        nodes: [
+          { id: 'plan', label: 'Plan', kind: 'plan', required: true },
+          { id: 'validate', label: 'Validate', kind: 'validate', required: true },
+        ],
+        edges: [{ from: 'plan', to: 'validate', condition: 'planned' }],
+        criticalPath: ['plan', 'validate'],
+      },
+      plugins: [{ id: 'github', enabled: true, policy: 'suggest', capabilities: ['issues'] }],
+    });
+
+    expect(settings.executionPolicy.mode).toBe('locked-down');
+    expect(settings.executionPolicy.maxChangedFiles).toBe(3);
+    expect(settings.environment.runner).toBe('remote-command');
+    expect(settings.environment.validationCommands).toContain('pnpm run typecheck');
+    expect(settings.subagents.some((agent) => agent.id === 'docs')).toBe(true);
+    expect(settings.workflow.criticalPath).toEqual(['plan', 'validate']);
+    expect(settings.plugins.find((connector) => connector.id === 'github')?.enabled).toBe(true);
+  });
+});
+
+describe('validateKiraOrchestrationContract()', () => {
+  const fixtures = JSON.parse(
+    fs.readFileSync(
+      join(process.cwd(), 'src/pages/Kira/fixtures/orchestration-regression-fixtures.json'),
+      'utf-8',
+    ),
+  ) as Record<string, any>;
+
+  it('rejects remote-command runner declarations without an executable command template', () => {
+    const report = validateKiraOrchestrationContract({
+      environment: fixtures.remoteRunnerMissing.environment,
+    });
+
+    expect(report.valid).toBe(false);
+    expect(report.issues.map((issue) => issue.path)).toContain('environment.remoteCommand');
+    expect(report.issues.map((issue) => issue.message).join('\n')).toContain('{command}');
+  });
+
+  it('keeps GitHub connector and customized DAG fixtures valid when policy requirements match', () => {
+    const report = validateKiraOrchestrationContract({
+      executionPolicy: {
+        requireValidation: false,
+        requireReviewerEvidence: true,
+      },
+      plugins: fixtures.pluginEnabled.plugins,
+      workflow: fixtures.dagCustomized.workflow,
+    });
+
+    expect(report.valid).toBe(true);
+    expect(report.normalized.plugins.find((connector) => connector.id === 'github')?.enabled).toBe(
+      true,
+    );
+    expect(report.normalized.workflow.criticalPath).toEqual(['plan', 'implement', 'review']);
+  });
+
+  it('flags invalid workflow edges and duplicate subagent ids before project settings are saved', () => {
+    const report = validateKiraOrchestrationContract({
+      subagents: [
+        { id: 'implementer', tools: ['read_file'], requiredEvidence: [] },
+        { id: 'implementer', tools: ['unknown_tool'], requiredEvidence: [] },
+      ],
+      workflow: {
+        nodes: [{ id: 'plan', kind: 'plan', required: true }],
+        edges: [{ from: 'plan', to: 'missing' }],
+        criticalPath: ['plan', 'missing'],
+      },
+    });
+
+    expect(report.valid).toBe(false);
+    expect(report.issues.map((issue) => issue.path)).toContain('subagents[1].id');
+    expect(report.issues.map((issue) => issue.path)).toContain('subagents[1].tools[0]');
+    expect(report.issues.map((issue) => issue.path)).toContain('workflow.edges[0].to');
+    expect(report.issues.map((issue) => issue.path)).toContain('workflow.criticalPath[1]');
+  });
+
+  it('normalizes policy-blocked attempt fixture with approval readiness blockers intact', () => {
+    const attempt = fixtures.policyBlockedAttempt;
+
+    expect(attempt.status).toBe('blocked');
+    expect(attempt.evidenceLedger.approvalReadiness.status).toBe('blocked');
+    expect(attempt.evidenceLedger.items[0].kind).toBe('policy');
+  });
+});
+
+describe('evaluateExecutionPolicy()', () => {
+  it('blocks protected writes and denied commands before tool execution', () => {
+    expect(
+      evaluateExecutionPolicy({ protectedPaths: ['secrets/**'] }, 'before_tool', {
+        toolName: 'write_file',
+        path: 'secrets/token.txt',
+      }).decision,
+    ).toBe('block');
+
+    const denied = evaluateExecutionPolicy({ commandDenylist: ['pnpm add'] }, 'before_tool', {
+      toolName: 'run_command',
+      command: 'pnpm add left-pad',
+    });
+
+    expect(denied.decision).toBe('block');
+    expect(denied.issues.join('\n')).toContain('denied command');
+  });
+
+  it('blocks integration when patch size exceeds locked execution policy limits', () => {
+    const result = evaluateExecutionPolicy(
+      {
+        mode: 'locked-down',
+        maxChangedFiles: 1,
+        maxDiffLines: 5,
+      },
+      'before_integration',
+      {
+        changedFiles: ['src/a.ts', 'src/b.ts'],
+        diffStats: { files: 2, additions: 10, deletions: 0, hunks: 2 },
+      },
+    );
+
+    expect(result.decision).toBe('block');
+    expect(result.issues.join('\n')).toContain('changed-file limit exceeded');
+    expect(result.issues.join('\n')).toContain('diff-line limit exceeded');
+  });
+
+  it('applies before_validation and task_completed policy hooks', () => {
+    const beforeValidation = evaluateExecutionPolicy(
+      {
+        rules: [
+          {
+            id: 'block-typecheck',
+            event: 'before_validation',
+            enabled: true,
+            decision: 'block',
+            message: 'Typecheck is blocked in this fixture.',
+            toolNames: ['run_command'],
+            pathPatterns: [],
+            commandPatterns: ['pnpm run typecheck'],
+            riskLevels: [],
+          },
+        ],
+      },
+      'before_validation',
+      { toolName: 'run_command', command: 'pnpm run typecheck' },
+    );
+    const completed = evaluateExecutionPolicy(
+      {
+        rules: [
+          {
+            id: 'block-high-risk-complete',
+            event: 'task_completed',
+            enabled: true,
+            decision: 'block',
+            message: 'High risk completion requires manual approval.',
+            toolNames: [],
+            pathPatterns: [],
+            commandPatterns: [],
+            riskLevels: ['high'],
+          },
+        ],
+      },
+      'task_completed',
+      { riskLevel: 'high' },
+    );
+
+    expect(beforeValidation.decision).toBe('block');
+    expect(completed.decision).toBe('block');
+  });
 });
 
 describe('resolveKiraProjectRoot()', () => {
@@ -1776,6 +1973,78 @@ describe('git status helpers', () => {
     );
 
     expect(detectTouchedFilesFromGitStatus(before, after)).toEqual(['changed.py', 'new.txt']);
+  });
+
+  it('detects pre-existing dirty files that an attempt removed or reverted', () => {
+    const before = parseGitStatusPorcelain(' M user-work.ts\n?? scratch.txt');
+    const after = parseGitStatusPorcelain('?? scratch.txt');
+
+    expect(detectTouchedFilesFromGitStatus(before, after)).toEqual(['user-work.ts']);
+  });
+
+  it('detects pre-existing dirty files whose git status entry stays unchanged', () => {
+    const projectRoot = makeTempDir('kira-dirty-hash-');
+    try {
+      fs.mkdirSync(join(projectRoot, 'src'), { recursive: true });
+      fs.writeFileSync(join(projectRoot, 'src', 'user-work.ts'), 'const value = 1;\n', 'utf-8');
+
+      const before = captureDirtyFileSnapshots(projectRoot, ['src/user-work.ts']);
+      fs.writeFileSync(join(projectRoot, 'src', 'user-work.ts'), 'const value = 2;\n', 'utf-8');
+
+      expect(detectTouchedFilesFromDirtySnapshots(projectRoot, before)).toEqual([
+        'src/user-work.ts',
+      ]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('adds project environment validation commands to the effective plan', () => {
+    const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-env-validation-'));
+    fs.writeFileSync(
+      join(projectRoot, 'package.json'),
+      JSON.stringify({
+        packageManager: 'pnpm@9.0.0',
+        scripts: {
+          typecheck: 'tsc --noEmit',
+        },
+      }),
+      'utf-8',
+    );
+    fs.writeFileSync(join(projectRoot, 'pnpm-lock.yaml'), 'lockfileVersion: 9', 'utf-8');
+
+    try {
+      const plan = resolveValidationPlan(projectRoot, [], ['src/app.ts'], {
+        runner: 'local',
+        setupCommands: [],
+        validationCommands: ['pnpm run typecheck'],
+        requiredEnv: [],
+        allowedNetwork: 'localhost',
+        secretsPolicy: 'local-only',
+        windowsMode: 'auto',
+        remoteCommand: '',
+        devServerCommand: '',
+      });
+
+      expect(plan.effectiveCommands).toContain('pnpm run typecheck');
+      expect(plan.notes.join('\n')).toContain('environment contract');
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('ignores pre-existing dirty files whose content is unchanged', () => {
+    const projectRoot = makeTempDir('kira-dirty-hash-');
+    try {
+      fs.mkdirSync(join(projectRoot, 'src'), { recursive: true });
+      fs.writeFileSync(join(projectRoot, 'src', 'user-work.ts'), 'const value = 1;\n', 'utf-8');
+
+      const before = captureDirtyFileSnapshots(projectRoot, ['src/user-work.ts']);
+
+      expect(detectTouchedFilesFromDirtySnapshots(projectRoot, before)).toEqual([]);
+    } finally {
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
   });
 
   it('uses the renamed target path from porcelain rename entries', () => {
@@ -1916,12 +2185,18 @@ describe('isSafeCommandAllowed()', () => {
   it('allows curated diagnostic commands', () => {
     expect(isSafeCommandAllowed('python -m pytest tests/test_memory.py')).toBe(true);
     expect(isSafeCommandAllowed('pnpm exec vitest src/foo.test.ts')).toBe(true);
+    expect(isSafeCommandAllowed('pnpm --dir apps/webuiapps exec vitest src/foo.test.ts')).toBe(
+      true,
+    );
+    expect(isSafeCommandAllowed('pnpm --dir apps/webuiapps run build:test')).toBe(true);
+    expect(isSafeCommandAllowed('npm run test:coverage')).toBe(true);
     expect(isSafeCommandAllowed('git diff --stat')).toBe(true);
     expect(isSafeCommandAllowed('rg -n "data-theme" templates/index.html')).toBe(true);
   });
 
   it('rejects commands that are too broad or potentially mutating', () => {
     expect(isSafeCommandAllowed('npm install')).toBe(false);
+    expect(isSafeCommandAllowed('pnpm --dir ../other exec vitest')).toBe(false);
     expect(isSafeCommandAllowed('python scripts/migrate.py')).toBe(false);
     expect(isSafeCommandAllowed('pnpm add zod')).toBe(false);
     expect(isSafeCommandAllowed('curl https://example.com')).toBe(false);

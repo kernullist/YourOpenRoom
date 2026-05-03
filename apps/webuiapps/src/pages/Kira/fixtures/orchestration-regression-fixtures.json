@@ -1,0 +1,69 @@
+{
+  "policyBlockedAttempt": {
+    "id": "work-policy-1",
+    "workId": "work-policy",
+    "attemptNo": 1,
+    "status": "blocked",
+    "changedFiles": ["secrets/token.txt"],
+    "commandsRun": [],
+    "risks": ["Execution policy blocks edits to protected path: secrets/token.txt."],
+    "evidenceLedger": {
+      "items": [
+        {
+          "id": "evidence-policy",
+          "kind": "policy",
+          "status": "fail",
+          "summary": "Protected path write was blocked.",
+          "evidence": ["secrets/token.txt"],
+          "createdBy": "kira",
+          "confidence": 0.95,
+          "createdAt": 0
+        }
+      ],
+      "approvalReadiness": {
+        "score": 0,
+        "status": "blocked",
+        "blockers": ["Execution policy blocked protected path write."],
+        "missingEvidence": [],
+        "requiredEvidenceCount": 1,
+        "observedEvidenceCount": 0
+      }
+    }
+  },
+  "remoteRunnerMissing": {
+    "environment": {
+      "runner": "remote-command",
+      "remoteCommand": "",
+      "requiredEnv": ["KIRA_REMOTE_TOKEN"],
+      "allowedNetwork": "localhost",
+      "secretsPolicy": "local-only"
+    },
+    "expectedIssue": "Remote-command runner requires environment.remoteCommand with a {command} placeholder."
+  },
+  "pluginEnabled": {
+    "plugins": [
+      {
+        "id": "github",
+        "label": "GitHub",
+        "type": "github",
+        "enabled": true,
+        "capabilities": ["issues", "pull-requests", "checks"],
+        "policy": "suggest"
+      }
+    ]
+  },
+  "dagCustomized": {
+    "workflow": {
+      "nodes": [
+        { "id": "plan", "label": "Plan", "kind": "plan", "required": true },
+        { "id": "implement", "label": "Implement", "kind": "implement", "required": true },
+        { "id": "review", "label": "Review", "kind": "review", "required": true }
+      ],
+      "edges": [
+        { "from": "plan", "to": "implement", "condition": "planned" },
+        { "from": "implement", "to": "review", "condition": "patch complete" }
+      ],
+      "criticalPath": ["plan", "implement", "review"]
+    }
+  }
+}

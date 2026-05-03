@@ -201,18 +201,69 @@ export interface KiraReviewFindingTriageItem {
   createdAt: number;
 }
 
+export interface KiraDiffReviewCoverage {
+  changedLineCount: number;
+  anchoredFindingCount: number;
+  unanchoredFindingCount: number;
+  filesWithChangedLines: string[];
+  filesCoveredByReview: string[];
+  coverageRatio: number;
+  issues: string[];
+}
+
+export interface KiraConnectorEvidence {
+  connectorId: string;
+  status: string;
+  summary: string;
+  url?: string;
+  checks: string[];
+  evidence: string[];
+}
+
+export interface KiraIntegrationRecord {
+  status: string;
+  message: string;
+  commitHash?: string;
+  pullRequestUrl?: string;
+  connectors: KiraConnectorEvidence[];
+  createdAt: number;
+}
+
+export interface KiraWorkflowDag {
+  nodes: Array<{
+    id: string;
+    label: string;
+    kind: string;
+    required: boolean;
+  }>;
+  edges: Array<{
+    from: string;
+    to: string;
+    condition: string;
+  }>;
+  criticalPath: string[];
+}
+
 export interface KiraOrchestrationPlan {
+  promptContractVersion?: number;
   runMode: string;
   taskType: string;
   workerCount: number;
   validationDepth: string;
   reviewDepth: string;
   approvalThreshold: number;
+  subagentIds: string[];
+  workflowDag?: KiraWorkflowDag;
+  runner: string;
+  connectors: string[];
   summary: string;
   lanes: Array<{
     id: string;
     role: string;
     goal: string;
+    subagentId?: string;
+    toolScope: string[];
+    modelHint?: string;
     requiredEvidence: string[];
   }>;
   checkpoints: string[];
@@ -242,6 +293,8 @@ export interface KiraEvidenceLedger {
 }
 
 export interface KiraAttemptRecord {
+  recordVersion?: number;
+  migratedFromVersion?: number;
   id: string;
   workId: string;
   attemptNo: number;
@@ -295,6 +348,7 @@ export interface KiraAttemptRecord {
   designReviewGate?: KiraDesignReviewGate;
   orchestrationPlan?: KiraOrchestrationPlan;
   evidenceLedger?: KiraEvidenceLedger;
+  integration?: KiraIntegrationRecord;
   requirementTrace?: KiraRequirementTraceItem[];
   approachAlternatives?: KiraPatchAlternative[];
   diffExcerpts?: string[];
@@ -319,6 +373,8 @@ export interface KiraAttemptRecord {
 }
 
 export interface KiraReviewRecord {
+  recordVersion?: number;
+  migratedFromVersion?: number;
   id: string;
   workId: string;
   attemptNo: number;
@@ -340,6 +396,7 @@ export interface KiraReviewRecord {
   adversarialChecks: KiraReviewAdversarialCheck[];
   reviewerDiscourse?: KiraReviewerDiscourseEntry[];
   triage?: KiraReviewFindingTriageItem[];
+  diffCoverage?: KiraDiffReviewCoverage;
   reviewAdversarialPlan?: KiraReviewAdversarialPlan;
   attemptSynthesis?: KiraAttemptSynthesisRecommendation;
   observability?: {
@@ -579,6 +636,11 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
   const parsed = parseRecord<Partial<KiraOrchestrationPlan>>(value);
   if (!parsed?.runMode) return undefined;
   return {
+    promptContractVersion:
+      typeof parsed.promptContractVersion === 'number' &&
+      Number.isFinite(parsed.promptContractVersion)
+        ? parsed.promptContractVersion
+        : 1,
     runMode: String(parsed.runMode),
     taskType: typeof parsed.taskType === 'string' ? parsed.taskType : 'generalist',
     workerCount: typeof parsed.workerCount === 'number' ? parsed.workerCount : 1,
@@ -586,6 +648,10 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
       typeof parsed.validationDepth === 'string' ? parsed.validationDepth : 'standard',
     reviewDepth: typeof parsed.reviewDepth === 'string' ? parsed.reviewDepth : 'adversarial',
     approvalThreshold: typeof parsed.approvalThreshold === 'number' ? parsed.approvalThreshold : 80,
+    subagentIds: normalizeStringList(parsed.subagentIds),
+    workflowDag: normalizeWorkflowDag(parsed.workflowDag),
+    runner: typeof parsed.runner === 'string' ? parsed.runner : 'local',
+    connectors: normalizeStringList(parsed.connectors),
     summary: typeof parsed.summary === 'string' ? parsed.summary : '',
     lanes: Array.isArray(parsed.lanes)
       ? parsed.lanes
@@ -596,6 +662,9 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
               id: typeof raw.id === 'string' ? raw.id : '',
               role: typeof raw.role === 'string' ? raw.role : '',
               goal: typeof raw.goal === 'string' ? raw.goal : '',
+              ...(typeof raw.subagentId === 'string' ? { subagentId: raw.subagentId } : {}),
+              toolScope: normalizeStringList(raw.toolScope),
+              ...(typeof raw.modelHint === 'string' ? { modelHint: raw.modelHint } : {}),
               requiredEvidence: normalizeStringList(raw.requiredEvidence),
             };
           })
@@ -603,6 +672,48 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
       : [],
     checkpoints: normalizeStringList(parsed.checkpoints),
     stopRules: normalizeStringList(parsed.stopRules),
+  };
+}
+
+function normalizeWorkflowDag(value: unknown): KiraWorkflowDag | undefined {
+  const parsed = parseRecord<Partial<KiraWorkflowDag>>(value);
+  if (!parsed) return undefined;
+  const nodes = Array.isArray(parsed.nodes)
+    ? parsed.nodes
+        .map((node): KiraWorkflowDag['nodes'][number] | null => {
+          if (!node || typeof node !== 'object') return null;
+          const raw = node as Partial<KiraWorkflowDag['nodes'][number]>;
+          const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+          if (!id) return null;
+          return {
+            id,
+            label: typeof raw.label === 'string' ? raw.label : id,
+            kind: typeof raw.kind === 'string' ? raw.kind : 'plan',
+            required: raw.required !== false,
+          };
+        })
+        .filter((node): node is KiraWorkflowDag['nodes'][number] => node !== null)
+    : [];
+  return {
+    nodes,
+    edges: Array.isArray(parsed.edges)
+      ? parsed.edges
+          .map((edge): KiraWorkflowDag['edges'][number] | null => {
+            if (!edge || typeof edge !== 'object') return null;
+            const raw = edge as Partial<KiraWorkflowDag['edges'][number]>;
+            const from = typeof raw.from === 'string' ? raw.from.trim() : '';
+            const to = typeof raw.to === 'string' ? raw.to.trim() : '';
+            if (!from || !to) return null;
+            return {
+              from,
+              to,
+              condition:
+                typeof raw.condition === 'string' ? raw.condition : 'previous stage passed',
+            };
+          })
+          .filter((edge): edge is KiraWorkflowDag['edges'][number] => edge !== null)
+      : [],
+    criticalPath: normalizeStringList(parsed.criticalPath),
   };
 }
 
@@ -649,6 +760,50 @@ function normalizeEvidenceLedger(value: unknown): KiraEvidenceLedger | undefined
           ? parsed.approvalReadiness.observedEvidenceCount
           : 0,
     },
+  };
+}
+
+function normalizeDiffReviewCoverage(value: unknown): KiraDiffReviewCoverage | undefined {
+  const parsed = parseRecord<Partial<KiraDiffReviewCoverage>>(value);
+  if (!parsed) return undefined;
+  return {
+    changedLineCount: typeof parsed.changedLineCount === 'number' ? parsed.changedLineCount : 0,
+    anchoredFindingCount:
+      typeof parsed.anchoredFindingCount === 'number' ? parsed.anchoredFindingCount : 0,
+    unanchoredFindingCount:
+      typeof parsed.unanchoredFindingCount === 'number' ? parsed.unanchoredFindingCount : 0,
+    filesWithChangedLines: normalizeStringList(parsed.filesWithChangedLines),
+    filesCoveredByReview: normalizeStringList(parsed.filesCoveredByReview),
+    coverageRatio: typeof parsed.coverageRatio === 'number' ? parsed.coverageRatio : 0,
+    issues: normalizeStringList(parsed.issues),
+  };
+}
+
+function normalizeIntegrationRecord(value: unknown): KiraIntegrationRecord | undefined {
+  const parsed = parseRecord<Partial<KiraIntegrationRecord>>(value);
+  if (!parsed?.status) return undefined;
+  return {
+    status: String(parsed.status),
+    message: typeof parsed.message === 'string' ? parsed.message : '',
+    ...(typeof parsed.commitHash === 'string' ? { commitHash: parsed.commitHash } : {}),
+    ...(typeof parsed.pullRequestUrl === 'string' ? { pullRequestUrl: parsed.pullRequestUrl } : {}),
+    connectors: Array.isArray(parsed.connectors)
+      ? parsed.connectors
+          .map((item): KiraConnectorEvidence | null => {
+            const raw = parseRecord<Partial<KiraConnectorEvidence>>(item);
+            if (!raw?.connectorId) return null;
+            return {
+              connectorId: String(raw.connectorId),
+              status: typeof raw.status === 'string' ? raw.status : 'observed',
+              summary: typeof raw.summary === 'string' ? raw.summary : '',
+              ...(typeof raw.url === 'string' ? { url: raw.url } : {}),
+              checks: normalizeStringList(raw.checks),
+              evidence: normalizeStringList(raw.evidence),
+            };
+          })
+          .filter((item): item is KiraConnectorEvidence => item !== null)
+      : [],
+    createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : 0,
   };
 }
 
@@ -804,6 +959,14 @@ export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
   const parsed = parseRecord<Partial<KiraAttemptRecord>>(raw);
   if (!parsed?.id || !parsed.workId) return null;
   return {
+    recordVersion:
+      typeof parsed.recordVersion === 'number' && Number.isFinite(parsed.recordVersion)
+        ? parsed.recordVersion
+        : 1,
+    migratedFromVersion:
+      typeof parsed.migratedFromVersion === 'number' && Number.isFinite(parsed.migratedFromVersion)
+        ? parsed.migratedFromVersion
+        : undefined,
     id: parsed.id,
     workId: parsed.workId,
     attemptNo: typeof parsed.attemptNo === 'number' ? parsed.attemptNo : 0,
@@ -832,6 +995,7 @@ export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
     designReviewGate: normalizeDesignReviewGate(parsed.designReviewGate),
     orchestrationPlan: normalizeOrchestrationPlan(parsed.orchestrationPlan),
     evidenceLedger: normalizeEvidenceLedger(parsed.evidenceLedger),
+    integration: normalizeIntegrationRecord(parsed.integration),
     requirementTrace: normalizeRequirementTrace(parsed.requirementTrace),
     approachAlternatives: normalizePatchAlternatives(parsed.approachAlternatives),
     diffExcerpts: normalizeStringList(parsed.diffExcerpts),
@@ -851,6 +1015,14 @@ export function normalizeKiraReview(raw: unknown): KiraReviewRecord | null {
   const parsed = parseRecord<Partial<KiraReviewRecord>>(raw);
   if (!parsed?.id || !parsed.workId) return null;
   return {
+    recordVersion:
+      typeof parsed.recordVersion === 'number' && Number.isFinite(parsed.recordVersion)
+        ? parsed.recordVersion
+        : 1,
+    migratedFromVersion:
+      typeof parsed.migratedFromVersion === 'number' && Number.isFinite(parsed.migratedFromVersion)
+        ? parsed.migratedFromVersion
+        : undefined,
     id: parsed.id,
     workId: parsed.workId,
     attemptNo: typeof parsed.attemptNo === 'number' ? parsed.attemptNo : 0,
@@ -867,6 +1039,7 @@ export function normalizeKiraReview(raw: unknown): KiraReviewRecord | null {
     adversarialChecks: normalizeReviewAdversarialChecks(parsed.adversarialChecks),
     reviewerDiscourse: normalizeReviewerDiscourse(parsed.reviewerDiscourse),
     triage: normalizeReviewTriage(parsed.triage),
+    diffCoverage: normalizeDiffReviewCoverage(parsed.diffCoverage),
     reviewAdversarialPlan: parsed.reviewAdversarialPlan,
     attemptSynthesis: parsed.attemptSynthesis,
     observability: parsed.observability,

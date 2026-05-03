@@ -34,6 +34,84 @@
       "rulePacks": [
         { "id": "strict-typescript", "enabled": true },
         { "id": "validation-first", "enabled": true }
+      ],
+      "executionPolicy": {
+        "mode": "balanced",
+        "maxChangedFiles": 12,
+        "maxDiffLines": 900,
+        "protectedPaths": [
+          ".env",
+          ".env.*",
+          ".git/**",
+          ".kira/project-settings.json",
+          "**/*.pem",
+          "**/*.key",
+          "**/secrets/**"
+        ],
+        "commandAllowlist": [],
+        "commandDenylist": ["npm install", "pnpm add", "git reset", "git clean"],
+        "requireValidation": true,
+        "requireReviewerEvidence": true,
+        "rules": []
+      },
+      "environment": {
+        "runner": "local",
+        "setupCommands": [],
+        "validationCommands": ["pnpm run typecheck"],
+        "requiredEnv": [],
+        "allowedNetwork": "localhost",
+        "secretsPolicy": "local-only",
+        "windowsMode": "auto",
+        "remoteCommand": "",
+        "devServerCommand": ""
+      },
+      "subagents": [
+        {
+          "id": "implementer",
+          "label": "Implementer",
+          "profile": "generalist",
+          "tools": ["read_file", "edit_file", "write_file", "run_command"],
+          "requiredEvidence": ["diffHunkReview", "validation"],
+          "enabled": true
+        },
+        {
+          "id": "security-reviewer",
+          "label": "Security Reviewer",
+          "profile": "security-auth",
+          "tools": ["read_file", "search_files"],
+          "requiredEvidence": ["adversarialChecks", "reviewerDiscourse"],
+          "enabled": true
+        }
+      ],
+      "workflow": {
+        "nodes": [
+          { "id": "discover", "label": "Context discovery", "kind": "plan", "required": true },
+          { "id": "plan", "label": "Preflight plan", "kind": "plan", "required": true },
+          { "id": "design-gate", "label": "Design gate", "kind": "review", "required": true },
+          { "id": "implement", "label": "Implementation", "kind": "implement", "required": true },
+          { "id": "validate", "label": "Validation rerun", "kind": "validate", "required": true },
+          { "id": "review", "label": "Evidence review", "kind": "review", "required": true },
+          { "id": "integrate", "label": "Apply or commit decision", "kind": "integrate", "required": true }
+        ],
+        "edges": [
+          { "from": "discover", "to": "plan", "condition": "context found" },
+          { "from": "plan", "to": "design-gate", "condition": "plan accepted" },
+          { "from": "design-gate", "to": "implement", "condition": "gate passed" },
+          { "from": "implement", "to": "validate", "condition": "patch complete" },
+          { "from": "validate", "to": "review", "condition": "validation passed" },
+          { "from": "review", "to": "integrate", "condition": "review approved" }
+        ],
+        "criticalPath": ["discover", "plan", "design-gate", "implement", "validate", "review", "integrate"]
+      },
+      "plugins": [
+        {
+          "id": "github",
+          "label": "GitHub",
+          "type": "github",
+          "enabled": false,
+          "capabilities": ["issues", "pull-requests", "checks"],
+          "policy": "suggest"
+        }
       ]
     },
     "workers": [

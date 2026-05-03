@@ -112,6 +112,86 @@ const DEFAULT_RULE_PACK_PRESETS: KiraRulePackPreset[] = [
     instructions: [],
   },
 ];
+const DEFAULT_ORCHESTRATION_CONTRACT = {
+  executionPolicy: {
+    mode: 'balanced',
+    maxChangedFiles: 12,
+    maxDiffLines: 900,
+    protectedPaths: ['.env', '.env.*', '.git/**', '.kira/project-settings.json'],
+    commandAllowlist: [],
+    commandDenylist: ['npm install', 'pnpm add', 'git reset', 'git clean'],
+    requireValidation: true,
+    requireReviewerEvidence: true,
+    rules: [],
+  },
+  environment: {
+    runner: 'local',
+    setupCommands: [],
+    validationCommands: [],
+    requiredEnv: [],
+    allowedNetwork: 'localhost',
+    secretsPolicy: 'local-only',
+    windowsMode: 'auto',
+    remoteCommand: '',
+    devServerCommand: '',
+  },
+  subagents: [
+    {
+      id: 'implementer',
+      label: 'Implementer',
+      profile: 'generalist',
+      tools: ['read_file', 'edit_file', 'write_file', 'run_command'],
+      requiredEvidence: ['diffHunkReview', 'validation'],
+      enabled: true,
+    },
+    {
+      id: 'security-reviewer',
+      label: 'Security Reviewer',
+      profile: 'security-auth',
+      tools: ['read_file', 'search_files'],
+      requiredEvidence: ['adversarialChecks', 'reviewerDiscourse'],
+      enabled: true,
+    },
+  ],
+  workflow: {
+    nodes: [
+      { id: 'discover', label: 'Context discovery', kind: 'plan', required: true },
+      { id: 'plan', label: 'Preflight plan', kind: 'plan', required: true },
+      { id: 'design-gate', label: 'Design gate', kind: 'review', required: true },
+      { id: 'implement', label: 'Implementation', kind: 'implement', required: true },
+      { id: 'validate', label: 'Validation rerun', kind: 'validate', required: true },
+      { id: 'review', label: 'Evidence review', kind: 'review', required: true },
+      { id: 'integrate', label: 'Apply or commit decision', kind: 'integrate', required: true },
+    ],
+    edges: [
+      { from: 'discover', to: 'plan', condition: 'context found' },
+      { from: 'plan', to: 'design-gate', condition: 'plan accepted' },
+      { from: 'design-gate', to: 'implement', condition: 'gate passed' },
+      { from: 'implement', to: 'validate', condition: 'patch complete' },
+      { from: 'validate', to: 'review', condition: 'validation passed' },
+      { from: 'review', to: 'integrate', condition: 'review approved' },
+    ],
+    criticalPath: [
+      'discover',
+      'plan',
+      'design-gate',
+      'implement',
+      'validate',
+      'review',
+      'integrate',
+    ],
+  },
+  plugins: [
+    {
+      id: 'github',
+      label: 'GitHub',
+      type: 'github',
+      enabled: false,
+      capabilities: ['issues', 'pull-requests', 'checks'],
+      policy: 'suggest',
+    },
+  ],
+};
 
 const kiraFileApi = createAppFileApi(APP_NAME);
 
@@ -146,12 +226,81 @@ interface KiraRulePackSelection {
   enabled: boolean;
 }
 
+interface KiraExecutionPolicy {
+  mode?: string;
+  maxChangedFiles?: number;
+  maxDiffLines?: number;
+  protectedPaths?: string[];
+  commandAllowlist?: string[];
+  commandDenylist?: string[];
+  requireValidation?: boolean;
+  requireReviewerEvidence?: boolean;
+  rules?: Array<{
+    id?: string;
+    enabled?: boolean;
+    decision?: string;
+  }>;
+}
+
+interface KiraEnvironmentContract {
+  runner?: string;
+  setupCommands?: string[];
+  validationCommands?: string[];
+  requiredEnv?: string[];
+  allowedNetwork?: string;
+  secretsPolicy?: string;
+  windowsMode?: string;
+  remoteCommand?: string;
+  devServerCommand?: string;
+}
+
+interface KiraSubagentDefinition {
+  id?: string;
+  label?: string;
+  profile?: string;
+  tools?: string[];
+  requiredEvidence?: string[];
+  modelHint?: string;
+  enabled?: boolean;
+}
+
+interface KiraWorkflowDag {
+  nodes?: Array<{ id?: string; label?: string; kind?: string; required?: boolean }>;
+  edges?: Array<{ from?: string; to?: string; condition?: string }>;
+  criticalPath?: string[];
+}
+
+interface KiraPluginConnector {
+  id?: string;
+  label?: string;
+  type?: string;
+  enabled?: boolean;
+  capabilities?: string[];
+  policy?: string;
+}
+
+interface KiraQualitySnapshot {
+  attemptsTotal?: number;
+  approvedAttempts?: number;
+  validationFailures?: number;
+  reviewRejections?: number;
+  rollbacks?: number;
+  averageReadinessScore?: number;
+  passRate?: number;
+  topFailureCategories?: string[];
+}
+
 interface KiraProjectSettings {
   autoCommit: boolean;
   requiredInstructions: string;
   effectiveInstructions?: string;
   runMode: KiraRunMode;
   rulePacks: KiraRulePackSelection[];
+  executionPolicy?: KiraExecutionPolicy;
+  environment?: KiraEnvironmentContract;
+  subagents?: KiraSubagentDefinition[];
+  workflow?: KiraWorkflowDag;
+  plugins?: KiraPluginConnector[];
 }
 
 interface KiraProjectSettingsResponse {
@@ -160,7 +309,21 @@ interface KiraProjectSettingsResponse {
   settingsPath: string;
   exists: boolean;
   rulePackPresets?: KiraRulePackPreset[];
+  validation?: KiraOrchestrationValidationReport;
   settings: KiraProjectSettings;
+}
+
+interface KiraOrchestrationValidationIssue {
+  path: string;
+  severity: 'error' | 'warning';
+  message: string;
+  suggestion?: string;
+}
+
+interface KiraOrchestrationValidationReport {
+  valid: boolean;
+  issues: KiraOrchestrationValidationIssue[];
+  summary?: string[];
 }
 
 interface KiraProjectProfileResponse {
@@ -185,9 +348,25 @@ interface KiraProjectProfileResponse {
       recentValidationFailures?: string[];
       workerGuidanceRules?: string[];
       successfulPatterns?: string[];
+      failureClusters?: Array<{
+        signature?: string;
+        category?: string;
+        hits?: number;
+        commands?: string[];
+        remediation?: string[];
+        staleScore?: number;
+      }>;
     };
     workers?: {
       recommendedProfiles?: string[];
+    };
+    orchestration?: {
+      subagents?: KiraSubagentDefinition[];
+      workflowDag?: KiraWorkflowDag;
+      pluginConnectors?: KiraPluginConnector[];
+      environment?: KiraEnvironmentContract;
+      executionPolicy?: KiraExecutionPolicy;
+      quality?: KiraQualitySnapshot;
     };
   } | null;
 }
@@ -273,6 +452,312 @@ function normalizeRulePackSelections(
   }));
 }
 
+function normalizeStringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+function normalizeExecutionPolicy(value: unknown): KiraExecutionPolicy {
+  const raw = value && typeof value === 'object' ? (value as KiraExecutionPolicy) : {};
+  return {
+    mode: typeof raw.mode === 'string' ? raw.mode : 'balanced',
+    maxChangedFiles:
+      typeof raw.maxChangedFiles === 'number' && Number.isFinite(raw.maxChangedFiles)
+        ? raw.maxChangedFiles
+        : 12,
+    maxDiffLines:
+      typeof raw.maxDiffLines === 'number' && Number.isFinite(raw.maxDiffLines)
+        ? raw.maxDiffLines
+        : 900,
+    protectedPaths: normalizeStringArray(raw.protectedPaths),
+    commandAllowlist: normalizeStringArray(raw.commandAllowlist),
+    commandDenylist: normalizeStringArray(raw.commandDenylist),
+    requireValidation: raw.requireValidation !== false,
+    requireReviewerEvidence: raw.requireReviewerEvidence !== false,
+    rules: Array.isArray(raw.rules) ? raw.rules : [],
+  };
+}
+
+function normalizeEnvironmentContract(value: unknown): KiraEnvironmentContract {
+  const raw = value && typeof value === 'object' ? (value as KiraEnvironmentContract) : {};
+  return {
+    runner: typeof raw.runner === 'string' ? raw.runner : 'local',
+    setupCommands: normalizeStringArray(raw.setupCommands),
+    validationCommands: normalizeStringArray(raw.validationCommands),
+    requiredEnv: normalizeStringArray(raw.requiredEnv),
+    allowedNetwork: typeof raw.allowedNetwork === 'string' ? raw.allowedNetwork : 'localhost',
+    secretsPolicy: typeof raw.secretsPolicy === 'string' ? raw.secretsPolicy : 'local-only',
+    windowsMode: typeof raw.windowsMode === 'string' ? raw.windowsMode : 'auto',
+    remoteCommand: typeof raw.remoteCommand === 'string' ? raw.remoteCommand : '',
+    devServerCommand: typeof raw.devServerCommand === 'string' ? raw.devServerCommand : '',
+  };
+}
+
+function normalizeSubagents(value: unknown): KiraSubagentDefinition[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is KiraSubagentDefinition =>
+        Boolean(item && typeof item === 'object'),
+      )
+    : [];
+}
+
+function normalizeWorkflow(value: unknown): KiraWorkflowDag {
+  const raw = value && typeof value === 'object' ? (value as KiraWorkflowDag) : {};
+  return {
+    nodes: Array.isArray(raw.nodes) ? raw.nodes : [],
+    edges: Array.isArray(raw.edges) ? raw.edges : [],
+    criticalPath: normalizeStringArray(raw.criticalPath),
+  };
+}
+
+function normalizePluginConnectors(value: unknown): KiraPluginConnector[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is KiraPluginConnector => Boolean(item && typeof item === 'object'))
+    : [];
+}
+
+function buildOrchestrationDraft(settings: KiraProjectSettings | null | undefined): string {
+  if (!settings) return '';
+  return JSON.stringify(
+    {
+      executionPolicy: settings.executionPolicy ?? {},
+      environment: settings.environment ?? {},
+      subagents: settings.subagents ?? [],
+      workflow: settings.workflow ?? {},
+      plugins: settings.plugins ?? [],
+    },
+    null,
+    2,
+  );
+}
+
+function buildDefaultOrchestrationDraft(): string {
+  return JSON.stringify(DEFAULT_ORCHESTRATION_CONTRACT, null, 2);
+}
+
+function addDraftIssue(
+  issues: KiraOrchestrationValidationIssue[],
+  issue: KiraOrchestrationValidationIssue,
+): void {
+  if (
+    issues.some(
+      (existing) =>
+        existing.path === issue.path &&
+        existing.severity === issue.severity &&
+        existing.message === issue.message,
+    )
+  ) {
+    return;
+  }
+  issues.push(issue);
+}
+
+function isDraftObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateDraftArray(
+  issues: KiraOrchestrationValidationIssue[],
+  owner: Record<string, unknown>,
+  key: string,
+  path: string,
+): void {
+  if (!(key in owner)) return;
+  if (!Array.isArray(owner[key])) {
+    addDraftIssue(issues, {
+      path,
+      severity: 'error',
+      message: 'Expected an array.',
+    });
+  }
+}
+
+function validateDraftObjectField(
+  issues: KiraOrchestrationValidationIssue[],
+  owner: Record<string, unknown>,
+  key: string,
+  path: string,
+): Record<string, unknown> | null {
+  if (!(key in owner)) return null;
+  if (!isDraftObject(owner[key])) {
+    addDraftIssue(issues, {
+      path,
+      severity: 'error',
+      message: 'Expected a JSON object.',
+    });
+    return null;
+  }
+  return owner[key];
+}
+
+function validateOrchestrationDraftObject(
+  record: Record<string, unknown>,
+): KiraOrchestrationValidationIssue[] {
+  const issues: KiraOrchestrationValidationIssue[] = [];
+  const knownKeys = new Set(['executionPolicy', 'environment', 'subagents', 'workflow', 'plugins']);
+  for (const key of Object.keys(record)) {
+    if (!knownKeys.has(key)) {
+      addDraftIssue(issues, {
+        path: key,
+        severity: 'warning',
+        message: 'Unknown orchestration field will be ignored.',
+      });
+    }
+  }
+
+  const policy = validateDraftObjectField(issues, record, 'executionPolicy', 'executionPolicy');
+  if (policy) {
+    if (
+      'mode' in policy &&
+      !['balanced', 'locked-down', 'permissive'].includes(String(policy.mode))
+    ) {
+      addDraftIssue(issues, {
+        path: 'executionPolicy.mode',
+        severity: 'error',
+        message: 'Expected balanced, locked-down, or permissive.',
+      });
+    }
+    for (const key of ['protectedPaths', 'commandAllowlist', 'commandDenylist', 'rules']) {
+      validateDraftArray(issues, policy, key, `executionPolicy.${key}`);
+    }
+    for (const key of ['requireValidation', 'requireReviewerEvidence']) {
+      if (key in policy && typeof policy[key] !== 'boolean') {
+        addDraftIssue(issues, {
+          path: `executionPolicy.${key}`,
+          severity: 'error',
+          message: 'Expected a boolean.',
+        });
+      }
+    }
+  }
+
+  const environment = validateDraftObjectField(issues, record, 'environment', 'environment');
+  if (environment) {
+    if (
+      'runner' in environment &&
+      !['local', 'remote-command', 'cloud'].includes(String(environment.runner))
+    ) {
+      addDraftIssue(issues, {
+        path: 'environment.runner',
+        severity: 'error',
+        message: 'Expected local, remote-command, or cloud.',
+      });
+    }
+    for (const key of ['setupCommands', 'validationCommands', 'requiredEnv']) {
+      validateDraftArray(issues, environment, key, `environment.${key}`);
+    }
+    if (
+      environment.runner === 'remote-command' &&
+      (typeof environment.remoteCommand !== 'string' ||
+        !environment.remoteCommand.includes('{command}'))
+    ) {
+      addDraftIssue(issues, {
+        path: 'environment.remoteCommand',
+        severity: 'error',
+        message: 'Remote-command runner requires a {command} placeholder.',
+      });
+    }
+  }
+
+  validateDraftArray(issues, record, 'subagents', 'subagents');
+  validateDraftArray(issues, record, 'plugins', 'plugins');
+  const workflow = validateDraftObjectField(issues, record, 'workflow', 'workflow');
+  if (workflow) {
+    validateDraftArray(issues, workflow, 'nodes', 'workflow.nodes');
+    validateDraftArray(issues, workflow, 'edges', 'workflow.edges');
+    validateDraftArray(issues, workflow, 'criticalPath', 'workflow.criticalPath');
+    const nodes = Array.isArray(workflow.nodes) ? workflow.nodes : [];
+    const requiredKinds = new Set(
+      nodes
+        .filter((node): node is Record<string, unknown> => isDraftObject(node))
+        .filter((node) => node.required !== false)
+        .map((node) => node.kind),
+    );
+    if (policy?.requireValidation !== false && !requiredKinds.has('validate')) {
+      addDraftIssue(issues, {
+        path: 'workflow.nodes',
+        severity: 'error',
+        message: 'Validation is required but workflow has no required validate node.',
+      });
+    }
+    if (policy?.requireReviewerEvidence !== false && !requiredKinds.has('review')) {
+      addDraftIssue(issues, {
+        path: 'workflow.nodes',
+        severity: 'error',
+        message: 'Reviewer evidence is required but workflow has no required review node.',
+      });
+    }
+  }
+
+  return issues;
+}
+
+function parseOrchestrationDraft(value: string): {
+  valid: boolean;
+  value: Record<string, unknown>;
+  error: string | null;
+  summary: string[];
+  issues: KiraOrchestrationValidationIssue[];
+} {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return {
+      valid: true,
+      value: {},
+      error: null,
+      summary: ['defaults only'],
+      issues: [],
+    };
+  }
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return {
+        valid: false,
+        value: {},
+        error: 'The orchestration contract must be a JSON object.',
+        summary: [],
+        issues: [
+          {
+            path: '$',
+            severity: 'error',
+            message: 'The orchestration contract must be a JSON object.',
+          },
+        ],
+      };
+    }
+    const record = parsed as Record<string, unknown>;
+    const issues = validateOrchestrationDraftObject(record);
+    const summary = [
+      `policy=${typeof record.executionPolicy === 'object' ? 'set' : 'default'}`,
+      `environment=${typeof record.environment === 'object' ? 'set' : 'default'}`,
+      `subagents=${Array.isArray(record.subagents) ? record.subagents.length : 'default'}`,
+      `workflow=${typeof record.workflow === 'object' ? 'set' : 'default'}`,
+      `plugins=${Array.isArray(record.plugins) ? record.plugins.length : 'default'}`,
+    ];
+    return {
+      valid: !issues.some((issue) => issue.severity === 'error'),
+      value: record,
+      error: issues.find((issue) => issue.severity === 'error')?.message ?? null,
+      summary,
+      issues,
+    };
+  } catch (error) {
+    return {
+      valid: false,
+      value: {},
+      error: error instanceof Error ? error.message : String(error),
+      summary: [],
+      issues: [
+        {
+          path: '$',
+          severity: 'error',
+          message: error instanceof Error ? error.message : String(error),
+        },
+      ],
+    };
+  }
+}
+
 function normalizeProjectSettingsResponse(
   data: KiraProjectSettingsResponse & { error?: string },
 ): KiraProjectSettingsResponse {
@@ -284,12 +769,18 @@ function normalizeProjectSettingsResponse(
     settingsPath: data.settingsPath,
     exists: Boolean(data.exists),
     rulePackPresets: presets,
+    validation: data.validation,
     settings: {
       autoCommit: data.settings?.autoCommit !== false,
       requiredInstructions: data.settings?.requiredInstructions?.trim() || '',
       effectiveInstructions: data.settings?.effectiveInstructions?.trim() || '',
       runMode: normalizeRunMode(data.settings?.runMode),
       rulePacks,
+      executionPolicy: normalizeExecutionPolicy(data.settings?.executionPolicy),
+      environment: normalizeEnvironmentContract(data.settings?.environment),
+      subagents: normalizeSubagents(data.settings?.subagents),
+      workflow: normalizeWorkflow(data.settings?.workflow),
+      plugins: normalizePluginConnectors(data.settings?.plugins),
     },
   };
 }
@@ -526,6 +1017,7 @@ const KiraPage: React.FC = () => {
   const [projectRulePackDrafts, setProjectRulePackDrafts] = useState<KiraRulePackSelection[]>(
     normalizeRulePackSelections([]),
   );
+  const [projectOrchestrationDraft, setProjectOrchestrationDraft] = useState('');
   const [projectSettingsLoading, setProjectSettingsLoading] = useState(false);
   const [projectSettingsSaving, setProjectSettingsSaving] = useState(false);
   const [manualEvidenceDraft, setManualEvidenceDraft] = useState({
@@ -672,6 +1164,7 @@ const KiraPage: React.FC = () => {
       setProjectInstructionsDraft('');
       setProjectRunModeDraft('standard');
       setProjectRulePackDrafts(normalizeRulePackSelections([]));
+      setProjectOrchestrationDraft('');
       return null;
     }
 
@@ -680,13 +1173,24 @@ const KiraPage: React.FC = () => {
       const res = await fetch(
         `/api/kira-project-settings?projectName=${encodeURIComponent(projectName)}`,
       );
-      const data = (await res.json()) as KiraProjectSettingsResponse & { error?: string };
-      if (!res.ok) throw new Error(data.error || `Kira project settings API error ${res.status}`);
+      const data = (await res.json()) as KiraProjectSettingsResponse & {
+        error?: string;
+        validation?: KiraOrchestrationValidationReport;
+      };
+      if (!res.ok) {
+        const validationIssue = data.validation?.issues.find((issue) => issue.severity === 'error');
+        throw new Error(
+          validationIssue
+            ? `${validationIssue.path}: ${validationIssue.message}`
+            : data.error || `Kira project settings API error ${res.status}`,
+        );
+      }
       const normalized = normalizeProjectSettingsResponse(data);
       setProjectSettings(normalized);
       setProjectInstructionsDraft(normalized.settings.requiredInstructions);
       setProjectRunModeDraft(normalized.settings.runMode);
       setProjectRulePackDrafts(normalized.settings.rulePacks);
+      setProjectOrchestrationDraft(buildOrchestrationDraft(normalized.settings));
       return normalized;
     } catch (error) {
       console.warn('[Kira] Failed to load project settings:', error);
@@ -694,6 +1198,7 @@ const KiraPage: React.FC = () => {
       setProjectInstructionsDraft('');
       setProjectRunModeDraft('standard');
       setProjectRulePackDrafts(normalizeRulePackSelections([]));
+      setProjectOrchestrationDraft('');
       return null;
     } finally {
       setProjectSettingsLoading(false);
@@ -1066,6 +1571,86 @@ const KiraPage: React.FC = () => {
     () => comments.filter((comment) => projectScopedTaskIds.has(comment.taskId)),
     [comments, projectScopedTaskIds],
   );
+  const projectScopedAttempts = useMemo(
+    () => attempts.filter((attempt) => projectScopedTaskIds.has(attempt.workId)),
+    [attempts, projectScopedTaskIds],
+  );
+  const projectScopedReviews = useMemo(
+    () => reviews.filter((review) => projectScopedTaskIds.has(review.workId)),
+    [reviews, projectScopedTaskIds],
+  );
+  const projectQualitySummary = useMemo(() => {
+    const attemptsTotal = projectScopedAttempts.length;
+    const approvedAttempts = projectScopedAttempts.filter(
+      (attempt) => attempt.status === 'approved',
+    ).length;
+    const readinessScores = projectScopedAttempts
+      .map((attempt) => attempt.evidenceLedger?.approvalReadiness?.score)
+      .filter((score): score is number => typeof score === 'number' && Number.isFinite(score));
+    const topFailureCategories = new Map<string, number>();
+    const policyExceptions = projectScopedAttempts.reduce(
+      (total, attempt) =>
+        total +
+        (attempt.evidenceLedger?.items.filter(
+          (item) => item.kind === 'policy' && item.status !== 'pass',
+        ).length ?? 0),
+      0,
+    );
+    const connectorEvents = projectScopedAttempts.reduce(
+      (total, attempt) => total + (attempt.integration?.connectors.length ?? 0),
+      0,
+    );
+    const recentAttempts = [...projectScopedAttempts]
+      .sort((a, b) => (b.finishedAt || 0) - (a.finishedAt || 0))
+      .slice(0, 10);
+    const recentApproved = recentAttempts.filter((attempt) => attempt.status === 'approved').length;
+    const commandFailures = new Map<string, number>();
+    for (const attempt of projectScopedAttempts) {
+      for (const item of attempt.failureAnalysis ?? []) {
+        topFailureCategories.set(item.category, (topFailureCategories.get(item.category) ?? 0) + 1);
+      }
+      for (const command of attempt.validationReruns?.failed ?? []) {
+        commandFailures.set(command, (commandFailures.get(command) ?? 0) + 1);
+      }
+    }
+    return {
+      attemptsTotal,
+      approvedAttempts,
+      validationFailures: projectScopedAttempts.filter(
+        (attempt) =>
+          attempt.status === 'validation_failed' ||
+          (attempt.validationReruns?.failed?.length ?? 0) > 0,
+      ).length,
+      reviewRejections: projectScopedReviews.filter((review) => !review.approved).length,
+      rollbacks: projectScopedAttempts.filter((attempt) => (attempt.rollbackFiles?.length ?? 0) > 0)
+        .length,
+      averageReadinessScore: readinessScores.length
+        ? Math.round(
+            readinessScores.reduce((total, score) => total + score, 0) / readinessScores.length,
+          )
+        : 0,
+      passRate: attemptsTotal > 0 ? Math.round((approvedAttempts / attemptsTotal) * 100) : 0,
+      topFailureCategories: [...topFailureCategories.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .map(([category]) => category),
+      sloStatus:
+        attemptsTotal === 0 ||
+        (approvedAttempts / Math.max(1, attemptsTotal) >= 0.75 && policyExceptions === 0)
+          ? 'healthy'
+          : 'attention',
+      policyExceptions,
+      connectorEvents,
+      failureClusters: projectProfile?.profile?.learning?.failureClusters ?? [],
+      recentPassRate:
+        recentAttempts.length > 0 ? Math.round((recentApproved / recentAttempts.length) * 100) : 0,
+      flakyCommands: [...commandFailures.entries()]
+        .filter(([, count]) => count > 1)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 2)
+        .map(([command, count]) => `${command} x${count}`),
+    };
+  }, [projectProfile, projectScopedAttempts, projectScopedReviews]);
   const commentCountByTask = useMemo(() => {
     return projectScopedComments.reduce((acc, comment) => {
       acc.set(comment.taskId, (acc.get(comment.taskId) ?? 0) + 1);
@@ -1101,6 +1686,10 @@ const KiraPage: React.FC = () => {
     ? projectSettings.rulePackPresets
     : DEFAULT_RULE_PACK_PRESETS;
   const enabledRulePackCount = projectRulePackDrafts.filter((item) => item.enabled).length;
+  const orchestrationDraftState = useMemo(
+    () => parseOrchestrationDraft(projectOrchestrationDraft),
+    [projectOrchestrationDraft],
+  );
   const projectSettingsConfigured =
     Boolean(projectInstructionsDraft.trim()) ||
     enabledRulePackCount > 0 ||
@@ -1272,6 +1861,10 @@ const KiraPage: React.FC = () => {
     try {
       setProjectSettingsSaving(true);
       setErrorText(null);
+      if (!orchestrationDraftState.valid) {
+        throw new Error(orchestrationDraftState.error || 'Invalid orchestration JSON.');
+      }
+      const contractDraft = orchestrationDraftState.value;
       const res = await fetch('/api/kira-project-settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1280,6 +1873,11 @@ const KiraPage: React.FC = () => {
           requiredInstructions: projectInstructionsDraft,
           runMode: projectRunModeDraft,
           rulePacks: projectRulePackDrafts,
+          executionPolicy: contractDraft.executionPolicy,
+          environment: contractDraft.environment,
+          subagents: contractDraft.subagents,
+          workflow: contractDraft.workflow,
+          plugins: contractDraft.plugins,
         }),
       });
       const data = (await res.json()) as KiraProjectSettingsResponse & { error?: string };
@@ -1289,6 +1887,7 @@ const KiraPage: React.FC = () => {
       setProjectInstructionsDraft(normalized.settings.requiredInstructions);
       setProjectRunModeDraft(normalized.settings.runMode);
       setProjectRulePackDrafts(normalized.settings.rulePacks);
+      setProjectOrchestrationDraft(buildOrchestrationDraft(normalized.settings));
       reportAction(APP_ID, 'SAVE_PROJECT_SETTINGS', {
         projectName: activeProjectName,
         hasRequiredInstructions: String(Boolean(normalized.settings.requiredInstructions)),
@@ -1303,7 +1902,13 @@ const KiraPage: React.FC = () => {
     } finally {
       setProjectSettingsSaving(false);
     }
-  }, [activeProjectName, projectInstructionsDraft, projectRulePackDrafts, projectRunModeDraft]);
+  }, [
+    activeProjectName,
+    projectInstructionsDraft,
+    orchestrationDraftState,
+    projectRulePackDrafts,
+    projectRunModeDraft,
+  ]);
 
   const handleRefreshProjectProfile = useCallback(async () => {
     if (!activeProjectName) return;
@@ -2166,11 +2771,82 @@ const KiraPage: React.FC = () => {
                   );
                 })}
               </div>
+              <label className={styles.projectInstructionsField}>
+                <span>{t('fields.orchestrationContract')}</span>
+                <textarea
+                  value={projectOrchestrationDraft}
+                  onChange={(event) => setProjectOrchestrationDraft(event.target.value)}
+                  rows={12}
+                  disabled={projectSettingsLoading || projectSettingsSaving}
+                  aria-invalid={!orchestrationDraftState.valid}
+                />
+              </label>
+              <div className={styles.contractTools}>
+                <div
+                  className={
+                    orchestrationDraftState.valid
+                      ? styles.contractStatusReady
+                      : styles.contractStatusError
+                  }
+                >
+                  <strong>
+                    {orchestrationDraftState.valid
+                      ? t('root.contractValid')
+                      : t('root.contractInvalid')}
+                  </strong>
+                  <span>
+                    {orchestrationDraftState.valid
+                      ? orchestrationDraftState.summary.join(' · ')
+                      : orchestrationDraftState.error}
+                  </span>
+                </div>
+                <div className={styles.contractSchema}>
+                  {['executionPolicy', 'environment', 'subagents', 'workflow', 'plugins'].map(
+                    (key) => (
+                      <code key={key}>{key}</code>
+                    ),
+                  )}
+                </div>
+                {orchestrationDraftState.issues.length > 0 ? (
+                  <div className={styles.contractIssues}>
+                    {orchestrationDraftState.issues.slice(0, 5).map((issue) => (
+                      <span key={`${issue.path}-${issue.message}`}>
+                        <strong>{issue.path}</strong>
+                        <small>{issue.message}</small>
+                      </span>
+                    ))}
+                  </div>
+                ) : null}
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() => setProjectOrchestrationDraft(buildDefaultOrchestrationDraft())}
+                  disabled={projectSettingsLoading || projectSettingsSaving}
+                >
+                  {t('actions.resetContract')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  onClick={() =>
+                    setProjectOrchestrationDraft(
+                      buildOrchestrationDraft(projectSettings?.settings ?? null),
+                    )
+                  }
+                  disabled={projectSettingsLoading || projectSettingsSaving || !projectSettings}
+                >
+                  {t('actions.revertContract')}
+                </button>
+              </div>
               <div className={styles.projectSettingsActions}>
                 <button
                   type="submit"
                   className={styles.secondaryButton}
-                  disabled={projectSettingsLoading || projectSettingsSaving}
+                  disabled={
+                    projectSettingsLoading ||
+                    projectSettingsSaving ||
+                    !orchestrationDraftState.valid
+                  }
                 >
                   {projectSettingsSaving ? t('actions.saving') : t('actions.saveProjectSettings')}
                 </button>
@@ -2236,6 +2912,100 @@ const KiraPage: React.FC = () => {
                     (projectProfile?.profile?.learning?.workerGuidanceRules?.length ?? 0) +
                     (projectProfile?.profile?.learning?.successfulPatterns?.length ?? 0) || 0}
                 </strong>
+              </span>
+              <span>
+                {t('fields.executionPolicy')}
+                <strong>
+                  {projectSettings?.settings.executionPolicy?.mode ?? 'balanced'} /{' '}
+                  {projectSettings?.settings.executionPolicy?.maxChangedFiles ?? 12} files
+                </strong>
+              </span>
+              <span>
+                {t('fields.runner')}
+                <strong>{projectSettings?.settings.environment?.runner ?? 'local'}</strong>
+              </span>
+              <span>
+                {t('fields.workflow')}
+                <strong>
+                  {projectSettings?.settings.workflow?.criticalPath?.length ??
+                    projectProfile?.profile?.orchestration?.workflowDag?.criticalPath?.length ??
+                    0}{' '}
+                  stages
+                </strong>
+              </span>
+              <span>
+                {t('fields.subagents')}
+                <strong>
+                  {projectSettings?.settings.subagents?.length ??
+                    projectProfile?.profile?.orchestration?.subagents?.length ??
+                    0}
+                </strong>
+              </span>
+              <span>
+                {t('fields.connectors')}
+                <strong>
+                  {
+                    (projectSettings?.settings.plugins ?? []).filter(
+                      (connector) => connector.enabled,
+                    ).length
+                  }{' '}
+                  / {projectSettings?.settings.plugins?.length ?? 0}
+                </strong>
+              </span>
+              <span>
+                {t('fields.quality')}
+                <strong>
+                  {projectQualitySummary.approvedAttempts}/{projectQualitySummary.attemptsTotal} ·{' '}
+                  {projectQualitySummary.passRate}%
+                </strong>
+              </span>
+              <span>
+                {t('fields.readiness')}
+                <strong>{projectQualitySummary.averageReadinessScore || 0} / 100</strong>
+              </span>
+              <span>
+                {t('fields.failureMemory')}
+                <strong>
+                  {projectQualitySummary.topFailureCategories.join(', ') || t('root.profileNone')}
+                </strong>
+              </span>
+            </div>
+
+            <div className={styles.qualityDrilldown}>
+              <span>
+                <strong>{t('fields.qualitySlo')}</strong>
+                <small>{projectQualitySummary.sloStatus}</small>
+              </span>
+              <span>
+                <strong>{t('fields.policyExceptions')}</strong>
+                <small>
+                  {projectQualitySummary.policyExceptions} {t('fields.policyExceptionUnit')}
+                </small>
+              </span>
+              <span>
+                <strong>{t('fields.connectorEvents')}</strong>
+                <small>
+                  {projectQualitySummary.connectorEvents} {t('fields.connectorEventUnit')}
+                </small>
+              </span>
+              <span>
+                <strong>{t('fields.failureClusters')}</strong>
+                <small>
+                  {projectQualitySummary.failureClusters
+                    .slice(0, 2)
+                    .map((item) => `${item.category}/${item.hits}`)
+                    .join(', ') || t('root.profileNone')}
+                </small>
+              </span>
+              <span>
+                <strong>{t('fields.recentTrend')}</strong>
+                <small>{projectQualitySummary.recentPassRate}%</small>
+              </span>
+              <span>
+                <strong>{t('fields.flakyCommands')}</strong>
+                <small>
+                  {projectQualitySummary.flakyCommands.join(', ') || t('root.profileNone')}
+                </small>
               </span>
             </div>
 
@@ -2907,6 +3677,27 @@ const KiraPage: React.FC = () => {
                                     {review.observability.estimatedReviewOutputTokens ?? 0}
                                   </small>
                                 ) : null}
+                                {review?.diffCoverage ? (
+                                  <small>
+                                    Diff coverage:{' '}
+                                    {Math.round((review.diffCoverage.coverageRatio ?? 0) * 100)}% |{' '}
+                                    Anchored findings:{' '}
+                                    {review.diffCoverage.anchoredFindingCount ?? 0}
+                                  </small>
+                                ) : null}
+                                {review?.diffCoverage ? (
+                                  <small>
+                                    Covered files:{' '}
+                                    {review.diffCoverage.filesCoveredByReview.join(', ') || 'none'}{' '}
+                                    / Changed:{' '}
+                                    {review.diffCoverage.filesWithChangedLines.join(', ') || 'none'}
+                                  </small>
+                                ) : null}
+                                {review?.diffCoverage?.issues?.length ? (
+                                  <small>
+                                    Diff issues: {review.diffCoverage.issues.join(' | ')}
+                                  </small>
+                                ) : null}
                                 {attempt.evidenceLedger?.approvalReadiness ? (
                                   <small>
                                     Approval readiness:{' '}
@@ -2918,6 +3709,15 @@ const KiraPage: React.FC = () => {
                                       attempt.evidenceLedger.approvalReadiness.missingEvidence
                                         .length
                                     }
+                                  </small>
+                                ) : null}
+                                {attempt.integration ? (
+                                  <small>
+                                    Integration: {attempt.integration.status}
+                                    {attempt.integration.commitHash
+                                      ? ` | ${attempt.integration.commitHash}`
+                                      : ''}
+                                    {attempt.integration.pullRequestUrl ? ' | PR ready' : ''}
                                   </small>
                                 ) : null}
                               </div>

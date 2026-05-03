@@ -173,11 +173,49 @@ describe('Kira model helpers', () => {
       id: 'work-1-2',
       workId: 'work-1',
       attemptNo: 2,
+      recordVersion: 2,
+      migratedFromVersion: 1,
       status: 'blocked',
       changedFiles: ['src/app.ts', 123],
       commandsRun: ['pnpm test'],
       blockedReason: { invalid: true },
       patchedFiles: ['src/app.ts'],
+      integration: {
+        status: 'committed',
+        message: 'Committed as abc123',
+        commitHash: 'abc123',
+        pullRequestUrl: 'https://github.com/example/repo/pull/1',
+        connectors: [
+          {
+            connectorId: 'github',
+            status: 'applied',
+            summary: 'Draft PR created.',
+            checks: ['[]'],
+            evidence: ['gh pr create'],
+          },
+        ],
+        createdAt: 123,
+      },
+      orchestrationPlan: {
+        promptContractVersion: 2,
+        runMode: 'deep',
+        taskType: 'frontend-ui',
+        workerCount: 2,
+        validationDepth: 'deep',
+        reviewDepth: 'evidence-heavy',
+        approvalThreshold: 88,
+        subagentIds: ['implementer', 'security-reviewer'],
+        runner: 'local',
+        connectors: ['github'],
+        workflowDag: {
+          nodes: [{ id: 'plan', label: 'Plan', kind: 'plan', required: true }],
+          edges: [],
+          criticalPath: ['plan'],
+        },
+        lanes: [],
+        checkpoints: [],
+        stopRules: [],
+      },
     });
 
     expect(attempt).toMatchObject({
@@ -189,6 +227,12 @@ describe('Kira model helpers', () => {
       commandsRun: ['pnpm test'],
       patchedFiles: ['src/app.ts'],
     });
+    expect(attempt?.orchestrationPlan?.subagentIds).toEqual(['implementer', 'security-reviewer']);
+    expect(attempt?.orchestrationPlan?.promptContractVersion).toBe(2);
+    expect(attempt?.orchestrationPlan?.workflowDag?.criticalPath).toEqual(['plan']);
+    expect(attempt?.integration?.connectors[0]?.connectorId).toBe('github');
+    expect(attempt?.recordVersion).toBe(2);
+    expect(attempt?.migratedFromVersion).toBe(1);
     expect(attempt?.blockedReason).toBeUndefined();
   });
 
@@ -197,6 +241,7 @@ describe('Kira model helpers', () => {
       id: 'work-1-2',
       workId: 'work-1',
       attemptNo: 2,
+      recordVersion: 2,
       approved: true,
       summary: 'Needs work',
       findings: [
@@ -205,11 +250,22 @@ describe('Kira model helpers', () => {
         'not-a-finding',
       ],
       missingValidation: ['pnpm test', 42],
+      diffCoverage: {
+        changedLineCount: 3,
+        anchoredFindingCount: 1,
+        unanchoredFindingCount: 0,
+        filesWithChangedLines: ['src/app.ts'],
+        filesCoveredByReview: ['src/app.ts'],
+        coverageRatio: 1,
+        issues: [],
+      },
     });
 
     expect(review?.findings).toEqual([
       { file: 'src/app.ts', line: 4, severity: 'medium', message: 'bad branch' },
     ]);
     expect(review?.missingValidation).toEqual(['pnpm test', '42']);
+    expect(review?.recordVersion).toBe(2);
+    expect(review?.diffCoverage?.coverageRatio).toBe(1);
   });
 });

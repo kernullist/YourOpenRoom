@@ -97,6 +97,7 @@ blob-report/
 
 # Logs
 *.log.idea/
+.logs/
 apps/*/logs/
 nohup.out
 
@@ -105,4 +106,5 @@ docs/*
 !docs/project-structure.md
 !docs/config.example.json
 !docs/kira-codex-grade-worker-reviewer-plan.md
+!docs/kira-remaining-work-items.md
 .worktrees/

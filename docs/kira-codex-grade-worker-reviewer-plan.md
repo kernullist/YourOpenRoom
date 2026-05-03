@@ -691,3 +691,10 @@ E2E 테스트:
 
 이 순서로 진행하면 Kira는 현재의 자동 워커/리뷰어 루프를 유지하면서도, 결과물의 신뢰성과 설명
 가능성을 Codex급 처리 과정에 가깝게 끌어올릴 수 있다.
+
+## 12. P0/P1/P2 이후 마감 항목
+
+P0/P1/P2 오케스트레이션 계약을 코드에 연결한 뒤 남았던 작업은 `docs/kira-remaining-work-items.md`에
+마감 기록으로 정리한다. 이 문서는 계획의 큰 그림을 유지하고, 마감 기록 문서는 JSON UX, 환경/정책
+집행, subagent scheduler, workflow DAG, diff-aware review, failure memory, GitHub adapter, quality
+dashboard, fixture/test 검증 상태를 추적한다.

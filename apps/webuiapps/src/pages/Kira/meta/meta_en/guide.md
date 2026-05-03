@@ -136,6 +136,11 @@ Current fields:
 | requiredInstructions | string  | `""`         | Mandatory project instructions, such as coding style or architecture rules, enforced for workers, reviewers, and attempt selection |
 | runMode              | string  | `"standard"` | One of `quick`, `standard`, or `deep`; controls orchestration, worker count, validation depth, and review depth                    |
 | rulePacks            | array   | `[]`         | Enabled preset rule packs. Each item is `{ "id": string, "enabled": boolean }`                                                     |
+| executionPolicy      | object  | balanced     | Tool and integration policy: protected paths, command allow/deny lists, patch size limits, and policy rules                        |
+| environment          | object  | local        | Runner contract: local or remote runner, validation commands, required env vars, network, secret, and Windows mode                 |
+| subagents            | array   | defaults     | Project-specific subagent contracts with profile, tool scope, model hint, and required evidence                                    |
+| workflow             | object  | default DAG  | Workflow DAG nodes, edges, and critical path used in orchestration planning and evidence records                                   |
+| plugins              | array   | defaults     | Connector declarations such as GitHub, Linear, or MCP, with enabled state, capabilities, and policy                                |
 
 Example:
 
@@ -148,6 +153,73 @@ Example:
     { "id": "strict-typescript", "enabled": true },
     { "id": "validation-first", "enabled": true },
     { "id": "small-patch", "enabled": false }
+  ],
+  "executionPolicy": {
+    "mode": "balanced",
+    "maxChangedFiles": 12,
+    "maxDiffLines": 900,
+    "protectedPaths": [".env", ".git/**", "**/*.pem", "**/secrets/**"],
+    "commandDenylist": ["npm install", "pnpm add", "git reset", "git clean"],
+    "requireValidation": true,
+    "requireReviewerEvidence": true
+  },
+  "environment": {
+    "runner": "local",
+    "setupCommands": [],
+    "validationCommands": ["pnpm run typecheck"],
+    "devServerCommand": "",
+    "requiredEnv": [],
+    "allowedNetwork": "localhost",
+    "secretsPolicy": "local-only",
+    "windowsMode": "auto"
+  },
+  "subagents": [
+    {
+      "id": "implementation",
+      "label": "Implementation",
+      "profile": "implementation",
+      "description": "Implement scoped changes and collect validation evidence.",
+      "tools": ["read_file", "edit_file", "run_command"],
+      "modelHint": "balanced",
+      "requiredEvidence": ["plan", "diff", "validation"],
+      "enabled": true
+    },
+    {
+      "id": "review",
+      "label": "Review",
+      "profile": "review",
+      "description": "Review changed files and reject missing evidence.",
+      "tools": ["read_file", "run_command"],
+      "modelHint": "strict",
+      "requiredEvidence": ["review", "validation"],
+      "enabled": true
+    }
+  ],
+  "workflow": {
+    "nodes": [
+      { "id": "plan", "label": "Plan", "kind": "plan", "required": true },
+      { "id": "implement", "label": "Implement", "kind": "implement", "required": true },
+      { "id": "validate", "label": "Validate", "kind": "validate", "required": true },
+      { "id": "review", "label": "Review", "kind": "review", "required": true },
+      { "id": "integrate", "label": "Integrate", "kind": "integrate", "required": true }
+    ],
+    "edges": [
+      { "from": "plan", "to": "implement", "condition": "plan accepted" },
+      { "from": "implement", "to": "validate", "condition": "patch complete" },
+      { "from": "validate", "to": "review", "condition": "validation passed" },
+      { "from": "review", "to": "integrate", "condition": "review approved" }
+    ],
+    "criticalPath": ["plan", "implement", "validate", "review", "integrate"]
+  },
+  "plugins": [
+    {
+      "id": "github",
+      "label": "GitHub",
+      "type": "github",
+      "enabled": false,
+      "policy": "suggest",
+      "capabilities": ["issues", "pull-requests", "checks"]
+    }
   ]
 }
 ```
@@ -157,6 +229,22 @@ If the project file is missing, Kira falls back to `kira.projectDefaults` from
 `requiredInstructions` defaults to an empty string, `runMode` defaults to `standard`, and no rule
 packs are enabled. A project-local `rulePacks` list intentionally overrides inherited defaults, even
 when it is empty.
+
+Project-local orchestration fields also override inherited defaults when present. Missing or invalid
+orchestration fields are normalized back to safe defaults before Kira uses them.
+
+The Project Settings UI and `/api/kira-project-settings` save endpoint both validate the
+orchestration contract. Validation reports include field paths such as `environment.remoteCommand`,
+`workflow.edges[0].to`, or `subagents[1].tools[0]`; contracts with error-level issues are not saved.
+
+Kira applies these fields during execution, not only in prompts. Environment setup commands and
+validation commands run through the same cancellation and policy checks as worker tools. Secret-like
+environment variables are withheld from child processes when the secret policy requires masking or
+remote execution. Remote-command runners must also pass a cancellable worktree reachability probe
+before a worker starts; probe output and failures are recorded as environment evidence and approval
+blockers. Subagent tool scopes are enforced before a worker tool call is executed, and the workflow
+DAG controls whether design gates, validation, review, integration, and completion guards are
+required for the attempt.
 
 When `requiredInstructions` or rule-pack instructions are not empty, Kira injects the combined
 effective instructions into worker, reviewer, and multi-worker selection prompts as binding
@@ -190,6 +278,8 @@ panel after it exists, or generated automatically during worker context scans. I
   `tooling-config`, and `docs-maintainer`
 - recent review failures, validation failures, repeated patterns, worker guidance rules, and
   decomposition recommendations
+- orchestration defaults for execution policy, environment contract, subagent registry, workflow
+  DAG, plugin connectors, and quality snapshot
 
 Workers and reviewers receive the profile as part of the context scan. Kira also uses it to:
 
@@ -230,6 +320,10 @@ Workers and reviewers receive the profile as part of the context scan. Kira also
   runtime validation evidence, failure analysis, patch intent, diff stats, duration, estimated token
   counts, and timeline notes
 - select a worker specialization focus for single-worker and multi-worker attempts
+- enforce environment setup, validation, policy hooks, subagent tool scopes, workflow DAG gates, and
+  connector integration as runtime evidence rather than prompt-only guidance
+- track failure clusters with command-specific remediation and stale-score decay so repeated
+  validation failures become reusable project guidance
 
 ## Attempt Evidence and Review Records
 
@@ -242,20 +336,26 @@ apps/kira/data/reviews/{workId}-{attemptNo}.json
 
 Attempt records may include:
 
-- `orchestrationPlan` with the selected run mode, lane goals, evidence requirements, checkpoints,
-  and stop rules
+- `recordVersion` and `migratedFromVersion` for compatibility with older saved attempts
+- `orchestrationPlan` with the selected run mode, lane goals, subagent ids, runner, connectors,
+  workflow DAG, prompt contract version, evidence requirements, checkpoints, and stop rules
 - `evidenceLedger` with concrete plan, diff, validation, runtime, intent, manual, risk-acceptance,
-  design, and review evidence
+  design, policy, environment setup, remote runner probe, workflow, connector, and review evidence
 - an approval-readiness score with blockers and missing evidence
 - worker self-checks, requirement traces, patch alternatives, diff hunk review, runtime validation,
   failure analysis, and patch-intent verification
+- `integration` status with local commit hash, pull request URL, connector evidence, checks, and
+  integration notes when an approved attempt is committed or published
 
 Review records may include:
 
+- `recordVersion` and `migratedFromVersion` for compatibility with older saved reviews
 - independent `filesChecked`, `evidenceChecked`, `requirementVerdicts`, and adversarial checks
 - simulated reviewer discourse for skeptical review modes
 - triage items for review findings, validation gaps, runtime blockers, design-gate concerns, and
   patch-intent drift
+- `diffCoverage` with changed-line files, reviewed changed-line files, anchored finding counts, and
+  contradiction issues that can prevent an unsafe approval
 - multi-worker attempt synthesis, including non-selected attempts and fully rejected comparison
   cycles
 

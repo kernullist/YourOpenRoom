@@ -20,6 +20,8 @@ import {
   loadProjectIntelligenceProfile,
   kiraAutomationPlugin,
   refreshProjectIntelligenceProfile,
+  resolveProjectSettings,
+  validateKiraOrchestrationContract,
 } from './src/lib/kiraAutomationPlugin';
 import { searchOpenVscodeWorkspace } from './src/lib/openVscodeSearch';
 import {
@@ -229,23 +231,6 @@ function normalizeKiraRulePacks(
   }));
 }
 
-function buildKiraEffectiveInstructions(
-  requiredInstructions: string,
-  rulePacks: KiraRulePackSetting[],
-): string {
-  const enabled = new Set(rulePacks.filter((item) => item.enabled).map((item) => item.id));
-  const presetInstructions = KIRA_RULE_PACK_PRESETS.filter((preset) =>
-    enabled.has(preset.id),
-  ).flatMap((preset) => [
-    `Rule pack: ${preset.label}`,
-    ...preset.instructions.map((instruction) => `- ${instruction}`),
-  ]);
-  return [requiredInstructions, presetInstructions.join('\n')]
-    .map((section) => section.trim())
-    .filter(Boolean)
-    .join('\n\n');
-}
-
 function readKiraProjectSettingsFile(settingsPath: string): KiraProjectSettingsFile {
   try {
     if (!fs.existsSync(settingsPath)) return {};
@@ -286,21 +271,21 @@ function buildKiraProjectSettingsResponse(project: { name: string; path: string 
     raw,
     'requiredInstructions',
   );
-  const localRequiredInstructions = hasLocalRequiredInstructions
-    ? normalizeKiraRequiredInstructions(raw.requiredInstructions)
-    : '';
   const inheritedRequiredInstructions = hasLocalRequiredInstructions
     ? ''
     : normalizeKiraRequiredInstructions(defaults.requiredInstructions);
-  const runMode = normalizeKiraRunMode(raw.runMode, normalizeKiraRunMode(defaults.runMode));
-  const hasLocalRulePacks = Object.prototype.hasOwnProperty.call(raw, 'rulePacks');
-  const rulePacks = normalizeKiraRulePacks(
-    raw.rulePacks,
-    hasLocalRulePacks ? [] : normalizeKiraRulePacks(defaults.rulePacks),
+  const resolvedSettings = resolveProjectSettings(raw, defaults);
+  const validation = validateKiraOrchestrationContract(
+    {
+      executionPolicy: raw.executionPolicy ?? defaults.executionPolicy,
+      environment: raw.environment ?? defaults.environment,
+      subagents: raw.subagents ?? defaults.subagents,
+      workflow: raw.workflow ?? defaults.workflow,
+      plugins: raw.plugins ?? defaults.plugins,
+    },
+    resolvedSettings.runMode,
   );
-  const requiredInstructions = hasLocalRequiredInstructions
-    ? localRequiredInstructions
-    : inheritedRequiredInstructions;
+  const requiredInstructions = resolvedSettings.requiredInstructions;
   return {
     projectName: project.name,
     projectRoot: project.path,
@@ -309,17 +294,18 @@ function buildKiraProjectSettingsResponse(project: { name: string; path: string 
     hasLocalRequiredInstructions,
     inheritedRequiredInstructions,
     rulePackPresets: KIRA_RULE_PACK_PRESETS,
+    validation,
     settings: {
-      autoCommit:
-        typeof raw.autoCommit === 'boolean'
-          ? raw.autoCommit
-          : typeof defaults.autoCommit === 'boolean'
-            ? defaults.autoCommit
-            : true,
+      autoCommit: resolvedSettings.autoCommit,
       requiredInstructions,
-      effectiveInstructions: buildKiraEffectiveInstructions(requiredInstructions, rulePacks),
-      runMode,
-      rulePacks,
+      effectiveInstructions: resolvedSettings.effectiveInstructions,
+      runMode: resolvedSettings.runMode,
+      rulePacks: resolvedSettings.rulePacks,
+      executionPolicy: resolvedSettings.executionPolicy,
+      environment: resolvedSettings.environment,
+      subagents: resolvedSettings.subagents,
+      workflow: resolvedSettings.workflow,
+      plugins: resolvedSettings.plugins,
     },
   };
 }
@@ -643,6 +629,39 @@ function kiraConfigPlugin(): Plugin {
 
               if (Object.prototype.hasOwnProperty.call(body, 'rulePacks')) {
                 nextSettings.rulePacks = normalizeKiraRulePacks(body.rulePacks);
+              }
+
+              for (const key of [
+                'executionPolicy',
+                'environment',
+                'subagents',
+                'workflow',
+                'plugins',
+              ]) {
+                if (Object.prototype.hasOwnProperty.call(body, key)) {
+                  nextSettings[key] = body[key];
+                }
+              }
+
+              const validation = validateKiraOrchestrationContract(
+                {
+                  executionPolicy: nextSettings.executionPolicy,
+                  environment: nextSettings.environment,
+                  subagents: nextSettings.subagents,
+                  workflow: nextSettings.workflow,
+                  plugins: nextSettings.plugins,
+                },
+                normalizeKiraRunMode(nextSettings.runMode),
+              );
+              if (!validation.valid) {
+                res.writeHead(400);
+                res.end(
+                  JSON.stringify({
+                    error: 'Invalid Kira orchestration contract',
+                    validation,
+                  }),
+                );
+                return;
               }
 
               fs.mkdirSync(dirname(settingsPath), { recursive: true });

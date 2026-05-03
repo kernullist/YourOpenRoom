@@ -1,13 +1,12 @@
 import * as fs from 'fs';
 import * as net from 'net';
-import { exec as execCallback, execFile as execFileCallback, spawn } from 'child_process';
+import { execFile as execFileCallback, spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
 import { basename, dirname, join, resolve } from 'path';
 import type { Plugin } from 'vite';
 
-const execAsync = promisify(execCallback);
 const execFileAsync = promisify(execFileCallback);
 
 type LLMProvider =
@@ -304,11 +303,117 @@ interface ScoredMemorySignal {
   lastSeenAt: number;
 }
 
+interface FailureMemoryCluster {
+  signature: string;
+  category: FailureAnalysis['category'] | 'review' | 'policy';
+  hits: number;
+  lastSeenAt: number;
+  commands: string[];
+  remediation: string[];
+  examples: string[];
+  staleScore: number;
+}
+
 type KiraRunMode = 'quick' | 'standard' | 'deep';
 
 interface KiraRulePackSetting {
   id: string;
   enabled: boolean;
+}
+
+type KiraPolicyEvent =
+  | 'before_tool'
+  | 'after_tool'
+  | 'before_validation'
+  | 'before_integration'
+  | 'task_completed';
+
+type KiraPolicyDecision = 'allow' | 'warn' | 'block' | 'defer';
+
+interface KiraPolicyRule {
+  id: string;
+  event: KiraPolicyEvent;
+  enabled: boolean;
+  decision: KiraPolicyDecision;
+  message: string;
+  toolNames: string[];
+  pathPatterns: string[];
+  commandPatterns: string[];
+  riskLevels: Array<RiskReviewPolicy['level']>;
+}
+
+interface KiraExecutionPolicy {
+  mode: 'balanced' | 'locked-down' | 'permissive';
+  maxChangedFiles: number;
+  maxDiffLines: number;
+  protectedPaths: string[];
+  commandAllowlist: string[];
+  commandDenylist: string[];
+  requireValidation: boolean;
+  requireReviewerEvidence: boolean;
+  rules: KiraPolicyRule[];
+}
+
+interface KiraEnvironmentContract {
+  runner: 'local' | 'remote-command' | 'cloud';
+  setupCommands: string[];
+  validationCommands: string[];
+  requiredEnv: string[];
+  allowedNetwork: 'none' | 'localhost' | 'public';
+  secretsPolicy: 'local-only' | 'masked' | 'unrestricted';
+  windowsMode: 'auto' | 'native-powershell' | 'wsl';
+  remoteCommand: string;
+  devServerCommand: string;
+}
+
+interface KiraSubagentDefinition {
+  id: string;
+  label: string;
+  profile: string;
+  description: string;
+  tools: string[];
+  requiredEvidence: string[];
+  modelHint: string;
+  enabled: boolean;
+}
+
+interface KiraWorkflowDagNode {
+  id: string;
+  label: string;
+  kind: 'plan' | 'implement' | 'validate' | 'review' | 'integrate' | 'blocked' | 'done';
+  required: boolean;
+}
+
+interface KiraWorkflowDagEdge {
+  from: string;
+  to: string;
+  condition: string;
+}
+
+interface KiraWorkflowDag {
+  nodes: KiraWorkflowDagNode[];
+  edges: KiraWorkflowDagEdge[];
+  criticalPath: string[];
+}
+
+interface KiraPluginConnector {
+  id: string;
+  label: string;
+  type: 'github' | 'linear' | 'slack' | 'mcp' | 'custom';
+  enabled: boolean;
+  capabilities: string[];
+  policy: 'observe' | 'suggest' | 'apply';
+}
+
+interface KiraQualitySnapshot {
+  attemptsTotal: number;
+  approvedAttempts: number;
+  validationFailures: number;
+  reviewRejections: number;
+  rollbacks: number;
+  averageReadinessScore: number;
+  passRate: number;
+  topFailureCategories: string[];
 }
 
 interface KiraRulePackDefinition {
@@ -319,17 +424,25 @@ interface KiraRulePackDefinition {
 }
 
 interface OrchestrationPlan {
+  promptContractVersion: number;
   runMode: KiraRunMode;
   taskType: KiraTaskType;
   workerCount: number;
   validationDepth: 'focused' | 'standard' | 'deep';
   reviewDepth: 'focused' | 'adversarial' | 'evidence-heavy';
   approvalThreshold: number;
+  subagentIds: string[];
+  workflowDag: KiraWorkflowDag;
+  runner: KiraEnvironmentContract['runner'];
+  connectors: string[];
   summary: string;
   lanes: Array<{
     id: string;
     role: string;
     goal: string;
+    subagentId?: string;
+    toolScope: string[];
+    modelHint?: string;
     requiredEvidence: string[];
   }>;
   checkpoints: string[];
@@ -356,7 +469,11 @@ interface EvidenceLedgerItem {
     | 'review'
     | 'manual'
     | 'risk-acceptance'
-    | 'design';
+    | 'design'
+    | 'policy'
+    | 'environment'
+    | 'workflow'
+    | 'connectors';
   status: 'pass' | 'warn' | 'fail' | 'info';
   summary: string;
   target?: string;
@@ -378,6 +495,51 @@ interface ApprovalReadiness {
 interface EvidenceLedger {
   items: EvidenceLedgerItem[];
   approvalReadiness: ApprovalReadiness;
+}
+
+interface EnvironmentExecutionSummary {
+  setup: ValidationRerunSummary;
+  remote: {
+    declared: boolean;
+    commandTemplate: string;
+    status: 'not_declared' | 'validated' | 'blocked' | 'failed' | 'skipped';
+    probes: string[];
+    notes: string[];
+  };
+  devServer: {
+    declared: boolean;
+    command: string;
+    status: 'not_declared' | 'validated' | 'blocked' | 'skipped';
+    notes: string[];
+  };
+}
+
+interface KiraConnectorEvidence {
+  connectorId: string;
+  status: 'observed' | 'suggested' | 'applied' | 'skipped' | 'failed';
+  summary: string;
+  url?: string;
+  checks: string[];
+  evidence: string[];
+}
+
+interface KiraIntegrationRecord {
+  status: 'committed' | 'integrated' | 'skipped' | 'failed';
+  message: string;
+  commitHash?: string;
+  pullRequestUrl?: string;
+  connectors: KiraConnectorEvidence[];
+  createdAt: number;
+}
+
+interface DiffReviewCoverage {
+  changedLineCount: number;
+  anchoredFindingCount: number;
+  unanchoredFindingCount: number;
+  filesWithChangedLines: string[];
+  filesCoveredByReview: string[];
+  coverageRatio: number;
+  issues: string[];
 }
 
 interface PatchIntentVerification {
@@ -501,6 +663,14 @@ interface KiraProjectProfile {
     hints: string[];
     lastRecommendations: string[];
   };
+  orchestration?: {
+    subagents: KiraSubagentDefinition[];
+    workflowDag: KiraWorkflowDag;
+    pluginConnectors: KiraPluginConnector[];
+    environment: KiraEnvironmentContract;
+    executionPolicy: KiraExecutionPolicy;
+    quality: KiraQualitySnapshot;
+  };
   learning: {
     recentReviewFailures: string[];
     recentValidationFailures: string[];
@@ -508,6 +678,7 @@ interface KiraProjectProfile {
     workerGuidanceRules: string[];
     successfulPatterns: string[];
     scoredMemories: ScoredMemorySignal[];
+    failureClusters: FailureMemoryCluster[];
     lastUpdatedAt?: number;
   };
 }
@@ -542,6 +713,13 @@ interface ProjectContextScan {
   reviewerCalibration?: ReviewerCalibration;
   designReviewGate?: DesignReviewGate;
   orchestrationPlan?: OrchestrationPlan;
+  subagentRegistry?: KiraSubagentDefinition[];
+  workflowDag?: KiraWorkflowDag;
+  executionPolicy?: KiraExecutionPolicy;
+  environmentContract?: KiraEnvironmentContract;
+  environmentExecution?: EnvironmentExecutionSummary;
+  pluginConnectors?: KiraPluginConnector[];
+  qualitySnapshot?: KiraQualitySnapshot;
   manualEvidence?: ManualEvidenceItem[];
 }
 
@@ -581,6 +759,8 @@ interface ReviewFindingTriageItem {
 }
 
 interface KiraAttemptRecord {
+  recordVersion?: number;
+  migratedFromVersion?: number;
   id: string;
   workId: string;
   attemptNo: number;
@@ -622,6 +802,7 @@ interface KiraAttemptRecord {
   designReviewGate?: DesignReviewGate;
   orchestrationPlan?: OrchestrationPlan;
   evidenceLedger?: EvidenceLedger;
+  integration?: KiraIntegrationRecord;
   requirementTrace?: RequirementTraceItem[];
   approachAlternatives?: PatchAlternative[];
   diffExcerpts?: string[];
@@ -631,6 +812,8 @@ interface KiraAttemptRecord {
 }
 
 interface KiraReviewRecord {
+  recordVersion?: number;
+  migratedFromVersion?: number;
   id: string;
   workId: string;
   attemptNo: number;
@@ -647,6 +830,7 @@ interface KiraReviewRecord {
   adversarialChecks: ReviewAdversarialCheck[];
   reviewerDiscourse?: ReviewerDiscourseEntry[];
   triage?: ReviewFindingTriageItem[];
+  diffCoverage?: DiffReviewCoverage;
   reviewAdversarialPlan?: ReviewAdversarialPlan;
   attemptSynthesis?: AttemptSynthesisRecommendation;
   observability?: KiraReviewObservability;
@@ -705,6 +889,11 @@ interface KiraProjectSettings {
   requiredInstructions?: string;
   runMode?: KiraRunMode;
   rulePacks?: unknown;
+  executionPolicy?: unknown;
+  environment?: unknown;
+  subagents?: unknown;
+  workflow?: unknown;
+  plugins?: unknown;
 }
 
 interface ResolvedKiraProjectSettings {
@@ -713,6 +902,31 @@ interface ResolvedKiraProjectSettings {
   effectiveInstructions: string;
   runMode: KiraRunMode;
   rulePacks: KiraRulePackSetting[];
+  executionPolicy: KiraExecutionPolicy;
+  environment: KiraEnvironmentContract;
+  subagents: KiraSubagentDefinition[];
+  workflow: KiraWorkflowDag;
+  plugins: KiraPluginConnector[];
+}
+
+export interface KiraOrchestrationValidationIssue {
+  path: string;
+  severity: 'error' | 'warning';
+  message: string;
+  suggestion?: string;
+}
+
+export interface KiraOrchestrationValidationReport {
+  valid: boolean;
+  issues: KiraOrchestrationValidationIssue[];
+  normalized: {
+    executionPolicy: KiraExecutionPolicy;
+    environment: KiraEnvironmentContract;
+    subagents: KiraSubagentDefinition[];
+    workflow: KiraWorkflowDag;
+    plugins: KiraPluginConnector[];
+  };
+  summary: string[];
 }
 
 interface KiraWorkspaceSession {
@@ -727,6 +941,7 @@ interface KiraWorkerLane {
   id: string;
   label: string;
   config: LLMConfig;
+  subagent?: KiraSubagentDefinition;
 }
 
 interface KiraWorkerAttemptResult {
@@ -834,9 +1049,19 @@ interface AttemptFileSnapshot {
   content: string | null;
 }
 
+export interface DirtyFileContentSnapshot {
+  exists: boolean;
+  hash: string | null;
+  size: number | null;
+}
+
 interface WorkerAttemptState {
   plan: WorkerExecutionPlan | null;
   fileSnapshots: Map<string, AttemptFileSnapshot>;
+  dirtyFileSnapshots: Map<string, DirtyFileContentSnapshot>;
+  executionPolicy: KiraExecutionPolicy;
+  environmentContract: KiraEnvironmentContract;
+  toolScope: Set<string> | null;
   commandsRun: string[];
   readFiles: Set<string>;
   explorationActions: string[];
@@ -868,6 +1093,9 @@ const PROJECT_SETTINGS_DIR_NAME = '.kira';
 const PROJECT_SETTINGS_FILE_NAME = 'project-settings.json';
 const PROJECT_PROFILE_FILE_NAME = 'project-profile.json';
 const PROJECT_PROFILE_SCHEMA_VERSION = 1;
+const KIRA_ATTEMPT_RECORD_VERSION = 2;
+const KIRA_REVIEW_RECORD_VERSION = 2;
+const KIRA_PROMPT_CONTRACT_VERSION = 2;
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_CLARIFICATION_QUESTIONS = 3;
@@ -901,8 +1129,14 @@ const SMALL_PATCH_FILE_LIMIT = 10;
 const SMALL_PATCH_LINE_LIMIT = 900;
 const SMALL_PATCH_PLAN_FILE_LIMIT = 8;
 const COMMON_DEV_SERVER_PORTS = [5173, 3000, 4173, 5174, 8080];
+const SECRET_ENV_NAME_PATTERN = /(?:token|secret|key|password|credential|auth|cookie)/i;
+const NETWORK_COMMAND_PATTERN =
+  /\b(?:gh|git\s+(?:fetch|pull|push|clone)|npm\s+publish|pnpm\s+publish|yarn\s+publish)\b|https?:\/\//i;
+const ENV_DISCLOSURE_COMMAND_PATTERN =
+  /\b(?:printenv|set|env|Get-ChildItem\s+Env:|gci\s+Env:|\$env:)\b/i;
 const RUNTIME_PROBE_TIMEOUT_MS = 450;
 const COMMAND_TIMEOUT_MS = 90_000;
+const REMOTE_RUNNER_PROBE_COMMAND = 'git rev-parse --is-inside-work-tree';
 const LLM_REQUEST_TIMEOUT_MS = 240_000;
 const EXTERNAL_AGENT_TIMEOUT_MS = 10 * 60_000;
 const STALLED_WORK_MS = 15_000;
@@ -983,6 +1217,100 @@ const KIRA_RULE_PACK_PRESETS: KiraRulePackDefinition[] = [
     ],
   },
 ];
+const DEFAULT_KIRA_EXECUTION_POLICY: KiraExecutionPolicy = {
+  mode: 'balanced',
+  maxChangedFiles: 12,
+  maxDiffLines: 900,
+  protectedPaths: [
+    '.env',
+    '.env.*',
+    '.git/**',
+    '.kira/project-settings.json',
+    '**/*.pem',
+    '**/*.key',
+    '**/secrets/**',
+  ],
+  commandAllowlist: [],
+  commandDenylist: [
+    'npm install',
+    'pnpm add',
+    'git reset',
+    'git clean',
+    'curl ',
+    'Invoke-WebRequest',
+  ],
+  requireValidation: true,
+  requireReviewerEvidence: true,
+  rules: [
+    {
+      id: 'block-protected-write',
+      event: 'before_tool',
+      enabled: true,
+      decision: 'block',
+      message: 'Protected paths cannot be written by Kira automation.',
+      toolNames: ['write_file', 'edit_file'],
+      pathPatterns: [
+        '.env',
+        '.env.*',
+        '.git/**',
+        '.kira/project-settings.json',
+        '**/*.pem',
+        '**/*.key',
+        '**/secrets/**',
+      ],
+      commandPatterns: [],
+      riskLevels: [],
+    },
+    {
+      id: 'block-denied-command',
+      event: 'before_tool',
+      enabled: true,
+      decision: 'block',
+      message: 'Command is denied by the project execution policy.',
+      toolNames: ['run_command'],
+      pathPatterns: [],
+      commandPatterns: ['npm install', 'pnpm add', 'git reset', 'git clean'],
+      riskLevels: [],
+    },
+  ],
+};
+const DEFAULT_KIRA_ENVIRONMENT_CONTRACT: KiraEnvironmentContract = {
+  runner: 'local',
+  setupCommands: [],
+  validationCommands: [],
+  requiredEnv: [],
+  allowedNetwork: 'localhost',
+  secretsPolicy: 'local-only',
+  windowsMode: 'auto',
+  remoteCommand: '',
+  devServerCommand: '',
+};
+const DEFAULT_KIRA_PLUGIN_CONNECTORS: KiraPluginConnector[] = [
+  {
+    id: 'github',
+    label: 'GitHub',
+    type: 'github',
+    enabled: false,
+    capabilities: ['issues', 'pull-requests', 'checks'],
+    policy: 'suggest',
+  },
+  {
+    id: 'linear',
+    label: 'Linear',
+    type: 'linear',
+    enabled: false,
+    capabilities: ['issues', 'projects'],
+    policy: 'observe',
+  },
+  {
+    id: 'mcp',
+    label: 'MCP',
+    type: 'mcp',
+    enabled: false,
+    capabilities: ['context', 'tools'],
+    policy: 'observe',
+  },
+];
 const KIRA_PROJECT_ROOT_MARKERS = [
   '.git',
   'package.json',
@@ -995,13 +1323,18 @@ const KIRA_PROJECT_ROOT_MARKERS = [
   'settings.gradle',
   'deno.json',
 ];
+const SAFE_SCRIPT_NAME = String.raw`(?:test|lint|build|check|typecheck)(?::[A-Za-z0-9_-]+)?`;
+const SAFE_PNPM_DIR = String.raw`(?:(?!\.\.(?:[\\/]|$))(?!.*[\\/]\.\.(?:[\\/]|$))[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)`;
 const SAFE_COMMAND_PATTERNS = [
   /^python\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
   /^py\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b/i,
   /^pytest(?:\s|$)/i,
   /^uv\s+run\s+(?:pytest(?:\s|$)|python\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b|py\s+-m\s+(?:pytest|unittest|compileall|py_compile|ruff|mypy)\b|ruff\b|mypy\b)/i,
-  /^npm\s+(?:test(?:\s|$)|run\s+(?:test|lint|build|check|typecheck)\b)/i,
-  /^pnpm\s+(?:(?:run\s+)?(?:test|lint|build|check|typecheck)\b|exec\s+(?:vitest|jest|eslint|tsc|tsx|vite)\b)/i,
+  new RegExp(`^npm\\s+(?:test(?:\\s|$)|run\\s+${SAFE_SCRIPT_NAME}\\b)`, 'i'),
+  new RegExp(
+    `^pnpm\\s+(?:--dir\\s+${SAFE_PNPM_DIR}\\s+)?(?:(?:run\\s+)?${SAFE_SCRIPT_NAME}\\b|exec\\s+(?:vitest|jest|eslint|tsc|tsx|vite)\\b)`,
+    'i',
+  ),
   /^node\s+--test\b/i,
   /^git\s+(status|diff|show|rev-parse|branch|log)\b/i,
   /^rg(?:\s|$)/i,
@@ -1016,6 +1349,26 @@ const DANGEROUS_COMMAND_PATTERNS = [
   /\bgit\s+(?:reset|checkout|clean)\b/i,
   /[|;&><]/,
 ];
+const SKIPPED_TOOL_TRAVERSAL_DIRECTORIES = new Set([
+  '.git',
+  '.kira',
+  '.mypy_cache',
+  '.next',
+  '.openroom',
+  '.pytest_cache',
+  '.turbo',
+  '.venv',
+  '__pycache__',
+  'automation-locks',
+  'build',
+  'coverage',
+  'dist',
+  'node_modules',
+  'out',
+  'playwright-report',
+  'test-results',
+  'venv',
+]);
 
 interface GitStatusEntry {
   path: string;
@@ -1032,6 +1385,10 @@ function makeId(prefix: string): string {
 
 function normalizeWhitespace(value: string): string {
   return value.trim().replace(/\s+/g, ' ');
+}
+
+function shouldSkipToolTraversalDirectory(name: string): boolean {
+  return SKIPPED_TOOL_TRAVERSAL_DIRECTORIES.has(name.toLowerCase());
 }
 
 function estimateTokenCount(value: string): number {
@@ -1167,6 +1524,1030 @@ function limitedUniqueStrings(values: string[], limit = MAX_PROJECT_PROFILE_LIST
 
 function stringArrayFrom(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String) : [];
+}
+
+function normalizePatternList(value: unknown, fallback: string[] = [], limit = 40): string[] {
+  return limitedUniqueStrings(
+    (Array.isArray(value) ? value.map(String) : fallback).map((item) => item.trim()),
+    limit,
+  );
+}
+
+function normalizePolicyRule(raw: unknown, fallback?: KiraPolicyRule): KiraPolicyRule | null {
+  const value = typeof raw === 'object' && raw !== null ? (raw as Partial<KiraPolicyRule>) : {};
+  const id =
+    typeof value.id === 'string' && value.id.trim()
+      ? normalizeWhitespace(value.id)
+      : fallback?.id || '';
+  if (!id) return null;
+  const event =
+    value.event === 'before_tool' ||
+    value.event === 'after_tool' ||
+    value.event === 'before_validation' ||
+    value.event === 'before_integration' ||
+    value.event === 'task_completed'
+      ? value.event
+      : (fallback?.event ?? 'before_tool');
+  const decision =
+    value.decision === 'allow' ||
+    value.decision === 'warn' ||
+    value.decision === 'block' ||
+    value.decision === 'defer'
+      ? value.decision
+      : (fallback?.decision ?? 'warn');
+  return {
+    id,
+    event,
+    enabled: normalizeBoolean(value.enabled, fallback?.enabled ?? true),
+    decision,
+    message:
+      typeof value.message === 'string' && value.message.trim()
+        ? normalizeWhitespace(value.message)
+        : fallback?.message || `Kira policy ${id} matched.`,
+    toolNames: normalizePatternList(value.toolNames, fallback?.toolNames ?? [], 20),
+    pathPatterns: normalizePatternList(value.pathPatterns, fallback?.pathPatterns ?? [], 40),
+    commandPatterns: normalizePatternList(
+      value.commandPatterns,
+      fallback?.commandPatterns ?? [],
+      40,
+    ),
+    riskLevels: Array.isArray(value.riskLevels)
+      ? value.riskLevels.filter(
+          (level): level is RiskReviewPolicy['level'] =>
+            level === 'low' || level === 'medium' || level === 'high',
+        )
+      : (fallback?.riskLevels ?? []),
+  };
+}
+
+export function normalizeExecutionPolicy(
+  value: unknown,
+  fallback: KiraExecutionPolicy = DEFAULT_KIRA_EXECUTION_POLICY,
+): KiraExecutionPolicy {
+  const raw =
+    typeof value === 'object' && value !== null ? (value as Partial<KiraExecutionPolicy>) : {};
+  const maxChangedFiles =
+    typeof raw.maxChangedFiles === 'number' && Number.isFinite(raw.maxChangedFiles)
+      ? Math.max(1, Math.min(200, Math.round(raw.maxChangedFiles)))
+      : fallback.maxChangedFiles;
+  const maxDiffLines =
+    typeof raw.maxDiffLines === 'number' && Number.isFinite(raw.maxDiffLines)
+      ? Math.max(1, Math.min(20_000, Math.round(raw.maxDiffLines)))
+      : fallback.maxDiffLines;
+  const mode =
+    raw.mode === 'locked-down' || raw.mode === 'permissive' || raw.mode === 'balanced'
+      ? raw.mode
+      : fallback.mode;
+  const fallbackRules = fallback.rules;
+  const rawRules = Array.isArray(raw.rules) ? raw.rules : fallbackRules;
+  return {
+    mode,
+    maxChangedFiles,
+    maxDiffLines,
+    protectedPaths: normalizePatternList(raw.protectedPaths, fallback.protectedPaths, 80),
+    commandAllowlist: normalizePatternList(raw.commandAllowlist, fallback.commandAllowlist, 80),
+    commandDenylist: normalizePatternList(raw.commandDenylist, fallback.commandDenylist, 80),
+    requireValidation: normalizeBoolean(raw.requireValidation, fallback.requireValidation),
+    requireReviewerEvidence: normalizeBoolean(
+      raw.requireReviewerEvidence,
+      fallback.requireReviewerEvidence,
+    ),
+    rules: rawRules
+      .map((rule, index) => normalizePolicyRule(rule, fallbackRules[index]))
+      .filter((rule): rule is KiraPolicyRule => rule !== null),
+  };
+}
+
+export function normalizeEnvironmentContract(
+  value: unknown,
+  fallback: KiraEnvironmentContract = DEFAULT_KIRA_ENVIRONMENT_CONTRACT,
+): KiraEnvironmentContract {
+  const raw =
+    typeof value === 'object' && value !== null ? (value as Partial<KiraEnvironmentContract>) : {};
+  return {
+    runner:
+      raw.runner === 'remote-command' || raw.runner === 'cloud' || raw.runner === 'local'
+        ? raw.runner
+        : fallback.runner,
+    setupCommands: normalizePatternList(raw.setupCommands, fallback.setupCommands, 12).filter(
+      (command) => isSafeCommandAllowed(command),
+    ),
+    validationCommands: normalizePatternList(
+      raw.validationCommands,
+      fallback.validationCommands,
+      12,
+    ).filter((command) => isSafeCommandAllowed(command)),
+    requiredEnv: normalizePatternList(raw.requiredEnv, fallback.requiredEnv, 40),
+    allowedNetwork:
+      raw.allowedNetwork === 'none' ||
+      raw.allowedNetwork === 'localhost' ||
+      raw.allowedNetwork === 'public'
+        ? raw.allowedNetwork
+        : fallback.allowedNetwork,
+    secretsPolicy:
+      raw.secretsPolicy === 'masked' ||
+      raw.secretsPolicy === 'unrestricted' ||
+      raw.secretsPolicy === 'local-only'
+        ? raw.secretsPolicy
+        : fallback.secretsPolicy,
+    windowsMode:
+      raw.windowsMode === 'native-powershell' ||
+      raw.windowsMode === 'wsl' ||
+      raw.windowsMode === 'auto'
+        ? raw.windowsMode
+        : fallback.windowsMode,
+    remoteCommand:
+      typeof raw.remoteCommand === 'string'
+        ? normalizeWhitespace(raw.remoteCommand).slice(0, 400)
+        : fallback.remoteCommand,
+    devServerCommand:
+      typeof raw.devServerCommand === 'string'
+        ? normalizeWhitespace(raw.devServerCommand).slice(0, 400)
+        : fallback.devServerCommand,
+  };
+}
+
+function buildDefaultSubagentRegistry(
+  profile?: KiraProjectProfile | null,
+): KiraSubagentDefinition[] {
+  const recommended = new Set(profile?.workers.recommendedProfiles ?? []);
+  const defaults: KiraSubagentDefinition[] = [
+    {
+      id: 'explorer',
+      label: 'Explorer',
+      profile: 'generalist',
+      description:
+        'Find relevant files, contracts, tests, and project constraints before planning.',
+      tools: ['list_files', 'search_files', 'read_file'],
+      requiredEvidence: ['repoFindings', 'likelyFiles'],
+      modelHint: '',
+      enabled: true,
+    },
+    {
+      id: 'implementer',
+      label: 'Implementer',
+      profile: recommended.has('frontend-ui') ? 'frontend-ui' : 'generalist',
+      description: 'Apply the scoped patch while preserving user work and project policy.',
+      tools: ['read_file', 'edit_file', 'write_file', 'run_command'],
+      requiredEvidence: ['diffHunkReview', 'validation'],
+      modelHint: '',
+      enabled: true,
+    },
+    {
+      id: 'test-validator',
+      label: 'Test Validator',
+      profile: 'test-validation',
+      description: 'Select, run, and interpret focused validation for changed files.',
+      tools: ['read_file', 'search_files', 'run_command'],
+      requiredEvidence: ['validationCommands', 'failureAnalysis'],
+      modelHint: '',
+      enabled: recommended.has('test-validation'),
+    },
+    {
+      id: 'security-reviewer',
+      label: 'Security Reviewer',
+      profile: 'security-auth',
+      description: 'Challenge auth, secrets, permissions, data-loss, and rollback assumptions.',
+      tools: ['read_file', 'search_files'],
+      requiredEvidence: ['adversarialChecks', 'reviewerDiscourse'],
+      modelHint: '',
+      enabled: true,
+    },
+    {
+      id: 'integration-judge',
+      label: 'Integration Judge',
+      profile: 'minimal-risk integration reviewer',
+      description: 'Approve only when the evidence ledger, policy, and review findings are ready.',
+      tools: ['read_file', 'run_command'],
+      requiredEvidence: ['evidenceLedger', 'approvalReadiness'],
+      modelHint: '',
+      enabled: true,
+    },
+  ];
+  return defaults;
+}
+
+export function normalizeSubagentRegistry(
+  value: unknown,
+  profile?: KiraProjectProfile | null,
+): KiraSubagentDefinition[] {
+  const defaults = buildDefaultSubagentRegistry(profile);
+  const byId = new Map(defaults.map((agent) => [agent.id, agent]));
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (!item || typeof item !== 'object') continue;
+      const raw = item as Partial<KiraSubagentDefinition>;
+      const id = typeof raw.id === 'string' && raw.id.trim() ? normalizeWhitespace(raw.id) : '';
+      if (!id) continue;
+      const fallback = byId.get(id);
+      byId.set(id, {
+        id,
+        label:
+          typeof raw.label === 'string' && raw.label.trim()
+            ? normalizeWhitespace(raw.label)
+            : fallback?.label || id,
+        profile:
+          typeof raw.profile === 'string' && raw.profile.trim()
+            ? normalizeWhitespace(raw.profile)
+            : fallback?.profile || 'generalist',
+        description:
+          typeof raw.description === 'string' && raw.description.trim()
+            ? normalizeWhitespace(raw.description)
+            : fallback?.description || 'Custom Kira subagent.',
+        tools: normalizePatternList(raw.tools, fallback?.tools ?? [], 20),
+        requiredEvidence: normalizePatternList(
+          raw.requiredEvidence,
+          fallback?.requiredEvidence ?? [],
+          20,
+        ),
+        modelHint:
+          typeof raw.modelHint === 'string' && raw.modelHint.trim()
+            ? normalizeWhitespace(raw.modelHint)
+            : fallback?.modelHint || '',
+        enabled: normalizeBoolean(raw.enabled, fallback?.enabled ?? true),
+      });
+    }
+  }
+  return [...byId.values()].filter((agent) => agent.enabled).slice(0, 12);
+}
+
+function buildDefaultWorkflowDag(runMode: KiraRunMode = 'standard'): KiraWorkflowDag {
+  const nodes: KiraWorkflowDagNode[] = [
+    { id: 'discover', label: 'Context discovery', kind: 'plan', required: true },
+    { id: 'plan', label: 'Preflight plan', kind: 'plan', required: true },
+    { id: 'design-gate', label: 'Design gate', kind: 'review', required: runMode !== 'quick' },
+    { id: 'implement', label: 'Implementation', kind: 'implement', required: true },
+    { id: 'validate', label: 'Validation rerun', kind: 'validate', required: true },
+    { id: 'review', label: 'Evidence review', kind: 'review', required: true },
+    { id: 'integrate', label: 'Apply or commit decision', kind: 'integrate', required: true },
+  ];
+  if (runMode === 'deep') {
+    nodes.splice(5, 0, {
+      id: 'adversarial-pass',
+      label: 'Adversarial second pass',
+      kind: 'review',
+      required: true,
+    });
+  }
+  const criticalPath = nodes.map((node) => node.id);
+  return {
+    nodes,
+    edges: criticalPath.slice(1).map((to, index) => ({
+      from: criticalPath[index],
+      to,
+      condition: 'previous stage passed',
+    })),
+    criticalPath,
+  };
+}
+
+export function normalizeWorkflowDag(
+  value: unknown,
+  runMode: KiraRunMode = 'standard',
+): KiraWorkflowDag {
+  const fallback = buildDefaultWorkflowDag(runMode);
+  const raw =
+    typeof value === 'object' && value !== null ? (value as Partial<KiraWorkflowDag>) : {};
+  const nodes = Array.isArray(raw.nodes)
+    ? raw.nodes
+        .map((item): KiraWorkflowDagNode | null => {
+          if (!item || typeof item !== 'object') return null;
+          const node = item as Partial<KiraWorkflowDagNode>;
+          const id =
+            typeof node.id === 'string' && node.id.trim() ? normalizeWhitespace(node.id) : '';
+          const label =
+            typeof node.label === 'string' && node.label.trim()
+              ? normalizeWhitespace(node.label)
+              : id;
+          const kind =
+            node.kind === 'plan' ||
+            node.kind === 'implement' ||
+            node.kind === 'validate' ||
+            node.kind === 'review' ||
+            node.kind === 'integrate' ||
+            node.kind === 'blocked' ||
+            node.kind === 'done'
+              ? node.kind
+              : 'plan';
+          return id ? { id, label, kind, required: node.required !== false } : null;
+        })
+        .filter((node): node is KiraWorkflowDagNode => node !== null)
+    : fallback.nodes;
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const edges = Array.isArray(raw.edges)
+    ? raw.edges
+        .map((item): KiraWorkflowDagEdge | null => {
+          if (!item || typeof item !== 'object') return null;
+          const edge = item as Partial<KiraWorkflowDagEdge>;
+          const from = typeof edge.from === 'string' ? normalizeWhitespace(edge.from) : '';
+          const to = typeof edge.to === 'string' ? normalizeWhitespace(edge.to) : '';
+          if (!nodeIds.has(from) || !nodeIds.has(to)) return null;
+          return {
+            from,
+            to,
+            condition:
+              typeof edge.condition === 'string' && edge.condition.trim()
+                ? normalizeWhitespace(edge.condition)
+                : 'previous stage passed',
+          };
+        })
+        .filter((edge): edge is KiraWorkflowDagEdge => edge !== null)
+    : fallback.edges;
+  const criticalPath = normalizePatternList(raw.criticalPath, fallback.criticalPath, 40).filter(
+    (id) => nodeIds.has(id),
+  );
+  return {
+    nodes,
+    edges,
+    criticalPath: criticalPath.length > 0 ? criticalPath : fallback.criticalPath,
+  };
+}
+
+function workflowHasRequiredKind(
+  workflow: KiraWorkflowDag | undefined,
+  kind: KiraWorkflowDagNode['kind'],
+): boolean {
+  return normalizeWorkflowDag(workflow).nodes.some((node) => node.required && node.kind === kind);
+}
+
+function workflowHasStage(workflow: KiraWorkflowDag | undefined, stageId: string): boolean {
+  return normalizeWorkflowDag(workflow).nodes.some((node) => node.required && node.id === stageId);
+}
+
+export function normalizePluginConnectors(value: unknown): KiraPluginConnector[] {
+  const byId = new Map(
+    DEFAULT_KIRA_PLUGIN_CONNECTORS.map((connector) => [connector.id, connector]),
+  );
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      if (!item || typeof item !== 'object') continue;
+      const raw = item as Partial<KiraPluginConnector>;
+      const id = typeof raw.id === 'string' && raw.id.trim() ? normalizeWhitespace(raw.id) : '';
+      if (!id) continue;
+      const fallback = byId.get(id);
+      const type =
+        raw.type === 'github' ||
+        raw.type === 'linear' ||
+        raw.type === 'slack' ||
+        raw.type === 'mcp' ||
+        raw.type === 'custom'
+          ? raw.type
+          : (fallback?.type ?? 'custom');
+      const policy =
+        raw.policy === 'apply' || raw.policy === 'suggest' || raw.policy === 'observe'
+          ? raw.policy
+          : (fallback?.policy ?? 'observe');
+      byId.set(id, {
+        id,
+        label:
+          typeof raw.label === 'string' && raw.label.trim()
+            ? normalizeWhitespace(raw.label)
+            : fallback?.label || id,
+        type,
+        enabled: normalizeBoolean(raw.enabled, fallback?.enabled ?? false),
+        capabilities: normalizePatternList(raw.capabilities, fallback?.capabilities ?? [], 20),
+        policy,
+      });
+    }
+  }
+  return [...byId.values()].slice(0, 20);
+}
+
+function pushValidationIssue(
+  issues: KiraOrchestrationValidationIssue[],
+  issue: KiraOrchestrationValidationIssue,
+): void {
+  if (
+    issues.some(
+      (existing) =>
+        existing.path === issue.path &&
+        existing.severity === issue.severity &&
+        existing.message === issue.message,
+    )
+  ) {
+    return;
+  }
+  issues.push(issue);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function validateStringArrayField(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+  path: string,
+  options: { required?: boolean; maxItems?: number } = {},
+): void {
+  if (value === undefined) {
+    if (options.required) {
+      pushValidationIssue(issues, {
+        path,
+        severity: 'error',
+        message: 'Required array field is missing.',
+      });
+    }
+    return;
+  }
+  if (!Array.isArray(value)) {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'error',
+      message: 'Expected an array.',
+    });
+    return;
+  }
+  if (options.maxItems && value.length > options.maxItems) {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'warning',
+      message: `Only the first ${options.maxItems} entries are used.`,
+    });
+  }
+  value.forEach((item, index) => {
+    if (typeof item !== 'string' || !item.trim()) {
+      pushValidationIssue(issues, {
+        path: `${path}[${index}]`,
+        severity: 'error',
+        message: 'Expected a non-empty string.',
+      });
+    }
+  });
+}
+
+function validateNumberField(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+  path: string,
+  options: { min: number; max: number },
+): void {
+  if (value === undefined) return;
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'error',
+      message: 'Expected a finite number.',
+    });
+    return;
+  }
+  if (value < options.min || value > options.max) {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'warning',
+      message: `Value is clamped to the supported range ${options.min}-${options.max}.`,
+    });
+  }
+}
+
+function validateBooleanField(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+  path: string,
+): void {
+  if (value === undefined) return;
+  if (typeof value !== 'boolean') {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'error',
+      message: 'Expected a boolean.',
+    });
+  }
+}
+
+function validateEnumField(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+  path: string,
+  allowed: readonly string[],
+): void {
+  if (value === undefined) return;
+  if (typeof value !== 'string' || !allowed.includes(value)) {
+    pushValidationIssue(issues, {
+      path,
+      severity: 'error',
+      message: `Expected one of: ${allowed.join(', ')}.`,
+    });
+  }
+}
+
+function validateTopLevelUnknownKeys(
+  issues: KiraOrchestrationValidationIssue[],
+  raw: Record<string, unknown>,
+): void {
+  const known = new Set(['executionPolicy', 'environment', 'subagents', 'workflow', 'plugins']);
+  for (const key of Object.keys(raw)) {
+    if (!known.has(key)) {
+      pushValidationIssue(issues, {
+        path: key,
+        severity: 'warning',
+        message: 'Unknown orchestration field will be ignored by Kira.',
+      });
+    }
+  }
+}
+
+function validateExecutionPolicyContract(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  if (!isPlainRecord(value)) {
+    pushValidationIssue(issues, {
+      path: 'executionPolicy',
+      severity: 'error',
+      message: 'Execution policy must be an object.',
+    });
+    return;
+  }
+  validateEnumField(issues, value.mode, 'executionPolicy.mode', [
+    'balanced',
+    'locked-down',
+    'permissive',
+  ]);
+  validateNumberField(issues, value.maxChangedFiles, 'executionPolicy.maxChangedFiles', {
+    min: 1,
+    max: 200,
+  });
+  validateNumberField(issues, value.maxDiffLines, 'executionPolicy.maxDiffLines', {
+    min: 1,
+    max: 20_000,
+  });
+  validateStringArrayField(issues, value.protectedPaths, 'executionPolicy.protectedPaths', {
+    maxItems: 80,
+  });
+  validateStringArrayField(issues, value.commandAllowlist, 'executionPolicy.commandAllowlist', {
+    maxItems: 80,
+  });
+  validateStringArrayField(issues, value.commandDenylist, 'executionPolicy.commandDenylist', {
+    maxItems: 80,
+  });
+  validateBooleanField(issues, value.requireValidation, 'executionPolicy.requireValidation');
+  validateBooleanField(
+    issues,
+    value.requireReviewerEvidence,
+    'executionPolicy.requireReviewerEvidence',
+  );
+  if (value.rules === undefined) return;
+  if (!Array.isArray(value.rules)) {
+    pushValidationIssue(issues, {
+      path: 'executionPolicy.rules',
+      severity: 'error',
+      message: 'Policy rules must be an array.',
+    });
+    return;
+  }
+  value.rules.forEach((rule, index) => {
+    const path = `executionPolicy.rules[${index}]`;
+    if (!isPlainRecord(rule)) {
+      pushValidationIssue(issues, {
+        path,
+        severity: 'error',
+        message: 'Policy rule must be an object.',
+      });
+      return;
+    }
+    if (typeof rule.id !== 'string' || !rule.id.trim()) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: 'Policy rule requires a stable id.',
+      });
+    }
+    validateEnumField(issues, rule.event, `${path}.event`, [
+      'before_tool',
+      'after_tool',
+      'before_validation',
+      'before_integration',
+      'task_completed',
+    ]);
+    validateEnumField(issues, rule.decision, `${path}.decision`, [
+      'allow',
+      'warn',
+      'block',
+      'defer',
+    ]);
+    validateStringArrayField(issues, rule.toolNames, `${path}.toolNames`, { maxItems: 20 });
+    validateStringArrayField(issues, rule.pathPatterns, `${path}.pathPatterns`, {
+      maxItems: 40,
+    });
+    validateStringArrayField(issues, rule.commandPatterns, `${path}.commandPatterns`, {
+      maxItems: 40,
+    });
+  });
+}
+
+function validateEnvironmentContract(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  if (!isPlainRecord(value)) {
+    pushValidationIssue(issues, {
+      path: 'environment',
+      severity: 'error',
+      message: 'Environment contract must be an object.',
+    });
+    return;
+  }
+  validateEnumField(issues, value.runner, 'environment.runner', [
+    'local',
+    'remote-command',
+    'cloud',
+  ]);
+  validateStringArrayField(issues, value.setupCommands, 'environment.setupCommands', {
+    maxItems: 12,
+  });
+  validateStringArrayField(issues, value.validationCommands, 'environment.validationCommands', {
+    maxItems: 12,
+  });
+  validateStringArrayField(issues, value.requiredEnv, 'environment.requiredEnv', {
+    maxItems: 40,
+  });
+  validateEnumField(issues, value.allowedNetwork, 'environment.allowedNetwork', [
+    'none',
+    'localhost',
+    'public',
+  ]);
+  validateEnumField(issues, value.secretsPolicy, 'environment.secretsPolicy', [
+    'local-only',
+    'masked',
+    'unrestricted',
+  ]);
+  validateEnumField(issues, value.windowsMode, 'environment.windowsMode', [
+    'auto',
+    'native-powershell',
+    'wsl',
+  ]);
+  for (const field of ['setupCommands', 'validationCommands']) {
+    const commands = Array.isArray(value[field]) ? value[field] : [];
+    commands.forEach((command, index) => {
+      if (typeof command === 'string' && !isSafeCommandAllowed(command)) {
+        pushValidationIssue(issues, {
+          path: `environment.${field}[${index}]`,
+          severity: 'error',
+          message: 'Command is not allowed by the Kira safe command policy.',
+        });
+      }
+    });
+  }
+  if (
+    typeof value.devServerCommand === 'string' &&
+    value.devServerCommand.trim() &&
+    !isSafeCommandAllowed(value.devServerCommand)
+  ) {
+    pushValidationIssue(issues, {
+      path: 'environment.devServerCommand',
+      severity: 'error',
+      message: 'Dev server command is not allowed by the Kira safe command policy.',
+    });
+  }
+  if (
+    value.runner === 'remote-command' &&
+    (typeof value.remoteCommand !== 'string' || !value.remoteCommand.includes('{command}'))
+  ) {
+    pushValidationIssue(issues, {
+      path: 'environment.remoteCommand',
+      severity: 'error',
+      message: 'Remote-command runner requires a command template containing {command}.',
+    });
+  }
+  if (value.runner === 'cloud') {
+    pushValidationIssue(issues, {
+      path: 'environment.runner',
+      severity: 'warning',
+      message: 'Cloud runner requires an enabled execution connector before work can start.',
+    });
+  }
+}
+
+function validateSubagentContract(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    pushValidationIssue(issues, {
+      path: 'subagents',
+      severity: 'error',
+      message: 'Subagents must be an array.',
+    });
+    return;
+  }
+  const seen = new Set<string>();
+  const allowedTools = new Set([
+    'list_files',
+    'search_files',
+    'read_file',
+    'write_file',
+    'edit_file',
+    'run_command',
+  ]);
+  value.forEach((agent, index) => {
+    const path = `subagents[${index}]`;
+    if (!isPlainRecord(agent)) {
+      pushValidationIssue(issues, {
+        path,
+        severity: 'error',
+        message: 'Subagent entry must be an object.',
+      });
+      return;
+    }
+    const id = typeof agent.id === 'string' ? agent.id.trim() : '';
+    if (!id) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: 'Subagent requires a stable id.',
+      });
+    } else if (seen.has(id)) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: `Duplicate subagent id: ${id}.`,
+      });
+    }
+    if (id) seen.add(id);
+    validateStringArrayField(issues, agent.tools, `${path}.tools`, { maxItems: 20 });
+    const tools = Array.isArray(agent.tools) ? agent.tools : [];
+    tools.forEach((tool, toolIndex) => {
+      if (typeof tool === 'string' && !allowedTools.has(tool)) {
+        pushValidationIssue(issues, {
+          path: `${path}.tools[${toolIndex}]`,
+          severity: 'error',
+          message: `Unknown Kira worker tool: ${tool}.`,
+        });
+      }
+    });
+    validateStringArrayField(issues, agent.requiredEvidence, `${path}.requiredEvidence`, {
+      maxItems: 20,
+    });
+  });
+}
+
+function validateWorkflowContract(
+  issues: KiraOrchestrationValidationIssue[],
+  value: unknown,
+  executionPolicy: KiraExecutionPolicy,
+): void {
+  if (value === undefined) return;
+  if (!isPlainRecord(value)) {
+    pushValidationIssue(issues, {
+      path: 'workflow',
+      severity: 'error',
+      message: 'Workflow DAG must be an object.',
+    });
+    return;
+  }
+  if (!Array.isArray(value.nodes)) {
+    pushValidationIssue(issues, {
+      path: 'workflow.nodes',
+      severity: 'error',
+      message: 'Workflow nodes must be an array.',
+    });
+    return;
+  }
+  const nodeIds = new Set<string>();
+  const requiredKinds = new Set<string>();
+  value.nodes.forEach((node, index) => {
+    const path = `workflow.nodes[${index}]`;
+    if (!isPlainRecord(node)) {
+      pushValidationIssue(issues, {
+        path,
+        severity: 'error',
+        message: 'Workflow node must be an object.',
+      });
+      return;
+    }
+    const id = typeof node.id === 'string' ? node.id.trim() : '';
+    if (!id) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: 'Workflow node requires an id.',
+      });
+    } else if (nodeIds.has(id)) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: `Duplicate workflow node id: ${id}.`,
+      });
+    }
+    if (id) nodeIds.add(id);
+    validateEnumField(issues, node.kind, `${path}.kind`, [
+      'plan',
+      'implement',
+      'validate',
+      'review',
+      'integrate',
+      'blocked',
+      'done',
+    ]);
+    if (node.required !== false && typeof node.kind === 'string') {
+      requiredKinds.add(node.kind);
+    }
+  });
+  if (Array.isArray(value.edges)) {
+    value.edges.forEach((edge, index) => {
+      const path = `workflow.edges[${index}]`;
+      if (!isPlainRecord(edge)) {
+        pushValidationIssue(issues, {
+          path,
+          severity: 'error',
+          message: 'Workflow edge must be an object.',
+        });
+        return;
+      }
+      const from = typeof edge.from === 'string' ? edge.from.trim() : '';
+      const to = typeof edge.to === 'string' ? edge.to.trim() : '';
+      if (!nodeIds.has(from)) {
+        pushValidationIssue(issues, {
+          path: `${path}.from`,
+          severity: 'error',
+          message: `Edge references unknown source node: ${from || '<empty>'}.`,
+        });
+      }
+      if (!nodeIds.has(to)) {
+        pushValidationIssue(issues, {
+          path: `${path}.to`,
+          severity: 'error',
+          message: `Edge references unknown target node: ${to || '<empty>'}.`,
+        });
+      }
+    });
+  }
+  if (Array.isArray(value.criticalPath)) {
+    value.criticalPath.forEach((id, index) => {
+      if (typeof id !== 'string' || !nodeIds.has(id)) {
+        pushValidationIssue(issues, {
+          path: `workflow.criticalPath[${index}]`,
+          severity: 'error',
+          message: `Critical path references unknown node: ${String(id)}.`,
+        });
+      }
+    });
+  }
+  if (executionPolicy.requireValidation && !requiredKinds.has('validate')) {
+    pushValidationIssue(issues, {
+      path: 'workflow.nodes',
+      severity: 'error',
+      message: 'Execution policy requires validation but workflow has no required validate node.',
+    });
+  }
+  if (executionPolicy.requireReviewerEvidence && !requiredKinds.has('review')) {
+    pushValidationIssue(issues, {
+      path: 'workflow.nodes',
+      severity: 'error',
+      message:
+        'Execution policy requires reviewer evidence but workflow has no required review node.',
+    });
+  }
+}
+
+function validatePluginContract(issues: KiraOrchestrationValidationIssue[], value: unknown): void {
+  if (value === undefined) return;
+  if (!Array.isArray(value)) {
+    pushValidationIssue(issues, {
+      path: 'plugins',
+      severity: 'error',
+      message: 'Plugins must be an array.',
+    });
+    return;
+  }
+  const seen = new Set<string>();
+  value.forEach((plugin, index) => {
+    const path = `plugins[${index}]`;
+    if (!isPlainRecord(plugin)) {
+      pushValidationIssue(issues, {
+        path,
+        severity: 'error',
+        message: 'Plugin connector must be an object.',
+      });
+      return;
+    }
+    const id = typeof plugin.id === 'string' ? plugin.id.trim() : '';
+    if (!id) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: 'Plugin connector requires an id.',
+      });
+    } else if (seen.has(id)) {
+      pushValidationIssue(issues, {
+        path: `${path}.id`,
+        severity: 'error',
+        message: `Duplicate plugin id: ${id}.`,
+      });
+    }
+    if (id) seen.add(id);
+    validateEnumField(issues, plugin.type, `${path}.type`, [
+      'github',
+      'linear',
+      'slack',
+      'mcp',
+      'custom',
+    ]);
+    validateEnumField(issues, plugin.policy, `${path}.policy`, ['observe', 'suggest', 'apply']);
+    validateStringArrayField(issues, plugin.capabilities, `${path}.capabilities`, {
+      maxItems: 20,
+    });
+  });
+}
+
+export function validateKiraOrchestrationContract(
+  value: unknown,
+  runMode: KiraRunMode = 'standard',
+): KiraOrchestrationValidationReport {
+  const issues: KiraOrchestrationValidationIssue[] = [];
+  if (value !== undefined && !isPlainRecord(value)) {
+    pushValidationIssue(issues, {
+      path: '$',
+      severity: 'error',
+      message: 'Orchestration contract must be a JSON object.',
+    });
+  }
+  const raw = isPlainRecord(value) ? value : {};
+  validateTopLevelUnknownKeys(issues, raw);
+  validateExecutionPolicyContract(issues, raw.executionPolicy);
+  const executionPolicy = normalizeExecutionPolicy(raw.executionPolicy);
+  validateEnvironmentContract(issues, raw.environment);
+  validateSubagentContract(issues, raw.subagents);
+  validateWorkflowContract(issues, raw.workflow, executionPolicy);
+  validatePluginContract(issues, raw.plugins);
+  const environment = normalizeEnvironmentContract(raw.environment);
+  const subagents = normalizeSubagentRegistry(raw.subagents);
+  const workflow = normalizeWorkflowDag(raw.workflow, runMode);
+  const plugins = normalizePluginConnectors(raw.plugins);
+  if (
+    environment.runner === 'cloud' &&
+    !plugins.some((plugin) => plugin.enabled && plugin.policy === 'apply')
+  ) {
+    pushValidationIssue(issues, {
+      path: 'environment.runner',
+      severity: 'error',
+      message: 'Cloud runner requires at least one enabled apply connector.',
+    });
+  }
+  const summary = [
+    `policy=${executionPolicy.mode}`,
+    `environment=${environment.runner}`,
+    `subagents=${subagents.length}`,
+    `workflow=${workflow.criticalPath.length}`,
+    `plugins=${plugins.filter((plugin) => plugin.enabled).length}/${plugins.length}`,
+  ];
+  return {
+    valid: !issues.some((issue) => issue.severity === 'error'),
+    issues,
+    normalized: {
+      executionPolicy,
+      environment,
+      subagents,
+      workflow,
+      plugins,
+    },
+    summary,
+  };
+}
+
+function normalizeQualitySnapshot(raw: unknown): KiraQualitySnapshot {
+  const value =
+    typeof raw === 'object' && raw !== null ? (raw as Partial<KiraQualitySnapshot>) : {};
+  const attemptsTotal =
+    typeof value.attemptsTotal === 'number' && Number.isFinite(value.attemptsTotal)
+      ? Math.max(0, Math.round(value.attemptsTotal))
+      : 0;
+  const approvedAttempts =
+    typeof value.approvedAttempts === 'number' && Number.isFinite(value.approvedAttempts)
+      ? Math.max(0, Math.round(value.approvedAttempts))
+      : 0;
+  return {
+    attemptsTotal,
+    approvedAttempts,
+    validationFailures:
+      typeof value.validationFailures === 'number' && Number.isFinite(value.validationFailures)
+        ? Math.max(0, Math.round(value.validationFailures))
+        : 0,
+    reviewRejections:
+      typeof value.reviewRejections === 'number' && Number.isFinite(value.reviewRejections)
+        ? Math.max(0, Math.round(value.reviewRejections))
+        : 0,
+    rollbacks:
+      typeof value.rollbacks === 'number' && Number.isFinite(value.rollbacks)
+        ? Math.max(0, Math.round(value.rollbacks))
+        : 0,
+    averageReadinessScore:
+      typeof value.averageReadinessScore === 'number' &&
+      Number.isFinite(value.averageReadinessScore)
+        ? Math.max(0, Math.min(100, Math.round(value.averageReadinessScore)))
+        : 0,
+    passRate:
+      typeof value.passRate === 'number' && Number.isFinite(value.passRate)
+        ? Math.max(0, Math.min(1, value.passRate))
+        : attemptsTotal > 0
+          ? approvedAttempts / attemptsTotal
+          : 0,
+    topFailureCategories: normalizePatternList(value.topFailureCategories, [], 8),
+  };
 }
 
 function normalizeDecompositionRecommendation(raw: unknown): WorkDecompositionRecommendation {
@@ -1510,15 +2891,29 @@ function formatIgnoredIntegrationPaths(ignoredFiles: string[]): string {
 function createWorkerAttemptState(
   plan: WorkerExecutionPlan | null,
   dirtyFiles: string[] = [],
+  projectRoot?: string,
+  executionPolicy: KiraExecutionPolicy = DEFAULT_KIRA_EXECUTION_POLICY,
+  environmentContract: KiraEnvironmentContract = DEFAULT_KIRA_ENVIRONMENT_CONTRACT,
+  toolScope?: string[],
 ): WorkerAttemptState {
+  const normalizedDirtyFiles = dirtyFiles
+    .map((file) => normalizeRelativePath(file))
+    .filter(Boolean);
+  const normalizedToolScope = normalizePatternList(toolScope, [], 24);
   return {
     plan,
     fileSnapshots: new Map(),
+    dirtyFileSnapshots: projectRoot
+      ? captureDirtyFileSnapshots(projectRoot, normalizedDirtyFiles)
+      : new Map(),
+    executionPolicy: normalizeExecutionPolicy(executionPolicy),
+    environmentContract: normalizeEnvironmentContract(environmentContract),
+    toolScope: normalizedToolScope.length > 0 ? new Set(normalizedToolScope) : null,
     commandsRun: [],
     readFiles: new Set(),
     explorationActions: [],
     patchedFiles: new Set(),
-    dirtyFiles: new Set(dirtyFiles.map((file) => normalizeRelativePath(file)).filter(Boolean)),
+    dirtyFiles: new Set(normalizedDirtyFiles),
   };
 }
 
@@ -1529,6 +2924,12 @@ function isAbortError(error: unknown): boolean {
   return false;
 }
 
+function createAbortError(message = 'Work was canceled or deleted.'): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
 function throwIfCanceled(
   sessionsDir: string,
   sessionPath: string,
@@ -1537,9 +2938,7 @@ function throwIfCanceled(
 ): void {
   const workPath = getWorkFileAbsolutePath(sessionsDir, sessionPath, workId);
   if (signal?.aborted || !fs.existsSync(workPath)) {
-    const error = new Error('Work was canceled or deleted.');
-    error.name = 'AbortError';
-    throw error;
+    throw createAbortError();
   }
 }
 
@@ -1662,6 +3061,22 @@ export function resolveProjectSettings(
     projectRequiredInstructions ??
     normalizeProjectRequiredInstructions(fallback.requiredInstructions);
   const runMode = normalizeRunMode(parsed.runMode, normalizeRunMode(fallback.runMode));
+  const hasExecutionPolicy = Object.prototype.hasOwnProperty.call(parsed, 'executionPolicy');
+  const hasEnvironment = Object.prototype.hasOwnProperty.call(parsed, 'environment');
+  const hasSubagents = Object.prototype.hasOwnProperty.call(parsed, 'subagents');
+  const hasWorkflow = Object.prototype.hasOwnProperty.call(parsed, 'workflow');
+  const hasPlugins = Object.prototype.hasOwnProperty.call(parsed, 'plugins');
+  const executionPolicy = normalizeExecutionPolicy(
+    hasExecutionPolicy ? parsed.executionPolicy : fallback.executionPolicy,
+    normalizeExecutionPolicy(fallback.executionPolicy),
+  );
+  const environment = normalizeEnvironmentContract(
+    hasEnvironment ? parsed.environment : fallback.environment,
+    normalizeEnvironmentContract(fallback.environment),
+  );
+  const subagents = normalizeSubagentRegistry(hasSubagents ? parsed.subagents : fallback.subagents);
+  const workflow = normalizeWorkflowDag(hasWorkflow ? parsed.workflow : fallback.workflow, runMode);
+  const plugins = normalizePluginConnectors(hasPlugins ? parsed.plugins : fallback.plugins);
   return {
     autoCommit:
       typeof parsed.autoCommit === 'boolean'
@@ -1673,6 +3088,11 @@ export function resolveProjectSettings(
     effectiveInstructions: buildEffectiveProjectInstructions(requiredInstructions, rulePacks),
     runMode,
     rulePacks,
+    executionPolicy,
+    environment,
+    subagents,
+    workflow,
+    plugins,
   };
 }
 
@@ -2022,14 +3442,42 @@ function getKiraRuntimeSettings(configFile: string, fallbackWorkRootDirectory: s
   };
 }
 
-function buildWorkerLanes(workerConfigs: LLMConfig[]): KiraWorkerLane[] {
+function selectRunnableSubagents(
+  subagents: KiraSubagentDefinition[] | undefined,
+): KiraSubagentDefinition[] {
+  const enabled = (subagents ?? []).filter((agent) => agent.enabled);
+  const implementers = enabled.filter((agent) =>
+    agent.tools.some((tool) => ['edit_file', 'write_file', 'run_command'].includes(tool)),
+  );
+  return (implementers.length > 0 ? implementers : enabled).slice(0, 12);
+}
+
+function getPrimaryImplementationSubagent(
+  subagents: KiraSubagentDefinition[] | undefined,
+): KiraSubagentDefinition | undefined {
+  const runnable = selectRunnableSubagents(subagents);
+  return (
+    runnable.find((agent) => agent.id === 'implementer') ??
+    runnable.find((agent) => /implement|worker|builder|developer/i.test(agent.id)) ??
+    runnable[0]
+  );
+}
+
+function buildWorkerLanes(
+  workerConfigs: LLMConfig[],
+  subagents?: KiraSubagentDefinition[],
+): KiraWorkerLane[] {
+  const runnableSubagents = selectRunnableSubagents(subagents);
   return workerConfigs.slice(0, 3).map((config, index) => {
+    const subagent = runnableSubagents[index % Math.max(1, runnableSubagents.length)];
     const configuredName = config.name?.trim();
-    const baseLabel = configuredName || `Worker ${String.fromCharCode(65 + index)}`;
+    const baseLabel =
+      configuredName || subagent?.label || `Worker ${String.fromCharCode(65 + index)}`;
     return {
       id: `worker-${index + 1}`,
       label: buildAgentLabel(baseLabel, config.model),
       config,
+      ...(subagent ? { subagent } : {}),
     };
   });
 }
@@ -2568,6 +4016,114 @@ export function isSafeCommandAllowed(command: string): boolean {
   return SAFE_COMMAND_PATTERNS.some((pattern) => pattern.test(normalized));
 }
 
+function isToolAllowedByScope(
+  toolName: string,
+  state: WorkerAttemptState | null | undefined,
+): boolean {
+  if (!state?.toolScope || state.toolScope.size === 0) return true;
+  return state.toolScope.has(toolName);
+}
+
+function collectEnvironmentCommandIssues(environmentInput: unknown, command: string): string[] {
+  const environment = normalizeEnvironmentContract(environmentInput);
+  const normalized = normalizeWhitespace(command);
+  const issues: string[] = [];
+  if (!normalized) return issues;
+
+  if (environment.allowedNetwork === 'none' && NETWORK_COMMAND_PATTERN.test(normalized)) {
+    issues.push(
+      `Environment contract blocks network-capable command while allowedNetwork=none: ${normalized}.`,
+    );
+  }
+  if (
+    environment.allowedNetwork === 'localhost' &&
+    /https?:\/\//i.test(normalized) &&
+    !/https?:\/\/(?:127\.0\.0\.1|localhost)(?::\d+)?/i.test(normalized)
+  ) {
+    issues.push(
+      `Environment contract allows only localhost network access for command: ${normalized}.`,
+    );
+  }
+  if (
+    environment.secretsPolicy !== 'unrestricted' &&
+    ENV_DISCLOSURE_COMMAND_PATTERN.test(normalized)
+  ) {
+    issues.push(
+      'Environment contract blocks commands that can disclose process environment secrets.',
+    );
+  }
+  if (environment.runner !== 'local' && environment.secretsPolicy === 'local-only') {
+    const secretNames = environment.requiredEnv.filter((name) =>
+      SECRET_ENV_NAME_PATTERN.test(name),
+    );
+    if (secretNames.length > 0) {
+      issues.push(
+        `Environment contract keeps secret env vars local-only for remote runner: ${secretNames.join(', ')}.`,
+      );
+    }
+  }
+  return limitedUniqueStrings(issues, 8);
+}
+
+function buildChildProcessEnv(environmentInput?: KiraEnvironmentContract): NodeJS.ProcessEnv {
+  const environment = normalizeEnvironmentContract(environmentInput);
+  const nextEnv: NodeJS.ProcessEnv = { ...process.env };
+  if (environment.secretsPolicy === 'unrestricted') return nextEnv;
+
+  const shouldMask = environment.secretsPolicy === 'masked' || environment.runner !== 'local';
+  if (!shouldMask) return nextEnv;
+
+  for (const key of Object.keys(nextEnv)) {
+    if (SECRET_ENV_NAME_PATTERN.test(key)) {
+      nextEnv[key] = '';
+    }
+  }
+  return nextEnv;
+}
+
+function readDirtyFileContentSnapshot(
+  projectRoot: string,
+  relativePath: string,
+): DirtyFileContentSnapshot {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  if (!normalizedPath || isGeneratedArtifactPath(normalizedPath)) {
+    return { exists: false, hash: null, size: null };
+  }
+
+  try {
+    const absolutePath = ensureInsideRoot(projectRoot, normalizedPath);
+    if (!fs.existsSync(absolutePath)) {
+      return { exists: false, hash: null, size: null };
+    }
+
+    const stat = fs.statSync(absolutePath);
+    if (!stat.isFile()) {
+      return { exists: false, hash: null, size: null };
+    }
+
+    const content = fs.readFileSync(absolutePath);
+    return {
+      exists: true,
+      hash: createHash('sha256').update(content).digest('hex'),
+      size: content.length,
+    };
+  } catch {
+    return { exists: false, hash: null, size: null };
+  }
+}
+
+export function captureDirtyFileSnapshots(
+  projectRoot: string,
+  dirtyFiles: string[],
+): Map<string, DirtyFileContentSnapshot> {
+  const snapshots = new Map<string, DirtyFileContentSnapshot>();
+  for (const filePath of normalizePathList(dirtyFiles, 500)) {
+    if (isGeneratedArtifactPath(filePath)) continue;
+    snapshots.set(filePath, readDirtyFileContentSnapshot(projectRoot, filePath));
+  }
+  return snapshots;
+}
+
 function captureAttemptFileSnapshot(
   state: WorkerAttemptState | null | undefined,
   projectRoot: string,
@@ -2623,6 +4179,158 @@ function pathMatchesScope(scopes: string[], relativePath: string): boolean {
   });
 }
 
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function globPatternToRegExp(pattern: string): RegExp {
+  const normalized = normalizeRelativePath(pattern);
+  const parts = normalized.split(/(\*\*|\*)/g);
+  const body = parts
+    .map((part) => {
+      if (part === '**') return '.*';
+      if (part === '*') return '[^/]*';
+      return escapeRegExp(part);
+    })
+    .join('');
+  return new RegExp(`^${body}$`, 'i');
+}
+
+function pathMatchesPolicyPattern(relativePath: string, pattern: string): boolean {
+  const normalizedPath = normalizeRelativePath(relativePath);
+  const normalizedPattern = normalizeRelativePath(pattern);
+  if (!normalizedPath || !normalizedPattern) return false;
+  if (normalizedPattern.startsWith('**/')) {
+    const tail = normalizedPattern.slice(3);
+    if (pathMatchesPolicyPattern(normalizedPath, tail)) return true;
+  }
+  return globPatternToRegExp(normalizedPattern).test(normalizedPath);
+}
+
+function commandMatchesPolicyPattern(command: string, pattern: string): boolean {
+  const normalizedCommand = normalizeCommandForComparison(command);
+  const normalizedPattern = normalizeCommandForComparison(pattern);
+  if (!normalizedCommand || !normalizedPattern) return false;
+  if (normalizedPattern.includes('*')) {
+    return globPatternToRegExp(normalizedPattern.replace(/\s+/g, ' ')).test(normalizedCommand);
+  }
+  return (
+    normalizedCommand === normalizedPattern ||
+    normalizedCommand.startsWith(`${normalizedPattern} `) ||
+    normalizedCommand.includes(` ${normalizedPattern} `)
+  );
+}
+
+function isProtectedByExecutionPolicy(policy: KiraExecutionPolicy, relativePath: string): boolean {
+  return policy.protectedPaths.some((pattern) => pathMatchesPolicyPattern(relativePath, pattern));
+}
+
+export function evaluateExecutionPolicy(
+  policyInput: unknown,
+  event: KiraPolicyEvent,
+  input: {
+    toolName?: string;
+    path?: string;
+    command?: string;
+    riskLevel?: RiskReviewPolicy['level'];
+    changedFiles?: string[];
+    diffStats?: DiffStats;
+  },
+): {
+  decision: KiraPolicyDecision;
+  issues: string[];
+  warnings: string[];
+  matchedRules: string[];
+} {
+  const policy = normalizeExecutionPolicy(policyInput);
+  const toolName = input.toolName ? normalizeWhitespace(input.toolName) : '';
+  const relativePath = input.path ? normalizeRelativePath(input.path) : '';
+  const command = input.command ? normalizeWhitespace(input.command) : '';
+  const changedFiles = normalizePathList(input.changedFiles ?? [], 500);
+  const diffLineCount = (input.diffStats?.additions ?? 0) + (input.diffStats?.deletions ?? 0);
+  const issues: string[] = [];
+  const warnings: string[] = [];
+  const matchedRules: string[] = [];
+
+  if (
+    relativePath &&
+    (toolName === 'write_file' || toolName === 'edit_file') &&
+    isProtectedByExecutionPolicy(policy, relativePath)
+  ) {
+    issues.push(`Execution policy blocks edits to protected path: ${relativePath}.`);
+  }
+  if (
+    command &&
+    policy.commandDenylist.some((pattern) => commandMatchesPolicyPattern(command, pattern))
+  ) {
+    issues.push(`Execution policy blocks denied command: ${command}.`);
+  }
+  if (
+    command &&
+    policy.commandAllowlist.length > 0 &&
+    !policy.commandAllowlist.some((pattern) => commandMatchesPolicyPattern(command, pattern))
+  ) {
+    issues.push(`Execution policy requires an allowlisted command, but got: ${command}.`);
+  }
+  if (changedFiles.length > policy.maxChangedFiles) {
+    const message = `Execution policy changed-file limit exceeded: ${changedFiles.length}/${policy.maxChangedFiles}.`;
+    if (policy.mode !== 'permissive') {
+      issues.push(message);
+    } else {
+      warnings.push(message);
+    }
+  }
+  if (diffLineCount > policy.maxDiffLines) {
+    const message = `Execution policy diff-line limit exceeded: ${diffLineCount}/${policy.maxDiffLines}.`;
+    if (policy.mode !== 'permissive') {
+      issues.push(message);
+    } else {
+      warnings.push(message);
+    }
+  }
+
+  for (const rule of policy.rules) {
+    if (!rule.enabled || rule.event !== event) continue;
+    const toolMatched = rule.toolNames.length === 0 || rule.toolNames.includes(toolName);
+    const pathMatched =
+      rule.pathPatterns.length === 0 ||
+      (relativePath &&
+        rule.pathPatterns.some((pattern) => pathMatchesPolicyPattern(relativePath, pattern)));
+    const commandMatched =
+      rule.commandPatterns.length === 0 ||
+      (command &&
+        rule.commandPatterns.some((pattern) => commandMatchesPolicyPattern(command, pattern)));
+    const riskMatched =
+      rule.riskLevels.length === 0 ||
+      (input.riskLevel ? rule.riskLevels.includes(input.riskLevel) : false);
+    if (!toolMatched || !pathMatched || !commandMatched || !riskMatched) continue;
+    matchedRules.push(rule.id);
+    if (rule.decision === 'block') {
+      issues.push(`${rule.message} (${rule.id})`);
+    } else if (rule.decision === 'warn' || rule.decision === 'defer') {
+      warnings.push(`${rule.message} (${rule.id})`);
+    }
+  }
+
+  return {
+    decision: issues.length > 0 ? 'block' : warnings.length > 0 ? 'warn' : 'allow',
+    issues: limitedUniqueStrings(issues, 12),
+    warnings: limitedUniqueStrings(warnings, 12),
+    matchedRules: limitedUniqueStrings(matchedRules, 12),
+  };
+}
+
+function formatPolicyEvaluationFailure(
+  evaluation: ReturnType<typeof evaluateExecutionPolicy>,
+): string {
+  return `error: ${[
+    ...evaluation.issues,
+    ...(evaluation.matchedRules.length > 0
+      ? [`Matched policy rules: ${evaluation.matchedRules.join(', ')}`]
+      : []),
+  ].join(' ')}`;
+}
+
 export function canUseFullFileRewrite(params: {
   existingFileSize: number;
   relativePath: string;
@@ -2649,6 +4357,9 @@ function validateWriteTarget(
   if (!state) return null;
   const normalizedPath = normalizeRelativePath(relativePath);
   if (!normalizedPath) return null;
+  if (isProtectedByExecutionPolicy(state.executionPolicy, normalizedPath)) {
+    return `error: ${normalizedPath} is protected by the project execution policy`;
+  }
   if (isProtectedFile(state.plan, normalizedPath)) {
     return `error: ${normalizedPath} is listed in protectedFiles and cannot be edited by this attempt`;
   }
@@ -2836,11 +4547,17 @@ function requiresExplicitReadBeforeWrite(
 
 function collectFiles(root: string, currentDir: string, depth: number, entries: string[]): void {
   if (entries.length >= MAX_LIST_ENTRIES) return;
-  const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+  let dirents: fs.Dirent[];
+  try {
+    dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+  } catch {
+    return;
+  }
   for (const dirent of dirents) {
     if (entries.length >= MAX_LIST_ENTRIES) return;
-    if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv')
+    if (dirent.isDirectory() && shouldSkipToolTraversalDirectory(dirent.name)) {
       continue;
+    }
     const absolutePath = join(currentDir, dirent.name);
     const relativePath = absolutePath
       .slice(root.length)
@@ -2860,11 +4577,17 @@ function searchProjectFiles(root: string, query: string): string[] {
   const needle = query.toLowerCase();
   const walk = (currentDir: string) => {
     if (results.length >= MAX_SEARCH_RESULTS) return;
-    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const dirent of dirents) {
       if (results.length >= MAX_SEARCH_RESULTS) return;
-      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv')
+      if (dirent.isDirectory() && shouldSkipToolTraversalDirectory(dirent.name)) {
         continue;
+      }
       const absolutePath = join(currentDir, dirent.name);
       if (dirent.isDirectory()) {
         walk(absolutePath);
@@ -2906,7 +4629,30 @@ async function executeTool(
   args: Record<string, unknown>,
   writable: boolean,
   attemptState?: WorkerAttemptState | null,
+  signal?: AbortSignal,
 ): Promise<string> {
+  if (!isToolAllowedByScope(toolName, attemptState)) {
+    return `error: tool ${toolName} is not allowed by the active Kira subagent contract`;
+  }
+  const policyEvaluation = evaluateExecutionPolicy(
+    attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+    'before_tool',
+    {
+      toolName,
+      path: typeof args.path === 'string' ? args.path : undefined,
+      command: typeof args.command === 'string' ? args.command : undefined,
+    },
+  );
+  if (policyEvaluation.decision === 'block') {
+    return formatPolicyEvaluationFailure(policyEvaluation);
+  }
+  if (policyEvaluation.warnings.length > 0) {
+    recordAttemptExploration(
+      attemptState,
+      `policy warning ${toolName}: ${policyEvaluation.warnings.join('; ')}`,
+    );
+  }
+
   switch (toolName) {
     case 'list_files': {
       const directory = typeof args.directory === 'string' ? args.directory : '.';
@@ -2972,6 +4718,14 @@ async function executeTool(
       fs.mkdirSync(dirname(absolutePath), { recursive: true });
       fs.writeFileSync(absolutePath, content, 'utf-8');
       recordAttemptPatch(attemptState, filePath);
+      const afterEvaluation = evaluateExecutionPolicy(
+        attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+        'after_tool',
+        { toolName, path: filePath },
+      );
+      if (afterEvaluation.decision === 'block') {
+        return formatPolicyEvaluationFailure(afterEvaluation);
+      }
       return 'success';
     }
     case 'edit_file': {
@@ -3004,6 +4758,14 @@ async function executeTool(
       }
       fs.writeFileSync(absolutePath, next, 'utf-8');
       recordAttemptPatch(attemptState, filePath);
+      const afterEvaluation = evaluateExecutionPolicy(
+        attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+        'after_tool',
+        { toolName, path: filePath },
+      );
+      if (afterEvaluation.decision === 'block') {
+        return formatPolicyEvaluationFailure(afterEvaluation);
+      }
       return `success: replaced ${replaceAll ? occurrences : 1} occurrence(s)`;
     }
     case 'search_files': {
@@ -3024,15 +4786,37 @@ async function executeTool(
       if (!isSafeCommandAllowed(command)) {
         return 'error: command prefix is not allowed';
       }
-      const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
-      const { stdout, stderr } = await execAsync(command, {
-        cwd: projectRoot,
-        shell,
-        timeout: COMMAND_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-      });
+      const environmentIssues = collectEnvironmentCommandIssues(
+        attemptState?.environmentContract,
+        command,
+      );
+      if (environmentIssues.length > 0) {
+        return `error: ${environmentIssues.join(' ')}`;
+      }
       recordAttemptCommand(attemptState, command);
-      return formatCommandOutput(stdout, stderr);
+      try {
+        const { stdout, stderr } = await runShellCommand(
+          command,
+          projectRoot,
+          signal,
+          COMMAND_TIMEOUT_MS,
+          attemptState?.environmentContract,
+        );
+        const afterEvaluation = evaluateExecutionPolicy(
+          attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+          'after_tool',
+          { toolName, command },
+        );
+        if (afterEvaluation.decision === 'block') {
+          return formatPolicyEvaluationFailure(afterEvaluation);
+        }
+        return formatCommandOutput(stdout, stderr);
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+        return formatCommandFailureDetail(command, error);
+      }
     }
     default:
       return `error: unknown tool ${toolName}`;
@@ -3146,6 +4930,93 @@ export function buildCodexCliArgs(
   return args;
 }
 
+function createCommandExecutionError(
+  message: string,
+  stdout = '',
+  stderr = '',
+  name?: string,
+): Error & { stdout?: string; stderr?: string } {
+  const error = new Error(message) as Error & { stdout?: string; stderr?: string };
+  if (name) {
+    error.name = name;
+  }
+  error.stdout = stdout;
+  error.stderr = stderr;
+  return error;
+}
+
+function terminateProcessTree(child: ReturnType<typeof spawn>): void {
+  if (child.pid && process.platform === 'win32') {
+    try {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], {
+        windowsHide: true,
+        stdio: 'ignore',
+      });
+      killer.on('error', () => undefined);
+      killer.unref?.();
+    } catch {
+      // Fall back to the direct child kill below.
+    }
+  }
+
+  if (child.pid && process.platform !== 'win32') {
+    try {
+      process.kill(-child.pid, 'SIGTERM');
+      return;
+    } catch {
+      // Fall back to the direct child kill below.
+    }
+  }
+
+  try {
+    child.kill();
+  } catch {
+    // Process may have already exited.
+  }
+}
+
+function quoteShellArgument(value: string): string {
+  if (process.platform === 'win32') {
+    return `'${value.replace(/'/g, "''")}'`;
+  }
+  return `'${value.replace(/'/g, "'\\''")}'`;
+}
+
+function buildRunnerCommand(command: string, environment?: KiraEnvironmentContract): string {
+  const contract = normalizeEnvironmentContract(environment);
+  if (contract.runner === 'local') return command;
+  if (contract.runner === 'cloud') {
+    throw createCommandExecutionError(
+      'Cloud runner is declared for this project, but the local Kira runtime has no cloud execution connector enabled.',
+    );
+  }
+  if (!contract.remoteCommand || !contract.remoteCommand.includes('{command}')) {
+    throw createCommandExecutionError(
+      'Remote-command runner requires environment.remoteCommand with a {command} placeholder.',
+    );
+  }
+  return contract.remoteCommand.replace('{command}', quoteShellArgument(command));
+}
+
+function buildShellCommandInvocation(
+  command: string,
+  environment?: KiraEnvironmentContract,
+): { command: string; args: string[] } {
+  const contract = normalizeEnvironmentContract(environment);
+  if (process.platform === 'win32' && contract.windowsMode === 'wsl') {
+    return {
+      command: 'wsl.exe',
+      args: ['bash', '-lc', command],
+    };
+  }
+  return process.platform === 'win32'
+    ? {
+        command: 'powershell.exe',
+        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', command],
+      }
+    : { command: '/bin/bash', args: ['-lc', command] };
+}
+
 function runProcessWithInput(
   command: string,
   args: string[],
@@ -3155,32 +5026,42 @@ function runProcessWithInput(
   timeoutMs = COMMAND_TIMEOUT_MS,
 ): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolveProcess, reject) => {
+    if (signal?.aborted) {
+      reject(createCommandExecutionError('Agent run aborted.', '', '', 'AbortError'));
+      return;
+    }
+
     const child = spawn(command, args, {
       cwd,
       shell: process.platform === 'win32',
       windowsHide: true,
+      detached: process.platform !== 'win32',
       env: process.env,
     });
     let stdout = '';
     let stderr = '';
     let settled = false;
     const timeout = setTimeout(() => {
-      child.kill();
+      terminateProcessTree(child);
       if (!settled) {
         settled = true;
-        reject(new Error(`Command timed out after ${timeoutMs}ms: ${command}`));
+        reject(
+          createCommandExecutionError(
+            `Command timed out after ${timeoutMs}ms: ${command}`,
+            stdout,
+            stderr,
+          ),
+        );
       }
     }, timeoutMs);
     timeout.unref?.();
 
     const abortHandler = () => {
-      child.kill();
+      terminateProcessTree(child);
       if (!settled) {
         settled = true;
         clearTimeout(timeout);
-        const error = new Error('Agent run aborted.');
-        error.name = 'AbortError';
-        reject(error);
+        reject(createCommandExecutionError('Agent run aborted.', stdout, stderr, 'AbortError'));
       }
     };
     signal?.addEventListener('abort', abortHandler, { once: true });
@@ -3210,15 +5091,116 @@ function runProcessWithInput(
         return;
       }
       reject(
-        new Error(
+        createCommandExecutionError(
           [
             `Command failed with exit code ${code}: ${command}`,
             truncateForReview(formatCommandOutput(stdout, stderr), 1_200),
           ].join('\n\n'),
+          stdout,
+          stderr,
         ),
       );
     });
     child.stdin?.end(input);
+  });
+}
+
+function runShellCommand(
+  command: string,
+  cwd: string,
+  signal?: AbortSignal,
+  timeoutMs = COMMAND_TIMEOUT_MS,
+  environment?: KiraEnvironmentContract,
+): Promise<{ stdout: string; stderr: string }> {
+  return new Promise((resolveProcess, reject) => {
+    if (signal?.aborted) {
+      reject(createCommandExecutionError('Command aborted.', '', '', 'AbortError'));
+      return;
+    }
+
+    let effectiveCommand: string;
+    try {
+      effectiveCommand = buildRunnerCommand(command, environment);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+    const invocation = buildShellCommandInvocation(effectiveCommand, environment);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd,
+      windowsHide: true,
+      detached: process.platform !== 'win32',
+      env: buildChildProcessEnv(environment),
+    });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
+
+    const abortHandler = () => {
+      terminateProcessTree(child);
+      if (!settled) {
+        settled = true;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
+        reject(createCommandExecutionError('Command aborted.', stdout, stderr, 'AbortError'));
+      }
+    };
+
+    timeout = setTimeout(() => {
+      terminateProcessTree(child);
+      if (!settled) {
+        settled = true;
+        signal?.removeEventListener('abort', abortHandler);
+        reject(
+          createCommandExecutionError(
+            `Command timed out after ${timeoutMs}ms: ${effectiveCommand}`,
+            stdout,
+            stderr,
+          ),
+        );
+      }
+    }, timeoutMs);
+    timeout.unref?.();
+    signal?.addEventListener('abort', abortHandler, { once: true });
+
+    child.stdout?.on('data', (chunk) => {
+      stdout += String(chunk);
+      if (stdout.length > 1024 * 1024) stdout = stdout.slice(-1024 * 1024);
+    });
+    child.stderr?.on('data', (chunk) => {
+      stderr += String(chunk);
+      if (stderr.length > 1024 * 1024) stderr = stderr.slice(-1024 * 1024);
+    });
+    child.on('error', (error) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      signal?.removeEventListener('abort', abortHandler);
+      reject(createCommandExecutionError(error.message, stdout, stderr, error.name));
+    });
+    child.on('close', (code) => {
+      if (settled) return;
+      settled = true;
+      if (timeout) {
+        clearTimeout(timeout);
+      }
+      signal?.removeEventListener('abort', abortHandler);
+      if (code === 0) {
+        resolveProcess({ stdout, stderr });
+        return;
+      }
+      reject(
+        createCommandExecutionError(
+          `Command failed with exit code ${code}: ${effectiveCommand}`,
+          stdout,
+          stderr,
+        ),
+      );
+    });
   });
 }
 
@@ -3355,6 +5337,7 @@ async function runToolAgent(
         toolCall.args,
         writable,
         attemptState,
+        signal,
       );
       history.push({
         role: 'tool',
@@ -3627,9 +5610,14 @@ function projectHasFileWithSuffix(projectRoot: string, suffixes: string[], maxDe
   const walk = (currentDir: string, depth: number): boolean => {
     if (depth < 0 || !fs.existsSync(currentDir) || !fs.statSync(currentDir).isDirectory())
       return false;
-    const dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+    } catch {
+      return false;
+    }
     for (const dirent of dirents) {
-      if (dirent.name === '.git' || dirent.name === 'node_modules' || dirent.name === '.venv') {
+      if (dirent.isDirectory() && shouldSkipToolTraversalDirectory(dirent.name)) {
         continue;
       }
       const absolutePath = join(currentDir, dirent.name);
@@ -4820,76 +6808,122 @@ function buildOrchestrationPlan(params: {
   workerCount: number;
   riskPolicy: RiskReviewPolicy;
   runtimeValidation: RuntimeValidationSignal;
+  subagentRegistry?: KiraSubagentDefinition[];
+  workflowDag?: KiraWorkflowDag;
+  environmentContract?: KiraEnvironmentContract;
+  pluginConnectors?: KiraPluginConnector[];
 }): OrchestrationPlan {
   const runtimeEvidence = params.runtimeValidation.applicable
     ? ['runtime reachability or clear non-applicable note']
     : [];
   const baseEvidence = ['diff evidence', 'validation rerun evidence', ...runtimeEvidence];
+  const enabledSubagents = (params.subagentRegistry ?? normalizeSubagentRegistry(null)).filter(
+    (agent) => agent.enabled,
+  );
+  const workflowDag = params.workflowDag ?? normalizeWorkflowDag(null, params.runMode);
+  const environmentContract = normalizeEnvironmentContract(params.environmentContract);
+  const enabledConnectors = (params.pluginConnectors ?? normalizePluginConnectors(null)).filter(
+    (connector) => connector.enabled,
+  );
+  const subagentByIntent = (intent: RegExp) =>
+    enabledSubagents.find((agent) => intent.test(`${agent.id} ${agent.label} ${agent.profile}`));
+  const laneFromSubagent = (
+    id: string,
+    role: string,
+    goal: string,
+    evidence: string[],
+    agent?: KiraSubagentDefinition,
+  ) => ({
+    id,
+    role: agent ? `${role} (${agent.label})` : role,
+    goal,
+    ...(agent ? { subagentId: agent.id } : {}),
+    toolScope: agent?.tools ?? [],
+    ...(agent?.modelHint ? { modelHint: agent.modelHint } : {}),
+    requiredEvidence: uniqueStrings([...evidence, ...(agent?.requiredEvidence ?? [])]).slice(0, 12),
+  });
+  const plannerAgent = subagentByIntent(/explore|plan|architect|research/i);
+  const implementerAgent =
+    subagentByIntent(/implement|worker|builder|developer/i) ??
+    getPrimaryImplementationSubagent(enabledSubagents);
+  const validatorAgent = subagentByIntent(/test|validat|quality/i);
+  const reviewerAgent = subagentByIntent(/review|security|judge|integration/i);
   const lanes =
     params.runMode === 'quick'
       ? [
-          {
-            id: 'implement',
-            role: 'focused implementer',
-            goal: 'Make the smallest correct change and record validation evidence.',
-            requiredEvidence: baseEvidence.slice(0, 2),
-          },
+          laneFromSubagent(
+            'implement',
+            'focused implementer',
+            'Make the smallest correct change and record validation evidence.',
+            baseEvidence.slice(0, 2),
+            implementerAgent,
+          ),
         ]
       : params.runMode === 'deep'
         ? [
-            {
-              id: 'plan',
-              role: 'planner',
-              goal: 'Identify scope, invariants, and stop conditions before editing.',
-              requiredEvidence: ['preflight repository reads', 'change design'],
-            },
-            {
-              id: 'implement',
-              role: 'implementer',
-              goal: 'Apply the planned patch while preserving project rules.',
-              requiredEvidence: baseEvidence,
-            },
-            {
-              id: 'challenge',
-              role: 'adversarial reviewer',
-              goal: 'Challenge correctness, regression, and integration assumptions.',
-              requiredEvidence: ['adversarialChecks', 'reviewerDiscourse'],
-            },
-            {
-              id: 'approval',
-              role: 'approval judge',
-              goal: 'Approve only when the evidence ledger is ready and blockers are clear.',
-              requiredEvidence: ['evidenceChecked', 'requirementVerdicts'],
-            },
+            laneFromSubagent(
+              'plan',
+              'planner',
+              'Identify scope, invariants, and stop conditions before editing.',
+              ['preflight repository reads', 'change design'],
+              plannerAgent,
+            ),
+            laneFromSubagent(
+              'implement',
+              'implementer',
+              'Apply the planned patch while preserving project rules.',
+              baseEvidence,
+              implementerAgent,
+            ),
+            laneFromSubagent(
+              'challenge',
+              'adversarial reviewer',
+              'Challenge correctness, regression, and integration assumptions.',
+              ['adversarialChecks', 'reviewerDiscourse'],
+              reviewerAgent,
+            ),
+            laneFromSubagent(
+              'approval',
+              'approval judge',
+              'Approve only when the evidence ledger is ready and blockers are clear.',
+              ['evidenceChecked', 'requirementVerdicts'],
+              reviewerAgent,
+            ),
           ]
         : [
-            {
-              id: 'plan',
-              role: 'planner',
-              goal: 'Map likely files, validation commands, and patch boundaries.',
-              requiredEvidence: ['preflight repository reads', 'change design'],
-            },
-            {
-              id: 'implement',
-              role: 'implementer',
-              goal: 'Implement the scoped change and produce worker self-check evidence.',
-              requiredEvidence: baseEvidence,
-            },
-            {
-              id: 'review',
-              role: 'reviewer',
-              goal: 'Review changed files, validation, requirements, and concrete risks.',
-              requiredEvidence: ['filesChecked', 'evidenceChecked'],
-            },
+            laneFromSubagent(
+              'plan',
+              'planner',
+              'Map likely files, validation commands, and patch boundaries.',
+              ['preflight repository reads', 'change design'],
+              plannerAgent,
+            ),
+            laneFromSubagent(
+              'implement',
+              'implementer',
+              'Implement the scoped change and produce worker self-check evidence.',
+              baseEvidence,
+              implementerAgent,
+            ),
+            laneFromSubagent(
+              'review',
+              'reviewer',
+              'Review changed files, validation, requirements, and concrete risks.',
+              ['filesChecked', 'evidenceChecked'],
+              validatorAgent ?? reviewerAgent,
+            ),
           ];
   const checkpoints = [
     'preflight plan before edits',
     'design review gate before implementation',
     'Kira validation reruns after implementation',
     'patch intent verification before approval',
+    `workflow DAG critical path: ${formatInlineList(workflowDag.criticalPath)}`,
+    `execution runner: ${environmentContract.runner}`,
     ...(params.runMode === 'deep' ? ['evidence ledger readiness before completion'] : []),
   ];
   return {
+    promptContractVersion: KIRA_PROMPT_CONTRACT_VERSION,
     runMode: params.runMode,
     taskType: params.taskType,
     workerCount: Math.max(1, params.workerCount),
@@ -4902,7 +6936,11 @@ function buildOrchestrationPlan(params: {
           ? 'focused'
           : 'adversarial',
     approvalThreshold: params.runMode === 'deep' ? 88 : params.runMode === 'quick' ? 72 : 80,
-    summary: `${params.runMode} orchestration for "${params.work.title}" (${params.taskType}): ${lanes.length} lane(s), ${params.riskPolicy.evidenceMinimum}+ evidence item(s) required.`,
+    subagentIds: enabledSubagents.map((agent) => agent.id),
+    workflowDag,
+    runner: environmentContract.runner,
+    connectors: enabledConnectors.map((connector) => connector.id),
+    summary: `${params.runMode} orchestration for "${params.work.title}" (${params.taskType}): ${lanes.length} lane(s), ${enabledSubagents.length} subagent contract(s), ${params.riskPolicy.evidenceMinimum}+ evidence item(s) required.`,
     lanes,
     checkpoints,
     stopRules: [
@@ -5197,6 +7235,59 @@ function normalizeScoredMemories(raw: unknown): ScoredMemorySignal[] {
     .slice(0, MAX_SCORED_MEMORY_ITEMS);
 }
 
+function normalizeFailureMemoryClusters(raw: unknown): FailureMemoryCluster[] {
+  if (!Array.isArray(raw)) return [];
+  const now = Date.now();
+  return raw
+    .map((item): FailureMemoryCluster | null => {
+      const value =
+        typeof item === 'object' && item !== null ? (item as Partial<FailureMemoryCluster>) : {};
+      const signature =
+        typeof value.signature === 'string' && value.signature.trim()
+          ? normalizeWhitespace(value.signature)
+          : '';
+      if (!signature) return null;
+      const lastSeenAt =
+        typeof value.lastSeenAt === 'number' && Number.isFinite(value.lastSeenAt)
+          ? value.lastSeenAt
+          : now;
+      const ageDays = Math.max(0, (now - lastSeenAt) / (24 * 60 * 60 * 1000));
+      const hits =
+        typeof value.hits === 'number' && Number.isFinite(value.hits)
+          ? Math.max(1, Math.round(value.hits))
+          : 1;
+      const category =
+        value.category === 'typecheck' ||
+        value.category === 'unit-test' ||
+        value.category === 'lint' ||
+        value.category === 'build' ||
+        value.category === 'runtime' ||
+        value.category === 'environment' ||
+        value.category === 'safety' ||
+        value.category === 'review' ||
+        value.category === 'policy' ||
+        value.category === 'unknown'
+          ? value.category
+          : 'unknown';
+      return {
+        signature,
+        category,
+        hits,
+        lastSeenAt,
+        commands: limitedUniqueStrings(stringArrayFrom(value.commands), 6),
+        remediation: limitedUniqueStrings(stringArrayFrom(value.remediation), 8),
+        examples: limitedUniqueStrings(stringArrayFrom(value.examples), 6),
+        staleScore:
+          typeof value.staleScore === 'number' && Number.isFinite(value.staleScore)
+            ? Math.max(0, Math.min(1, value.staleScore))
+            : Math.max(0.1, Math.min(1, 1 / (1 + ageDays / 14))),
+      };
+    })
+    .filter((item): item is FailureMemoryCluster => item !== null)
+    .sort((a, b) => b.hits * b.staleScore - a.hits * a.staleScore || b.lastSeenAt - a.lastSeenAt)
+    .slice(0, MAX_SCORED_MEMORY_ITEMS);
+}
+
 function normalizeProjectProfile(raw: unknown, projectRoot: string): KiraProjectProfile | null {
   if (typeof raw !== 'object' || raw === null) return null;
   const value = raw as Partial<KiraProjectProfile>;
@@ -5264,6 +7355,14 @@ function normalizeProjectProfile(raw: unknown, projectRoot: string): KiraProject
         stringArrayFrom(value.decomposition?.lastRecommendations),
       ),
     },
+    orchestration: {
+      subagents: normalizeSubagentRegistry(value.orchestration?.subagents),
+      workflowDag: normalizeWorkflowDag(value.orchestration?.workflowDag),
+      pluginConnectors: normalizePluginConnectors(value.orchestration?.pluginConnectors),
+      environment: normalizeEnvironmentContract(value.orchestration?.environment),
+      executionPolicy: normalizeExecutionPolicy(value.orchestration?.executionPolicy),
+      quality: normalizeQualitySnapshot(value.orchestration?.quality),
+    },
     learning: {
       recentReviewFailures: limitedUniqueStrings(
         stringArrayFrom(value.learning?.recentReviewFailures),
@@ -5286,6 +7385,7 @@ function normalizeProjectProfile(raw: unknown, projectRoot: string): KiraProject
         MAX_PROJECT_LEARNING_ITEMS,
       ),
       scoredMemories: normalizeScoredMemories(value.learning?.scoredMemories),
+      failureClusters: normalizeFailureMemoryClusters(value.learning?.failureClusters),
       lastUpdatedAt:
         typeof value.learning?.lastUpdatedAt === 'number'
           ? value.learning.lastUpdatedAt
@@ -5406,6 +7506,14 @@ export function refreshProjectIntelligenceProfile(
       ]),
       lastRecommendations: previous?.decomposition.lastRecommendations ?? [],
     },
+    orchestration: {
+      subagents: normalizeSubagentRegistry(previous?.orchestration?.subagents, previous),
+      workflowDag: normalizeWorkflowDag(previous?.orchestration?.workflowDag),
+      pluginConnectors: normalizePluginConnectors(previous?.orchestration?.pluginConnectors),
+      environment: normalizeEnvironmentContract(previous?.orchestration?.environment),
+      executionPolicy: normalizeExecutionPolicy(previous?.orchestration?.executionPolicy),
+      quality: normalizeQualitySnapshot(previous?.orchestration?.quality),
+    },
     learning: previous?.learning ?? {
       recentReviewFailures: [],
       recentValidationFailures: [],
@@ -5413,6 +7521,7 @@ export function refreshProjectIntelligenceProfile(
       workerGuidanceRules: [],
       successfulPatterns: [],
       scoredMemories: [],
+      failureClusters: [],
     },
   };
 
@@ -5441,8 +7550,15 @@ function summarizeProjectProfile(profile: KiraProjectProfile | null | undefined)
       `Style signals: ${formatInlineList(profile.conventions.styleSignals)}`,
       `Risk surfaces: ${formatInlineList(profile.risk.highRiskFiles)}`,
       `Worker profiles: ${formatInlineList(profile.workers.recommendedProfiles)}`,
+      `Subagents: ${formatInlineList(profile.orchestration?.subagents.map((agent) => agent.id) ?? [])}`,
+      `Workflow: ${formatInlineList(profile.orchestration?.workflowDag.criticalPath ?? [])}`,
       `Guidance rules: ${formatInlineList(profile.learning.workerGuidanceRules)}`,
       `Successful patterns: ${formatInlineList(profile.learning.successfulPatterns)}`,
+      `Failure clusters: ${formatInlineList(
+        profile.learning.failureClusters
+          .slice(0, 4)
+          .map((item) => `${item.category}/${item.hits} ${item.signature}`),
+      )}`,
       `Weighted memories: ${formatInlineList(
         profile.learning.scoredMemories.slice(0, 4).map((item) => item.text),
       )}`,
@@ -5584,6 +7700,79 @@ function mergeScoredMemories(
     .slice(0, MAX_SCORED_MEMORY_ITEMS);
 }
 
+function buildFailureClusterUpdates(
+  updates: {
+    reviewFailures?: string[];
+    validationFailures?: string[];
+    repeatedPatterns?: string[];
+  },
+  now: number,
+): FailureMemoryCluster[] {
+  const validation = (updates.validationFailures ?? []).map((text): FailureMemoryCluster => {
+    const command = /^Kira rerun failed for\s+(.+)$/i.exec(text)?.[1] ?? '';
+    const category = classifyFailure(command, text);
+    const signature = buildIssueSignature([category, command, text], text).slice(0, 180);
+    return {
+      signature,
+      category,
+      hits: 1,
+      lastSeenAt: now,
+      commands: command ? [command] : [],
+      remediation: [guidanceForFailure(category)],
+      examples: [text],
+      staleScore: 1,
+    };
+  });
+  const review = [...(updates.reviewFailures ?? []), ...(updates.repeatedPatterns ?? [])].map(
+    (text): FailureMemoryCluster => ({
+      signature: buildIssueSignature([text], text).slice(0, 180),
+      category: /\bpolicy|protected|unsafe|deny|allowlist\b/i.test(text) ? 'policy' : 'review',
+      hits: 1,
+      lastSeenAt: now,
+      commands: [],
+      remediation: deriveWorkerGuidanceRules([text]),
+      examples: [text],
+      staleScore: 1,
+    }),
+  );
+  return [...validation, ...review].filter((item) => item.signature);
+}
+
+function mergeFailureClusters(
+  existing: FailureMemoryCluster[],
+  incoming: FailureMemoryCluster[],
+  now: number,
+): FailureMemoryCluster[] {
+  const bySignature = new Map<string, FailureMemoryCluster>();
+  for (const cluster of [...existing, ...incoming]) {
+    const key = cluster.signature.toLowerCase();
+    const previous = bySignature.get(key);
+    if (!previous) {
+      bySignature.set(key, { ...cluster });
+      continue;
+    }
+    bySignature.set(key, {
+      signature: previous.signature,
+      category: previous.category,
+      hits: previous.hits + cluster.hits,
+      lastSeenAt: Math.max(previous.lastSeenAt, cluster.lastSeenAt),
+      commands: limitedUniqueStrings([...cluster.commands, ...previous.commands], 6),
+      remediation: limitedUniqueStrings([...cluster.remediation, ...previous.remediation], 8),
+      examples: limitedUniqueStrings([...cluster.examples, ...previous.examples], 6),
+      staleScore: 1,
+    });
+  }
+  return normalizeFailureMemoryClusters(
+    [...bySignature.values()].map((cluster) => {
+      const ageDays = Math.max(0, (now - cluster.lastSeenAt) / 86_400_000);
+      return {
+        ...cluster,
+        staleScore: Math.max(0.1, Math.min(1, 1 / (1 + ageDays / 14))),
+      };
+    }),
+  );
+}
+
 function updateProjectProfileLearning(
   projectRoot: string,
   updates: {
@@ -5640,6 +7829,11 @@ function updateProjectProfileLearning(
         ),
         now,
       ),
+      failureClusters: mergeFailureClusters(
+        profile.learning.failureClusters ?? [],
+        buildFailureClusterUpdates(updates, now),
+        now,
+      ),
       lastUpdatedAt: now,
     };
     profile.decomposition.lastRecommendations = limitedUniqueStrings(
@@ -5667,6 +7861,12 @@ function getProjectRecentFeedback(profile: KiraProjectProfile | null | undefined
       ...profile.learning.repeatedPatterns.map((item) => `Repeated pattern: ${item}`),
       ...profile.learning.workerGuidanceRules.map((item) => `Guidance rule: ${item}`),
       ...profile.learning.successfulPatterns.map((item) => `Successful pattern: ${item}`),
+      ...profile.learning.failureClusters
+        .slice(0, 6)
+        .map(
+          (item) =>
+            `Failure cluster ${item.category}/${item.hits}: ${item.signature}. Remediation: ${formatInlineList(item.remediation)}`,
+        ),
       ...profile.learning.scoredMemories
         .slice(0, 6)
         .map((item) => `Weighted memory ${item.source}/${item.score.toFixed(2)}: ${item.text}`),
@@ -5779,6 +7979,7 @@ function selectLaneWorkerProfile(
   workerCount: number,
   attemptNo: number,
 ): string {
+  if (lane.subagent) return lane.subagent.profile;
   const label = lane.label.toLowerCase();
   if (label.includes('test') || label.includes('review') || label.includes('validation')) {
     return 'test-validation';
@@ -5810,8 +8011,25 @@ export async function buildProjectContextScan(
   requiredInstructions = '',
   runMode: KiraRunMode = 'standard',
   workerCount = 1,
+  projectSettings?: Pick<
+    ResolvedKiraProjectSettings,
+    'executionPolicy' | 'environment' | 'subagents' | 'workflow' | 'plugins'
+  >,
 ): Promise<ProjectContextScan> {
   const projectProfile = ensureProjectIntelligenceProfile(projectRoot, work.projectName);
+  const executionPolicy = normalizeExecutionPolicy(projectSettings?.executionPolicy);
+  const environmentContract = normalizeEnvironmentContract(projectSettings?.environment);
+  const subagentRegistry =
+    projectSettings?.subagents && projectSettings.subagents.length > 0
+      ? projectSettings.subagents
+      : normalizeSubagentRegistry(projectProfile?.orchestration?.subagents, projectProfile);
+  const workflowDag =
+    projectSettings?.workflow ??
+    normalizeWorkflowDag(projectProfile?.orchestration?.workflowDag, runMode);
+  const pluginConnectors =
+    projectSettings?.plugins ??
+    normalizePluginConnectors(projectProfile?.orchestration?.pluginConnectors);
+  const qualitySnapshot = normalizeQualitySnapshot(projectProfile?.orchestration?.quality);
   const packageManager = detectNodePackageManager(projectRoot);
   const scripts = loadPackageScripts(projectRoot);
   const existingChanges = formatGitStatusEntries(await getGitWorktreeEntries(projectRoot));
@@ -5843,6 +8061,10 @@ export async function buildProjectContextScan(
     workerCount,
     riskPolicy,
     runtimeValidation,
+    subagentRegistry,
+    workflowDag,
+    environmentContract,
+    pluginConnectors,
   });
   const reviewAdversarialPlan = buildReviewAdversarialPlan({
     taskType,
@@ -5857,6 +8079,7 @@ export async function buildProjectContextScan(
     reviewAdversarialPlan,
   );
   const candidateChecks = uniqueStrings([
+    ...environmentContract.validationCommands,
     ...buildDefaultValidationCommands(projectRoot, likelyFilePaths),
     ...testImpact.flatMap((item) => item.commands),
     ...(['test', 'lint', 'typecheck', 'build'] as const)
@@ -5914,6 +8137,12 @@ export async function buildProjectContextScan(
     testImpact,
     reviewerCalibration,
     orchestrationPlan,
+    subagentRegistry,
+    workflowDag,
+    executionPolicy,
+    environmentContract,
+    pluginConnectors,
+    qualitySnapshot,
   };
   const decomposition = recommendWorkDecomposition(work, baseScan, projectProfile);
   const workerProfile = inferWorkerProfile(work, baseScan, projectProfile);
@@ -6042,13 +8271,19 @@ export function resolveValidationPlan(
   projectRoot: string,
   plannerCommands: string[],
   filesChanged: string[],
+  environment?: KiraEnvironmentContract,
 ): ResolvedValidationPlan {
+  const environmentContract = normalizeEnvironmentContract(environment);
   const normalizedPlannerCommands = uniqueStrings(
     plannerCommands.map((command) => normalizeWhitespace(command)),
   ).filter(Boolean);
-  const autoAddedCommands = buildDefaultValidationCommands(projectRoot, filesChanged).filter(
+  const contractCommands = environmentContract.validationCommands.filter(
     (command) => !normalizedPlannerCommands.includes(command),
   );
+  const autoAddedCommands = uniqueStrings([
+    ...contractCommands,
+    ...buildDefaultValidationCommands(projectRoot, filesChanged),
+  ]).filter((command) => !normalizedPlannerCommands.includes(command));
   const effectiveCommands = uniqueStrings([
     ...normalizedPlannerCommands,
     ...autoAddedCommands,
@@ -6072,6 +8307,14 @@ export function resolveValidationPlan(
   }
   if (normalizedFiles.length > 0 && effectiveCommands.length === 0) {
     notes.push('No safe validation command could be inferred from the changed files.');
+  }
+  if (environmentContract.validationCommands.length > 0) {
+    notes.push(
+      `Project environment contract contributed ${environmentContract.validationCommands.length} validation command(s).`,
+    );
+  }
+  if (environmentContract.runner !== 'local') {
+    notes.push(`Validation will execute through the ${environmentContract.runner} runner.`);
   }
 
   return {
@@ -6527,6 +8770,16 @@ function formatProjectProfileBlock(profile: KiraProjectProfile | null | undefine
     `- Recent review learning: ${formatInlineList(profile.learning.recentReviewFailures)}`,
     `- Recent validation learning: ${formatInlineList(profile.learning.recentValidationFailures)}`,
     `- Worker guidance rules: ${formatInlineList(profile.learning.workerGuidanceRules)}`,
+    `- Failure clusters: ${formatInlineList(
+      profile.learning.failureClusters
+        .slice(0, 4)
+        .map((item) => `${item.category}/${item.hits} ${item.signature}`),
+    )}`,
+    `- Orchestration subagents: ${formatInlineList(
+      profile.orchestration?.subagents.map((agent) => agent.id) ?? [],
+    )}`,
+    `- Workflow path: ${formatInlineList(profile.orchestration?.workflowDag.criticalPath ?? [])}`,
+    `- Runner: ${profile.orchestration?.environment.runner ?? 'local'}`,
     `- Weighted memories: ${formatInlineList(
       profile.learning.scoredMemories
         .slice(0, 4)
@@ -6714,6 +8967,10 @@ function formatOrchestrationPlan(plan: OrchestrationPlan | undefined): string {
     `- Validation depth: ${plan.validationDepth}`,
     `- Review depth: ${plan.reviewDepth}`,
     `- Approval threshold: ${plan.approvalThreshold}`,
+    `- Runner: ${plan.runner}`,
+    `- Subagents: ${formatInlineList(plan.subagentIds)}`,
+    `- Connectors: ${formatInlineList(plan.connectors)}`,
+    `- Workflow critical path: ${formatInlineList(plan.workflowDag.criticalPath)}`,
     `- Summary: ${plan.summary}`,
     `- Lanes:\n${formatList(
       plan.lanes.map(
@@ -6726,6 +8983,87 @@ function formatOrchestrationPlan(plan: OrchestrationPlan | undefined): string {
     )}`,
     `- Checkpoints:\n${formatList(plan.checkpoints, 'No checkpoints')}`,
     `- Stop rules:\n${formatList(plan.stopRules, 'No stop rules')}`,
+  ].join('\n');
+}
+
+function formatExecutionPolicy(policy: KiraExecutionPolicy | undefined): string {
+  if (!policy) return 'Execution policy:\n- No execution policy available';
+  return [
+    'Execution policy:',
+    `- Mode: ${policy.mode}`,
+    `- Changed-file limit: ${policy.maxChangedFiles}`,
+    `- Diff-line limit: ${policy.maxDiffLines}`,
+    `- Require validation: ${policy.requireValidation}`,
+    `- Require reviewer evidence: ${policy.requireReviewerEvidence}`,
+    `- Protected paths: ${formatInlineList(policy.protectedPaths)}`,
+    `- Command allowlist: ${formatInlineList(policy.commandAllowlist)}`,
+    `- Command denylist: ${formatInlineList(policy.commandDenylist)}`,
+    `- Rules: ${formatInlineList(policy.rules.filter((rule) => rule.enabled).map((rule) => rule.id))}`,
+  ].join('\n');
+}
+
+function formatEnvironmentContract(contract: KiraEnvironmentContract | undefined): string {
+  if (!contract) return 'Environment contract:\n- No environment contract available';
+  return [
+    'Environment contract:',
+    `- Runner: ${contract.runner}`,
+    `- Allowed network: ${contract.allowedNetwork}`,
+    `- Secrets policy: ${contract.secretsPolicy}`,
+    `- Windows mode: ${contract.windowsMode}`,
+    `- Setup commands: ${formatInlineList(contract.setupCommands)}`,
+    `- Validation commands: ${formatInlineList(contract.validationCommands)}`,
+    `- Required env: ${formatInlineList(contract.requiredEnv)}`,
+    `- Dev server command: ${contract.devServerCommand || 'none'}`,
+  ].join('\n');
+}
+
+function formatSubagentRegistry(subagents: KiraSubagentDefinition[] | undefined): string {
+  if (!subagents?.length) return 'Subagent registry:\n- No subagent registry available';
+  return [
+    'Subagent registry:',
+    ...subagents.map(
+      (agent) =>
+        `- ${agent.id} (${agent.profile}): ${agent.description} Evidence: ${formatInlineList(
+          agent.requiredEvidence,
+        )}`,
+    ),
+  ].join('\n');
+}
+
+function formatWorkflowDag(dag: KiraWorkflowDag | undefined): string {
+  if (!dag) return 'Workflow DAG:\n- No workflow DAG available';
+  return [
+    'Workflow DAG:',
+    `- Nodes: ${formatInlineList(dag.nodes.map((node) => `${node.id}:${node.kind}`))}`,
+    `- Critical path: ${formatInlineList(dag.criticalPath)}`,
+    `- Edges: ${formatInlineList(dag.edges.map((edge) => `${edge.from}->${edge.to}`))}`,
+  ].join('\n');
+}
+
+function formatPluginConnectors(connectors: KiraPluginConnector[] | undefined): string {
+  if (!connectors?.length) return 'Plugin connectors:\n- No plugin connectors available';
+  return [
+    'Plugin connectors:',
+    ...connectors.map(
+      (connector) =>
+        `- ${connector.id} (${connector.type}) enabled=${connector.enabled} policy=${connector.policy} capabilities=${formatInlineList(
+          connector.capabilities,
+        )}`,
+    ),
+  ].join('\n');
+}
+
+function formatQualitySnapshot(snapshot: KiraQualitySnapshot | undefined): string {
+  if (!snapshot) return 'Quality snapshot:\n- No quality snapshot available';
+  return [
+    'Quality snapshot:',
+    `- Attempts: ${snapshot.approvedAttempts}/${snapshot.attemptsTotal} approved`,
+    `- Validation failures: ${snapshot.validationFailures}`,
+    `- Review rejections: ${snapshot.reviewRejections}`,
+    `- Rollbacks: ${snapshot.rollbacks}`,
+    `- Average readiness: ${snapshot.averageReadinessScore}`,
+    `- Pass rate: ${(snapshot.passRate * 100).toFixed(0)}%`,
+    `- Top failure categories: ${formatInlineList(snapshot.topFailureCategories)}`,
   ].join('\n');
 }
 
@@ -6847,6 +9185,12 @@ function formatProjectContextScan(scan: ProjectContextScan): string {
     formatRequirementTrace(scan.requirementTrace),
     formatRiskReviewPolicy(scan.riskPolicy),
     formatOrchestrationPlan(scan.orchestrationPlan),
+    formatExecutionPolicy(scan.executionPolicy),
+    formatEnvironmentContract(scan.environmentContract),
+    formatSubagentRegistry(scan.subagentRegistry),
+    formatWorkflowDag(scan.workflowDag),
+    formatPluginConnectors(scan.pluginConnectors),
+    formatQualitySnapshot(scan.qualitySnapshot),
     formatReviewAdversarialPlan(scan.reviewAdversarialPlan),
     formatRuntimeValidationSignal(scan.runtimeValidation),
     formatEscalationSignals(scan.escalationSignals),
@@ -7315,6 +9659,7 @@ export function detectTouchedFilesFromGitStatus(
   if (!after) return [];
 
   const beforeMap = new Map((before ?? []).map((entry) => [entry.path, entry.status]));
+  const afterMap = new Map(after.map((entry) => [entry.path, entry.status]));
   const touched = new Set<string>();
 
   for (const entry of after) {
@@ -7322,6 +9667,34 @@ export function detectTouchedFilesFromGitStatus(
     const previousStatus = beforeMap.get(entry.path);
     if (previousStatus !== entry.status) {
       touched.add(entry.path);
+    }
+  }
+
+  for (const entry of before ?? []) {
+    if (isGeneratedArtifactPath(entry.path)) continue;
+    if (!afterMap.has(entry.path)) {
+      touched.add(entry.path);
+    }
+  }
+
+  return [...touched].sort();
+}
+
+export function detectTouchedFilesFromDirtySnapshots(
+  projectRoot: string,
+  beforeSnapshots: Map<string, DirtyFileContentSnapshot>,
+): string[] {
+  const touched = new Set<string>();
+
+  for (const [relativePath, before] of beforeSnapshots.entries()) {
+    if (isGeneratedArtifactPath(relativePath)) continue;
+    const after = readDirtyFileContentSnapshot(projectRoot, relativePath);
+    if (
+      before.exists !== after.exists ||
+      before.hash !== after.hash ||
+      before.size !== after.size
+    ) {
+      touched.add(relativePath);
     }
   }
 
@@ -7498,6 +9871,9 @@ async function collectPatchValidationIssues(
 async function rerunValidationCommands(
   projectRoot: string,
   commands: string[],
+  signal?: AbortSignal,
+  environment?: KiraEnvironmentContract,
+  policy?: KiraExecutionPolicy,
 ): Promise<ValidationRerunSummary> {
   const plannedCommands = uniqueStrings(
     commands.map((command) => normalizeWhitespace(command)),
@@ -7507,28 +9883,179 @@ async function rerunValidationCommands(
   const failureDetails: string[] = [];
 
   for (const command of plannedCommands) {
+    if (signal?.aborted) {
+      throw createAbortError('Validation rerun aborted.');
+    }
     if (!isSafeCommandAllowed(command)) {
       failed.push(command);
       failureDetails.push(`Command: ${command}\n\nError: Rejected by Kira safety policy.`);
       continue;
     }
+    const policyEvaluation = evaluateExecutionPolicy(
+      policy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+      'before_validation',
+      { toolName: 'run_command', command },
+    );
+    if (policyEvaluation.decision === 'block') {
+      failed.push(command);
+      failureDetails.push(
+        `Command: ${command}\n\nError: ${formatPolicyEvaluationFailure(policyEvaluation)}`,
+      );
+      continue;
+    }
+    const environmentIssues = collectEnvironmentCommandIssues(environment, command);
+    if (environmentIssues.length > 0) {
+      failed.push(command);
+      failureDetails.push(`Command: ${command}\n\nError: ${environmentIssues.join(' ')}`);
+      continue;
+    }
 
-    const shell = process.platform === 'win32' ? 'powershell.exe' : '/bin/bash';
     try {
-      await execAsync(command, {
-        cwd: projectRoot,
-        shell,
-        timeout: COMMAND_TIMEOUT_MS,
-        maxBuffer: 1024 * 1024,
-      });
+      await runShellCommand(command, projectRoot, signal, COMMAND_TIMEOUT_MS, environment);
       passed.push(command);
     } catch (error) {
+      if (isAbortError(error)) {
+        throw error;
+      }
       failed.push(command);
       failureDetails.push(formatCommandFailureDetail(command, error));
     }
   }
 
   return { passed, failed, failureDetails };
+}
+
+async function runEnvironmentSetup(
+  projectRoot: string,
+  environment?: KiraEnvironmentContract,
+  signal?: AbortSignal,
+  policy?: KiraExecutionPolicy,
+): Promise<EnvironmentExecutionSummary> {
+  const contract = normalizeEnvironmentContract(environment);
+  const setup = contract.setupCommands.length
+    ? await rerunValidationCommands(projectRoot, contract.setupCommands, signal, contract, policy)
+    : { passed: [], failed: [], failureDetails: [] };
+  let remote: EnvironmentExecutionSummary['remote'] = {
+    declared: contract.runner !== 'local',
+    commandTemplate: contract.remoteCommand,
+    status: contract.runner === 'local' ? 'not_declared' : 'skipped',
+    probes: [],
+    notes:
+      contract.runner === 'local'
+        ? ['Local runner uses direct process execution.']
+        : ['Remote runner was not probed.'],
+  };
+  if (contract.runner === 'remote-command') {
+    const remoteIssues =
+      !contract.remoteCommand || !contract.remoteCommand.includes('{command}')
+        ? ['Remote-command runner requires environment.remoteCommand with a {command} placeholder.']
+        : [
+            ...collectEnvironmentCommandIssues(contract, REMOTE_RUNNER_PROBE_COMMAND),
+            ...(isSafeCommandAllowed(REMOTE_RUNNER_PROBE_COMMAND)
+              ? []
+              : ['Remote runner probe command is not in Kira safe command allowlist.']),
+          ];
+    if (remoteIssues.length > 0) {
+      remote = {
+        declared: true,
+        commandTemplate: contract.remoteCommand,
+        status: 'blocked',
+        probes: [],
+        notes: limitedUniqueStrings(remoteIssues, 8),
+      };
+    } else {
+      try {
+        const probe = await runShellCommand(
+          REMOTE_RUNNER_PROBE_COMMAND,
+          projectRoot,
+          signal,
+          Math.min(COMMAND_TIMEOUT_MS, 30_000),
+          contract,
+        );
+        const probeOutput = `${probe.stdout}\n${probe.stderr}`;
+        const confirmed = /\btrue\b/i.test(probeOutput);
+        remote = {
+          declared: true,
+          commandTemplate: contract.remoteCommand,
+          status: confirmed ? 'validated' : 'failed',
+          probes: [truncateForReview(formatCommandOutput(probe.stdout, probe.stderr), 1_200)],
+          notes: confirmed
+            ? ['Remote-command runner validated git worktree reachability.']
+            : ['Remote-command runner responded but did not confirm git worktree reachability.'],
+        };
+      } catch (error) {
+        if (isAbortError(error)) {
+          throw error;
+        }
+        remote = {
+          declared: true,
+          commandTemplate: contract.remoteCommand,
+          status: 'failed',
+          probes: [],
+          notes: [
+            truncateForReview(
+              formatCommandFailureDetail(REMOTE_RUNNER_PROBE_COMMAND, error),
+              1_200,
+            ),
+          ],
+        };
+      }
+    }
+  } else if (contract.runner === 'cloud') {
+    remote = {
+      declared: true,
+      commandTemplate: '',
+      status: 'blocked',
+      probes: [],
+      notes: [
+        'Cloud runner requires an enabled execution connector before Kira can execute remotely.',
+      ],
+    };
+  }
+  const devServerIssues = contract.devServerCommand
+    ? [
+        ...collectEnvironmentCommandIssues(contract, contract.devServerCommand),
+        ...(isSafeCommandAllowed(contract.devServerCommand)
+          ? []
+          : ['Dev server command is not in Kira safe command allowlist.']),
+      ]
+    : [];
+  return {
+    setup,
+    remote,
+    devServer: {
+      declared: Boolean(contract.devServerCommand),
+      command: contract.devServerCommand,
+      status: !contract.devServerCommand
+        ? 'not_declared'
+        : devServerIssues.length > 0
+          ? 'blocked'
+          : 'validated',
+      notes: contract.devServerCommand
+        ? devServerIssues.length > 0
+          ? devServerIssues
+          : [
+              'Dev server command passed Kira environment policy checks. Kira will use runtime probes instead of leaving a long-running process open.',
+            ]
+        : ['No dev server command declared.'],
+    },
+  };
+}
+
+function collectEnvironmentExecutionIssues(summary: EnvironmentExecutionSummary): string[] {
+  return uniqueStrings([
+    ...summary.setup.failed.map((command) => `Environment setup failed: ${command}`),
+    ...summary.setup.failureDetails,
+    ...(summary.remote.status === 'blocked'
+      ? summary.remote.notes.map((note) => `Remote runner blocked: ${note}`)
+      : []),
+    ...(summary.remote.status === 'failed'
+      ? summary.remote.notes.map((note) => `Remote runner failed: ${note}`)
+      : []),
+    ...(summary.devServer.status === 'blocked'
+      ? summary.devServer.notes.map((note) => `Dev server command blocked: ${note}`)
+      : []),
+  ]).slice(0, 12);
 }
 
 function classifyFailure(command: string, detail: string): FailureAnalysis['category'] {
@@ -7825,6 +10352,44 @@ function collectPatchScopeIssues(params: {
   }
 
   return uniqueStrings(issues);
+}
+
+function collectExecutionPolicyPatchIssues(params: {
+  policy?: KiraExecutionPolicy;
+  filesChanged: string[];
+  diffStats: DiffStats;
+  riskLevel?: RiskReviewPolicy['level'];
+}): string[] {
+  const evaluation = evaluateExecutionPolicy(
+    params.policy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+    'before_integration',
+    {
+      changedFiles: params.filesChanged,
+      diffStats: params.diffStats,
+      riskLevel: params.riskLevel,
+    },
+  );
+  if (evaluation.decision !== 'block') return [];
+  return evaluation.issues.map((issue) => `Execution policy blocked integration: ${issue}`);
+}
+
+function collectExecutionPolicyCompletionIssues(params: {
+  policy?: KiraExecutionPolicy;
+  filesChanged: string[];
+  diffStats: DiffStats;
+  riskLevel?: RiskReviewPolicy['level'];
+}): string[] {
+  const evaluation = evaluateExecutionPolicy(
+    params.policy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+    'task_completed',
+    {
+      changedFiles: params.filesChanged,
+      diffStats: params.diffStats,
+      riskLevel: params.riskLevel,
+    },
+  );
+  if (evaluation.decision !== 'block') return [];
+  return evaluation.issues.map((issue) => `Execution policy blocked completion: ${issue}`);
 }
 
 export function collectAttemptReviewabilityIssues(params: {
@@ -8265,6 +10830,100 @@ function buildReviewFindingTriage(
   return [...byId.values()].slice(0, 30);
 }
 
+function extractChangedDiffLines(diffExcerpts: string[]): Map<string, Set<number>> {
+  const byFile = new Map<string, Set<number>>();
+  for (const excerpt of diffExcerpts) {
+    const headerFile = /^File:\s*(.+)$/m.exec(excerpt)?.[1]?.trim();
+    let currentFile = headerFile ? normalizeRelativePath(headerFile) : '';
+    let nextLine = 0;
+    for (const line of excerpt.split(/\r?\n/)) {
+      const fileMatch = /^\+\+\+\s+b\/(.+)$/.exec(line);
+      if (fileMatch?.[1]) {
+        currentFile = normalizeRelativePath(fileMatch[1]);
+        if (!byFile.has(currentFile)) byFile.set(currentFile, new Set());
+        continue;
+      }
+      const hunkMatch = /^@@\s+-\d+(?:,\d+)?\s+\+(\d+)(?:,(\d+))?\s+@@/.exec(line);
+      if (hunkMatch?.[1]) {
+        nextLine = Number.parseInt(hunkMatch[1], 10);
+        if (currentFile && !byFile.has(currentFile)) byFile.set(currentFile, new Set());
+        continue;
+      }
+      if (!currentFile || nextLine <= 0) continue;
+      if (line.startsWith('+') && !line.startsWith('+++')) {
+        byFile.get(currentFile)?.add(nextLine);
+        nextLine += 1;
+        continue;
+      }
+      if (line.startsWith('-') && !line.startsWith('---')) {
+        continue;
+      }
+      nextLine += 1;
+    }
+  }
+  return byFile;
+}
+
+function buildDiffReviewCoverage(params: {
+  workerSummary?: WorkerSummary;
+  reviewSummary?: ReviewSummary;
+  diffExcerpts?: string[];
+}): DiffReviewCoverage {
+  const changedLines = extractChangedDiffLines(params.diffExcerpts ?? []);
+  const filesWithChangedLines = [...changedLines.keys()].sort();
+  const changedLineCount = [...changedLines.values()].reduce(
+    (total, lines) => total + lines.size,
+    0,
+  );
+  const reviewSummary = params.reviewSummary;
+  const reviewedFiles = normalizePathList(
+    [
+      ...(reviewSummary?.filesChecked ?? []),
+      ...(reviewSummary?.evidenceChecked.map((item) => item.file) ?? []),
+    ],
+    200,
+  );
+  const findings = reviewSummary?.findings ?? [];
+  const anchoredFindingCount = findings.filter((finding) => {
+    const file = normalizeRelativePath(finding.file);
+    return (
+      file &&
+      typeof finding.line === 'number' &&
+      finding.line > 0 &&
+      changedLines.get(file)?.has(finding.line)
+    );
+  }).length;
+  const unanchoredFindingCount = findings.length - anchoredFindingCount;
+  const filesCoveredByReview = filesWithChangedLines.filter((file) =>
+    pathMatchesScope(reviewedFiles, file),
+  );
+  const issues = uniqueStrings([
+    ...(filesWithChangedLines.length > 0 && filesCoveredByReview.length === 0
+      ? ['Reviewer did not cover any file with changed diff lines.']
+      : []),
+    ...(reviewSummary?.approved && unanchoredFindingCount > 0
+      ? [`Reviewer approved with ${unanchoredFindingCount} unanchored finding(s).`]
+      : []),
+    ...(params.workerSummary?.summary &&
+    /\b(no changes|nothing changed|no files changed)\b/i.test(params.workerSummary.summary) &&
+    (params.workerSummary.filesChanged?.length ?? 0) > 0
+      ? ['Worker summary contradicts the detected changed files.']
+      : []),
+  ]);
+  return {
+    changedLineCount,
+    anchoredFindingCount,
+    unanchoredFindingCount,
+    filesWithChangedLines,
+    filesCoveredByReview,
+    coverageRatio:
+      filesWithChangedLines.length > 0
+        ? filesCoveredByReview.length / filesWithChangedLines.length
+        : 1,
+    issues,
+  };
+}
+
 function buildReviewObservability(params: {
   startedAt: number;
   finishedAt: number;
@@ -8331,6 +10990,97 @@ function buildEvidenceLedger(params: {
     'worker',
     params.workerPlan.confidence,
   );
+
+  const policy = params.contextScan.executionPolicy;
+  const policyEvaluation = policy
+    ? evaluateExecutionPolicy(policy, 'before_integration', {
+        changedFiles: params.workerSummary?.filesChanged ?? [],
+        diffStats: params.diffStats,
+        riskLevel: params.riskPolicy?.level ?? params.contextScan.riskPolicy?.level,
+      })
+    : null;
+  if (policy) {
+    addItem(
+      'policy',
+      policyEvaluation?.decision === 'block'
+        ? 'fail'
+        : policyEvaluation?.decision === 'warn'
+          ? 'warn'
+          : 'pass',
+      `Execution policy ${policy.mode}: ${policy.maxChangedFiles} files / ${policy.maxDiffLines} diff lines.`,
+      [
+        `Protected paths: ${formatInlineList(policy.protectedPaths)}`,
+        `Denylist: ${formatInlineList(policy.commandDenylist)}`,
+        ...(policyEvaluation ? [...policyEvaluation.issues, ...policyEvaluation.warnings] : []),
+      ],
+      'kira',
+      policyEvaluation?.decision === 'block' ? 0.95 : 0.76,
+    );
+  }
+
+  if (params.contextScan.environmentContract) {
+    const setupFailed = (params.contextScan.environmentExecution?.setup.failed.length ?? 0) > 0;
+    const remoteBlocked =
+      params.contextScan.environmentExecution?.remote?.status === 'blocked' ||
+      params.contextScan.environmentExecution?.remote?.status === 'failed';
+    const devServerBlocked =
+      params.contextScan.environmentExecution?.devServer.status === 'blocked';
+    addItem(
+      'environment',
+      setupFailed || remoteBlocked || devServerBlocked
+        ? 'fail'
+        : params.contextScan.environmentContract.runner === 'cloud'
+          ? 'warn'
+          : 'pass',
+      `Environment runner: ${params.contextScan.environmentContract.runner}.`,
+      [
+        `Validation commands: ${formatInlineList(params.contextScan.environmentContract.validationCommands)}`,
+        `Setup passed: ${formatInlineList(params.contextScan.environmentExecution?.setup.passed ?? [])}`,
+        `Setup failed: ${formatInlineList(params.contextScan.environmentExecution?.setup.failed ?? [])}`,
+        `Remote runner: ${params.contextScan.environmentExecution?.remote?.status ?? 'not_checked'}`,
+        `Remote probes: ${formatInlineList(params.contextScan.environmentExecution?.remote?.probes ?? [])}`,
+        `Dev server: ${params.contextScan.environmentExecution?.devServer.status ?? 'not_checked'}`,
+        `Required env: ${formatInlineList(params.contextScan.environmentContract.requiredEnv)}`,
+        `Allowed network: ${params.contextScan.environmentContract.allowedNetwork}`,
+      ],
+      'kira',
+      setupFailed || remoteBlocked || devServerBlocked
+        ? 0.94
+        : params.contextScan.environmentContract.runner === 'local'
+          ? 0.78
+          : 0.62,
+    );
+  }
+
+  if (params.contextScan.workflowDag) {
+    addItem(
+      'workflow',
+      params.contextScan.workflowDag.criticalPath.length > 0 ? 'pass' : 'warn',
+      `Workflow DAG has ${params.contextScan.workflowDag.nodes.length} node(s).`,
+      [
+        `Critical path: ${formatInlineList(params.contextScan.workflowDag.criticalPath)}`,
+        `Edges: ${formatInlineList(
+          params.contextScan.workflowDag.edges.map((edge) => `${edge.from}->${edge.to}`),
+        )}`,
+      ],
+      'kira',
+      0.72,
+    );
+  }
+
+  if (params.contextScan.pluginConnectors) {
+    const enabled = params.contextScan.pluginConnectors.filter((connector) => connector.enabled);
+    addItem(
+      'connectors',
+      enabled.length > 0 ? 'info' : 'warn',
+      `${enabled.length} plugin connector(s) enabled for this project.`,
+      params.contextScan.pluginConnectors.map(
+        (connector) => `${connector.id}: enabled=${connector.enabled} policy=${connector.policy}`,
+      ),
+      'kira',
+      enabled.length > 0 ? 0.62 : 0.5,
+    );
+  }
 
   if (params.diffStats) {
     addItem(
@@ -8451,6 +11201,19 @@ function buildEvidenceLedger(params: {
       params.runtimeValidation.status !== 'reachable'
         ? ['Runtime validation failed on a detected dev server.']
         : []),
+      ...(params.contextScan.environmentExecution?.setup.failed ?? []).map(
+        (command) => `Environment setup failed: ${command}`,
+      ),
+      ...(params.contextScan.environmentExecution?.remote?.status === 'blocked'
+        ? ['Environment remote runner is blocked by policy.']
+        : []),
+      ...(params.contextScan.environmentExecution?.remote?.status === 'failed'
+        ? ['Environment remote runner probe failed.']
+        : []),
+      ...(params.contextScan.environmentExecution?.devServer.status === 'blocked'
+        ? ['Environment dev server command is blocked by policy.']
+        : []),
+      ...(policyEvaluation?.issues ?? []).map((issue) => `Execution policy blocked: ${issue}`),
     ],
     12,
   );
@@ -8463,7 +11226,14 @@ function buildEvidenceLedger(params: {
         ? [`Need ${requiredEvidenceCount - observedEvidenceCount} more passing evidence item(s).`]
         : []),
       ...(!validation || validation.passed.length === 0
-        ? ['No passed Kira validation rerun recorded.']
+        ? policy?.requireValidation !== false
+          ? ['No passed Kira validation rerun recorded.']
+          : []
+        : []),
+      ...(policy?.requireReviewerEvidence === true &&
+      params.reviewSummary &&
+      params.reviewSummary.evidenceChecked.length === 0
+        ? ['Execution policy requires reviewer evidence, but none was recorded.']
         : []),
       ...(params.workerSummary?.filesChanged.length && !params.diffStats
         ? ['Changed files exist but diff stats are missing.']
@@ -8528,11 +11298,13 @@ function buildReviewRecord(
     patchIntentVerification?: PatchIntentVerification;
     runtimeValidation?: RuntimeValidationResult;
     observability?: KiraReviewObservability;
+    diffCoverage?: DiffReviewCoverage;
   } = {},
 ): KiraReviewRecord {
   const normalizedSummary = ensureReviewerDiscourse(reviewSummary, extras);
   const triage = buildReviewFindingTriage(normalizedSummary, extras);
   return {
+    recordVersion: KIRA_REVIEW_RECORD_VERSION,
     id: `${workId}-${attemptNo}`,
     workId,
     attemptNo,
@@ -8549,6 +11321,7 @@ function buildReviewRecord(
     adversarialChecks: normalizedSummary.adversarialChecks,
     reviewerDiscourse: normalizedSummary.reviewerDiscourse,
     triage,
+    ...(extras.diffCoverage ? { diffCoverage: extras.diffCoverage } : {}),
     ...(extras.reviewAdversarialPlan
       ? { reviewAdversarialPlan: extras.reviewAdversarialPlan }
       : {}),
@@ -8627,6 +11400,11 @@ function enforceReviewDecision(
   const filesChecked = normalizePathList(summary.filesChecked, 200);
   const evidenceChecked = summary.evidenceChecked;
   const riskPolicy = evidence?.riskPolicy;
+  const diffCoverage = buildDiffReviewCoverage({
+    workerSummary: evidence?.workerSummary,
+    reviewSummary: summary,
+    diffExcerpts: evidence?.diffExcerpts,
+  });
   if (summary.approved && evidence?.validationReruns?.failed.length) {
     blockingIssues.push(
       `Reviewer approved despite failed Kira validation reruns: ${evidence.validationReruns.failed.join(', ')}`,
@@ -8774,6 +11552,9 @@ function enforceReviewDecision(
       'Reviewer approved a high-risk task without enough independent evidence for the required second-pass review.',
     );
   }
+  if (summary.approved && diffCoverage.issues.length > 0) {
+    blockingIssues.push(...diffCoverage.issues);
+  }
   if (summary.approved && blockingIssues.length > 0) {
     return {
       ...summary,
@@ -8896,6 +11677,7 @@ function buildAttemptRecord(params: {
   blockedReason?: string;
   rollbackFiles?: string[];
   reviewSummary?: ReviewSummary;
+  integration?: KiraIntegrationRecord;
 }): KiraAttemptRecord {
   const attemptState = params.attemptState ?? null;
   const finishedAt = Date.now();
@@ -8912,6 +11694,7 @@ function buildAttemptRecord(params: {
     riskPolicy: params.riskPolicy,
   });
   return {
+    recordVersion: KIRA_ATTEMPT_RECORD_VERSION,
     id: `${params.workId}-${params.attemptNo}`,
     workId: params.workId,
     attemptNo: params.attemptNo,
@@ -8960,6 +11743,7 @@ function buildAttemptRecord(params: {
       ? { orchestrationPlan: params.contextScan.orchestrationPlan }
       : {}),
     evidenceLedger,
+    ...(params.integration ? { integration: params.integration } : {}),
     ...(params.patchIntentVerification
       ? { patchIntentVerification: params.patchIntentVerification }
       : {}),
@@ -8996,7 +11780,7 @@ function saveAttemptRecord(
 ): void {
   writeJsonFile(
     join(getKiraAttemptsDir(sessionsDir, sessionPath), `${record.workId}-${record.attemptNo}.json`),
-    record,
+    migrateAttemptRecord(record),
   );
 }
 
@@ -9007,7 +11791,7 @@ function saveReviewRecord(
 ): void {
   writeJsonFile(
     join(getKiraReviewsDir(sessionsDir, sessionPath), `${record.workId}-${record.attemptNo}.json`),
-    record,
+    migrateReviewRecord(record),
   );
 }
 
@@ -9218,6 +12002,333 @@ async function autoCommitApprovedWork(
       message: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+async function runGhCommand(
+  projectRoot: string,
+  args: string[],
+): Promise<{ ok: boolean; output: string }> {
+  try {
+    const result = await execFileAsync('gh', args, {
+      cwd: projectRoot,
+      timeout: COMMAND_TIMEOUT_MS,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    });
+    return { ok: true, output: `${result.stdout ?? ''}${result.stderr ?? ''}`.trim() };
+  } catch (error) {
+    const stdout =
+      error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '';
+    const stderr =
+      error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '';
+    return {
+      ok: false,
+      output: truncateForReview(
+        [stdout, stderr, error instanceof Error ? error.message : String(error)]
+          .filter(Boolean)
+          .join('\n'),
+        1200,
+      ),
+    };
+  }
+}
+
+function isProtectedGitHubBaseBranch(branch: string): boolean {
+  return /^(main|master|trunk|production|prod|release)$/i.test(branch.trim());
+}
+
+function isSafeGitHubHeadBranch(branch: string): boolean {
+  return /^[A-Za-z0-9._/-]{1,180}$/.test(branch) && !branch.includes('..');
+}
+
+function buildKiraPullRequestBody(work: WorkTask, commitHash?: string): string {
+  return [
+    `Kira work: ${work.title}`,
+    '',
+    work.description.slice(0, 4000),
+    '',
+    commitHash ? `Commit: ${commitHash}` : 'Commit: unavailable',
+    '',
+    'Generated by Kira automation after reviewer approval.',
+  ].join('\n');
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
+}
+
+async function collectGitHubCheckEvidence(
+  projectRoot: string,
+  attempts = 3,
+): Promise<{ checks: string[]; evidence: string[] }> {
+  const checks: string[] = [];
+  const evidence: string[] = [];
+  for (let index = 0; index < attempts; index += 1) {
+    const result = await runGhCommand(projectRoot, ['pr', 'checks', '--json', 'name,state,link']);
+    evidence.push(result.output);
+    if (result.ok) {
+      checks.push(truncateForReview(result.output, 1200));
+      break;
+    }
+    if (/no checks|not found|no pull request/i.test(result.output)) {
+      break;
+    }
+    await delay(750);
+  }
+  return { checks, evidence };
+}
+
+async function collectConnectorIntegrationEvidence(params: {
+  projectRoot: string;
+  work: WorkTask;
+  commitMessage: string;
+  commitHash?: string;
+  connectors?: KiraPluginConnector[];
+}): Promise<KiraConnectorEvidence[]> {
+  const enabledConnectors = normalizePluginConnectors(params.connectors).filter(
+    (connector) => connector.enabled,
+  );
+  const evidence: KiraConnectorEvidence[] = [];
+  for (const connector of enabledConnectors) {
+    if (connector.type !== 'github') {
+      evidence.push({
+        connectorId: connector.id,
+        status: connector.policy === 'apply' ? 'suggested' : 'observed',
+        summary: `${connector.label} connector is declared but no local adapter is available for type ${connector.type}.`,
+        checks: [],
+        evidence: [`Capabilities: ${formatInlineList(connector.capabilities)}`],
+      });
+      continue;
+    }
+
+    const ghVersion = await runGhCommand(params.projectRoot, ['--version']);
+    if (!ghVersion.ok) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'skipped',
+        summary: 'GitHub connector skipped because the gh CLI is not available.',
+        checks: [],
+        evidence: [ghVersion.output],
+      });
+      continue;
+    }
+
+    const authStatus = await runGhCommand(params.projectRoot, ['auth', 'status']);
+    if (!authStatus.ok) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'skipped',
+        summary: 'GitHub connector skipped because gh is not authenticated for this repository.',
+        checks: [],
+        evidence: [ghVersion.output, authStatus.output],
+      });
+      continue;
+    }
+
+    const branch = await runGitCommand(params.projectRoot, ['branch', '--show-current'])
+      .then((output) => output.trim())
+      .catch(() => '');
+    const remote = await runGitCommand(params.projectRoot, ['remote', 'get-url', 'origin']).catch(
+      () => '',
+    );
+    const connectorEvidence = [
+      `gh: ${ghVersion.output.split(/\r?\n/)[0] ?? 'available'}`,
+      `auth: ${authStatus.output.split(/\r?\n/)[0] ?? 'available'}`,
+      `branch: ${branch || 'unknown'}`,
+      `origin: ${remote || 'missing'}`,
+      ...(params.commitHash ? [`commit: ${params.commitHash}`] : []),
+    ];
+    if (connector.policy !== 'apply' || !params.commitHash) {
+      evidence.push({
+        connectorId: connector.id,
+        status: connector.policy === 'apply' ? 'skipped' : 'observed',
+        summary:
+          connector.policy === 'apply'
+            ? 'GitHub PR creation skipped because no commit hash was available.'
+            : 'GitHub connector observed local repository metadata.',
+        checks: [],
+        evidence: connectorEvidence,
+      });
+      continue;
+    }
+
+    if (!remote.trim()) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'skipped',
+        summary: 'GitHub PR creation skipped because origin remote is missing.',
+        checks: [],
+        evidence: connectorEvidence,
+      });
+      continue;
+    }
+
+    if (!branch || isProtectedGitHubBaseBranch(branch)) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'suggested',
+        summary:
+          'GitHub PR creation was not attempted from a protected base branch; create a feature branch first.',
+        checks: [],
+        evidence: connectorEvidence,
+      });
+      continue;
+    }
+
+    if (!isSafeGitHubHeadBranch(branch)) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'skipped',
+        summary:
+          'GitHub PR creation skipped because the current branch name is not safe for automation.',
+        checks: [],
+        evidence: connectorEvidence,
+      });
+      continue;
+    }
+
+    const existingPr = await runGhCommand(params.projectRoot, [
+      'pr',
+      'list',
+      '--head',
+      branch,
+      '--state',
+      'open',
+      '--json',
+      'url,title,isDraft,headRefName',
+      '--limit',
+      '1',
+    ]);
+    const existingPrUrl = /https?:\/\/\S+/.exec(existingPr.output)?.[0];
+    if (existingPr.ok && existingPrUrl) {
+      const checkEvidence = await collectGitHubCheckEvidence(params.projectRoot, 2);
+      evidence.push({
+        connectorId: connector.id,
+        status: 'observed',
+        summary: 'GitHub connector found an existing open PR for the current branch.',
+        url: existingPrUrl,
+        checks: checkEvidence.checks,
+        evidence: [...connectorEvidence, existingPr.output, ...checkEvidence.evidence],
+      });
+      continue;
+    }
+
+    const push = await runGitCommand(params.projectRoot, ['push', '-u', 'origin', branch]).then(
+      (output) => ({ ok: true, output }),
+      (error) => ({ ok: false, output: error instanceof Error ? error.message : String(error) }),
+    );
+    if (!push.ok) {
+      evidence.push({
+        connectorId: connector.id,
+        status: 'failed',
+        summary: 'GitHub connector could not push the integration branch.',
+        checks: [],
+        evidence: [...connectorEvidence, push.output],
+      });
+      continue;
+    }
+
+    const prTitle = params.commitMessage.split(/\r?\n/)[0] || params.work.title;
+    const prBody = buildKiraPullRequestBody(params.work, params.commitHash);
+    const pr = await runGhCommand(params.projectRoot, [
+      'pr',
+      'create',
+      '--draft',
+      '--title',
+      prTitle,
+      '--body',
+      prBody,
+    ]);
+    const prUrl = /https?:\/\/\S+/.exec(pr.output)?.[0];
+    const checkEvidence = pr.ok
+      ? await collectGitHubCheckEvidence(params.projectRoot)
+      : { checks: [], evidence: [] };
+    evidence.push({
+      connectorId: connector.id,
+      status: pr.ok ? 'applied' : 'failed',
+      summary: pr.ok
+        ? 'GitHub draft PR created for the approved Kira work.'
+        : 'GitHub draft PR creation failed.',
+      ...(prUrl ? { url: prUrl } : {}),
+      checks: checkEvidence.checks,
+      evidence: [...connectorEvidence, push.output, pr.output, ...checkEvidence.evidence],
+    });
+  }
+  return evidence;
+}
+
+function updateAttemptRecordIntegration(
+  sessionsDir: string,
+  sessionPath: string,
+  workId: string,
+  attemptNo: number,
+  integration: KiraIntegrationRecord,
+): void {
+  const attemptPath = join(
+    getKiraAttemptsDir(sessionsDir, sessionPath),
+    `${workId}-${attemptNo}.json`,
+  );
+  const current = readJsonFile<KiraAttemptRecord>(attemptPath);
+  if (!current) return;
+  writeJsonFile(attemptPath, migrateAttemptRecord({ ...current, integration }));
+}
+
+function migrateAttemptRecord(record: KiraAttemptRecord): KiraAttemptRecord {
+  const previousVersion =
+    typeof record.recordVersion === 'number' && Number.isFinite(record.recordVersion)
+      ? Math.max(1, Math.round(record.recordVersion))
+      : 1;
+  return {
+    ...record,
+    recordVersion: KIRA_ATTEMPT_RECORD_VERSION,
+    ...(previousVersion < KIRA_ATTEMPT_RECORD_VERSION
+      ? { migratedFromVersion: previousVersion }
+      : record.migratedFromVersion
+        ? { migratedFromVersion: record.migratedFromVersion }
+        : {}),
+    ...(record.evidenceLedger
+      ? { evidenceLedger: record.evidenceLedger }
+      : record.contextScan && record.workerPlan
+        ? {
+            evidenceLedger: buildEvidenceLedger({
+              contextScan: record.contextScan,
+              workerPlan: record.workerPlan,
+              validationReruns: record.validationReruns,
+              diffStats: record.diffStats,
+              runtimeValidation: record.runtimeValidation,
+              patchIntentVerification: record.patchIntentVerification,
+              designReviewGate: record.designReviewGate,
+              riskPolicy: record.riskPolicy,
+            }),
+          }
+        : {}),
+    validationReruns: record.validationReruns ?? { passed: [], failed: [], failureDetails: [] },
+    outOfPlanFiles: record.outOfPlanFiles ?? [],
+    validationGaps: record.validationGaps ?? [],
+    risks: record.risks ?? [],
+  };
+}
+
+function migrateReviewRecord(record: KiraReviewRecord): KiraReviewRecord {
+  const previousVersion =
+    typeof record.recordVersion === 'number' && Number.isFinite(record.recordVersion)
+      ? Math.max(1, Math.round(record.recordVersion))
+      : 1;
+  return {
+    ...record,
+    recordVersion: KIRA_REVIEW_RECORD_VERSION,
+    ...(previousVersion < KIRA_REVIEW_RECORD_VERSION
+      ? { migratedFromVersion: previousVersion }
+      : record.migratedFromVersion
+        ? { migratedFromVersion: record.migratedFromVersion }
+        : {}),
+    filesChecked: record.filesChecked ?? [],
+    evidenceChecked: record.evidenceChecked ?? [],
+    requirementVerdicts: record.requirementVerdicts ?? [],
+    adversarialChecks: record.adversarialChecks ?? [],
+  };
 }
 
 async function ensurePrimaryWorktreeCanIntegrate(
@@ -9507,8 +12618,68 @@ function buildProjectOverview(projectRoot: string): string {
   ].join('\n\n');
 }
 
-async function collectProjectSafetyIssues(projectRoot: string): Promise<string[]> {
+async function collectProjectSafetyIssues(
+  projectRoot: string,
+  projectSettings?: Pick<
+    ResolvedKiraProjectSettings,
+    'environment' | 'plugins' | 'executionPolicy' | 'workflow'
+  >,
+): Promise<string[]> {
   const issues: string[] = [];
+  const environment = normalizeEnvironmentContract(projectSettings?.environment);
+  const executionPolicy = normalizeExecutionPolicy(projectSettings?.executionPolicy);
+  const workflow = normalizeWorkflowDag(projectSettings?.workflow);
+  const missingEnv = environment.requiredEnv.filter((name) => !process.env[name]);
+  if (missingEnv.length > 0) {
+    issues.push(`Missing required environment variables: ${missingEnv.join(', ')}.`);
+  }
+  if (environment.runner === 'remote-command') {
+    if (!environment.remoteCommand || !environment.remoteCommand.includes('{command}')) {
+      issues.push(
+        'Remote-command runner requires environment.remoteCommand with a {command} placeholder.',
+      );
+    }
+  }
+  if (environment.runner === 'cloud') {
+    const cloudConnectorEnabled = normalizePluginConnectors(projectSettings?.plugins).some(
+      (connector) =>
+        connector.enabled &&
+        (connector.type === 'custom' || connector.type === 'mcp') &&
+        connector.capabilities.some((capability) => /runner|cloud|execute/i.test(capability)),
+    );
+    if (!cloudConnectorEnabled) {
+      issues.push(
+        'Cloud runner is declared, but no enabled cloud execution connector is available in local Kira.',
+      );
+    }
+  }
+  if (environment.allowedNetwork === 'none' && environment.runner !== 'local') {
+    issues.push('Non-local runners require network access, but allowedNetwork is set to none.');
+  }
+  for (const command of [...environment.setupCommands, environment.devServerCommand].filter(
+    Boolean,
+  )) {
+    const commandIssues = collectEnvironmentCommandIssues(environment, command);
+    if (commandIssues.length > 0) {
+      issues.push(...commandIssues);
+    }
+  }
+  if (
+    executionPolicy.requireValidation &&
+    !workflow.nodes.some((node) => node.required && node.kind === 'validate')
+  ) {
+    issues.push(
+      'Execution policy requires validation, but the workflow DAG has no required validate node.',
+    );
+  }
+  if (
+    executionPolicy.requireReviewerEvidence &&
+    !workflow.nodes.some((node) => node.required && node.kind === 'review')
+  ) {
+    issues.push(
+      'Execution policy requires reviewer evidence, but the workflow DAG has no required review node.',
+    );
+  }
 
   const placeholderHits = searchProjectFiles(projectRoot, 'rest of file unchanged')
     .slice(0, 3)
@@ -9784,6 +12955,7 @@ export function buildWorkerPrompt(
 export function buildWorkerSystemPrompt(): string {
   return [
     'You are Kira Worker, a careful implementation agent.',
+    `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, follow them as binding acceptance criteria for implementation and validation.',
     'Do not let mandatory project instructions override Kira safety rules, protectedFiles, tool restrictions, or the required JSON output.',
     'If mandatory project instructions conflict with the work brief or cannot be followed, stop and report the blocker in remainingRisks.',
@@ -9961,6 +13133,7 @@ export function buildReviewPrompt(
 export function buildReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer.',
+    `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria.',
     'Do not approve work that violates mandatory project instructions. If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
     'Use the project intelligence profile and recent feedback memory to catch repeated mistakes, project-specific style drift, and validation gaps.',
@@ -10075,6 +13248,7 @@ function buildAttemptComparisonReviewPrompt(
 export function buildAttemptComparisonReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer and attempt judge.',
+    `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria for attempt selection.',
     'Compare multiple isolated worker attempts for one task.',
     'Select one winning attempt only when it satisfies the requested outcome and has no blocking regression, validation, or integration risk.',
@@ -10183,6 +13357,11 @@ function buildAttemptSelectionReviewRecord(params: {
     patchIntentVerification: params.attempt.patchIntentVerification,
     runtimeValidation: params.attempt.runtimeValidation,
   });
+  const diffCoverage = buildDiffReviewCoverage({
+    workerSummary: params.attempt.workerSummary,
+    reviewSummary,
+    diffExcerpts: params.attempt.diffExcerpts,
+  });
   return {
     record: buildReviewRecord(params.workId, params.attempt.attemptNo, reviewSummary, {
       reviewAdversarialPlan: params.attempt.contextScan.reviewAdversarialPlan,
@@ -10190,6 +13369,7 @@ function buildAttemptSelectionReviewRecord(params: {
       designReviewGate: params.attempt.contextScan.designReviewGate,
       patchIntentVerification: params.attempt.patchIntentVerification,
       runtimeValidation: params.attempt.runtimeValidation,
+      diffCoverage,
       observability: buildReviewObservability({
         startedAt: params.startedAt,
         finishedAt: params.finishedAt,
@@ -10278,6 +13458,14 @@ function enforceAttemptSelectionDecision(
     issues.push(
       `Selected attempt has patch intent drift: ${selectedAttempt.patchIntentVerification.issues.join('; ')}`,
     );
+  }
+  const diffCoverage = buildDiffReviewCoverage({
+    workerSummary: selectedAttempt.workerSummary,
+    reviewSummary: buildAttemptSelectionReviewSummary(summary, true),
+    diffExcerpts: selectedAttempt.diffExcerpts,
+  });
+  if (diffCoverage.issues.length > 0) {
+    issues.push(...diffCoverage.issues);
   }
   if (selectedAttempt.contextScan.designReviewGate?.status === 'blocked') {
     issues.push(
@@ -10530,6 +13718,16 @@ async function runIsolatedWorkerAttempt(params: {
   const laneFeedback = [
     ...params.feedback,
     `${params.lane.label}: produce an independent solution in this isolated worktree. Do not coordinate through files outside this worktree.`,
+    params.lane.subagent
+      ? [
+          `Subagent contract: ${params.lane.subagent.label} (${params.lane.subagent.profile}).`,
+          `Allowed tools: ${formatInlineList(params.lane.subagent.tools)}`,
+          `Required evidence: ${formatInlineList(params.lane.subagent.requiredEvidence)}`,
+          params.lane.subagent.modelHint ? `Model hint: ${params.lane.subagent.modelHint}` : '',
+        ]
+          .filter(Boolean)
+          .join(' ')
+      : '',
   ];
   const fallbackContextScan = await buildProjectContextScan(
     params.primaryProjectRoot,
@@ -10537,6 +13735,7 @@ async function runIsolatedWorkerAttempt(params: {
     params.projectSettings.effectiveInstructions,
     params.projectSettings.runMode,
     params.workerCount,
+    params.projectSettings,
   );
   fallbackContextScan.manualEvidence = params.manualEvidence ?? [];
   const fallbackOverview = buildProjectOverview(params.primaryProjectRoot);
@@ -10564,6 +13763,13 @@ async function runIsolatedWorkerAttempt(params: {
 
   try {
     const projectRoot = workspace.projectRoot;
+    const environmentExecution = await runEnvironmentSetup(
+      projectRoot,
+      params.projectSettings.environment,
+      params.signal,
+      params.projectSettings.executionPolicy,
+    );
+    const environmentIssues = collectEnvironmentExecutionIssues(environmentExecution);
     const projectOverview = buildProjectOverview(projectRoot);
     const contextScan = await buildProjectContextScan(
       projectRoot,
@@ -10571,8 +13777,22 @@ async function runIsolatedWorkerAttempt(params: {
       params.projectSettings.effectiveInstructions,
       params.projectSettings.runMode,
       params.workerCount,
+      params.projectSettings,
     );
     contextScan.manualEvidence = params.manualEvidence ?? [];
+    contextScan.environmentExecution = environmentExecution;
+    if (environmentIssues.length > 0) {
+      return buildWorkerAttemptFailureResult({
+        lane: params.lane,
+        workspace,
+        attemptNo: params.attemptNo,
+        cycle: params.cycle,
+        startedAt: attemptStartedAt,
+        projectOverview,
+        contextScan,
+        message: `Environment contract blocked this worker attempt: ${environmentIssues.join(' ')}`,
+      });
+    }
     const laneWorkerProfile = selectLaneWorkerProfile(
       params.lane,
       params.work,
@@ -10580,7 +13800,13 @@ async function runIsolatedWorkerAttempt(params: {
       params.workerCount,
       params.attemptNo,
     );
-    const planningState = createWorkerAttemptState(null);
+    const planningState = createWorkerAttemptState(
+      null,
+      [],
+      undefined,
+      contextScan.executionPolicy,
+      contextScan.environmentContract,
+    );
     const workerPlanRaw = await runToolAgent(
       params.lane.config,
       projectRoot,
@@ -10650,14 +13876,19 @@ async function runIsolatedWorkerAttempt(params: {
         blockedReason: 'Preflight planning needs more repository context.',
       };
     }
-    const designReviewGate = buildDesignReviewGate({
-      work: params.work,
-      contextScan,
-      workerPlan,
-      requiredInstructions: params.projectSettings.effectiveInstructions,
-    });
+    const shouldRunDesignGate = workflowHasStage(contextScan.workflowDag, 'design-gate');
+    const designReviewGate = shouldRunDesignGate
+      ? buildDesignReviewGate({
+          work: params.work,
+          contextScan,
+          workerPlan,
+          requiredInstructions: params.projectSettings.effectiveInstructions,
+        })
+      : undefined;
     contextScan.designReviewGate = designReviewGate;
-    const designReviewIssues = collectDesignReviewGateIssues(designReviewGate);
+    const designReviewIssues = designReviewGate
+      ? collectDesignReviewGateIssues(designReviewGate)
+      : [];
     if (designReviewIssues.length > 0) {
       return {
         lane: params.lane,
@@ -10701,7 +13932,14 @@ async function runIsolatedWorkerAttempt(params: {
 
     const worktreeBefore = await getGitWorktreeEntries(projectRoot);
     const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
-    const attemptState = createWorkerAttemptState(workerPlan, dirtyFilesBefore);
+    const attemptState = createWorkerAttemptState(
+      workerPlan,
+      dirtyFilesBefore,
+      projectRoot,
+      contextScan.executionPolicy,
+      contextScan.environmentContract,
+      params.lane.subagent?.tools,
+    );
     const workerRaw = await runToolAgent(
       params.lane.config,
       projectRoot,
@@ -10723,7 +13961,10 @@ async function runIsolatedWorkerAttempt(params: {
 
     const parsedWorkerSummary = parseWorkerSummary(workerRaw);
     const worktreeAfter = await getGitWorktreeEntries(projectRoot);
-    const touchedFiles = detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter);
+    const touchedFiles = uniqueStrings([
+      ...detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter),
+      ...detectTouchedFilesFromDirtySnapshots(projectRoot, attemptState.dirtyFileSnapshots),
+    ]).sort();
     const resolvedFilesChanged = resolveAttemptChangedFiles(
       touchedFiles,
       parsedWorkerSummary.filesChanged,
@@ -10745,19 +13986,36 @@ async function runIsolatedWorkerAttempt(params: {
       workerPlan.validationCommands,
       workerSummary.testsRun,
     );
-    const validationPlan = resolveValidationPlan(
-      projectRoot,
-      workerPlan.validationCommands,
-      workerSummary.filesChanged,
-    );
+    const shouldRunValidation =
+      workflowHasRequiredKind(contextScan.workflowDag, 'validate') ||
+      contextScan.executionPolicy?.requireValidation !== false;
+    const validationPlan = shouldRunValidation
+      ? resolveValidationPlan(
+          projectRoot,
+          workerPlan.validationCommands,
+          workerSummary.filesChanged,
+          contextScan.environmentContract,
+        )
+      : {
+          plannerCommands: [],
+          autoAddedCommands: [],
+          effectiveCommands: [],
+          notes: ['Workflow DAG does not require validation and execution policy allows it.'],
+        };
     const patchValidationIssues = await collectPatchValidationIssues(
       projectRoot,
       workerSummary.filesChanged,
     );
-    const validationReruns = await rerunValidationCommands(
-      projectRoot,
-      validationPlan.effectiveCommands,
-    );
+    const validationReruns = shouldRunValidation
+      ? await rerunValidationCommands(
+          projectRoot,
+          validationPlan.effectiveCommands,
+          params.signal,
+          contextScan.environmentContract,
+          contextScan.executionPolicy,
+        )
+      : { passed: [], failed: [], failureDetails: [] };
+    throwIfCanceled(params.options.sessionsDir, params.sessionPath, params.work.id, params.signal);
     const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
     const diffStats = await collectGitDiffStats(projectRoot, workerSummary.filesChanged);
     const runtimeSignal = buildRuntimeValidationSignal(
@@ -10783,6 +14041,10 @@ async function runIsolatedWorkerAttempt(params: {
       workerCount: params.workerCount,
       riskPolicy,
       runtimeValidation: runtimeSignal,
+      subagentRegistry: contextScan.subagentRegistry,
+      workflowDag: contextScan.workflowDag,
+      environmentContract: contextScan.environmentContract,
+      pluginConnectors: contextScan.pluginConnectors,
     });
     contextScan.reviewAdversarialPlan = buildReviewAdversarialPlan({
       taskType: workerPlan.taskType,
@@ -10835,6 +14097,12 @@ async function runIsolatedWorkerAttempt(params: {
         workerPlan,
         filesChanged: workerSummary.filesChanged,
         diffStats,
+      }),
+      ...collectExecutionPolicyPatchIssues({
+        policy: contextScan.executionPolicy,
+        filesChanged: workerSummary.filesChanged,
+        diffStats,
+        riskLevel: riskPolicy.level,
       }),
       ...(patchIntentVerification.status === 'drift'
         ? patchIntentVerification.issues.map((issue) => `Patch intent drift: ${issue}`)
@@ -11249,8 +14517,8 @@ async function processWorkWithMultipleWorkers(params: {
   if (!runtime.reviewerConfig) {
     throw new Error('No usable reviewer LLM config was found in config.json.');
   }
-  const lanes = buildWorkerLanes(runtime.workerConfigs);
   const projectSettings = loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings);
+  const lanes = buildWorkerLanes(runtime.workerConfigs, projectSettings.subagents);
   if (!(await isGitWorktree(primaryProjectRoot))) {
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
@@ -11278,7 +14546,7 @@ async function processWorkWithMultipleWorkers(params: {
     return;
   }
 
-  const safetyIssues = await collectProjectSafetyIssues(primaryProjectRoot);
+  const safetyIssues = await collectProjectSafetyIssues(primaryProjectRoot, projectSettings);
   if (safetyIssues.length > 0) {
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
@@ -11462,6 +14730,38 @@ async function processWorkWithMultipleWorkers(params: {
       : null;
 
     if (selection.approved && selectedAttempt) {
+      const completionPolicyIssues = collectExecutionPolicyCompletionIssues({
+        policy: selectedAttempt.contextScan.executionPolicy,
+        filesChanged: selectedAttempt.workerSummary.filesChanged,
+        diffStats: selectedAttempt.diffStats,
+        riskLevel: selectedAttempt.contextScan.riskPolicy?.level,
+      });
+      if (completionPolicyIssues.length > 0) {
+        saveWorkerAttemptResult(
+          options.sessionsDir,
+          sessionPath,
+          work.id,
+          selectedAttempt,
+          'blocked',
+          completionPolicyIssues,
+        );
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: [
+            `Execution policy blocked selected attempt ${selectedAttempt.attemptNo} after review approval.`,
+            '',
+            `Issues:\n${formatList(completionPolicyIssues, 'No details provided')}`,
+          ].join('\n'),
+        });
+        await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
+        return;
+      }
       const selectedReview = buildAttemptSelectionReviewRecord({
         workId: work.id,
         attempt: selectedAttempt,
@@ -11542,6 +14842,30 @@ async function processWorkWithMultipleWorkers(params: {
             suggestedCommitMessage,
             projectLockPath,
           );
+      const connectorEvidence =
+        integrationResult.status === 'committed'
+          ? await collectConnectorIntegrationEvidence({
+              projectRoot: selectedAttempt.workspace.primaryRoot,
+              work,
+              commitMessage: suggestedCommitMessage,
+              commitHash: integrationResult.commitHash,
+              connectors: projectSettings.plugins,
+            })
+          : [];
+      updateAttemptRecordIntegration(
+        options.sessionsDir,
+        sessionPath,
+        work.id,
+        selectedAttempt.attemptNo,
+        {
+          status: integrationResult.status,
+          message: integrationResult.message,
+          ...(integrationResult.commitHash ? { commitHash: integrationResult.commitHash } : {}),
+          pullRequestUrl: connectorEvidence.find((item) => item.url)?.url,
+          connectors: connectorEvidence,
+          createdAt: Date.now(),
+        },
+      );
 
       if (integrationResult.status === 'failed') {
         updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
@@ -11594,6 +14918,27 @@ async function processWorkWithMultipleWorkers(params: {
         author: runtime.reviewerAuthor,
         body: `Integrated winning attempt.\n\n${integrationResult.message}`,
       });
+      if (connectorEvidence.length > 0) {
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: [
+            'Connector integration evidence recorded.',
+            '',
+            ...connectorEvidence.map((item) =>
+              [
+                `${item.connectorId}: ${item.status}`,
+                item.summary,
+                item.url ? `URL: ${item.url}` : '',
+                `Evidence:\n${formatList(item.evidence, 'No connector evidence')}`,
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            ),
+          ].join('\n\n'),
+        });
+      }
       await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
       enqueueEvent(options.sessionsDir, sessionPath, {
         id: makeId('event'),
@@ -11774,6 +15119,7 @@ async function processWork(
     projectSettings.effectiveInstructions,
     projectSettings.runMode,
     projectSettings.runMode === 'quick' ? 1 : runtime.workerConfigs.length,
+    projectSettings,
   );
   if (
     initialContextScan.decomposition &&
@@ -11872,7 +15218,7 @@ async function processWork(
   }
   const projectRoot = workspace.projectRoot;
 
-  const safetyIssues = await collectProjectSafetyIssues(projectRoot);
+  const safetyIssues = await collectProjectSafetyIssues(projectRoot, projectSettings);
   if (safetyIssues.length > 0) {
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
@@ -11903,6 +15249,41 @@ async function processWork(
     return;
   }
 
+  const environmentExecution = await runEnvironmentSetup(
+    projectRoot,
+    projectSettings.environment,
+    signal,
+    projectSettings.executionPolicy,
+  );
+  const environmentExecutionIssues = collectEnvironmentExecutionIssues(environmentExecution);
+  if (environmentExecutionIssues.length > 0) {
+    updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+      ...current,
+      status: 'blocked',
+      assignee: current.assignee || runtime.workerAuthor,
+    }));
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: runtime.reviewerAuthor,
+      body: [
+        'Automation blocked before worker start due to the project environment contract.',
+        '',
+        `Issues:\n${formatList(environmentExecutionIssues, 'No details provided')}`,
+      ].join('\n'),
+    });
+    enqueueEvent(options.sessionsDir, sessionPath, {
+      id: makeId('event'),
+      workId: work.id,
+      title: work.title,
+      projectName: work.projectName,
+      type: 'needs_attention',
+      createdAt: Date.now(),
+      message: `Kira blocked: "${work.title}" 작업의 환경 준비 단계가 실패했어요.`,
+    });
+    return;
+  }
+
   const projectOverview = buildProjectOverview(projectRoot);
   const contextScan = await buildProjectContextScan(
     projectRoot,
@@ -11910,9 +15291,12 @@ async function processWork(
     projectSettings.effectiveInstructions,
     projectSettings.runMode,
     1,
+    projectSettings,
   );
+  contextScan.environmentExecution = environmentExecution;
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
   contextScan.manualEvidence = collectManualEvidenceFromComments(existingComments);
+  const activeSubagent = getPrimaryImplementationSubagent(contextScan.subagentRegistry);
   const resumeFeedback =
     work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
 
@@ -11955,7 +15339,13 @@ async function processWork(
   let repeatedIssueCount = 0;
   for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
     const attemptStartedAt = Date.now();
-    const planningState = createWorkerAttemptState(null);
+    const planningState = createWorkerAttemptState(
+      null,
+      [],
+      undefined,
+      contextScan.executionPolicy,
+      contextScan.environmentContract,
+    );
     const workerPlanRaw = await runToolAgent(
       runtime.workerConfig,
       projectRoot,
@@ -11965,6 +15355,7 @@ async function processWork(
         contextScan,
         feedback,
         projectSettings.effectiveInstructions,
+        activeSubagent?.profile,
       ),
       buildWorkerPlanningSystemPrompt(),
       false,
@@ -12020,14 +15411,19 @@ async function processWork(
       feedback = preflightIssues;
       continue;
     }
-    const designReviewGate = buildDesignReviewGate({
-      work,
-      contextScan,
-      workerPlan,
-      requiredInstructions: projectSettings.effectiveInstructions,
-    });
+    const shouldRunDesignGate = workflowHasStage(contextScan.workflowDag, 'design-gate');
+    const designReviewGate = shouldRunDesignGate
+      ? buildDesignReviewGate({
+          work,
+          contextScan,
+          workerPlan,
+          requiredInstructions: projectSettings.effectiveInstructions,
+        })
+      : undefined;
     contextScan.designReviewGate = designReviewGate;
-    const designReviewIssues = collectDesignReviewGateIssues(designReviewGate);
+    const designReviewIssues = designReviewGate
+      ? collectDesignReviewGateIssues(designReviewGate)
+      : [];
     if (designReviewIssues.length > 0) {
       saveAttemptRecord(
         options.sessionsDir,
@@ -12061,7 +15457,14 @@ async function processWork(
     }
     const worktreeBefore = await getGitWorktreeEntries(projectRoot);
     const dirtyFilesBefore = getDirtyWorktreePaths(worktreeBefore);
-    const attemptState = createWorkerAttemptState(workerPlan, dirtyFilesBefore);
+    const attemptState = createWorkerAttemptState(
+      workerPlan,
+      dirtyFilesBefore,
+      projectRoot,
+      contextScan.executionPolicy,
+      contextScan.environmentContract,
+      activeSubagent?.tools,
+    );
     let workerRaw: string;
     try {
       workerRaw = await runToolAgent(
@@ -12074,6 +15477,7 @@ async function processWork(
           workerPlan,
           feedback,
           projectSettings.effectiveInstructions,
+          activeSubagent?.profile,
         ),
         buildWorkerSystemPrompt(),
         true,
@@ -12115,7 +15519,10 @@ async function processWork(
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const parsedWorkerSummary = parseWorkerSummary(workerRaw);
     const worktreeAfter = await getGitWorktreeEntries(projectRoot);
-    const touchedFiles = detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter);
+    const touchedFiles = uniqueStrings([
+      ...detectTouchedFilesFromGitStatus(worktreeBefore, worktreeAfter),
+      ...detectTouchedFilesFromDirtySnapshots(projectRoot, attemptState.dirtyFileSnapshots),
+    ]).sort();
     const resolvedFilesChanged = resolveAttemptChangedFiles(
       touchedFiles,
       parsedWorkerSummary.filesChanged,
@@ -12137,19 +15544,36 @@ async function processWork(
       workerPlan.validationCommands,
       workerSummary.testsRun,
     );
-    const validationPlan = resolveValidationPlan(
-      projectRoot,
-      workerPlan.validationCommands,
-      workerSummary.filesChanged,
-    );
+    const shouldRunValidation =
+      workflowHasRequiredKind(contextScan.workflowDag, 'validate') ||
+      contextScan.executionPolicy?.requireValidation !== false;
+    const validationPlan = shouldRunValidation
+      ? resolveValidationPlan(
+          projectRoot,
+          workerPlan.validationCommands,
+          workerSummary.filesChanged,
+          contextScan.environmentContract,
+        )
+      : {
+          plannerCommands: [],
+          autoAddedCommands: [],
+          effectiveCommands: [],
+          notes: ['Workflow DAG does not require validation and execution policy allows it.'],
+        };
     const patchValidationIssues = await collectPatchValidationIssues(
       projectRoot,
       workerSummary.filesChanged,
     );
-    const validationReruns = await rerunValidationCommands(
-      projectRoot,
-      validationPlan.effectiveCommands,
-    );
+    const validationReruns = shouldRunValidation
+      ? await rerunValidationCommands(
+          projectRoot,
+          validationPlan.effectiveCommands,
+          signal,
+          contextScan.environmentContract,
+          contextScan.executionPolicy,
+        )
+      : { passed: [], failed: [], failureDetails: [] };
+    throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const diffExcerpts = await collectReviewerDiffExcerpts(projectRoot, workerSummary.filesChanged);
     const diffStats = await collectGitDiffStats(projectRoot, workerSummary.filesChanged);
     const runtimeSignal = buildRuntimeValidationSignal(
@@ -12175,6 +15599,10 @@ async function processWork(
       workerCount: 1,
       riskPolicy,
       runtimeValidation: runtimeSignal,
+      subagentRegistry: contextScan.subagentRegistry,
+      workflowDag: contextScan.workflowDag,
+      environmentContract: contextScan.environmentContract,
+      pluginConnectors: contextScan.pluginConnectors,
     });
     contextScan.reviewAdversarialPlan = buildReviewAdversarialPlan({
       taskType: workerPlan.taskType,
@@ -12227,6 +15655,12 @@ async function processWork(
         workerPlan,
         filesChanged: workerSummary.filesChanged,
         diffStats,
+      }),
+      ...collectExecutionPolicyPatchIssues({
+        policy: contextScan.executionPolicy,
+        filesChanged: workerSummary.filesChanged,
+        diffStats,
+        riskLevel: riskPolicy.level,
       }),
       ...(patchIntentVerification.status === 'drift'
         ? patchIntentVerification.issues.map((issue) => `Patch intent drift: ${issue}`)
@@ -12663,11 +16097,17 @@ async function processWork(
       patchIntentVerification,
       runtimeValidation,
     });
+    const diffCoverage = buildDiffReviewCoverage({
+      workerSummary,
+      reviewSummary,
+      diffExcerpts,
+    });
     const reviewRecord = buildReviewRecord(work.id, cycle, reviewSummary, {
       reviewAdversarialPlan: contextScan.reviewAdversarialPlan,
       designReviewGate: contextScan.designReviewGate,
       patchIntentVerification,
       runtimeValidation,
+      diffCoverage,
       observability: buildReviewObservability({
         startedAt: reviewStartedAt,
         finishedAt: reviewFinishedAt,
@@ -12679,6 +16119,58 @@ async function processWork(
     saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
 
     if (reviewSummary.approved) {
+      const completionPolicyIssues = collectExecutionPolicyCompletionIssues({
+        policy: contextScan.executionPolicy,
+        filesChanged: workerSummary.filesChanged,
+        diffStats,
+        riskLevel: riskPolicy.level,
+      });
+      if (completionPolicyIssues.length > 0) {
+        saveAttemptRecord(
+          options.sessionsDir,
+          sessionPath,
+          buildAttemptRecord({
+            workId: work.id,
+            attemptNo: cycle,
+            status: 'blocked',
+            startedAt: attemptStartedAt,
+            contextScan,
+            workerPlan,
+            planningState,
+            attemptState,
+            workerSummary,
+            validationPlan,
+            validationReruns,
+            failureAnalysis,
+            runtimeValidation,
+            riskPolicy,
+            patchIntentVerification,
+            diffStats,
+            outOfPlanFiles,
+            validationGaps: missingValidationCommands,
+            risks: [...workerSummary.remainingRisks, ...completionPolicyIssues],
+            diffExcerpts,
+            rawWorkerOutput: workerRaw,
+            blockedReason: 'Execution policy blocked task completion.',
+            reviewSummary,
+          }),
+        );
+        updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+          ...current,
+          status: 'blocked',
+        }));
+        addComment(options.sessionsDir, sessionPath, {
+          taskId: work.id,
+          taskType: 'work',
+          author: runtime.reviewerAuthor,
+          body: [
+            'Execution policy blocked task completion after review approval.',
+            '',
+            `Issues:\n${formatList(completionPolicyIssues, 'No details provided')}`,
+          ].join('\n'),
+        });
+        return;
+      }
       updateProjectProfileLearning(projectRoot, {
         successfulPatterns: [
           `${workerPlan.taskType}: approved with ${validationReruns.passed.length} validation checks and ${reviewSummary.evidenceChecked.length} review evidence entries.`,
@@ -12740,6 +16232,31 @@ async function processWork(
           getProjectKey(runtime.workRootDirectory, work, sessionPath),
         ),
       );
+      const connectorEvidence =
+        autoCommitResult.status === 'committed'
+          ? await collectConnectorIntegrationEvidence({
+              projectRoot: workspace.isolated ? workspace.primaryRoot : workspace.projectRoot,
+              work,
+              commitMessage: suggestedCommitMessage,
+              commitHash: autoCommitResult.commitHash,
+              connectors: projectSettings.plugins,
+            })
+          : [];
+      const integrationRecord: KiraIntegrationRecord = {
+        status: autoCommitResult.status === 'committed' ? 'committed' : autoCommitResult.status,
+        message: autoCommitResult.message,
+        ...(autoCommitResult.commitHash ? { commitHash: autoCommitResult.commitHash } : {}),
+        pullRequestUrl: connectorEvidence.find((item) => item.url)?.url,
+        connectors: connectorEvidence,
+        createdAt: Date.now(),
+      };
+      updateAttemptRecordIntegration(
+        options.sessionsDir,
+        sessionPath,
+        work.id,
+        cycle,
+        integrationRecord,
+      );
       if (autoCommitResult.status === 'committed') {
         addComment(options.sessionsDir, sessionPath, {
           taskId: work.id,
@@ -12747,6 +16264,27 @@ async function processWork(
           author: runtime.reviewerAuthor,
           body: `Committed changes.\n\n${autoCommitResult.message}\n\nCommit message:\n${suggestedCommitMessage}`,
         });
+        if (connectorEvidence.length > 0) {
+          addComment(options.sessionsDir, sessionPath, {
+            taskId: work.id,
+            taskType: 'work',
+            author: runtime.reviewerAuthor,
+            body: [
+              'Connector integration evidence recorded.',
+              '',
+              ...connectorEvidence.map((item) =>
+                [
+                  `${item.connectorId}: ${item.status}`,
+                  item.summary,
+                  item.url ? `URL: ${item.url}` : '',
+                  `Evidence:\n${formatList(item.evidence, 'No connector evidence')}`,
+                ]
+                  .filter(Boolean)
+                  .join('\n'),
+              ),
+            ].join('\n\n'),
+          });
+        }
       } else if (autoCommitResult.status === 'failed') {
         updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
           ...current,
