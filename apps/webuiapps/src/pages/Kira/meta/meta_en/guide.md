@@ -248,7 +248,10 @@ required for the attempt.
 
 When `requiredInstructions` or rule-pack instructions are not empty, Kira injects the combined
 effective instructions into worker, reviewer, and multi-worker selection prompts as binding
-acceptance criteria. Reviewers and attempt judges must reject attempts that violate them.
+acceptance criteria. Small-patch guidance limits reviewable patch surface only; it does not narrow
+the requested outcome. Workers, reviewers, and attempt judges must reject attempts that violate
+mandatory instructions, solve only a smaller version of the brief, or mark brief/project-instruction
+requirements as `not_applicable`.
 
 Available rule pack IDs:
 
@@ -300,6 +303,8 @@ Workers and reviewers receive the profile as part of the context scan. Kira also
   validation, risk, and integration checks can block unsafe plans before files are edited
 - require worker final self-checks for diff review, per-file/hunk `diffHunkReview`, project
   instructions, requirement trace evidence, plan fit, validation, and uncertainty
+- block non-documentation changes when Kira has no effective validation command, so a reviewer
+  cannot approve unverified code merely by accepting missing validation
 - capture already-running dev server HTTP evidence without starting a server
 - verify patch intent against the preflight plan and flag drift before review
 - interpret validation failures into categories, reproduction steps, and concrete worker guidance
@@ -351,6 +356,8 @@ Review records may include:
 
 - `recordVersion` and `migratedFromVersion` for compatibility with older saved reviews
 - independent `filesChecked`, `evidenceChecked`, `requirementVerdicts`, and adversarial checks
+- approval overrides when a reviewer accepts scope reduction or approves non-documentation changes
+  without an effective Kira validation command
 - simulated reviewer discourse for skeptical review modes
 - triage items for review findings, validation gaps, runtime blockers, design-gate concerns, and
   patch-intent drift

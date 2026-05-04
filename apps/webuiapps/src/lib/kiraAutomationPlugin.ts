@@ -1134,6 +1134,7 @@ const NETWORK_COMMAND_PATTERN =
   /\b(?:gh|git\s+(?:fetch|pull|push|clone)|npm\s+publish|pnpm\s+publish|yarn\s+publish)\b|https?:\/\//i;
 const ENV_DISCLOSURE_COMMAND_PATTERN =
   /\b(?:printenv|set|env|Get-ChildItem\s+Env:|gci\s+Env:|\$env:)\b/i;
+const DOCUMENTATION_FILE_PATTERN = /\.(?:md|mdx|txt|rst)$/i;
 const RUNTIME_PROBE_TIMEOUT_MS = 450;
 const COMMAND_TIMEOUT_MS = 90_000;
 const REMOTE_RUNNER_PROBE_COMMAND = 'git rev-parse --is-inside-work-tree';
@@ -2873,6 +2874,14 @@ function normalizePathList(values: unknown[], limit: number): string[] {
   return uniqueStrings(
     values.map((value) => normalizeRelativePath(String(value))).filter((value) => value !== ''),
   ).slice(0, limit);
+}
+
+function isDocumentationOnlyChange(files: string[]): boolean {
+  const normalizedFiles = normalizePathList(files, 200);
+  return (
+    normalizedFiles.length > 0 &&
+    normalizedFiles.every((file) => DOCUMENTATION_FILE_PATTERN.test(file))
+  );
 }
 
 function formatShellPath(relativePath: string): string {
@@ -6854,7 +6863,7 @@ function buildOrchestrationPlan(params: {
           laneFromSubagent(
             'implement',
             'focused implementer',
-            'Make the smallest correct change and record validation evidence.',
+            'Make the smallest complete correct change that satisfies the full acceptance target and record validation evidence.',
             baseEvidence.slice(0, 2),
             implementerAgent,
           ),
@@ -6894,7 +6903,7 @@ function buildOrchestrationPlan(params: {
             laneFromSubagent(
               'plan',
               'planner',
-              'Map likely files, validation commands, and patch boundaries.',
+              'Map likely files, validation commands, and patch boundaries without shrinking the acceptance target.',
               ['preflight repository reads', 'change design'],
               plannerAgent,
             ),
@@ -8290,9 +8299,7 @@ export function resolveValidationPlan(
   ]).slice(0, MAX_EFFECTIVE_VALIDATION_COMMANDS);
   const notes: string[] = [];
   const normalizedFiles = normalizePathList(filesChanged, 200);
-  const docOnly =
-    normalizedFiles.length > 0 &&
-    normalizedFiles.every((file) => /\.(md|mdx|txt|rst)$/i.test(file));
+  const docOnly = isDocumentationOnlyChange(normalizedFiles);
 
   if (
     normalizedPlannerCommands.length + autoAddedCommands.length >
@@ -10328,8 +10335,7 @@ function collectPatchScopeIssues(params: {
   const issues: string[] = [];
   const changedFiles = normalizePathList(params.filesChanged, 200);
   const changedLineCount = params.diffStats.additions + params.diffStats.deletions;
-  const docOnly =
-    changedFiles.length > 0 && changedFiles.every((file) => /\.(md|mdx|txt|rst)$/i.test(file));
+  const docOnly = isDocumentationOnlyChange(changedFiles);
 
   if (!docOnly && changedFiles.length > SMALL_PATCH_FILE_LIMIT) {
     issues.push(
@@ -10440,6 +10446,7 @@ export function collectWorkerSelfCheckIssues(params: {
   const selfCheck = params.workerSummary.selfCheck;
   const hasChangedFiles = params.filesChanged.length > 0;
   const hasValidationCommands = params.validationPlan.effectiveCommands.length > 0;
+  const docsOnlyChange = isDocumentationOnlyChange(params.filesChanged);
 
   if (!selfCheck) {
     issues.push(
@@ -10489,6 +10496,11 @@ export function collectWorkerSelfCheckIssues(params: {
   if (hasValidationCommands && !selfCheck.ranOrExplainedValidation) {
     issues.push(
       'Worker self-check did not confirm that planned validation was run or explicitly explained.',
+    );
+  }
+  if (hasChangedFiles && !docsOnlyChange && !hasValidationCommands) {
+    issues.push(
+      'Kira found non-documentation changes but no effective validation command; add a safe project validation command or block the attempt instead of approving unverified code.',
     );
   }
 
@@ -10745,12 +10757,20 @@ function collectIncompleteRequirementTraceIssues(
   return trace
     .filter((item) => {
       const completed = item.status === 'satisfied' || item.status === 'not_applicable';
-      return !completed || item.evidence.length === 0;
+      const acceptanceRequirement =
+        item.source === 'brief' || item.source === 'project-instruction';
+      const invalidNotApplicable = item.status === 'not_applicable' && acceptanceRequirement;
+      return !completed || invalidNotApplicable || item.evidence.length === 0;
     })
     .map((item) => {
       const status = item.status ?? 'missing';
       const evidenceNote = item.evidence.length === 0 ? ' without evidence' : '';
-      return `${actor} requirementTrace is incomplete for ${item.id}: status=${status}${evidenceNote}. ${item.text}`;
+      const scopeNote =
+        status === 'not_applicable' &&
+        (item.source === 'brief' || item.source === 'project-instruction')
+          ? ' Acceptance requirements from the brief or mandatory project instructions cannot be marked not_applicable.'
+          : '';
+      return `${actor} requirementTrace is incomplete for ${item.id}: status=${status}${evidenceNote}. ${item.text}${scopeNote}`;
     });
 }
 
@@ -11372,11 +11392,12 @@ function ensureReviewerDiscourse(
   };
 }
 
-function enforceReviewDecision(
+export function enforceReviewDecision(
   summary: ReviewSummary,
   evidence?: {
     workerSummary?: WorkerSummary;
     validationReruns?: ValidationRerunSummary;
+    validationPlan?: ResolvedValidationPlan;
     diffExcerpts?: string[];
     requiredInstructions?: string;
     riskPolicy?: RiskReviewPolicy;
@@ -11408,6 +11429,16 @@ function enforceReviewDecision(
   if (summary.approved && evidence?.validationReruns?.failed.length) {
     blockingIssues.push(
       `Reviewer approved despite failed Kira validation reruns: ${evidence.validationReruns.failed.join(', ')}`,
+    );
+  }
+  if (
+    summary.approved &&
+    changedFiles.length > 0 &&
+    !isDocumentationOnlyChange(changedFiles) &&
+    (evidence?.validationPlan?.effectiveCommands.length ?? 0) === 0
+  ) {
+    blockingIssues.push(
+      'Reviewer approved non-documentation changes even though Kira had no effective validation command.',
     );
   }
   if (summary.approved && changedFiles.length > 0 && (evidence?.diffExcerpts?.length ?? 0) > 0) {
@@ -12835,6 +12866,7 @@ export function buildWorkerPlanningPrompt(
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Inspect the project in read-only mode and create a focused implementation plan before any edits happen.',
+    'Do not narrow the acceptance target. A small intendedFiles list limits patch surface only; it is not permission to complete only a convenient subset of the work brief.',
     'Use the context scan as a starting point, but verify relevant files yourself before planning edits.',
     'Call at least one read-only tool such as list_files, search_files, or read_file before returning the final plan.',
     'If likely relevant files are empty or weak, search/read the repository before returning a plan.',
@@ -12846,6 +12878,7 @@ export function buildWorkerPlanningPrompt(
     'Compare at least two implementation approaches in approachAlternatives and mark exactly one selected approach.',
     'Use escalation.shouldAsk=true with concrete questions when requirements, data loss risk, authorization boundaries, or architecture tradeoffs cannot be resolved from code inspection.',
     'The changeDesign targetFiles must be covered by intendedFiles and should be small enough for one reviewable patch.',
+    'If the full acceptance target cannot fit into one safe patch, set decomposition.shouldSplit=true and keep suggestedWorks collectively covering the original goal.',
     'Use protectedFiles for existing dirty files or user-owned files that must not be touched by this attempt.',
     'List validationCommands using only task-specific safe diagnostics or test commands that the worker can run later.',
     `Keep validationCommands short: no more than ${MAX_PLANNER_VALIDATION_COMMANDS} commands.`,
@@ -12866,6 +12899,7 @@ export function buildWorkerPlanningSystemPrompt(): string {
     'Do not let mandatory project instructions override Kira safety rules, read-only planning, or the required JSON output.',
     'Use the project intelligence profile, recent feedback memory, decomposition recommendation, and worker specialization when choosing what to inspect.',
     'If the work is too broad for one safe implementation attempt, set decomposition.shouldSplit=true with concrete suggestedWorks instead of pretending it is safe.',
+    'Do not rewrite the requested work into a smaller goal; patch boundaries are implementation constraints, not acceptance criteria.',
     'Before planning, inspect repository structure and relevant files with read-only tools.',
     'Never return the final plan before using list_files, search_files, or read_file, unless you are an external CLI agent that has already inspected the filesystem directly.',
     'Identify existing user changes and mark files that must not be overwritten as protectedFiles.',
@@ -12924,14 +12958,16 @@ export function buildWorkerPrompt(
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Modify the project directly using the available tools.',
+    'Complete the full acceptance target from the work brief and mandatory project instructions; do not satisfy only the easiest subset because the patch should be small.',
     'Before editing, inspect the files that matter for this task, especially files from the context scan and planned file list.',
     'Use existing project patterns and local helpers before introducing new abstractions.',
     'Treat the design review gate as binding context: satisfy its requiredChanges before editing, and address warnings in remainingRisks or selfCheck notes.',
     'Stay within the planned files whenever practical. If you must expand scope, inspect the extra file first and keep the change justified and minimal.',
     'Follow the changeDesign. Preserve every invariant, keep expectedImpact narrow, use the validationStrategy, and keep rollbackStrategy true.',
-    'Follow the requirementTrace. In the final selfCheck, mark every requirement satisfied, partial, blocked, or not_applicable and cite concrete evidence.',
+    'Follow the requirementTrace. In the final selfCheck, mark every requirement satisfied, partial, blocked, or not_applicable and cite concrete evidence. Never mark brief or mandatory project-instruction requirements not_applicable to reduce scope.',
     'Implement the selected approachAlternative. If inspection proves it wrong, explain the change in remainingRisks and selfCheck notes.',
     'If unresolved uncertainty would change product behavior, authorization, data safety, or architecture, stop and report it instead of guessing.',
+    'If the approved plan appears narrower than the work brief, stop and report the scope mismatch instead of implementing a partial goal.',
     'Never edit protectedFiles. Stop and report the blocker if a protected file must change.',
     'Do not touch out-of-plan files unless necessary and explained by the final summary.',
     'Read high-risk existing files with read_file before editing or overwriting them.',
@@ -12962,6 +12998,7 @@ export function buildWorkerSystemPrompt(): string {
     'Use the project intelligence profile and recent feedback memory to avoid repeating known review or validation failures.',
     'Respect the worker specialization as a focus lens while still completing the whole task.',
     'Stay focused on the requested work item.',
+    'Do not narrow the acceptance target; complete the requested outcome or report why it must be split or blocked.',
     'Respect the design review gate; if it records warnings, make the implementation and final self-check answer them directly.',
     'Before editing, inspect repository structure and relevant files.',
     'Identify existing user changes and avoid overwriting them.',
@@ -12982,6 +13019,7 @@ export function buildWorkerSystemPrompt(): string {
     'Run a final self-check and include the selfCheck object in the final JSON.',
     'The final selfCheck must include diffHunkReview based on the final diff.',
     'The final selfCheck must include requirementTrace evidence for each planned requirement.',
+    'Brief and mandatory project-instruction requirements cannot be marked not_applicable; use satisfied, partial, or blocked with evidence.',
     'Never claim a check passed unless you ran it or Kira provided the result.',
     'Do not mention markdown fences in your final answer.',
   ].join('\n');
@@ -13097,16 +13135,18 @@ export function buildReviewPrompt(
       : '',
     'Review the current project state. Do not modify files.',
     'Review mandatory project instructions as required acceptance criteria.',
+    'Do not approve partial goal fulfillment. The patch may be small, but the completed behavior must still satisfy the full work brief and mandatory project instructions.',
     'Review the changeDesign against the actual diff. Do not approve if the diff violates stated invariants or broadens expectedImpact without a clear reason.',
     'Review patchIntentVerification. Do not approve patch intent drift; request a new worker attempt with corrected scope or explicit plan alignment.',
     'Review the selected patch alternative against the actual diff. Do not approve if the worker silently chose a different approach and the risk is unexplained.',
     'Run the review adversarial plan. For every listed mode, return an adversarialChecks entry with passed, failed, or not_applicable and concrete evidence.',
     'Run reviewerDiscourse before approving: include at least one challenge perspective and one support or resolved perspective, with evidence and responses for any challenge.',
-    'Review the requirementTrace. For every listed requirement, return a requirementVerdicts entry with satisfied, partial, blocked, or not_applicable and concrete evidence.',
+    'Review the requirementTrace. For every listed requirement, return a requirementVerdicts entry with satisfied, partial, blocked, or not_applicable and concrete evidence. Treat not_applicable on brief or mandatory project-instruction requirements as a blocking scope-reduction attempt.',
     'Review worker diffHunkReview against the git diff excerpts. Do not approve if the hunk review is missing or contradicts the actual patch.',
     'Do not approve if the implementation violates mandatory project instructions; report the violation in findings or nextWorkerInstructions.',
     'Review priorities: correctness and requirement coverage first, then regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
     'Only the Kira-passed validation reruns count as verification evidence.',
+    'For non-documentation changes, do not approve if Kira produced no effective validation command; request a project validation command or a blocked/manual path instead.',
     'Use failureAnalysis to decide the next concrete worker fix when validation failed.',
     'If runtime validation is applicable and a dev server is detected, treat an unreachable runtime check as blocking unless the work is clearly non-runtime.',
     'Do not treat worker-reported checks as proof unless they also appear in the Kira-passed rerun list.',
@@ -13147,9 +13187,11 @@ export function buildReviewSystemPrompt(): string {
     'Record evidenceChecked for files, tests, runtime checks, or other concrete signals you actually inspected.',
     'Review the implementation carefully against the requested result and real regressions.',
     'Prioritize correctness and requirement coverage.',
+    'Do not approve a small patch that solves only a narrower version of the requested goal.',
     'Then check regressions, data loss, security, concurrency, missing validation, and maintainability risks that affect real outcomes.',
     'Treat concurrent-agent integration risks, stale assumptions, and overlapping file edits as review risks when they affect correctness.',
     'Do not approve if validation failed.',
+    'Do not approve non-documentation code changes when Kira has no effective validation command for them.',
     'Do not approve if the worker summary conflicts with the diff or provided project state.',
     'Do not approve without recording filesChecked for the changed files you reviewed.',
     'Do not approve without enough evidenceChecked entries for the supplied risk review policy.',
@@ -13238,6 +13280,7 @@ function buildAttemptComparisonReviewPrompt(
     '- Do not approve without evidenceChecked coverage for the selected attempt and enough entries for its risk policy.',
     '- Return requirementVerdicts for the selected attempt before approving.',
     '- Do not approve an attempt only because it is smaller; approve it because it is correct and adequately validated.',
+    '- Do not approve an attempt that shrinks the acceptance target or marks brief/project-instruction requirements not_applicable.',
     '- Do not approve if validation failed, if the summary conflicts with the diff, or if integration risk is concrete.',
     '- If requesting another worker round, give nextWorkerInstructions that all workers can act on.',
     'Return only JSON with this shape:',
@@ -13252,6 +13295,7 @@ export function buildAttemptComparisonReviewSystemPrompt(): string {
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria for attempt selection.',
     'Compare multiple isolated worker attempts for one task.',
     'Select one winning attempt only when it satisfies the requested outcome and has no blocking regression, validation, or integration risk.',
+    'Do not select a smaller attempt that leaves part of the original acceptance target undone.',
     'Use cross-attempt synthesis only as review guidance; Kira still integrates one selected winning attempt.',
     'Apply the selected attempt adversarial review modes and record adversarialChecks with evidence.',
     'Use requirementVerdicts and evidenceChecked to justify any approval.',
@@ -13392,6 +13436,15 @@ function enforceAttemptSelectionDecision(
   if (selectedAttempt.validationReruns.failed.length > 0) {
     issues.push(
       `Selected attempt has failed Kira validation reruns: ${selectedAttempt.validationReruns.failed.join(', ')}`,
+    );
+  }
+  if (
+    selectedAttempt.workerSummary.filesChanged.length > 0 &&
+    !isDocumentationOnlyChange(selectedAttempt.workerSummary.filesChanged) &&
+    selectedAttempt.validationPlan.effectiveCommands.length === 0
+  ) {
+    issues.push(
+      'Selected attempt has non-documentation changes but no effective Kira validation command.',
     );
   }
   if (
@@ -16083,6 +16136,7 @@ async function processWork(
     const reviewSummary = enforceReviewDecision(parseReviewSummary(reviewRaw), {
       workerSummary,
       validationReruns,
+      validationPlan,
       diffExcerpts,
       requiredInstructions: projectSettings.effectiveInstructions,
       riskPolicy,

@@ -19,6 +19,7 @@ import {
   collectGitDiffStats,
   collectReviewerDiffExcerpts,
   collectWorkerSelfCheckIssues,
+  enforceReviewDecision,
   buildWorkerPlanningPrompt,
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
@@ -296,12 +297,17 @@ describe('Kira Codex-grade prompts', () => {
     expect(planner).toContain('protectedFiles');
     expect(planner).toContain('stopConditions');
     expect(planner).toContain('Do not invent inspected files');
+    expect(planner).toContain('Do not rewrite the requested work into a smaller goal');
     expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
     expect(worker).toContain('Kira prompt contract version: 2.');
     expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
     expect(worker).toContain('sibling git worktrees');
     expect(worker).toContain('Do not touch out-of-plan files unless necessary and explained.');
     expect(worker).toContain('complete final content');
+    expect(worker).toContain('Do not narrow the acceptance target');
+    expect(worker).toContain(
+      'Brief and mandatory project-instruction requirements cannot be marked not_applicable',
+    );
     expect(worker).toContain(
       'Never claim a check passed unless you ran it or Kira provided the result.',
     );
@@ -335,14 +341,21 @@ describe('Kira Codex-grade prompts', () => {
     expect(planningPrompt).toContain('"escalation"');
     expect(planningPrompt).toContain('"stopConditions":["..."]');
     expect(planningPrompt).toContain('Call at least one read-only tool');
+    expect(planningPrompt).toContain('Do not narrow the acceptance target');
+    expect(planningPrompt).toContain('keep suggestedWorks collectively covering the original goal');
     expect(workerPrompt).toContain('Mandatory project instructions:');
     expect(workerPrompt).toContain('binding acceptance criteria');
+    expect(workerPrompt).toContain('Complete the full acceptance target');
     expect(workerPrompt).toContain('Change design:');
     expect(workerPrompt).toContain('Requirement trace:');
     expect(workerPrompt).toContain('Patch alternatives:');
     expect(workerPrompt).toContain('Never edit protectedFiles.');
     expect(workerPrompt).toContain('Run the planned validation commands when practical');
     expect(workerPrompt).toContain('complete final file content');
+    expect(workerPrompt).toContain(
+      'Never mark brief or mandatory project-instruction requirements not_applicable',
+    );
+    expect(workerPrompt).toContain('If the approved plan appears narrower than the work brief');
     expect(workerPrompt).toContain('"diffHunkReview"');
     expect(workerPrompt).toContain('"requirementTrace"');
     expect(workerPrompt).toContain('"remainingRisks":["..."]');
@@ -388,21 +401,31 @@ describe('Kira Codex-grade prompts', () => {
     expect(reviewerSystem).toContain('Prioritize correctness and requirement coverage.');
     expect(reviewerSystem).toContain('concurrent-agent integration risks');
     expect(reviewerSystem).toContain('Do not approve if validation failed.');
+    expect(reviewerSystem).toContain(
+      'Do not approve a small patch that solves only a narrower version',
+    );
+    expect(reviewerSystem).toContain(
+      'Do not approve non-documentation code changes when Kira has no effective validation command',
+    );
     expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('attempt judge');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain(
       'Kira prompt contract version: 2.',
     );
+    expect(buildAttemptComparisonReviewSystemPrompt()).toContain('Do not select a smaller attempt');
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
     expect(reviewPrompt).toContain('Mandatory project instructions:');
+    expect(reviewPrompt).toContain('Do not approve partial goal fulfillment');
     expect(reviewPrompt).toContain('Review the changeDesign against the actual diff');
     expect(reviewPrompt).toContain('Do not approve patch intent drift');
     expect(reviewPrompt).toContain('Review the requirementTrace.');
+    expect(reviewPrompt).toContain('blocking scope-reduction attempt');
     expect(reviewPrompt).toContain('Risk review policy:');
     expect(reviewPrompt).toContain('Do not approve if the implementation violates');
     expect(reviewPrompt).toContain(
       'Do not approve if the worker summary conflicts with the diff excerpts.',
     );
+    expect(reviewPrompt).toContain('no effective validation command');
     expect(reviewPrompt).toContain('"missingValidation":["..."]');
     expect(reviewPrompt).toContain('"nextWorkerInstructions":["..."]');
     expect(reviewPrompt).toContain('"residualRisk":["..."]');
@@ -1275,6 +1298,247 @@ describe('collectWorkerSelfCheckIssues()', () => {
 
     expect(issues.join('\n')).toContain(
       'Worker self-check requirementTrace is incomplete for R1: status=planned without evidence.',
+    );
+  });
+
+  it('does not allow brief requirements to be marked not_applicable to shrink scope', () => {
+    const issues = collectWorkerSelfCheckIssues({
+      workerSummary: {
+        summary: 'Updated files.',
+        filesChanged: ['src/app.ts'],
+        testsRun: ['pnpm test'],
+        remainingRisks: [],
+        selfCheck: {
+          reviewedDiff: true,
+          followedProjectInstructions: true,
+          matchedPlan: true,
+          ranOrExplainedValidation: true,
+          diffHunkReview: [
+            {
+              file: 'src/app.ts',
+              intent: 'Update app behavior.',
+              risk: 'Low risk.',
+            },
+          ],
+          requirementTrace: [
+            {
+              id: 'R1',
+              source: 'brief',
+              text: 'Complete the full requested Kira hardening.',
+              status: 'not_applicable',
+              evidence: ['Skipped as out of scope.'],
+            },
+          ],
+          uncertainty: [],
+          notes: [],
+        },
+      },
+      workerPlan: makePlan(),
+      requiredInstructions: '',
+      validationPlan: {
+        plannerCommands: ['pnpm test'],
+        autoAddedCommands: [],
+        effectiveCommands: ['pnpm test'],
+        notes: [],
+      },
+      filesChanged: ['src/app.ts'],
+    });
+
+    expect(issues.join('\n')).toContain('status=not_applicable');
+    expect(issues.join('\n')).toContain('cannot be marked not_applicable');
+  });
+
+  it('blocks non-documentation changes when Kira has no effective validation command', () => {
+    const issues = collectWorkerSelfCheckIssues({
+      workerSummary: {
+        summary: 'Updated files.',
+        filesChanged: ['src/app.ts'],
+        testsRun: [],
+        remainingRisks: [],
+        selfCheck: {
+          reviewedDiff: true,
+          followedProjectInstructions: true,
+          matchedPlan: true,
+          ranOrExplainedValidation: true,
+          diffHunkReview: [
+            {
+              file: 'src/app.ts',
+              intent: 'Update app behavior.',
+              risk: 'Low risk.',
+            },
+          ],
+          requirementTrace: [
+            {
+              id: 'R1',
+              source: 'brief',
+              text: 'Make worker and reviewer behavior safer.',
+              status: 'satisfied',
+              evidence: ['src/app.ts updated.'],
+            },
+          ],
+          uncertainty: [],
+          notes: [],
+        },
+      },
+      workerPlan: makePlan(),
+      requiredInstructions: '',
+      validationPlan: {
+        plannerCommands: [],
+        autoAddedCommands: [],
+        effectiveCommands: [],
+        notes: ['No safe validation command could be inferred from the changed files.'],
+      },
+      filesChanged: ['src/app.ts'],
+    });
+
+    expect(issues).toContain(
+      'Kira found non-documentation changes but no effective validation command; add a safe project validation command or block the attempt instead of approving unverified code.',
+    );
+  });
+
+  it('allows documentation-only changes to explain that no code validation was inferred', () => {
+    const issues = collectWorkerSelfCheckIssues({
+      workerSummary: {
+        summary: 'Updated docs.',
+        filesChanged: ['docs/guide.md'],
+        testsRun: [],
+        remainingRisks: [],
+        selfCheck: {
+          reviewedDiff: true,
+          followedProjectInstructions: true,
+          matchedPlan: true,
+          ranOrExplainedValidation: true,
+          diffHunkReview: [
+            {
+              file: 'docs/guide.md',
+              intent: 'Update documentation.',
+              risk: 'Documentation only.',
+            },
+          ],
+          requirementTrace: [
+            {
+              id: 'R1',
+              source: 'brief',
+              text: 'Update the documentation.',
+              status: 'satisfied',
+              evidence: ['docs/guide.md updated.'],
+            },
+          ],
+          uncertainty: [],
+          notes: ['No code validation required.'],
+        },
+      },
+      workerPlan: {
+        ...makePlan(),
+        intendedFiles: ['docs/guide.md'],
+        changeDesign: {
+          ...makePlan().changeDesign,
+          targetFiles: ['docs/guide.md'],
+        },
+      },
+      requiredInstructions: '',
+      validationPlan: {
+        plannerCommands: [],
+        autoAddedCommands: [],
+        effectiveCommands: [],
+        notes: [
+          'Only documentation files changed; no automatic code validation command was added.',
+        ],
+      },
+      filesChanged: ['docs/guide.md'],
+    });
+
+    expect(issues.join('\n')).not.toContain('no effective validation command');
+  });
+});
+
+describe('enforceReviewDecision()', () => {
+  it('overrides reviewer approval for non-documentation changes without validation commands', () => {
+    const review = enforceReviewDecision(
+      {
+        approved: true,
+        summary: 'Looks good.',
+        issues: [],
+        filesChecked: ['src/app.ts'],
+        findings: [],
+        missingValidation: [],
+        nextWorkerInstructions: [],
+        residualRisk: [],
+        evidenceChecked: [
+          {
+            file: 'src/app.ts',
+            reason: 'Reviewed the diff.',
+            method: 'diff',
+          },
+        ],
+        requirementVerdicts: [
+          {
+            id: 'R1',
+            source: 'brief',
+            text: 'Make worker and reviewer behavior safer.',
+            status: 'satisfied',
+            evidence: ['src/app.ts updated.'],
+          },
+        ],
+        adversarialChecks: [
+          {
+            mode: 'correctness',
+            result: 'passed',
+            evidence: ['src/app.ts reviewed.'],
+          },
+        ],
+        reviewerDiscourse: [],
+      },
+      {
+        workerSummary: {
+          summary: 'Updated files.',
+          filesChanged: ['src/app.ts'],
+          testsRun: [],
+          remainingRisks: [],
+          selfCheck: {
+            reviewedDiff: true,
+            followedProjectInstructions: true,
+            matchedPlan: true,
+            ranOrExplainedValidation: true,
+            diffHunkReview: [
+              {
+                file: 'src/app.ts',
+                intent: 'Update app behavior.',
+                risk: 'Low risk.',
+              },
+            ],
+            requirementTrace: [
+              {
+                id: 'R1',
+                source: 'brief',
+                text: 'Make worker and reviewer behavior safer.',
+                status: 'satisfied',
+                evidence: ['src/app.ts updated.'],
+              },
+            ],
+            uncertainty: [],
+            notes: [],
+          },
+        },
+        validationPlan: {
+          plannerCommands: [],
+          autoAddedCommands: [],
+          effectiveCommands: [],
+          notes: ['No safe validation command could be inferred from the changed files.'],
+        },
+        validationReruns: {
+          passed: [],
+          failed: [],
+          failureDetails: [],
+        },
+        diffExcerpts: ['diff -- src/app.ts'],
+        requirementTrace: makePlan().requirementTrace,
+      },
+    );
+
+    expect(review.approved).toBe(false);
+    expect(review.issues).toContain(
+      'Reviewer approved non-documentation changes even though Kira had no effective validation command.',
     );
   });
 });

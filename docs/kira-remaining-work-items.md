@@ -35,6 +35,11 @@
   경로에서 호환되도록 정규화한다.
 - Prompt contract versioning: worker/reviewer/attempt-selection prompt와 orchestration plan에
   contract version을 남긴다.
+- Scope fidelity gate: small patch 지시는 patch surface 제한일 뿐 acceptance target 축소가 아니며,
+  brief/project-instruction requirement를 `not_applicable`로 표시하는 worker/reviewer 승인을
+  차단한다.
+- Validation approval gate: 비문서 변경에 대해 Kira가 effective validation command를 만들지 못하면
+  worker self-check와 reviewer approval, multi-worker attempt selection에서 모두 차단한다.
 - Quality dashboard: SLO, policy exception history, connector events, failure cluster drilldown,
   최근 성공률, 반복 실패 명령을 Project Intelligence에 추가했다.
 - Fixtures: policy-blocked, remote-runner-missing, plugin-enabled, DAG-customized regression
@@ -109,6 +114,10 @@
      detector를 review enforcement에 추가했다.
    - 차단: approved review가 changed files를 실제로 확인하지 않았거나 worker summary가 diff와
      충돌하면 approval이 거부된다.
+   - Scope fidelity: reviewer와 attempt judge는 작은 patch를 선호하더라도 원래 brief와 mandatory
+     project instructions의 acceptance target을 축소한 attempt를 승인할 수 없다.
+   - Validation gate: 비문서 변경에서 effective validation command가 비어 있으면 수동 승인 대신
+     project validation command 추가 또는 blocked/manual path로 되돌린다.
    - UI: Attempts 패널에서 diff coverage, anchored finding count, covered files, changed-line files,
      coverage issue를 확인할 수 있다.
 
