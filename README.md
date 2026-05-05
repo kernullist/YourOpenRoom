@@ -164,6 +164,12 @@ Kira can run one worker by default or up to three configured workers. With multi
 worker gets its own isolated git worktree and produces an independent attempt. The reviewer compares
 the passing attempts and selects a single winner; if no attempt passes review, all workers receive
 the review feedback and try again.
+Kira also limits concurrent calls to the same provider/baseUrl/model route: local model routes
+(`llama.cpp`, localhost, or private-network base URLs) run one at a time, while other routes allow
+up to two concurrent calls.
+Each model call sets the response output token cap to 8192 tokens.
+Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
+policy checks remain the stopping controls.
 
 When `autoCommit` is enabled for a git project, approved work is committed in the winning isolated
 worktree and then integrated back into the primary project worktree with a short project-level

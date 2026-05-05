@@ -97,6 +97,12 @@ worker gets a separate git worktree for its attempt, and the reviewer compares a
 attempts before selecting one winner. Codex CLI workers/reviewers can be configured with
 `provider: "codex-cli"` after `codex login`; OpenCode Zen/Go workers/reviewers can be configured
 with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key.
+When multiple workers share the same provider/baseUrl/model route, Kira throttles concurrent model
+calls to one for local routes (`llama.cpp`, localhost, or private-network base URLs) and two for
+all other routes.
+Each model call sets the response output token cap to 8192 tokens.
+Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
+policy checks remain the stopping controls.
 
 Before worker assignment, Kira runs a clarification analysis over the work title, description, and
 project context. If a material ambiguity would likely send workers in the wrong direction, Kira

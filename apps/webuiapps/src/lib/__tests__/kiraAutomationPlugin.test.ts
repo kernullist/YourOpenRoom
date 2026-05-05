@@ -32,6 +32,8 @@ import {
   findSuggestedCommitBackfillSummary,
   findOutOfPlanTouchedFiles,
   formatWorkerSubmission,
+  getKiraModelRouteKey,
+  getKiraModelRouteLimit,
   getOpenAiAssistantReasoningContent,
   getProjectProfilePath,
   hasMergeConflictMarkers,
@@ -54,6 +56,7 @@ import {
   resolveWorkerLlmConfigs,
   recommendWorkDecomposition,
   refreshProjectIntelligenceProfile,
+  runWithKiraModelRouteLimit,
   shouldUseKiraAttemptWorktrees,
   shouldUseKiraIsolatedWorktree,
   tryAcquireLock,
@@ -1835,6 +1838,167 @@ describe('resolveWorkerLlmConfigs()', () => {
     ]);
     expect(workers[1].provider).toBe('codex-cli');
     expect(workers[2].baseUrl).toBe('https://opencode.ai/zen/go');
+  });
+});
+
+describe('Kira model route limits', () =>
+{
+  it('uses one route slot for local model endpoints', () =>
+  {
+    expect(
+      getKiraModelRouteLimit({
+        provider: 'llama.cpp',
+        baseUrl: 'https://example.invalid/v1',
+      }),
+    ).toBe(1);
+    expect(
+      getKiraModelRouteLimit({
+        provider: 'openai',
+        baseUrl: 'http://127.0.0.1:1234/v1',
+      }),
+    ).toBe(1);
+    expect(
+      getKiraModelRouteLimit({
+        provider: 'openai',
+        baseUrl: 'http://192.168.0.20:1234/v1',
+      }),
+    ).toBe(1);
+  });
+
+  it('uses two route slots for non-local model endpoints', () =>
+  {
+    expect(
+      getKiraModelRouteLimit({
+        provider: 'openrouter',
+        baseUrl: 'https://openrouter.ai/api/v1',
+      }),
+    ).toBe(2);
+    expect(
+      getKiraModelRouteLimit({
+        provider: 'codex-cli',
+        baseUrl: '',
+      }),
+    ).toBe(2);
+  });
+
+  it('normalizes same-model route keys by provider, base URL, and model', () =>
+  {
+    expect(
+      getKiraModelRouteKey({
+        provider: 'opencode-go',
+        baseUrl: 'https://opencode.ai/zen/go/',
+        model: 'opencode-go/kimi-k2.5',
+      }),
+    ).toBe('opencode-go|https://opencode.ai/zen/go|kimi-k2.5');
+  });
+
+  it('serializes same-route local model work', async () =>
+  {
+    const config = {
+      provider: 'openai' as const,
+      apiKey: '',
+      baseUrl: 'http://127.0.0.1:1234/v1',
+      model: 'local-route-limit-test',
+    };
+    const events: string[] = [];
+    let releaseFirst: (() => void) | null = null;
+
+    const first = runWithKiraModelRouteLimit(config, async () =>
+    {
+      events.push('first-start');
+      await new Promise<void>((resolve) =>
+      {
+        releaseFirst = resolve;
+      });
+      events.push('first-end');
+      return 'first';
+    });
+    await Promise.resolve();
+
+    const second = runWithKiraModelRouteLimit(config, async () =>
+    {
+      events.push('second-start');
+      return 'second';
+    });
+    await Promise.resolve();
+
+    expect(events).toEqual(['first-start']);
+    expect(releaseFirst).toBeTypeOf('function');
+    releaseFirst?.();
+    await expect(first).resolves.toBe('first');
+    await expect(second).resolves.toBe('second');
+    expect(events).toEqual(['first-start', 'first-end', 'second-start']);
+  });
+
+  it('allows two same-route non-local model calls before queueing', async () =>
+  {
+    const config = {
+      provider: 'openrouter' as const,
+      apiKey: 'sk-test',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'remote-route-limit-test',
+    };
+    const events: string[] = [];
+    let active = 0;
+    let maxActive = 0;
+    let releaseFirst: (() => void) | null = null;
+    let releaseSecond: (() => void) | null = null;
+
+    const runHeldTask = (
+      label: string,
+      setRelease: (release: () => void) => void,
+    ): Promise<string> =>
+      runWithKiraModelRouteLimit(config, async () =>
+      {
+        events.push(`${label}-start`);
+        active += 1;
+        maxActive = Math.max(maxActive, active);
+        await new Promise<void>((resolve) =>
+        {
+          setRelease(resolve);
+        });
+        active -= 1;
+        events.push(`${label}-end`);
+        return label;
+      });
+
+    const first = runHeldTask('first', (release) =>
+    {
+      releaseFirst = release;
+    });
+    const second = runHeldTask('second', (release) =>
+    {
+      releaseSecond = release;
+    });
+    await Promise.resolve();
+
+    const third = runWithKiraModelRouteLimit(config, async () =>
+    {
+      events.push('third-start');
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      active -= 1;
+      events.push('third-end');
+      return 'third';
+    });
+    await Promise.resolve();
+
+    expect(events).toEqual(['first-start', 'second-start']);
+    expect(maxActive).toBe(2);
+    releaseFirst?.();
+    await expect(first).resolves.toBe('first');
+    await expect(third).resolves.toBe('third');
+    releaseSecond?.();
+    await expect(second).resolves.toBe('second');
+    expect(events).toEqual([
+      'first-start',
+      'second-start',
+      'first-end',
+      'third-start',
+      'third-end',
+      'second-end',
+    ]);
+    expect(maxActive).toBe(2);
   });
 });
 

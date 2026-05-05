@@ -55,6 +55,13 @@ Kira analyzes each `todo` work brief before assigning it to workers. If the brie
 way that could materially change the implementation, Kira blocks the work and writes a
 `clarification` object onto the work file.
 
+During multi-worker runs, Kira limits concurrent model calls on the same provider/baseUrl/model
+route. Local routes (`llama.cpp`, localhost, or private-network base URLs) run one at a time; other
+routes can run up to two calls at once.
+Each model call sets the response output token cap to 8192 tokens.
+Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
+policy checks remain the stopping controls.
+
 | Field      | Type   | Required | Description                                                       |
 | ---------- | ------ | -------- | ----------------------------------------------------------------- |
 | status     | string | Yes      | One of `pending`, `answered`, or `cleared`                        |

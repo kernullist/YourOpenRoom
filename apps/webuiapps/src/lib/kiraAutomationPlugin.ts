@@ -1075,14 +1075,14 @@ type AgentMessage =
   | { role: 'tool'; content: string; toolCallId: string };
 type ToolAgentFinalValidator = (content: string) => string[];
 
+interface KiraModelRouteLock
+{
+  active: number;
+  queue: Array<() => void>;
+}
+
 const KIMI_TOOL_CALL_REASONING_FALLBACK =
   'Kira is continuing a tool-call turn where the provider did not return reasoning_content.';
-const AGENT_TURN_BUDGET_EXHAUSTED_PROMPT = [
-  'The Kira tool-turn budget for this step is exhausted.',
-  'Do not call any more tools.',
-  'Return the final answer now in exactly the structured JSON shape requested by the original Kira prompt.',
-  'Base the answer only on the tool results already available in this conversation.',
-].join(' ');
 const COMMENTS_DIR_NAME = 'comments';
 const WORKS_DIR_NAME = 'works';
 const ANALYSIS_DIR_NAME = 'analysis';
@@ -1100,9 +1100,11 @@ const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_CLARIFICATION_QUESTIONS = 3;
 const MAX_CLARIFICATION_OPTIONS = 4;
-const MAX_AGENT_TURNS = 24;
 const MAX_AGENT_REPAIR_TURNS = 2;
 const MAX_AGENT_TIMEOUT_RETRIES = 1;
+const KIRA_LOCAL_MODEL_ROUTE_LIMIT = 1;
+const KIRA_REMOTE_MODEL_ROUTE_LIMIT = 2;
+const KIRA_LLM_MAX_OUTPUT_TOKENS = 8192;
 const MAX_FILE_BYTES = 80_000;
 const MAX_OVERWRITE_FILE_BYTES = 8_000;
 const MAX_FULL_REWRITE_FILE_BYTES = MAX_FILE_BYTES;
@@ -1161,6 +1163,7 @@ const EVENT_QUEUE_FILE = 'kira-automation-events.json';
 const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
+const kiraModelRouteLocks = new Map<string, KiraModelRouteLock>();
 const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
 const KIRA_RULE_PACK_PRESETS: KiraRulePackDefinition[] = [
   {
@@ -3293,6 +3296,231 @@ function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): 
   return model;
 }
 
+function normalizeKiraModelRouteBaseUrl(baseUrl: string): string
+{
+  const trimmed = baseUrl.trim().replace(/\/+$/, '');
+  if (!trimmed)
+  {
+    return '';
+  }
+
+  try
+  {
+    const parsed = new URL(trimmed);
+    parsed.hash = '';
+    parsed.search = '';
+    return parsed.toString().replace(/\/+$/, '').toLowerCase();
+  }
+  catch
+  {
+    return trimmed.toLowerCase();
+  }
+}
+
+function isPrivateIpv4Host(hostname: string): boolean
+{
+  const parts = hostname.split('.').map((part) => Number.parseInt(part, 10));
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  )
+  {
+    return false;
+  }
+
+  const [first, second] = parts;
+  if (first === 10)
+  {
+    return true;
+  }
+  if (first === 127)
+  {
+    return true;
+  }
+  if (first === 169 && second === 254)
+  {
+    return true;
+  }
+  if (first === 172 && second >= 16 && second <= 31)
+  {
+    return true;
+  }
+  if (first === 192 && second === 168)
+  {
+    return true;
+  }
+  return first === 0 && second === 0 && parts[2] === 0 && parts[3] === 0;
+}
+
+export function isKiraLocalModelRoute(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): boolean
+{
+  if (config.provider === 'llama.cpp')
+  {
+    return true;
+  }
+
+  const baseUrl = config.baseUrl.trim();
+  if (!baseUrl)
+  {
+    return false;
+  }
+
+  try
+  {
+    const parsed = new URL(baseUrl);
+    const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+    if (hostname === 'localhost' || hostname === '::1')
+    {
+      return true;
+    }
+    return isPrivateIpv4Host(hostname);
+  }
+  catch
+  {
+    return /^(?:https?:\/\/)?(?:localhost|127\.|0\.0\.0\.0|\[?::1\]?)/i.test(baseUrl);
+  }
+}
+
+export function getKiraModelRouteLimit(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): number
+{
+  return isKiraLocalModelRoute(config)
+    ? KIRA_LOCAL_MODEL_ROUTE_LIMIT
+    : KIRA_REMOTE_MODEL_ROUTE_LIMIT;
+}
+
+export function getKiraModelRouteKey(
+  config: Pick<LLMConfig, 'provider' | 'baseUrl' | 'model'>,
+): string
+{
+  return [
+    config.provider,
+    normalizeKiraModelRouteBaseUrl(config.baseUrl),
+    normalizeProviderModel(config).toLowerCase(),
+  ].join('|');
+}
+
+function makeKiraRouteAbortError(): Error
+{
+  const error = new Error('Agent run aborted.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function getKiraModelRouteLock(routeKey: string): KiraModelRouteLock
+{
+  let lock = kiraModelRouteLocks.get(routeKey);
+  if (!lock)
+  {
+    lock = {
+      active: 0,
+      queue: [],
+    };
+    kiraModelRouteLocks.set(routeKey, lock);
+  }
+  return lock;
+}
+
+function releaseKiraModelRouteSlot(routeKey: string): void
+{
+  const lock = kiraModelRouteLocks.get(routeKey);
+  if (!lock)
+  {
+    return;
+  }
+
+  lock.active = Math.max(0, lock.active - 1);
+  const next = lock.queue.shift();
+  if (next)
+  {
+    next();
+    return;
+  }
+
+  if (lock.active === 0)
+  {
+    kiraModelRouteLocks.delete(routeKey);
+  }
+}
+
+function acquireKiraModelRouteSlot(
+  routeKey: string,
+  limit: number,
+  signal?: AbortSignal,
+): Promise<() => void>
+{
+  if (signal?.aborted)
+  {
+    return Promise.reject(makeKiraRouteAbortError());
+  }
+
+  const lock = getKiraModelRouteLock(routeKey);
+  if (lock.active < limit)
+  {
+    lock.active += 1;
+    return Promise.resolve((): void =>
+    {
+      releaseKiraModelRouteSlot(routeKey);
+    });
+  }
+
+  return new Promise((resolve, reject) =>
+  {
+    let settled = false;
+
+    const start = (): void =>
+    {
+      if (settled)
+      {
+        return;
+      }
+      settled = true;
+      signal?.removeEventListener('abort', abort);
+      lock.active += 1;
+      resolve((): void =>
+      {
+        releaseKiraModelRouteSlot(routeKey);
+      });
+    };
+
+    const abort = (): void =>
+    {
+      if (settled)
+      {
+        return;
+      }
+      settled = true;
+      const index = lock.queue.indexOf(start);
+      if (index >= 0)
+      {
+        lock.queue.splice(index, 1);
+      }
+      reject(makeKiraRouteAbortError());
+    };
+
+    lock.queue.push(start);
+    signal?.addEventListener('abort', abort, { once: true });
+  });
+}
+
+export async function runWithKiraModelRouteLimit<T>(
+  config: LLMConfig,
+  task: () => Promise<T>,
+  signal?: AbortSignal,
+): Promise<T>
+{
+  const routeKey = getKiraModelRouteKey(config);
+  const routeLimit = getKiraModelRouteLimit(config);
+  const release = await acquireKiraModelRouteSlot(routeKey, routeLimit, signal);
+  try
+  {
+    return await task();
+  }
+  finally
+  {
+    release();
+  }
+}
+
 function resolveOpenCodeApiKey(config: LLMConfig): string {
   if (!isOpenCodeProvider(config.provider) || config.apiKey.trim()) return config.apiKey;
   return (
@@ -3715,6 +3943,7 @@ async function callOpenAiCompatible(
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
     messages: systemPrompt ? [{ role: 'system', content: systemPrompt }, ...messages] : messages,
+    max_tokens: KIRA_LLM_MAX_OUTPUT_TOKENS,
     stream: false,
   };
   if (shouldDisableOpenAiThinking(config)) {
@@ -3811,6 +4040,7 @@ async function callOpenAiResponses(
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
     input,
+    max_output_tokens: KIRA_LLM_MAX_OUTPUT_TOKENS,
     stream: false,
   };
   if (systemPrompt) body.instructions = systemPrompt;
@@ -3916,7 +4146,7 @@ async function callAnthropicCompatible(
 
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
-    max_tokens: 4096,
+    max_tokens: KIRA_LLM_MAX_OUTPUT_TOKENS,
     messages,
   };
   if (systemPrompt) body.system = systemPrompt;
@@ -3980,19 +4210,29 @@ async function callLlm(
   tools: ToolDefinition[],
   signal?: AbortSignal,
 ): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
-  if (isOpenCodeProvider(config.provider)) {
-    const apiStyle = resolveOpenCodeApiStyle(config);
-    if (apiStyle === 'openai-responses') {
-      return callOpenAiResponses(config, systemPrompt, history, tools, signal);
-    }
-    if (apiStyle === 'anthropic-messages') {
-      return callAnthropicCompatible(config, systemPrompt, history, tools, signal);
-    }
-    return callOpenAiCompatible(config, systemPrompt, history, tools, signal);
-  }
-  return isAnthropicProvider(config.provider)
-    ? callAnthropicCompatible(config, systemPrompt, history, tools, signal)
-    : callOpenAiCompatible(config, systemPrompt, history, tools, signal);
+  return runWithKiraModelRouteLimit(
+    config,
+    async () =>
+    {
+      if (isOpenCodeProvider(config.provider))
+      {
+        const apiStyle = resolveOpenCodeApiStyle(config);
+        if (apiStyle === 'openai-responses')
+        {
+          return callOpenAiResponses(config, systemPrompt, history, tools, signal);
+        }
+        if (apiStyle === 'anthropic-messages')
+        {
+          return callAnthropicCompatible(config, systemPrompt, history, tools, signal);
+        }
+        return callOpenAiCompatible(config, systemPrompt, history, tools, signal);
+      }
+      return isAnthropicProvider(config.provider)
+        ? callAnthropicCompatible(config, systemPrompt, history, tools, signal)
+        : callOpenAiCompatible(config, systemPrompt, history, tools, signal);
+    },
+    signal,
+  );
 }
 
 function ensureInsideRoot(root: string, candidatePath: string): string {
@@ -5285,7 +5525,11 @@ async function runToolAgent(
       }`,
     );
     recordAttemptExploration(attemptState, `external_agent ${config.provider}`);
-    return runCodexCliAgent(config, projectRoot, prompt, systemPrompt, writable, signal);
+    return runWithKiraModelRouteLimit(
+      config,
+      () => runCodexCliAgent(config, projectRoot, prompt, systemPrompt, writable, signal),
+      signal,
+    );
   }
 
   const history: AgentMessage[] = [{ role: 'user', content: prompt }];
@@ -5293,7 +5537,8 @@ async function runToolAgent(
   let repairTurns = 0;
   let timeoutRetries = 0;
 
-  for (let turn = 0; turn < MAX_AGENT_TURNS; turn += 1) {
+  for (;;)
+  {
     if (signal?.aborted) {
       const error = new Error('Agent run aborted.');
       error.name = 'AbortError';
@@ -5355,28 +5600,6 @@ async function runToolAgent(
       });
     }
   }
-
-  const finalResponse = await callLlm(
-    config,
-    systemPrompt,
-    [...history, { role: 'user', content: AGENT_TURN_BUDGET_EXHAUSTED_PROMPT }],
-    [],
-    signal,
-  );
-  const finalIssues = finalValidator?.(finalResponse.content) ?? [];
-  if (
-    finalResponse.toolCalls.length === 0 &&
-    finalResponse.content.trim() &&
-    finalIssues.length === 0
-  ) {
-    return finalResponse.content;
-  }
-
-  throw new Error(
-    finalIssues.length > 0
-      ? `Agent final response failed structured validation: ${finalIssues.join(' ')}`
-      : 'Agent exceeded the maximum number of tool turns.',
-  );
 }
 
 export function parseWorkerExecutionPlan(raw: string): WorkerExecutionPlan {

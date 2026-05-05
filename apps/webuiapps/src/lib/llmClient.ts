@@ -14,6 +14,7 @@ import {
 } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
+const LLM_MAX_OUTPUT_TOKENS = 8192;
 const KIMI_TOOL_CALL_REASONING_FALLBACK =
   'Continuing a tool-call turn where the provider did not return reasoning_content.';
 
@@ -419,6 +420,7 @@ async function chatOpenAI(
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
     messages: requestMessages,
+    max_tokens: LLM_MAX_OUTPUT_TOKENS,
     stream: false,
   };
   if (shouldDisableOpenAiThinking(config)) {
@@ -551,6 +553,7 @@ async function chatOpenAIResponses(
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
     input,
+    max_output_tokens: LLM_MAX_OUTPUT_TOKENS,
     stream: false,
   };
   if (instructions) body.instructions = instructions;
@@ -673,7 +676,7 @@ async function chatAnthropic(
 
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
-    max_tokens: 4096,
+    max_tokens: LLM_MAX_OUTPUT_TOKENS,
     messages: anthropicMessages,
   };
   if (systemMsg) body.system = systemMsg;

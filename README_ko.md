@@ -171,6 +171,12 @@ Kira 는 기본적으로 1개의 worker 를 사용하지만, 설정으로 최대
 여러 worker 를 쓰면 각 worker 는 자기 전용 git worktree 에서 독립적인 attempt 를 만들고, reviewer 가
 검증을 통과한 attempt 들을 비교해 하나의 winner 를 고릅니다. 모두 review 를 통과하지 못하면 같은
 피드백으로 worker 들이 다시 시도합니다.
+같은 provider/baseUrl/model route 로 동시에 모델을 호출할 때는 로컬 모델 route(`llama.cpp`,
+localhost, private-network base URL)는 1개씩만 실행하고, 그 외 route 는 최대 2개까지만 동시에
+실행합니다.
+각 모델 호출의 response output token cap 은 8192 token 으로 설정됩니다.
+Kira 는 고정 tool-call 횟수 cap 을 두지 않으며, 중단 기준은 cancellation, request timeout,
+execution policy check 입니다.
 
 git 프로젝트에서 `autoCommit` 이 켜져 있으면 승인된 작업은 winning 격리 worktree 에서 먼저 커밋한
 뒤, 짧은 프로젝트 단위 cherry-pick 락을 잡고 기본 프로젝트 worktree 로 통합합니다. 여러 worker 를

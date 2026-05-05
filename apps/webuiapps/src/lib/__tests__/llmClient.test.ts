@@ -778,6 +778,17 @@ describe('chat()', () => {
       expect(body.tools).toBeUndefined();
     });
 
+    it('sets the per-response token cap to 8192', async () =>
+    {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], MOCK_OPENAI_CONFIG);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.max_tokens).toBe(8192);
+    });
+
     it('throws with status code when API returns error', async () => {
       globalThis.fetch = vi
         .fn()
@@ -973,6 +984,7 @@ respond_to_user
       const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
       expect(body.system).toBe('You are helpful.');
       expect(body.messages.some((m: { role: string }) => m.role === 'system')).toBe(false);
+      expect(body.max_tokens).toBe(8192);
     });
 
     it('converts tool_use blocks in response to toolCalls', async () => {
@@ -1072,6 +1084,7 @@ respond_to_user
       expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/v1/messages');
       expect(headers['x-api-key']).toBe('oc-key');
       expect(body.model).toBe('claude-sonnet-4-6');
+      expect(body.max_tokens).toBe(8192);
     });
 
     it('routes GPT models through the Responses API and strips provider prefix', async () => {
@@ -1091,6 +1104,7 @@ respond_to_user
       expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/v1/responses');
       expect(headers.Authorization).toBe('Bearer oc-key');
       expect(body.model).toBe('gpt-5.4');
+      expect(body.max_output_tokens).toBe(8192);
       expect(body.tools).toHaveLength(1);
     });
 
@@ -1111,6 +1125,7 @@ respond_to_user
       expect(headers['X-LLM-Target-URL']).toBe('https://opencode.ai/zen/go/v1/chat/completions');
       expect(headers.Authorization).toBe('Bearer oc-go-key');
       expect(body.model).toBe('kimi-k2.5');
+      expect(body.max_tokens).toBe(8192);
       expect(body.thinking).toEqual({ type: 'disabled' });
     });
   });
