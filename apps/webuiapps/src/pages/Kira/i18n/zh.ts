@@ -34,6 +34,13 @@ const zh = {
     collapseAttempts: '收起 Attempts',
     resetContract: '默认值',
     revertContract: '还原',
+    retryWithFeedback: '带反馈重试',
+  },
+  retry: {
+    title: '评审反馈重试',
+    copy: 'Kira 会把下面的反馈传给下一次 worker 尝试。',
+    commentTitle: '用户请求使用最新 Kira 反馈重试。',
+    noFeedback: '没有找到可用于重试的 Kira 反馈。',
   },
   sections: {
     workRoot: '工作根目录',

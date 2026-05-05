@@ -1511,6 +1511,26 @@
     line-height: 1.45;
     overflow-wrap: anywhere;
   }
+
+  ul {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin: 2px 0 0;
+    padding-left: 18px;
+    color: var(--text-main);
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+  }
+
+  button {
+    align-self: flex-start;
+    min-height: 34px;
+    margin-top: 4px;
+    padding: 0 12px;
+    border-radius: 12px;
+  }
 }
 
 .formGrid {

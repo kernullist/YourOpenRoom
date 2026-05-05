@@ -35,6 +35,7 @@ import {
   type WorkTask,
   DEFAULT_VIEW_STATE,
   STATUS_ORDER,
+  findLatestRetryFeedback,
   formatTimestamp,
   getCommentFilePath,
   getWorkFilePath,
@@ -1664,6 +1665,10 @@ const KiraPage: React.FC = () => {
         : [],
     [comments, selectedTaskId],
   );
+  const currentRetryFeedback = useMemo(
+    () => findLatestRetryFeedback(currentComments),
+    [currentComments],
+  );
   const currentAttempts = useMemo(
     () =>
       selectedTaskId
@@ -2486,6 +2491,65 @@ const KiraPage: React.FC = () => {
       setErrorText(error instanceof Error ? error.message : String(error));
     }
   }, [commentDraft, saveFile, selectedTaskId, syncToCloud, t]);
+
+  const handleRetryWithFeedback = useCallback(async () => {
+    if (!selectedWork || selectedWork.status !== 'blocked') return;
+    if (currentRetryFeedback.length === 0) {
+      setErrorText(t('retry.noFeedback'));
+      return;
+    }
+
+    try {
+      const now = Date.now();
+      const nextWork: WorkTask = {
+        ...selectedWork,
+        status: 'todo',
+        updatedAt: now,
+      };
+      const nextComment: TaskComment = {
+        id: generateId(),
+        taskId: selectedWork.id,
+        taskType: 'work',
+        author: t('comments.defaultAuthor'),
+        body: [
+          t('retry.commentTitle'),
+          '',
+          'Retry with feedback:',
+          ...currentRetryFeedback.map((item) => `- ${item}`),
+        ].join('\n'),
+        createdAt: now,
+      };
+
+      const workPath = getWorkFilePath(nextWork.id);
+      const commentPath = getCommentFilePath(nextComment.id);
+      saveFile(workPath, nextWork);
+      saveFile(commentPath, nextComment);
+      await Promise.all([syncToCloud(workPath, nextWork), syncToCloud(commentPath, nextComment)]);
+      setWorks((prev) =>
+        sortByUpdatedAtDesc([...prev.filter((work) => work.id !== nextWork.id), nextWork]),
+      );
+      setComments((prev) => sortByCreatedAtDesc([...prev, nextComment]));
+      setForm(createFormFromWork(nextWork));
+      setFormDirty(false);
+      setErrorText(null);
+      reportAction(APP_ID, 'RETRY_WITH_FEEDBACK', {
+        workId: nextWork.id,
+        feedbackCount: String(currentRetryFeedback.length),
+      });
+
+      const sessionPath = getSessionPath().trim();
+      if (sessionPath) {
+        await fetch('/api/kira-automation/scan', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ sessionPath }),
+        }).catch(() => undefined);
+      }
+    } catch (error) {
+      console.error('[Kira] Retry with feedback failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    }
+  }, [currentRetryFeedback, saveFile, selectedWork, syncToCloud, t]);
 
   const handleDeleteComment = useCallback(
     async (commentId: string) => {
@@ -3404,10 +3468,35 @@ const KiraPage: React.FC = () => {
               </div>
               {!attemptsCollapsed ? (
                 <>
-                  {selectedWork?.status === 'blocked' && currentAttempts[0]?.blockedReason ? (
+                  {selectedWork?.status === 'blocked' &&
+                  (currentAttempts[0]?.blockedReason || currentRetryFeedback.length > 0) ? (
                     <div className={styles.blockedNotice}>
-                      <strong>Resume condition</strong>
-                      <span>{currentAttempts[0].blockedReason}</span>
+                      {currentAttempts[0]?.blockedReason ? (
+                        <>
+                          <strong>Resume condition</strong>
+                          <span>{currentAttempts[0].blockedReason}</span>
+                        </>
+                      ) : null}
+                      {currentRetryFeedback.length > 0 ? (
+                        <>
+                          <strong>{t('retry.title')}</strong>
+                          <span>{t('retry.copy')}</span>
+                          <ul>
+                            {currentRetryFeedback.slice(0, 4).map((item) => (
+                              <li key={item}>{item}</li>
+                            ))}
+                          </ul>
+                          <button
+                            type="button"
+                            className={styles.secondaryButton}
+                            onClick={() => void handleRetryWithFeedback()}
+                            disabled={!automationReady}
+                            title={actionBlockedHint ?? undefined}
+                          >
+                            {t('actions.retryWithFeedback')}
+                          </button>
+                        </>
+                      ) : null}
                     </div>
                   ) : null}
                   {attemptComparisonRows.length > 0 ? (
@@ -3528,6 +3617,18 @@ const KiraPage: React.FC = () => {
                                     Orchestration: {attempt.orchestrationPlan.runMode} |{' '}
                                     {attempt.orchestrationPlan.reviewDepth} review | Threshold{' '}
                                     {attempt.orchestrationPlan.approvalThreshold}
+                                  </small>
+                                ) : null}
+                                {attempt.orchestrationPlan?.adaptiveAgentPlan ? (
+                                  <small>
+                                    Agent graph: {attempt.orchestrationPlan.adaptiveAgentPlan.mode} |{' '}
+                                    Alternative:{' '}
+                                    {attempt.orchestrationPlan.adaptiveAgentPlan.alternativeWorker
+                                      .enabled
+                                      ? 'enabled'
+                                      : 'skipped'}{' '}
+                                    | Stages:{' '}
+                                    {attempt.orchestrationPlan.adaptiveAgentPlan.stages.length}
                                   </small>
                                 ) : null}
                               </div>

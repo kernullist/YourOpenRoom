@@ -35,6 +35,13 @@ const en = {
     collapseAttempts: 'Collapse attempts',
     resetContract: 'Defaults',
     revertContract: 'Revert',
+    retryWithFeedback: 'Retry with feedback',
+  },
+  retry: {
+    title: 'Review feedback retry',
+    copy: 'Kira will pass the feedback below into the next worker attempt.',
+    commentTitle: 'User requested a retry with the latest Kira feedback.',
+    noFeedback: 'No Kira feedback was found for retry.',
   },
   sections: {
     workRoot: 'Work Root',

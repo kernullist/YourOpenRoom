@@ -150,8 +150,8 @@ discovery flow against a configured local work root. The Vite plugin in
 1. scan actionable tasks
 2. analyze whether the brief is specific enough for worker assignment
 3. ask clarification questions and block handoff when the brief is ambiguous
-4. plan intended files and validation commands
-5. run worker/reviewer loops
+4. build a structured Planner and Context Scout contract
+5. run Primary Worker, optional Alternative Worker, Reviewer, and Integrator stages
 6. rerun validation
 7. block, retry, or auto-commit based on project settings
 
@@ -160,23 +160,30 @@ leave a material product or implementation choice open, the work is moved to `bl
 multiple-choice questions when possible. User answers are saved back onto the work item and appended
 to the markdown brief before the work returns to `todo`.
 
-Kira can run one worker by default or up to three configured workers. With multiple workers, each
-worker gets its own isolated git worktree and produces an independent attempt. The reviewer compares
-the passing attempts and selects a single winner; if no attempt passes review, all workers receive
-the review feedback and try again.
+Kira uses one Primary Worker by default. When work is high-risk, ambiguous, runtime-sensitive, or
+running in deep mode, it may enable one Alternative Worker as an isolated patch challenger. The
+Alternative Worker uses a separate git worktree and must produce a materially different attempt; the
+Reviewer and Integrator still select one winning patch rather than merging pieces from several
+attempts. Kira records the adaptive agent graph in each attempt: Planner, Context Scout, Primary
+Worker, optional Alternative Worker, Reviewer, and Integrator. The Debugger role is intentionally
+omitted; validation failures feed back into the worker/reviewer loop.
 Kira also limits concurrent calls to the same provider/baseUrl/model route: local model routes
 (`llama.cpp`, localhost, or private-network base URLs) run one at a time, while other routes allow
 up to two concurrent calls.
 Each model call sets the response output token cap to 8192 tokens.
 Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
 policy checks remain the stopping controls.
+When final review, Integrator selection, validation, or a timeout blocks the work, Kira leaves a
+main-model status comment with the current state, concrete issues, possible solutions, and, when the
+solution is review-pass feedback, a `Retry with feedback` section. Blocked work with that section can
+be resumed from the Kira details panel; the retry comment is fed back into the next worker attempt.
 
 When `autoCommit` is enabled for a git project, approved work is committed in the winning isolated
 worktree and then integrated back into the primary project worktree with a short project-level
-cherry-pick lock. With multiple workers and `autoCommit` disabled, Kira still uses isolated
-worktrees and integrates the winning diff with `cherry-pick --no-commit`. If the primary worktree
-has overlapping dirty files, staged changes, or a cherry-pick conflict, Kira blocks the task and
-leaves the winning worktree available for manual recovery instead of overwriting local work.
+cherry-pick lock. With an Alternative Worker and `autoCommit` disabled, Kira still isolates attempts
+and integrates the winning diff with `cherry-pick --no-commit`. If the primary worktree has
+overlapping dirty files, staged changes, or a cherry-pick conflict, Kira blocks the task and leaves
+the winning worktree available for manual recovery instead of overwriting local work.
 
 ### Aoi's IDE
 

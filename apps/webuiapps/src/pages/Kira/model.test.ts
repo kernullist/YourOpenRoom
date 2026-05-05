@@ -5,6 +5,8 @@ import {
   normalizeKiraAttempt,
   normalizeKiraReview,
   normalizeTaskComment,
+  extractRetryFeedbackFromCommentBody,
+  findLatestRetryFeedback,
   normalizeWorkTask,
 } from './model';
 
@@ -42,6 +44,45 @@ describe('Kira model helpers', () => {
       taskType: 'work',
       body: 'hello',
     });
+  });
+
+  it('extracts retry feedback sections from comments', () => {
+    expect(
+      extractRetryFeedbackFromCommentBody(
+        [
+          'Kira status: Blocked after final review retries',
+          '',
+          'Retry with feedback:',
+          '- Address the reviewer blocker.',
+          '- Add the missing validation evidence.',
+          '',
+          'Kira will pass these bullets into the next worker attempt when this work is retried from In Progress.',
+        ].join('\n'),
+      ),
+    ).toEqual(['Address the reviewer blocker.', 'Add the missing validation evidence.']);
+  });
+
+  it('finds the newest retry feedback comment for the blocked-task action', () => {
+    expect(
+      findLatestRetryFeedback([
+        {
+          id: 'comment-old',
+          taskId: 'work-1',
+          taskType: 'work',
+          author: 'Kira',
+          body: ['Retry with feedback:', '- Old feedback'].join('\n'),
+          createdAt: 1,
+        },
+        {
+          id: 'comment-new',
+          taskId: 'work-1',
+          taskType: 'work',
+          author: 'Kira',
+          body: ['Retry with feedback:', '- New feedback'].join('\n'),
+          createdAt: 2,
+        },
+      ]),
+    ).toEqual(['New feedback']);
   });
 
   it('normalizes pending clarification questions on work records', () => {
@@ -215,6 +256,40 @@ describe('Kira model helpers', () => {
         lanes: [],
         checkpoints: [],
         stopRules: [],
+        adaptiveAgentPlan: {
+          schemaVersion: 1,
+          mode: 'primary-plus-alternative',
+          alternativeWorker: {
+            enabled: true,
+            maxWorkers: 2,
+            isolation: 'git-worktree',
+            reasons: ['High-risk review policy requires stronger comparison evidence.'],
+          },
+          stages: [
+            {
+              id: 'planner',
+              role: 'planner',
+              label: 'Planner',
+              activation: 'always',
+              dependsOn: [],
+              reason: 'Plan first.',
+              inputs: ['brief'],
+              outputs: ['taskSpec'],
+              successCriteria: ['scope clear'],
+              toolScope: ['read_file'],
+              isolation: 'read-only',
+            },
+          ],
+          successCriteria: ['full brief satisfied'],
+          verificationPlan: ['run tests'],
+          integratorPolicy: {
+            selection: 'single-winning-patch',
+            mergeMode: 'apply-approved-attempt',
+            conflictPolicy: ['block conflicts'],
+            summaryRequirements: ['validation'],
+          },
+          omittedRoles: [{ role: 'debugger', reason: 'Not configured.' }],
+        },
       },
     });
 
@@ -230,6 +305,11 @@ describe('Kira model helpers', () => {
     expect(attempt?.orchestrationPlan?.subagentIds).toEqual(['implementer', 'security-reviewer']);
     expect(attempt?.orchestrationPlan?.promptContractVersion).toBe(2);
     expect(attempt?.orchestrationPlan?.workflowDag?.criticalPath).toEqual(['plan']);
+    expect(attempt?.orchestrationPlan?.adaptiveAgentPlan?.mode).toBe('primary-plus-alternative');
+    expect(attempt?.orchestrationPlan?.adaptiveAgentPlan?.stages[0]?.role).toBe('planner');
+    expect(attempt?.orchestrationPlan?.adaptiveAgentPlan?.integratorPolicy.selection).toBe(
+      'single-winning-patch',
+    );
     expect(attempt?.integration?.connectors[0]?.connectorId).toBe('github');
     expect(attempt?.recordVersion).toBe(2);
     expect(attempt?.migratedFromVersion).toBe(1);

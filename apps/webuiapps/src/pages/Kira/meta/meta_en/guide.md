@@ -55,7 +55,9 @@ Kira analyzes each `todo` work brief before assigning it to workers. If the brie
 way that could materially change the implementation, Kira blocks the work and writes a
 `clarification` object onto the work file.
 
-During multi-worker runs, Kira limits concurrent model calls on the same provider/baseUrl/model
+Kira does not fan out to every configured worker by default. It runs a Primary Worker first and
+enables one Alternative Worker only for high-risk, ambiguous, runtime-sensitive, or deep-mode work.
+During Primary/Alternative runs, Kira limits concurrent model calls on the same provider/baseUrl/model
 route. Local routes (`llama.cpp`, localhost, or private-network base URLs) run one at a time; other
 routes can run up to two calls at once.
 Each model call sets the response output token cap to 8192 tokens.
@@ -106,6 +108,16 @@ Comments are intentionally lightweight and belong to a work.
 | body      | string | Yes      | Plain-text comment body                             |
 | createdAt | number | Yes      | Unix timestamp in milliseconds                      |
 
+Kira automation comments may include:
+
+- `Kira status:` for blocked or review-requested-change state
+- `Possible solutions:` for operator fixes or retry options
+- `Retry with feedback:` when the listed bullets should be fed into the next worker attempt
+
+When a blocked work has a `Retry with feedback:` section, the Kira details panel can move the work
+back to `todo`, add a retry-request comment, and trigger the automation scan. The next worker
+attempt receives those bullets as reviewer feedback.
+
 Example:
 
 ```json
@@ -141,7 +153,7 @@ Current fields:
 | -------------------- | ------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------- |
 | autoCommit           | boolean | `true`       | If `true`, Kira will try to git-commit approved work using the reviewer’s suggested commit message                                 |
 | requiredInstructions | string  | `""`         | Mandatory project instructions, such as coding style or architecture rules, enforced for workers, reviewers, and attempt selection |
-| runMode              | string  | `"standard"` | One of `quick`, `standard`, or `deep`; controls orchestration, worker count, validation depth, and review depth                    |
+| runMode              | string  | `"standard"` | One of `quick`, `standard`, or `deep`; controls orchestration, Alternative Worker activation, validation depth, and review depth   |
 | rulePacks            | array   | `[]`         | Enabled preset rule packs. Each item is `{ "id": string, "enabled": boolean }`                                                     |
 | executionPolicy      | object  | balanced     | Tool and integration policy: protected paths, command allow/deny lists, patch size limits, and policy rules                        |
 | environment          | object  | local        | Runner contract: local or remote runner, validation commands, required env vars, network, secret, and Windows mode                 |
@@ -254,7 +266,7 @@ DAG controls whether design gates, validation, review, integration, and completi
 required for the attempt.
 
 When `requiredInstructions` or rule-pack instructions are not empty, Kira injects the combined
-effective instructions into worker, reviewer, and multi-worker selection prompts as binding
+effective instructions into worker, reviewer, and attempt-selection prompts as binding
 acceptance criteria. Small-patch guidance limits reviewable patch surface only; it does not narrow
 the requested outcome. Workers, reviewers, and attempt judges must reject attempts that violate
 mandatory instructions, solve only a smaller version of the brief, or mark brief/project-instruction
@@ -294,6 +306,8 @@ panel after it exists, or generated automatically during worker context scans. I
 Workers and reviewers receive the profile as part of the context scan. Kira also uses it to:
 
 - collect smarter task-specific context before planning
+- record an adaptive agent graph for Planner, Context Scout, Primary Worker, optional Alternative
+  Worker, Reviewer, and Integrator
 - require a pre-edit `changeDesign` with target files, invariants, expected impact, validation
   strategy, and rollback strategy
 - validate preflight plan quality, low-confidence plans, missing change designs, and over-broad
@@ -315,8 +329,12 @@ Workers and reviewers receive the profile as part of the context scan. Kira also
 - capture already-running dev server HTTP evidence without starting a server
 - verify patch intent against the preflight plan and flag drift before review
 - interpret validation failures into categories, reproduction steps, and concrete worker guidance
+  for the next worker/reviewer cycle rather than launching a separate Debugger role
 - remember reviewer feedback, validation failures, successful patterns, and weighted worker guidance
   memories so future workers avoid repeated mistakes
+- write status comments with possible solutions when review, validation, Integrator selection, or
+  timeout failures block the work; review-pass feedback is stored under `Retry with feedback:` for
+  the next worker attempt
 - recommend or automatically create smaller split works when a task is too broad
 - enforce a small-patch policy when a worker changes too many files or too many lines for one
   reviewable attempt
@@ -326,12 +344,12 @@ Workers and reviewers receive the profile as part of the context scan. Kira also
   review issues, missing validation, design-gate concerns, intent drift, and runtime blockers
 - calibrate reviewer strictness and require adversarial mode checks for correctness, regression,
   security, runtime UX, data safety, integration, and maintainability when those risks apply
-- synthesize lessons across multiple isolated worker attempts while still integrating one selected
-  winner
+- run one Alternative Worker as an isolated patch challenger only when risk, ambiguity, runtime
+  sensitivity, or deep mode justifies it, while still integrating one selected winner
 - persist attempt observability metrics such as exploration count, changed files, validation reruns,
   runtime validation evidence, failure analysis, patch intent, diff stats, duration, estimated token
   counts, and timeline notes
-- select a worker specialization focus for single-worker and multi-worker attempts
+- select a worker specialization focus for Primary Worker and optional Alternative Worker attempts
 - enforce environment setup, validation, policy hooks, subagent tool scopes, workflow DAG gates, and
   connector integration as runtime evidence rather than prompt-only guidance
 - track failure clusters with command-specific remediation and stale-score decay so repeated
@@ -350,7 +368,8 @@ Attempt records may include:
 
 - `recordVersion` and `migratedFromVersion` for compatibility with older saved attempts
 - `orchestrationPlan` with the selected run mode, lane goals, subagent ids, runner, connectors,
-  workflow DAG, prompt contract version, evidence requirements, checkpoints, and stop rules
+  workflow DAG, prompt contract version, adaptive agent graph, evidence requirements,
+  checkpoints, and stop rules
 - `evidenceLedger` with concrete plan, diff, validation, runtime, intent, manual, risk-acceptance,
   design, policy, environment setup, remote runner probe, workflow, connector, and review evidence
 - an approval-readiness score with blockers and missing evidence
@@ -370,7 +389,8 @@ Review records may include:
   patch-intent drift
 - `diffCoverage` with changed-line files, reviewed changed-line files, anchored finding counts, and
   contradiction issues that can prevent an unsafe approval
-- multi-worker attempt synthesis, including non-selected attempts and fully rejected comparison
+- Primary/Alternative attempt synthesis, including non-selected attempts and fully rejected
+  comparison
   cycles
 
 Operators can add manual evidence from the Kira work detail panel. Kira stores it as a normal

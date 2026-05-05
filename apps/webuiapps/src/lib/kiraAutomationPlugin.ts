@@ -447,6 +447,56 @@ interface OrchestrationPlan {
   }>;
   checkpoints: string[];
   stopRules: string[];
+  adaptiveAgentPlan: KiraAdaptiveAgentPlan;
+}
+
+type KiraAdaptiveAgentRole =
+  | 'planner'
+  | 'context_scout'
+  | 'primary_worker'
+  | 'alternative_worker'
+  | 'reviewer'
+  | 'integrator';
+
+type KiraAdaptiveAgentActivation = 'always' | 'conditional' | 'skipped';
+
+interface KiraAdaptiveAgentStage {
+  id: string;
+  role: KiraAdaptiveAgentRole;
+  label: string;
+  activation: KiraAdaptiveAgentActivation;
+  dependsOn: string[];
+  reason: string;
+  inputs: string[];
+  outputs: string[];
+  successCriteria: string[];
+  toolScope: string[];
+  isolation: 'primary-worktree' | 'git-worktree' | 'read-only' | 'not-applicable';
+  modelHint?: string;
+}
+
+interface KiraAdaptiveAgentPlan {
+  schemaVersion: number;
+  mode: 'primary-only' | 'primary-plus-alternative';
+  alternativeWorker: {
+    enabled: boolean;
+    maxWorkers: number;
+    isolation: 'git-worktree' | 'not-applicable';
+    reasons: string[];
+  };
+  stages: KiraAdaptiveAgentStage[];
+  successCriteria: string[];
+  verificationPlan: string[];
+  integratorPolicy: {
+    selection: 'single-winning-patch';
+    mergeMode: 'apply-approved-attempt';
+    conflictPolicy: string[];
+    summaryRequirements: string[];
+  };
+  omittedRoles: Array<{
+    role: string;
+    reason: string;
+  }>;
 }
 
 interface ManualEvidenceItem {
@@ -859,6 +909,8 @@ interface ResolvedValidationPlan {
 interface AutomationFailureResolution {
   summary: string;
   guidance: string;
+  solutions: string[];
+  retryFeedback: string[];
   userMessage: string;
 }
 
@@ -940,6 +992,7 @@ interface KiraWorkspaceSession {
 interface KiraWorkerLane {
   id: string;
   label: string;
+  role: 'primary_worker' | 'alternative_worker';
   config: LLMConfig;
   subagent?: KiraSubagentDefinition;
 }
@@ -1095,7 +1148,7 @@ const PROJECT_PROFILE_FILE_NAME = 'project-profile.json';
 const PROJECT_PROFILE_SCHEMA_VERSION = 1;
 const KIRA_ATTEMPT_RECORD_VERSION = 2;
 const KIRA_REVIEW_RECORD_VERSION = 2;
-const KIRA_PROMPT_CONTRACT_VERSION = 2;
+const KIRA_PROMPT_CONTRACT_VERSION = 3;
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_CLARIFICATION_QUESTIONS = 3;
@@ -1678,7 +1731,7 @@ function buildDefaultSubagentRegistry(
   const defaults: KiraSubagentDefinition[] = [
     {
       id: 'explorer',
-      label: 'Explorer',
+      label: 'Context Scout',
       profile: 'generalist',
       description:
         'Find relevant files, contracts, tests, and project constraints before planning.',
@@ -1694,6 +1747,19 @@ function buildDefaultSubagentRegistry(
       description: 'Apply the scoped patch while preserving user work and project policy.',
       tools: ['read_file', 'edit_file', 'write_file', 'run_command'],
       requiredEvidence: ['diffHunkReview', 'validation'],
+      modelHint: '',
+      enabled: true,
+    },
+    {
+      id: 'alternative-worker',
+      label: 'Alternative Worker',
+      profile: recommended.has('test-validation')
+        ? 'test-validation challenger'
+        : 'alternate implementation challenger',
+      description:
+        'Produce a second isolated patch only when risk or ambiguity justifies an alternative attempt.',
+      tools: ['read_file', 'search_files', 'edit_file', 'write_file', 'run_command'],
+      requiredEvidence: ['approachAlternatives', 'diffHunkReview', 'validation'],
       modelHint: '',
       enabled: true,
     },
@@ -1777,7 +1843,7 @@ export function normalizeSubagentRegistry(
 
 function buildDefaultWorkflowDag(runMode: KiraRunMode = 'standard'): KiraWorkflowDag {
   const nodes: KiraWorkflowDagNode[] = [
-    { id: 'discover', label: 'Context discovery', kind: 'plan', required: true },
+    { id: 'context-scout', label: 'Context scout evidence', kind: 'plan', required: true },
     { id: 'plan', label: 'Preflight plan', kind: 'plan', required: true },
     { id: 'design-gate', label: 'Design gate', kind: 'review', required: runMode !== 'quick' },
     { id: 'implement', label: 'Implementation', kind: 'implement', required: true },
@@ -3705,14 +3771,25 @@ function buildWorkerLanes(
   subagents?: KiraSubagentDefinition[],
 ): KiraWorkerLane[] {
   const runnableSubagents = selectRunnableSubagents(subagents);
-  return workerConfigs.slice(0, 3).map((config, index) => {
-    const subagent = runnableSubagents[index % Math.max(1, runnableSubagents.length)];
+  const primarySubagent =
+    runnableSubagents.find((agent) => /implement|primary|worker|builder|developer/i.test(agent.id)) ??
+    runnableSubagents[0];
+  const alternativeSubagent =
+    runnableSubagents.find((agent) => /alternative|challenger|test-validation/i.test(agent.id)) ??
+    runnableSubagents.find((agent) => agent.id !== primarySubagent?.id) ??
+    primarySubagent;
+  return workerConfigs.slice(0, 2).map((config, index) => {
+    const role = index === 0 ? 'primary_worker' : 'alternative_worker';
+    const subagent = role === 'primary_worker' ? primarySubagent : alternativeSubagent;
     const configuredName = config.name?.trim();
     const baseLabel =
-      configuredName || subagent?.label || `Worker ${String.fromCharCode(65 + index)}`;
+      configuredName ||
+      subagent?.label ||
+      (role === 'primary_worker' ? 'Primary Worker' : 'Alternative Worker');
     return {
       id: `worker-${index + 1}`,
       label: buildAgentLabel(baseLabel, config.model),
+      role,
       config,
       ...(subagent ? { subagent } : {}),
     };
@@ -7033,6 +7110,278 @@ function assessRiskReviewPolicy(params: {
   };
 }
 
+function collectAdaptiveAlternativeWorkerReasons(params: {
+  work: WorkTask;
+  taskType: KiraTaskType;
+  runMode: KiraRunMode;
+  configuredWorkerCount: number;
+  riskPolicy: RiskReviewPolicy;
+  runtimeValidation: RuntimeValidationSignal;
+  escalationSignals?: EscalationSignal[];
+  likelyFiles?: string[];
+}): string[] {
+  if (params.runMode === 'quick') return [];
+  const reasons: string[] = [];
+  if (params.runMode === 'deep') {
+    reasons.push('Deep run mode requests an independent alternative patch.');
+  }
+  if (params.riskPolicy.level === 'high') {
+    reasons.push('High-risk review policy requires stronger comparison evidence.');
+  }
+  if (params.riskPolicy.requiresSecondPass) {
+    reasons.push('Risk policy requires a second pass before approval.');
+  }
+  if (params.runtimeValidation.applicable) {
+    reasons.push('Runtime-sensitive work benefits from an independently validated attempt.');
+  }
+  if ((params.escalationSignals ?? []).some((item) => item.severity !== 'low')) {
+    reasons.push('Material ambiguity or escalation signals were detected in the work brief.');
+  }
+  if ((params.likelyFiles ?? []).length > SMALL_PATCH_PLAN_FILE_LIMIT) {
+    reasons.push('Likely file surface is broad enough to justify an alternative patch comparison.');
+  }
+  if (params.configuredWorkerCount < 2 && reasons.length > 0) {
+    reasons.push('Alternative worker skipped because only one worker model is configured.');
+  }
+  return limitedUniqueStrings(reasons, 8);
+}
+
+export function shouldUseKiraAlternativeWorker(params: {
+  runMode: KiraRunMode;
+  configuredWorkerCount: number;
+  riskPolicy: Pick<RiskReviewPolicy, 'level' | 'requiresSecondPass'>;
+  runtimeValidation: Pick<RuntimeValidationSignal, 'applicable'>;
+  escalationSignals?: Array<Pick<EscalationSignal, 'severity'>>;
+  likelyFiles?: string[];
+}): boolean {
+  const reasons = collectAdaptiveAlternativeWorkerReasons({
+    work: {
+      id: 'adaptive-check',
+      type: 'work',
+      projectName: '',
+      title: '',
+      description: '',
+      status: 'todo',
+      assignee: '',
+      createdAt: 0,
+      updatedAt: 0,
+    },
+    taskType: 'generalist',
+    runMode: params.runMode,
+    configuredWorkerCount: params.configuredWorkerCount,
+    riskPolicy: {
+      level: params.riskPolicy.level,
+      reasons: [],
+      evidenceMinimum: params.riskPolicy.level === 'high' ? 3 : 1,
+      requiresRuntimeValidation: Boolean(params.runtimeValidation.applicable),
+      requiresSecondPass: params.riskPolicy.requiresSecondPass,
+    },
+    runtimeValidation: {
+      applicable: params.runtimeValidation.applicable,
+      reason: '',
+      suggestedUrls: [],
+    },
+    escalationSignals: (params.escalationSignals ?? []).map((item) => ({
+      severity: item.severity,
+      reason: '',
+      suggestedQuestion: '',
+    })),
+    likelyFiles: params.likelyFiles,
+  });
+  return (
+    params.configuredWorkerCount >= 2 &&
+    reasons.some((reason) => !reason.includes('Alternative worker skipped'))
+  );
+}
+
+export function buildAdaptiveAgentPlan(params: {
+  work: WorkTask;
+  taskType: KiraTaskType;
+  runMode: KiraRunMode;
+  configuredWorkerCount: number;
+  riskPolicy: RiskReviewPolicy;
+  runtimeValidation: RuntimeValidationSignal;
+  subagentRegistry?: KiraSubagentDefinition[];
+  escalationSignals?: EscalationSignal[];
+  likelyFiles?: string[];
+}): KiraAdaptiveAgentPlan {
+  const enabledSubagents = (params.subagentRegistry ?? normalizeSubagentRegistry(null)).filter(
+    (agent) => agent.enabled,
+  );
+  const findAgent = (pattern: RegExp) =>
+    enabledSubagents.find((agent) => pattern.test(`${agent.id} ${agent.label} ${agent.profile}`));
+  const contextScout = findAgent(/context|explor|scout|research/i);
+  const primaryWorker =
+    findAgent(/implement|primary|worker|builder|developer/i) ??
+    getPrimaryImplementationSubagent(enabledSubagents);
+  const alternativeWorker = findAgent(/alternative|challenger|test-validation/i);
+  const reviewer = findAgent(/review|security|judge/i);
+  const integrator = findAgent(/integrat|judge|approval/i);
+  const alternativeReasons = collectAdaptiveAlternativeWorkerReasons({
+    work: params.work,
+    taskType: params.taskType,
+    runMode: params.runMode,
+    configuredWorkerCount: params.configuredWorkerCount,
+    riskPolicy: params.riskPolicy,
+    runtimeValidation: params.runtimeValidation,
+    escalationSignals: params.escalationSignals,
+    likelyFiles: params.likelyFiles,
+  });
+  const alternativeEnabled =
+    params.configuredWorkerCount >= 2 &&
+    alternativeReasons.some((reason) => !reason.includes('Alternative worker skipped'));
+  const stageFromAgent = (
+    id: string,
+    role: KiraAdaptiveAgentRole,
+    label: string,
+    activation: KiraAdaptiveAgentActivation,
+    dependsOn: string[],
+    reason: string,
+    inputs: string[],
+    outputs: string[],
+    successCriteria: string[],
+    isolation: KiraAdaptiveAgentStage['isolation'],
+    agent?: KiraSubagentDefinition,
+  ): KiraAdaptiveAgentStage => ({
+    id,
+    role,
+    label: agent ? `${label} (${agent.label})` : label,
+    activation,
+    dependsOn,
+    reason,
+    inputs,
+    outputs,
+    successCriteria,
+    toolScope: agent?.tools ?? [],
+    isolation,
+    ...(agent?.modelHint ? { modelHint: agent.modelHint } : {}),
+  });
+  const stages: KiraAdaptiveAgentStage[] = [
+    stageFromAgent(
+      'planner',
+      'planner',
+      'Planner',
+      'always',
+      [],
+      'Every work item needs a structured task spec before editing.',
+      ['work brief', 'mandatory project instructions', 'context scout evidence'],
+      ['taskSpec', 'riskLevel', 'successCriteria', 'verificationPlan', 'changeDesign'],
+      ['acceptance target is not narrowed', 'planned files are reviewable', 'stop conditions are explicit'],
+      'read-only',
+      contextScout,
+    ),
+    stageFromAgent(
+      'context-scout',
+      'context_scout',
+      'Context Scout',
+      'always',
+      [],
+      'Relevant files, docs, tests, and existing changes must be collected before implementation.',
+      ['work brief', 'project profile', 'workspace scan'],
+      ['evidencePack', 'likelyFiles', 'relatedDocs', 'candidateChecks', 'existingChanges'],
+      ['evidence names concrete files', 'user changes are identified', 'validation candidates are listed'],
+      'read-only',
+      contextScout,
+    ),
+    stageFromAgent(
+      'primary-worker',
+      'primary_worker',
+      'Primary Worker',
+      'always',
+      ['planner', 'context-scout'],
+      'A single writer remains the default implementation owner.',
+      ['taskSpec', 'evidencePack', 'changeDesign', 'mandatory project instructions'],
+      ['patch', 'workerSummary', 'diffHunkReview', 'requirementTrace'],
+      ['patch satisfies the full brief', 'diff matches the plan', 'self-check covers every requirement'],
+      'primary-worktree',
+      primaryWorker,
+    ),
+    stageFromAgent(
+      'alternative-worker',
+      'alternative_worker',
+      'Alternative Worker',
+      alternativeEnabled ? 'conditional' : 'skipped',
+      ['planner', 'context-scout'],
+      alternativeEnabled
+        ? alternativeReasons.join(' ')
+        : alternativeReasons.join(' ') ||
+          'Risk and ambiguity did not justify a second isolated patch.',
+      ['taskSpec', 'evidencePack', 'selected primary approach constraints'],
+      ['independentPatch', 'alternativeValidation', 'comparisonNotes'],
+      ['runs in a separate git worktree', 'does not overwrite primary worker output', 'makes a materially different approach explicit'],
+      alternativeEnabled ? 'git-worktree' : 'not-applicable',
+      alternativeWorker,
+    ),
+    stageFromAgent(
+      'reviewer',
+      'reviewer',
+      'Reviewer',
+      'always',
+      ['primary-worker', ...(alternativeEnabled ? ['alternative-worker'] : [])],
+      'Independent review gates completion on diff, evidence, validation, and project instructions.',
+      ['diff excerpts', 'validation reruns', 'worker self-check', 'risk policy'],
+      ['blockingFindings', 'nonBlockingFindings', 'evidenceChecked', 'requirementVerdicts'],
+      ['blocking findings are explicit', 'reviewer evidence minimum is met', 'validation evidence is not guessed'],
+      'read-only',
+      reviewer,
+    ),
+    stageFromAgent(
+      'integrator',
+      'integrator',
+      'Integrator',
+      'always',
+      ['reviewer'],
+      'Only one approved patch is selected, applied, committed, or summarized.',
+      ['approved attempt', 'review record', 'integration policy'],
+      ['selectedPatch', 'mergeResult', 'summary', 'residualRisk'],
+      ['one winning patch is integrated', 'conflicts block instead of being guessed', 'final summary names validation and risk'],
+      'primary-worktree',
+      integrator,
+    ),
+  ];
+  return {
+    schemaVersion: 1,
+    mode: alternativeEnabled ? 'primary-plus-alternative' : 'primary-only',
+    alternativeWorker: {
+      enabled: alternativeEnabled,
+      maxWorkers: alternativeEnabled ? 2 : 1,
+      isolation: alternativeEnabled ? 'git-worktree' : 'not-applicable',
+      reasons: alternativeReasons.length > 0 ? alternativeReasons : ['Primary-only path is sufficient.'],
+    },
+    stages,
+    successCriteria: [
+      'The final patch satisfies the full work brief and mandatory project instructions.',
+      'Planner success criteria, requirement trace, and worker self-check agree with the final diff.',
+      'Kira validation reruns and reviewer evidence are recorded before completion.',
+    ],
+    verificationPlan: [
+      'Use planner-selected safe commands plus Kira auto-added focused validation.',
+      'Collect diff excerpts and diff stats before review.',
+      'Require reviewer filesChecked, evidenceChecked, and requirementVerdicts before approval.',
+    ],
+    integratorPolicy: {
+      selection: 'single-winning-patch',
+      mergeMode: 'apply-approved-attempt',
+      conflictPolicy: [
+        'Block integration on cherry-pick conflicts, staged changes, or overlapping dirty files.',
+        'Do not synthesize two patches directly in the primary worktree.',
+      ],
+      summaryRequirements: [
+        'Selected attempt or primary-only path',
+        'Validation reruns',
+        'Review evidence',
+        'Residual risk',
+      ],
+    },
+    omittedRoles: [
+      {
+        role: 'debugger',
+        reason: 'Debugger loop is intentionally omitted; validation failures feed back to the worker/reviewer loop.',
+      },
+    ],
+  };
+}
+
 function buildOrchestrationPlan(params: {
   work: WorkTask;
   taskType: KiraTaskType;
@@ -7040,6 +7389,8 @@ function buildOrchestrationPlan(params: {
   workerCount: number;
   riskPolicy: RiskReviewPolicy;
   runtimeValidation: RuntimeValidationSignal;
+  escalationSignals?: EscalationSignal[];
+  likelyFiles?: string[];
   subagentRegistry?: KiraSubagentDefinition[];
   workflowDag?: KiraWorkflowDag;
   environmentContract?: KiraEnvironmentContract;
@@ -7057,6 +7408,17 @@ function buildOrchestrationPlan(params: {
   const enabledConnectors = (params.pluginConnectors ?? normalizePluginConnectors(null)).filter(
     (connector) => connector.enabled,
   );
+  const adaptiveAgentPlan = buildAdaptiveAgentPlan({
+    work: params.work,
+    taskType: params.taskType,
+    runMode: params.runMode,
+    configuredWorkerCount: params.workerCount,
+    riskPolicy: params.riskPolicy,
+    runtimeValidation: params.runtimeValidation,
+    subagentRegistry: enabledSubagents,
+    escalationSignals: params.escalationSignals,
+    likelyFiles: params.likelyFiles,
+  });
   const subagentByIntent = (intent: RegExp) =>
     enabledSubagents.find((agent) => intent.test(`${agent.id} ${agent.label} ${agent.profile}`));
   const laneFromSubagent = (
@@ -7172,7 +7534,7 @@ function buildOrchestrationPlan(params: {
     workflowDag,
     runner: environmentContract.runner,
     connectors: enabledConnectors.map((connector) => connector.id),
-    summary: `${params.runMode} orchestration for "${params.work.title}" (${params.taskType}): ${lanes.length} lane(s), ${enabledSubagents.length} subagent contract(s), ${params.riskPolicy.evidenceMinimum}+ evidence item(s) required.`,
+    summary: `${params.runMode} orchestration for "${params.work.title}" (${params.taskType}): ${adaptiveAgentPlan.mode}, ${lanes.length} lane(s), ${enabledSubagents.length} subagent contract(s), ${params.riskPolicy.evidenceMinimum}+ evidence item(s) required.`,
     lanes,
     checkpoints,
     stopRules: [
@@ -7183,6 +7545,7 @@ function buildOrchestrationPlan(params: {
         ? ['Stop on failed runtime validation when a dev server is detected.']
         : []),
     ],
+    adaptiveAgentPlan,
   };
 }
 
@@ -8293,6 +8656,8 @@ export async function buildProjectContextScan(
     workerCount,
     riskPolicy,
     runtimeValidation,
+    escalationSignals,
+    likelyFiles: likelyFilePaths,
     subagentRegistry,
     workflowDag,
     environmentContract,
@@ -8982,6 +9347,107 @@ function formatList(items: string[], emptyLabel: string): string {
   return items.map((item) => `- ${item}`).join('\n');
 }
 
+function formatRetryWithFeedback(feedback: string[]): string {
+  return [
+    'Retry with feedback:',
+    formatList(feedback, 'No retry feedback generated'),
+    '',
+    'Kira will pass these bullets into the next worker attempt when this work is retried.',
+  ].join('\n');
+}
+
+function buildReviewRetrySolutions(): string[] {
+  return [
+    'Retry with feedback so the next worker attempt addresses the reviewer or integrator blockers directly.',
+    'Add manual evidence or validation output as a comment if the missing part is proof rather than code.',
+    'Tighten the work brief if the reviewer is blocking on ambiguous scope or unclear success criteria.',
+  ];
+}
+
+function buildValidationRetrySolutions(): string[] {
+  return [
+    'Retry with feedback after fixing the failing validation command or the implementation path that triggered it.',
+    'Add manual test evidence as a comment if the required validation cannot be run automatically in this environment.',
+    'Update the project validation hints only when the command itself is stale or no longer represents the project contract.',
+  ];
+}
+
+function buildOperatorFixSolutions(): string[] {
+  return [
+    'Fix the reported project, environment, credential, or git state problem before retrying.',
+    'Leave a comment with manual evidence if the issue was resolved outside Kira.',
+    'Split or narrow the work if the failure came from task scope rather than a local setup problem.',
+  ];
+}
+
+function buildKiraStatusComment(params: {
+  status: string;
+  summary: string;
+  details?: string[];
+  issues?: string[];
+  solutions: string[];
+  retryFeedback?: string[];
+}): string {
+  const retryFeedback = uniqueStrings(params.retryFeedback ?? []).slice(0, 12);
+  return [
+    `Kira status: ${params.status}`,
+    '',
+    `Summary:\n${params.summary}`,
+    ...(params.details?.length ? ['', ...params.details] : []),
+    '',
+    `Issues:\n${formatList(params.issues ?? [], 'No detailed issues provided')}`,
+    '',
+    `Possible solutions:\n${formatList(params.solutions, 'No suggested solution available')}`,
+    ...(retryFeedback.length > 0 ? ['', formatRetryWithFeedback(retryFeedback)] : []),
+  ].join('\n');
+}
+
+function extractBulletedCommentSection(body: string, sectionTitle: string): string[] {
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const normalizedTitle = sectionTitle.trim().toLowerCase();
+  const items: string[] = [];
+  let inSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inSection) {
+      if (trimmed.replace(/:$/, '').toLowerCase() === normalizedTitle) {
+        inSection = true;
+      }
+      continue;
+    }
+
+    if (!trimmed) {
+      if (items.length > 0) break;
+      continue;
+    }
+
+    if (items.length > 0 && /^[A-Za-z][A-Za-z0-9 /_-]{0,80}:$/.test(trimmed)) {
+      break;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      items.push(trimmed.slice(2).trim());
+      continue;
+    }
+
+    if (items.length === 0) {
+      items.push(trimmed);
+    }
+  }
+
+  return uniqueStrings(items.filter(Boolean)).slice(0, 12);
+}
+
+export function extractRetryFeedbackFromCommentBody(body: string): string[] {
+  return extractBulletedCommentSection(body, 'Retry with feedback');
+}
+
+function selectRetryFeedback(summary: string, preferred: string[], fallback: string[] = []): string[] {
+  const feedback = uniqueStrings([...preferred, ...fallback]).filter(Boolean).slice(0, 12);
+  return feedback.length > 0 ? feedback : [summary];
+}
+
 function formatInlineList(items: string[], emptyLabel = 'none'): string {
   return items.length > 0 ? items.slice(0, 6).join(', ') : emptyLabel;
 }
@@ -9211,8 +9677,33 @@ function formatOrchestrationPlan(plan: OrchestrationPlan | undefined): string {
       ),
       'No orchestration lanes',
     )}`,
+    formatAdaptiveAgentPlan(plan.adaptiveAgentPlan),
     `- Checkpoints:\n${formatList(plan.checkpoints, 'No checkpoints')}`,
     `- Stop rules:\n${formatList(plan.stopRules, 'No stop rules')}`,
+  ].join('\n');
+}
+
+function formatAdaptiveAgentPlan(plan: KiraAdaptiveAgentPlan | undefined): string {
+  if (!plan) return '- Adaptive agent graph: not recorded';
+  return [
+    `- Adaptive agent graph: ${plan.mode}`,
+    `- Alternative worker: ${
+      plan.alternativeWorker.enabled ? 'enabled' : 'disabled'
+    } (${formatInlineList(plan.alternativeWorker.reasons)})`,
+    `- Agent stages:\n${formatList(
+      plan.stages.map(
+        (stage) =>
+          `${stage.id} [${stage.activation}] ${stage.label}: ${stage.reason} Outputs: ${formatInlineList(
+            stage.outputs,
+          )}`,
+      ),
+      'No adaptive agent stages',
+    )}`,
+    `- Integrator policy: ${plan.integratorPolicy.selection}, ${plan.integratorPolicy.mergeMode}`,
+    `- Omitted roles:\n${formatList(
+      plan.omittedRoles.map((item) => `${item.role}: ${item.reason}`),
+      'No roles omitted',
+    )}`,
   ].join('\n');
 }
 
@@ -12062,11 +12553,31 @@ export function resolveUnexpectedAutomationFailure(
   errorMessage: string,
 ): AutomationFailureResolution {
   const normalizedMessage = errorMessage.trim() || 'Unknown automation error.';
+  const timeoutFailure =
+    /\btimeout\b/i.test(normalizedMessage) ||
+    /\btimed out\b/i.test(normalizedMessage) ||
+    /\betimedout\b/i.test(normalizedMessage);
   const missingCredentialFailure =
     /\bapi key\b/i.test(normalizedMessage) ||
     /\brequired api keys?\b/i.test(normalizedMessage) ||
     /\bcredentials?\b/i.test(normalizedMessage) ||
     /\btoken\b/i.test(normalizedMessage);
+
+  if (timeoutFailure) {
+    return {
+      summary:
+        'Automation stopped because a model, command, or external agent step timed out before Kira could finish the work.',
+      guidance:
+        'Check the local model or command runtime, reduce the task scope if needed, and retry once the slow step is healthy.',
+      solutions: [
+        'Verify that the configured worker and reviewer models are responding before retrying.',
+        'Split the work or narrow the brief if the timeout came from an oversized task.',
+        'Check project commands or dev servers if the timeout happened during validation rather than model generation.',
+      ],
+      retryFeedback: [],
+      userMessage: `Kira blocked: "${workTitle}" 작업이 timeout으로 중단되어 상황 확인이 필요해요.`,
+    };
+  }
 
   if (missingCredentialFailure) {
     return {
@@ -12074,6 +12585,12 @@ export function resolveUnexpectedAutomationFailure(
         'Automation blocked because the task depends on missing API keys or external credentials.',
       guidance:
         'Add the required API keys or credentials in the target project, or revise the work so that startup generation and other credential-gated steps are not required before retrying.',
+      solutions: [
+        'Add the required API keys, tokens, or external credentials in the target project environment.',
+        'Revise the work brief so credential-gated startup generation is no longer required.',
+        'Add a comment with the resolved credential state before retrying.',
+      ],
+      retryFeedback: [],
       userMessage: `Kira blocked: "${workTitle}" 작업은 필요한 API 키 또는 외부 인증 정보가 없어 자동으로 멈췄어요.`,
     };
   }
@@ -12083,6 +12600,8 @@ export function resolveUnexpectedAutomationFailure(
       'Automation failed unexpectedly, and Kira blocked the task to avoid repeating the same failure.',
     guidance:
       'Inspect the underlying error, fix the project or task brief, and then manually move the work out of Blocked before retrying.',
+    solutions: buildOperatorFixSolutions(),
+    retryFeedback: [],
     userMessage: `Kira blocked: "${workTitle}" 작업이 예기치 않은 오류로 중단되어 같은 실패를 반복하지 않도록 멈췄어요.`,
   };
 }
@@ -12093,6 +12612,7 @@ async function autoCommitApprovedWork(
   commitMessage: string,
   defaultProjectSettings: Partial<KiraProjectSettings> = {},
   integrationLockPath?: string,
+  preAcquiredIntegrationLockOwner?: string,
 ): Promise<{ status: 'committed' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
   const projectRoot = workspace.projectRoot;
   const projectSettings = loadProjectSettings(workspace.primaryRoot, defaultProjectSettings);
@@ -12165,15 +12685,19 @@ async function autoCommitApprovedWork(
 
     if (workspace.isolated) {
       const integrationOwner = `${SERVER_INSTANCE_ID}:${commitHash}:${Date.now()}`;
-      if (
-        integrationLockPath &&
-        !tryAcquireLock(integrationLockPath, {
-          ownerId: integrationOwner,
-          resource: 'project',
-          sessionPath: 'git-integration',
-          targetKey: workspace.primaryRoot,
-        })
-      ) {
+      const integrationLock = integrationLockPath
+        ? acquireIntegrationLock(
+            integrationLockPath,
+            {
+              ownerId: integrationOwner,
+              resource: 'project',
+              sessionPath: 'git-integration',
+              targetKey: workspace.primaryRoot,
+            },
+            preAcquiredIntegrationLockOwner,
+          )
+        : null;
+      if (integrationLockPath && !integrationLock) {
         return {
           status: 'failed',
           message:
@@ -12233,8 +12757,8 @@ async function autoCommitApprovedWork(
           };
         }
       } finally {
-        if (integrationLockPath) {
-          releaseLock(integrationLockPath, integrationOwner);
+        if (integrationLockPath && integrationLock?.release) {
+          releaseLock(integrationLockPath, integrationLock.ownerId);
         }
       }
     }
@@ -12618,6 +13142,7 @@ async function integrateApprovedWorktreeChanges(
   filesChanged: string[],
   commitMessage: string,
   integrationLockPath?: string,
+  preAcquiredIntegrationLockOwner?: string,
 ): Promise<{ status: 'integrated' | 'skipped' | 'failed'; message: string; commitHash?: string }> {
   if (!workspace.isolated) {
     return {
@@ -12645,15 +13170,19 @@ async function integrateApprovedWorktreeChanges(
   }
 
   const integrationOwner = `${SERVER_INSTANCE_ID}:no-commit:${Date.now()}`;
-  if (
-    integrationLockPath &&
-    !tryAcquireLock(integrationLockPath, {
-      ownerId: integrationOwner,
-      resource: 'project',
-      sessionPath: 'git-integration',
-      targetKey: workspace.primaryRoot,
-    })
-  ) {
+  const integrationLock = integrationLockPath
+    ? acquireIntegrationLock(
+        integrationLockPath,
+        {
+          ownerId: integrationOwner,
+          resource: 'project',
+          sessionPath: 'git-integration',
+          targetKey: workspace.primaryRoot,
+        },
+        preAcquiredIntegrationLockOwner,
+      )
+    : null;
+  if (integrationLockPath && !integrationLock) {
     return {
       status: 'failed',
       message:
@@ -12710,8 +13239,8 @@ async function integrateApprovedWorktreeChanges(
       message: error instanceof Error ? error.message : String(error),
     };
   } finally {
-    if (integrationLockPath) {
-      releaseLock(integrationLockPath, integrationOwner);
+    if (integrationLockPath && integrationLock?.release) {
+      releaseLock(integrationLockPath, integrationLock.ownerId);
     }
   }
 }
@@ -12810,6 +13339,27 @@ export function tryAcquireLock(
   }
 
   return false;
+}
+
+function acquireIntegrationLock(
+  lockPath: string,
+  record: Omit<AutomationLockRecord, 'acquiredAt' | 'heartbeatAt'>,
+  preAcquiredOwnerId?: string,
+): { ownerId: string; release: boolean } | null {
+  if (preAcquiredOwnerId && isKiraIntegrationLockReusable(lockPath, preAcquiredOwnerId)) {
+    return { ownerId: preAcquiredOwnerId, release: false };
+  }
+
+  if (tryAcquireLock(lockPath, record)) {
+    return { ownerId: record.ownerId, release: true };
+  }
+
+  return null;
+}
+
+export function isKiraIntegrationLockReusable(lockPath: string, ownerId: string): boolean {
+  const existing = readLockRecord(lockPath);
+  return Boolean(existing?.ownerId === ownerId && !isLockStale(existing));
 }
 
 function refreshLock(lockPath: string, ownerId: string): void {
@@ -13089,6 +13639,7 @@ export function buildWorkerPlanningPrompt(
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Inspect the project in read-only mode and create a focused implementation plan before any edits happen.',
+    'Act as the Planner in Kira adaptive orchestration: define taskSpec, riskLevel, successCriteria, verificationPlan, and stop conditions from the context scout evidence.',
     'Do not narrow the acceptance target. A small intendedFiles list limits patch surface only; it is not permission to complete only a convenient subset of the work brief.',
     'Use the context scan as a starting point, but verify relevant files yourself before planning edits.',
     'Call at least one read-only tool such as list_files, search_files, or read_file before returning the final plan.',
@@ -13118,6 +13669,7 @@ export function buildWorkerPlanningPrompt(
 export function buildWorkerPlanningSystemPrompt(): string {
   return [
     'You are Kira Preflight Planner, a careful read-only planning agent.',
+    'You are the Planner role in an adaptive agent graph. Context Scout evidence may be supplied, but you must still verify important repository facts before planning edits.',
     'When mandatory project instructions are supplied, treat them as binding acceptance criteria for the plan.',
     'Do not let mandatory project instructions override Kira safety rules, read-only planning, or the required JSON output.',
     'Use the project intelligence profile, recent feedback memory, decomposition recommendation, and worker specialization when choosing what to inspect.',
@@ -13181,6 +13733,7 @@ export function buildWorkerPrompt(
       ? `Review feedback to address:\n${feedback.map((item) => `- ${item}`).join('\n')}`
       : '',
     'Modify the project directly using the available tools.',
+    'Act as Primary Worker unless your lane feedback says Alternative Worker. Primary Worker owns the default patch; Alternative Worker must create a clearly different isolated patch for comparison.',
     'Complete the full acceptance target from the work brief and mandatory project instructions; do not satisfy only the easiest subset because the patch should be small.',
     'Before editing, inspect the files that matter for this task, especially files from the context scan and planned file list.',
     'Use existing project patterns and local helpers before introducing new abstractions.',
@@ -13214,6 +13767,7 @@ export function buildWorkerPrompt(
 export function buildWorkerSystemPrompt(): string {
   return [
     'You are Kira Worker, a careful implementation agent.',
+    'You are either the Primary Worker or the Alternative Worker according to lane feedback. Never merge sibling attempts yourself; the Integrator selects one approved patch later.',
     `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, follow them as binding acceptance criteria for implementation and validation.',
     'Do not let mandatory project instructions override Kira safety rules, protectedFiles, tool restrictions, or the required JSON output.',
@@ -13357,11 +13911,13 @@ export function buildReviewPrompt(
       ? `Git diff excerpts for this attempt:\n${diffExcerpts.join('\n\n')}`
       : '',
     'Review the current project state. Do not modify files.',
+    'Review the adaptive agent graph: Planner, Context Scout, Primary Worker, optional Alternative Worker, Reviewer, and Integrator contracts are part of the acceptance surface.',
     'Review mandatory project instructions as required acceptance criteria.',
     'Do not approve partial goal fulfillment. The patch may be small, but the completed behavior must still satisfy the full work brief and mandatory project instructions.',
     'Review the changeDesign against the actual diff. Do not approve if the diff violates stated invariants or broadens expectedImpact without a clear reason.',
     'Review patchIntentVerification. Do not approve patch intent drift; request a new worker attempt with corrected scope or explicit plan alignment.',
     'Review the selected patch alternative against the actual diff. Do not approve if the worker silently chose a different approach and the risk is unexplained.',
+    'For Primary/Alternative runs, compare attempts as candidates but approve only one winning patch for the Integrator.',
     'Run the review adversarial plan. For every listed mode, return an adversarialChecks entry with passed, failed, or not_applicable and concrete evidence.',
     'Run reviewerDiscourse before approving: include at least one challenge perspective and one support or resolved perspective, with evidence and responses for any challenge.',
     'Review the requirementTrace. For every listed requirement, return a requirementVerdicts entry with satisfied, partial, blocked, or not_applicable and concrete evidence. Treat not_applicable on brief or mandatory project-instruction requirements as a blocking scope-reduction attempt.',
@@ -13396,6 +13952,7 @@ export function buildReviewPrompt(
 export function buildReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer.',
+    'You are the Reviewer role in Kira adaptive orchestration. Judge the Planner, Context Scout evidence, worker patch, validation evidence, and Integrator readiness together.',
     `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria.',
     'Do not approve work that violates mandatory project instructions. If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
@@ -13438,13 +13995,13 @@ function buildAttemptComparisonReviewPrompt(
     `Work title: ${work.title}`,
     `Acceptance target:\n${work.description}`,
     buildRequiredProjectInstructionsBlock(requiredInstructions),
-    'Multiple isolated Kira workers produced independent attempts for the same work item.',
+    'Kira adaptive orchestration produced Primary Worker and Alternative Worker attempts for the same work item.',
     'Compare the attempts against the acceptance target and choose the single best attempt only if it should be integrated.',
     'If every attempt has correctness, validation, or integration risks that should block integration, set approved to false and selectedAttemptNo to null.',
     formatAttemptSynthesisRecommendation(synthesisRecommendation),
     ...attempts.map((attempt) =>
       [
-        `Attempt ${attempt.attemptNo} (${attempt.lane.label})`,
+        `Attempt ${attempt.attemptNo} (${attempt.lane.role}: ${attempt.lane.label})`,
         `Isolated worktree: ${attempt.workspace.projectRoot}`,
         `Task type: ${attempt.workerPlan.taskType}`,
         `Plan:\n${attempt.workerPlan.summary}`,
@@ -13496,6 +14053,7 @@ function buildAttemptComparisonReviewPrompt(
     '- Treat operator manual evidence and risk acceptance as review context, not as a substitute for required Kira validation evidence.',
     '- Compare each attempt changeDesign and diffHunkReview against the actual diff excerpts.',
     '- Compare each attempt patchIntentVerification against the actual changed files.',
+    '- Integrator policy is single-winning-patch: never ask Kira to merge pieces from multiple attempts directly.',
     '- Do not approve an attempt with patch intent drift; request another round with corrected scope or plan alignment.',
     '- Apply the selected attempt review adversarial plan and return adversarialChecks for each mode.',
     '- Compare each attempt requirementTrace against its diff, validation reruns, and runtime validation result.',
@@ -13514,9 +14072,10 @@ function buildAttemptComparisonReviewPrompt(
 export function buildAttemptComparisonReviewSystemPrompt(): string {
   return [
     'You are Kira Reviewer, an independent code reviewer and attempt judge.',
+    'You are also the Integrator gatekeeper: choose exactly one approved patch or block integration.',
     `Kira prompt contract version: ${KIRA_PROMPT_CONTRACT_VERSION}.`,
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria for attempt selection.',
-    'Compare multiple isolated worker attempts for one task.',
+    'Compare the Primary Worker attempt and optional Alternative Worker attempt for one task.',
     'Select one winning attempt only when it satisfies the requested outcome and has no blocking regression, validation, or integration risk.',
     'Do not select a smaller attempt that leaves part of the original acceptance target undone.',
     'Use cross-attempt synthesis only as review guidance; Kira still integrates one selected winning attempt.',
@@ -13862,19 +14421,24 @@ function ensureSuggestedCommitMessageComment(
   }
 }
 
-function extractLatestReviewerFeedback(comments: TaskComment[]): string[] {
+export function extractLatestReviewerFeedback(comments: TaskComment[]): string[] {
+  const explicitRetryFeedback = [...comments]
+    .reverse()
+    .map((comment) => extractRetryFeedbackFromCommentBody(comment.body))
+    .find((items) => items.length > 0);
+  if (explicitRetryFeedback) return explicitRetryFeedback;
+
   const latestReviewComment = [...comments]
     .reverse()
     .find((comment) => isReviewerAuthor(comment.author) && comment.body.includes('Issues:'));
 
   if (!latestReviewComment) return [];
-  const issuesSection = latestReviewComment.body.split('Issues:\n')[1] ?? '';
-  return issuesSection
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.startsWith('- '))
-    .map((line) => line.slice(2).trim())
-    .filter(Boolean);
+  const nextWorkerInstructions = extractBulletedCommentSection(
+    latestReviewComment.body,
+    'Next worker instructions',
+  );
+  if (nextWorkerInstructions.length > 0) return nextWorkerInstructions;
+  return extractBulletedCommentSection(latestReviewComment.body, 'Issues');
 }
 
 function sendSseEvent(
@@ -13993,7 +14557,9 @@ async function runIsolatedWorkerAttempt(params: {
   const attemptStartedAt = Date.now();
   const laneFeedback = [
     ...params.feedback,
-    `${params.lane.label}: produce an independent solution in this isolated worktree. Do not coordinate through files outside this worktree.`,
+    params.lane.role === 'alternative_worker'
+      ? `${params.lane.label}: act as Alternative Worker. Produce a materially different isolated patch only inside this worktree and make the tradeoff versus the primary path explicit.`
+      : `${params.lane.label}: act as Primary Worker. Produce the main implementation attempt in this isolated worktree and keep the patch reviewable.`,
     params.lane.subagent
       ? [
           `Subagent contract: ${params.lane.subagent.label} (${params.lane.subagent.profile}).`,
@@ -14317,6 +14883,8 @@ async function runIsolatedWorkerAttempt(params: {
       workerCount: params.workerCount,
       riskPolicy,
       runtimeValidation: runtimeSignal,
+      escalationSignals: contextScan.escalationSignals,
+      likelyFiles: workerSummary.filesChanged,
       subagentRegistry: contextScan.subagentRegistry,
       workflowDag: contextScan.workflowDag,
       environmentContract: contextScan.environmentContract,
@@ -14787,14 +15355,28 @@ async function processWorkWithMultipleWorkers(params: {
   work: WorkTask;
   runtime: ReturnType<typeof getKiraRuntimeSettings>;
   primaryProjectRoot: string;
+  workerLimit: number;
+  preAcquiredProjectLockOwner?: string;
   signal?: AbortSignal;
 }): Promise<void> {
-  const { options, sessionPath, work, runtime, primaryProjectRoot, signal } = params;
+  const {
+    options,
+    sessionPath,
+    work,
+    runtime,
+    primaryProjectRoot,
+    workerLimit,
+    preAcquiredProjectLockOwner,
+    signal,
+  } = params;
   if (!runtime.reviewerConfig) {
     throw new Error('No usable reviewer LLM config was found in config.json.');
   }
   const projectSettings = loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings);
-  const lanes = buildWorkerLanes(runtime.workerConfigs, projectSettings.subagents);
+  const lanes = buildWorkerLanes(
+    runtime.workerConfigs.slice(0, workerLimit),
+    projectSettings.subagents,
+  );
   if (!(await isGitWorktree(primaryProjectRoot))) {
     updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
       ...current,
@@ -14804,11 +15386,17 @@ async function processWorkWithMultipleWorkers(params: {
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        'Automation blocked because multiple workers require git worktree isolation.',
-        '',
-        'Configure one worker for non-git projects, or initialize the project as a git repository before retrying.',
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: 'Blocked before worker start',
+        summary:
+          'The adaptive Primary/Alternative worker path requires git worktree isolation, but this project is not a git worktree.',
+        issues: ['Primary/Alternative isolation cannot be created for a non-git project.'],
+        solutions: [
+          'Use primary-only mode for non-git projects.',
+          'Initialize the project as a git repository before retrying.',
+          'Disable the alternative worker path for this task if isolation is not needed.',
+        ],
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -14817,7 +15405,7 @@ async function processWorkWithMultipleWorkers(params: {
       projectName: work.projectName,
       type: 'needs_attention',
       createdAt: Date.now(),
-      message: `Kira blocked: "${work.title}" 작업은 여러 worker 격리를 위해 git worktree가 필요해요.`,
+      message: `Kira blocked: "${work.title}" 작업은 Primary/Alternative worker 격리를 위해 git worktree가 필요해요.`,
     });
     return;
   }
@@ -14833,19 +15421,20 @@ async function processWorkWithMultipleWorkers(params: {
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        'Automation blocked before start due to project safety checks.',
-        '',
-        `Issues:\n${formatList(safetyIssues, 'No details provided')}`,
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: 'Blocked before worker start',
+        summary: 'Project safety checks failed before Kira could start worker attempts.',
+        issues: safetyIssues,
+        solutions: buildOperatorFixSolutions(),
+      }),
     });
     return;
   }
 
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
   const manualEvidence = collectManualEvidenceFromComments(existingComments);
-  let feedback =
-    work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
+  const retryFeedback = extractLatestReviewerFeedback(existingComments);
+  let feedback = work.status === 'in_progress' || retryFeedback.length > 0 ? retryFeedback : [];
   let previousIssueSignature: string | null = null;
   let repeatedIssueCount = 0;
 
@@ -14863,22 +15452,22 @@ async function processWorkWithMultipleWorkers(params: {
     createdAt: Date.now(),
     message:
       work.status === 'in_progress'
-        ? `Kira 재개: "${work.title}" 작업을 ${lanes.length}개 worker로 다시 진행할게요.`
-        : `Kira 시작: "${work.title}" 작업을 ${lanes.length}개 worker로 자동 시작할게요.`,
+        ? `Kira 재개: "${work.title}" 작업을 adaptive Primary/Alternative worker 경로로 다시 진행할게요.`
+        : `Kira 시작: "${work.title}" 작업을 adaptive Primary/Alternative worker 경로로 자동 시작할게요.`,
   });
   addComment(options.sessionsDir, sessionPath, {
     taskId: work.id,
     taskType: 'work',
     author: runtime.workerAuthor,
     body: [
-      `Picked up the task with ${lanes.length} isolated workers in ${work.projectName}.`,
+      `Picked up the task with adaptive Primary/Alternative workers in ${work.projectName}.`,
       '',
       `Workers:\n${formatList(
-        lanes.map((lane) => lane.label),
+        lanes.map((lane) => `${lane.role}: ${lane.label}`),
         'No workers configured',
       )}`,
       '',
-      'Each worker will produce an independent attempt in its own git worktree. The reviewer will compare passing attempts and select one winner.',
+      'Primary Worker owns the default implementation. Alternative Worker runs only as an isolated patch challenger for this risky or ambiguous task. The reviewer and integrator compare passing attempts and select one winner.',
     ].join('\n'),
   });
 
@@ -14933,11 +15522,13 @@ async function processWorkWithMultipleWorkers(params: {
         taskId: work.id,
         taskType: 'work',
         author: runtime.reviewerAuthor,
-        body: [
-          `No worker attempts were ready for review after cycle ${cycle}.`,
-          '',
-          `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
-        ].join('\n'),
+        body: buildKiraStatusComment({
+          status: `Validation blocked cycle ${cycle}`,
+          summary: 'No Primary/Alternative worker attempt was ready for final review.',
+          issues: feedback,
+          solutions: buildValidationRetrySolutions(),
+          retryFeedback: feedback,
+        }),
       });
       await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
       if (issueSignature === previousIssueSignature) {
@@ -15029,11 +15620,12 @@ async function processWorkWithMultipleWorkers(params: {
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            `Execution policy blocked selected attempt ${selectedAttempt.attemptNo} after review approval.`,
-            '',
-            `Issues:\n${formatList(completionPolicyIssues, 'No details provided')}`,
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: 'Blocked after review approval',
+            summary: `Execution policy blocked selected attempt ${selectedAttempt.attemptNo} after review approval.`,
+            issues: completionPolicyIssues,
+            solutions: buildOperatorFixSolutions(),
+          }),
         });
         await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
         return;
@@ -15111,12 +15703,14 @@ async function processWorkWithMultipleWorkers(params: {
             suggestedCommitMessage,
             runtime.defaultProjectSettings,
             projectLockPath,
+            preAcquiredProjectLockOwner,
           )
         : await integrateApprovedWorktreeChanges(
             selectedAttempt.workspace,
             selectedAttempt.workerSummary.filesChanged,
             suggestedCommitMessage,
             projectLockPath,
+            preAcquiredProjectLockOwner,
           );
       const connectorEvidence =
         integrationResult.status === 'committed'
@@ -15152,11 +15746,13 @@ async function processWorkWithMultipleWorkers(params: {
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            `Approved attempt ${selectedAttempt.attemptNo}, but integration failed.`,
-            '',
-            integrationResult.message,
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: 'Integration failed',
+            summary: `Approved attempt ${selectedAttempt.attemptNo}, but integration failed.`,
+            details: [`Integration result:\n${integrationResult.message}`],
+            issues: [integrationResult.message],
+            solutions: buildOperatorFixSolutions(),
+          }),
         });
         await Promise.all(
           results
@@ -15267,20 +15863,14 @@ async function processWorkWithMultipleWorkers(params: {
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        `Reviewer did not approve any attempts after cycle ${cycle}.`,
-        '',
-        formatAttemptSynthesisRecommendation(synthesisRecommendation),
-        '',
-        `Summary:\n${selection.summary}`,
-        '',
-        `Issues:\n${formatList(selection.issues, 'No detailed issues provided')}`,
-        '',
-        `Next worker instructions:\n${formatList(
-          selection.nextWorkerInstructions,
-          'No next instructions provided',
-        )}`,
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: `Final review requested changes after cycle ${cycle}`,
+        summary: selection.summary,
+        details: [formatAttemptSynthesisRecommendation(synthesisRecommendation)],
+        issues: selection.issues,
+        solutions: buildReviewRetrySolutions(),
+        retryFeedback: feedback,
+      }),
     });
     await Promise.all(results.map((result) => cleanupKiraWorktreeSession(result.workspace)));
 
@@ -15308,13 +15898,14 @@ async function processWorkWithMultipleWorkers(params: {
     taskId: work.id,
     taskType: 'work',
     author: runtime.reviewerAuthor,
-    body: [
-      `Blocked after ${MAX_REVIEW_CYCLES} multi-worker review cycles.`,
-      '',
-      `Summary:\n${feedback[0] ?? 'No worker attempt satisfied the review requirements.'}`,
-      '',
-      `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
-    ].join('\n'),
+    body: buildKiraStatusComment({
+      status: 'Blocked after final review retries',
+      summary:
+        feedback[0] ?? 'No worker attempt satisfied the final review requirements.',
+      issues: feedback,
+      solutions: buildReviewRetrySolutions(),
+      retryFeedback: feedback,
+    }),
   });
   enqueueEvent(options.sessionsDir, sessionPath, {
     id: makeId('event'),
@@ -15323,7 +15914,7 @@ async function processWorkWithMultipleWorkers(params: {
     projectName: work.projectName,
     type: 'needs_attention',
     createdAt: Date.now(),
-    message: `Kira blocked: "${work.title}" 작업이 여러 worker 재시도 후에도 리뷰를 통과하지 못했어요.`,
+    message: `Kira blocked: "${work.title}" 작업이 Primary/Alternative worker 재시도 후에도 리뷰를 통과하지 못했어요.`,
   });
 }
 
@@ -15332,6 +15923,7 @@ async function processWork(
   sessionPath: string,
   workId: string,
   signal?: AbortSignal,
+  preAcquiredProjectLockOwner?: string,
 ): Promise<void> {
   const runtime = getKiraRuntimeSettings(options.configFile, options.getWorkRootDirectory());
   const dataDir = getKiraDataDir(options.sessionsDir, sessionPath);
@@ -15343,7 +15935,16 @@ async function processWork(
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: 'Automation could not start because no usable LLM config was found in config.json.',
+      body: buildKiraStatusComment({
+        status: 'Automation cannot start',
+        summary: 'No usable worker/reviewer LLM config was found in config.json.',
+        issues: ['Kira needs both a worker model and a reviewer model before automation can run.'],
+        solutions: [
+          'Open Kira model settings and configure a worker model plus a reviewer model.',
+          'Verify that the configured provider endpoint is reachable.',
+          'Retry the work after the model readiness indicator is healthy.',
+        ],
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -15363,7 +15964,19 @@ async function processWork(
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: 'Automation could not start because the project root directory for this work was not found.',
+      body: buildKiraStatusComment({
+        status: 'Automation cannot start',
+        summary: 'The project root directory for this work was not found.',
+        issues: [
+          `Work root: ${runtime.workRootDirectory || 'not configured'}`,
+          `Project: ${work.projectName || 'not set'}`,
+        ],
+        solutions: [
+          'Set the Kira work root to the parent folder that contains this project.',
+          'Check that the work item project name still matches an existing project folder.',
+          'Refresh the project list before retrying the work.',
+        ],
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -15389,12 +16002,14 @@ async function processWork(
   work = clarifiedWork;
 
   const projectSettings = loadProjectSettings(primaryProjectRoot, runtime.defaultProjectSettings);
+  const configuredAdaptiveWorkerCount =
+    projectSettings.runMode === 'quick' ? 1 : Math.min(2, runtime.workerConfigs.length);
   const initialContextScan = await buildProjectContextScan(
     primaryProjectRoot,
     work,
     projectSettings.effectiveInstructions,
     projectSettings.runMode,
-    projectSettings.runMode === 'quick' ? 1 : runtime.workerConfigs.length,
+    configuredAdaptiveWorkerCount,
     projectSettings,
   );
   if (
@@ -15447,13 +16062,17 @@ async function processWork(
     return;
   }
 
-  if (runtime.workerConfigs.length > 1 && projectSettings.runMode !== 'quick') {
+  const shouldRunAlternativeWorker =
+    initialContextScan.orchestrationPlan?.adaptiveAgentPlan.alternativeWorker.enabled === true;
+  if (shouldRunAlternativeWorker && runtime.workerConfigs.length > 1) {
     await processWorkWithMultipleWorkers({
       options,
       sessionPath,
       work,
       runtime,
       primaryProjectRoot,
+      workerLimit: Math.min(2, runtime.workerConfigs.length),
+      preAcquiredProjectLockOwner,
       signal,
     });
     return;
@@ -15475,11 +16094,20 @@ async function processWork(
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        'Automation blocked because Kira could not create an isolated git worktree.',
-        '',
-        'The task was not run in the primary worktree because auto-commit is enabled and concurrent work requires isolation.',
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: 'Blocked before worker start',
+        summary:
+          'Kira could not create an isolated git worktree, so it did not run the task in the primary worktree.',
+        issues: [
+          'Auto-commit is enabled and this work requires isolation before editing files.',
+          'The isolated git worktree was not created successfully.',
+        ],
+        solutions: [
+          'Check git worktree support and repository health for the selected project.',
+          'Clean up stale Kira worktrees if a previous run left one behind.',
+          'Disable auto-commit only if running directly in the primary worktree is acceptable.',
+        ],
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -15505,13 +16133,12 @@ async function processWork(
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        'Automation blocked before start due to project safety checks.',
-        '',
-        `Issues:\n${formatList(safetyIssues, 'No details provided')}`,
-        '',
-        'Please restore the project to a healthy state before retrying this work.',
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: 'Blocked before worker start',
+        summary: 'Project safety checks failed before Kira could start worker attempts.',
+        issues: safetyIssues,
+        solutions: buildOperatorFixSolutions(),
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -15542,11 +16169,16 @@ async function processWork(
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        'Automation blocked before worker start due to the project environment contract.',
-        '',
-        `Issues:\n${formatList(environmentExecutionIssues, 'No details provided')}`,
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: 'Blocked before worker start',
+        summary: 'The project environment contract failed before Kira could start the worker.',
+        issues: environmentExecutionIssues,
+        solutions: [
+          'Fix the failing setup command or required environment variable.',
+          'Update the project environment contract if the command is stale.',
+          'Add a manual evidence comment after resolving the setup issue, then retry the work.',
+        ],
+      }),
     });
     enqueueEvent(options.sessionsDir, sessionPath, {
       id: makeId('event'),
@@ -15573,8 +16205,11 @@ async function processWork(
   const existingComments = loadTaskComments(options.sessionsDir, sessionPath, work.id);
   contextScan.manualEvidence = collectManualEvidenceFromComments(existingComments);
   const activeSubagent = getPrimaryImplementationSubagent(contextScan.subagentRegistry);
+  const extractedRetryFeedback = extractLatestReviewerFeedback(existingComments);
   const resumeFeedback =
-    work.status === 'in_progress' ? extractLatestReviewerFeedback(existingComments) : [];
+    work.status === 'in_progress' || extractedRetryFeedback.length > 0
+      ? extractedRetryFeedback
+      : [];
 
   throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
 
@@ -15875,6 +16510,8 @@ async function processWork(
       workerCount: 1,
       riskPolicy,
       runtimeValidation: runtimeSignal,
+      escalationSignals: contextScan.escalationSignals,
+      likelyFiles: workerSummary.filesChanged,
       subagentRegistry: contextScan.subagentRegistry,
       workflowDag: contextScan.workflowDag,
       environmentContract: contextScan.environmentContract,
@@ -16127,17 +16764,18 @@ async function processWork(
         taskId: work.id,
         taskType: 'work',
         author: runtime.reviewerAuthor,
-        body: [
-          `Blocked after automated safety validation failed on attempt ${cycle}.`,
-          '',
-          `Issues:\n${formatList(highRiskIssues, 'No detailed issues provided')}`,
-          '',
-          `Rolled back files:\n${formatList(restoredFiles, 'No files rolled back')}`,
-          '',
-          restoreError ? `Rollback error:\n${restoreError}` : 'Rollback completed without errors.',
-          '',
-          'Kira rolled back the latest attempt instead of leaving unsafe or unverified edits in the worktree.',
-        ].join('\n'),
+        body: buildKiraStatusComment({
+          status: `Safety validation blocked attempt ${cycle}`,
+          summary:
+            'Automated safety validation failed, so Kira rolled back the latest attempt instead of leaving unsafe or unverified edits in the worktree.',
+          details: [
+            `Rolled back files:\n${formatList(restoredFiles, 'No files rolled back')}`,
+            restoreError ? `Rollback error:\n${restoreError}` : 'Rollback completed without errors.',
+          ],
+          issues: highRiskIssues,
+          solutions: buildReviewRetrySolutions(),
+          retryFeedback: highRiskIssues,
+        }),
       });
       enqueueEvent(options.sessionsDir, sessionPath, {
         id: makeId('event'),
@@ -16197,40 +16835,41 @@ async function processWork(
           rawWorkerOutput: workerRaw,
         }),
       );
-      addComment(options.sessionsDir, sessionPath, {
-        taskId: work.id,
-        taskType: 'work',
-        author: runtime.reviewerAuthor,
-        body: [
-          `Validation requested changes after attempt ${cycle}.`,
-          '',
-          `Passed reruns:\n${formatList(validationReruns.passed, 'No validation reruns passed')}`,
-          '',
-          `Failed reruns:\n${formatList(validationReruns.failed, 'No validation reruns failed')}`,
-          '',
-          `Failure details:\n${formatList(
-            validationReruns.failureDetails,
-            'No validation failure details provided',
-          )}`,
-          '',
-          formatFailureAnalysis(failureAnalysis),
-          '',
-          `Worker self-check issues:\n${formatList(
-            selfCheckIssues,
-            'No worker self-check issues',
-          )}`,
-          '',
-          'Kira reran the planned validation commands itself and will not send this attempt to final review until they pass.',
-        ].join('\n'),
-      });
-
-      feedback = [
+      const validationFeedback = [
         ...validationReruns.failed.map(
           (command) => `Planned validation failed when Kira reran it: ${command}`,
         ),
         ...failureAnalysis.map((item) => `Failure analysis (${item.category}): ${item.guidance}`),
         ...selfCheckIssues,
       ];
+      addComment(options.sessionsDir, sessionPath, {
+        taskId: work.id,
+        taskType: 'work',
+        author: runtime.reviewerAuthor,
+        body: buildKiraStatusComment({
+          status: `Validation requested changes after attempt ${cycle}`,
+          summary:
+            'Kira reran the planned validation commands itself and will not send this attempt to final review until they pass.',
+          details: [
+            `Passed reruns:\n${formatList(validationReruns.passed, 'No validation reruns passed')}`,
+            `Failed reruns:\n${formatList(validationReruns.failed, 'No validation reruns failed')}`,
+            `Failure details:\n${formatList(
+              validationReruns.failureDetails,
+              'No validation failure details provided',
+            )}`,
+            formatFailureAnalysis(failureAnalysis),
+            `Worker self-check issues:\n${formatList(
+              selfCheckIssues,
+              'No worker self-check issues',
+            )}`,
+          ],
+          issues: validationFeedback,
+          solutions: buildValidationRetrySolutions(),
+          retryFeedback: validationFeedback,
+        }),
+      });
+
+      feedback = validationFeedback;
       const validationSummary =
         validationReruns.failed.length > 0
           ? `Validation reruns failed: ${validationReruns.failed.join(', ')}`
@@ -16280,13 +16919,14 @@ async function processWork(
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            `Blocked early because the same validation failures repeated without progress after attempt ${cycle}.`,
-            '',
-            `Issues:\n${formatList(feedback, validationSummary)}`,
-            '',
-            'Kira stopped retrying because the worker was not making progress against the same rerun validation failures.',
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: `Blocked after repeated validation failures on attempt ${cycle}`,
+            summary:
+              'Kira stopped retrying because the worker was not making progress against the same rerun validation failures.',
+            issues: feedback.length > 0 ? feedback : [validationSummary],
+            solutions: buildValidationRetrySolutions(),
+            retryFeedback: feedback,
+          }),
         });
         enqueueEvent(options.sessionsDir, sessionPath, {
           id: makeId('event'),
@@ -16440,11 +17080,12 @@ async function processWork(
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            'Execution policy blocked task completion after review approval.',
-            '',
-            `Issues:\n${formatList(completionPolicyIssues, 'No details provided')}`,
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: 'Blocked after review approval',
+            summary: 'Execution policy blocked task completion after review approval.',
+            issues: completionPolicyIssues,
+            solutions: buildOperatorFixSolutions(),
+          }),
         });
         return;
       }
@@ -16508,6 +17149,7 @@ async function processWork(
           options.sessionsDir,
           getProjectKey(runtime.workRootDirectory, work, sessionPath),
         ),
+        preAcquiredProjectLockOwner,
       );
       const connectorEvidence =
         autoCommitResult.status === 'committed'
@@ -16571,11 +17213,13 @@ async function processWork(
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            'Auto-commit failed and Kira blocked the task before marking integration complete.',
-            '',
-            autoCommitResult.message,
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: 'Integration failed',
+            summary: 'Auto-commit failed and Kira blocked the task before marking integration complete.',
+            details: [`Auto-commit result:\n${autoCommitResult.message}`],
+            issues: [autoCommitResult.message],
+            solutions: buildOperatorFixSolutions(),
+          }),
         });
         enqueueEvent(options.sessionsDir, sessionPath, {
           id: makeId('event'),
@@ -16622,41 +17266,41 @@ async function processWork(
           : [],
     });
 
+    const reviewFeedback = selectRetryFeedback(
+      reviewSummary.summary,
+      reviewSummary.nextWorkerInstructions,
+      reviewSummary.issues,
+    );
     addComment(options.sessionsDir, sessionPath, {
       taskId: work.id,
       taskType: 'work',
       author: runtime.reviewerAuthor,
-      body: [
-        `Review requested changes after attempt ${cycle}.`,
-        '',
-        `Summary:\n${reviewSummary.summary}`,
-        '',
-        `Findings:\n${formatList(
-          reviewSummary.findings.map((finding) =>
-            [
-              finding.severity,
-              finding.file,
-              finding.line ? `line ${finding.line}` : '',
-              finding.message,
-            ]
-              .filter(Boolean)
-              .join(': '),
-          ),
-          'No structured findings',
-        )}`,
-        '',
-        `Missing validation:\n${formatList(
-          reviewSummary.missingValidation,
-          'No missing validation reported',
-        )}`,
-        '',
-        `Next worker instructions:\n${formatList(
-          reviewSummary.nextWorkerInstructions,
-          'No next instructions provided',
-        )}`,
-        '',
-        `Issues:\n${formatList(reviewSummary.issues, 'No detailed issues provided')}`,
-      ].join('\n'),
+      body: buildKiraStatusComment({
+        status: `Final review requested changes after attempt ${cycle}`,
+        summary: reviewSummary.summary,
+        details: [
+          `Findings:\n${formatList(
+            reviewSummary.findings.map((finding) =>
+              [
+                finding.severity,
+                finding.file,
+                finding.line ? `line ${finding.line}` : '',
+                finding.message,
+              ]
+                .filter(Boolean)
+                .join(': '),
+            ),
+            'No structured findings',
+          )}`,
+          `Missing validation:\n${formatList(
+            reviewSummary.missingValidation,
+            'No missing validation reported',
+          )}`,
+        ],
+        issues: reviewSummary.issues,
+        solutions: buildReviewRetrySolutions(),
+        retryFeedback: reviewFeedback,
+      }),
     });
 
     saveAttemptRecord(
@@ -16688,12 +17332,7 @@ async function processWork(
       }),
     );
 
-    feedback =
-      reviewSummary.nextWorkerInstructions.length > 0
-        ? reviewSummary.nextWorkerInstructions
-        : reviewSummary.issues.length > 0
-          ? reviewSummary.issues
-          : [reviewSummary.summary];
+    feedback = reviewFeedback;
     const issueSignature = buildIssueSignature(reviewSummary.issues, reviewSummary.summary);
     if (issueSignature === previousIssueSignature) {
       repeatedIssueCount += 1;
@@ -16740,13 +17379,14 @@ async function processWork(
         taskId: work.id,
         taskType: 'work',
         author: runtime.reviewerAuthor,
-        body: [
-          `Blocked early because the same review issues repeated without progress after attempt ${cycle}.`,
-          '',
-          `Issues:\n${formatList(reviewSummary.issues, reviewSummary.summary)}`,
-          '',
-          'Kira stopped retrying because the worker was not making progress against the same review feedback.',
-        ].join('\n'),
+        body: buildKiraStatusComment({
+          status: `Blocked after repeated review feedback on attempt ${cycle}`,
+          summary:
+            'Kira stopped retrying because the worker was not making progress against the same review feedback.',
+          issues: reviewSummary.issues.length > 0 ? reviewSummary.issues : [reviewSummary.summary],
+          solutions: buildReviewRetrySolutions(),
+          retryFeedback: feedback,
+        }),
       });
       enqueueEvent(options.sessionsDir, sessionPath, {
         id: makeId('event'),
@@ -16776,15 +17416,14 @@ async function processWork(
     taskId: work.id,
     taskType: 'work',
     author: runtime.reviewerAuthor,
-    body: [
-      `Blocked after ${MAX_REVIEW_CYCLES} review or validation attempts.`,
-      '',
-      `Summary:\n${feedback[0] ?? 'The work could not satisfy the review requirements within the allowed retries.'}`,
-      '',
-      `Issues:\n${formatList(feedback, 'No detailed issues provided')}`,
-      '',
-      'Please revise the work brief or resolve the review issues before restarting this task.',
-    ].join('\n'),
+    body: buildKiraStatusComment({
+      status: 'Blocked after review or validation retries',
+      summary:
+        feedback[0] ?? 'The work could not satisfy the review requirements within the allowed retries.',
+      issues: feedback,
+      solutions: buildReviewRetrySolutions(),
+      retryFeedback: feedback,
+    }),
   });
   enqueueEvent(options.sessionsDir, sessionPath, {
     id: makeId('event'),
@@ -16827,7 +17466,7 @@ function startWorkJob(
   const shouldUseIsolatedWorktree = shouldUseKiraAttemptWorktrees(
     projectRoot,
     projectSettings,
-    runtime.workerConfigs.length,
+    1,
   );
   let projectLockAcquired = false;
   if (
@@ -16872,7 +17511,13 @@ function startWorkJob(
     }
   }, LOCK_HEARTBEAT_MS);
   heartbeat.unref?.();
-  void processWork(options, sessionPath, workId, controller.signal)
+  void processWork(
+    options,
+    sessionPath,
+    workId,
+    controller.signal,
+    projectLockAcquired ? SERVER_INSTANCE_ID : undefined,
+  )
     .catch((error) => {
       if (isAbortError(error)) return;
       const work = readJsonFile<WorkTask>(join(dataDir, WORKS_DIR_NAME, `${workId}.json`));
@@ -16889,15 +17534,17 @@ function startWorkJob(
           taskId: work.id,
           taskType: 'work',
           author: runtime.reviewerAuthor,
-          body: [
-            'Automation failed unexpectedly and Kira blocked this task to avoid retry loops.',
-            '',
-            `Summary:\n${resolvedFailure.summary}`,
-            '',
-            `Error:\n${error instanceof Error ? error.message : String(error)}`,
-            '',
-            `Guidance:\n${resolvedFailure.guidance}`,
-          ].join('\n'),
+          body: buildKiraStatusComment({
+            status: 'Automation failed unexpectedly',
+            summary: resolvedFailure.summary,
+            details: [
+              `Error:\n${error instanceof Error ? error.message : String(error)}`,
+              `Guidance:\n${resolvedFailure.guidance}`,
+            ],
+            issues: [error instanceof Error ? error.message : String(error)],
+            solutions: resolvedFailure.solutions,
+            retryFeedback: resolvedFailure.retryFeedback,
+          }),
         });
         enqueueEvent(options.sessionsDir, sessionPath, {
           id: makeId('event'),

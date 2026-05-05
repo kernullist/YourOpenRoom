@@ -92,17 +92,23 @@ The Kira app shell also supports project roots with long names or paths in its l
 browser locales fall back to the available Kira translations so labels remain readable even when the
 exact locale bundle is not present.
 
-Kira supports one worker by default or up to three configured workers. In multi-worker mode, every
-worker gets a separate git worktree for its attempt, and the reviewer compares all validated
-attempts before selecting one winner. Codex CLI workers/reviewers can be configured with
+Kira uses one Primary Worker by default. It enables one Alternative Worker only when the adaptive
+agent graph marks the work as high-risk, ambiguous, runtime-sensitive, or deep-mode. The alternative
+attempt runs in a separate git worktree as a patch challenger; the Reviewer and Integrator still
+select one winning patch instead of merging pieces from several attempts. Codex CLI
+workers/reviewers can be configured with
 `provider: "codex-cli"` after `codex login`; OpenCode Zen/Go workers/reviewers can be configured
 with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key.
-When multiple workers share the same provider/baseUrl/model route, Kira throttles concurrent model
-calls to one for local routes (`llama.cpp`, localhost, or private-network base URLs) and two for
-all other routes.
+When Primary/Alternative workers share the same provider/baseUrl/model route, Kira throttles
+concurrent model calls to one for local routes (`llama.cpp`, localhost, or private-network base
+URLs) and two for all other routes.
 Each model call sets the response output token cap to 8192 tokens.
 Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
 policy checks remain the stopping controls.
+When final review, Integrator selection, validation, or a timeout blocks a work item, Kira writes a
+main-model status comment with issues and possible solutions. Review-passable failures also include
+a `Retry with feedback` section, and the Kira detail panel can resume the blocked work with that
+feedback carried into the next worker attempt.
 
 Before worker assignment, Kira runs a clarification analysis over the work title, description, and
 project context. If a material ambiguity would likely send workers in the wrong direction, Kira
@@ -111,7 +117,7 @@ only returns the work to `todo` after the user's answers are saved back into the
 
 For git projects with Kira `autoCommit` enabled, automation commits approved work in the winning
 temporary git worktree. The primary project worktree is touched only during the final locked
-cherry-pick integration. With multiple workers and `autoCommit` disabled, Kira still isolates
+cherry-pick integration. With an Alternative Worker and `autoCommit` disabled, Kira still isolates
 attempts and integrates the selected diff without making the final commit. Integration conflicts,
 overlapping dirty files, or existing staged changes block the task and keep the winning isolated
 worktree for manual recovery.

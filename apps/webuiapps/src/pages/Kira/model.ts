@@ -268,6 +268,44 @@ export interface KiraOrchestrationPlan {
   }>;
   checkpoints: string[];
   stopRules: string[];
+  adaptiveAgentPlan?: KiraAdaptiveAgentPlan;
+}
+
+export interface KiraAdaptiveAgentPlan {
+  schemaVersion: number;
+  mode: string;
+  alternativeWorker: {
+    enabled: boolean;
+    maxWorkers: number;
+    isolation: string;
+    reasons: string[];
+  };
+  stages: Array<{
+    id: string;
+    role: string;
+    label: string;
+    activation: string;
+    dependsOn: string[];
+    reason: string;
+    inputs: string[];
+    outputs: string[];
+    successCriteria: string[];
+    toolScope: string[];
+    isolation: string;
+    modelHint?: string;
+  }>;
+  successCriteria: string[];
+  verificationPlan: string[];
+  integratorPolicy: {
+    selection: string;
+    mergeMode: string;
+    conflictPolicy: string[];
+    summaryRequirements: string[];
+  };
+  omittedRoles: Array<{
+    role: string;
+    reason: string;
+  }>;
 }
 
 export interface KiraEvidenceLedger {
@@ -672,6 +710,92 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
       : [],
     checkpoints: normalizeStringList(parsed.checkpoints),
     stopRules: normalizeStringList(parsed.stopRules),
+    adaptiveAgentPlan: normalizeAdaptiveAgentPlan(parsed.adaptiveAgentPlan),
+  };
+}
+
+function normalizeAdaptiveAgentPlan(value: unknown): KiraAdaptiveAgentPlan | undefined {
+  const parsed = parseRecord<Partial<KiraAdaptiveAgentPlan>>(value);
+  if (!parsed?.mode) return undefined;
+  const alternativeWorker = parseRecord<
+    Partial<KiraAdaptiveAgentPlan['alternativeWorker']>
+  >(parsed.alternativeWorker);
+  const integratorPolicy = parseRecord<
+    Partial<KiraAdaptiveAgentPlan['integratorPolicy']>
+  >(parsed.integratorPolicy);
+  return {
+    schemaVersion:
+      typeof parsed.schemaVersion === 'number' && Number.isFinite(parsed.schemaVersion)
+        ? parsed.schemaVersion
+        : 1,
+    mode: String(parsed.mode),
+    alternativeWorker: {
+      enabled: Boolean(alternativeWorker?.enabled),
+      maxWorkers:
+        typeof alternativeWorker?.maxWorkers === 'number' &&
+        Number.isFinite(alternativeWorker.maxWorkers)
+          ? alternativeWorker.maxWorkers
+          : 1,
+      isolation:
+        typeof alternativeWorker?.isolation === 'string'
+          ? alternativeWorker.isolation
+          : 'not-applicable',
+      reasons: normalizeStringList(alternativeWorker?.reasons),
+    },
+    stages: Array.isArray(parsed.stages)
+      ? parsed.stages
+          .map((stage): KiraAdaptiveAgentPlan['stages'][number] | null => {
+            if (!stage || typeof stage !== 'object') return null;
+            const raw = stage as Partial<KiraAdaptiveAgentPlan['stages'][number]>;
+            const id = typeof raw.id === 'string' ? raw.id.trim() : '';
+            if (!id) return null;
+            return {
+              id,
+              role: typeof raw.role === 'string' ? raw.role : '',
+              label: typeof raw.label === 'string' ? raw.label : id,
+              activation: typeof raw.activation === 'string' ? raw.activation : 'always',
+              dependsOn: normalizeStringList(raw.dependsOn),
+              reason: typeof raw.reason === 'string' ? raw.reason : '',
+              inputs: normalizeStringList(raw.inputs),
+              outputs: normalizeStringList(raw.outputs),
+              successCriteria: normalizeStringList(raw.successCriteria),
+              toolScope: normalizeStringList(raw.toolScope),
+              isolation: typeof raw.isolation === 'string' ? raw.isolation : 'not-applicable',
+              ...(typeof raw.modelHint === 'string' ? { modelHint: raw.modelHint } : {}),
+            };
+          })
+          .filter((stage): stage is KiraAdaptiveAgentPlan['stages'][number] => Boolean(stage))
+      : [],
+    successCriteria: normalizeStringList(parsed.successCriteria),
+    verificationPlan: normalizeStringList(parsed.verificationPlan),
+    integratorPolicy: {
+      selection:
+        typeof integratorPolicy?.selection === 'string'
+          ? integratorPolicy.selection
+          : 'single-winning-patch',
+      mergeMode:
+        typeof integratorPolicy?.mergeMode === 'string'
+          ? integratorPolicy.mergeMode
+          : 'apply-approved-attempt',
+      conflictPolicy: normalizeStringList(integratorPolicy?.conflictPolicy),
+      summaryRequirements: normalizeStringList(integratorPolicy?.summaryRequirements),
+    },
+    omittedRoles: Array.isArray(parsed.omittedRoles)
+      ? parsed.omittedRoles
+          .map((item): KiraAdaptiveAgentPlan['omittedRoles'][number] | null => {
+            if (!item || typeof item !== 'object') return null;
+            const raw = item as Partial<KiraAdaptiveAgentPlan['omittedRoles'][number]>;
+            const role = typeof raw.role === 'string' ? raw.role.trim() : '';
+            if (!role) return null;
+            return {
+              role,
+              reason: typeof raw.reason === 'string' ? raw.reason : '',
+            };
+          })
+          .filter((item): item is KiraAdaptiveAgentPlan['omittedRoles'][number] =>
+            Boolean(item),
+          )
+      : [],
   };
 }
 
@@ -953,6 +1077,55 @@ export function normalizeTaskComment(raw: unknown): TaskComment | null {
     body: parsed.body.trim(),
     createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : Date.now(),
   };
+}
+
+function extractBulletedCommentSection(body: string, sectionTitle: string): string[] {
+  const lines = body.replace(/\r\n/g, '\n').split('\n');
+  const normalizedTitle = sectionTitle.trim().toLowerCase();
+  const items: string[] = [];
+  let inSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inSection) {
+      if (trimmed.replace(/:$/, '').toLowerCase() === normalizedTitle) {
+        inSection = true;
+      }
+      continue;
+    }
+
+    if (!trimmed) {
+      if (items.length > 0) break;
+      continue;
+    }
+
+    if (items.length > 0 && /^[A-Za-z][A-Za-z0-9 /_-]{0,80}:$/.test(trimmed)) {
+      break;
+    }
+
+    if (trimmed.startsWith('- ')) {
+      items.push(trimmed.slice(2).trim());
+      continue;
+    }
+
+    if (items.length === 0) {
+      items.push(trimmed);
+    }
+  }
+
+  return [...new Set(items.filter(Boolean))].slice(0, 12);
+}
+
+export function extractRetryFeedbackFromCommentBody(body: string): string[] {
+  return extractBulletedCommentSection(body, 'Retry with feedback');
+}
+
+export function findLatestRetryFeedback(comments: TaskComment[]): string[] {
+  for (const comment of [...comments].sort((a, b) => b.createdAt - a.createdAt)) {
+    const feedback = extractRetryFeedbackFromCommentBody(comment.body);
+    if (feedback.length > 0) return feedback;
+  }
+  return [];
 }
 
 export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {

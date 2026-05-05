@@ -34,6 +34,13 @@ const ko = {
     collapseAttempts: 'Attempts 접기',
     resetContract: '기본값',
     revertContract: '되돌리기',
+    retryWithFeedback: '피드백으로 재시도',
+  },
+  retry: {
+    title: '리뷰 피드백 재시도',
+    copy: 'Kira가 아래 피드백을 다음 worker 시도에 그대로 전달합니다.',
+    commentTitle: '사용자가 최신 Kira 피드백으로 재시도를 요청했습니다.',
+    noFeedback: '재시도에 사용할 Kira 피드백을 찾지 못했습니다.',
   },
   sections: {
     workRoot: '작업 루트',

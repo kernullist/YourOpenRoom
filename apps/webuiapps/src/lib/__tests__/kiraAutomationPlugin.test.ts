@@ -12,6 +12,7 @@ import {
   buildReviewPrompt,
   buildReviewSystemPrompt,
   buildAttemptComparisonReviewSystemPrompt,
+  buildAdaptiveAgentPlan,
   canUseFullFileRewrite,
   captureDirtyFileSnapshots,
   collectAttemptReviewabilityIssues,
@@ -27,6 +28,8 @@ import {
   detectTouchedFilesFromDirtySnapshots,
   detectTouchedFilesFromGitStatus,
   evaluateExecutionPolicy,
+  extractLatestReviewerFeedback,
+  extractRetryFeedbackFromCommentBody,
   filterStageableChangedFiles,
   findMissingValidationCommands,
   findSuggestedCommitBackfillSummary,
@@ -38,6 +41,7 @@ import {
   getProjectProfilePath,
   hasMergeConflictMarkers,
   isGeneratedArtifactPath,
+  isKiraIntegrationLockReusable,
   isRecoverableAutomationLockMessage,
   isRecoverableLockError,
   isSafeCommandAllowed,
@@ -58,6 +62,7 @@ import {
   refreshProjectIntelligenceProfile,
   runWithKiraModelRouteLimit,
   shouldUseKiraAttemptWorktrees,
+  shouldUseKiraAlternativeWorker,
   shouldUseKiraIsolatedWorktree,
   tryAcquireLock,
   validateKiraOrchestrationContract,
@@ -302,7 +307,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(planner).toContain('Do not invent inspected files');
     expect(planner).toContain('Do not rewrite the requested work into a smaller goal');
     expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
-    expect(worker).toContain('Kira prompt contract version: 2.');
+    expect(worker).toContain('Kira prompt contract version: 3.');
     expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
     expect(worker).toContain('sibling git worktrees');
     expect(worker).toContain('Do not touch out-of-plan files unless necessary and explained.');
@@ -395,7 +400,7 @@ describe('Kira Codex-grade prompts', () => {
     );
 
     expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
-    expect(reviewerSystem).toContain('Kira prompt contract version: 2.');
+    expect(reviewerSystem).toContain('Kira prompt contract version: 3.');
     expect(reviewerSystem).toContain('enforce them as binding acceptance criteria');
     expect(reviewerSystem).toContain(
       'If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
@@ -413,7 +418,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(reviewerSystem).toContain('Provide concrete nextWorkerInstructions');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('attempt judge');
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain(
-      'Kira prompt contract version: 2.',
+      'Kira prompt contract version: 3.',
     );
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('Do not select a smaller attempt');
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
@@ -1046,12 +1051,107 @@ describe('buildProjectContextScan()', () => {
       expect(scan.executionPolicy?.mode).toBe('balanced');
       expect(scan.environmentContract?.runner).toBe('local');
       expect(scan.subagentRegistry?.some((agent) => agent.id === 'implementer')).toBe(true);
+      expect(scan.subagentRegistry?.some((agent) => agent.id === 'alternative-worker')).toBe(true);
       expect(scan.workflowDag?.criticalPath).toContain('validate');
       expect(scan.pluginConnectors?.some((connector) => connector.id === 'github')).toBe(true);
       expect(scan.orchestrationPlan?.subagentIds).toContain('implementer');
+      expect(scan.orchestrationPlan?.promptContractVersion).toBe(3);
+      expect(scan.orchestrationPlan?.adaptiveAgentPlan.stages.map((stage) => stage.role)).toEqual([
+        'planner',
+        'context_scout',
+        'primary_worker',
+        'alternative_worker',
+        'reviewer',
+        'integrator',
+      ]);
+      expect(scan.orchestrationPlan?.adaptiveAgentPlan.omittedRoles[0]?.role).toBe('debugger');
     } finally {
       fs.rmSync(projectRoot, { recursive: true, force: true });
     }
+  });
+});
+
+describe('adaptive agent orchestration plan', () => {
+  it('keeps standard low-risk work on the primary-only path', () => {
+    expect(
+      shouldUseKiraAlternativeWorker({
+        runMode: 'standard',
+        configuredWorkerCount: 2,
+        riskPolicy: { level: 'low', requiresSecondPass: false },
+        runtimeValidation: { applicable: false },
+        likelyFiles: ['src/app.ts'],
+      }),
+    ).toBe(false);
+
+    const plan = buildAdaptiveAgentPlan({
+      work: makeWork(),
+      taskType: 'docs-maintainer',
+      runMode: 'standard',
+      configuredWorkerCount: 2,
+      riskPolicy: {
+        level: 'low',
+        reasons: [],
+        evidenceMinimum: 1,
+        requiresRuntimeValidation: false,
+        requiresSecondPass: false,
+      },
+      runtimeValidation: {
+        applicable: false,
+        reason: 'Docs only.',
+        suggestedUrls: [],
+      },
+    });
+
+    expect(plan.mode).toBe('primary-only');
+    expect(plan.alternativeWorker.enabled).toBe(false);
+    expect(plan.stages.find((stage) => stage.role === 'alternative_worker')?.activation).toBe(
+      'skipped',
+    );
+    expect(plan.integratorPolicy.selection).toBe('single-winning-patch');
+  });
+
+  it('enables only one alternative worker for deep or high-risk work', () => {
+    expect(
+      shouldUseKiraAlternativeWorker({
+        runMode: 'deep',
+        configuredWorkerCount: 3,
+        riskPolicy: { level: 'high', requiresSecondPass: true },
+        runtimeValidation: { applicable: true },
+        likelyFiles: ['src/app.ts', 'src/app.test.ts'],
+      }),
+    ).toBe(true);
+
+    const plan = buildAdaptiveAgentPlan({
+      work: makeWork(),
+      taskType: 'frontend-ui',
+      runMode: 'deep',
+      configuredWorkerCount: 3,
+      riskPolicy: {
+        level: 'high',
+        reasons: ['Runtime UI patch.'],
+        evidenceMinimum: 4,
+        requiresRuntimeValidation: true,
+        requiresSecondPass: true,
+      },
+      runtimeValidation: {
+        applicable: true,
+        reason: 'UI runtime can regress.',
+        suggestedUrls: ['http://127.0.0.1:5173'],
+      },
+    });
+
+    expect(plan.mode).toBe('primary-plus-alternative');
+    expect(plan.alternativeWorker).toMatchObject({
+      enabled: true,
+      maxWorkers: 2,
+      isolation: 'git-worktree',
+    });
+    expect(plan.stages.filter((stage) => stage.role.includes('worker'))).toHaveLength(2);
+    expect(plan.omittedRoles).toContainEqual({
+      role: 'debugger',
+      reason:
+        'Debugger loop is intentionally omitted; validation failures feed back to the worker/reviewer loop.',
+    });
   });
 });
 
@@ -2639,6 +2739,52 @@ describe('buildIssueSignature()', () => {
   });
 });
 
+describe('retry feedback comments', () => {
+  it('extracts explicit retry feedback from Kira status comments', () => {
+    expect(
+      extractRetryFeedbackFromCommentBody(
+        [
+          'Kira status: Final review requested changes after attempt 1',
+          '',
+          'Retry with feedback:',
+          '- Re-run the missing validation command.',
+          '- Fix the reviewer finding before touching unrelated files.',
+          '',
+          'Kira will pass these bullets into the next worker attempt when this work is retried from In Progress.',
+        ].join('\n'),
+      ),
+    ).toEqual([
+      'Re-run the missing validation command.',
+      'Fix the reviewer finding before touching unrelated files.',
+    ]);
+  });
+
+  it('prefers explicit retry feedback over older Issues sections', () => {
+    const comments = [
+      {
+        id: 'comment-old',
+        taskId: 'work-1',
+        taskType: 'work',
+        author: 'Kira Reviewer',
+        body: ['Issues:', '- Old issue'].join('\n'),
+        createdAt: 1,
+      },
+      {
+        id: 'comment-new',
+        taskId: 'work-1',
+        taskType: 'work',
+        author: 'Operator',
+        body: ['Retry with feedback:', '- Use this exact retry instruction.'].join('\n'),
+        createdAt: 2,
+      },
+    ] as const;
+
+    expect(extractLatestReviewerFeedback([...comments])).toEqual([
+      'Use this exact retry instruction.',
+    ]);
+  });
+});
+
 describe('automation locks', () => {
   it('treats inaccessible lock paths as unavailable instead of throwing', () => {
     const tempDir = makeTempDir('kira-locks-');
@@ -2678,6 +2824,34 @@ describe('automation locks', () => {
 
     expect(isRecoverableLockError(error)).toBe(false);
   });
+
+  it('allows an integration step to reuse a project lock already held by the same job', () => {
+    const tempDir = makeTempDir('kira-reentrant-lock-');
+    try {
+      const lockPath = join(tempDir, 'project.json');
+      expect(
+        tryAcquireLock(lockPath, {
+          ownerId: 'server-instance',
+          resource: 'project',
+          sessionPath: 'session-a',
+          targetKey: 'project-a',
+        }),
+      ).toBe(true);
+
+      expect(isKiraIntegrationLockReusable(lockPath, 'server-instance')).toBe(true);
+      expect(isKiraIntegrationLockReusable(lockPath, 'other-instance')).toBe(false);
+      expect(
+        tryAcquireLock(lockPath, {
+          ownerId: 'other-instance',
+          resource: 'project',
+          sessionPath: 'session-b',
+          targetKey: 'project-a',
+        }),
+      ).toBe(false);
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('resolveUnexpectedAutomationFailure()', () => {
@@ -2692,8 +2866,36 @@ describe('resolveUnexpectedAutomationFailure()', () => {
         'Automation blocked because the task depends on missing API keys or external credentials.',
       guidance:
         'Add the required API keys or credentials in the target project, or revise the work so that startup generation and other credential-gated steps are not required before retrying.',
+      solutions: [
+        'Add the required API keys, tokens, or external credentials in the target project environment.',
+        'Revise the work brief so credential-gated startup generation is no longer required.',
+        'Add a comment with the resolved credential state before retrying.',
+      ],
+      retryFeedback: [],
       userMessage:
         'Kira blocked: "Do not attempt startup generation when required API keys are absent" 작업은 필요한 API 키 또는 외부 인증 정보가 없어 자동으로 멈췄어요.',
+    });
+  });
+
+  it('classifies timeout failures with local recovery options', () => {
+    expect(
+      resolveUnexpectedAutomationFailure(
+        'Refresh Kira board state',
+        'LLM request timed out after 240000ms.',
+      ),
+    ).toEqual({
+      summary:
+        'Automation stopped because a model, command, or external agent step timed out before Kira could finish the work.',
+      guidance:
+        'Check the local model or command runtime, reduce the task scope if needed, and retry once the slow step is healthy.',
+      solutions: [
+        'Verify that the configured worker and reviewer models are responding before retrying.',
+        'Split the work or narrow the brief if the timeout came from an oversized task.',
+        'Check project commands or dev servers if the timeout happened during validation rather than model generation.',
+      ],
+      retryFeedback: [],
+      userMessage:
+        'Kira blocked: "Refresh Kira board state" 작업이 timeout으로 중단되어 상황 확인이 필요해요.',
     });
   });
 
@@ -2705,6 +2907,12 @@ describe('resolveUnexpectedAutomationFailure()', () => {
         'Automation failed unexpectedly, and Kira blocked the task to avoid repeating the same failure.',
       guidance:
         'Inspect the underlying error, fix the project or task brief, and then manually move the work out of Blocked before retrying.',
+      solutions: [
+        'Fix the reported project, environment, credential, or git state problem before retrying.',
+        'Leave a comment with manual evidence if the issue was resolved outside Kira.',
+        'Split or narrow the work if the failure came from task scope rather than a local setup problem.',
+      ],
+      retryFeedback: [],
       userMessage:
         'Kira blocked: "Fix search layout" 작업이 예기치 않은 오류로 중단되어 같은 실패를 반복하지 않도록 멈췄어요.',
     });
