@@ -251,7 +251,7 @@ interface KiraAutomationEvent {
   projectName: string;
   message: string;
   createdAt: number;
-  type: 'started' | 'resumed' | 'completed' | 'needs_attention';
+  type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
 const calendarReminderFileApi = createAppFileApi('calendar');

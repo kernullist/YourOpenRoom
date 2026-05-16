@@ -59,6 +59,119 @@ agent model override 흐름을 Kira에 반영했다.
 - worker attempt exploration에는 실제 provider/model/runtime 옵션이 남아 모델 선택과 실행 상태를
   사후 추적할 수 있다.
 
+### 2.2 2026-05-16 Codex active-turn steering 반영
+
+`F:\kernullist\codex` 의 `turn/steer` 와 `pending_input` 흐름을 Kira의 일감 처리에 맞춰 옮겼다.
+
+- Kira details panel은 `in_progress` 또는 `in_review` 일감에 대해 live steering composer를 노출한다.
+- `/api/kira-automation/steer` 는 `sessionPath`, `workId`, `text` 를 받아 현재 해당 work의 자동화
+  job이 실제로 실행 중일 때만 수락한다. 실행 중인 job이 없으면 Codex의 active turn precondition처럼
+  거절한다.
+- steering 입력은 최대 6000자까지 허용하고, 수락되면 `Operator steer:` 구조화 댓글로 저장된다.
+- worker 루프는 각 planning/retry cycle 전에 최신 댓글을 다시 읽고 `Operator steer:` bullets를
+  feedback 목록에 병합한다. 그래서 실행 중 들어온 지시가 다음 worker 계획이나 재시도에 반영된다.
+- ChatPanel 자동화 이벤트에도 `steered` 타입을 추가해 Aoi/Kira 알림과 Kira refresh 흐름이 같은
+  이벤트 채널을 사용한다.
+
+### 2.3 2026-05-16 Codex turn/interrupt 반영
+
+`F:\kernullist\codex` 의 `turn/interrupt` 와 interrupted turn history marker 흐름을 Kira의 실행 중단
+경로에 맞춰 옮겼다.
+
+- `/api/kira-automation/cancel` 은 삭제용 조용한 abort(`reason: "delete"`)와 운영자 실행 중단
+  (`reason: "operator"`)을 분리한다.
+- 운영자 실행 중단은 현재 work의 자동화 job이 실제로 실행 중이고 work 상태가 `in_progress` 또는
+  `in_review` 일 때만 수락한다. 실행 중인 job이 없으면 Codex active turn interrupt처럼 거절한다.
+- 수락된 중단은 abort controller를 신호하고 work를 `blocked` 로 전환한 뒤
+  `Kira status: Interrupted by operator` 댓글을 남긴다.
+- interrupted 댓글에는 `Retry with feedback:` 섹션이 포함되어 다음 재시도 worker가 현재 worktree
+  상태를 다시 확인하도록 한다.
+- ChatPanel/Shell 자동화 이벤트에 `interrupted` 타입을 추가해 operator가 중단 사실을 놓치지 않게
+  했다.
+
+### 2.4 2026-05-16 Codex token usage observability 반영
+
+`F:\kernullist\codex` 의 `ThreadTokenUsageUpdated` 와 `turn_timing` 관측성 흐름을 Kira의
+attempt/review 기록에 맞춰 옮겼다.
+
+- OpenAI Chat, OpenAI Responses, Anthropic-compatible 응답의 usage payload를 공통 `modelUsage`
+  형식으로 정규화한다.
+- worker planning, worker execution, reviewer, attempt-selection judge 호출에서 provider가 반환한
+  actual token usage를 누적한다.
+- attempt observability에는 planning + worker usage를 합산해 `modelUsage` 와 metrics의
+  `actualModelTokens`, `actualModelInputTokens`, `actualModelCachedInputTokens`,
+  `actualModelOutputTokens`, `actualModelReasoningOutputTokens`, `modelRequestCount` 로 남긴다.
+- review observability에도 reviewer/judge actual token usage를 저장한다.
+- UI timeline은 기존 estimated output token과 함께 actual token total을 표시한다. usage를 제공하지
+  않는 provider는 기존 추정값만 유지한다.
+
+### 2.5 2026-05-16 Codex rate-limit observability 반영
+
+`F:\kernullist\codex` 의 `AccountRateLimitsUpdatedNotification` 과 `RateLimitSnapshot` 흐름을 Kira의
+provider 호출 경계에 맞춰 적용했다.
+
+- OpenAI-compatible 응답의 `x-ratelimit-limit-*`, `x-ratelimit-remaining-*`, `x-ratelimit-reset-*`
+  헤더를 `rateLimits` snapshot으로 정규화한다.
+- Anthropic-compatible 응답의 `anthropic-ratelimit-*-limit`, `anthropic-ratelimit-*-remaining`,
+  `anthropic-ratelimit-*-reset` 헤더도 같은 형식으로 정규화한다.
+- worker planning/execution, reviewer, attempt-selection judge 호출의 최신 rate-limit snapshot을
+  attempt/review observability에 보존한다.
+- UI timeline은 actual token total 옆에 마지막 request/token remaining 정보를 표시한다. 이 값이
+  있으면 장시간 Kira 작업에서 provider capacity pressure와 worker logic failure를 구분하기 쉽다.
+
+### 2.6 2026-05-16 Codex exec command lifecycle observability 반영
+
+`F:\kernullist\codex` 의 `ExecCommandBeginEvent` / `ExecCommandEndEvent` 흐름을 Kira의 validation
+rerun 경계에 맞춰 적용했다.
+
+- Kira validation rerun은 기존 `passed` / `failed` 목록에 더해 `commandEvents`를 저장한다.
+- 각 command event는 명령, cwd, 시작/완료 시각, duration, status, exit code, stdout/stderr excerpt,
+  error message를 가진다.
+- safety policy, execution policy, environment contract에 의해 실행 전 차단된 명령도 `blocked`
+  event로 남겨서 "명령이 안 돈 것"과 "명령이 돌고 실패한 것"을 구분한다.
+- 실제 실행 실패는 `failed`, timeout은 `timed_out`, 성공은 `completed`로 기록한다.
+- attempt observability metrics와 evidence ledger는 command event count, blocked/timeout count,
+  command duration을 함께 보존한다.
+- Kira UI validation section은 command lifecycle 요약과 최신 command issue를 표시한다.
+
+### 2.7 2026-05-16 Codex patch/turn diff lifecycle 반영
+
+`F:\kernullist\codex` 의 `PatchApplyBeginEvent` / `PatchApplyEndEvent`, `FileChange`,
+`TurnDiffEvent` 흐름을 Kira attempt 기록에 맞춰 축약 적용했다.
+
+- Kira attempt record는 `fileChangeEvents` 를 저장한다.
+- 각 file event는 파일 경로, change type(add/modify/delete/unchanged/unknown), before/after
+  fingerprint(hash, size, source), git status, planned/protected/dirty-before/tool-touched flag를
+  가진다.
+- Kira 도구로 편집한 파일은 attempt snapshot을 before fingerprint로 사용하고, 기존 dirty file은
+  dirty snapshot을 사용한다.
+- clean tracked file이 외부 agent 경로로 바뀐 경우에는 git HEAD fingerprint를 before로 삼아 worker
+  summary만 믿지 않고 실제 변경 전후를 비교한다.
+- event 후보는 worker summary가 보고한 파일, Kira 도구가 직접 건드린 파일, attempt 이후 worktree
+  status에서 새로 dirty가 되었거나 기존 dirty snapshot과 달라진 파일의 합집합으로 만든다.
+- attempt observability와 evidence ledger는 file event count, add/modify/delete/unknown count,
+  unplanned/protected/dirty-before count를 함께 남긴다.
+- Reviewer prompt와 attempt 비교 prompt에도 file lifecycle을 넣어 worker summary, changeDesign, diff
+  excerpt와 교차 검토하게 한다.
+- Kira UI diff section은 file lifecycle 요약과 최신 unplanned/protected/unknown issue를 표시한다.
+
+### 2.8 2026-05-16 Codex exec command lifecycle 반영
+
+`F:\kernullist\codex` 의 `ExecCommandBegin` / `ExecCommandOutputDelta` / `ExecCommandEnd` 흐름을
+Kira worker tool command에도 적용했다.
+
+- worker가 `run_command`를 호출하면 `toolCommandEvents` 로 command, cwd, started/completed time,
+  duration, status(completed/failed/blocked/timed_out), exit code, stdout/stderr excerpt, error
+  message를 남긴다.
+- safety policy, command prefix, environment contract 때문에 실행 전 차단된 command도 `blocked`
+  event로 기록한다.
+- attempt observability와 evidence ledger는 worker command event count, failed/blocked count,
+  timeout count, 총 duration을 함께 보존한다.
+- Reviewer prompt와 attempt 비교 prompt는 worker command lifecycle을 받아 worker-reported checks,
+  Kira validation rerun, failure analysis와 교차 검토한다.
+- Kira UI validation section은 validation rerun command와 별도로 worker tool command 요약과 최신
+  tool issue를 표시한다.
+
 ## 3. Codex급 기준
 
 ### 3.1 워커 기준

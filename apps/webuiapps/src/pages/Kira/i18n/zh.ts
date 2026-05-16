@@ -17,6 +17,8 @@ const zh = {
     preview: '预览',
     write: '编辑',
     addComment: '添加评论',
+    sendSteer: '发送引导',
+    cancelRun: '中断运行',
     continue: '继续',
     notNow: '稍后再说',
     useSavedAnalysis: '使用已有分析',
@@ -58,6 +60,7 @@ const zh = {
     detailCopy: 'Markdown 说明写在这里，简短的交接与评审备注放到评论里。',
     attempts: 'Attempts',
     comments: '评论',
+    liveSteering: '实时引导',
     discoveryEyebrow: 'Aoi 分析',
     discoveryTitle: 'Aoi 项目发现',
     discoverySubtitle:
@@ -103,6 +106,7 @@ const zh = {
     assignee: 'backend-agent-1、reviewer，或留空',
     commentAuthor: '你、orchestrator、reviewer...',
     commentBody: '写一条简短备注、评审意见或交接说明。',
+    steerBody: '为正在运行的 Kira 任务补充修正方向、约束或优先级。',
     workRootDirectory: 'F:/workspace',
     requiredInstructions:
       '例如：遵循现有组件风格，导出的 API 优先使用显式类型，跳过验证的代码必须驳回。',
@@ -130,6 +134,7 @@ const zh = {
   comments: {
     empty: '还没有评论。',
     hint: '评论保持轻量，主要实现说明尽量写在 markdown 里。',
+    steerHint: '会进入当前 worker 循环。',
     saveFirst: '先保存任务，再添加评论。',
     defaultAuthor: 'Operator',
   },

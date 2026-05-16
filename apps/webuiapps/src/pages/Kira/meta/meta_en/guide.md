@@ -128,10 +128,62 @@ Kira automation comments may include:
 - `Kira status:` for blocked or review-requested-change state
 - `Possible solutions:` for operator fixes or retry options
 - `Retry with feedback:` when the listed bullets should be fed into the next worker attempt
+- `Operator steer:` when an active automation run receives live operator guidance that should be
+  merged into the next worker planning or retry cycle
 
 When a blocked work has a `Retry with feedback:` section, the Kira details panel can move the work
 back to `todo`, add a retry-request comment, and trigger the automation scan. The next worker
 attempt receives those bullets as reviewer feedback.
+
+When a work is already `in_progress` or `in_review`, the Kira details panel exposes a live steering
+composer. It posts to `/api/kira-automation/steer`, which accepts guidance only while the matching
+work has an active automation job. Accepted guidance is stored as an `Operator steer:` comment and
+is merged into the feedback list before the next worker planning or retry cycle. This mirrors
+Codex's active-turn steering boundary: stale or inactive work is rejected instead of silently
+mutating a completed run.
+
+The same active-run boundary is used for `/api/kira-automation/cancel`. A delete flow sends
+`reason: "delete"` and performs a quiet abort before removing task files. An operator interruption
+sends `reason: "operator"` and is accepted only for a currently running or review-active job. Kira
+then aborts the job, moves the work to `blocked`, records a retryable
+`Kira status: Interrupted by operator` comment, and emits an `interrupted` automation event. This
+mirrors Codex's `turn/interrupt` status path without losing the recovery trail.
+
+Kira also stores Codex-style model usage observability when a provider returns usage metadata.
+OpenAI Chat, OpenAI Responses, and Anthropic-compatible responses are normalized into `modelUsage`
+on attempt and review observability records. The timeline still keeps the older estimated
+output-token count for providers that do not report usage, but actual input, cached input, output,
+reasoning output, total tokens, and request count are preserved when available.
+
+When the provider returns rate-limit headers, Kira also records Codex-style `rateLimits` snapshots
+next to `modelUsage`. OpenAI-compatible request/token limit headers and Anthropic request/token
+limit headers are normalized into the same shape, capped to the most recent snapshots, and surfaced
+in the attempt/review timeline so long-running jobs can show whether a slowdown is likely model
+capacity pressure rather than worker logic failure.
+
+Validation reruns also keep Codex-style command lifecycle events. Alongside the older
+`passed`/`failed` command lists, `validationReruns.commandEvents` records command, cwd, start and
+completion timestamps, duration, status, exit code, stdout/stderr excerpts, and the failure message
+when one exists. Commands rejected before execution by Kira safety, execution policy, or environment
+contract checks are stored as `blocked`, command failures as `failed`, timeouts as `timed_out`, and
+successful reruns as `completed`. Attempt metrics and the validation panel surface the command event
+count, failed/blocked count, timeout count, total command duration, and latest command issue.
+
+Attempts also keep Codex-style file change lifecycle evidence. `fileChangeEvents` records each
+changed file with add/modify/delete/unchanged/unknown classification, before/after fingerprints, the
+git status when available, and whether the file was planned, protected, dirty before the attempt, or
+touched by a Kira tool. Kira uses tool snapshots, dirty-file snapshots, and git HEAD content as the
+before state so reviewers can distinguish a reported file list from verified file movement. Attempt
+metrics, the evidence ledger, and the diff panel surface file event counts, unplanned/protected
+changes, dirty-before changes, and the latest suspicious file event. Reviewer prompts also receive
+the lifecycle so they can compare the actual file events against `changeDesign`, `filesChanged`, and
+diff excerpts instead of trusting the worker summary alone.
+
+Worker `run_command` calls keep the same Codex-style command lifecycle evidence outside validation
+reruns. `toolCommandEvents` records the command, cwd, start/end timing, duration, status, exit code,
+stdout/stderr excerpts, and error message. Commands blocked by safety policy, prefix rules, or the
+environment contract are stored as `blocked`, so reviewers can compare worker-reported checks, tool
+command results, and Kira validation reruns separately.
 
 Example:
 

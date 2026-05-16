@@ -18,6 +18,8 @@ const en = {
     preview: 'Preview',
     write: 'Write',
     addComment: 'Add comment',
+    sendSteer: 'Send steer',
+    cancelRun: 'Cancel run',
     continue: 'Continue',
     notNow: 'Not now',
     useSavedAnalysis: 'Use Saved Analysis',
@@ -61,6 +63,7 @@ const en = {
       'Write the markdown brief here, then let comments handle short handoff and review notes.',
     attempts: 'Attempts',
     comments: 'Comments',
+    liveSteering: 'Live steering',
     discoveryEyebrow: 'Aoi analysis',
     discoveryTitle: 'Aoi Project Discovery',
     discoverySubtitle:
@@ -107,6 +110,7 @@ const en = {
     assignee: 'backend-agent-1, reviewer, or leave blank',
     commentAuthor: 'You, orchestrator, reviewer...',
     commentBody: 'Short note, review remark, or handoff update.',
+    steerBody: 'Add a correction, constraint, or priority for the active Kira run.',
     workRootDirectory: 'F:/workspace',
     requiredInstructions:
       'Example: Follow the existing component style, prefer explicit types on exported APIs, and reject code that skips validation.',
@@ -134,6 +138,7 @@ const en = {
   comments: {
     empty: 'No comments yet.',
     hint: 'Keep comments lightweight so the main brief stays in markdown.',
+    steerHint: 'Queued into the active worker loop.',
     saveFirst: 'Save the task first, then add comments.',
     defaultAuthor: 'Operator',
   },

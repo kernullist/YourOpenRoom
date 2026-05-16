@@ -17,6 +17,8 @@ const ko = {
     preview: '미리보기',
     write: '작성',
     addComment: '댓글 추가',
+    sendSteer: '지시 보내기',
+    cancelRun: '실행 중단',
     continue: '계속',
     notNow: '나중에',
     useSavedAnalysis: '저장된 분석 사용',
@@ -59,6 +61,7 @@ const ko = {
     detailCopy: '구현 브리프는 markdown으로 작성하고, 짧은 인계와 리뷰 메모는 댓글에 남기세요.',
     attempts: 'Attempts',
     comments: '댓글',
+    liveSteering: '실시간 지시',
     discoveryEyebrow: 'Aoi 분석',
     discoveryTitle: 'Aoi 프로젝트 디스커버리',
     discoverySubtitle:
@@ -104,6 +107,7 @@ const ko = {
     assignee: 'backend-agent-1, reviewer 또는 비워두기',
     commentAuthor: '나, orchestrator, reviewer...',
     commentBody: '짧은 메모, 리뷰 의견, 인계 내용을 적어 주세요.',
+    steerBody: '진행 중인 Kira 실행에 반영할 수정 방향, 제약, 우선순위를 적어 주세요.',
     workRootDirectory: 'F:/workspace',
     requiredInstructions:
       '예: 기존 컴포넌트 스타일을 따르고, export API에는 명시적 타입을 선호하며, 검증을 생략한 코드는 반려하세요.',
@@ -131,6 +135,7 @@ const ko = {
   comments: {
     empty: '아직 댓글이 없습니다.',
     hint: '메인 브리프가 markdown 중심으로 유지되도록 댓글은 짧게 남기세요.',
+    steerHint: '활성 worker 루프에 큐잉됩니다.',
     saveFirst: '먼저 작업을 저장한 뒤 댓글을 추가하세요.',
     defaultAuthor: 'Operator',
   },

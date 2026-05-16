@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Settings } from 'lucide-react';
+import { ChevronDown, CircleStop, Send, Settings } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
   useFileSystem,
@@ -27,7 +27,10 @@ import styles from './index.module.scss';
 import {
   type KiraTaskStatus,
   type KiraAttemptRecord,
+  type KiraFileChangeEvent,
+  type KiraLlmRateLimitSnapshot,
   type KiraReviewRecord,
+  type KiraValidationCommandEvent,
   type KiraViewState,
   type TaskComment,
   type WorkClarificationAnswer,
@@ -57,6 +60,7 @@ const ATTEMPTS_DIR = '/attempts';
 const REVIEWS_DIR = '/reviews';
 const STATE_FILE = '/state.json';
 const KIRA_LIVE_REFRESH_INTERVAL_MS = 4_000;
+const KIRA_STEER_TEXT_LIMIT = 6000;
 const EDITOR_WIDTH_STORAGE_KEY = 'kira.editorPanelWidth';
 const EDITOR_WIDTH_DEFAULT = 420;
 const EDITOR_WIDTH_MIN = 360;
@@ -75,6 +79,100 @@ const RUN_MODES: Array<{ value: KiraRunMode; label: string; description: string 
   },
   { value: 'deep', label: 'Deep', description: 'Evidence-heavy orchestration for risky work.' },
 ];
+
+function formatRateLimitWindow(
+  label: string,
+  window: KiraLlmRateLimitSnapshot['requestLimit'],
+): string | null {
+  if (!window) return null;
+  const parts: string[] = [];
+  if (typeof window.remaining === 'number' && typeof window.limit === 'number') {
+    parts.push(`${label} ${window.remaining}/${window.limit}`);
+  }
+  if (parts.length === 0 && typeof window.remaining === 'number') {
+    parts.push(`${label} ${window.remaining} left`);
+  }
+  if (parts.length === 0 && typeof window.usedPercent === 'number') {
+    parts.push(`${label} ${Math.round(window.usedPercent)}% used`);
+  }
+  if (window.reset) {
+    parts.push(`reset ${window.reset}`);
+  }
+  return parts.length > 0 ? parts.join(' ') : null;
+}
+
+function formatRateLimitSummary(rateLimits?: KiraLlmRateLimitSnapshot[]): string | null {
+  const latest = rateLimits?.[rateLimits.length - 1];
+  if (!latest) return null;
+  const pieces = [
+    formatRateLimitWindow('Req', latest.requestLimit),
+    formatRateLimitWindow('Tok', latest.tokenLimit),
+  ].filter((item): item is string => Boolean(item));
+  if (pieces.length === 0) return null;
+  return `${latest.provider ?? 'model'} ${pieces.join(' | ')}`;
+}
+
+function formatRateLimitSuffix(rateLimits?: KiraLlmRateLimitSnapshot[]): string {
+  const summary = formatRateLimitSummary(rateLimits);
+  return summary ? ` | Rate: ${summary}` : '';
+}
+
+function formatValidationCommandSummary(events?: KiraValidationCommandEvent[]): string | null {
+  const commandEvents = events ?? [];
+  if (commandEvents.length === 0) return null;
+  const failed = commandEvents.filter((event) => event.status !== 'completed').length;
+  const durationMs = commandEvents.reduce(
+    (total, event) => total + Math.max(0, event.durationMs || 0),
+    0,
+  );
+  return `${commandEvents.length} event(s), ${failed} failed, ${Math.round(durationMs / 1000)}s`;
+}
+
+function formatLatestValidationCommandIssue(events?: KiraValidationCommandEvent[]): string | null {
+  const latestIssue = [...(events ?? [])]
+    .reverse()
+    .find((event) => event.status && event.status !== 'completed');
+  if (!latestIssue) return null;
+  const exitCode =
+    typeof latestIssue.exitCode === 'number' ? `exit ${latestIssue.exitCode}` : 'no exit';
+  const command = latestIssue.command.replace(/\s+/g, ' ').slice(0, 160);
+  const message = latestIssue.errorMessage
+    ? ` | ${latestIssue.errorMessage.replace(/\s+/g, ' ').slice(0, 180)}`
+    : '';
+  return `${latestIssue.status}: ${command} (${exitCode}, ${latestIssue.durationMs}ms)${message}`;
+}
+
+function formatFileChangeEventSummary(events?: KiraFileChangeEvent[]): string | null {
+  const fileEvents = events ?? [];
+  if (fileEvents.length === 0) return null;
+  const count = (type: KiraFileChangeEvent['changeType']) =>
+    fileEvents.filter((event) => event.changeType === type).length;
+  const unplanned = fileEvents.filter((event) => event.planned === false).length;
+  const dirty = fileEvents.filter((event) => event.dirtyBefore).length;
+  return `${fileEvents.length} event(s), +${count('add')} ~${count('modify')} -${count(
+    'delete',
+  )}, ${unplanned} unplanned, ${dirty} dirty-before`;
+}
+
+function formatLatestFileChangeIssue(events?: KiraFileChangeEvent[]): string | null {
+  const issue = [...(events ?? [])]
+    .reverse()
+    .find((event) => event.planned === false || event.protected || event.changeType === 'unknown');
+  if (!issue) return null;
+  const hashPair = `${issue.before?.hash?.slice(0, 8) ?? 'missing'} -> ${
+    issue.after?.hash?.slice(0, 8) ?? 'missing'
+  }`;
+  const flags = [
+    issue.planned === false ? 'unplanned' : '',
+    issue.protected ? 'protected' : '',
+    issue.dirtyBefore ? 'dirty-before' : '',
+  ]
+    .filter(Boolean)
+    .join(', ');
+  return `${issue.changeType ?? 'unknown'}: ${issue.file} (${hashPair})${
+    flags ? ` | ${flags}` : ''
+  }`;
+}
 const DEFAULT_RULE_PACK_PRESETS: KiraRulePackPreset[] = [
   {
     id: 'strict-typescript',
@@ -1008,6 +1106,9 @@ const KiraPage: React.FC = () => {
   const [form, setForm] = useState<TaskFormState>(createDraftForm());
   const [formDirty, setFormDirty] = useState(false);
   const [commentDraft, setCommentDraft] = useState({ author: '', body: '' });
+  const [steerDraft, setSteerDraft] = useState('');
+  const [steerSending, setSteerSending] = useState(false);
+  const [cancelSending, setCancelSending] = useState(false);
   const [clarificationAnswers, setClarificationAnswers] = useState<Record<string, string>>({});
   const [workRootConfig, setWorkRootConfig] = useState<KiraConfigResponse | null>(null);
   const [workRootDraft, setWorkRootDraft] = useState('');
@@ -1411,6 +1512,8 @@ const KiraPage: React.FC = () => {
           ? t('messages.modelReviewerRequired')
           : null;
   const automationReady = workRootReady && modelReadiness.ready;
+  const canSteerSelectedWork =
+    selectedWork?.status === 'in_progress' || selectedWork?.status === 'in_review';
 
   useEffect(() => {
     if (!workRootReady || !activeProjectName) {
@@ -2374,7 +2477,7 @@ const KiraPage: React.FC = () => {
         await fetch('/api/kira-automation/cancel', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ sessionPath, workId: selectedTaskId }),
+          body: JSON.stringify({ sessionPath, workId: selectedTaskId, reason: 'delete' }),
         }).catch(() => undefined);
       }
 
@@ -2497,6 +2600,76 @@ const KiraPage: React.FC = () => {
       setErrorText(error instanceof Error ? error.message : String(error));
     }
   }, [commentDraft, saveFile, selectedTaskId, syncToCloud, t]);
+
+  const handleSendSteer = useCallback(async () => {
+    if (!selectedWork || !canSteerSelectedWork) return;
+    const text = steerDraft.trim();
+    if (!text) return;
+
+    const sessionPath = getSessionPath().trim();
+    if (!sessionPath) {
+      setErrorText(t('messages.discoverySessionMissing'));
+      return;
+    }
+
+    setSteerSending(true);
+    try {
+      const res = await fetch('/api/kira-automation/steer', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionPath, workId: selectedWork.id, text }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        throw new Error(payload.error ?? `Kira steer API error ${res.status}`);
+      }
+
+      setSteerDraft('');
+      await refreshFromCloud({ id: selectedWork.id });
+      setErrorText(null);
+      reportAction(APP_ID, 'STEER_KIRA_WORK', {
+        workId: selectedWork.id,
+        chars: String(text.length),
+      });
+    } catch (error) {
+      console.error('[Kira] Steering failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setSteerSending(false);
+    }
+  }, [canSteerSelectedWork, refreshFromCloud, selectedWork, steerDraft, t]);
+
+  const handleCancelRun = useCallback(async () => {
+    if (!selectedWork || !canSteerSelectedWork) return;
+
+    const sessionPath = getSessionPath().trim();
+    if (!sessionPath) {
+      setErrorText(t('messages.discoverySessionMissing'));
+      return;
+    }
+
+    setCancelSending(true);
+    try {
+      const res = await fetch('/api/kira-automation/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionPath, workId: selectedWork.id, reason: 'operator' }),
+      });
+      const payload = (await res.json().catch(() => ({}))) as { error?: string };
+      if (!res.ok) {
+        throw new Error(payload.error ?? `Kira cancel API error ${res.status}`);
+      }
+
+      await refreshFromCloud({ id: selectedWork.id });
+      setErrorText(null);
+      reportAction(APP_ID, 'INTERRUPT_KIRA_WORK', { workId: selectedWork.id });
+    } catch (error) {
+      console.error('[Kira] Cancel run failed:', error);
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setCancelSending(false);
+    }
+  }, [canSteerSelectedWork, refreshFromCloud, selectedWork, t]);
 
   const handleRetryWithFeedback = useCallback(async () => {
     if (!selectedWork || selectedWork.status !== 'blocked') return;
@@ -3286,6 +3459,17 @@ const KiraPage: React.FC = () => {
               <p className={styles.editorCopy}>{t('sections.detailCopy')}</p>
             </div>
             <div className={styles.editorActions}>
+              {canSteerSelectedWork ? (
+                <button
+                  type="button"
+                  className={styles.dangerButton}
+                  onClick={() => void handleCancelRun()}
+                  disabled={cancelSending}
+                >
+                  <CircleStop size={14} aria-hidden="true" />
+                  {cancelSending ? t('actions.saving') : t('actions.cancelRun')}
+                </button>
+              ) : null}
               <button onClick={() => setPreviewMode((prev) => !prev)}>
                 {previewMode ? t('actions.write') : t('actions.preview')}
               </button>
@@ -3673,6 +3857,18 @@ const KiraPage: React.FC = () => {
                                     {attempt.diffStats.hunks ?? 0} hunks
                                   </small>
                                 ) : null}
+                                {formatFileChangeEventSummary(attempt.fileChangeEvents) ? (
+                                  <small>
+                                    File events:{' '}
+                                    {formatFileChangeEventSummary(attempt.fileChangeEvents)}
+                                  </small>
+                                ) : null}
+                                {formatLatestFileChangeIssue(attempt.fileChangeEvents) ? (
+                                  <small>
+                                    File issue:{' '}
+                                    {formatLatestFileChangeIssue(attempt.fileChangeEvents)}
+                                  </small>
+                                ) : null}
                                 {attempt.patchIntentVerification ? (
                                   <small>
                                     Intent: {attempt.patchIntentVerification.status || 'unknown'}{' '}
@@ -3690,6 +3886,38 @@ const KiraPage: React.FC = () => {
                                 <small>
                                   Failed: {attempt.validationReruns?.failed?.join(', ') || 'none'}
                                 </small>
+                                {formatValidationCommandSummary(
+                                  attempt.validationReruns?.commandEvents,
+                                ) ? (
+                                  <small>
+                                    Commands:{' '}
+                                    {formatValidationCommandSummary(
+                                      attempt.validationReruns?.commandEvents,
+                                    )}
+                                  </small>
+                                ) : null}
+                                {formatLatestValidationCommandIssue(
+                                  attempt.validationReruns?.commandEvents,
+                                ) ? (
+                                  <small>
+                                    Latest issue:{' '}
+                                    {formatLatestValidationCommandIssue(
+                                      attempt.validationReruns?.commandEvents,
+                                    )}
+                                  </small>
+                                ) : null}
+                                {formatValidationCommandSummary(attempt.toolCommandEvents) ? (
+                                  <small>
+                                    Tool commands:{' '}
+                                    {formatValidationCommandSummary(attempt.toolCommandEvents)}
+                                  </small>
+                                ) : null}
+                                {formatLatestValidationCommandIssue(attempt.toolCommandEvents) ? (
+                                  <small>
+                                    Tool issue:{' '}
+                                    {formatLatestValidationCommandIssue(attempt.toolCommandEvents)}
+                                  </small>
+                                ) : null}
                                 {attempt.validationPlan?.autoAddedCommands?.length ? (
                                   <small>
                                     Auto:{' '}
@@ -3774,6 +4002,10 @@ const KiraPage: React.FC = () => {
                                     {attempt.observability.metrics.evidenceSignalCount ?? 0} |
                                     Tokens:{' '}
                                     {attempt.observability.metrics.estimatedWorkerOutputTokens ?? 0}
+                                    {attempt.observability.modelUsage?.totalTokens
+                                      ? ` | Actual tokens: ${attempt.observability.modelUsage.totalTokens}`
+                                      : ''}
+                                    {formatRateLimitSuffix(attempt.observability.rateLimits)}
                                   </small>
                                 ) : null}
                                 {review?.triage?.length ? (
@@ -3800,6 +4032,10 @@ const KiraPage: React.FC = () => {
                                       : 'n/a'}{' '}
                                     | Output tokens:{' '}
                                     {review.observability.estimatedReviewOutputTokens ?? 0}
+                                    {review.observability.modelUsage?.totalTokens
+                                      ? ` | Actual tokens: ${review.observability.modelUsage.totalTokens}`
+                                      : ''}
+                                    {formatRateLimitSuffix(review.observability.rateLimits)}
                                   </small>
                                 ) : null}
                                 {review?.diffCoverage ? (
@@ -3890,6 +4126,35 @@ const KiraPage: React.FC = () => {
 
             {selectedTaskId ? (
               <>
+                {canSteerSelectedWork ? (
+                  <div className={styles.steerComposer}>
+                    <div className={styles.panelSubhead}>
+                      <strong>{t('sections.liveSteering')}</strong>
+                      <span>{t('comments.steerHint')}</span>
+                    </div>
+                    <textarea
+                      value={steerDraft}
+                      onChange={(event) => setSteerDraft(event.target.value)}
+                      placeholder={t('placeholders.steerBody')}
+                      maxLength={KIRA_STEER_TEXT_LIMIT}
+                      rows={3}
+                    />
+                    <div className={styles.commentActions}>
+                      <span>
+                        {steerDraft.trim().length}/{KIRA_STEER_TEXT_LIMIT}
+                      </span>
+                      <button
+                        type="button"
+                        className={styles.secondaryButton}
+                        onClick={() => void handleSendSteer()}
+                        disabled={!steerDraft.trim() || steerSending}
+                      >
+                        <Send size={14} aria-hidden="true" />
+                        {steerSending ? t('actions.saving') : t('actions.sendSteer')}
+                      </button>
+                    </div>
+                  </div>
+                ) : null}
                 <div className={styles.manualEvidenceComposer}>
                   <div className={styles.panelSubhead}>
                     <strong>Manual evidence</strong>

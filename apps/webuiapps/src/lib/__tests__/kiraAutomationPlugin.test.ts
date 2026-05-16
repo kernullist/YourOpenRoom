@@ -8,6 +8,7 @@ import {
   buildDesignReviewGate,
   buildCodexCliArgs,
   buildKiraPromptCacheKey,
+  buildOperatorInterruptComment,
   buildIssueSignature,
   buildProjectContextScan,
   buildReviewPrompt,
@@ -29,7 +30,12 @@ import {
   detectTouchedFilesFromDirtySnapshots,
   detectTouchedFilesFromGitStatus,
   evaluateExecutionPolicy,
+  extractAnthropicTokenUsage,
+  extractAnthropicRateLimitSnapshot,
   extractLatestReviewerFeedback,
+  extractOpenAiTokenUsage,
+  extractOpenAiRateLimitSnapshot,
+  extractOperatorSteeringFromComments,
   extractRetryFeedbackFromCommentBody,
   filterStageableChangedFiles,
   findMissingValidationCommands,
@@ -66,6 +72,8 @@ import {
   shouldUseKiraAttemptWorktrees,
   shouldUseKiraAlternativeWorker,
   shouldUseKiraIsolatedWorktree,
+  summarizeKiraFileChangeEvents,
+  summarizeValidationCommandEvents,
   tryAcquireLock,
   validateKiraOrchestrationContract,
   verifyPatchIntent,
@@ -445,6 +453,36 @@ describe('Kira Codex-grade prompts', () => {
       },
       ['diff -- src/kira.ts'],
       'Use strict TypeScript and keep exported APIs backward compatible.',
+      { files: 1, additions: 3, deletions: 1, hunks: 1 },
+      [],
+      undefined,
+      undefined,
+      [
+        {
+          id: 'tool-command-1',
+          command: 'pnpm test',
+          cwd: 'F:/repo',
+          startedAt: 1,
+          completedAt: 11,
+          durationMs: 10,
+          status: 'completed',
+          exitCode: 0,
+          stdoutExcerpt: 'ok',
+          stderrExcerpt: '',
+        },
+      ],
+      [
+        {
+          file: 'src/kira.ts',
+          changeType: 'modify',
+          before: { exists: true, hash: 'a'.repeat(64), size: 120, source: 'git_head' },
+          after: { exists: true, hash: 'b'.repeat(64), size: 140, source: 'current' },
+          planned: true,
+          protected: false,
+          dirtyBefore: false,
+          touchedByKiraTool: true,
+        },
+      ],
     );
 
     expect(reviewerSystem).toContain('You are Kira Reviewer, an independent code reviewer.');
@@ -474,6 +512,10 @@ describe('Kira Codex-grade prompts', () => {
     expect(reviewPrompt).toContain('Do not approve partial goal fulfillment');
     expect(reviewPrompt).toContain('Review the changeDesign against the actual diff');
     expect(reviewPrompt).toContain('Do not approve patch intent drift');
+    expect(reviewPrompt).toContain('Worker command lifecycle: 1 event(s)');
+    expect(reviewPrompt).toContain('Review the worker command lifecycle.');
+    expect(reviewPrompt).toContain('File change lifecycle: 1 event(s)');
+    expect(reviewPrompt).toContain('Review the file change lifecycle.');
     expect(reviewPrompt).toContain('Review the requirementTrace.');
     expect(reviewPrompt).toContain('blocking scope-reduction attempt');
     expect(reviewPrompt).toContain('Risk review policy:');
@@ -2883,6 +2925,278 @@ describe('retry feedback comments', () => {
     expect(extractLatestReviewerFeedback([...comments])).toEqual([
       'Use this exact retry instruction.',
     ]);
+  });
+
+  it('extracts operator steering as worker feedback', () => {
+    const comments = [
+      {
+        id: 'comment-steer',
+        taskId: 'work-1',
+        taskType: 'work',
+        author: 'Operator',
+        body: [
+          'Operator steer:',
+          '- Keep the existing public API stable.',
+          '- Prefer the smaller patch if both approaches pass validation.',
+          '',
+          'Kira will pass these bullets into the next worker planning cycle.',
+        ].join('\n'),
+        createdAt: 3,
+      },
+    ];
+
+    expect(extractOperatorSteeringFromComments(comments)).toEqual([
+      'Operator steer: Keep the existing public API stable.',
+      'Operator steer: Prefer the smaller patch if both approaches pass validation.',
+    ]);
+  });
+
+  it('records operator interruption as retryable Kira status', () => {
+    const body = buildOperatorInterruptComment('Refactor task runner');
+
+    expect(body).toContain('Kira status: Interrupted by operator');
+    expect(body).toContain('The active Kira automation run for "Refactor task runner"');
+    expect(extractRetryFeedbackFromCommentBody(body)).toEqual([
+      'Previous Kira run was interrupted by the operator; re-check current worktree state before continuing.',
+    ]);
+  });
+});
+
+describe('validation command event observability', () => {
+  it('summarizes completed, failed, blocked, and timed-out validation command events', () => {
+    expect(
+      summarizeValidationCommandEvents([
+        {
+          id: 'validation-command-1',
+          command: 'pnpm test',
+          cwd: '/repo',
+          startedAt: 10,
+          completedAt: 40,
+          durationMs: 30,
+          status: 'completed',
+          exitCode: 0,
+          stdoutExcerpt: 'ok',
+          stderrExcerpt: '',
+        },
+        {
+          id: 'validation-command-2',
+          command: 'pnpm lint',
+          cwd: '/repo',
+          startedAt: 50,
+          completedAt: 90,
+          durationMs: 40,
+          status: 'failed',
+          exitCode: 1,
+          stdoutExcerpt: '',
+          stderrExcerpt: 'lint failed',
+          errorMessage: 'Command failed with exit code 1: pnpm lint',
+        },
+        {
+          id: 'validation-command-3',
+          command: 'git push',
+          cwd: '/repo',
+          startedAt: 100,
+          completedAt: 100,
+          durationMs: 0,
+          status: 'blocked',
+          exitCode: null,
+          stdoutExcerpt: '',
+          stderrExcerpt: '',
+          errorMessage: 'Rejected by Kira safety policy.',
+        },
+        {
+          id: 'validation-command-4',
+          command: 'pnpm e2e',
+          cwd: '/repo',
+          startedAt: 120,
+          completedAt: 1120,
+          durationMs: 1000,
+          status: 'timed_out',
+          exitCode: null,
+          stdoutExcerpt: '',
+          stderrExcerpt: '',
+          errorMessage: 'Command timed out after 90000ms: pnpm e2e',
+        },
+      ]),
+    ).toEqual({
+      totalCount: 4,
+      completedCount: 1,
+      failedCount: 3,
+      blockedCount: 1,
+      timedOutCount: 1,
+      totalDurationMs: 1070,
+    });
+  });
+});
+
+describe('file change event observability', () => {
+  it('summarizes file change lifecycle flags for review and rollback decisions', () => {
+    expect(
+      summarizeKiraFileChangeEvents([
+        {
+          file: 'src/new.ts',
+          changeType: 'add',
+          before: { exists: false, hash: null, size: null, source: 'git_head' },
+          after: { exists: true, hash: 'a'.repeat(64), size: 12, source: 'current' },
+          planned: true,
+          protected: false,
+          dirtyBefore: false,
+          touchedByKiraTool: true,
+        },
+        {
+          file: 'src/old.ts',
+          changeType: 'modify',
+          before: { exists: true, hash: 'b'.repeat(64), size: 20, source: 'git_head' },
+          after: { exists: true, hash: 'c'.repeat(64), size: 24, source: 'current' },
+          planned: false,
+          protected: false,
+          dirtyBefore: true,
+          touchedByKiraTool: false,
+        },
+        {
+          file: 'src/protected.ts',
+          changeType: 'delete',
+          before: { exists: true, hash: 'd'.repeat(64), size: 30, source: 'attempt_snapshot' },
+          after: { exists: false, hash: null, size: null, source: 'current' },
+          planned: false,
+          protected: true,
+          dirtyBefore: false,
+          touchedByKiraTool: true,
+        },
+      ]),
+    ).toEqual({
+      totalCount: 3,
+      addedCount: 1,
+      modifiedCount: 1,
+      deletedCount: 1,
+      unknownCount: 0,
+      unplannedCount: 2,
+      protectedCount: 1,
+      dirtyBeforeCount: 1,
+      toolTouchedCount: 2,
+    });
+  });
+});
+
+describe('model token usage extraction', () => {
+  it('normalizes OpenAI Responses usage', () => {
+    expect(
+      extractOpenAiTokenUsage({
+        input_tokens: 120,
+        output_tokens: 40,
+        total_tokens: 160,
+        input_tokens_details: { cached_tokens: 30 },
+        output_tokens_details: { reasoning_tokens: 12 },
+      }),
+    ).toEqual({
+      requestCount: 1,
+      inputTokens: 120,
+      cachedInputTokens: 30,
+      outputTokens: 40,
+      reasoningOutputTokens: 12,
+      totalTokens: 160,
+    });
+  });
+
+  it('does not double count OpenAI reasoning tokens when total tokens are absent', () => {
+    expect(
+      extractOpenAiTokenUsage({
+        input_tokens: 120,
+        output_tokens: 40,
+        output_tokens_details: { reasoning_tokens: 12 },
+      }),
+    ).toEqual({
+      requestCount: 1,
+      inputTokens: 120,
+      cachedInputTokens: 0,
+      outputTokens: 40,
+      reasoningOutputTokens: 12,
+      totalTokens: 160,
+    });
+  });
+
+  it('normalizes Anthropic usage', () => {
+    expect(
+      extractAnthropicTokenUsage({
+        input_tokens: 90,
+        output_tokens: 25,
+        cache_read_input_tokens: 10,
+        cache_creation_input_tokens: 5,
+      }),
+    ).toEqual({
+      requestCount: 1,
+      inputTokens: 90,
+      cachedInputTokens: 15,
+      outputTokens: 25,
+      reasoningOutputTokens: 0,
+      totalTokens: 115,
+    });
+  });
+
+  it('normalizes OpenAI rate-limit headers', () => {
+    const snapshot = extractOpenAiRateLimitSnapshot(
+      new Headers({
+        'x-ratelimit-limit-requests': '100',
+        'x-ratelimit-remaining-requests': '72',
+        'x-ratelimit-reset-requests': '18s',
+        'x-ratelimit-limit-tokens': '200000',
+        'x-ratelimit-remaining-tokens': '150000',
+        'x-ratelimit-reset-tokens': '1m',
+      }),
+      'openai-test',
+    );
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        provider: 'openai-test',
+        requestLimit: {
+          limit: 100,
+          remaining: 72,
+          usedPercent: 28,
+          reset: '18s',
+        },
+        tokenLimit: {
+          limit: 200000,
+          remaining: 150000,
+          usedPercent: 25,
+          reset: '1m',
+        },
+      }),
+    );
+    expect(snapshot?.capturedAt).toEqual(expect.any(Number));
+  });
+
+  it('normalizes Anthropic rate-limit headers', () => {
+    const snapshot = extractAnthropicRateLimitSnapshot(
+      new Headers({
+        'anthropic-ratelimit-requests-limit': '50',
+        'anthropic-ratelimit-requests-remaining': '5',
+        'anthropic-ratelimit-requests-reset': '2026-05-16T04:30:00Z',
+        'anthropic-ratelimit-tokens-limit': '90000',
+        'anthropic-ratelimit-tokens-remaining': '45000',
+        'anthropic-ratelimit-tokens-reset': '2026-05-16T04:31:00Z',
+      }),
+      'anthropic-test',
+    );
+
+    expect(snapshot).toEqual(
+      expect.objectContaining({
+        provider: 'anthropic-test',
+        requestLimit: {
+          limit: 50,
+          remaining: 5,
+          usedPercent: 90,
+          reset: '2026-05-16T04:30:00Z',
+        },
+        tokenLimit: {
+          limit: 90000,
+          remaining: 45000,
+          usedPercent: 50,
+          reset: '2026-05-16T04:31:00Z',
+        },
+      }),
+    );
+    expect(snapshot?.capturedAt).toEqual(expect.any(Number));
   });
 });
 

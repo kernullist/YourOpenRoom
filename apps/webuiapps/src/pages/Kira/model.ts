@@ -98,6 +98,39 @@ export interface KiraFailureAnalysisItem {
   reproductionSteps?: KiraFailureReproductionStep[];
 }
 
+export interface KiraValidationCommandEvent {
+  id: string;
+  command: string;
+  cwd: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status?: 'completed' | 'failed' | 'blocked' | 'timed_out';
+  exitCode?: number | null;
+  stdoutExcerpt?: string;
+  stderrExcerpt?: string;
+  errorMessage?: string;
+}
+
+export interface KiraFileChangeFingerprint {
+  exists?: boolean;
+  hash?: string | null;
+  size?: number | null;
+  source?: string;
+}
+
+export interface KiraFileChangeEvent {
+  file: string;
+  changeType?: 'add' | 'modify' | 'delete' | 'unchanged' | 'unknown';
+  before?: KiraFileChangeFingerprint;
+  after?: KiraFileChangeFingerprint;
+  gitStatus?: string;
+  planned?: boolean;
+  protected?: boolean;
+  dirtyBefore?: boolean;
+  touchedByKiraTool?: boolean;
+}
+
 export interface KiraReviewEvidenceChecked {
   file: string;
   reason: string;
@@ -330,6 +363,29 @@ export interface KiraEvidenceLedger {
   };
 }
 
+export interface KiraLlmTokenUsage {
+  requestCount?: number;
+  inputTokens?: number;
+  cachedInputTokens?: number;
+  outputTokens?: number;
+  reasoningOutputTokens?: number;
+  totalTokens?: number;
+}
+
+export interface KiraLlmRateLimitWindow {
+  limit?: number;
+  remaining?: number;
+  usedPercent?: number;
+  reset?: string;
+}
+
+export interface KiraLlmRateLimitSnapshot {
+  provider?: string;
+  capturedAt?: number;
+  requestLimit?: KiraLlmRateLimitWindow;
+  tokenLimit?: KiraLlmRateLimitWindow;
+}
+
 export interface KiraAttemptRecord {
   recordVersion?: number;
   migratedFromVersion?: number;
@@ -362,14 +418,18 @@ export interface KiraAttemptRecord {
     effectiveCommands?: string[];
     notes?: string[];
   };
+  toolCommandEvents?: KiraValidationCommandEvent[];
   diffStats?: {
     files?: number;
     additions?: number;
     deletions?: number;
     hunks?: number;
   };
+  fileChangeEvents?: KiraFileChangeEvent[];
   observability?: {
     stage?: string;
+    modelUsage?: KiraLlmTokenUsage;
+    rateLimits?: KiraLlmRateLimitSnapshot[];
     metrics?: Record<string, number>;
     timeline?: string[];
     notes?: string[];
@@ -404,6 +464,7 @@ export interface KiraAttemptRecord {
     passed?: string[];
     failed?: string[];
     failureDetails?: string[];
+    commandEvents?: KiraValidationCommandEvent[];
   };
   preflightExploration?: string[];
   readFiles?: string[];
@@ -444,6 +505,8 @@ export interface KiraReviewRecord {
     discourseCount?: number;
     evidenceCount?: number;
     estimatedReviewOutputTokens?: number;
+    modelUsage?: KiraLlmTokenUsage;
+    rateLimits?: KiraLlmRateLimitSnapshot[];
   };
 }
 
@@ -717,12 +780,12 @@ function normalizeOrchestrationPlan(value: unknown): KiraOrchestrationPlan | und
 function normalizeAdaptiveAgentPlan(value: unknown): KiraAdaptiveAgentPlan | undefined {
   const parsed = parseRecord<Partial<KiraAdaptiveAgentPlan>>(value);
   if (!parsed?.mode) return undefined;
-  const alternativeWorker = parseRecord<
-    Partial<KiraAdaptiveAgentPlan['alternativeWorker']>
-  >(parsed.alternativeWorker);
-  const integratorPolicy = parseRecord<
-    Partial<KiraAdaptiveAgentPlan['integratorPolicy']>
-  >(parsed.integratorPolicy);
+  const alternativeWorker = parseRecord<Partial<KiraAdaptiveAgentPlan['alternativeWorker']>>(
+    parsed.alternativeWorker,
+  );
+  const integratorPolicy = parseRecord<Partial<KiraAdaptiveAgentPlan['integratorPolicy']>>(
+    parsed.integratorPolicy,
+  );
   return {
     schemaVersion:
       typeof parsed.schemaVersion === 'number' && Number.isFinite(parsed.schemaVersion)
@@ -792,9 +855,7 @@ function normalizeAdaptiveAgentPlan(value: unknown): KiraAdaptiveAgentPlan | und
               reason: typeof raw.reason === 'string' ? raw.reason : '',
             };
           })
-          .filter((item): item is KiraAdaptiveAgentPlan['omittedRoles'][number] =>
-            Boolean(item),
-          )
+          .filter((item): item is KiraAdaptiveAgentPlan['omittedRoles'][number] => Boolean(item))
       : [],
   };
 }
@@ -1155,6 +1216,8 @@ export function normalizeKiraAttempt(raw: unknown): KiraAttemptRecord | null {
     diffHunkReview: Array.isArray(parsed.diffHunkReview) ? parsed.diffHunkReview : [],
     validationPlan: parsed.validationPlan,
     diffStats: parsed.diffStats,
+    toolCommandEvents: Array.isArray(parsed.toolCommandEvents) ? parsed.toolCommandEvents : [],
+    fileChangeEvents: Array.isArray(parsed.fileChangeEvents) ? parsed.fileChangeEvents : [],
     observability: parsed.observability,
     failureAnalysis: normalizeFailureAnalysis(parsed.failureAnalysis),
     runtimeValidation: parsed.runtimeValidation,

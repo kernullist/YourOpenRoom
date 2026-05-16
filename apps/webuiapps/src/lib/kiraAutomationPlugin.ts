@@ -543,6 +543,7 @@ interface EvidenceLedgerItem {
     | 'policy'
     | 'environment'
     | 'workflow'
+    | 'command'
     | 'connectors';
   status: 'pass' | 'warn' | 'fail' | 'info';
   summary: string;
@@ -817,7 +818,7 @@ interface ReviewFinding {
 
 interface ReviewFindingTriageItem {
   id: string;
-  source: 'review' | 'validation' | 'runtime' | 'design' | 'intent';
+  source: 'review' | 'validation' | 'runtime' | 'design' | 'intent' | 'file-change';
   status: 'open' | 'fixed' | 'acknowledged' | 'dismissed';
   severity: ReviewFinding['severity'];
   title: string;
@@ -852,12 +853,14 @@ interface KiraAttemptRecord {
   changedFiles: string[];
   commandsRun: string[];
   validationReruns: ValidationRerunSummary;
+  toolCommandEvents?: KiraValidationCommandEvent[];
   outOfPlanFiles: string[];
   validationGaps: string[];
   risks: string[];
   changeDesign?: ChangeDesign;
   diffHunkReview?: DiffHunkReview[];
   validationPlan?: ResolvedValidationPlan;
+  fileChangeEvents?: KiraFileChangeEvent[];
   diffStats?: DiffStats;
   observability?: KiraAttemptObservability;
   failureAnalysis?: FailureAnalysis[];
@@ -906,10 +909,48 @@ interface KiraReviewRecord {
   observability?: KiraReviewObservability;
 }
 
+export type KiraValidationCommandStatus = 'completed' | 'failed' | 'blocked' | 'timed_out';
+
+export interface KiraValidationCommandEvent {
+  id: string;
+  command: string;
+  cwd: string;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  status: KiraValidationCommandStatus;
+  exitCode: number | null;
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  errorMessage?: string;
+}
+
+export type KiraFileChangeType = 'add' | 'modify' | 'delete' | 'unchanged' | 'unknown';
+
+export interface KiraFileChangeFingerprint {
+  exists: boolean;
+  hash: string | null;
+  size: number | null;
+  source: 'attempt_snapshot' | 'dirty_snapshot' | 'git_head' | 'current' | 'unknown';
+}
+
+export interface KiraFileChangeEvent {
+  file: string;
+  changeType: KiraFileChangeType;
+  before: KiraFileChangeFingerprint;
+  after: KiraFileChangeFingerprint;
+  gitStatus?: string;
+  planned: boolean;
+  protected: boolean;
+  dirtyBefore: boolean;
+  touchedByKiraTool: boolean;
+}
+
 interface ValidationRerunSummary {
   passed: string[];
   failed: string[];
   failureDetails: string[];
+  commandEvents?: KiraValidationCommandEvent[];
 }
 
 interface DiffStats {
@@ -1031,6 +1072,7 @@ interface KiraWorkerAttemptResult {
   workerSummary: WorkerSummary;
   validationPlan: ResolvedValidationPlan;
   validationReruns: ValidationRerunSummary;
+  toolCommandEvents?: KiraValidationCommandEvent[];
   failureAnalysis: FailureAnalysis[];
   runtimeValidation: RuntimeValidationResult;
   patchIntentVerification: PatchIntentVerification;
@@ -1039,6 +1081,7 @@ interface KiraWorkerAttemptResult {
   missingValidationCommands: string[];
   highRiskIssues: string[];
   diffExcerpts: string[];
+  fileChangeEvents?: KiraFileChangeEvent[];
   rawWorkerOutput?: string;
   status: 'needs_context' | 'validation_failed' | 'blocked' | 'reviewable' | 'failed';
   feedback: string[];
@@ -1047,6 +1090,8 @@ interface KiraWorkerAttemptResult {
 
 interface KiraAttemptObservability {
   stage: KiraAttemptRecord['status'];
+  modelUsage: KiraLlmTokenUsage;
+  rateLimits: KiraLlmRateLimitSnapshot[];
   metrics: {
     preflightExplorationCount: number;
     readFileCount: number;
@@ -1055,6 +1100,25 @@ interface KiraAttemptObservability {
     commandRunCount: number;
     validationPassedCount: number;
     validationFailedCount: number;
+    validationCommandEventCount: number;
+    validationCommandCompletedCount: number;
+    validationCommandFailedEventCount: number;
+    validationCommandBlockedCount: number;
+    validationCommandTimedOutCount: number;
+    validationCommandDurationMs: number;
+    toolCommandEventCount: number;
+    toolCommandFailedEventCount: number;
+    toolCommandBlockedCount: number;
+    toolCommandTimedOutCount: number;
+    toolCommandDurationMs: number;
+    fileChangeEventCount: number;
+    fileChangeAddedCount: number;
+    fileChangeModifiedCount: number;
+    fileChangeDeletedCount: number;
+    fileChangeUnknownCount: number;
+    fileChangeUnplannedCount: number;
+    fileChangeProtectedCount: number;
+    fileChangeDirtyBeforeCount: number;
     diffFileCount: number;
     diffAdditions: number;
     diffDeletions: number;
@@ -1062,6 +1126,15 @@ interface KiraAttemptObservability {
     durationMs: number;
     evidenceSignalCount: number;
     estimatedWorkerOutputTokens: number;
+    actualModelTokens?: number;
+    actualModelInputTokens?: number;
+    actualModelCachedInputTokens?: number;
+    actualModelOutputTokens?: number;
+    actualModelReasoningOutputTokens?: number;
+    modelRequestCount?: number;
+    modelRateLimitSnapshotCount?: number;
+    modelRequestLimitRemaining?: number;
+    modelTokenLimitRemaining?: number;
   };
   timeline: string[];
   notes: string[];
@@ -1074,6 +1147,8 @@ interface KiraReviewObservability {
   discourseCount: number;
   evidenceCount: number;
   estimatedReviewOutputTokens: number;
+  modelUsage: KiraLlmTokenUsage;
+  rateLimits: KiraLlmRateLimitSnapshot[];
 }
 
 interface AttemptSelectionSummary {
@@ -1096,7 +1171,7 @@ interface KiraAutomationEvent {
   projectName: string;
   message: string;
   createdAt: number;
-  type: 'started' | 'resumed' | 'completed' | 'needs_attention';
+  type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
 interface KiraAutomationPluginOptions {
@@ -1135,6 +1210,31 @@ interface KiraLlmCallOptions {
 
 interface RunToolAgentOptions extends KiraLlmCallOptions {
   promptCacheKey?: string;
+  modelUsage?: KiraLlmTokenUsage;
+  rateLimits?: KiraLlmRateLimitSnapshot[];
+}
+
+export interface KiraLlmTokenUsage {
+  requestCount: number;
+  inputTokens: number;
+  cachedInputTokens: number;
+  outputTokens: number;
+  reasoningOutputTokens: number;
+  totalTokens: number;
+}
+
+export interface KiraLlmRateLimitWindow {
+  limit?: number;
+  remaining?: number;
+  usedPercent?: number;
+  reset?: string;
+}
+
+export interface KiraLlmRateLimitSnapshot {
+  provider: string;
+  capturedAt: number;
+  requestLimit?: KiraLlmRateLimitWindow;
+  tokenLimit?: KiraLlmRateLimitWindow;
 }
 
 function jsonStringSchema(): JsonSchemaDefinition {
@@ -1397,10 +1497,13 @@ interface WorkerAttemptState {
   environmentContract: KiraEnvironmentContract;
   toolScope: Set<string> | null;
   commandsRun: string[];
+  commandEvents: KiraValidationCommandEvent[];
   readFiles: Set<string>;
   explorationActions: string[];
   patchedFiles: Set<string>;
   dirtyFiles: Set<string>;
+  modelUsage: KiraLlmTokenUsage;
+  rateLimits: KiraLlmRateLimitSnapshot[];
 }
 
 type AgentMessage =
@@ -1472,6 +1575,7 @@ const ENV_DISCLOSURE_COMMAND_PATTERN =
 const DOCUMENTATION_FILE_PATTERN = /\.(?:md|mdx|txt|rst)$/i;
 const RUNTIME_PROBE_TIMEOUT_MS = 450;
 const COMMAND_TIMEOUT_MS = 90_000;
+const VALIDATION_COMMAND_EVENT_OUTPUT_CHARS = 1_200;
 const REMOTE_RUNNER_PROBE_COMMAND = 'git rev-parse --is-inside-work-tree';
 const LLM_REQUEST_TIMEOUT_MS = 240_000;
 const EXTERNAL_AGENT_TIMEOUT_MS = 10 * 60_000;
@@ -1493,6 +1597,8 @@ const activeJobs = new Set<string>();
 const activeProjectJobs = new Set<string>();
 const jobAbortControllers = new Map<string, AbortController>();
 const EVENT_QUEUE_FILE = 'kira-automation-events.json';
+const MAX_KIRA_STEER_TEXT_CHARS = 6000;
+const KIRA_OPERATOR_STEER_SECTION = 'Operator steer';
 const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
@@ -1732,6 +1838,256 @@ function estimateTokenCount(value: string): number {
   const normalized = normalizeWhitespace(value);
   if (!normalized) return 0;
   return Math.max(1, Math.ceil(normalized.length / 4));
+}
+
+function asTokenCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.round(value) : 0;
+}
+
+function asHeaderNumber(value: string | null): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number(value.trim());
+  return Number.isFinite(parsed) && parsed >= 0 ? Math.round(parsed) : undefined;
+}
+
+function getHeaderValue(headers: Headers, names: string[]): string | null {
+  for (const name of names) {
+    const value = headers.get(name);
+    if (value && value.trim()) return value.trim();
+  }
+  return null;
+}
+
+function createRateLimitWindow(params: {
+  limit?: number;
+  remaining?: number;
+  reset?: string | null;
+}): KiraLlmRateLimitWindow | undefined {
+  if (
+    params.limit === undefined &&
+    params.remaining === undefined &&
+    !(params.reset && params.reset.trim())
+  ) {
+    return undefined;
+  }
+  const usedPercent =
+    params.limit !== undefined && params.limit > 0 && params.remaining !== undefined
+      ? Math.round(
+          Math.max(0, Math.min(100, ((params.limit - params.remaining) / params.limit) * 100)) *
+            100,
+        ) / 100
+      : undefined;
+  return {
+    ...(params.limit !== undefined ? { limit: params.limit } : {}),
+    ...(params.remaining !== undefined ? { remaining: params.remaining } : {}),
+    ...(usedPercent !== undefined ? { usedPercent } : {}),
+    ...(params.reset && params.reset.trim() ? { reset: params.reset.trim() } : {}),
+  };
+}
+
+function finalizeRateLimitSnapshot(
+  snapshot: Omit<KiraLlmRateLimitSnapshot, 'capturedAt'>,
+): KiraLlmRateLimitSnapshot | undefined {
+  if (!snapshot.requestLimit && !snapshot.tokenLimit) return undefined;
+  return {
+    ...snapshot,
+    capturedAt: Date.now(),
+  };
+}
+
+function cloneRateLimitSnapshot(value: KiraLlmRateLimitSnapshot): KiraLlmRateLimitSnapshot {
+  return {
+    ...value,
+    requestLimit: value.requestLimit ? { ...value.requestLimit } : undefined,
+    tokenLimit: value.tokenLimit ? { ...value.tokenLimit } : undefined,
+  };
+}
+
+function cloneRateLimitSnapshots(values?: KiraLlmRateLimitSnapshot[]): KiraLlmRateLimitSnapshot[] {
+  return (values ?? []).map(cloneRateLimitSnapshot).slice(-12);
+}
+
+function addRateLimitSnapshot(
+  target: KiraLlmRateLimitSnapshot[],
+  snapshot?: KiraLlmRateLimitSnapshot,
+): void {
+  if (!snapshot) return;
+  target.push(cloneRateLimitSnapshot(snapshot));
+  if (target.length > 12) {
+    target.splice(0, target.length - 12);
+  }
+}
+
+function combineRateLimitSnapshots(
+  ...items: Array<KiraLlmRateLimitSnapshot[] | undefined>
+): KiraLlmRateLimitSnapshot[] {
+  const combined: KiraLlmRateLimitSnapshot[] = [];
+  for (const item of items) {
+    for (const snapshot of item ?? []) {
+      addRateLimitSnapshot(combined, snapshot);
+    }
+  }
+  return combined;
+}
+
+function createEmptyLlmTokenUsage(): KiraLlmTokenUsage {
+  return {
+    requestCount: 0,
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens: 0,
+  };
+}
+
+function cloneLlmTokenUsage(value?: KiraLlmTokenUsage): KiraLlmTokenUsage {
+  return value ? { ...value } : createEmptyLlmTokenUsage();
+}
+
+function addLlmTokenUsage(target: KiraLlmTokenUsage, usage?: KiraLlmTokenUsage): void {
+  if (!usage) return;
+  target.requestCount += usage.requestCount;
+  target.inputTokens += usage.inputTokens;
+  target.cachedInputTokens += usage.cachedInputTokens;
+  target.outputTokens += usage.outputTokens;
+  target.reasoningOutputTokens += usage.reasoningOutputTokens;
+  target.totalTokens += usage.totalTokens;
+}
+
+function combineLlmTokenUsage(...items: Array<KiraLlmTokenUsage | undefined>): KiraLlmTokenUsage {
+  const combined = createEmptyLlmTokenUsage();
+  for (const item of items) {
+    addLlmTokenUsage(combined, item);
+  }
+  return combined;
+}
+
+function finalizeLlmTokenUsage(usage: KiraLlmTokenUsage): KiraLlmTokenUsage | undefined {
+  const totalTokens =
+    usage.totalTokens ||
+    usage.inputTokens + Math.max(usage.outputTokens, usage.reasoningOutputTokens);
+  if (
+    usage.inputTokens === 0 &&
+    usage.outputTokens === 0 &&
+    usage.reasoningOutputTokens === 0 &&
+    totalTokens === 0
+  ) {
+    return undefined;
+  }
+  return {
+    ...usage,
+    totalTokens,
+  };
+}
+
+function readNestedNumber(value: unknown, key: string): number {
+  if (!value || typeof value !== 'object') return 0;
+  return asTokenCount((value as Record<string, unknown>)[key]);
+}
+
+export function extractOpenAiTokenUsage(usage: unknown): KiraLlmTokenUsage | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const record = usage as Record<string, unknown>;
+  const inputTokens =
+    asTokenCount(record.input_tokens) ||
+    asTokenCount(record.prompt_tokens) ||
+    asTokenCount(record.promptTokens);
+  const outputTokens =
+    asTokenCount(record.output_tokens) ||
+    asTokenCount(record.completion_tokens) ||
+    asTokenCount(record.completionTokens);
+  const cachedInputTokens =
+    readNestedNumber(record.input_tokens_details, 'cached_tokens') ||
+    readNestedNumber(record.prompt_tokens_details, 'cached_tokens') ||
+    readNestedNumber(record.inputTokensDetails, 'cachedTokens') ||
+    readNestedNumber(record.promptTokensDetails, 'cachedTokens');
+  const reasoningOutputTokens =
+    readNestedNumber(record.output_tokens_details, 'reasoning_tokens') ||
+    readNestedNumber(record.completion_tokens_details, 'reasoning_tokens') ||
+    readNestedNumber(record.outputTokensDetails, 'reasoningTokens') ||
+    readNestedNumber(record.completionTokensDetails, 'reasoningTokens');
+  return finalizeLlmTokenUsage({
+    requestCount: 1,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens:
+      asTokenCount(record.total_tokens) ||
+      asTokenCount(record.totalTokens) ||
+      inputTokens + Math.max(outputTokens, reasoningOutputTokens),
+  });
+}
+
+export function extractAnthropicTokenUsage(usage: unknown): KiraLlmTokenUsage | undefined {
+  if (!usage || typeof usage !== 'object') return undefined;
+  const record = usage as Record<string, unknown>;
+  const inputTokens = asTokenCount(record.input_tokens) || asTokenCount(record.inputTokens);
+  const outputTokens = asTokenCount(record.output_tokens) || asTokenCount(record.outputTokens);
+  const cachedInputTokens =
+    asTokenCount(record.cache_read_input_tokens) +
+    asTokenCount(record.cache_creation_input_tokens) +
+    asTokenCount(record.cacheReadInputTokens) +
+    asTokenCount(record.cacheCreationInputTokens);
+  return finalizeLlmTokenUsage({
+    requestCount: 1,
+    inputTokens,
+    cachedInputTokens,
+    outputTokens,
+    reasoningOutputTokens: 0,
+    totalTokens: inputTokens + outputTokens,
+  });
+}
+
+export function extractOpenAiRateLimitSnapshot(
+  headers: Headers,
+  provider = 'openai',
+): KiraLlmRateLimitSnapshot | undefined {
+  return finalizeRateLimitSnapshot({
+    provider,
+    requestLimit: createRateLimitWindow({
+      limit: asHeaderNumber(getHeaderValue(headers, ['x-ratelimit-limit-requests'])),
+      remaining: asHeaderNumber(getHeaderValue(headers, ['x-ratelimit-remaining-requests'])),
+      reset: getHeaderValue(headers, ['x-ratelimit-reset-requests']),
+    }),
+    tokenLimit: createRateLimitWindow({
+      limit: asHeaderNumber(
+        getHeaderValue(headers, ['x-ratelimit-limit-tokens', 'x-ratelimit-limit-input-tokens']),
+      ),
+      remaining: asHeaderNumber(
+        getHeaderValue(headers, [
+          'x-ratelimit-remaining-tokens',
+          'x-ratelimit-remaining-input-tokens',
+        ]),
+      ),
+      reset: getHeaderValue(headers, [
+        'x-ratelimit-reset-tokens',
+        'x-ratelimit-reset-input-tokens',
+      ]),
+    }),
+  });
+}
+
+export function extractAnthropicRateLimitSnapshot(
+  headers: Headers,
+  provider = 'anthropic',
+): KiraLlmRateLimitSnapshot | undefined {
+  return finalizeRateLimitSnapshot({
+    provider,
+    requestLimit: createRateLimitWindow({
+      limit: asHeaderNumber(getHeaderValue(headers, ['anthropic-ratelimit-requests-limit'])),
+      remaining: asHeaderNumber(
+        getHeaderValue(headers, ['anthropic-ratelimit-requests-remaining']),
+      ),
+      reset: getHeaderValue(headers, ['anthropic-ratelimit-requests-reset', 'retry-after']),
+    }),
+    tokenLimit: createRateLimitWindow({
+      limit: asHeaderNumber(getHeaderValue(headers, ['anthropic-ratelimit-tokens-limit'])),
+      remaining: asHeaderNumber(getHeaderValue(headers, ['anthropic-ratelimit-tokens-remaining'])),
+      reset: getHeaderValue(headers, ['anthropic-ratelimit-tokens-reset', 'retry-after']),
+    }),
+  });
 }
 
 function normalizeProjectRequiredInstructions(value: unknown): string {
@@ -3268,10 +3624,13 @@ function createWorkerAttemptState(
     environmentContract: normalizeEnvironmentContract(environmentContract),
     toolScope: normalizedToolScope.length > 0 ? new Set(normalizedToolScope) : null,
     commandsRun: [],
+    commandEvents: [],
     readFiles: new Set(),
     explorationActions: [],
     patchedFiles: new Set(),
     dirtyFiles: new Set(normalizedDirtyFiles),
+    modelUsage: createEmptyLlmTokenUsage(),
+    rateLimits: [],
   };
 }
 
@@ -4254,7 +4613,13 @@ async function callOpenAiCompatible(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+): Promise<{
+  content: string;
+  toolCalls: ToolCall[];
+  reasoningContent?: string;
+  usage?: KiraLlmTokenUsage;
+  rateLimit?: KiraLlmRateLimitSnapshot;
+}> {
   const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
   const apiKey = resolveOpenCodeApiKey(config);
   const messages = history.map((message) => {
@@ -4316,6 +4681,7 @@ async function callOpenAiCompatible(
     throw new Error(`LLM API error ${res.status}: ${text}`);
   }
   const data = JSON.parse(text) as {
+    usage?: unknown;
     choices?: Array<{
       message?: {
         content?: string;
@@ -4338,6 +4704,8 @@ async function callOpenAiCompatible(
     content: message?.content?.trim() || '',
     toolCalls: toolCalls.filter((tool) => tool.name),
     reasoningContent: message?.reasoning_content,
+    usage: extractOpenAiTokenUsage(data.usage),
+    rateLimit: extractOpenAiRateLimitSnapshot(res.headers, config.provider),
   };
 }
 
@@ -4348,7 +4716,13 @@ async function callOpenAiResponses(
   tools: ToolDefinition[],
   signal?: AbortSignal,
   callOptions?: KiraLlmCallOptions,
-): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+): Promise<{
+  content: string;
+  toolCalls: ToolCall[];
+  reasoningContent?: string;
+  usage?: KiraLlmTokenUsage;
+  rateLimit?: KiraLlmRateLimitSnapshot;
+}> {
   const targetUrl = joinUrl(
     config.baseUrl,
     hasVersionSuffix(config.baseUrl) ? 'responses' : 'v1/responses',
@@ -4419,6 +4793,7 @@ async function callOpenAiResponses(
   }
   const data = JSON.parse(text) as {
     output_text?: string;
+    usage?: unknown;
     output?: Array<
       | {
           type?: 'message';
@@ -4454,6 +4829,8 @@ async function callOpenAiResponses(
   return {
     content: (data.output_text || contentParts.join('')).trim(),
     toolCalls,
+    usage: extractOpenAiTokenUsage(data.usage),
+    rateLimit: extractOpenAiRateLimitSnapshot(res.headers, config.provider),
   };
 }
 
@@ -4463,7 +4840,13 @@ async function callAnthropicCompatible(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
-): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+): Promise<{
+  content: string;
+  toolCalls: ToolCall[];
+  reasoningContent?: string;
+  usage?: KiraLlmTokenUsage;
+  rateLimit?: KiraLlmRateLimitSnapshot;
+}> {
   const targetUrl = joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl));
   const apiKey = resolveOpenCodeApiKey(config);
   const messages = history.map((message) => {
@@ -4525,6 +4908,7 @@ async function callAnthropicCompatible(
     throw new Error(`Anthropic API error ${res.status}: ${text}`);
   }
   const data = JSON.parse(text) as {
+    usage?: unknown;
     content?: Array<
       | { type: 'text'; text?: string }
       | { type: 'tool_use'; id?: string; name?: string; input?: Record<string, unknown> }
@@ -4552,7 +4936,12 @@ async function callAnthropicCompatible(
       args: block.input ?? {},
     }))
     .filter((tool) => tool.name);
-  return { content, toolCalls };
+  return {
+    content,
+    toolCalls,
+    usage: extractAnthropicTokenUsage(data.usage),
+    rateLimit: extractAnthropicRateLimitSnapshot(res.headers, config.provider),
+  };
 }
 
 async function callLlm(
@@ -4562,7 +4951,13 @@ async function callLlm(
   tools: ToolDefinition[],
   signal?: AbortSignal,
   callOptions?: KiraLlmCallOptions,
-): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
+): Promise<{
+  content: string;
+  toolCalls: ToolCall[];
+  reasoningContent?: string;
+  usage?: KiraLlmTokenUsage;
+  rateLimit?: KiraLlmRateLimitSnapshot;
+}> {
   return runWithKiraModelRouteLimit(
     config,
     async () => {
@@ -5027,6 +5422,14 @@ function recordAttemptCommand(state: WorkerAttemptState | null | undefined, comm
   }
 }
 
+function recordAttemptCommandEvent(
+  state: WorkerAttemptState | null | undefined,
+  event: KiraValidationCommandEvent,
+): void {
+  if (!state) return;
+  state.commandEvents.push(event);
+}
+
 function recordAttemptExploration(
   state: WorkerAttemptState | null | undefined,
   action: string,
@@ -5036,6 +5439,22 @@ function recordAttemptExploration(
   if (normalized) {
     state.explorationActions.push(normalized);
   }
+}
+
+function recordAttemptModelUsage(
+  state: WorkerAttemptState | null | undefined,
+  usage?: KiraLlmTokenUsage,
+): void {
+  if (!state) return;
+  addLlmTokenUsage(state.modelUsage, usage);
+}
+
+function recordAttemptRateLimit(
+  state: WorkerAttemptState | null | undefined,
+  snapshot?: KiraLlmRateLimitSnapshot,
+): void {
+  if (!state) return;
+  addRateLimitSnapshot(state.rateLimits, snapshot);
 }
 
 function recordAttemptRead(
@@ -5113,6 +5532,285 @@ function formatCommandFailureDetail(command: string, error: unknown): string {
     `Error: ${message}`,
     truncateForReview(formatCommandOutput(stdout, stderr), 1_200),
   ].join('\n\n');
+}
+
+function emptyFileFingerprint(
+  source: KiraFileChangeFingerprint['source'] = 'unknown',
+): KiraFileChangeFingerprint {
+  return {
+    exists: false,
+    hash: null,
+    size: null,
+    source,
+  };
+}
+
+function fingerprintBuffer(
+  content: Buffer | string,
+  source: KiraFileChangeFingerprint['source'],
+): KiraFileChangeFingerprint {
+  const buffer = Buffer.isBuffer(content) ? content : Buffer.from(content, 'utf-8');
+  return {
+    exists: true,
+    hash: createHash('sha256').update(buffer).digest('hex'),
+    size: buffer.length,
+    source,
+  };
+}
+
+function convertDirtySnapshotToFingerprint(
+  snapshot: DirtyFileContentSnapshot,
+  source: KiraFileChangeFingerprint['source'],
+): KiraFileChangeFingerprint {
+  return {
+    exists: snapshot.exists,
+    hash: snapshot.hash,
+    size: snapshot.size,
+    source,
+  };
+}
+
+function convertAttemptSnapshotToFingerprint(
+  snapshot: AttemptFileSnapshot,
+): KiraFileChangeFingerprint {
+  return snapshot.existed && snapshot.content !== null
+    ? fingerprintBuffer(snapshot.content, 'attempt_snapshot')
+    : emptyFileFingerprint('attempt_snapshot');
+}
+
+function inferFileChangeType(params: {
+  before: KiraFileChangeFingerprint;
+  after: KiraFileChangeFingerprint;
+  gitStatus?: string;
+}): KiraFileChangeType {
+  const status = params.gitStatus ?? '';
+  const statusSaysAdded = status.includes('?') || status.includes('A');
+  const statusSaysDeleted = status.includes('D');
+  const statusSaysModified =
+    status.includes('M') || status.includes('R') || status.includes('C') || status.includes('T');
+
+  if (params.before.source === 'unknown' && params.after.exists) {
+    if (statusSaysAdded) return 'add';
+    if (statusSaysModified) return 'modify';
+    return 'unknown';
+  }
+  if (!params.before.exists && params.after.exists) return 'add';
+  if (params.before.exists && !params.after.exists) return 'delete';
+  if (statusSaysDeleted && !params.after.exists) return 'delete';
+  if (
+    params.before.exists &&
+    params.after.exists &&
+    (params.before.hash !== params.after.hash || params.before.size !== params.after.size)
+  ) {
+    return 'modify';
+  }
+  if (statusSaysModified) return 'modify';
+  return 'unchanged';
+}
+
+export function summarizeKiraFileChangeEvents(events: KiraFileChangeEvent[] | undefined): {
+  totalCount: number;
+  addedCount: number;
+  modifiedCount: number;
+  deletedCount: number;
+  unknownCount: number;
+  unplannedCount: number;
+  protectedCount: number;
+  dirtyBeforeCount: number;
+  toolTouchedCount: number;
+} {
+  const fileEvents = Array.isArray(events) ? events : [];
+  return fileEvents.reduce(
+    (summary, event) => {
+      summary.totalCount += 1;
+      if (event.changeType === 'add') summary.addedCount += 1;
+      if (event.changeType === 'modify') summary.modifiedCount += 1;
+      if (event.changeType === 'delete') summary.deletedCount += 1;
+      if (event.changeType === 'unknown') summary.unknownCount += 1;
+      if (!event.planned) summary.unplannedCount += 1;
+      if (event.protected) summary.protectedCount += 1;
+      if (event.dirtyBefore) summary.dirtyBeforeCount += 1;
+      if (event.touchedByKiraTool) summary.toolTouchedCount += 1;
+      return summary;
+    },
+    {
+      totalCount: 0,
+      addedCount: 0,
+      modifiedCount: 0,
+      deletedCount: 0,
+      unknownCount: 0,
+      unplannedCount: 0,
+      protectedCount: 0,
+      dirtyBeforeCount: 0,
+      toolTouchedCount: 0,
+    },
+  );
+}
+
+function formatFileFingerprint(fingerprint: KiraFileChangeFingerprint): string {
+  if (!fingerprint.exists) {
+    return `${fingerprint.source}:missing`;
+  }
+  return `${fingerprint.source}:${fingerprint.hash?.slice(0, 10) ?? 'unknown'}:${
+    fingerprint.size ?? 'unknown'
+  }b`;
+}
+
+function formatKiraFileChangeEvents(events: KiraFileChangeEvent[] | undefined): string {
+  const fileEvents = Array.isArray(events) ? events : [];
+  if (fileEvents.length === 0) {
+    return 'File change lifecycle:\n- No file change lifecycle events recorded';
+  }
+
+  const summary = summarizeKiraFileChangeEvents(fileEvents);
+  return [
+    `File change lifecycle: ${summary.totalCount} event(s), add=${summary.addedCount}, modify=${summary.modifiedCount}, delete=${summary.deletedCount}, unknown=${summary.unknownCount}, unplanned=${summary.unplannedCount}, protected=${summary.protectedCount}, dirtyBefore=${summary.dirtyBeforeCount}, toolTouched=${summary.toolTouchedCount}`,
+    ...fileEvents.slice(0, 30).map((event) => {
+      const flags = [
+        event.planned ? 'planned' : 'unplanned',
+        event.protected ? 'protected' : '',
+        event.dirtyBefore ? 'dirty-before' : '',
+        event.touchedByKiraTool ? 'tool-touched' : '',
+      ].filter(Boolean);
+      return [
+        `- ${event.changeType} ${event.file}`,
+        event.gitStatus ? `git=${event.gitStatus.trim()}` : '',
+        `flags=${flags.join(', ') || 'none'}`,
+        `before=${formatFileFingerprint(event.before)}`,
+        `after=${formatFileFingerprint(event.after)}`,
+      ]
+        .filter(Boolean)
+        .join(' | ');
+    }),
+    ...(fileEvents.length > 30 ? [`- ... ${fileEvents.length - 30} more file event(s)`] : []),
+  ].join('\n');
+}
+
+function getCommandErrorMetadata(error: unknown): {
+  message: string;
+  stdout: string;
+  stderr: string;
+  exitCode: number | null;
+  timedOut: boolean;
+} {
+  const stdout =
+    error && typeof error === 'object' && 'stdout' in error ? String(error.stdout ?? '') : '';
+  const stderr =
+    error && typeof error === 'object' && 'stderr' in error ? String(error.stderr ?? '') : '';
+  const rawExitCode =
+    error && typeof error === 'object' && 'exitCode' in error ? error.exitCode : null;
+  const exitCode =
+    typeof rawExitCode === 'number' && Number.isFinite(rawExitCode) ? rawExitCode : null;
+  const timedOut =
+    error && typeof error === 'object' && 'timedOut' in error ? Boolean(error.timedOut) : false;
+  return {
+    message: error instanceof Error ? error.message : String(error),
+    stdout,
+    stderr,
+    exitCode,
+    timedOut,
+  };
+}
+
+function buildValidationCommandEvent(params: {
+  command: string;
+  cwd: string;
+  startedAt: number;
+  status: KiraValidationCommandStatus;
+  exitCode?: number | null;
+  stdout?: string;
+  stderr?: string;
+  errorMessage?: string;
+}): KiraValidationCommandEvent {
+  const completedAt = Date.now();
+  const errorMessage = params.errorMessage?.trim();
+  return {
+    id: makeId('validation-command'),
+    command: params.command,
+    cwd: params.cwd,
+    startedAt: params.startedAt,
+    completedAt,
+    durationMs: Math.max(0, completedAt - params.startedAt),
+    status: params.status,
+    exitCode: params.exitCode ?? null,
+    stdoutExcerpt: truncateForReview(
+      (params.stdout ?? '').trim(),
+      VALIDATION_COMMAND_EVENT_OUTPUT_CHARS,
+    ),
+    stderrExcerpt: truncateForReview(
+      (params.stderr ?? '').trim(),
+      VALIDATION_COMMAND_EVENT_OUTPUT_CHARS,
+    ),
+    ...(errorMessage
+      ? { errorMessage: truncateForReview(errorMessage, VALIDATION_COMMAND_EVENT_OUTPUT_CHARS) }
+      : {}),
+  };
+}
+
+export function summarizeValidationCommandEvents(
+  events: KiraValidationCommandEvent[] | undefined,
+): {
+  totalCount: number;
+  completedCount: number;
+  failedCount: number;
+  blockedCount: number;
+  timedOutCount: number;
+  totalDurationMs: number;
+} {
+  const commandEvents = Array.isArray(events) ? events : [];
+  return commandEvents.reduce(
+    (summary, event) => {
+      summary.totalCount += 1;
+      summary.totalDurationMs += Math.max(0, event.durationMs || 0);
+      if (event.status === 'completed') {
+        summary.completedCount += 1;
+      } else {
+        summary.failedCount += 1;
+      }
+      if (event.status === 'blocked') {
+        summary.blockedCount += 1;
+      }
+      if (event.status === 'timed_out') {
+        summary.timedOutCount += 1;
+      }
+      return summary;
+    },
+    {
+      totalCount: 0,
+      completedCount: 0,
+      failedCount: 0,
+      blockedCount: 0,
+      timedOutCount: 0,
+      totalDurationMs: 0,
+    },
+  );
+}
+
+function formatKiraCommandLifecycle(
+  title: string,
+  events: KiraValidationCommandEvent[] | undefined,
+): string {
+  const commandEvents = Array.isArray(events) ? events : [];
+  if (commandEvents.length === 0) {
+    return `${title}:\n- No command lifecycle events recorded`;
+  }
+
+  const summary = summarizeValidationCommandEvents(commandEvents);
+  return [
+    `${title}: ${summary.totalCount} event(s), completed=${summary.completedCount}, failedOrBlocked=${summary.failedCount}, blocked=${summary.blockedCount}, timedOut=${summary.timedOutCount}, durationMs=${summary.totalDurationMs}`,
+    ...commandEvents
+      .slice(-12)
+      .map((event) =>
+        [
+          `- ${event.status} ${event.command}`,
+          `exit=${event.exitCode ?? 'n/a'}`,
+          `${event.durationMs}ms`,
+          event.errorMessage ? truncateForReview(event.errorMessage, 180) : '',
+        ]
+          .filter(Boolean)
+          .join(' | '),
+      ),
+  ].join('\n');
 }
 
 function isHighRiskFile(projectRoot: string, relativePath: string): boolean {
@@ -5378,20 +6076,37 @@ async function executeTool(
     case 'run_command': {
       const command = typeof args.command === 'string' ? args.command.trim() : '';
       if (!command) return 'error: command is required';
+      const startedAt = Date.now();
+      const recordBlockedCommand = (message: string): string => {
+        recordAttemptCommandEvent(
+          attemptState,
+          buildValidationCommandEvent({
+            command,
+            cwd: projectRoot,
+            startedAt,
+            status: 'blocked',
+            exitCode: null,
+            stdout: '',
+            stderr: message,
+            errorMessage: message,
+          }),
+        );
+        return `error: ${message}`;
+      };
       if (
         DANGEROUS_COMMAND_PATTERNS.some((pattern) => pattern.test(normalizeWhitespace(command)))
       ) {
-        return 'error: command rejected by safety policy';
+        return recordBlockedCommand('command rejected by safety policy');
       }
       if (!isSafeCommandAllowed(command)) {
-        return 'error: command prefix is not allowed';
+        return recordBlockedCommand('command prefix is not allowed');
       }
       const environmentIssues = collectEnvironmentCommandIssues(
         attemptState?.environmentContract,
         command,
       );
       if (environmentIssues.length > 0) {
-        return `error: ${environmentIssues.join(' ')}`;
+        return recordBlockedCommand(environmentIssues.join(' '));
       }
       recordAttemptCommand(attemptState, command);
       try {
@@ -5407,6 +6122,22 @@ async function executeTool(
           'after_tool',
           { toolName, command },
         );
+        recordAttemptCommandEvent(
+          attemptState,
+          buildValidationCommandEvent({
+            command,
+            cwd: projectRoot,
+            startedAt,
+            status: afterEvaluation.decision === 'block' ? 'blocked' : 'completed',
+            exitCode: 0,
+            stdout,
+            stderr,
+            errorMessage:
+              afterEvaluation.decision === 'block'
+                ? formatPolicyEvaluationFailure(afterEvaluation)
+                : undefined,
+          }),
+        );
         if (afterEvaluation.decision === 'block') {
           return formatPolicyEvaluationFailure(afterEvaluation);
         }
@@ -5415,6 +6146,20 @@ async function executeTool(
         if (isAbortError(error)) {
           throw error;
         }
+        const metadata = getCommandErrorMetadata(error);
+        recordAttemptCommandEvent(
+          attemptState,
+          buildValidationCommandEvent({
+            command,
+            cwd: projectRoot,
+            startedAt,
+            status: metadata.timedOut ? 'timed_out' : 'failed',
+            exitCode: metadata.exitCode,
+            stdout: metadata.stdout,
+            stderr: metadata.stderr,
+            errorMessage: metadata.message,
+          }),
+        );
         return formatCommandFailureDetail(command, error);
       }
     }
@@ -5594,18 +6339,32 @@ export function buildCodexCliArgs(
   return args;
 }
 
+type CommandExecutionError = Error & {
+  stdout?: string;
+  stderr?: string;
+  exitCode?: number | null;
+  timedOut?: boolean;
+};
+
 function createCommandExecutionError(
   message: string,
   stdout = '',
   stderr = '',
   name?: string,
-): Error & { stdout?: string; stderr?: string } {
-  const error = new Error(message) as Error & { stdout?: string; stderr?: string };
+  details?: { exitCode?: number | null; timedOut?: boolean },
+): CommandExecutionError {
+  const error = new Error(message) as CommandExecutionError;
   if (name) {
     error.name = name;
   }
   error.stdout = stdout;
   error.stderr = stderr;
+  if (details && 'exitCode' in details) {
+    error.exitCode = details.exitCode ?? null;
+  }
+  if (details?.timedOut) {
+    error.timedOut = true;
+  }
   return error;
 }
 
@@ -5714,6 +6473,8 @@ function runProcessWithInput(
             `Command timed out after ${timeoutMs}ms: ${command}`,
             stdout,
             stderr,
+            undefined,
+            { timedOut: true },
           ),
         );
       }
@@ -5762,6 +6523,8 @@ function runProcessWithInput(
           ].join('\n\n'),
           stdout,
           stderr,
+          undefined,
+          { exitCode: code },
         ),
       );
     });
@@ -5822,6 +6585,8 @@ function runShellCommand(
             `Command timed out after ${timeoutMs}ms: ${effectiveCommand}`,
             stdout,
             stderr,
+            undefined,
+            { timedOut: true },
           ),
         );
       }
@@ -5862,6 +6627,8 @@ function runShellCommand(
           `Command failed with exit code ${code}: ${effectiveCommand}`,
           stdout,
           stderr,
+          undefined,
+          { exitCode: code },
         ),
       );
     });
@@ -5971,6 +6738,14 @@ async function runToolAgent(
     let response: Awaited<ReturnType<typeof callLlm>>;
     try {
       response = await callLlm(requestConfig, systemPrompt, history, tools, signal, options);
+      recordAttemptModelUsage(attemptState, response.usage);
+      recordAttemptRateLimit(attemptState, response.rateLimit);
+      if (options?.modelUsage) {
+        addLlmTokenUsage(options.modelUsage, response.usage);
+      }
+      if (options?.rateLimits) {
+        addRateLimitSnapshot(options.rateLimits, response.rateLimit);
+      }
     } catch (error) {
       if (isLlmTimeoutError(error) && timeoutRetries < MAX_AGENT_TIMEOUT_RETRIES) {
         timeoutRetries += 1;
@@ -9738,6 +10513,34 @@ function formatRetryWithFeedback(feedback: string[]): string {
   ].join('\n');
 }
 
+function normalizeOperatorSteerText(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  return value
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean)
+    .join('\n')
+    .slice(0, MAX_KIRA_STEER_TEXT_CHARS);
+}
+
+function formatOperatorSteerComment(text: string): string {
+  const normalized = normalizeOperatorSteerText(text);
+  const paragraphs = normalized
+    .split(/\n+/)
+    .map((line) => normalizeWhitespace(line))
+    .filter(Boolean)
+    .slice(0, 12);
+
+  return [
+    `${KIRA_OPERATOR_STEER_SECTION}:`,
+    formatList(paragraphs, 'No steering text provided'),
+    '',
+    'Kira will pass these bullets into the next worker planning or retry cycle for the active task.',
+  ].join('\n');
+}
+
 function buildReviewRetrySolutions(): string[] {
   return [
     'Retry with feedback so the next worker attempt addresses the reviewer or integrator blockers directly.',
@@ -9762,6 +10565,14 @@ function buildOperatorFixSolutions(): string[] {
   ];
 }
 
+function buildOperatorInterruptSolutions(): string[] {
+  return [
+    'Review the interrupted attempt notes and retry only when the operator is ready for Kira to continue.',
+    'Add an Operator steer comment before retrying if the next attempt should change scope, priority, or constraints.',
+    'Split the work if the interruption happened because the active run was too broad or risky.',
+  ];
+}
+
 function buildKiraStatusComment(params: {
   status: string;
   summary: string;
@@ -9782,6 +10593,18 @@ function buildKiraStatusComment(params: {
     `Possible solutions:\n${formatList(params.solutions, 'No suggested solution available')}`,
     ...(retryFeedback.length > 0 ? ['', formatRetryWithFeedback(retryFeedback)] : []),
   ].join('\n');
+}
+
+export function buildOperatorInterruptComment(workTitle: string): string {
+  return buildKiraStatusComment({
+    status: 'Interrupted by operator',
+    summary: `The active Kira automation run for "${workTitle}" was interrupted before completion.`,
+    issues: ['The previous worker or reviewer cycle did not reach a final approval decision.'],
+    solutions: buildOperatorInterruptSolutions(),
+    retryFeedback: [
+      'Previous Kira run was interrupted by the operator; re-check current worktree state before continuing.',
+    ],
+  });
 }
 
 function extractBulletedCommentSection(body: string, sectionTitle: string): string[] {
@@ -9823,6 +10646,22 @@ function extractBulletedCommentSection(body: string, sectionTitle: string): stri
 
 export function extractRetryFeedbackFromCommentBody(body: string): string[] {
   return extractBulletedCommentSection(body, 'Retry with feedback');
+}
+
+export function extractOperatorSteeringFromComments(comments: TaskComment[]): string[] {
+  return uniqueStrings(
+    comments.flatMap((comment) =>
+      extractBulletedCommentSection(comment.body, KIRA_OPERATOR_STEER_SECTION).map(
+        (item) => `Operator steer: ${item}`,
+      ),
+    ),
+  ).slice(0, 12);
+}
+
+function mergeOperatorSteeringFeedback(feedback: string[], comments: TaskComment[]): string[] {
+  const steering = extractOperatorSteeringFromComments(comments);
+  if (steering.length === 0) return feedback;
+  return uniqueStrings([...steering, ...feedback]).slice(0, 12);
 }
 
 function selectRetryFeedback(
@@ -10875,6 +11714,129 @@ async function getTrackedHeadFile(
   }
 }
 
+async function getTrackedHeadFileFingerprint(
+  projectRoot: string,
+  relativePath: string,
+): Promise<KiraFileChangeFingerprint | null> {
+  return new Promise((resolveFingerprint) => {
+    const child = spawn('git', ['show', `HEAD:${relativePath.replace(/\\/g, '/')}`], {
+      cwd: projectRoot,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const chunks: Buffer[] = [];
+    child.stdout?.on('data', (chunk) => {
+      chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+    });
+    child.on('error', () => resolveFingerprint(null));
+    child.on('close', (code) => {
+      if (code !== 0) {
+        resolveFingerprint(null);
+        return;
+      }
+      resolveFingerprint(fingerprintBuffer(Buffer.concat(chunks), 'git_head'));
+    });
+  });
+}
+
+async function resolveBeforeFileFingerprint(params: {
+  projectRoot: string;
+  relativePath: string;
+  attemptState?: WorkerAttemptState | null;
+  gitStatus?: string;
+}): Promise<KiraFileChangeFingerprint> {
+  const attemptSnapshot = params.attemptState?.fileSnapshots.get(params.relativePath);
+  if (attemptSnapshot) return convertAttemptSnapshotToFingerprint(attemptSnapshot);
+
+  const dirtySnapshot = params.attemptState?.dirtyFileSnapshots.get(params.relativePath);
+  if (dirtySnapshot) return convertDirtySnapshotToFingerprint(dirtySnapshot, 'dirty_snapshot');
+
+  if (params.gitStatus?.includes('?') || params.gitStatus?.includes('A')) {
+    return emptyFileFingerprint('git_head');
+  }
+
+  const headFingerprint = await getTrackedHeadFileFingerprint(
+    params.projectRoot,
+    params.relativePath,
+  );
+  if (headFingerprint) return headFingerprint;
+
+  return emptyFileFingerprint('unknown');
+}
+
+async function buildKiraFileChangeEvents(params: {
+  projectRoot: string;
+  filesChanged: string[];
+  attemptState?: WorkerAttemptState | null;
+  worktreeAfter?: GitStatusEntry[] | null;
+}): Promise<KiraFileChangeEvent[]> {
+  const reportedFiles = new Set(
+    normalizePathList(params.filesChanged, 500).filter(
+      (filePath) => !isGeneratedArtifactPath(filePath),
+    ),
+  );
+  const toolTouchedFiles = new Set(
+    normalizePathList([...(params.attemptState?.patchedFiles ?? [])], 500).filter(
+      (filePath) => !isGeneratedArtifactPath(filePath),
+    ),
+  );
+  const statusByPath = new Map(
+    (params.worktreeAfter ?? []).map((entry) => [normalizeRelativePath(entry.path), entry.status]),
+  );
+  const normalizedFiles = new Set<string>([...reportedFiles, ...toolTouchedFiles]);
+  for (const entry of params.worktreeAfter ?? []) {
+    const relativePath = normalizeRelativePath(entry.path);
+    if (!relativePath || isGeneratedArtifactPath(relativePath)) continue;
+
+    const dirtyBefore = params.attemptState?.dirtyFileSnapshots.get(relativePath);
+    if (reportedFiles.has(relativePath) || toolTouchedFiles.has(relativePath) || !dirtyBefore) {
+      normalizedFiles.add(relativePath);
+      continue;
+    }
+
+    const current = readDirtyFileContentSnapshot(params.projectRoot, relativePath);
+    if (dirtyBefore.exists !== current.exists || dirtyBefore.hash !== current.hash) {
+      normalizedFiles.add(relativePath);
+    }
+  }
+  const candidateFiles = [...normalizedFiles].filter(
+    (filePath) => !isGeneratedArtifactPath(filePath),
+  );
+  const events: KiraFileChangeEvent[] = [];
+
+  for (const relativePath of candidateFiles) {
+    const gitStatus = statusByPath.get(relativePath);
+    const before = await resolveBeforeFileFingerprint({
+      projectRoot: params.projectRoot,
+      relativePath,
+      attemptState: params.attemptState,
+      gitStatus,
+    });
+    const after = convertDirtySnapshotToFingerprint(
+      readDirtyFileContentSnapshot(params.projectRoot, relativePath),
+      'current',
+    );
+    events.push({
+      file: relativePath,
+      changeType: inferFileChangeType({ before, after, gitStatus }),
+      before,
+      after,
+      ...(gitStatus ? { gitStatus } : {}),
+      planned: isPlannedFile(params.attemptState?.plan ?? null, relativePath),
+      protected:
+        isProtectedFile(params.attemptState?.plan ?? null, relativePath) ||
+        isProtectedByExecutionPolicy(
+          params.attemptState?.executionPolicy ?? DEFAULT_KIRA_EXECUTION_POLICY,
+          relativePath,
+        ),
+      dirtyBefore: params.attemptState?.dirtyFileSnapshots.has(relativePath) ?? false,
+      touchedByKiraTool: params.attemptState?.patchedFiles.has(relativePath) ?? false,
+    });
+  }
+
+  return events.sort((a, b) => a.file.localeCompare(b.file));
+}
+
 async function collectHighRiskAttemptIssues(
   projectRoot: string,
   filesChanged: string[],
@@ -10990,14 +11952,26 @@ async function rerunValidationCommands(
   const passed: string[] = [];
   const failed: string[] = [];
   const failureDetails: string[] = [];
+  const commandEvents: KiraValidationCommandEvent[] = [];
 
   for (const command of plannedCommands) {
     if (signal?.aborted) {
       throw createAbortError('Validation rerun aborted.');
     }
+    const startedAt = Date.now();
     if (!isSafeCommandAllowed(command)) {
+      const errorMessage = 'Rejected by Kira safety policy.';
       failed.push(command);
-      failureDetails.push(`Command: ${command}\n\nError: Rejected by Kira safety policy.`);
+      failureDetails.push(`Command: ${command}\n\nError: ${errorMessage}`);
+      commandEvents.push(
+        buildValidationCommandEvent({
+          command,
+          cwd: projectRoot,
+          startedAt,
+          status: 'blocked',
+          errorMessage,
+        }),
+      );
       continue;
     }
     const policyEvaluation = evaluateExecutionPolicy(
@@ -11006,32 +11980,80 @@ async function rerunValidationCommands(
       { toolName: 'run_command', command },
     );
     if (policyEvaluation.decision === 'block') {
+      const errorMessage = formatPolicyEvaluationFailure(policyEvaluation);
       failed.push(command);
-      failureDetails.push(
-        `Command: ${command}\n\nError: ${formatPolicyEvaluationFailure(policyEvaluation)}`,
+      failureDetails.push(`Command: ${command}\n\nError: ${errorMessage}`);
+      commandEvents.push(
+        buildValidationCommandEvent({
+          command,
+          cwd: projectRoot,
+          startedAt,
+          status: 'blocked',
+          errorMessage,
+        }),
       );
       continue;
     }
     const environmentIssues = collectEnvironmentCommandIssues(environment, command);
     if (environmentIssues.length > 0) {
+      const errorMessage = environmentIssues.join(' ');
       failed.push(command);
-      failureDetails.push(`Command: ${command}\n\nError: ${environmentIssues.join(' ')}`);
+      failureDetails.push(`Command: ${command}\n\nError: ${errorMessage}`);
+      commandEvents.push(
+        buildValidationCommandEvent({
+          command,
+          cwd: projectRoot,
+          startedAt,
+          status: 'blocked',
+          errorMessage,
+        }),
+      );
       continue;
     }
 
     try {
-      await runShellCommand(command, projectRoot, signal, COMMAND_TIMEOUT_MS, environment);
+      const output = await runShellCommand(
+        command,
+        projectRoot,
+        signal,
+        COMMAND_TIMEOUT_MS,
+        environment,
+      );
       passed.push(command);
+      commandEvents.push(
+        buildValidationCommandEvent({
+          command,
+          cwd: projectRoot,
+          startedAt,
+          status: 'completed',
+          exitCode: 0,
+          stdout: output.stdout,
+          stderr: output.stderr,
+        }),
+      );
     } catch (error) {
       if (isAbortError(error)) {
         throw error;
       }
+      const metadata = getCommandErrorMetadata(error);
       failed.push(command);
       failureDetails.push(formatCommandFailureDetail(command, error));
+      commandEvents.push(
+        buildValidationCommandEvent({
+          command,
+          cwd: projectRoot,
+          startedAt,
+          status: metadata.timedOut ? 'timed_out' : 'failed',
+          exitCode: metadata.exitCode,
+          stdout: metadata.stdout,
+          stderr: metadata.stderr,
+          errorMessage: metadata.message,
+        }),
+      );
     }
   }
 
-  return { passed, failed, failureDetails };
+  return { passed, failed, failureDetails, commandEvents };
 }
 
 async function runEnvironmentSetup(
@@ -11882,6 +12904,7 @@ function buildReviewFindingTriage(
     designReviewGate?: DesignReviewGate;
     patchIntentVerification?: PatchIntentVerification;
     runtimeValidation?: RuntimeValidationResult;
+    fileChangeEvents?: KiraFileChangeEvent[];
   } = {},
 ): ReviewFindingTriageItem[] {
   const now = Date.now();
@@ -11930,6 +12953,33 @@ function buildReviewFindingTriage(
   }
   for (const issue of extras.patchIntentVerification?.issues ?? []) {
     addItem('intent', 'high', issue, extras.patchIntentVerification?.evidence ?? []);
+  }
+  for (const event of extras.fileChangeEvents ?? []) {
+    if (event.protected) {
+      addItem(
+        'file-change',
+        'high',
+        `Protected file changed: ${event.file}`,
+        [formatKiraFileChangeEvents([event])],
+        event.file,
+      );
+    } else if (!event.planned) {
+      addItem(
+        'file-change',
+        'medium',
+        `Unplanned file changed: ${event.file}`,
+        [formatKiraFileChangeEvents([event])],
+        event.file,
+      );
+    } else if (event.changeType === 'unknown') {
+      addItem(
+        'file-change',
+        'medium',
+        `Unknown file change type: ${event.file}`,
+        [formatKiraFileChangeEvents([event])],
+        event.file,
+      );
+    }
   }
   if (
     extras.runtimeValidation?.applicable &&
@@ -12052,6 +13102,8 @@ function buildReviewObservability(params: {
   reviewRaw: string;
   reviewSummary: ReviewSummary;
   triage: ReviewFindingTriageItem[];
+  modelUsage?: KiraLlmTokenUsage;
+  rateLimits?: KiraLlmRateLimitSnapshot[];
 }): KiraReviewObservability {
   return {
     durationMs: Math.max(0, params.finishedAt - params.startedAt),
@@ -12060,6 +13112,8 @@ function buildReviewObservability(params: {
     discourseCount: params.reviewSummary.reviewerDiscourse.length,
     evidenceCount: params.reviewSummary.evidenceChecked.length,
     estimatedReviewOutputTokens: estimateTokenCount(params.reviewRaw),
+    modelUsage: cloneLlmTokenUsage(params.modelUsage),
+    rateLimits: cloneRateLimitSnapshots(params.rateLimits),
   };
 }
 
@@ -12068,6 +13122,8 @@ function buildEvidenceLedger(params: {
   workerPlan: WorkerExecutionPlan;
   workerSummary?: WorkerSummary;
   validationReruns?: ValidationRerunSummary;
+  toolCommandEvents?: KiraValidationCommandEvent[];
+  fileChangeEvents?: KiraFileChangeEvent[];
   diffStats?: DiffStats;
   runtimeValidation?: RuntimeValidationResult;
   patchIntentVerification?: PatchIntentVerification;
@@ -12205,13 +13261,28 @@ function buildEvidenceLedger(params: {
   }
 
   if (params.diffStats) {
+    const fileChangeEvents = params.fileChangeEvents ?? [];
     addItem(
       'diff',
       params.diffStats.files > 0 ? 'pass' : 'warn',
-      `${params.diffStats.files} changed file(s), ${params.diffStats.hunks} hunk(s).`,
+      `${params.diffStats.files} changed file(s), ${params.diffStats.hunks} hunk(s), ${fileChangeEvents.length} file event(s).`,
       [
         `+${params.diffStats.additions}/-${params.diffStats.deletions}`,
         `Reported files: ${formatInlineList(params.workerSummary?.filesChanged ?? [])}`,
+        ...fileChangeEvents
+          .slice(0, 8)
+          .map((event) =>
+            [
+              `${event.changeType}: ${event.file}`,
+              event.gitStatus ? `git=${event.gitStatus.trim()}` : '',
+              event.before.hash ? `before=${event.before.hash.slice(0, 10)}` : 'before=missing',
+              event.after.hash ? `after=${event.after.hash.slice(0, 10)}` : 'after=missing',
+              event.planned ? 'planned' : 'unplanned',
+              event.dirtyBefore ? 'dirty-before' : '',
+            ]
+              .filter(Boolean)
+              .join(' | '),
+          ),
       ],
       'kira',
       params.diffStats.files > 0 ? 0.8 : 0.45,
@@ -12220,16 +13291,53 @@ function buildEvidenceLedger(params: {
 
   const validation = params.validationReruns;
   if (validation) {
+    const commandEvents = validation.commandEvents ?? [];
     addItem(
       'validation',
       validation.failed.length > 0 ? 'fail' : validation.passed.length > 0 ? 'pass' : 'warn',
-      `${validation.passed.length} validation rerun(s) passed, ${validation.failed.length} failed.`,
+      `${validation.passed.length} validation rerun(s) passed, ${validation.failed.length} failed, ${commandEvents.length} command event(s).`,
       [
         ...validation.passed.map((item) => `passed: ${item}`),
         ...validation.failed.map((item) => `failed: ${item}`),
+        ...commandEvents
+          .slice(-8)
+          .map((event) =>
+            [
+              `${event.status}: ${event.command}`,
+              `exit=${event.exitCode ?? 'n/a'}`,
+              `${event.durationMs}ms`,
+              event.errorMessage ? truncateForReview(event.errorMessage, 180) : '',
+            ]
+              .filter(Boolean)
+              .join(' | '),
+          ),
       ],
       'kira',
       validation.failed.length > 0 ? 0.95 : validation.passed.length > 0 ? 0.82 : 0.35,
+    );
+  }
+
+  const toolCommandEvents = params.toolCommandEvents ?? [];
+  if (toolCommandEvents.length > 0) {
+    const toolCommandSummary = summarizeValidationCommandEvents(toolCommandEvents);
+    addItem(
+      'command',
+      toolCommandSummary.failedCount > 0 ? 'warn' : 'pass',
+      `${toolCommandSummary.totalCount} worker command event(s), ${toolCommandSummary.failedCount} failed/blocked, ${toolCommandSummary.timedOutCount} timed out.`,
+      toolCommandEvents
+        .slice(-8)
+        .map((event) =>
+          [
+            `${event.status}: ${event.command}`,
+            `exit=${event.exitCode ?? 'n/a'}`,
+            `${event.durationMs}ms`,
+            event.errorMessage ? truncateForReview(event.errorMessage, 180) : '',
+          ]
+            .filter(Boolean)
+            .join(' | '),
+        ),
+      'kira',
+      toolCommandSummary.failedCount > 0 ? 0.78 : 0.7,
     );
   }
 
@@ -12707,6 +13815,8 @@ function buildAttemptObservability(params: {
   attemptState: WorkerAttemptState | null;
   workerSummary?: WorkerSummary;
   validationReruns?: ValidationRerunSummary;
+  toolCommandEvents?: KiraValidationCommandEvent[];
+  fileChangeEvents?: KiraFileChangeEvent[];
   diffStats?: DiffStats;
   failureAnalysis?: FailureAnalysis[];
   runtimeValidation?: RuntimeValidationResult;
@@ -12722,10 +13832,37 @@ function buildAttemptObservability(params: {
   };
   const diffStats = params.diffStats ?? { files: 0, additions: 0, deletions: 0, hunks: 0 };
   const changedFiles = params.workerSummary?.filesChanged ?? [];
+  const modelUsage = combineLlmTokenUsage(
+    params.planningState.modelUsage,
+    attemptState?.modelUsage,
+  );
+  const rateLimits = combineRateLimitSnapshots(
+    params.planningState.rateLimits,
+    attemptState?.rateLimits,
+  );
+  const latestRateLimit = rateLimits.at(-1);
+  const validationCommandSummary = summarizeValidationCommandEvents(validationReruns.commandEvents);
+  const toolCommandSummary = summarizeValidationCommandEvents(params.toolCommandEvents);
+  const fileChangeSummary = summarizeKiraFileChangeEvents(params.fileChangeEvents);
   const notes = uniqueStrings([
     ...(params.risks ?? []),
     ...(validationReruns.failed.length > 0
       ? [`Validation failed: ${validationReruns.failed.join(', ')}`]
+      : []),
+    ...(validationCommandSummary.failedCount > 0
+      ? [
+          `Validation command lifecycle recorded ${validationCommandSummary.failedCount} failed/blocked event(s).`,
+        ]
+      : []),
+    ...(toolCommandSummary.failedCount > 0
+      ? [
+          `Worker command lifecycle recorded ${toolCommandSummary.failedCount} failed/blocked event(s).`,
+        ]
+      : []),
+    ...(fileChangeSummary.unplannedCount > 0
+      ? [
+          `File change lifecycle recorded ${fileChangeSummary.unplannedCount} unplanned file event(s).`,
+        ]
       : []),
     ...(params.failureAnalysis ?? []).map((item) => `Failure ${item.category}: ${item.summary}`),
     ...(params.runtimeValidation?.applicable
@@ -12748,6 +13885,8 @@ function buildAttemptObservability(params: {
 
   return {
     stage: params.status,
+    modelUsage,
+    rateLimits,
     metrics: {
       preflightExplorationCount: uniqueStrings(params.planningState.explorationActions).length,
       readFileCount: attemptState ? attemptState.readFiles.size : 0,
@@ -12758,6 +13897,25 @@ function buildAttemptObservability(params: {
         : uniqueStrings(params.planningState.commandsRun).length,
       validationPassedCount: validationReruns.passed.length,
       validationFailedCount: validationReruns.failed.length,
+      validationCommandEventCount: validationCommandSummary.totalCount,
+      validationCommandCompletedCount: validationCommandSummary.completedCount,
+      validationCommandFailedEventCount: validationCommandSummary.failedCount,
+      validationCommandBlockedCount: validationCommandSummary.blockedCount,
+      validationCommandTimedOutCount: validationCommandSummary.timedOutCount,
+      validationCommandDurationMs: validationCommandSummary.totalDurationMs,
+      toolCommandEventCount: toolCommandSummary.totalCount,
+      toolCommandFailedEventCount: toolCommandSummary.failedCount,
+      toolCommandBlockedCount: toolCommandSummary.blockedCount,
+      toolCommandTimedOutCount: toolCommandSummary.timedOutCount,
+      toolCommandDurationMs: toolCommandSummary.totalDurationMs,
+      fileChangeEventCount: fileChangeSummary.totalCount,
+      fileChangeAddedCount: fileChangeSummary.addedCount,
+      fileChangeModifiedCount: fileChangeSummary.modifiedCount,
+      fileChangeDeletedCount: fileChangeSummary.deletedCount,
+      fileChangeUnknownCount: fileChangeSummary.unknownCount,
+      fileChangeUnplannedCount: fileChangeSummary.unplannedCount,
+      fileChangeProtectedCount: fileChangeSummary.protectedCount,
+      fileChangeDirtyBeforeCount: fileChangeSummary.dirtyBeforeCount,
       diffFileCount: diffStats.files,
       diffAdditions: diffStats.additions,
       diffDeletions: diffStats.deletions,
@@ -12766,12 +13924,22 @@ function buildAttemptObservability(params: {
       evidenceSignalCount:
         validationReruns.passed.length +
         validationReruns.failed.length +
+        toolCommandSummary.totalCount +
         (params.diffStats?.files ?? 0) +
         (params.runtimeValidation?.evidence.length ?? 0) +
         (params.patchIntentVerification?.evidence.length ?? 0),
       estimatedWorkerOutputTokens: estimateTokenCount(
         params.rawWorkerOutput ?? params.workerSummary?.summary ?? '',
       ),
+      actualModelTokens: modelUsage.totalTokens,
+      actualModelInputTokens: modelUsage.inputTokens,
+      actualModelCachedInputTokens: modelUsage.cachedInputTokens,
+      actualModelOutputTokens: modelUsage.outputTokens,
+      actualModelReasoningOutputTokens: modelUsage.reasoningOutputTokens,
+      modelRequestCount: modelUsage.requestCount,
+      modelRateLimitSnapshotCount: rateLimits.length,
+      modelRequestLimitRemaining: latestRateLimit?.requestLimit?.remaining ?? 0,
+      modelTokenLimitRemaining: latestRateLimit?.tokenLimit?.remaining ?? 0,
     },
     timeline: [
       `started ${new Date(params.startedAt).toISOString()}`,
@@ -12780,6 +13948,9 @@ function buildAttemptObservability(params: {
       `exploration ${uniqueStrings(params.planningState.explorationActions).length}`,
       `changedFiles ${changedFiles.length}`,
       `validation ${validationReruns.passed.length} passed / ${validationReruns.failed.length} failed`,
+      `validationCommands ${validationCommandSummary.totalCount} event(s) / ${validationCommandSummary.totalDurationMs}ms`,
+      `toolCommands ${toolCommandSummary.totalCount} event(s) / ${toolCommandSummary.totalDurationMs}ms`,
+      `fileChanges ${fileChangeSummary.totalCount} event(s) / ${fileChangeSummary.unplannedCount} unplanned`,
     ],
     notes,
   };
@@ -12797,6 +13968,7 @@ function buildAttemptRecord(params: {
   workerSummary?: WorkerSummary;
   validationPlan?: ResolvedValidationPlan;
   validationReruns?: ValidationRerunSummary;
+  fileChangeEvents?: KiraFileChangeEvent[];
   diffStats?: DiffStats;
   failureAnalysis?: FailureAnalysis[];
   runtimeValidation?: RuntimeValidationResult;
@@ -12814,11 +13986,16 @@ function buildAttemptRecord(params: {
 }): KiraAttemptRecord {
   const attemptState = params.attemptState ?? null;
   const finishedAt = Date.now();
+  const toolCommandEvents = attemptState
+    ? attemptState.commandEvents
+    : params.planningState.commandEvents;
   const evidenceLedger = buildEvidenceLedger({
     contextScan: params.contextScan,
     workerPlan: params.workerPlan,
     workerSummary: params.workerSummary,
     validationReruns: params.validationReruns,
+    toolCommandEvents,
+    fileChangeEvents: params.fileChangeEvents,
     diffStats: params.diffStats,
     runtimeValidation: params.runtimeValidation,
     patchIntentVerification: params.patchIntentVerification,
@@ -12844,6 +14021,7 @@ function buildAttemptRecord(params: {
       ? [...attemptState.commandsRun]
       : uniqueStrings(params.planningState.commandsRun),
     validationReruns: params.validationReruns ?? { passed: [], failed: [], failureDetails: [] },
+    ...(toolCommandEvents.length > 0 ? { toolCommandEvents } : {}),
     outOfPlanFiles: params.outOfPlanFiles ?? [],
     validationGaps: params.validationGaps ?? [],
     risks: params.risks ?? [],
@@ -12852,6 +14030,7 @@ function buildAttemptRecord(params: {
       ? { diffHunkReview: params.workerSummary.selfCheck.diffHunkReview }
       : {}),
     ...(params.validationPlan ? { validationPlan: params.validationPlan } : {}),
+    ...(params.fileChangeEvents ? { fileChangeEvents: params.fileChangeEvents } : {}),
     ...(params.diffStats ? { diffStats: params.diffStats } : {}),
     ...(params.failureAnalysis ? { failureAnalysis: params.failureAnalysis } : {}),
     ...(params.runtimeValidation ? { runtimeValidation: params.runtimeValidation } : {}),
@@ -12892,6 +14071,8 @@ function buildAttemptRecord(params: {
       attemptState,
       workerSummary: params.workerSummary,
       validationReruns: params.validationReruns,
+      toolCommandEvents,
+      fileChangeEvents: params.fileChangeEvents,
       diffStats: params.diffStats,
       failureAnalysis: params.failureAnalysis,
       runtimeValidation: params.runtimeValidation,
@@ -13462,6 +14643,8 @@ function migrateAttemptRecord(record: KiraAttemptRecord): KiraAttemptRecord {
               contextScan: record.contextScan,
               workerPlan: record.workerPlan,
               validationReruns: record.validationReruns,
+              toolCommandEvents: record.toolCommandEvents,
+              fileChangeEvents: record.fileChangeEvents,
               diffStats: record.diffStats,
               runtimeValidation: record.runtimeValidation,
               patchIntentVerification: record.patchIntentVerification,
@@ -13471,6 +14654,7 @@ function migrateAttemptRecord(record: KiraAttemptRecord): KiraAttemptRecord {
           }
         : {}),
     validationReruns: record.validationReruns ?? { passed: [], failed: [], failureDetails: [] },
+    ...(record.toolCommandEvents ? { toolCommandEvents: record.toolCommandEvents } : {}),
     outOfPlanFiles: record.outOfPlanFiles ?? [],
     validationGaps: record.validationGaps ?? [],
     risks: record.risks ?? [],
@@ -14206,6 +15390,8 @@ export function buildReviewPrompt(
   failureAnalysis: FailureAnalysis[] = [],
   runtimeValidation?: RuntimeValidationResult,
   patchIntentVerification?: PatchIntentVerification,
+  toolCommandEvents?: KiraValidationCommandEvent[],
+  fileChangeEvents?: KiraFileChangeEvent[],
 ): string {
   const requirementTrace = workerSummary.selfCheck?.requirementTrace.length
     ? workerSummary.selfCheck.requirementTrace
@@ -14275,6 +15461,7 @@ export function buildReviewPrompt(
           'No validation reruns failed',
         )}`
       : '',
+    formatKiraCommandLifecycle('Worker command lifecycle', toolCommandEvents),
     outOfPlanFiles.length > 0
       ? `Files changed outside the plan:\n${formatList(outOfPlanFiles, 'No out-of-plan files')}`
       : '',
@@ -14287,6 +15474,7 @@ export function buildReviewPrompt(
     diffStats
       ? `Diff stats:\n- files=${diffStats.files}\n- additions=${diffStats.additions}\n- deletions=${diffStats.deletions}\n- hunks=${diffStats.hunks}`
       : '',
+    formatKiraFileChangeEvents(fileChangeEvents),
     formatRiskReviewPolicy(contextScan.riskPolicy),
     formatReviewAdversarialPlan(contextScan.reviewAdversarialPlan),
     formatReviewerCalibration(contextScan.reviewerCalibration),
@@ -14304,6 +15492,8 @@ export function buildReviewPrompt(
     'Do not approve partial goal fulfillment. The patch may be small, but the completed behavior must still satisfy the full work brief and mandatory project instructions.',
     'Review the changeDesign against the actual diff. Do not approve if the diff violates stated invariants or broadens expectedImpact without a clear reason.',
     'Review patchIntentVerification. Do not approve patch intent drift; request a new worker attempt with corrected scope or explicit plan alignment.',
+    'Review the worker command lifecycle. Failed, blocked, timed-out, or policy-blocked run_command events must be reflected in the review risk and nextWorkerInstructions when they affect confidence.',
+    'Review the file change lifecycle. Treat add/delete/modify events, protected flags, dirty-before flags, and unplanned file events as evidence when checking the worker summary and changeDesign.',
     'Review the selected patch alternative against the actual diff. Do not approve if the worker silently chose a different approach and the risk is unexplained.',
     'For Primary/Alternative runs, compare attempts as candidates but approve only one winning patch for the Integrator.',
     'Run the review adversarial plan. For every listed mode, return an adversarialChecks entry with passed, failed, or not_applicable and concrete evidence.',
@@ -14350,7 +15540,7 @@ export function buildReviewSystemPrompt(): string {
     'Simulate reviewer discourse: challenge the patch from at least one skeptical perspective, then resolve or answer the challenge before approval.',
     'Treat design-gate concerns and finding triage as first-class review artifacts.',
     'Treat a missing or failed worker self-check as review evidence that must be addressed before approval.',
-    'Independently compare the changeDesign, worker self-check, filesChanged, and git diff excerpts instead of trusting the worker summary.',
+    'Independently compare the changeDesign, worker self-check, worker command lifecycle, filesChanged, file change lifecycle, and git diff excerpts instead of trusting the worker summary.',
     'Independently verify requirementTrace items and return requirementVerdicts with evidence.',
     'Record evidenceChecked for files, tests, runtime checks, or other concrete signals you actually inspected.',
     'Review the implementation carefully against the requested result and real regressions.',
@@ -14417,9 +15607,14 @@ function buildAttemptComparisonReviewPrompt(
           : 'Worker diffHunkReview:\n- Missing self-check',
         `Validation passed:\n${formatList(attempt.validationReruns.passed, 'No validation reruns passed')}`,
         `Validation failed:\n${formatList(attempt.validationReruns.failed, 'No validation reruns failed')}`,
+        formatKiraCommandLifecycle(
+          'Worker command lifecycle',
+          attempt.toolCommandEvents ?? attempt.attemptState.commandEvents,
+        ),
         formatRiskReviewPolicy(attempt.contextScan.riskPolicy),
         formatRuntimeValidationResult(attempt.runtimeValidation),
         formatPatchIntentVerification(attempt.patchIntentVerification),
+        formatKiraFileChangeEvents(attempt.fileChangeEvents),
         formatFailureAnalysis(attempt.failureAnalysis),
         `Diff stats:\n- files=${attempt.diffStats.files}\n- additions=${attempt.diffStats.additions}\n- deletions=${attempt.diffStats.deletions}\n- hunks=${attempt.diffStats.hunks}`,
         `Out-of-plan files:\n${formatList(attempt.outOfPlanFiles, 'No out-of-plan files')}`,
@@ -14441,6 +15636,8 @@ function buildAttemptComparisonReviewPrompt(
     '- Treat operator manual evidence and risk acceptance as review context, not as a substitute for required Kira validation evidence.',
     '- Compare each attempt changeDesign and diffHunkReview against the actual diff excerpts.',
     '- Compare each attempt patchIntentVerification against the actual changed files.',
+    '- Compare each attempt worker command lifecycle against reported tests and validation evidence.',
+    '- Compare each attempt file change lifecycle against the worker summary; treat protected or unplanned changes as risk signals, not automatic rejection by themselves.',
     '- Integrator policy is single-winning-patch: never ask Kira to merge pieces from multiple attempts directly.',
     '- Do not approve an attempt with patch intent drift; request another round with corrected scope or plan alignment.',
     '- Apply the selected attempt review adversarial plan and return adversarialChecks for each mode.',
@@ -14562,6 +15759,8 @@ function buildAttemptSelectionReviewRecord(params: {
   startedAt: number;
   finishedAt: number;
   reviewRaw: string;
+  modelUsage?: KiraLlmTokenUsage;
+  rateLimits?: KiraLlmRateLimitSnapshot[];
 }): { record: KiraReviewRecord; reviewSummary: ReviewSummary } {
   const reviewSummary = ensureReviewerDiscourse(params.reviewSummary, {
     reviewAdversarialPlan: params.attempt.contextScan.reviewAdversarialPlan,
@@ -14590,6 +15789,8 @@ function buildAttemptSelectionReviewRecord(params: {
         reviewRaw: params.reviewRaw,
         reviewSummary,
         triage,
+        modelUsage: params.modelUsage,
+        rateLimits: params.rateLimits,
       }),
     }),
     reviewSummary,
@@ -15223,6 +16424,12 @@ async function runIsolatedWorkerAttempt(params: {
       filesChanged: resolvedFilesChanged,
       testsRun: actualCommandsRun.length > 0 ? actualCommandsRun : parsedWorkerSummary.testsRun,
     };
+    const fileChangeEvents = await buildKiraFileChangeEvents({
+      projectRoot,
+      filesChanged: workerSummary.filesChanged,
+      attemptState,
+      worktreeAfter,
+    });
     const outOfPlanFiles = findOutOfPlanTouchedFiles(
       workerPlan.intendedFiles,
       workerSummary.filesChanged,
@@ -15375,6 +16582,7 @@ async function runIsolatedWorkerAttempt(params: {
       workerSummary,
       validationPlan,
       validationReruns,
+      toolCommandEvents: attemptState.commandEvents,
       failureAnalysis,
       runtimeValidation,
       patchIntentVerification,
@@ -15383,6 +16591,7 @@ async function runIsolatedWorkerAttempt(params: {
       missingValidationCommands,
       highRiskIssues,
       diffExcerpts,
+      fileChangeEvents,
       rawWorkerOutput: workerRaw,
       status:
         highRiskIssues.length > 0
@@ -15450,6 +16659,7 @@ function saveWorkerAttemptResult(
       workerSummary: result.workerSummary,
       validationPlan: result.validationPlan,
       validationReruns: result.validationReruns,
+      fileChangeEvents: result.fileChangeEvents,
       failureAnalysis: result.failureAnalysis,
       runtimeValidation: result.runtimeValidation,
       riskPolicy: result.contextScan.riskPolicy,
@@ -15888,6 +17098,10 @@ async function processWorkWithMultipleWorkers(params: {
 
   for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
+    feedback = mergeOperatorSteeringFeedback(
+      feedback,
+      loadTaskComments(options.sessionsDir, sessionPath, work.id),
+    );
     const results = await Promise.all(
       lanes.map((lane, index) =>
         runIsolatedWorkerAttempt({
@@ -15984,6 +17198,8 @@ async function processWorkWithMultipleWorkers(params: {
     });
     const synthesisRecommendation = buildAttemptSynthesisRecommendation(reviewableAttempts);
     const selectionStartedAt = Date.now();
+    const selectionModelUsage = createEmptyLlmTokenUsage();
+    const selectionRateLimits: KiraLlmRateLimitSnapshot[] = [];
     const selectionRaw = await runToolAgent(
       runtime.reviewerConfig,
       primaryProjectRoot,
@@ -16006,6 +17222,8 @@ async function processWorkWithMultipleWorkers(params: {
         }),
         outputSchema: getKiraStructuredOutputSchema('attempt-selection'),
         outputSchemaName: getKiraStructuredOutputSchemaName('attempt-selection'),
+        modelUsage: selectionModelUsage,
+        rateLimits: selectionRateLimits,
       },
     );
     const selectionFinishedAt = Date.now();
@@ -16064,6 +17282,8 @@ async function processWorkWithMultipleWorkers(params: {
         startedAt: selectionStartedAt,
         finishedAt: selectionFinishedAt,
         reviewRaw: selectionRaw,
+        modelUsage: selectionModelUsage,
+        rateLimits: selectionRateLimits,
       });
       updateProjectProfileLearning(primaryProjectRoot, {
         successfulPatterns: [
@@ -16098,6 +17318,8 @@ async function processWorkWithMultipleWorkers(params: {
                 startedAt: selectionStartedAt,
                 finishedAt: selectionFinishedAt,
                 reviewRaw: selectionRaw,
+                modelUsage: selectionModelUsage,
+                rateLimits: selectionRateLimits,
               });
         if (result.attemptNo !== selectedAttempt.attemptNo) {
           saveReviewRecord(options.sessionsDir, sessionPath, reviewForAttempt.record);
@@ -16273,6 +17495,8 @@ async function processWorkWithMultipleWorkers(params: {
         startedAt: selectionStartedAt,
         finishedAt: selectionFinishedAt,
         reviewRaw: selectionRaw,
+        modelUsage: selectionModelUsage,
+        rateLimits: selectionRateLimits,
       });
       saveReviewRecord(options.sessionsDir, sessionPath, rejectedReview.record);
       saveWorkerAttemptResult(
@@ -16678,6 +17902,10 @@ async function processWork(
   let previousIssueSignature: string | null = null;
   let repeatedIssueCount = 0;
   for (let cycle = 1; cycle <= MAX_REVIEW_CYCLES; cycle += 1) {
+    feedback = mergeOperatorSteeringFeedback(
+      feedback,
+      loadTaskComments(options.sessionsDir, sessionPath, work.id),
+    );
     const attemptStartedAt = Date.now();
     const planningState = createWorkerAttemptState(
       null,
@@ -16887,6 +18115,12 @@ async function processWork(
       filesChanged: resolvedFilesChanged,
       testsRun: actualCommandsRun.length > 0 ? actualCommandsRun : parsedWorkerSummary.testsRun,
     };
+    const fileChangeEvents = await buildKiraFileChangeEvents({
+      projectRoot,
+      filesChanged: workerSummary.filesChanged,
+      attemptState,
+      worktreeAfter,
+    });
     const outOfPlanFiles = findOutOfPlanTouchedFiles(
       workerPlan.intendedFiles,
       workerSummary.filesChanged,
@@ -17182,6 +18416,7 @@ async function processWork(
           workerSummary,
           validationPlan,
           validationReruns,
+          fileChangeEvents,
           failureAnalysis,
           runtimeValidation,
           riskPolicy,
@@ -17265,6 +18500,7 @@ async function processWork(
           workerSummary,
           validationPlan,
           validationReruns,
+          fileChangeEvents,
           failureAnalysis,
           runtimeValidation,
           riskPolicy,
@@ -17340,6 +18576,7 @@ async function processWork(
             workerSummary,
             validationPlan,
             validationReruns,
+            fileChangeEvents,
             failureAnalysis,
             runtimeValidation,
             riskPolicy,
@@ -17412,6 +18649,8 @@ async function processWork(
     });
 
     const reviewStartedAt = Date.now();
+    const reviewModelUsage = createEmptyLlmTokenUsage();
+    const reviewRateLimits: KiraLlmRateLimitSnapshot[] = [];
     const reviewRaw = await runToolAgent(
       runtime.reviewerConfig,
       projectRoot,
@@ -17431,6 +18670,8 @@ async function processWork(
         failureAnalysis,
         runtimeValidation,
         patchIntentVerification,
+        attemptState.commandEvents,
+        fileChangeEvents,
       ),
       buildReviewSystemPrompt(),
       false,
@@ -17445,6 +18686,8 @@ async function processWork(
         }),
         outputSchema: getKiraStructuredOutputSchema('review'),
         outputSchemaName: getKiraStructuredOutputSchemaName('review'),
+        modelUsage: reviewModelUsage,
+        rateLimits: reviewRateLimits,
       },
     );
     const reviewFinishedAt = Date.now();
@@ -17466,6 +18709,7 @@ async function processWork(
       designReviewGate: contextScan.designReviewGate,
       patchIntentVerification,
       runtimeValidation,
+      fileChangeEvents,
     });
     const diffCoverage = buildDiffReviewCoverage({
       workerSummary,
@@ -17484,6 +18728,8 @@ async function processWork(
         reviewRaw,
         reviewSummary,
         triage: reviewTriage,
+        modelUsage: reviewModelUsage,
+        rateLimits: reviewRateLimits,
       }),
     });
     saveReviewRecord(options.sessionsDir, sessionPath, reviewRecord);
@@ -17511,6 +18757,7 @@ async function processWork(
             workerSummary,
             validationPlan,
             validationReruns,
+            fileChangeEvents,
             failureAnalysis,
             runtimeValidation,
             riskPolicy,
@@ -17562,6 +18809,7 @@ async function processWork(
           workerSummary,
           validationPlan,
           validationReruns,
+          fileChangeEvents,
           failureAnalysis,
           runtimeValidation,
           riskPolicy,
@@ -17772,6 +19020,7 @@ async function processWork(
         workerSummary,
         validationPlan,
         validationReruns,
+        fileChangeEvents,
         failureAnalysis,
         runtimeValidation,
         riskPolicy,
@@ -17811,6 +19060,7 @@ async function processWork(
           workerSummary,
           validationPlan,
           validationReruns,
+          fileChangeEvents,
           failureAnalysis,
           runtimeValidation,
           riskPolicy,
@@ -18286,6 +19536,121 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
         });
       });
 
+      server.middlewares.use('/api/kira-automation/steer', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        readRequestBody(
+          req,
+          (body) => {
+            try {
+              const sessionPath =
+                typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
+              const workId = typeof body.workId === 'string' ? body.workId.trim() : '';
+              const rawText = typeof body.text === 'string' ? body.text : '';
+              const actualChars = Array.from(rawText).length;
+              if (!sessionPath || !workId) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Missing sessionPath or workId' }));
+                return;
+              }
+              if (actualChars > MAX_KIRA_STEER_TEXT_CHARS) {
+                res.writeHead(413);
+                res.end(
+                  JSON.stringify({
+                    error: `Input exceeds the maximum length of ${MAX_KIRA_STEER_TEXT_CHARS} characters.`,
+                    maxChars: MAX_KIRA_STEER_TEXT_CHARS,
+                    actualChars,
+                  }),
+                );
+                return;
+              }
+              const text = normalizeOperatorSteerText(rawText);
+              if (!text) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Missing steering text' }));
+                return;
+              }
+
+              const jobKey = `${sessionPath}::${workId}`;
+              const controller = jobAbortControllers.get(jobKey);
+              if (!controller || controller.signal.aborted) {
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: 'No active Kira automation run is accepting steering for this work.',
+                    rejectionReason: 'no_active_work',
+                  }),
+                );
+                return;
+              }
+
+              const work = readJsonFile<WorkTask>(
+                join(
+                  getKiraDataDir(options.sessionsDir, sessionPath),
+                  WORKS_DIR_NAME,
+                  `${workId}.json`,
+                ),
+              );
+              if (!work) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Work not found' }));
+                return;
+              }
+              if (work.status !== 'in_progress' && work.status !== 'in_review') {
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: 'Kira steering is only accepted for running or review-active work.',
+                    rejectionReason: 'inactive_work_status',
+                  }),
+                );
+                return;
+              }
+
+              addComment(options.sessionsDir, sessionPath, {
+                taskId: work.id,
+                taskType: 'work',
+                author: 'Operator',
+                body: formatOperatorSteerComment(text),
+              });
+              enqueueEvent(options.sessionsDir, sessionPath, {
+                id: makeId('event'),
+                workId: work.id,
+                title: work.title,
+                projectName: work.projectName,
+                type: 'steered',
+                createdAt: Date.now(),
+                message: `Kira steering queued: "${work.title}" 작업의 다음 worker 사이클에 운영자 지시를 반영할게요.`,
+              });
+              res.writeHead(200);
+              res.end(
+                JSON.stringify({
+                  ok: true,
+                  workId: work.id,
+                  maxChars: MAX_KIRA_STEER_TEXT_CHARS,
+                }),
+              );
+            } catch (error) {
+              res.writeHead(500);
+              res.end(
+                JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+              );
+            }
+          },
+          (error) => {
+            res.writeHead(400);
+            res.end(
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+            );
+          },
+        );
+      });
+
       server.middlewares.use('/api/kira-automation/cancel', (req, res) => {
         res.setHeader('Content-Type', 'application/json');
         if (req.method !== 'POST') {
@@ -18294,34 +19659,108 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
           return;
         }
 
-        const chunks: Buffer[] = [];
-        req.on('data', (chunk: Buffer) => chunks.push(chunk));
-        req.on('end', () => {
-          try {
-            const body = JSON.parse(Buffer.concat(chunks).toString() || '{}') as {
-              sessionPath?: string;
-              workId?: string;
-            };
-            const sessionPath = body.sessionPath?.trim();
-            const workId = body.workId?.trim();
-            if (!sessionPath || !workId) {
-              res.writeHead(400);
-              res.end(JSON.stringify({ error: 'Missing sessionPath or workId' }));
-              return;
-            }
+        readRequestBody(
+          req,
+          (body) => {
+            try {
+              const sessionPath =
+                typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
+              const workId = typeof body.workId === 'string' ? body.workId.trim() : '';
+              const reason = body.reason === 'delete' ? 'delete' : 'operator';
+              if (!sessionPath || !workId) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Missing sessionPath or workId' }));
+                return;
+              }
 
-            const jobKey = `${sessionPath}::${workId}`;
-            const controller = jobAbortControllers.get(jobKey);
-            controller?.abort();
-            res.writeHead(200);
-            res.end(JSON.stringify({ ok: true, wasRunning: Boolean(controller) }));
-          } catch (error) {
-            res.writeHead(500);
+              const jobKey = `${sessionPath}::${workId}`;
+              const controller = jobAbortControllers.get(jobKey);
+              const wasRunning = Boolean(controller && !controller.signal.aborted);
+              if (!wasRunning && reason !== 'delete') {
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: 'No active Kira automation run is accepting interruption for this work.',
+                    rejectionReason: 'no_active_work',
+                    wasRunning,
+                  }),
+                );
+                return;
+              }
+
+              const work =
+                reason !== 'delete'
+                  ? readJsonFile<WorkTask>(
+                      join(
+                        getKiraDataDir(options.sessionsDir, sessionPath),
+                        WORKS_DIR_NAME,
+                        `${workId}.json`,
+                      ),
+                    )
+                  : null;
+              if (reason !== 'delete' && !work) {
+                res.writeHead(404);
+                res.end(JSON.stringify({ error: 'Work not found', wasRunning }));
+                return;
+              }
+
+              if (
+                reason !== 'delete' &&
+                work &&
+                work.status !== 'in_progress' &&
+                work.status !== 'in_review'
+              ) {
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: 'Kira interruption is only accepted for running or review-active work.',
+                    rejectionReason: 'inactive_work_status',
+                    wasRunning,
+                  }),
+                );
+                return;
+              }
+
+              controller?.abort();
+
+              if (reason !== 'delete' && work) {
+                updateWork(options.sessionsDir, sessionPath, work.id, (current) => ({
+                  ...current,
+                  status: 'blocked',
+                }));
+                addComment(options.sessionsDir, sessionPath, {
+                  taskId: work.id,
+                  taskType: 'work',
+                  author: 'Operator',
+                  body: buildOperatorInterruptComment(work.title),
+                });
+                enqueueEvent(options.sessionsDir, sessionPath, {
+                  id: makeId('event'),
+                  workId: work.id,
+                  title: work.title,
+                  projectName: work.projectName,
+                  type: 'interrupted',
+                  createdAt: Date.now(),
+                  message: `Kira interrupted: "${work.title}" 작업 실행을 중단하고 Blocked 상태로 전환했어요.`,
+                });
+              }
+
+              res.writeHead(200);
+              res.end(JSON.stringify({ ok: true, wasRunning }));
+            } catch (error) {
+              res.writeHead(500);
+              res.end(
+                JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+              );
+            }
+          },
+          (error) => {
+            res.writeHead(400);
             res.end(
               JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
             );
-          }
-        });
+          },
+        );
       });
 
       server.middlewares.use('/api/kira-automation/events', (req, res) => {

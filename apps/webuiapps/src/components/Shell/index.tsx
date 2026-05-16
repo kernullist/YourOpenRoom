@@ -114,7 +114,7 @@ interface KiraAutomationEvent {
   projectName: string;
   message: string;
   createdAt: number;
-  type: 'started' | 'resumed' | 'completed' | 'needs_attention';
+  type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
 interface KiraAutomationNotice extends KiraAutomationEvent {
@@ -742,7 +742,9 @@ const Shell: React.FC = () => {
             <div
               key={notice.localId}
               className={`${styles.kiraToast} ${
-                notice.type === 'needs_attention' ? styles.kiraToastAlert : styles.kiraToastInfo
+                notice.type === 'needs_attention' || notice.type === 'interrupted'
+                  ? styles.kiraToastAlert
+                  : styles.kiraToastInfo
               }`}
               onClick={() => void handleOpenKiraNotice(notice)}
               role="button"
@@ -761,7 +763,11 @@ const Shell: React.FC = () => {
                     ? 'Needs attention'
                     : notice.type === 'completed'
                       ? 'Completed'
-                      : 'In progress'}
+                      : notice.type === 'steered'
+                        ? 'Steered'
+                        : notice.type === 'interrupted'
+                          ? 'Interrupted'
+                          : 'In progress'}
                 </span>
               </div>
               <strong className={styles.kiraToastTitle}>{notice.title}</strong>
