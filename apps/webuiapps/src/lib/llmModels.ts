@@ -15,10 +15,23 @@ export type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messag
 
 export type ModelCategory = 'flagship' | 'general' | 'coding' | 'lightweight' | 'thinking';
 
+export type LLMReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type LLMReasoningSummary = 'none' | 'auto' | 'concise' | 'detailed';
+export type LLMVerbosity = 'low' | 'medium' | 'high';
+
 export interface ModelInfo {
   id: string;
   name: string;
   category?: ModelCategory;
+  defaultReasoningEffort?: LLMReasoningEffort;
+  supportedReasoningEfforts?: LLMReasoningEffort[];
+  supportsReasoningSummaries?: boolean;
+  defaultReasoningSummary?: LLMReasoningSummary;
+  supportsVerbosity?: boolean;
+  defaultVerbosity?: LLMVerbosity;
+  supportsParallelToolCalls?: boolean;
+  serviceTiers?: string[];
+  contextWindow?: number;
 }
 
 export interface LLMConfig {
@@ -29,6 +42,12 @@ export interface LLMConfig {
   customHeaders?: string;
   command?: string;
   apiStyle?: LLMApiStyle;
+  reasoningEffort?: LLMReasoningEffort;
+  reasoningSummary?: LLMReasoningSummary;
+  verbosity?: LLMVerbosity;
+  serviceTier?: string;
+  parallelToolCalls?: boolean;
+  promptCacheKey?: string;
 }
 
 export interface ProviderModelConfig {
@@ -37,6 +56,44 @@ export interface ProviderModelConfig {
   defaultModel: string;
   models: ModelInfo[];
 }
+
+export interface EffectiveModelRuntimeOptions {
+  provider: LLMProvider;
+  model: string;
+  normalizedModel: string;
+  reasoningEffort?: LLMReasoningEffort;
+  reasoningSummary?: LLMReasoningSummary;
+  verbosity?: LLMVerbosity;
+  serviceTier?: string;
+  parallelToolCalls?: boolean;
+  supportsReasoningSummaries: boolean;
+  supportsVerbosity: boolean;
+  supportsParallelToolCalls: boolean;
+}
+
+export interface ExplicitModelRuntimeOptions {
+  reasoningEffort?: LLMReasoningEffort;
+  reasoningSummary?: LLMReasoningSummary;
+  verbosity?: LLMVerbosity;
+  serviceTier?: string;
+  parallelToolCalls?: boolean;
+}
+
+export const LLM_REASONING_EFFORTS: LLMReasoningEffort[] = [
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+];
+export const LLM_REASONING_SUMMARIES: LLMReasoningSummary[] = [
+  'none',
+  'auto',
+  'concise',
+  'detailed',
+];
+export const LLM_VERBOSITIES: LLMVerbosity[] = ['low', 'medium', 'high'];
 
 export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
   openai: {
@@ -257,7 +314,10 @@ export function getDefaultProviderConfig(provider: LLMProvider): Omit<LLMConfig,
 }
 
 export function getModelInfo(provider: LLMProvider, modelId: string): ModelInfo | undefined {
-  return LLM_PROVIDER_CONFIGS[provider]?.models.find((m) => m.id === modelId);
+  const normalizedModel = normalizeProviderModelId(provider, modelId);
+  return LLM_PROVIDER_CONFIGS[provider]?.models.find(
+    (m) => m.id === modelId || normalizeProviderModelId(provider, m.id) === normalizedModel,
+  );
 }
 
 export function getModelsByCategory(provider: LLMProvider, category: ModelCategory): ModelInfo[] {
@@ -270,4 +330,281 @@ export function isPresetModel(provider: LLMProvider, modelId: string): boolean {
 
 export function getProviderDisplayName(provider: LLMProvider): string {
   return LLM_PROVIDER_CONFIGS[provider]?.displayName ?? provider;
+}
+
+export function normalizeProviderModelId(provider: LLMProvider, modelId: string): string {
+  const model = modelId.trim();
+  if (provider === 'opencode' && model.startsWith('opencode/')) {
+    return model.slice('opencode/'.length);
+  }
+  if (provider === 'opencode-go' && model.startsWith('opencode-go/')) {
+    return model.slice('opencode-go/'.length);
+  }
+  return model;
+}
+
+export function normalizeReasoningEffort(value: unknown): LLMReasoningEffort | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  return LLM_REASONING_EFFORTS.includes(normalized as LLMReasoningEffort)
+    ? (normalized as LLMReasoningEffort)
+    : undefined;
+}
+
+export function normalizeReasoningSummary(value: unknown): LLMReasoningSummary | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  return LLM_REASONING_SUMMARIES.includes(normalized as LLMReasoningSummary)
+    ? (normalized as LLMReasoningSummary)
+    : undefined;
+}
+
+export function normalizeVerbosity(value: unknown): LLMVerbosity | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().toLowerCase();
+  return LLM_VERBOSITIES.includes(normalized as LLMVerbosity)
+    ? (normalized as LLMVerbosity)
+    : undefined;
+}
+
+export function normalizeServiceTier(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim();
+  if (!normalized) return undefined;
+  const lowered = normalized.toLowerCase();
+  if (lowered === 'fast' || lowered === 'priority') return 'priority';
+  if (lowered === 'flex') return 'flex';
+  return normalized;
+}
+
+export function normalizePromptCacheKey(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  return trimmed.slice(0, 128);
+}
+
+function isGptReasoningModel(normalizedModel: string): boolean {
+  return /(?:^|\/)gpt-5(?:[.-]|$)/i.test(normalizedModel);
+}
+
+function inferDefaultReasoningEffort(
+  normalizedModel: string,
+  info?: ModelInfo,
+): LLMReasoningEffort | undefined {
+  if (info?.defaultReasoningEffort) return info.defaultReasoningEffort;
+  if (!isGptReasoningModel(normalizedModel)) return undefined;
+  if (/\b(?:spark)\b/i.test(normalizedModel)) return 'high';
+  if (/\b(?:nano|instant)\b/i.test(normalizedModel)) return 'low';
+  return 'medium';
+}
+
+function inferSupportedReasoningEfforts(
+  normalizedModel: string,
+  info?: ModelInfo,
+): LLMReasoningEffort[] {
+  if (info?.supportedReasoningEfforts?.length) return info.supportedReasoningEfforts;
+  if (isGptReasoningModel(normalizedModel)) return ['low', 'medium', 'high', 'xhigh'];
+  return [];
+}
+
+function closestSupportedReasoningEffort(
+  requested: LLMReasoningEffort | undefined,
+  supported: LLMReasoningEffort[],
+): LLMReasoningEffort | undefined {
+  if (!requested) return undefined;
+  if (requested === 'none') return requested;
+  if (supported.length === 0) return requested;
+  if (supported.includes(requested)) return requested;
+
+  const rank = new Map<LLMReasoningEffort, number>(
+    LLM_REASONING_EFFORTS.map((effort, index) => [effort, index]),
+  );
+  const requestedRank = rank.get(requested) ?? 0;
+  return supported
+    .slice()
+    .sort(
+      (left, right) =>
+        Math.abs((rank.get(left) ?? 0) - requestedRank) -
+        Math.abs((rank.get(right) ?? 0) - requestedRank),
+    )[0];
+}
+
+function inferDefaultReasoningSummary(
+  normalizedModel: string,
+  info?: ModelInfo,
+): LLMReasoningSummary | undefined {
+  if (info?.defaultReasoningSummary) return info.defaultReasoningSummary;
+  if (!isGptReasoningModel(normalizedModel)) return undefined;
+  return 'none';
+}
+
+function inferDefaultVerbosity(
+  normalizedModel: string,
+  info?: ModelInfo,
+): LLMVerbosity | undefined {
+  if (info?.defaultVerbosity) return info.defaultVerbosity;
+  if (!isGptReasoningModel(normalizedModel)) return undefined;
+  return /\bmini\b/i.test(normalizedModel) ? 'medium' : 'low';
+}
+
+export function getExplicitModelRuntimeOptions(
+  config: Pick<
+    LLMConfig,
+    'reasoningEffort' | 'reasoningSummary' | 'verbosity' | 'serviceTier' | 'parallelToolCalls'
+  >,
+): ExplicitModelRuntimeOptions {
+  const reasoningEffort = normalizeReasoningEffort(config.reasoningEffort);
+  const reasoningSummary = normalizeReasoningSummary(config.reasoningSummary);
+  const verbosity = normalizeVerbosity(config.verbosity);
+  const serviceTier = normalizeServiceTier(config.serviceTier);
+  const parallelToolCalls =
+    typeof config.parallelToolCalls === 'boolean' ? config.parallelToolCalls : undefined;
+
+  return {
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(reasoningSummary ? { reasoningSummary } : {}),
+    ...(verbosity ? { verbosity } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+  };
+}
+
+export function getEffectiveModelRuntimeOptions(
+  config: Pick<
+    LLMConfig,
+    | 'provider'
+    | 'model'
+    | 'reasoningEffort'
+    | 'reasoningSummary'
+    | 'verbosity'
+    | 'serviceTier'
+    | 'parallelToolCalls'
+  >,
+): EffectiveModelRuntimeOptions {
+  const normalizedModel = normalizeProviderModelId(config.provider, config.model);
+  const info = getModelInfo(config.provider, config.model);
+  const supportedReasoningEfforts = inferSupportedReasoningEfforts(normalizedModel, info);
+  const defaultReasoningEffort = inferDefaultReasoningEffort(normalizedModel, info);
+  const requestedReasoningEffort = normalizeReasoningEffort(config.reasoningEffort);
+  const supportsReasoningSummaries =
+    info?.supportsReasoningSummaries ?? isGptReasoningModel(normalizedModel);
+  const supportsVerbosity = info?.supportsVerbosity ?? isGptReasoningModel(normalizedModel);
+  const supportsParallelToolCalls =
+    info?.supportsParallelToolCalls ?? isGptReasoningModel(normalizedModel);
+  const reasoningEffort = closestSupportedReasoningEffort(
+    requestedReasoningEffort ?? defaultReasoningEffort,
+    supportedReasoningEfforts,
+  );
+  const configuredSummary = normalizeReasoningSummary(config.reasoningSummary);
+  const defaultSummary = inferDefaultReasoningSummary(normalizedModel, info);
+  const selectedSummary = configuredSummary ?? defaultSummary;
+  const reasoningSummary =
+    reasoningEffort && supportsReasoningSummaries && selectedSummary
+      ? selectedSummary === 'none'
+        ? undefined
+        : selectedSummary
+      : undefined;
+  const configuredVerbosity = normalizeVerbosity(config.verbosity);
+  const defaultVerbosity = inferDefaultVerbosity(normalizedModel, info);
+  const verbosity = supportsVerbosity ? (configuredVerbosity ?? defaultVerbosity) : undefined;
+  const configuredServiceTier = normalizeServiceTier(config.serviceTier);
+  const knownServiceTiers = info?.serviceTiers ?? [];
+  const serviceTier =
+    configuredServiceTier &&
+    (knownServiceTiers.length === 0 || knownServiceTiers.includes(configuredServiceTier))
+      ? configuredServiceTier
+      : undefined;
+  const parallelToolCalls =
+    supportsParallelToolCalls && config.parallelToolCalls !== undefined
+      ? config.parallelToolCalls
+      : supportsParallelToolCalls
+        ? true
+        : undefined;
+
+  return {
+    provider: config.provider,
+    model: config.model,
+    normalizedModel,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(reasoningSummary ? { reasoningSummary } : {}),
+    ...(verbosity ? { verbosity } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
+    supportsReasoningSummaries,
+    supportsVerbosity,
+    supportsParallelToolCalls,
+  };
+}
+
+export function applyOpenAiResponsesRuntimeOptions(
+  body: Record<string, unknown>,
+  config: Pick<
+    LLMConfig,
+    | 'provider'
+    | 'model'
+    | 'reasoningEffort'
+    | 'reasoningSummary'
+    | 'verbosity'
+    | 'serviceTier'
+    | 'parallelToolCalls'
+    | 'promptCacheKey'
+  >,
+  hasTools: boolean,
+): EffectiveModelRuntimeOptions {
+  const runtimeOptions = getEffectiveModelRuntimeOptions(config);
+  if (runtimeOptions.reasoningEffort) {
+    body.reasoning = {
+      effort: runtimeOptions.reasoningEffort,
+      ...(runtimeOptions.reasoningSummary ? { summary: runtimeOptions.reasoningSummary } : {}),
+    };
+    const include = Array.isArray(body.include)
+      ? body.include.filter((value): value is string => typeof value === 'string')
+      : [];
+    body.include = Array.from(new Set([...include, 'reasoning.encrypted_content']));
+  }
+  if (runtimeOptions.verbosity) {
+    const existingText =
+      body.text && typeof body.text === 'object' && !Array.isArray(body.text)
+        ? (body.text as Record<string, unknown>)
+        : {};
+    body.text = { ...existingText, verbosity: runtimeOptions.verbosity };
+  }
+  if (runtimeOptions.serviceTier) {
+    body.service_tier = runtimeOptions.serviceTier;
+  }
+  const promptCacheKey = normalizePromptCacheKey(config.promptCacheKey);
+  if (promptCacheKey) {
+    body.prompt_cache_key = promptCacheKey;
+  }
+  if (hasTools && runtimeOptions.parallelToolCalls !== undefined) {
+    body.tool_choice = 'auto';
+    body.parallel_tool_calls = runtimeOptions.parallelToolCalls;
+  }
+  return runtimeOptions;
+}
+
+export function applyOpenAiResponsesOutputSchema(
+  body: Record<string, unknown>,
+  schema: Record<string, unknown> | undefined,
+  strict = true,
+  name = 'kira_output_schema',
+): void {
+  if (!schema) {
+    return;
+  }
+
+  const existingText =
+    body.text && typeof body.text === 'object' && !Array.isArray(body.text)
+      ? (body.text as Record<string, unknown>)
+      : {};
+  body.text = {
+    ...existingText,
+    format: {
+      type: 'json_schema',
+      name,
+      strict,
+      schema,
+    },
+  };
 }

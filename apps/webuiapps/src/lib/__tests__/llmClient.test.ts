@@ -16,7 +16,12 @@ import {
   type ChatMessage,
   type ToolDef,
 } from '../llmClient';
-import { getDefaultProviderConfig, PROVIDER_MODELS, type LLMConfig } from '../llmModels';
+import {
+  applyOpenAiResponsesOutputSchema,
+  getDefaultProviderConfig,
+  PROVIDER_MODELS,
+  type LLMConfig,
+} from '../llmModels';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -778,8 +783,7 @@ describe('chat()', () => {
       expect(body.tools).toBeUndefined();
     });
 
-    it('sets the per-response token cap to 8192', async () =>
-    {
+    it('sets the per-response token cap to 8192', async () => {
       const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
       globalThis.fetch = mockFetch;
 
@@ -1064,6 +1068,54 @@ respond_to_user
       expect(body.command).toBe('codex');
       expect(body.tools).toHaveLength(1);
     });
+
+    it('passes Codex runtime options to the local codex cli endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Codex answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+        reasoningEffort: 'xhigh',
+        reasoningSummary: 'detailed',
+        verbosity: 'high',
+        serviceTier: 'fast',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.reasoningEffort).toBe('xhigh');
+      expect(body.reasoningSummary).toBe('detailed');
+      expect(body.verbosity).toBe('high');
+      expect(body.serviceTier).toBe('priority');
+    });
+
+    it('does not freeze Codex CLI model defaults as config overrides', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Codex answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.reasoningEffort).toBeUndefined();
+      expect(body.reasoningSummary).toBeUndefined();
+      expect(body.verbosity).toBeUndefined();
+      expect(body.serviceTier).toBeUndefined();
+    });
   });
 
   describe('OpenCode providers', () => {
@@ -1106,6 +1158,77 @@ respond_to_user
       expect(body.model).toBe('gpt-5.4');
       expect(body.max_output_tokens).toBe(8192);
       expect(body.tools).toHaveLength(1);
+      expect(body.tool_choice).toBe('auto');
+      expect(body.parallel_tool_calls).toBe(true);
+      expect(body.reasoning).toEqual({ effort: 'medium' });
+      expect(body.include).toEqual(['reasoning.encrypted_content']);
+      expect(body.text).toEqual({ verbosity: 'low' });
+    });
+
+    it('sends Codex-style runtime options to Responses API model calls', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeResponsesApiResponse('OpenCode GPT'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'opencode',
+        apiKey: 'oc-key',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/gpt-5.4',
+        reasoningEffort: 'high',
+        reasoningSummary: 'concise',
+        verbosity: 'low',
+        serviceTier: 'fast',
+        parallelToolCalls: false,
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.reasoning).toEqual({ effort: 'high', summary: 'concise' });
+      expect(body.include).toEqual(['reasoning.encrypted_content']);
+      expect(body.text).toEqual({ verbosity: 'low' });
+      expect(body.service_tier).toBe('priority');
+      expect(body.parallel_tool_calls).toBe(false);
+    });
+
+    it('merges Responses JSON schema output format with existing text controls', () => {
+      const schema = {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          summary: { type: 'string' },
+        },
+        required: ['summary'],
+      };
+      const body: Record<string, unknown> = {
+        text: { verbosity: 'low' },
+      };
+
+      applyOpenAiResponsesOutputSchema(body, schema, true, 'kira_worker_summary');
+
+      expect(body.text).toEqual({
+        verbosity: 'low',
+        format: {
+          type: 'json_schema',
+          name: 'kira_worker_summary',
+          strict: true,
+          schema,
+        },
+      });
+    });
+
+    it('sends a stable Responses prompt cache key when configured', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeResponsesApiResponse('OpenCode GPT'));
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'opencode',
+        apiKey: 'oc-key',
+        baseUrl: 'https://opencode.ai/zen',
+        model: 'opencode/gpt-5.4',
+        promptCacheKey: '  kira:abc123  ',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.prompt_cache_key).toBe('kira:abc123');
     });
 
     it('routes OpenCode Go Kimi models through the OpenAI-compatible path', async () => {

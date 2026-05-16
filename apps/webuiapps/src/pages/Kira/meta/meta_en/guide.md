@@ -57,12 +57,27 @@ way that could materially change the implementation, Kira blocks the work and wr
 
 Kira does not fan out to every configured worker by default. It runs a Primary Worker first and
 enables one Alternative Worker only for high-risk, ambiguous, runtime-sensitive, or deep-mode work.
-During Primary/Alternative runs, Kira limits concurrent model calls on the same provider/baseUrl/model
-route. Local routes (`llama.cpp`, localhost, or private-network base URLs) run one at a time; other
-routes can run up to two calls at once.
-Each model call sets the response output token cap to 8192 tokens.
-Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
-policy checks remain the stopping controls.
+During Primary/Alternative runs, Kira limits concurrent model calls on the same
+provider/baseUrl/model route. Local routes (`llama.cpp`, localhost, or private-network base URLs)
+run one at a time; other routes can run up to two calls at once. Each model call sets the response
+output token cap to 8192 tokens. Kira does not impose a fixed tool-call count cap; cancellation,
+request timeouts, and execution policy checks remain the stopping controls. Codex-capable models can
+also carry runtime options in the main LLM config, dialog model config, and each Kira
+worker/reviewer role: `reasoningEffort`, `reasoningSummary`, `verbosity`, `serviceTier`, and
+`parallelToolCalls`. Kira applies effective Codex defaults to OpenAI Responses-compatible requests.
+Local Codex CLI runs receive only explicitly selected overrides through
+`-c model_reasoning_effort=...`, `-c model_reasoning_summary=...`, `-c model_verbosity=...`, and
+`-c service_tier=...`, so model defaults keep following the installed Codex model catalog. The
+legacy `fast` service tier is normalized to the request value `priority`. Responses-compatible Kira
+calls also attach an opaque `prompt_cache_key` per work or discovery scope, matching Codex's
+stable-thread cache-key behavior without exposing local project paths, and set `tool_choice: "auto"`
+whenever function tools are available. For providers routed through the OpenAI Responses API, Kira
+also attaches request-level `text.format: { type: "json_schema" }` contracts for clarification,
+project discovery, worker planning, worker final summaries, reviewer decisions, and attempt
+selection. The prompt-level JSON instructions and parser/repair loop still remain in place, but
+supported models now receive the same kind of structured-output contract that Codex uses before Kira
+tries to parse the final answer. Unsupported providers keep their own defaults instead of receiving
+incompatible request fields.
 
 | Field      | Type   | Required | Description                                                       |
 | ---------- | ------ | -------- | ----------------------------------------------------------------- |
@@ -266,9 +281,9 @@ DAG controls whether design gates, validation, review, integration, and completi
 required for the attempt.
 
 When `requiredInstructions` or rule-pack instructions are not empty, Kira injects the combined
-effective instructions into worker, reviewer, and attempt-selection prompts as binding
-acceptance criteria. Small-patch guidance limits reviewable patch surface only; it does not narrow
-the requested outcome. Workers, reviewers, and attempt judges must reject attempts that violate
+effective instructions into worker, reviewer, and attempt-selection prompts as binding acceptance
+criteria. Small-patch guidance limits reviewable patch surface only; it does not narrow the
+requested outcome. Workers, reviewers, and attempt judges must reject attempts that violate
 mandatory instructions, solve only a smaller version of the brief, or mark brief/project-instruction
 requirements as `not_applicable`.
 
@@ -368,8 +383,8 @@ Attempt records may include:
 
 - `recordVersion` and `migratedFromVersion` for compatibility with older saved attempts
 - `orchestrationPlan` with the selected run mode, lane goals, subagent ids, runner, connectors,
-  workflow DAG, prompt contract version, adaptive agent graph, evidence requirements,
-  checkpoints, and stop rules
+  workflow DAG, prompt contract version, adaptive agent graph, evidence requirements, checkpoints,
+  and stop rules
 - `evidenceLedger` with concrete plan, diff, validation, runtime, intent, manual, risk-acceptance,
   design, policy, environment setup, remote runner probe, workflow, connector, and review evidence
 - an approval-readiness score with blockers and missing evidence
@@ -390,8 +405,7 @@ Review records may include:
 - `diffCoverage` with changed-line files, reviewed changed-line files, anchored finding counts, and
   contradiction issues that can prevent an unsafe approval
 - Primary/Alternative attempt synthesis, including non-selected attempts and fully rejected
-  comparison
-  cycles
+  comparison cycles
 
 Operators can add manual evidence from the Kira work detail panel. Kira stores it as a normal
 comment with a `[Kira manual evidence]` marker. Manual evidence and risk acceptance are review

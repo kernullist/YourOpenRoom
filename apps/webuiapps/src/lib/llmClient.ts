@@ -4,6 +4,15 @@
  */
 
 import type { LLMApiStyle, LLMConfig } from './llmModels';
+import {
+  applyOpenAiResponsesRuntimeOptions,
+  getExplicitModelRuntimeOptions,
+  normalizeProviderModelId,
+  normalizeReasoningEffort,
+  normalizeReasoningSummary,
+  normalizeServiceTier,
+  normalizeVerbosity,
+} from './llmModels';
 
 import { logger } from './logger';
 import {
@@ -130,6 +139,20 @@ export function resolveLlmOverride(
     override?.customHeaders?.trim() || (canInheritBase ? baseConfig?.customHeaders : undefined);
   const command = override?.command?.trim() || (canInheritBase ? baseConfig?.command : undefined);
   const apiStyle = override?.apiStyle || (canInheritBase ? baseConfig?.apiStyle : undefined);
+  const reasoningEffort =
+    normalizeReasoningEffort(override?.reasoningEffort) ??
+    (canInheritBase ? normalizeReasoningEffort(baseConfig?.reasoningEffort) : undefined);
+  const reasoningSummary =
+    normalizeReasoningSummary(override?.reasoningSummary) ??
+    (canInheritBase ? normalizeReasoningSummary(baseConfig?.reasoningSummary) : undefined);
+  const verbosity =
+    normalizeVerbosity(override?.verbosity) ??
+    (canInheritBase ? normalizeVerbosity(baseConfig?.verbosity) : undefined);
+  const serviceTier =
+    normalizeServiceTier(override?.serviceTier) ??
+    (canInheritBase ? normalizeServiceTier(baseConfig?.serviceTier) : undefined);
+  const parallelToolCalls =
+    override?.parallelToolCalls ?? (canInheritBase ? baseConfig?.parallelToolCalls : undefined);
 
   if (!provider || !model) return null;
   if (provider !== 'codex-cli' && !baseUrl) return null;
@@ -142,6 +165,11 @@ export function resolveLlmOverride(
     ...(customHeaders ? { customHeaders } : {}),
     ...(command ? { command } : {}),
     ...(apiStyle ? { apiStyle } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(reasoningSummary ? { reasoningSummary } : {}),
+    ...(verbosity ? { verbosity } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
   };
 }
 
@@ -284,14 +312,7 @@ function isOpenCodeProvider(provider: LLMConfig['provider']): boolean {
 }
 
 function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): string {
-  const model = config.model.trim();
-  if (config.provider === 'opencode' && model.startsWith('opencode/')) {
-    return model.slice('opencode/'.length);
-  }
-  if (config.provider === 'opencode-go' && model.startsWith('opencode-go/')) {
-    return model.slice('opencode-go/'.length);
-  }
-  return model;
+  return normalizeProviderModelId(config.provider, config.model);
 }
 
 function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
@@ -303,6 +324,13 @@ function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
     return 'anthropic-messages';
   }
   return 'openai-chat';
+}
+
+function shouldUseOpenAIResponses(config: LLMConfig): boolean {
+  if (config.apiStyle === 'openai-responses') return true;
+  return (
+    config.provider === 'openai' && normalizeProviderModel(config).toLowerCase().startsWith('gpt-5')
+  );
 }
 
 function isKimiToolReasoningSensitiveModel(config: Pick<LLMConfig, 'provider' | 'model'>): boolean {
@@ -379,6 +407,9 @@ export async function chat(
   if (config.provider === 'anthropic' || config.provider === 'minimax') {
     return chatAnthropic(messages, tools, config);
   }
+  if (shouldUseOpenAIResponses(config)) {
+    return chatOpenAIResponses(messages, tools, config);
+  }
   return chatOpenAI(messages, tools, config);
 }
 
@@ -387,6 +418,7 @@ async function chatCodexCli(
   tools: ToolDef[],
   config: LLMConfig,
 ): Promise<LLMResponse> {
+  const runtimeOptions = getExplicitModelRuntimeOptions(config);
   const res = await fetch('/api/codex-cli-chat', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -395,6 +427,10 @@ async function chatCodexCli(
       tools,
       model: config.model,
       command: config.command?.trim() || 'codex',
+      reasoningEffort: runtimeOptions.reasoningEffort,
+      reasoningSummary: runtimeOptions.reasoningSummary,
+      verbosity: runtimeOptions.verbosity,
+      serviceTier: runtimeOptions.serviceTier,
     }),
   });
   const data = (await res.json()) as { content?: string; error?: string };
@@ -565,6 +601,7 @@ async function chatOpenAIResponses(
       parameters: tool.function.parameters,
     }));
   }
+  applyOpenAiResponsesRuntimeOptions(body, config, tools.length > 0);
 
   const targetUrl = joinUrl(config.baseUrl, getOpenAIResponsesPath(config.baseUrl));
   const headers: Record<string, string> = {

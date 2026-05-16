@@ -7,6 +7,7 @@ import {
   buildDefaultValidationCommands,
   buildDesignReviewGate,
   buildCodexCliArgs,
+  buildKiraPromptCacheKey,
   buildIssueSignature,
   buildProjectContextScan,
   buildReviewPrompt,
@@ -37,6 +38,7 @@ import {
   formatWorkerSubmission,
   getKiraModelRouteKey,
   getKiraModelRouteLimit,
+  getKiraStructuredOutputSchema,
   getOpenAiAssistantReasoningContent,
   getProjectProfilePath,
   hasMergeConflictMarkers,
@@ -367,6 +369,52 @@ describe('Kira Codex-grade prompts', () => {
     expect(workerPrompt).toContain('"diffHunkReview"');
     expect(workerPrompt).toContain('"requirementTrace"');
     expect(workerPrompt).toContain('"remainingRisks":["..."]');
+  });
+
+  it('defines Responses output schemas for Kira structured agent results', () => {
+    const asObjectSchema = (schema: unknown) =>
+      schema as {
+        additionalProperties: boolean;
+        properties: Record<string, unknown>;
+        required: string[];
+      };
+
+    const workerPlan = asObjectSchema(getKiraStructuredOutputSchema('worker-plan'));
+    expect(workerPlan.additionalProperties).toBe(false);
+    expect(workerPlan.required).toEqual(
+      expect.arrayContaining([
+        'understanding',
+        'changeDesign',
+        'requirementTrace',
+        'approachAlternatives',
+        'escalation',
+      ]),
+    );
+    expect(workerPlan.properties.changeDesign).toMatchObject({
+      additionalProperties: false,
+    });
+
+    const workerSummary = asObjectSchema(getKiraStructuredOutputSchema('worker-summary'));
+    expect(workerSummary.required).toContain('selfCheck');
+    expect(workerSummary.properties.selfCheck).toMatchObject({
+      additionalProperties: false,
+    });
+
+    const review = asObjectSchema(getKiraStructuredOutputSchema('review'));
+    expect(review.required).toEqual(
+      expect.arrayContaining(['findings', 'evidenceChecked', 'reviewerDiscourse']),
+    );
+
+    const attemptSelection = asObjectSchema(getKiraStructuredOutputSchema('attempt-selection'));
+    expect(attemptSelection.required).toContain('selectedAttemptNo');
+
+    const clarification = asObjectSchema(getKiraStructuredOutputSchema('work-clarification'));
+    expect(clarification.required).toEqual(
+      expect.arrayContaining(['needsClarification', 'confidence', 'questions']),
+    );
+
+    const discovery = asObjectSchema(getKiraStructuredOutputSchema('project-discovery'));
+    expect(discovery.required).toEqual(expect.arrayContaining(['summary', 'findings']));
   });
 
   it('locks reviewer prompts to independent review priorities and structured feedback', () => {
@@ -1835,6 +1883,11 @@ describe('resolveRoleLlmConfig()', () => {
         apiKey: 'sk-test',
         baseUrl: 'https://openrouter.ai/api/v1',
         model: 'openai/gpt-5.4',
+        reasoningEffort: 'high',
+        reasoningSummary: 'detailed',
+        verbosity: 'high',
+        serviceTier: 'fast',
+        parallelToolCalls: false,
       },
       { model: 'openai/gpt-5.4-mini' },
       null,
@@ -1845,6 +1898,11 @@ describe('resolveRoleLlmConfig()', () => {
       apiKey: 'sk-test',
       baseUrl: 'https://openrouter.ai/api/v1',
       model: 'openai/gpt-5.4-mini',
+      reasoningEffort: 'high',
+      reasoningSummary: 'detailed',
+      verbosity: 'high',
+      serviceTier: 'priority',
+      parallelToolCalls: false,
     });
   });
 
@@ -1879,6 +1937,8 @@ describe('resolveRoleLlmConfig()', () => {
       {
         provider: 'codex-cli',
         model: 'gpt-5.3-codex',
+        reasoningEffort: 'xhigh',
+        verbosity: 'high',
       },
       null,
     );
@@ -1888,6 +1948,8 @@ describe('resolveRoleLlmConfig()', () => {
       apiKey: '',
       baseUrl: '',
       model: 'gpt-5.3-codex',
+      reasoningEffort: 'xhigh',
+      verbosity: 'high',
     });
   });
 
@@ -1941,10 +2003,8 @@ describe('resolveWorkerLlmConfigs()', () => {
   });
 });
 
-describe('Kira model route limits', () =>
-{
-  it('uses one route slot for local model endpoints', () =>
-  {
+describe('Kira model route limits', () => {
+  it('uses one route slot for local model endpoints', () => {
     expect(
       getKiraModelRouteLimit({
         provider: 'llama.cpp',
@@ -1965,8 +2025,7 @@ describe('Kira model route limits', () =>
     ).toBe(1);
   });
 
-  it('uses two route slots for non-local model endpoints', () =>
-  {
+  it('uses two route slots for non-local model endpoints', () => {
     expect(
       getKiraModelRouteLimit({
         provider: 'openrouter',
@@ -1981,8 +2040,7 @@ describe('Kira model route limits', () =>
     ).toBe(2);
   });
 
-  it('normalizes same-model route keys by provider, base URL, and model', () =>
-  {
+  it('normalizes same-model route keys by provider, base URL, and model', () => {
     expect(
       getKiraModelRouteKey({
         provider: 'opencode-go',
@@ -1992,8 +2050,29 @@ describe('Kira model route limits', () =>
     ).toBe('opencode-go|https://opencode.ai/zen/go|kimi-k2.5');
   });
 
-  it('serializes same-route local model work', async () =>
-  {
+  it('builds opaque and stable Kira prompt cache keys', () => {
+    const key = buildKiraPromptCacheKey({
+      projectRoot: 'F:\\secret\\ProjectA',
+      workId: 'work_123',
+    });
+    const sameKey = buildKiraPromptCacheKey({
+      projectRoot: 'f:/secret/projecta',
+      workId: 'work_123',
+    });
+    const reviewKey = buildKiraPromptCacheKey({
+      projectRoot: 'F:\\secret\\ProjectA',
+      workId: 'work_123',
+      purpose: 'review',
+    });
+
+    expect(key).toMatch(/^kira:[0-9a-f]{32}$/);
+    expect(key).toBe(sameKey);
+    expect(reviewKey).not.toBe(key);
+    expect(key).not.toContain('secret');
+    expect(key).not.toContain('ProjectA');
+  });
+
+  it('serializes same-route local model work', async () => {
     const config = {
       provider: 'openai' as const,
       apiKey: '',
@@ -2003,11 +2082,9 @@ describe('Kira model route limits', () =>
     const events: string[] = [];
     let releaseFirst: (() => void) | null = null;
 
-    const first = runWithKiraModelRouteLimit(config, async () =>
-    {
+    const first = runWithKiraModelRouteLimit(config, async () => {
       events.push('first-start');
-      await new Promise<void>((resolve) =>
-      {
+      await new Promise<void>((resolve) => {
         releaseFirst = resolve;
       });
       events.push('first-end');
@@ -2015,8 +2092,7 @@ describe('Kira model route limits', () =>
     });
     await Promise.resolve();
 
-    const second = runWithKiraModelRouteLimit(config, async () =>
-    {
+    const second = runWithKiraModelRouteLimit(config, async () => {
       events.push('second-start');
       return 'second';
     });
@@ -2030,8 +2106,7 @@ describe('Kira model route limits', () =>
     expect(events).toEqual(['first-start', 'first-end', 'second-start']);
   });
 
-  it('allows two same-route non-local model calls before queueing', async () =>
-  {
+  it('allows two same-route non-local model calls before queueing', async () => {
     const config = {
       provider: 'openrouter' as const,
       apiKey: 'sk-test',
@@ -2048,13 +2123,11 @@ describe('Kira model route limits', () =>
       label: string,
       setRelease: (release: () => void) => void,
     ): Promise<string> =>
-      runWithKiraModelRouteLimit(config, async () =>
-      {
+      runWithKiraModelRouteLimit(config, async () => {
         events.push(`${label}-start`);
         active += 1;
         maxActive = Math.max(maxActive, active);
-        await new Promise<void>((resolve) =>
-        {
+        await new Promise<void>((resolve) => {
           setRelease(resolve);
         });
         active -= 1;
@@ -2062,18 +2135,15 @@ describe('Kira model route limits', () =>
         return label;
       });
 
-    const first = runHeldTask('first', (release) =>
-    {
+    const first = runHeldTask('first', (release) => {
       releaseFirst = release;
     });
-    const second = runHeldTask('second', (release) =>
-    {
+    const second = runHeldTask('second', (release) => {
       releaseSecond = release;
     });
     await Promise.resolve();
 
-    const third = runWithKiraModelRouteLimit(config, async () =>
-    {
+    const third = runWithKiraModelRouteLimit(config, async () => {
       events.push('third-start');
       active += 1;
       maxActive = Math.max(maxActive, active);
@@ -2110,6 +2180,10 @@ describe('buildCodexCliArgs()', () => {
         apiKey: '',
         baseUrl: '',
         model: 'gpt-5.5',
+        reasoningEffort: 'high',
+        reasoningSummary: 'detailed',
+        verbosity: 'low',
+        serviceTier: 'fast',
       },
       'F:/workspace/project',
       true,
@@ -2129,9 +2203,36 @@ describe('buildCodexCliArgs()', () => {
         'F:/tmp/last-message.txt',
         '--model',
         'gpt-5.5',
+        '-c',
+        'model_reasoning_effort="high"',
+        '-c',
+        'model_reasoning_summary="detailed"',
+        '-c',
+        'model_verbosity="low"',
+        '-c',
+        'service_tier="priority"',
         '-',
       ]),
     );
+  });
+
+  it('does not emit Codex CLI config overrides for model defaults', () => {
+    const args = buildCodexCliArgs(
+      {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      },
+      'F:/workspace/project',
+      false,
+      null,
+    );
+
+    expect(args).toContain('--model');
+    expect(args).toContain('gpt-5.5');
+    expect(args).not.toContain('-c');
+    expect(args.at(-1)).toBe('-');
   });
 });
 

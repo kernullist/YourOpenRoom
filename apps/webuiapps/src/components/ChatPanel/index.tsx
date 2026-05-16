@@ -22,6 +22,9 @@ import {
   type ChatMessage,
 } from '@/lib/llmClient';
 import {
+  LLM_REASONING_EFFORTS,
+  LLM_REASONING_SUMMARIES,
+  LLM_VERBOSITIES,
   PROVIDER_MODELS,
   getDefaultProviderConfig,
   getModelInfo,
@@ -29,6 +32,9 @@ import {
   type LLMApiStyle,
   type LLMConfig,
   type LLMProvider,
+  type LLMReasoningEffort,
+  type LLMReasoningSummary,
+  type LLMVerbosity,
 } from '@/lib/llmModels';
 import {
   loadImageGenConfig,
@@ -3915,6 +3921,7 @@ const ChatPanel: React.FC<{
 // ---------------------------------------------------------------------------
 
 type SettingsTabKey = AppSettingsTabKey;
+type ParallelToolCallsOption = '' | 'enabled' | 'disabled';
 
 interface KiraRoleDraft {
   id: string;
@@ -3926,6 +3933,11 @@ interface KiraRoleDraft {
   customHeaders: string;
   command: string;
   apiStyle: KiraAgentApiStyle | '';
+  reasoningEffort: LLMReasoningEffort | '';
+  reasoningSummary: LLMReasoningSummary | '';
+  verbosity: LLMVerbosity | '';
+  serviceTier: string;
+  parallelToolCalls: ParallelToolCallsOption;
 }
 
 interface RuntimeModelOption {
@@ -3961,6 +3973,47 @@ const KIRA_API_STYLE_OPTIONS: Array<{ value: KiraAgentApiStyle | ''; label: stri
   { value: 'openai-responses', label: 'OpenAI Responses' },
   { value: 'anthropic-messages', label: 'Anthropic Messages' },
 ];
+
+const MODEL_REASONING_OPTIONS: Array<{ value: LLMReasoningEffort | ''; label: string }> = [
+  { value: '', label: 'Model default' },
+  ...LLM_REASONING_EFFORTS.map((value) => ({ value, label: value })),
+];
+
+const MODEL_REASONING_SUMMARY_OPTIONS: Array<{ value: LLMReasoningSummary | ''; label: string }> = [
+  { value: '', label: 'Model default' },
+  ...LLM_REASONING_SUMMARIES.map((value) => ({ value, label: value })),
+];
+
+const MODEL_VERBOSITY_OPTIONS: Array<{ value: LLMVerbosity | ''; label: string }> = [
+  { value: '', label: 'Model default' },
+  ...LLM_VERBOSITIES.map((value) => ({ value, label: value })),
+];
+
+const MODEL_PARALLEL_TOOL_CALL_OPTIONS: Array<{ value: ParallelToolCallsOption; label: string }> = [
+  { value: '', label: 'Model default' },
+  { value: 'enabled', label: 'Enabled' },
+  { value: 'disabled', label: 'Disabled' },
+];
+
+function parallelToolCallsToOption(value: boolean | undefined): ParallelToolCallsOption {
+  if (value === true) {
+    return 'enabled';
+  }
+  if (value === false) {
+    return 'disabled';
+  }
+  return '';
+}
+
+function parallelToolCallsOptionToConfig(value: ParallelToolCallsOption): boolean | undefined {
+  if (value === 'enabled') {
+    return true;
+  }
+  if (value === 'disabled') {
+    return false;
+  }
+  return undefined;
+}
 
 function canInheritKiraApiKey(
   roleProvider: KiraAgentProvider,
@@ -4056,6 +4109,11 @@ function makeKiraRoleDraft(
     customHeaders: role?.customHeaders ?? '',
     command: role?.command ?? defaults.command ?? '',
     apiStyle: role?.apiStyle ?? '',
+    reasoningEffort: role?.reasoningEffort ?? '',
+    reasoningSummary: role?.reasoningSummary ?? '',
+    verbosity: role?.verbosity ?? '',
+    serviceTier: role?.serviceTier ?? '',
+    parallelToolCalls: parallelToolCallsToOption(role?.parallelToolCalls),
   };
 }
 
@@ -4090,10 +4148,16 @@ function resolveInitialKiraReviewer(
 
 function kiraDraftToConfig(draft: KiraRoleDraft): KiraRoleLlmConfig {
   const normalizedApiKey = draft.apiKey.trim();
+  const parallelToolCalls = parallelToolCallsOptionToConfig(draft.parallelToolCalls);
   const base: KiraRoleLlmConfig = {
     provider: draft.provider,
     ...(draft.name.trim() ? { name: draft.name.trim() } : {}),
     ...(draft.model.trim() ? { model: draft.model.trim() } : {}),
+    ...(draft.reasoningEffort ? { reasoningEffort: draft.reasoningEffort } : {}),
+    ...(draft.reasoningSummary ? { reasoningSummary: draft.reasoningSummary } : {}),
+    ...(draft.verbosity ? { verbosity: draft.verbosity } : {}),
+    ...(draft.serviceTier.trim() ? { serviceTier: draft.serviceTier.trim() } : {}),
+    ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
   };
 
   if (draft.provider === 'codex-cli') {
@@ -4166,6 +4230,17 @@ const SettingsModal: React.FC<{
   const [command, setCommand] = useState(config?.command || 'codex');
   const [apiStyle, setApiStyle] = useState<LLMApiStyle | ''>(config?.apiStyle || '');
   const [customHeaders, setCustomHeaders] = useState(config?.customHeaders || '');
+  const [reasoningEffort, setReasoningEffort] = useState<LLMReasoningEffort | ''>(
+    config?.reasoningEffort || '',
+  );
+  const [reasoningSummary, setReasoningSummary] = useState<LLMReasoningSummary | ''>(
+    config?.reasoningSummary || '',
+  );
+  const [verbosity, setVerbosity] = useState<LLMVerbosity | ''>(config?.verbosity || '');
+  const [serviceTier, setServiceTier] = useState(config?.serviceTier || '');
+  const [parallelToolCalls, setParallelToolCalls] = useState<ParallelToolCallsOption>(
+    parallelToolCallsToOption(config?.parallelToolCalls),
+  );
   const [manualModelMode, setManualModelMode] = useState(false);
   const [preferredName, setPreferredName] = useState(userProfile?.displayName || '');
   const [responseLanguageMode, setResponseLanguageMode] = useState<ResponseLanguageMode>(
@@ -4198,7 +4273,10 @@ const SettingsModal: React.FC<{
   );
   const [igCustomHeaders, setIgCustomHeaders] = useState(imageGenConfig?.customHeaders || '');
   const [dialogEnabled, setDialogEnabled] = useState(
-    Boolean(dialogConfig?.model?.trim() && dialogConfig?.baseUrl?.trim()),
+    Boolean(
+      dialogConfig?.model?.trim() &&
+      (dialogConfig.provider === 'codex-cli' || dialogConfig?.baseUrl?.trim()),
+    ),
   );
   const [dialogProvider, setDialogProvider] = useState<LLMProvider>(
     dialogConfig?.provider || config?.provider || 'openrouter',
@@ -4213,6 +4291,19 @@ const SettingsModal: React.FC<{
     dialogConfig?.apiStyle || '',
   );
   const [dialogCustomHeaders, setDialogCustomHeaders] = useState(dialogConfig?.customHeaders || '');
+  const [dialogReasoningEffort, setDialogReasoningEffort] = useState<LLMReasoningEffort | ''>(
+    dialogConfig?.reasoningEffort || '',
+  );
+  const [dialogReasoningSummary, setDialogReasoningSummary] = useState<LLMReasoningSummary | ''>(
+    dialogConfig?.reasoningSummary || '',
+  );
+  const [dialogVerbosity, setDialogVerbosity] = useState<LLMVerbosity | ''>(
+    dialogConfig?.verbosity || '',
+  );
+  const [dialogServiceTier, setDialogServiceTier] = useState(dialogConfig?.serviceTier || '');
+  const [dialogParallelToolCalls, setDialogParallelToolCalls] = useState<ParallelToolCallsOption>(
+    parallelToolCallsToOption(dialogConfig?.parallelToolCalls),
+  );
   const [dialogManualModelMode, setDialogManualModelMode] = useState(false);
   const [idaPeMode, setIdaPeMode] = useState<'prescan-only' | 'mcp-http'>(
     idaPeConfig?.mode || 'prescan-only',
@@ -4332,6 +4423,11 @@ const SettingsModal: React.FC<{
     setModel(defaults.model);
     setCommand(defaults.command || 'codex');
     setApiStyle(defaults.apiStyle || '');
+    setReasoningEffort('');
+    setReasoningSummary('');
+    setVerbosity('');
+    setServiceTier('');
+    setParallelToolCalls('');
     setManualModelMode(false);
   };
 
@@ -4354,6 +4450,11 @@ const SettingsModal: React.FC<{
     setDialogCommand(defaults.command || 'codex');
     setDialogApiStyle(defaults.apiStyle || '');
     setDialogModel(defaults.model);
+    setDialogReasoningEffort('');
+    setDialogReasoningSummary('');
+    setDialogVerbosity('');
+    setDialogServiceTier('');
+    setDialogParallelToolCalls('');
     setDialogManualModelMode(false);
   };
 
@@ -4377,6 +4478,11 @@ const SettingsModal: React.FC<{
       customHeaders: '',
       command: defaults.command ?? '',
       apiStyle: defaults.apiStyle ?? '',
+      reasoningEffort: '',
+      reasoningSummary: '',
+      verbosity: '',
+      serviceTier: '',
+      parallelToolCalls: '',
     });
   };
 
@@ -4390,6 +4496,11 @@ const SettingsModal: React.FC<{
       customHeaders: '',
       command: defaults.command ?? '',
       apiStyle: defaults.apiStyle ?? '',
+      reasoningEffort: '',
+      reasoningSummary: '',
+      verbosity: '',
+      serviceTier: '',
+      parallelToolCalls: '',
     });
   };
 
@@ -4425,6 +4536,101 @@ const SettingsModal: React.FC<{
     { key: 'image', label: 'Image' },
     { key: 'advanced', label: 'Advanced' },
   ];
+
+  const renderModelRuntimeFields = (
+    values: {
+      reasoningEffort: LLMReasoningEffort | '';
+      reasoningSummary: LLMReasoningSummary | '';
+      verbosity: LLMVerbosity | '';
+      serviceTier: string;
+      parallelToolCalls: ParallelToolCallsOption;
+    },
+    onChange: (
+      patch: Partial<{
+        reasoningEffort: LLMReasoningEffort | '';
+        reasoningSummary: LLMReasoningSummary | '';
+        verbosity: LLMVerbosity | '';
+        serviceTier: string;
+        parallelToolCalls: ParallelToolCallsOption;
+      }>,
+    ) => void,
+  ) => (
+    <div className={styles.runtimeOptionsGrid}>
+      <div className={styles.field}>
+        <label className={styles.label}>Reasoning effort</label>
+        <select
+          className={styles.select}
+          value={values.reasoningEffort}
+          onChange={(e) => onChange({ reasoningEffort: e.target.value as LLMReasoningEffort | '' })}
+        >
+          {MODEL_REASONING_OPTIONS.map((option) => (
+            <option key={option.value || 'default'} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.label}>Reasoning summary</label>
+        <select
+          className={styles.select}
+          value={values.reasoningSummary}
+          onChange={(e) =>
+            onChange({ reasoningSummary: e.target.value as LLMReasoningSummary | '' })
+          }
+        >
+          {MODEL_REASONING_SUMMARY_OPTIONS.map((option) => (
+            <option key={option.value || 'default'} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.label}>Verbosity</label>
+        <select
+          className={styles.select}
+          value={values.verbosity}
+          onChange={(e) => onChange({ verbosity: e.target.value as LLMVerbosity | '' })}
+        >
+          {MODEL_VERBOSITY_OPTIONS.map((option) => (
+            <option key={option.value || 'default'} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.label}>Service tier</label>
+        <input
+          className={styles.fieldInput}
+          value={values.serviceTier}
+          onChange={(e) => onChange({ serviceTier: e.target.value })}
+          placeholder="priority, flex, or custom"
+        />
+      </div>
+
+      <div className={styles.field}>
+        <label className={styles.label}>Parallel tool calls</label>
+        <select
+          className={styles.select}
+          value={values.parallelToolCalls}
+          onChange={(e) =>
+            onChange({ parallelToolCalls: e.target.value as ParallelToolCallsOption })
+          }
+        >
+          {MODEL_PARALLEL_TOOL_CALL_OPTIONS.map((option) => (
+            <option key={option.value || 'default'} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
 
   const renderKiraRoleFields = (
     draft: KiraRoleDraft,
@@ -4634,6 +4840,21 @@ const SettingsModal: React.FC<{
             </div>
           </>
         )}
+
+        {renderModelRuntimeFields(
+          {
+            reasoningEffort: draft.reasoningEffort,
+            reasoningSummary: draft.reasoningSummary,
+            verbosity: draft.verbosity,
+            serviceTier: draft.serviceTier,
+            parallelToolCalls: draft.parallelToolCalls,
+          },
+          onChange,
+        )}
+        <span className={styles.modelHint}>
+          Applied to Codex CLI and OpenAI Responses-compatible Kira calls. Unsupported model routes
+          keep their provider defaults.
+        </span>
       </div>
     );
   };
@@ -4940,6 +5161,37 @@ const SettingsModal: React.FC<{
                   ) : null}
                 </div>
 
+                {renderModelRuntimeFields(
+                  {
+                    reasoningEffort,
+                    reasoningSummary,
+                    verbosity,
+                    serviceTier,
+                    parallelToolCalls,
+                  },
+                  (patch) => {
+                    if (patch.reasoningEffort !== undefined) {
+                      setReasoningEffort(patch.reasoningEffort);
+                    }
+                    if (patch.reasoningSummary !== undefined) {
+                      setReasoningSummary(patch.reasoningSummary);
+                    }
+                    if (patch.verbosity !== undefined) {
+                      setVerbosity(patch.verbosity);
+                    }
+                    if (patch.serviceTier !== undefined) {
+                      setServiceTier(patch.serviceTier);
+                    }
+                    if (patch.parallelToolCalls !== undefined) {
+                      setParallelToolCalls(patch.parallelToolCalls);
+                    }
+                  },
+                )}
+                <span className={styles.modelHint}>
+                  These options follow the Codex model contract for Responses API and local Codex
+                  CLI runs.
+                </span>
+
                 {!isCodexCliProvider(provider) ? (
                   <div className={styles.field}>
                     <label className={styles.label}>
@@ -5131,6 +5383,33 @@ const SettingsModal: React.FC<{
                         richer requests stay on the main model.
                       </span>
                     </div>
+
+                    {renderModelRuntimeFields(
+                      {
+                        reasoningEffort: dialogReasoningEffort,
+                        reasoningSummary: dialogReasoningSummary,
+                        verbosity: dialogVerbosity,
+                        serviceTier: dialogServiceTier,
+                        parallelToolCalls: dialogParallelToolCalls,
+                      },
+                      (patch) => {
+                        if (patch.reasoningEffort !== undefined) {
+                          setDialogReasoningEffort(patch.reasoningEffort);
+                        }
+                        if (patch.reasoningSummary !== undefined) {
+                          setDialogReasoningSummary(patch.reasoningSummary);
+                        }
+                        if (patch.verbosity !== undefined) {
+                          setDialogVerbosity(patch.verbosity);
+                        }
+                        if (patch.serviceTier !== undefined) {
+                          setDialogServiceTier(patch.serviceTier);
+                        }
+                        if (patch.parallelToolCalls !== undefined) {
+                          setDialogParallelToolCalls(patch.parallelToolCalls);
+                        }
+                      },
+                    )}
 
                     {!isCodexCliProvider(dialogProvider) ? (
                       <div className={styles.field}>
@@ -5563,6 +5842,9 @@ const SettingsModal: React.FC<{
             onClick={() => {
               const mainIsCodexCli = isCodexCliProvider(provider);
               const dialogIsCodexCli = isCodexCliProvider(dialogProvider);
+              const mainParallelToolCalls = parallelToolCallsOptionToConfig(parallelToolCalls);
+              const dialogParallelToolCallsValue =
+                parallelToolCallsOptionToConfig(dialogParallelToolCalls);
               const llmCfg: LLMConfig = {
                 provider,
                 apiKey: mainIsCodexCli ? '' : apiKey,
@@ -5573,6 +5855,13 @@ const SettingsModal: React.FC<{
                   : {}),
                 ...(!mainIsCodexCli && apiStyle ? { apiStyle } : {}),
                 ...(!mainIsCodexCli && customHeaders.trim() ? { customHeaders } : {}),
+                ...(reasoningEffort ? { reasoningEffort } : {}),
+                ...(reasoningSummary ? { reasoningSummary } : {}),
+                ...(verbosity ? { verbosity } : {}),
+                ...(serviceTier.trim() ? { serviceTier: serviceTier.trim() } : {}),
+                ...(mainParallelToolCalls !== undefined
+                  ? { parallelToolCalls: mainParallelToolCalls }
+                  : {}),
               };
               const igCfg: ImageGenConfig | null = igApiKey.trim()
                 ? {
@@ -5600,6 +5889,17 @@ const SettingsModal: React.FC<{
                       ...(!dialogIsCodexCli && dialogApiStyle ? { apiStyle: dialogApiStyle } : {}),
                       ...(!dialogIsCodexCli && dialogCustomHeaders.trim()
                         ? { customHeaders: dialogCustomHeaders }
+                        : {}),
+                      ...(dialogReasoningEffort ? { reasoningEffort: dialogReasoningEffort } : {}),
+                      ...(dialogReasoningSummary
+                        ? { reasoningSummary: dialogReasoningSummary }
+                        : {}),
+                      ...(dialogVerbosity ? { verbosity: dialogVerbosity } : {}),
+                      ...(dialogServiceTier.trim()
+                        ? { serviceTier: dialogServiceTier.trim() }
+                        : {}),
+                      ...(dialogParallelToolCallsValue !== undefined
+                        ? { parallelToolCalls: dialogParallelToolCallsValue }
                         : {}),
                     }
                   : null;

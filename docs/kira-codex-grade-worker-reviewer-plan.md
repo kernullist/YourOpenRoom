@@ -34,6 +34,31 @@ Kira의 자동 처리 과정을 Codex 수준에 가깝게 끌어올린다. 여�
 따라서 고도화의 방향은 기존 구조를 유지하면서 각 단계의 판단력, 도구 사용성, 관측 가능성, 안전장치를
 강화하는 것이다.
 
+### 2.1 2026-05-16 Codex 모델 런타임 반영
+
+`F:\kernullist\codex` 소스의 모델 preset, Responses API request, Codex CLI config override, child
+agent model override 흐름을 Kira에 반영했다.
+
+- 모델 설정은 provider/model만 보지 않고 `reasoningEffort`, `reasoningSummary`, `verbosity`,
+  `serviceTier`, `parallelToolCalls`를 함께 보존한다.
+- OpenAI Responses-compatible 경로는 Codex 모델 기본값을 포함해 reasoning, encrypted reasoning
+  include, text verbosity, service tier, parallel tool call 옵션을 request body에 반영한다.
+- Responses-compatible Kira 호출은 Codex처럼 work/discovery scope 단위의 안정적인
+  `prompt_cache_key`를 사용한다. 로컬 경로와 프로젝트명은 그대로 보내지 않고 opaque hash key로
+  축약한다.
+- 함수 도구가 있는 Responses-compatible 호출에는 `tool_choice: "auto"`를 명시해 Codex의 request
+  구성과 맞춘다.
+- Kira의 clarification, discovery, worker plan, worker summary, review, attempt selection 결과는
+  Codex의 `output_schema` 흐름처럼 Responses `text.format: { type: "json_schema" }` 계약을 붙인다.
+  기존 프롬프트 기반 JSON 요구와 parser/repair 루프는 유지하되, 지원 모델에서는 request 단계에서
+  구조화 출력 계약을 먼저 강제한다.
+- Codex CLI worker/reviewer 경로는 명시 선택된 런타임 옵션만 `codex exec -c ...` override로 전달해서
+  설치된 Codex의 모델 카탈로그 기본값을 임의로 고정하지 않는다.
+- `serviceTier`는 Codex와 맞춰 `fast` 입력을 request value인 `priority`로 정규화한다.
+- Kira role 설정 UI는 main/dialog/Kira worker/reviewer에 같은 옵션을 노출한다.
+- worker attempt exploration에는 실제 provider/model/runtime 옵션이 남아 모델 선택과 실행 상태를
+  사후 추적할 수 있다.
+
 ## 3. Codex급 기준
 
 ### 3.1 워커 기준

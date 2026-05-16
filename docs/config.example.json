@@ -3,12 +3,15 @@
     "provider": "openrouter",
     "apiKey": "YOUR_API_KEY",
     "baseUrl": "https://openrouter.ai/api/v1",
-    "model": "anthropic/claude-sonnet-4.6"
+    "model": "anthropic/claude-sonnet-4.6",
+    "verbosity": "low"
   },
   "dialogLlm": {
     "provider": "openrouter",
     "baseUrl": "https://openrouter.ai/api/v1",
-    "model": "openai/gpt-5-mini"
+    "model": "openai/gpt-5-mini",
+    "reasoningEffort": "medium",
+    "verbosity": "low"
   },
   "userProfile": {
     "displayName": "Minji"
@@ -117,24 +120,31 @@
     "workers": [
       {
         "name": "Fast API worker",
-        "model": "openai/gpt-5.4-mini"
+        "model": "openai/gpt-5.4-mini",
+        "reasoningEffort": "medium",
+        "verbosity": "medium",
+        "parallelToolCalls": true
       },
       {
         "name": "Codex local worker",
         "provider": "codex-cli",
-        "model": "gpt-5.3-codex"
+        "model": "gpt-5.3-codex",
+        "reasoningEffort": "high",
+        "verbosity": "low"
       },
       {
         "name": "OpenCode Go worker",
         "provider": "opencode-go",
         "apiKey": "YOUR_OPENCODE_API_KEY",
-        "model": "opencode-go/kimi-k2.5"
+        "model": "opencode-go/kimi-k2.5",
+        "parallelToolCalls": false
       }
     ],
     "reviewerLlm": {
       "provider": "opencode",
       "apiKey": "YOUR_OPENCODE_API_KEY",
-      "model": "opencode/claude-sonnet-4-6"
+      "model": "opencode/claude-sonnet-4-6",
+      "reasoningSummary": "concise"
     }
   },
   "openvscode": {

@@ -23,6 +23,12 @@ import {
   resolveProjectSettings,
   validateKiraOrchestrationContract,
 } from './src/lib/kiraAutomationPlugin';
+import {
+  normalizeReasoningEffort,
+  normalizeReasoningSummary,
+  normalizeServiceTier,
+  normalizeVerbosity,
+} from './src/lib/llmModels';
 import { searchOpenVscodeWorkspace } from './src/lib/openVscodeSearch';
 import {
   applyWorkspaceRename,
@@ -2071,6 +2077,29 @@ function isCodexCliModelUpgradeError(error: unknown): boolean {
   return /requires a newer version of Codex/i.test(message);
 }
 
+function buildCodexCliConfigOverrideArg(key: string, value: string): string {
+  return `${key}=${JSON.stringify(value)}`;
+}
+
+function appendCodexCliRuntimeArgs(args: string[], payload: Record<string, unknown>): void {
+  const reasoningEffort = normalizeReasoningEffort(payload.reasoningEffort);
+  const reasoningSummary = normalizeReasoningSummary(payload.reasoningSummary);
+  const verbosity = normalizeVerbosity(payload.verbosity);
+  const serviceTier = normalizeServiceTier(payload.serviceTier);
+  if (reasoningEffort) {
+    args.push('-c', buildCodexCliConfigOverrideArg('model_reasoning_effort', reasoningEffort));
+  }
+  if (reasoningSummary) {
+    args.push('-c', buildCodexCliConfigOverrideArg('model_reasoning_summary', reasoningSummary));
+  }
+  if (verbosity) {
+    args.push('-c', buildCodexCliConfigOverrideArg('model_verbosity', verbosity));
+  }
+  if (serviceTier) {
+    args.push('-c', buildCodexCliConfigOverrideArg('service_tier', serviceTier));
+  }
+}
+
 function codexCliChatPlugin(): Plugin {
   return {
     name: 'codex-cli-chat',
@@ -2103,6 +2132,7 @@ function codexCliChatPlugin(): Plugin {
             'never',
           ];
           if (model) args.push('--model', model);
+          appendCodexCliRuntimeArgs(args, payload);
           args.push('-');
 
           const prompt = buildCodexCliChatPrompt(payload);

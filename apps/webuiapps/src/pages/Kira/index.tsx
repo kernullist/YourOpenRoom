@@ -1021,6 +1021,7 @@ const KiraPage: React.FC = () => {
   const [projectOrchestrationDraft, setProjectOrchestrationDraft] = useState('');
   const [projectSettingsLoading, setProjectSettingsLoading] = useState(false);
   const [projectSettingsSaving, setProjectSettingsSaving] = useState(false);
+  const [projectSettingsOpen, setProjectSettingsOpen] = useState(false);
   const [manualEvidenceDraft, setManualEvidenceDraft] = useState({
     kind: 'manual',
     body: '',
@@ -1815,7 +1816,12 @@ const KiraPage: React.FC = () => {
     setEditorOpen(false);
     setFormDirty(false);
     setErrorText(null);
+    setProjectSettingsOpen(true);
     reportAction(APP_ID, 'SELECT_PROJECT', { projectName });
+  }, []);
+
+  const handleCloseProjectSettings = useCallback(() => {
+    setProjectSettingsOpen(false);
   }, []);
 
   const handleSaveWorkRoot = useCallback(async () => {
@@ -2752,363 +2758,6 @@ const KiraPage: React.FC = () => {
           ) : null}
         </div>
 
-        {activeProjectName ? (
-          <div className={styles.projectSettingsCard}>
-            <div className={styles.projectSettingsHeader}>
-              <div>
-                <strong>{t('sections.projectSettings')}</strong>
-                <p>{t('sections.projectSettingsCopy')}</p>
-              </div>
-              <span
-                className={`${styles.rootState} ${
-                  projectSettingsConfigured ? styles.rootStateReady : styles.rootStateIdle
-                }`}
-              >
-                {projectSettingsConfigured
-                  ? t('root.instructionsSet')
-                  : t('root.instructionsEmpty')}
-              </span>
-            </div>
-
-            <form
-              className={styles.projectSettingsForm}
-              onSubmit={(event) => {
-                event.preventDefault();
-                void handleSaveProjectSettings();
-              }}
-            >
-              <label className={styles.projectInstructionsField}>
-                <span>{t('fields.requiredInstructions')}</span>
-                <textarea
-                  value={projectInstructionsDraft}
-                  onChange={(event) => setProjectInstructionsDraft(event.target.value)}
-                  placeholder={t('placeholders.requiredInstructions')}
-                  rows={7}
-                  maxLength={12000}
-                  disabled={projectSettingsLoading || projectSettingsSaving}
-                />
-              </label>
-              <div className={styles.runModeGroup}>
-                <span>{t('fields.runMode')}</span>
-                <div className={styles.segmentedControl}>
-                  {RUN_MODES.map((mode) => (
-                    <button
-                      key={mode.value}
-                      type="button"
-                      className={projectRunModeDraft === mode.value ? styles.segmentActive : ''}
-                      onClick={() => setProjectRunModeDraft(mode.value)}
-                      disabled={projectSettingsLoading || projectSettingsSaving}
-                      title={mode.description}
-                    >
-                      {mode.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className={styles.rulePackGrid}>
-                <span>{t('fields.rulePacks')}</span>
-                {activeRulePackPresets.map((preset) => {
-                  const checked = projectRulePackDrafts.some(
-                    (item) => item.id === preset.id && item.enabled,
-                  );
-                  return (
-                    <label key={preset.id} className={styles.rulePackItem}>
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        disabled={projectSettingsLoading || projectSettingsSaving}
-                        onChange={(event) =>
-                          setProjectRulePackDrafts((prev) =>
-                            prev.map((item) =>
-                              item.id === preset.id
-                                ? { ...item, enabled: event.target.checked }
-                                : item,
-                            ),
-                          )
-                        }
-                      />
-                      <span>
-                        <strong>{preset.label}</strong>
-                        <small>{preset.description}</small>
-                      </span>
-                    </label>
-                  );
-                })}
-              </div>
-              <label className={styles.projectInstructionsField}>
-                <span>{t('fields.orchestrationContract')}</span>
-                <textarea
-                  value={projectOrchestrationDraft}
-                  onChange={(event) => setProjectOrchestrationDraft(event.target.value)}
-                  rows={12}
-                  disabled={projectSettingsLoading || projectSettingsSaving}
-                  aria-invalid={!orchestrationDraftState.valid}
-                />
-              </label>
-              <div className={styles.contractTools}>
-                <div
-                  className={
-                    orchestrationDraftState.valid
-                      ? styles.contractStatusReady
-                      : styles.contractStatusError
-                  }
-                >
-                  <strong>
-                    {orchestrationDraftState.valid
-                      ? t('root.contractValid')
-                      : t('root.contractInvalid')}
-                  </strong>
-                  <span>
-                    {orchestrationDraftState.valid
-                      ? orchestrationDraftState.summary.join(' · ')
-                      : orchestrationDraftState.error}
-                  </span>
-                </div>
-                <div className={styles.contractSchema}>
-                  {['executionPolicy', 'environment', 'subagents', 'workflow', 'plugins'].map(
-                    (key) => (
-                      <code key={key}>{key}</code>
-                    ),
-                  )}
-                </div>
-                {orchestrationDraftState.issues.length > 0 ? (
-                  <div className={styles.contractIssues}>
-                    {orchestrationDraftState.issues.slice(0, 5).map((issue) => (
-                      <span key={`${issue.path}-${issue.message}`}>
-                        <strong>{issue.path}</strong>
-                        <small>{issue.message}</small>
-                      </span>
-                    ))}
-                  </div>
-                ) : null}
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() => setProjectOrchestrationDraft(buildDefaultOrchestrationDraft())}
-                  disabled={projectSettingsLoading || projectSettingsSaving}
-                >
-                  {t('actions.resetContract')}
-                </button>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() =>
-                    setProjectOrchestrationDraft(
-                      buildOrchestrationDraft(projectSettings?.settings ?? null),
-                    )
-                  }
-                  disabled={projectSettingsLoading || projectSettingsSaving || !projectSettings}
-                >
-                  {t('actions.revertContract')}
-                </button>
-              </div>
-              <div className={styles.projectSettingsActions}>
-                <button
-                  type="submit"
-                  className={styles.secondaryButton}
-                  disabled={
-                    projectSettingsLoading ||
-                    projectSettingsSaving ||
-                    !orchestrationDraftState.valid
-                  }
-                >
-                  {projectSettingsSaving ? t('actions.saving') : t('actions.saveProjectSettings')}
-                </button>
-                <button
-                  type="button"
-                  className={styles.secondaryButton}
-                  onClick={() => void loadProjectSettings(activeProjectName)}
-                  disabled={projectSettingsLoading || projectSettingsSaving}
-                >
-                  {t('actions.refresh')}
-                </button>
-              </div>
-            </form>
-
-            <p className={styles.rootHint}>
-              {t('root.requiredInstructionsHint')}{' '}
-              {t('root.rulePackHint', {
-                count: enabledRulePackCount,
-                mode: projectRunModeDraft,
-              })}
-            </p>
-            {projectSettings?.settingsPath ? (
-              <span className={styles.projectSettingsPath}>{projectSettings.settingsPath}</span>
-            ) : null}
-          </div>
-        ) : null}
-
-        {activeProjectName ? (
-          <div className={styles.projectSettingsCard}>
-            <div className={styles.projectSettingsHeader}>
-              <div>
-                <strong>{t('sections.projectIntelligence')}</strong>
-                <p>{t('sections.projectIntelligenceCopy')}</p>
-              </div>
-              <span
-                className={`${styles.rootState} ${
-                  projectProfile?.exists ? styles.rootStateReady : styles.rootStateIdle
-                }`}
-              >
-                {projectProfile?.exists ? t('root.profileReady') : t('root.profileMissing')}
-              </span>
-            </div>
-
-            <div className={styles.projectIntelligenceGrid}>
-              <span>
-                {t('fields.workerProfiles')}
-                <strong>
-                  {projectProfile?.profile?.workers?.recommendedProfiles?.slice(0, 3).join(', ') ||
-                    t('root.profileNone')}
-                </strong>
-              </span>
-              <span>
-                {t('fields.validationHints')}
-                <strong>
-                  {projectProfile?.profile?.validation?.candidateCommands?.length ?? 0}
-                </strong>
-              </span>
-              <span>
-                {t('fields.reviewMemory')}
-                <strong>
-                  {(projectProfile?.profile?.learning?.recentReviewFailures?.length ?? 0) +
-                    (projectProfile?.profile?.learning?.recentValidationFailures?.length ?? 0) +
-                    (projectProfile?.profile?.learning?.workerGuidanceRules?.length ?? 0) +
-                    (projectProfile?.profile?.learning?.successfulPatterns?.length ?? 0) || 0}
-                </strong>
-              </span>
-              <span>
-                {t('fields.executionPolicy')}
-                <strong>
-                  {projectSettings?.settings.executionPolicy?.mode ?? 'balanced'} /{' '}
-                  {projectSettings?.settings.executionPolicy?.maxChangedFiles ?? 12} files
-                </strong>
-              </span>
-              <span>
-                {t('fields.runner')}
-                <strong>{projectSettings?.settings.environment?.runner ?? 'local'}</strong>
-              </span>
-              <span>
-                {t('fields.workflow')}
-                <strong>
-                  {projectSettings?.settings.workflow?.criticalPath?.length ??
-                    projectProfile?.profile?.orchestration?.workflowDag?.criticalPath?.length ??
-                    0}{' '}
-                  stages
-                </strong>
-              </span>
-              <span>
-                {t('fields.subagents')}
-                <strong>
-                  {projectSettings?.settings.subagents?.length ??
-                    projectProfile?.profile?.orchestration?.subagents?.length ??
-                    0}
-                </strong>
-              </span>
-              <span>
-                {t('fields.connectors')}
-                <strong>
-                  {
-                    (projectSettings?.settings.plugins ?? []).filter(
-                      (connector) => connector.enabled,
-                    ).length
-                  }{' '}
-                  / {projectSettings?.settings.plugins?.length ?? 0}
-                </strong>
-              </span>
-              <span>
-                {t('fields.quality')}
-                <strong>
-                  {projectQualitySummary.approvedAttempts}/{projectQualitySummary.attemptsTotal} ·{' '}
-                  {projectQualitySummary.passRate}%
-                </strong>
-              </span>
-              <span>
-                {t('fields.readiness')}
-                <strong>{projectQualitySummary.averageReadinessScore || 0} / 100</strong>
-              </span>
-              <span>
-                {t('fields.failureMemory')}
-                <strong>
-                  {projectQualitySummary.topFailureCategories.join(', ') || t('root.profileNone')}
-                </strong>
-              </span>
-            </div>
-
-            <div className={styles.qualityDrilldown}>
-              <span>
-                <strong>{t('fields.qualitySlo')}</strong>
-                <small>{projectQualitySummary.sloStatus}</small>
-              </span>
-              <span>
-                <strong>{t('fields.policyExceptions')}</strong>
-                <small>
-                  {projectQualitySummary.policyExceptions} {t('fields.policyExceptionUnit')}
-                </small>
-              </span>
-              <span>
-                <strong>{t('fields.connectorEvents')}</strong>
-                <small>
-                  {projectQualitySummary.connectorEvents} {t('fields.connectorEventUnit')}
-                </small>
-              </span>
-              <span>
-                <strong>{t('fields.failureClusters')}</strong>
-                <small>
-                  {projectQualitySummary.failureClusters
-                    .slice(0, 2)
-                    .map((item) => `${item.category}/${item.hits}`)
-                    .join(', ') || t('root.profileNone')}
-                </small>
-              </span>
-              <span>
-                <strong>{t('fields.recentTrend')}</strong>
-                <small>{projectQualitySummary.recentPassRate}%</small>
-              </span>
-              <span>
-                <strong>{t('fields.flakyCommands')}</strong>
-                <small>
-                  {projectQualitySummary.flakyCommands.join(', ') || t('root.profileNone')}
-                </small>
-              </span>
-            </div>
-
-            <div className={styles.projectSettingsActions}>
-              <button
-                type="button"
-                className={styles.secondaryButton}
-                onClick={() => void handleRefreshProjectProfile()}
-                disabled={projectProfileLoading || projectProfileRefreshing}
-              >
-                {projectProfileRefreshing
-                  ? t('actions.saving')
-                  : projectProfile?.exists
-                    ? t('actions.refreshProfile')
-                    : t('actions.generateProfile')}
-              </button>
-              <button
-                type="button"
-                className={styles.secondaryButton}
-                onClick={() => void loadProjectProfile(activeProjectName)}
-                disabled={projectProfileLoading || projectProfileRefreshing}
-              >
-                {t('actions.refresh')}
-              </button>
-            </div>
-
-            <p className={styles.rootHint}>
-              {projectProfile?.profile?.updatedAt
-                ? t('root.profileUpdated', {
-                    time: new Date(projectProfile.profile.updatedAt).toLocaleString(),
-                  })
-                : t('root.profileHint')}
-            </p>
-            {projectProfile?.profilePath ? (
-              <span className={styles.projectSettingsPath}>{projectProfile.profilePath}</span>
-            ) : null}
-          </div>
-        ) : null}
-
         <div className={styles.modelSettingsCard}>
           <div className={styles.modelSettingsHeader}>
             <div>
@@ -3153,6 +2802,381 @@ const KiraPage: React.FC = () => {
           {actionBlockedHint ? <p className={styles.actionHint}>{actionBlockedHint}</p> : null}
         </div>
       </aside>
+
+      {projectSettingsOpen && activeProjectName ? (
+        <div className={styles.projectSettingsOverlay}>
+          <div className={styles.projectSettingsModal} role="dialog" aria-modal="true">
+            <div className={styles.projectSettingsModalHeader}>
+              <div>
+                <p className={styles.kicker}>{t('root.activeProject')}</p>
+                <h2>{activeProjectName}</h2>
+              </div>
+              <button className={styles.secondaryButton} onClick={handleCloseProjectSettings}>
+                {t('actions.close')}
+              </button>
+            </div>
+
+            <div className={styles.projectSettingsModalBody}>
+              <div className={styles.projectSettingsCard}>
+                <div className={styles.projectSettingsHeader}>
+                  <div>
+                    <strong>{t('sections.projectSettings')}</strong>
+                    <p>{t('sections.projectSettingsCopy')}</p>
+                  </div>
+                  <span
+                    className={`${styles.rootState} ${
+                      projectSettingsConfigured ? styles.rootStateReady : styles.rootStateIdle
+                    }`}
+                  >
+                    {projectSettingsConfigured
+                      ? t('root.instructionsSet')
+                      : t('root.instructionsEmpty')}
+                  </span>
+                </div>
+
+                <form
+                  className={styles.projectSettingsForm}
+                  onSubmit={(event) => {
+                    event.preventDefault();
+                    void handleSaveProjectSettings();
+                  }}
+                >
+                  <label className={styles.projectInstructionsField}>
+                    <span>{t('fields.requiredInstructions')}</span>
+                    <textarea
+                      value={projectInstructionsDraft}
+                      onChange={(event) => setProjectInstructionsDraft(event.target.value)}
+                      placeholder={t('placeholders.requiredInstructions')}
+                      rows={7}
+                      maxLength={12000}
+                      disabled={projectSettingsLoading || projectSettingsSaving}
+                    />
+                  </label>
+                  <div className={styles.runModeGroup}>
+                    <span>{t('fields.runMode')}</span>
+                    <div className={styles.segmentedControl}>
+                      {RUN_MODES.map((mode) => (
+                        <button
+                          key={mode.value}
+                          type="button"
+                          className={projectRunModeDraft === mode.value ? styles.segmentActive : ''}
+                          onClick={() => setProjectRunModeDraft(mode.value)}
+                          disabled={projectSettingsLoading || projectSettingsSaving}
+                          title={mode.description}
+                        >
+                          {mode.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <div className={styles.rulePackGrid}>
+                    <span>{t('fields.rulePacks')}</span>
+                    {activeRulePackPresets.map((preset) => {
+                      const checked = projectRulePackDrafts.some(
+                        (item) => item.id === preset.id && item.enabled,
+                      );
+                      return (
+                        <label key={preset.id} className={styles.rulePackItem}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={projectSettingsLoading || projectSettingsSaving}
+                            onChange={(event) =>
+                              setProjectRulePackDrafts((prev) =>
+                                prev.map((item) =>
+                                  item.id === preset.id
+                                    ? { ...item, enabled: event.target.checked }
+                                    : item,
+                                ),
+                              )
+                            }
+                          />
+                          <span>
+                            <strong>{preset.label}</strong>
+                            <small>{preset.description}</small>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <label className={styles.projectInstructionsField}>
+                    <span>{t('fields.orchestrationContract')}</span>
+                    <textarea
+                      value={projectOrchestrationDraft}
+                      onChange={(event) => setProjectOrchestrationDraft(event.target.value)}
+                      rows={12}
+                      disabled={projectSettingsLoading || projectSettingsSaving}
+                      aria-invalid={!orchestrationDraftState.valid}
+                    />
+                  </label>
+                  <div className={styles.contractTools}>
+                    <div
+                      className={
+                        orchestrationDraftState.valid
+                          ? styles.contractStatusReady
+                          : styles.contractStatusError
+                      }
+                    >
+                      <strong>
+                        {orchestrationDraftState.valid
+                          ? t('root.contractValid')
+                          : t('root.contractInvalid')}
+                      </strong>
+                      <span>
+                        {orchestrationDraftState.valid
+                          ? orchestrationDraftState.summary.join(' · ')
+                          : orchestrationDraftState.error}
+                      </span>
+                    </div>
+                    <div className={styles.contractSchema}>
+                      {['executionPolicy', 'environment', 'subagents', 'workflow', 'plugins'].map(
+                        (key) => (
+                          <code key={key}>{key}</code>
+                        ),
+                      )}
+                    </div>
+                    {orchestrationDraftState.issues.length > 0 ? (
+                      <div className={styles.contractIssues}>
+                        {orchestrationDraftState.issues.slice(0, 5).map((issue) => (
+                          <span key={`${issue.path}-${issue.message}`}>
+                            <strong>{issue.path}</strong>
+                            <small>{issue.message}</small>
+                          </span>
+                        ))}
+                      </div>
+                    ) : null}
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => setProjectOrchestrationDraft(buildDefaultOrchestrationDraft())}
+                      disabled={projectSettingsLoading || projectSettingsSaving}
+                    >
+                      {t('actions.resetContract')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() =>
+                        setProjectOrchestrationDraft(
+                          buildOrchestrationDraft(projectSettings?.settings ?? null),
+                        )
+                      }
+                      disabled={projectSettingsLoading || projectSettingsSaving || !projectSettings}
+                    >
+                      {t('actions.revertContract')}
+                    </button>
+                  </div>
+                  <div className={styles.projectSettingsActions}>
+                    <button
+                      type="submit"
+                      className={styles.secondaryButton}
+                      disabled={
+                        projectSettingsLoading ||
+                        projectSettingsSaving ||
+                        !orchestrationDraftState.valid
+                      }
+                    >
+                      {projectSettingsSaving
+                        ? t('actions.saving')
+                        : t('actions.saveProjectSettings')}
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.secondaryButton}
+                      onClick={() => void loadProjectSettings(activeProjectName)}
+                      disabled={projectSettingsLoading || projectSettingsSaving}
+                    >
+                      {t('actions.refresh')}
+                    </button>
+                  </div>
+                </form>
+
+                <p className={styles.rootHint}>
+                  {t('root.requiredInstructionsHint')}{' '}
+                  {t('root.rulePackHint', {
+                    count: enabledRulePackCount,
+                    mode: projectRunModeDraft,
+                  })}
+                </p>
+                {projectSettings?.settingsPath ? (
+                  <span className={styles.projectSettingsPath}>{projectSettings.settingsPath}</span>
+                ) : null}
+              </div>
+
+              <div className={styles.projectSettingsCard}>
+                <div className={styles.projectSettingsHeader}>
+                  <div>
+                    <strong>{t('sections.projectIntelligence')}</strong>
+                    <p>{t('sections.projectIntelligenceCopy')}</p>
+                  </div>
+                  <span
+                    className={`${styles.rootState} ${
+                      projectProfile?.exists ? styles.rootStateReady : styles.rootStateIdle
+                    }`}
+                  >
+                    {projectProfile?.exists ? t('root.profileReady') : t('root.profileMissing')}
+                  </span>
+                </div>
+
+                <div className={styles.projectIntelligenceGrid}>
+                  <span>
+                    {t('fields.workerProfiles')}
+                    <strong>
+                      {projectProfile?.profile?.workers?.recommendedProfiles
+                        ?.slice(0, 3)
+                        .join(', ') || t('root.profileNone')}
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.validationHints')}
+                    <strong>
+                      {projectProfile?.profile?.validation?.candidateCommands?.length ?? 0}
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.reviewMemory')}
+                    <strong>
+                      {(projectProfile?.profile?.learning?.recentReviewFailures?.length ?? 0) +
+                        (projectProfile?.profile?.learning?.recentValidationFailures?.length ?? 0) +
+                        (projectProfile?.profile?.learning?.workerGuidanceRules?.length ?? 0) +
+                        (projectProfile?.profile?.learning?.successfulPatterns?.length ?? 0) || 0}
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.executionPolicy')}
+                    <strong>
+                      {projectSettings?.settings.executionPolicy?.mode ?? 'balanced'} /{' '}
+                      {projectSettings?.settings.executionPolicy?.maxChangedFiles ?? 12} files
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.runner')}
+                    <strong>{projectSettings?.settings.environment?.runner ?? 'local'}</strong>
+                  </span>
+                  <span>
+                    {t('fields.workflow')}
+                    <strong>
+                      {projectSettings?.settings.workflow?.criticalPath?.length ??
+                        projectProfile?.profile?.orchestration?.workflowDag?.criticalPath?.length ??
+                        0}{' '}
+                      stages
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.subagents')}
+                    <strong>
+                      {projectSettings?.settings.subagents?.length ??
+                        projectProfile?.profile?.orchestration?.subagents?.length ??
+                        0}
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.connectors')}
+                    <strong>
+                      {
+                        (projectSettings?.settings.plugins ?? []).filter(
+                          (connector) => connector.enabled,
+                        ).length
+                      }{' '}
+                      / {projectSettings?.settings.plugins?.length ?? 0}
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.quality')}
+                    <strong>
+                      {projectQualitySummary.approvedAttempts}/{projectQualitySummary.attemptsTotal}{' '}
+                      · {projectQualitySummary.passRate}%
+                    </strong>
+                  </span>
+                  <span>
+                    {t('fields.readiness')}
+                    <strong>{projectQualitySummary.averageReadinessScore || 0} / 100</strong>
+                  </span>
+                  <span>
+                    {t('fields.failureMemory')}
+                    <strong>
+                      {projectQualitySummary.topFailureCategories.join(', ') ||
+                        t('root.profileNone')}
+                    </strong>
+                  </span>
+                </div>
+
+                <div className={styles.qualityDrilldown}>
+                  <span>
+                    <strong>{t('fields.qualitySlo')}</strong>
+                    <small>{projectQualitySummary.sloStatus}</small>
+                  </span>
+                  <span>
+                    <strong>{t('fields.policyExceptions')}</strong>
+                    <small>
+                      {projectQualitySummary.policyExceptions} {t('fields.policyExceptionUnit')}
+                    </small>
+                  </span>
+                  <span>
+                    <strong>{t('fields.connectorEvents')}</strong>
+                    <small>
+                      {projectQualitySummary.connectorEvents} {t('fields.connectorEventUnit')}
+                    </small>
+                  </span>
+                  <span>
+                    <strong>{t('fields.failureClusters')}</strong>
+                    <small>
+                      {projectQualitySummary.failureClusters
+                        .slice(0, 2)
+                        .map((item) => `${item.category}/${item.hits}`)
+                        .join(', ') || t('root.profileNone')}
+                    </small>
+                  </span>
+                  <span>
+                    <strong>{t('fields.recentTrend')}</strong>
+                    <small>{projectQualitySummary.recentPassRate}%</small>
+                  </span>
+                  <span>
+                    <strong>{t('fields.flakyCommands')}</strong>
+                    <small>
+                      {projectQualitySummary.flakyCommands.join(', ') || t('root.profileNone')}
+                    </small>
+                  </span>
+                </div>
+
+                <div className={styles.projectSettingsActions}>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void handleRefreshProjectProfile()}
+                    disabled={projectProfileLoading || projectProfileRefreshing}
+                  >
+                    {projectProfileRefreshing
+                      ? t('actions.saving')
+                      : projectProfile?.exists
+                        ? t('actions.refreshProfile')
+                        : t('actions.generateProfile')}
+                  </button>
+                  <button
+                    type="button"
+                    className={styles.secondaryButton}
+                    onClick={() => void loadProjectProfile(activeProjectName)}
+                    disabled={projectProfileLoading || projectProfileRefreshing}
+                  >
+                    {t('actions.refresh')}
+                  </button>
+                </div>
+
+                <p className={styles.rootHint}>
+                  {projectProfile?.profile?.updatedAt
+                    ? t('root.profileUpdated', {
+                        time: new Date(projectProfile.profile.updatedAt).toLocaleString(),
+                      })
+                    : t('root.profileHint')}
+                </p>
+                {projectProfile?.profilePath ? (
+                  <span className={styles.projectSettingsPath}>{projectProfile.profilePath}</span>
+                ) : null}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       <section className={styles.boardSection}>
         <div className={styles.boardHeader}>
@@ -3621,8 +3645,8 @@ const KiraPage: React.FC = () => {
                                 ) : null}
                                 {attempt.orchestrationPlan?.adaptiveAgentPlan ? (
                                   <small>
-                                    Agent graph: {attempt.orchestrationPlan.adaptiveAgentPlan.mode} |{' '}
-                                    Alternative:{' '}
+                                    Agent graph: {attempt.orchestrationPlan.adaptiveAgentPlan.mode}{' '}
+                                    | Alternative:{' '}
                                     {attempt.orchestrationPlan.adaptiveAgentPlan.alternativeWorker
                                       .enabled
                                       ? 'enabled'

@@ -6,6 +6,20 @@ import { tmpdir } from 'os';
 import { promisify } from 'util';
 import { basename, dirname, join, resolve } from 'path';
 import type { Plugin } from 'vite';
+import {
+  applyOpenAiResponsesOutputSchema,
+  applyOpenAiResponsesRuntimeOptions,
+  getEffectiveModelRuntimeOptions,
+  getExplicitModelRuntimeOptions,
+  normalizeProviderModelId,
+  normalizeReasoningEffort,
+  normalizeReasoningSummary,
+  normalizeServiceTier,
+  normalizeVerbosity,
+  type LLMReasoningEffort,
+  type LLMReasoningSummary,
+  type LLMVerbosity,
+} from './llmModels';
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -36,6 +50,12 @@ interface LLMConfig {
   command?: string;
   apiStyle?: LLMApiStyle;
   name?: string;
+  reasoningEffort?: LLMReasoningEffort;
+  reasoningSummary?: LLMReasoningSummary;
+  verbosity?: LLMVerbosity;
+  serviceTier?: string;
+  parallelToolCalls?: boolean;
+  promptCacheKey?: string;
 }
 
 interface KiraSettings {
@@ -1097,6 +1117,267 @@ interface ToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+type JsonSchemaDefinition = Record<string, unknown>;
+
+export type KiraStructuredOutputKind =
+  | 'work-clarification'
+  | 'project-discovery'
+  | 'worker-plan'
+  | 'worker-summary'
+  | 'review'
+  | 'attempt-selection';
+
+interface KiraLlmCallOptions {
+  outputSchema?: JsonSchemaDefinition;
+  outputSchemaStrict?: boolean;
+  outputSchemaName?: string;
+}
+
+interface RunToolAgentOptions extends KiraLlmCallOptions {
+  promptCacheKey?: string;
+}
+
+function jsonStringSchema(): JsonSchemaDefinition {
+  return { type: 'string' };
+}
+
+function jsonNumberSchema(): JsonSchemaDefinition {
+  return { type: 'number' };
+}
+
+function jsonBooleanSchema(): JsonSchemaDefinition {
+  return { type: 'boolean' };
+}
+
+function jsonNullableNumberSchema(): JsonSchemaDefinition {
+  return { type: ['number', 'null'] };
+}
+
+function jsonEnumSchema(values: string[]): JsonSchemaDefinition {
+  return { type: 'string', enum: values };
+}
+
+function jsonStringArraySchema(): JsonSchemaDefinition {
+  return { type: 'array', items: jsonStringSchema() };
+}
+
+function jsonArraySchema(items: JsonSchemaDefinition): JsonSchemaDefinition {
+  return { type: 'array', items };
+}
+
+function jsonObjectSchema(
+  properties: Record<string, JsonSchemaDefinition>,
+  required: string[] = Object.keys(properties),
+): JsonSchemaDefinition {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties,
+    required,
+  };
+}
+
+const REQUIREMENT_TRACE_ITEM_OUTPUT_SCHEMA = jsonObjectSchema({
+  id: jsonStringSchema(),
+  source: jsonEnumSchema(['brief', 'project-instruction', 'change-design', 'review']),
+  text: jsonStringSchema(),
+  status: jsonEnumSchema(['planned', 'satisfied', 'partial', 'blocked', 'not_applicable']),
+  evidence: jsonStringArraySchema(),
+});
+
+const REVIEW_EVIDENCE_OUTPUT_SCHEMA = jsonObjectSchema({
+  file: jsonStringSchema(),
+  reason: jsonStringSchema(),
+  method: jsonEnumSchema(['read_file', 'diff', 'test', 'runtime', 'other']),
+});
+
+const REVIEW_ADVERSARIAL_CHECK_OUTPUT_SCHEMA = jsonObjectSchema({
+  mode: jsonEnumSchema([
+    'correctness',
+    'regression',
+    'security',
+    'runtime-ux',
+    'data-safety',
+    'integration',
+    'maintainability',
+  ]),
+  result: jsonEnumSchema(['passed', 'failed', 'not_applicable']),
+  evidence: jsonStringArraySchema(),
+  concern: jsonStringSchema(),
+});
+
+const REVIEWER_DISCOURSE_OUTPUT_SCHEMA = jsonObjectSchema({
+  role: jsonEnumSchema([
+    'correctness',
+    'regression',
+    'security',
+    'runtime-ux',
+    'data-safety',
+    'integration',
+    'maintainability',
+    'design-gate',
+    'validation',
+  ]),
+  position: jsonEnumSchema(['support', 'challenge', 'resolved']),
+  argument: jsonStringSchema(),
+  evidence: jsonStringArraySchema(),
+  response: jsonStringSchema(),
+});
+
+const DIFF_HUNK_REVIEW_OUTPUT_SCHEMA = jsonObjectSchema({
+  file: jsonStringSchema(),
+  intent: jsonStringSchema(),
+  risk: jsonStringSchema(),
+});
+
+const WORKER_SELF_CHECK_OUTPUT_SCHEMA = jsonObjectSchema({
+  reviewedDiff: jsonBooleanSchema(),
+  followedProjectInstructions: jsonBooleanSchema(),
+  matchedPlan: jsonBooleanSchema(),
+  ranOrExplainedValidation: jsonBooleanSchema(),
+  diffHunkReview: jsonArraySchema(DIFF_HUNK_REVIEW_OUTPUT_SCHEMA),
+  requirementTrace: jsonArraySchema(REQUIREMENT_TRACE_ITEM_OUTPUT_SCHEMA),
+  uncertainty: jsonStringArraySchema(),
+  notes: jsonStringArraySchema(),
+});
+
+const CHANGE_DESIGN_OUTPUT_SCHEMA = jsonObjectSchema({
+  targetFiles: jsonStringArraySchema(),
+  invariants: jsonStringArraySchema(),
+  expectedImpact: jsonStringArraySchema(),
+  validationStrategy: jsonStringArraySchema(),
+  rollbackStrategy: jsonStringArraySchema(),
+});
+
+const DECOMPOSITION_OUTPUT_SCHEMA = jsonObjectSchema({
+  shouldSplit: jsonBooleanSchema(),
+  confidence: jsonNumberSchema(),
+  reason: jsonStringSchema(),
+  suggestedWorks: jsonStringArraySchema(),
+  signals: jsonStringArraySchema(),
+});
+
+const PATCH_ALTERNATIVE_OUTPUT_SCHEMA = jsonObjectSchema({
+  name: jsonStringSchema(),
+  selected: jsonBooleanSchema(),
+  rationale: jsonStringSchema(),
+  tradeoffs: jsonStringArraySchema(),
+});
+
+const UNCERTAINTY_ESCALATION_OUTPUT_SCHEMA = jsonObjectSchema({
+  shouldAsk: jsonBooleanSchema(),
+  questions: jsonStringArraySchema(),
+  blockers: jsonStringArraySchema(),
+});
+
+const REVIEW_FINDING_OUTPUT_SCHEMA = jsonObjectSchema({
+  file: jsonStringSchema(),
+  line: jsonNullableNumberSchema(),
+  severity: jsonEnumSchema(['low', 'medium', 'high']),
+  message: jsonStringSchema(),
+});
+
+const WORK_CLARIFICATION_QUESTION_OUTPUT_SCHEMA = jsonObjectSchema({
+  id: jsonStringSchema(),
+  question: jsonStringSchema(),
+  options: jsonStringArraySchema(),
+  allowCustomAnswer: jsonBooleanSchema(),
+});
+
+const PROJECT_DISCOVERY_FINDING_OUTPUT_SCHEMA = jsonObjectSchema({
+  id: jsonStringSchema(),
+  kind: jsonEnumSchema(['feature', 'bug']),
+  title: jsonStringSchema(),
+  summary: jsonStringSchema(),
+  evidence: jsonStringArraySchema(),
+  files: jsonStringArraySchema(),
+  taskDescription: jsonStringSchema(),
+});
+
+const KIRA_STRUCTURED_OUTPUT_SCHEMAS: Record<KiraStructuredOutputKind, JsonSchemaDefinition> = {
+  'work-clarification': jsonObjectSchema({
+    needsClarification: jsonBooleanSchema(),
+    confidence: jsonNumberSchema(),
+    summary: jsonStringSchema(),
+    questions: jsonArraySchema(WORK_CLARIFICATION_QUESTION_OUTPUT_SCHEMA),
+  }),
+  'project-discovery': jsonObjectSchema({
+    summary: jsonStringSchema(),
+    findings: jsonArraySchema(PROJECT_DISCOVERY_FINDING_OUTPUT_SCHEMA),
+  }),
+  'worker-plan': jsonObjectSchema({
+    understanding: jsonStringSchema(),
+    repoFindings: jsonStringArraySchema(),
+    summary: jsonStringSchema(),
+    taskType: jsonEnumSchema([
+      'frontend-ui',
+      'backend-api',
+      'test-validation',
+      'tooling-config',
+      'docs-maintainer',
+      'data-migration',
+      'security-auth',
+      'generalist',
+    ]),
+    intendedFiles: jsonStringArraySchema(),
+    protectedFiles: jsonStringArraySchema(),
+    changeDesign: CHANGE_DESIGN_OUTPUT_SCHEMA,
+    requirementTrace: jsonArraySchema(REQUIREMENT_TRACE_ITEM_OUTPUT_SCHEMA),
+    approachAlternatives: jsonArraySchema(PATCH_ALTERNATIVE_OUTPUT_SCHEMA),
+    validationCommands: jsonStringArraySchema(),
+    riskNotes: jsonStringArraySchema(),
+    stopConditions: jsonStringArraySchema(),
+    confidence: jsonNumberSchema(),
+    uncertainties: jsonStringArraySchema(),
+    escalation: UNCERTAINTY_ESCALATION_OUTPUT_SCHEMA,
+    decomposition: DECOMPOSITION_OUTPUT_SCHEMA,
+    workerProfile: jsonStringSchema(),
+  }),
+  'worker-summary': jsonObjectSchema({
+    summary: jsonStringSchema(),
+    filesChanged: jsonStringArraySchema(),
+    testsRun: jsonStringArraySchema(),
+    remainingRisks: jsonStringArraySchema(),
+    selfCheck: WORKER_SELF_CHECK_OUTPUT_SCHEMA,
+  }),
+  review: jsonObjectSchema({
+    approved: jsonBooleanSchema(),
+    summary: jsonStringSchema(),
+    findings: jsonArraySchema(REVIEW_FINDING_OUTPUT_SCHEMA),
+    missingValidation: jsonStringArraySchema(),
+    nextWorkerInstructions: jsonStringArraySchema(),
+    residualRisk: jsonStringArraySchema(),
+    issues: jsonStringArraySchema(),
+    filesChecked: jsonStringArraySchema(),
+    evidenceChecked: jsonArraySchema(REVIEW_EVIDENCE_OUTPUT_SCHEMA),
+    adversarialChecks: jsonArraySchema(REVIEW_ADVERSARIAL_CHECK_OUTPUT_SCHEMA),
+    reviewerDiscourse: jsonArraySchema(REVIEWER_DISCOURSE_OUTPUT_SCHEMA),
+    requirementVerdicts: jsonArraySchema(REQUIREMENT_TRACE_ITEM_OUTPUT_SCHEMA),
+  }),
+  'attempt-selection': jsonObjectSchema({
+    approved: jsonBooleanSchema(),
+    selectedAttemptNo: { type: ['number', 'null'] },
+    summary: jsonStringSchema(),
+    issues: jsonStringArraySchema(),
+    nextWorkerInstructions: jsonStringArraySchema(),
+    residualRisk: jsonStringArraySchema(),
+    filesChecked: jsonStringArraySchema(),
+    evidenceChecked: jsonArraySchema(REVIEW_EVIDENCE_OUTPUT_SCHEMA),
+    requirementVerdicts: jsonArraySchema(REQUIREMENT_TRACE_ITEM_OUTPUT_SCHEMA),
+    adversarialChecks: jsonArraySchema(REVIEW_ADVERSARIAL_CHECK_OUTPUT_SCHEMA),
+  }),
+};
+
+export function getKiraStructuredOutputSchema(
+  kind: KiraStructuredOutputKind,
+): JsonSchemaDefinition {
+  return KIRA_STRUCTURED_OUTPUT_SCHEMAS[kind];
+}
+
+function getKiraStructuredOutputSchemaName(kind: KiraStructuredOutputKind): string {
+  return `kira_${kind.replace(/-/g, '_')}`;
+}
+
 interface AttemptFileSnapshot {
   existed: boolean;
   content: string | null;
@@ -1128,8 +1409,7 @@ type AgentMessage =
   | { role: 'tool'; content: string; toolCallId: string };
 type ToolAgentFinalValidator = (content: string) => string[];
 
-interface KiraModelRouteLock
-{
+interface KiraModelRouteLock {
   active: number;
   queue: Array<() => void>;
 }
@@ -3352,103 +3632,76 @@ function isOpenCodeProvider(provider: LLMProvider | undefined): boolean {
 }
 
 function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): string {
-  const model = config.model.trim();
-  if (config.provider === 'opencode' && model.startsWith('opencode/')) {
-    return model.slice('opencode/'.length);
-  }
-  if (config.provider === 'opencode-go' && model.startsWith('opencode-go/')) {
-    return model.slice('opencode-go/'.length);
-  }
-  return model;
+  return normalizeProviderModelId(config.provider, config.model);
 }
 
-function normalizeKiraModelRouteBaseUrl(baseUrl: string): string
-{
+function normalizeKiraModelRouteBaseUrl(baseUrl: string): string {
   const trimmed = baseUrl.trim().replace(/\/+$/, '');
-  if (!trimmed)
-  {
+  if (!trimmed) {
     return '';
   }
 
-  try
-  {
+  try {
     const parsed = new URL(trimmed);
     parsed.hash = '';
     parsed.search = '';
     return parsed.toString().replace(/\/+$/, '').toLowerCase();
-  }
-  catch
-  {
+  } catch {
     return trimmed.toLowerCase();
   }
 }
 
-function isPrivateIpv4Host(hostname: string): boolean
-{
+function isPrivateIpv4Host(hostname: string): boolean {
   const parts = hostname.split('.').map((part) => Number.parseInt(part, 10));
   if (
     parts.length !== 4 ||
     parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
-  )
-  {
+  ) {
     return false;
   }
 
   const [first, second] = parts;
-  if (first === 10)
-  {
+  if (first === 10) {
     return true;
   }
-  if (first === 127)
-  {
+  if (first === 127) {
     return true;
   }
-  if (first === 169 && second === 254)
-  {
+  if (first === 169 && second === 254) {
     return true;
   }
-  if (first === 172 && second >= 16 && second <= 31)
-  {
+  if (first === 172 && second >= 16 && second <= 31) {
     return true;
   }
-  if (first === 192 && second === 168)
-  {
+  if (first === 192 && second === 168) {
     return true;
   }
   return first === 0 && second === 0 && parts[2] === 0 && parts[3] === 0;
 }
 
-export function isKiraLocalModelRoute(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): boolean
-{
-  if (config.provider === 'llama.cpp')
-  {
+export function isKiraLocalModelRoute(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): boolean {
+  if (config.provider === 'llama.cpp') {
     return true;
   }
 
   const baseUrl = config.baseUrl.trim();
-  if (!baseUrl)
-  {
+  if (!baseUrl) {
     return false;
   }
 
-  try
-  {
+  try {
     const parsed = new URL(baseUrl);
     const hostname = parsed.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-    if (hostname === 'localhost' || hostname === '::1')
-    {
+    if (hostname === 'localhost' || hostname === '::1') {
       return true;
     }
     return isPrivateIpv4Host(hostname);
-  }
-  catch
-  {
+  } catch {
     return /^(?:https?:\/\/)?(?:localhost|127\.|0\.0\.0\.0|\[?::1\]?)/i.test(baseUrl);
   }
 }
 
-export function getKiraModelRouteLimit(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): number
-{
+export function getKiraModelRouteLimit(config: Pick<LLMConfig, 'provider' | 'baseUrl'>): number {
   return isKiraLocalModelRoute(config)
     ? KIRA_LOCAL_MODEL_ROUTE_LIMIT
     : KIRA_REMOTE_MODEL_ROUTE_LIMIT;
@@ -3456,8 +3709,7 @@ export function getKiraModelRouteLimit(config: Pick<LLMConfig, 'provider' | 'bas
 
 export function getKiraModelRouteKey(
   config: Pick<LLMConfig, 'provider' | 'baseUrl' | 'model'>,
-): string
-{
+): string {
   return [
     config.provider,
     normalizeKiraModelRouteBaseUrl(config.baseUrl),
@@ -3465,18 +3717,15 @@ export function getKiraModelRouteKey(
   ].join('|');
 }
 
-function makeKiraRouteAbortError(): Error
-{
+function makeKiraRouteAbortError(): Error {
   const error = new Error('Agent run aborted.');
   error.name = 'AbortError';
   return error;
 }
 
-function getKiraModelRouteLock(routeKey: string): KiraModelRouteLock
-{
+function getKiraModelRouteLock(routeKey: string): KiraModelRouteLock {
   let lock = kiraModelRouteLocks.get(routeKey);
-  if (!lock)
-  {
+  if (!lock) {
     lock = {
       active: 0,
       queue: [],
@@ -3486,24 +3735,20 @@ function getKiraModelRouteLock(routeKey: string): KiraModelRouteLock
   return lock;
 }
 
-function releaseKiraModelRouteSlot(routeKey: string): void
-{
+function releaseKiraModelRouteSlot(routeKey: string): void {
   const lock = kiraModelRouteLocks.get(routeKey);
-  if (!lock)
-  {
+  if (!lock) {
     return;
   }
 
   lock.active = Math.max(0, lock.active - 1);
   const next = lock.queue.shift();
-  if (next)
-  {
+  if (next) {
     next();
     return;
   }
 
-  if (lock.active === 0)
-  {
+  if (lock.active === 0) {
     kiraModelRouteLocks.delete(routeKey);
   }
 }
@@ -3512,52 +3757,41 @@ function acquireKiraModelRouteSlot(
   routeKey: string,
   limit: number,
   signal?: AbortSignal,
-): Promise<() => void>
-{
-  if (signal?.aborted)
-  {
+): Promise<() => void> {
+  if (signal?.aborted) {
     return Promise.reject(makeKiraRouteAbortError());
   }
 
   const lock = getKiraModelRouteLock(routeKey);
-  if (lock.active < limit)
-  {
+  if (lock.active < limit) {
     lock.active += 1;
-    return Promise.resolve((): void =>
-    {
+    return Promise.resolve((): void => {
       releaseKiraModelRouteSlot(routeKey);
     });
   }
 
-  return new Promise((resolve, reject) =>
-  {
+  return new Promise((resolve, reject) => {
     let settled = false;
 
-    const start = (): void =>
-    {
-      if (settled)
-      {
+    const start = (): void => {
+      if (settled) {
         return;
       }
       settled = true;
       signal?.removeEventListener('abort', abort);
       lock.active += 1;
-      resolve((): void =>
-      {
+      resolve((): void => {
         releaseKiraModelRouteSlot(routeKey);
       });
     };
 
-    const abort = (): void =>
-    {
-      if (settled)
-      {
+    const abort = (): void => {
+      if (settled) {
         return;
       }
       settled = true;
       const index = lock.queue.indexOf(start);
-      if (index >= 0)
-      {
+      if (index >= 0) {
         lock.queue.splice(index, 1);
       }
       reject(makeKiraRouteAbortError());
@@ -3572,17 +3806,13 @@ export async function runWithKiraModelRouteLimit<T>(
   config: LLMConfig,
   task: () => Promise<T>,
   signal?: AbortSignal,
-): Promise<T>
-{
+): Promise<T> {
   const routeKey = getKiraModelRouteKey(config);
   const routeLimit = getKiraModelRouteLimit(config);
   const release = await acquireKiraModelRouteSlot(routeKey, routeLimit, signal);
-  try
-  {
+  try {
     return await task();
-  }
-  finally
-  {
+  } finally {
     release();
   }
 }
@@ -3606,6 +3836,13 @@ function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
     return 'anthropic-messages';
   }
   return 'openai-chat';
+}
+
+function shouldUseOpenAiResponses(config: LLMConfig): boolean {
+  if (config.apiStyle === 'openai-responses') return true;
+  return (
+    config.provider === 'openai' && normalizeProviderModel(config).toLowerCase().startsWith('gpt-5')
+  );
 }
 
 function isKimiToolReasoningSensitiveModel(config: Pick<LLMConfig, 'provider' | 'model'>): boolean {
@@ -3666,6 +3903,25 @@ export function resolveRoleLlmConfig(
   const name =
     getOptionalString(override?.name) ??
     (canInheritBaseProviderSettings ? baseConfig?.name : undefined);
+  const reasoningEffort =
+    normalizeReasoningEffort(override?.reasoningEffort) ??
+    (canInheritBaseProviderSettings
+      ? normalizeReasoningEffort(baseConfig?.reasoningEffort)
+      : undefined);
+  const reasoningSummary =
+    normalizeReasoningSummary(override?.reasoningSummary) ??
+    (canInheritBaseProviderSettings
+      ? normalizeReasoningSummary(baseConfig?.reasoningSummary)
+      : undefined);
+  const verbosity =
+    normalizeVerbosity(override?.verbosity) ??
+    (canInheritBaseProviderSettings ? normalizeVerbosity(baseConfig?.verbosity) : undefined);
+  const serviceTier =
+    normalizeServiceTier(override?.serviceTier) ??
+    (canInheritBaseProviderSettings ? normalizeServiceTier(baseConfig?.serviceTier) : undefined);
+  const parallelToolCalls =
+    override?.parallelToolCalls ??
+    (canInheritBaseProviderSettings ? baseConfig?.parallelToolCalls : undefined);
 
   if (!provider) return null;
   if (isCodexCliProvider(provider as LLMProvider)) {
@@ -3676,6 +3932,11 @@ export function resolveRoleLlmConfig(
       model: model ?? '',
       ...(command ? { command } : {}),
       ...(name ? { name } : {}),
+      ...(reasoningEffort ? { reasoningEffort } : {}),
+      ...(reasoningSummary ? { reasoningSummary } : {}),
+      ...(verbosity ? { verbosity } : {}),
+      ...(serviceTier ? { serviceTier } : {}),
+      ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
     };
   }
   if (!baseUrl || !model) return null;
@@ -3689,6 +3950,11 @@ export function resolveRoleLlmConfig(
     ...(command ? { command } : {}),
     ...(apiStyle ? { apiStyle } : {}),
     ...(name ? { name } : {}),
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+    ...(reasoningSummary ? { reasoningSummary } : {}),
+    ...(verbosity ? { verbosity } : {}),
+    ...(serviceTier ? { serviceTier } : {}),
+    ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
   };
 }
 
@@ -3772,8 +4038,9 @@ function buildWorkerLanes(
 ): KiraWorkerLane[] {
   const runnableSubagents = selectRunnableSubagents(subagents);
   const primarySubagent =
-    runnableSubagents.find((agent) => /implement|primary|worker|builder|developer/i.test(agent.id)) ??
-    runnableSubagents[0];
+    runnableSubagents.find((agent) =>
+      /implement|primary|worker|builder|developer/i.test(agent.id),
+    ) ?? runnableSubagents[0];
   const alternativeSubagent =
     runnableSubagents.find((agent) => /alternative|challenger|test-validation/i.test(agent.id)) ??
     runnableSubagents.find((agent) => agent.id !== primarySubagent?.id) ??
@@ -4080,6 +4347,7 @@ async function callOpenAiResponses(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
+  callOptions?: KiraLlmCallOptions,
 ): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
   const targetUrl = joinUrl(
     config.baseUrl,
@@ -4122,6 +4390,13 @@ async function callOpenAiResponses(
   };
   if (systemPrompt) body.instructions = systemPrompt;
   if (tools.length > 0) body.tools = toResponsesTools(tools);
+  applyOpenAiResponsesRuntimeOptions(body, config, tools.length > 0);
+  applyOpenAiResponsesOutputSchema(
+    body,
+    callOptions?.outputSchema,
+    callOptions?.outputSchemaStrict ?? true,
+    callOptions?.outputSchemaName,
+  );
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -4286,27 +4561,26 @@ async function callLlm(
   history: AgentMessage[],
   tools: ToolDefinition[],
   signal?: AbortSignal,
+  callOptions?: KiraLlmCallOptions,
 ): Promise<{ content: string; toolCalls: ToolCall[]; reasoningContent?: string }> {
   return runWithKiraModelRouteLimit(
     config,
-    async () =>
-    {
-      if (isOpenCodeProvider(config.provider))
-      {
+    async () => {
+      if (isOpenCodeProvider(config.provider)) {
         const apiStyle = resolveOpenCodeApiStyle(config);
-        if (apiStyle === 'openai-responses')
-        {
-          return callOpenAiResponses(config, systemPrompt, history, tools, signal);
+        if (apiStyle === 'openai-responses') {
+          return callOpenAiResponses(config, systemPrompt, history, tools, signal, callOptions);
         }
-        if (apiStyle === 'anthropic-messages')
-        {
+        if (apiStyle === 'anthropic-messages') {
           return callAnthropicCompatible(config, systemPrompt, history, tools, signal);
         }
         return callOpenAiCompatible(config, systemPrompt, history, tools, signal);
       }
       return isAnthropicProvider(config.provider)
         ? callAnthropicCompatible(config, systemPrompt, history, tools, signal)
-        : callOpenAiCompatible(config, systemPrompt, history, tools, signal);
+        : shouldUseOpenAiResponses(config)
+          ? callOpenAiResponses(config, systemPrompt, history, tools, signal, callOptions)
+          : callOpenAiCompatible(config, systemPrompt, history, tools, signal);
     },
     signal,
   );
@@ -5231,6 +5505,69 @@ function buildExternalAgentPrompt(systemPrompt: string, prompt: string): string 
     .join('\n\n');
 }
 
+export function buildKiraPromptCacheKey(input: {
+  projectRoot: string;
+  workId?: string;
+  projectName?: string;
+  purpose?: string;
+}): string {
+  const normalizedRoot = resolve(input.projectRoot).replace(/\\/g, '/').toLowerCase();
+  const hash = createHash('sha256')
+    .update(normalizedRoot)
+    .update('\0')
+    .update(input.workId?.trim() || '')
+    .update('\0')
+    .update(input.projectName?.trim().toLowerCase() || '')
+    .update('\0')
+    .update(input.purpose?.trim().toLowerCase() || 'work')
+    .digest('hex')
+    .slice(0, 32);
+  return `kira:${hash}`;
+}
+
+function buildCodexCliConfigOverrideArg(key: string, value: string): string {
+  return `${key}=${JSON.stringify(value)}`;
+}
+
+function getCodexCliRuntimeConfigArgs(config: LLMConfig): string[] {
+  const runtimeOptions = getExplicitModelRuntimeOptions(config);
+  const args: string[] = [];
+  if (runtimeOptions.reasoningEffort) {
+    args.push(
+      '-c',
+      buildCodexCliConfigOverrideArg('model_reasoning_effort', runtimeOptions.reasoningEffort),
+    );
+  }
+  if (runtimeOptions.reasoningSummary) {
+    args.push(
+      '-c',
+      buildCodexCliConfigOverrideArg('model_reasoning_summary', runtimeOptions.reasoningSummary),
+    );
+  }
+  if (runtimeOptions.verbosity) {
+    args.push('-c', buildCodexCliConfigOverrideArg('model_verbosity', runtimeOptions.verbosity));
+  }
+  if (runtimeOptions.serviceTier) {
+    args.push('-c', buildCodexCliConfigOverrideArg('service_tier', runtimeOptions.serviceTier));
+  }
+  return args;
+}
+
+function formatModelRuntimeTrace(config: LLMConfig): string {
+  const runtimeOptions = getEffectiveModelRuntimeOptions(config);
+  const details = [
+    `model=${runtimeOptions.normalizedModel || config.model}`,
+    runtimeOptions.reasoningEffort ? `reasoning=${runtimeOptions.reasoningEffort}` : '',
+    runtimeOptions.reasoningSummary ? `summary=${runtimeOptions.reasoningSummary}` : '',
+    runtimeOptions.verbosity ? `verbosity=${runtimeOptions.verbosity}` : '',
+    runtimeOptions.serviceTier ? `serviceTier=${runtimeOptions.serviceTier}` : '',
+    runtimeOptions.parallelToolCalls !== undefined
+      ? `parallelToolCalls=${runtimeOptions.parallelToolCalls}`
+      : '',
+  ].filter(Boolean);
+  return `model_runtime ${config.provider} ${details.join(' ')}`;
+}
+
 export function buildCodexCliArgs(
   config: LLMConfig,
   projectRoot: string,
@@ -5252,6 +5589,7 @@ export function buildCodexCliArgs(
   if (config.model.trim()) {
     args.push('--model', config.model.trim());
   }
+  args.push(...getCodexCliRuntimeConfigArgs(config));
   args.push('-');
   return args;
 }
@@ -5593,18 +5931,28 @@ async function runToolAgent(
   signal?: AbortSignal,
   attemptState?: WorkerAttemptState | null,
   finalValidator?: ToolAgentFinalValidator,
+  options?: RunToolAgentOptions,
 ): Promise<string> {
-  if (isCodexCliProvider(config.provider)) {
+  const requestConfig =
+    options?.promptCacheKey && !isCodexCliProvider(config.provider)
+      ? { ...config, promptCacheKey: options.promptCacheKey }
+      : config;
+  recordAttemptExploration(attemptState, formatModelRuntimeTrace(requestConfig));
+  if (isCodexCliProvider(requestConfig.provider)) {
     recordAttemptCommand(
       attemptState,
-      `codex exec --sandbox ${writable ? 'workspace-write' : 'read-only'}${
-        config.model ? ` --model ${config.model}` : ''
-      }`,
+      [
+        `codex exec --sandbox ${writable ? 'workspace-write' : 'read-only'}`,
+        requestConfig.model ? `--model ${requestConfig.model}` : '',
+        ...getCodexCliRuntimeConfigArgs(requestConfig).map((arg) => (arg === '-c' ? '-c' : arg)),
+      ]
+        .filter(Boolean)
+        .join(' '),
     );
-    recordAttemptExploration(attemptState, `external_agent ${config.provider}`);
+    recordAttemptExploration(attemptState, `external_agent ${requestConfig.provider}`);
     return runWithKiraModelRouteLimit(
-      config,
-      () => runCodexCliAgent(config, projectRoot, prompt, systemPrompt, writable, signal),
+      requestConfig,
+      () => runCodexCliAgent(requestConfig, projectRoot, prompt, systemPrompt, writable, signal),
       signal,
     );
   }
@@ -5614,8 +5962,7 @@ async function runToolAgent(
   let repairTurns = 0;
   let timeoutRetries = 0;
 
-  for (;;)
-  {
+  for (;;) {
     if (signal?.aborted) {
       const error = new Error('Agent run aborted.');
       error.name = 'AbortError';
@@ -5623,7 +5970,7 @@ async function runToolAgent(
     }
     let response: Awaited<ReturnType<typeof callLlm>>;
     try {
-      response = await callLlm(config, systemPrompt, history, tools, signal);
+      response = await callLlm(requestConfig, systemPrompt, history, tools, signal, options);
     } catch (error) {
       if (isLlmTimeoutError(error) && timeoutRetries < MAX_AGENT_TIMEOUT_RETRIES) {
         timeoutRetries += 1;
@@ -7266,7 +7613,11 @@ export function buildAdaptiveAgentPlan(params: {
       'Every work item needs a structured task spec before editing.',
       ['work brief', 'mandatory project instructions', 'context scout evidence'],
       ['taskSpec', 'riskLevel', 'successCriteria', 'verificationPlan', 'changeDesign'],
-      ['acceptance target is not narrowed', 'planned files are reviewable', 'stop conditions are explicit'],
+      [
+        'acceptance target is not narrowed',
+        'planned files are reviewable',
+        'stop conditions are explicit',
+      ],
       'read-only',
       contextScout,
     ),
@@ -7279,7 +7630,11 @@ export function buildAdaptiveAgentPlan(params: {
       'Relevant files, docs, tests, and existing changes must be collected before implementation.',
       ['work brief', 'project profile', 'workspace scan'],
       ['evidencePack', 'likelyFiles', 'relatedDocs', 'candidateChecks', 'existingChanges'],
-      ['evidence names concrete files', 'user changes are identified', 'validation candidates are listed'],
+      [
+        'evidence names concrete files',
+        'user changes are identified',
+        'validation candidates are listed',
+      ],
       'read-only',
       contextScout,
     ),
@@ -7292,7 +7647,11 @@ export function buildAdaptiveAgentPlan(params: {
       'A single writer remains the default implementation owner.',
       ['taskSpec', 'evidencePack', 'changeDesign', 'mandatory project instructions'],
       ['patch', 'workerSummary', 'diffHunkReview', 'requirementTrace'],
-      ['patch satisfies the full brief', 'diff matches the plan', 'self-check covers every requirement'],
+      [
+        'patch satisfies the full brief',
+        'diff matches the plan',
+        'self-check covers every requirement',
+      ],
       'primary-worktree',
       primaryWorker,
     ),
@@ -7305,10 +7664,14 @@ export function buildAdaptiveAgentPlan(params: {
       alternativeEnabled
         ? alternativeReasons.join(' ')
         : alternativeReasons.join(' ') ||
-          'Risk and ambiguity did not justify a second isolated patch.',
+            'Risk and ambiguity did not justify a second isolated patch.',
       ['taskSpec', 'evidencePack', 'selected primary approach constraints'],
       ['independentPatch', 'alternativeValidation', 'comparisonNotes'],
-      ['runs in a separate git worktree', 'does not overwrite primary worker output', 'makes a materially different approach explicit'],
+      [
+        'runs in a separate git worktree',
+        'does not overwrite primary worker output',
+        'makes a materially different approach explicit',
+      ],
       alternativeEnabled ? 'git-worktree' : 'not-applicable',
       alternativeWorker,
     ),
@@ -7321,7 +7684,11 @@ export function buildAdaptiveAgentPlan(params: {
       'Independent review gates completion on diff, evidence, validation, and project instructions.',
       ['diff excerpts', 'validation reruns', 'worker self-check', 'risk policy'],
       ['blockingFindings', 'nonBlockingFindings', 'evidenceChecked', 'requirementVerdicts'],
-      ['blocking findings are explicit', 'reviewer evidence minimum is met', 'validation evidence is not guessed'],
+      [
+        'blocking findings are explicit',
+        'reviewer evidence minimum is met',
+        'validation evidence is not guessed',
+      ],
       'read-only',
       reviewer,
     ),
@@ -7334,7 +7701,11 @@ export function buildAdaptiveAgentPlan(params: {
       'Only one approved patch is selected, applied, committed, or summarized.',
       ['approved attempt', 'review record', 'integration policy'],
       ['selectedPatch', 'mergeResult', 'summary', 'residualRisk'],
-      ['one winning patch is integrated', 'conflicts block instead of being guessed', 'final summary names validation and risk'],
+      [
+        'one winning patch is integrated',
+        'conflicts block instead of being guessed',
+        'final summary names validation and risk',
+      ],
       'primary-worktree',
       integrator,
     ),
@@ -7346,7 +7717,8 @@ export function buildAdaptiveAgentPlan(params: {
       enabled: alternativeEnabled,
       maxWorkers: alternativeEnabled ? 2 : 1,
       isolation: alternativeEnabled ? 'git-worktree' : 'not-applicable',
-      reasons: alternativeReasons.length > 0 ? alternativeReasons : ['Primary-only path is sufficient.'],
+      reasons:
+        alternativeReasons.length > 0 ? alternativeReasons : ['Primary-only path is sufficient.'],
     },
     stages,
     successCriteria: [
@@ -7376,7 +7748,8 @@ export function buildAdaptiveAgentPlan(params: {
     omittedRoles: [
       {
         role: 'debugger',
-        reason: 'Debugger loop is intentionally omitted; validation failures feed back to the worker/reviewer loop.',
+        reason:
+          'Debugger loop is intentionally omitted; validation failures feed back to the worker/reviewer loop.',
       },
     ],
   };
@@ -9283,6 +9656,15 @@ async function ensureWorkClarification(
     signal,
     undefined,
     validateWorkClarificationAnalysisFinal,
+    {
+      promptCacheKey: buildKiraPromptCacheKey({
+        projectRoot,
+        workId: work.id,
+        purpose: 'clarification',
+      }),
+      outputSchema: getKiraStructuredOutputSchema('work-clarification'),
+      outputSchemaName: getKiraStructuredOutputSchemaName('work-clarification'),
+    },
   );
   const analysis = parseWorkClarificationAnalysis(raw);
 
@@ -9443,8 +9825,14 @@ export function extractRetryFeedbackFromCommentBody(body: string): string[] {
   return extractBulletedCommentSection(body, 'Retry with feedback');
 }
 
-function selectRetryFeedback(summary: string, preferred: string[], fallback: string[] = []): string[] {
-  const feedback = uniqueStrings([...preferred, ...fallback]).filter(Boolean).slice(0, 12);
+function selectRetryFeedback(
+  summary: string,
+  preferred: string[],
+  fallback: string[] = [],
+): string[] {
+  const feedback = uniqueStrings([...preferred, ...fallback])
+    .filter(Boolean)
+    .slice(0, 12);
   return feedback.length > 0 ? feedback : [summary];
 }
 
@@ -14605,6 +14993,10 @@ async function runIsolatedWorkerAttempt(params: {
 
   try {
     const projectRoot = workspace.projectRoot;
+    const promptCacheKey = buildKiraPromptCacheKey({
+      projectRoot: params.primaryProjectRoot,
+      workId: params.work.id,
+    });
     const environmentExecution = await runEnvironmentSetup(
       projectRoot,
       params.projectSettings.environment,
@@ -14670,6 +15062,11 @@ async function runIsolatedWorkerAttempt(params: {
           parseWorkerExecutionPlan(content),
           uniqueStrings(planningState.explorationActions),
         ),
+      {
+        promptCacheKey,
+        outputSchema: getKiraStructuredOutputSchema('worker-plan'),
+        outputSchemaName: getKiraStructuredOutputSchemaName('worker-plan'),
+      },
     );
     throwIfCanceled(params.options.sessionsDir, params.sessionPath, params.work.id, params.signal);
     const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
@@ -14798,6 +15195,12 @@ async function runIsolatedWorkerAttempt(params: {
       true,
       params.signal,
       attemptState,
+      undefined,
+      {
+        promptCacheKey,
+        outputSchema: getKiraStructuredOutputSchema('worker-summary'),
+        outputSchemaName: getKiraStructuredOutputSchemaName('worker-summary'),
+      },
     );
     throwIfCanceled(params.options.sessionsDir, params.sessionPath, params.work.id, params.signal);
 
@@ -15219,6 +15622,18 @@ async function analyzeProjectForDiscovery(
     buildProjectDiscoveryPrompt(projectName, projectOverview, previousAnalysis),
     buildProjectDiscoverySystemPrompt(),
     false,
+    undefined,
+    undefined,
+    undefined,
+    {
+      promptCacheKey: buildKiraPromptCacheKey({
+        projectRoot,
+        projectName,
+        purpose: 'discovery',
+      }),
+      outputSchema: getKiraStructuredOutputSchema('project-discovery'),
+      outputSchemaName: getKiraStructuredOutputSchemaName('project-discovery'),
+    },
   );
 
   sendSseEvent(res, {
@@ -15581,6 +15996,17 @@ async function processWorkWithMultipleWorkers(params: {
       buildAttemptComparisonReviewSystemPrompt(),
       false,
       signal,
+      undefined,
+      undefined,
+      {
+        promptCacheKey: buildKiraPromptCacheKey({
+          projectRoot: primaryProjectRoot,
+          workId: work.id,
+          purpose: 'attempt-selection',
+        }),
+        outputSchema: getKiraStructuredOutputSchema('attempt-selection'),
+        outputSchemaName: getKiraStructuredOutputSchemaName('attempt-selection'),
+      },
     );
     const selectionFinishedAt = Date.now();
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
@@ -15900,8 +16326,7 @@ async function processWorkWithMultipleWorkers(params: {
     author: runtime.reviewerAuthor,
     body: buildKiraStatusComment({
       status: 'Blocked after final review retries',
-      summary:
-        feedback[0] ?? 'No worker attempt satisfied the final review requirements.',
+      summary: feedback[0] ?? 'No worker attempt satisfied the final review requirements.',
       issues: feedback,
       solutions: buildReviewRetrySolutions(),
       retryFeedback: feedback,
@@ -16121,6 +16546,10 @@ async function processWork(
     return;
   }
   const projectRoot = workspace.projectRoot;
+  const promptCacheKey = buildKiraPromptCacheKey({
+    projectRoot: primaryProjectRoot,
+    workId: work.id,
+  });
 
   const safetyIssues = await collectProjectSafetyIssues(projectRoot, projectSettings);
   if (safetyIssues.length > 0) {
@@ -16278,6 +16707,11 @@ async function processWork(
           parseWorkerExecutionPlan(content),
           uniqueStrings(planningState.explorationActions),
         ),
+      {
+        promptCacheKey,
+        outputSchema: getKiraStructuredOutputSchema('worker-plan'),
+        outputSchemaName: getKiraStructuredOutputSchemaName('worker-plan'),
+      },
     );
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
     const workerPlan = parseWorkerExecutionPlan(workerPlanRaw);
@@ -16394,6 +16828,12 @@ async function processWork(
         true,
         signal,
         attemptState,
+        undefined,
+        {
+          promptCacheKey,
+          outputSchema: getKiraStructuredOutputSchema('worker-summary'),
+          outputSchemaName: getKiraStructuredOutputSchemaName('worker-summary'),
+        },
       );
     } catch (error) {
       if (!isAbortError(error)) {
@@ -16770,7 +17210,9 @@ async function processWork(
             'Automated safety validation failed, so Kira rolled back the latest attempt instead of leaving unsafe or unverified edits in the worktree.',
           details: [
             `Rolled back files:\n${formatList(restoredFiles, 'No files rolled back')}`,
-            restoreError ? `Rollback error:\n${restoreError}` : 'Rollback completed without errors.',
+            restoreError
+              ? `Rollback error:\n${restoreError}`
+              : 'Rollback completed without errors.',
           ],
           issues: highRiskIssues,
           solutions: buildReviewRetrySolutions(),
@@ -16993,6 +17435,17 @@ async function processWork(
       buildReviewSystemPrompt(),
       false,
       signal,
+      undefined,
+      undefined,
+      {
+        promptCacheKey: buildKiraPromptCacheKey({
+          projectRoot: primaryProjectRoot,
+          workId: work.id,
+          purpose: 'review',
+        }),
+        outputSchema: getKiraStructuredOutputSchema('review'),
+        outputSchemaName: getKiraStructuredOutputSchemaName('review'),
+      },
     );
     const reviewFinishedAt = Date.now();
     throwIfCanceled(options.sessionsDir, sessionPath, work.id, signal);
@@ -17215,7 +17668,8 @@ async function processWork(
           author: runtime.reviewerAuthor,
           body: buildKiraStatusComment({
             status: 'Integration failed',
-            summary: 'Auto-commit failed and Kira blocked the task before marking integration complete.',
+            summary:
+              'Auto-commit failed and Kira blocked the task before marking integration complete.',
             details: [`Auto-commit result:\n${autoCommitResult.message}`],
             issues: [autoCommitResult.message],
             solutions: buildOperatorFixSolutions(),
@@ -17419,7 +17873,8 @@ async function processWork(
     body: buildKiraStatusComment({
       status: 'Blocked after review or validation retries',
       summary:
-        feedback[0] ?? 'The work could not satisfy the review requirements within the allowed retries.',
+        feedback[0] ??
+        'The work could not satisfy the review requirements within the allowed retries.',
       issues: feedback,
       solutions: buildReviewRetrySolutions(),
       retryFeedback: feedback,
@@ -17463,11 +17918,7 @@ function startWorkJob(
   const projectSettings = projectRoot
     ? loadProjectSettings(projectRoot, runtime.defaultProjectSettings)
     : runtime.defaultProjectSettings;
-  const shouldUseIsolatedWorktree = shouldUseKiraAttemptWorktrees(
-    projectRoot,
-    projectSettings,
-    1,
-  );
+  const shouldUseIsolatedWorktree = shouldUseKiraAttemptWorktrees(projectRoot, projectSettings, 1);
   let projectLockAcquired = false;
   if (
     !shouldUseIsolatedWorktree &&
