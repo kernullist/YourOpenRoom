@@ -2025,6 +2025,30 @@ function buildCodexCliChatPrompt(payload: Record<string, unknown>): string {
     .join('\n');
 }
 
+function buildClaudeCliChatPrompt(payload: Record<string, unknown>): string {
+  const messages = Array.isArray(payload.messages) ? payload.messages : [];
+  const renderedMessages = messages
+    .map((message, index) => {
+      if (typeof message !== 'object' || message === null) return null;
+      const record = message as Record<string, unknown>;
+      const role = typeof record.role === 'string' ? record.role : `message-${index + 1}`;
+      const content = typeof record.content === 'string' ? record.content : '';
+      return `${role.toUpperCase()}:\n${content}`;
+    })
+    .filter((entry): entry is string => Boolean(entry))
+    .join('\n\n');
+
+  return [
+    'You are running as the configured Claude CLI model for OpenRoom.',
+    'Reply directly to the latest user request. Tool calls are not available through this provider in the chat UI.',
+    'Preserve the active character/system instructions from the conversation when they are present.',
+    '',
+    renderedMessages,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
 function runCodexCliChatProcess(
   command: string,
   args: string[],
@@ -2072,6 +2096,44 @@ function runCodexCliChatProcess(
   });
 }
 
+function runClaudeCliChatProcess(command: string, args: string[], input: string): Promise<string> {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let stdout = '';
+    let stderr = '';
+    const child = spawn(command, args, {
+      cwd: OPENROOM_ROOT,
+      shell: process.platform === 'win32',
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    });
+
+    const timeout = setTimeout(() => {
+      child.kill();
+      rejectPromise(new Error('Claude CLI timed out.'));
+    }, 180_000);
+
+    child.stdout?.on('data', (chunk: Buffer) => {
+      stdout += chunk.toString();
+    });
+    child.stderr?.on('data', (chunk: Buffer) => {
+      stderr += chunk.toString();
+    });
+    child.on('error', (error) => {
+      clearTimeout(timeout);
+      rejectPromise(error);
+    });
+    child.on('close', (code) => {
+      clearTimeout(timeout);
+      if (code !== 0) {
+        rejectPromise(new Error(stderr.trim() || `Claude CLI exited with code ${code}`));
+        return;
+      }
+      resolvePromise(stdout.trim());
+    });
+    child.stdin?.end(input);
+  });
+}
+
 function isCodexCliModelUpgradeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
   return /requires a newer version of Codex/i.test(message);
@@ -2098,6 +2160,69 @@ function appendCodexCliRuntimeArgs(args: string[], payload: Record<string, unkno
   if (serviceTier) {
     args.push('-c', buildCodexCliConfigOverrideArg('service_tier', serviceTier));
   }
+}
+
+function normalizeClaudeCliEffort(value: unknown): string | undefined {
+  const reasoningEffort = normalizeReasoningEffort(value);
+  if (!reasoningEffort || reasoningEffort === 'none') {
+    return undefined;
+  }
+  if (reasoningEffort === 'minimal') {
+    return 'low';
+  }
+  return reasoningEffort;
+}
+
+function appendClaudeCliRuntimeArgs(args: string[], payload: Record<string, unknown>): void {
+  const effort = normalizeClaudeCliEffort(payload.reasoningEffort);
+  if (effort) {
+    args.push('--effort', effort);
+  }
+}
+
+function claudeCliChatPlugin(): Plugin {
+  return {
+    name: 'claude-cli-chat',
+    configureServer(server) {
+      server.middlewares.use('/api/claude-cli-chat', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        try {
+          const payload = await readJsonBody(req);
+          const command =
+            typeof payload.command === 'string' && payload.command.trim()
+              ? payload.command.trim()
+              : 'claude';
+          const model = typeof payload.model === 'string' ? payload.model.trim() : '';
+          const args = [
+            '--print',
+            '--input-format',
+            'text',
+            '--output-format',
+            'text',
+            '--no-session-persistence',
+            '--permission-mode',
+            'plan',
+            '--tools',
+            '',
+          ];
+          if (model) args.push('--model', model);
+          appendClaudeCliRuntimeArgs(args, payload);
+
+          const prompt = buildClaudeCliChatPrompt(payload);
+          const content = await runClaudeCliChatProcess(command, args, prompt);
+          writeJsonResponse(res, 200, { content });
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    },
+  };
 }
 
 function codexCliChatPlugin(): Plugin {
@@ -2842,6 +2967,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     openVscodeManagerPlugin(),
     openroomResetPlugin(),
     logServerPlugin(),
+    claudeCliChatPlugin(),
     codexCliChatPlugin(),
     openRouterModelsPlugin(),
     llmProxyPlugin(),

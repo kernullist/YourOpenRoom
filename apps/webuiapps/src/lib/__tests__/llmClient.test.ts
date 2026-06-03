@@ -17,6 +17,7 @@ import {
   type ToolDef,
 } from '../llmClient';
 import {
+  applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesOutputSchema,
   getDefaultProviderConfig,
   PROVIDER_MODELS,
@@ -141,8 +142,8 @@ describe('getDefaultProviderConfig()', () => {
   it('returns correct defaults for deepseek', () => {
     const cfg = getDefaultProviderConfig('deepseek');
     expect(cfg.provider).toBe('deepseek');
-    expect(cfg.baseUrl).toBe('https://api.deepseek.com/v1');
-    expect(cfg.model).toBe('deepseek-chat');
+    expect(cfg.baseUrl).toBe('https://api.deepseek.com');
+    expect(cfg.model).toBe('deepseek-v4-pro');
   });
 
   it('returns correct defaults for llama.cpp', () => {
@@ -188,8 +189,31 @@ describe('getDefaultProviderConfig()', () => {
     expect(cfg.command).toBe('codex');
   });
 
+  it('returns correct defaults for claude-cli', () => {
+    const cfg = getDefaultProviderConfig('claude-cli');
+    expect(cfg.provider).toBe('claude-cli');
+    expect(cfg.baseUrl).toBe('');
+    expect(cfg.model).toBe('claude-sonnet-4-6');
+    expect(cfg.command).toBe('claude');
+  });
+
   it('includes ChatGPT Pro models available through Codex CLI', () => {
     expect(PROVIDER_MODELS['codex-cli']).toEqual(expect.arrayContaining(['gpt-5.5']));
+  });
+
+  it('includes Claude CLI model aliases', () => {
+    expect(PROVIDER_MODELS['claude-cli']).toEqual(expect.arrayContaining(['sonnet', 'opus']));
+  });
+
+  it('includes current DeepSeek V4 API models and legacy aliases', () => {
+    expect(PROVIDER_MODELS.deepseek).toEqual(
+      expect.arrayContaining([
+        'deepseek-v4-pro',
+        'deepseek-v4-flash',
+        'deepseek-chat',
+        'deepseek-reasoner',
+      ]),
+    );
   });
 
   it('returns correct defaults for opencode', () => {
@@ -891,6 +915,7 @@ describe('chat()', () => {
         ...MOCK_OPENAI_CONFIG,
         provider: 'deepseek',
         baseUrl: 'https://api.deepseek.com',
+        model: 'deepseek-v4-pro',
       };
       const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('DeepSeek response'));
       globalThis.fetch = mockFetch;
@@ -899,7 +924,55 @@ describe('chat()', () => {
 
       expect(result.content).toBe('DeepSeek response');
       const headers = mockFetch.mock.calls[0][1].headers as Record<string, string>;
-      expect(headers['X-LLM-Target-URL']).toContain('deepseek.com');
+      expect(headers['X-LLM-Target-URL']).toBe('https://api.deepseek.com/chat/completions');
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.model).toBe('deepseek-v4-pro');
+    });
+
+    it('maps DeepSeek reasoning effort and preserves tool-call reasoning_content', async () => {
+      const deepseekConfig: LLMConfig = {
+        ...MOCK_OPENAI_CONFIG,
+        provider: 'deepseek',
+        baseUrl: 'https://api.deepseek.com',
+        model: 'deepseek-v4-pro',
+        reasoningEffort: 'xhigh',
+      };
+      const messages: ChatMessage[] = [
+        { role: 'user', content: 'Use a tool.' },
+        {
+          role: 'assistant',
+          content: 'Calling tool',
+          reasoning_content: 'tool reasoning must be sent back',
+          tool_calls: [
+            {
+              id: 'call_1',
+              type: 'function',
+              function: { name: 'get_weather', arguments: '{"city":"Seoul"}' },
+            },
+          ],
+        },
+        { role: 'tool', content: 'Sunny', tool_call_id: 'call_1' },
+      ];
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('DeepSeek response'));
+      globalThis.fetch = mockFetch;
+
+      await chat(messages, [], deepseekConfig);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.thinking).toEqual({ type: 'enabled' });
+      expect(body.reasoning_effort).toBe('max');
+      expect(body.messages[1].reasoning_content).toBe('tool reasoning must be sent back');
+    });
+
+    it('can disable DeepSeek thinking with reasoning effort none', () => {
+      const body: Record<string, unknown> = {};
+
+      applyDeepSeekChatRuntimeOptions(body, {
+        provider: 'deepseek',
+        reasoningEffort: 'none',
+      });
+
+      expect(body).toEqual({ thinking: { type: 'disabled' } });
     });
   });
 
@@ -1115,6 +1188,55 @@ respond_to_user
       expect(body.reasoningSummary).toBeUndefined();
       expect(body.verbosity).toBeUndefined();
       expect(body.serviceTier).toBeUndefined();
+    });
+  });
+
+  describe('Claude CLI provider', () => {
+    it('routes chat through the local claude cli endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Claude answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'claude-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'claude-sonnet-4-6',
+      });
+
+      expect(result.content).toBe('Claude answer');
+      expect(result.toolCalls).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/claude-cli-chat',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.model).toBe('claude-sonnet-4-6');
+      expect(body.command).toBe('claude');
+      expect(body.tools).toHaveLength(1);
+    });
+
+    it('passes Claude CLI reasoning effort when explicitly configured', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Claude answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      await chat(MOCK_MESSAGES, [], {
+        provider: 'claude-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'claude-sonnet-4-6',
+        reasoningEffort: 'xhigh',
+      });
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.reasoningEffort).toBe('xhigh');
     });
   });
 

@@ -96,19 +96,19 @@ Kira uses one Primary Worker by default. It enables one Alternative Worker only 
 agent graph marks the work as high-risk, ambiguous, runtime-sensitive, or deep-mode. The alternative
 attempt runs in a separate git worktree as a patch challenger; the Reviewer and Integrator still
 select one winning patch instead of merging pieces from several attempts. Codex CLI
-workers/reviewers can be configured with
-`provider: "codex-cli"` after `codex login`; OpenCode Zen/Go workers/reviewers can be configured
-with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key.
-When Primary/Alternative workers share the same provider/baseUrl/model route, Kira throttles
-concurrent model calls to one for local routes (`llama.cpp`, localhost, or private-network base
-URLs) and two for all other routes.
-Each model call sets the response output token cap to 8192 tokens.
-Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
-policy checks remain the stopping controls.
-When final review, Integrator selection, validation, or a timeout blocks a work item, Kira writes a
-main-model status comment with issues and possible solutions. Review-passable failures also include
-a `Retry with feedback` section, and the Kira detail panel can resume the blocked work with that
-feedback carried into the next worker attempt.
+workers/reviewers can be configured with `provider: "codex-cli"` after `codex login`; Claude CLI
+workers/reviewers can be configured with `provider: "claude-cli"` after the Claude Code auth flow;
+DeepSeek API workers/reviewers can be configured with `provider: "deepseek"`,
+`baseUrl: "https://api.deepseek.com"`, and a DeepSeek API key; OpenCode Zen/Go workers/reviewers can
+be configured with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key. When
+Primary/Alternative workers share the same provider/baseUrl/model route, Kira throttles concurrent
+model calls to one for local routes (`llama.cpp`, localhost, or private-network base URLs) and two
+for all other routes. Each model call sets the response output token cap to 8192 tokens. Kira does
+not impose a fixed tool-call count cap; cancellation, request timeouts, and execution policy checks
+remain the stopping controls. When final review, Integrator selection, validation, or a timeout
+blocks a work item, Kira writes a main-model status comment with issues and possible solutions.
+Review-passable failures also include a `Retry with feedback` section, and the Kira detail panel can
+resume the blocked work with that feedback carried into the next worker attempt.
 
 Before worker assignment, Kira runs a clarification analysis over the work title, description, and
 project context. If a material ambiguity would likely send workers in the wrong direction, Kira
@@ -171,8 +171,8 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
-- Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders are
-  rejected by the local `/api/openvscode/file` endpoint.
+- Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders
+  are rejected by the local `/api/openvscode/file` endpoint.
 - `PE Analyst` supports two modes today:
   - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`
   - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as

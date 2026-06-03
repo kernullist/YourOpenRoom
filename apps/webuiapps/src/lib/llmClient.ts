@@ -5,8 +5,10 @@
 
 import type { LLMApiStyle, LLMConfig } from './llmModels';
 import {
+  applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesRuntimeOptions,
   getExplicitModelRuntimeOptions,
+  isDeepSeekProvider,
   normalizeProviderModelId,
   normalizeReasoningEffort,
   normalizeReasoningSummary,
@@ -155,7 +157,7 @@ export function resolveLlmOverride(
     override?.parallelToolCalls ?? (canInheritBase ? baseConfig?.parallelToolCalls : undefined);
 
   if (!provider || !model) return null;
-  if (provider !== 'codex-cli' && !baseUrl) return null;
+  if (!isLoginCliProvider(provider) && !baseUrl) return null;
 
   return {
     provider,
@@ -295,7 +297,10 @@ function joinUrl(baseUrl: string, path: string): string {
   return `${baseUrl.replace(/\/+$/, '')}/${path.replace(/^\/+/, '')}`;
 }
 
-function getOpenAICompletionsPath(baseUrl: string): string {
+function getOpenAICompletionsPath(baseUrl: string, provider?: LLMConfig['provider']): string {
+  if (isDeepSeekProvider(provider)) {
+    return 'chat/completions';
+  }
   return hasVersionSuffix(baseUrl) ? 'chat/completions' : 'v1/chat/completions';
 }
 
@@ -309,6 +314,10 @@ function getOpenAIResponsesPath(baseUrl: string): string {
 
 function isOpenCodeProvider(provider: LLMConfig['provider']): boolean {
   return provider === 'opencode' || provider === 'opencode-go';
+}
+
+function isLoginCliProvider(provider: LLMConfig['provider'] | undefined): boolean {
+  return provider === 'codex-cli' || provider === 'claude-cli';
 }
 
 function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): string {
@@ -394,6 +403,9 @@ export async function chat(
   if (config.provider === 'codex-cli') {
     return chatCodexCli(messages, tools, config);
   }
+  if (config.provider === 'claude-cli') {
+    return chatClaudeCli(messages, tools, config);
+  }
   if (isOpenCodeProvider(config.provider)) {
     const apiStyle = resolveOpenCodeApiStyle(config);
     if (apiStyle === 'openai-responses') {
@@ -411,6 +423,33 @@ export async function chat(
     return chatOpenAIResponses(messages, tools, config);
   }
   return chatOpenAI(messages, tools, config);
+}
+
+async function chatClaudeCli(
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  config: LLMConfig,
+): Promise<LLMResponse> {
+  const runtimeOptions = getExplicitModelRuntimeOptions(config);
+  const res = await fetch('/api/claude-cli-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages,
+      tools,
+      model: config.model,
+      command: config.command?.trim() || 'claude',
+      reasoningEffort: runtimeOptions.reasoningEffort,
+    }),
+  });
+  const data = (await res.json()) as { content?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `Claude CLI error ${res.status}`);
+  }
+  return {
+    content: data.content?.trim() || '',
+    toolCalls: [],
+  };
 }
 
 async function chatCodexCli(
@@ -463,11 +502,15 @@ async function chatOpenAI(
     body.thinking = { type: 'disabled' };
     body.reasoning = { enabled: false };
   }
+  applyDeepSeekChatRuntimeOptions(body, config);
   if (tools.length > 0) {
     body.tools = tools;
   }
 
-  const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
+  const targetUrl = joinUrl(
+    config.baseUrl,
+    getOpenAICompletionsPath(config.baseUrl, config.provider),
+  );
   const toolNames = Array.isArray(tools) ? tools.map((t) => t.function?.name).filter(Boolean) : [];
   console.info('[LLM] OpenAI-compatible request', {
     targetUrl,

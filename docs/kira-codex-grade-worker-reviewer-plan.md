@@ -545,7 +545,9 @@ Codex급 처리는 실패한 시도를 깔끔하게 다룰 수 있어야 한다.
 - 여러 worker가 설정된 경우 `autoCommit` 여부와 무관하게 각 worker attempt는 별도 git worktree에서
   실행된다. 기본 worker 수는 1개이고, `kira.workers`는 최대 3개까지만 사용한다.
 - worker는 서로 다른 provider/model을 사용할 수 있다. `codex-cli`는 ChatGPT 로그인 기반 Codex CLI를,
-  `opencode`/`opencode-go`는 OpenCode API 키 기반 Zen/Go 엔드포인트를 사용한다.
+  `claude-cli`는 Claude Code 인증 기반 Claude CLI를, `deepseek`는 DeepSeek API 키 기반
+  `https://api.deepseek.com` 엔드포인트를, `opencode`/`opencode-go`는 OpenCode API 키 기반 Zen/Go
+  엔드포인트를 사용한다.
 - 단일 attempt 리뷰와 달리 multi-worker 모드에서는 reviewer가 검증을 통과한 모든 attempt의 요약,
   검증 결과, diff를 비교해 하나의 winning attempt를 고른다.
 - 승인된 변경은 격리 worktree에서 먼저 커밋한 뒤, 기본 프로젝트 worktree에는 프로젝트 단위 통합 락을
@@ -569,7 +571,7 @@ Codex급 처리는 실패한 시도를 깔끔하게 다룰 수 있어야 한다.
 - 완료: 기존 dirty 파일은 계획에 포함되지 않으면 수정할 수 없다.
 - 완료: auto-commit git 프로젝트는 작업별 격리 worktree에서 실행된다.
 - 완료: multi-worker git 프로젝트는 attempt별 격리 worktree에서 실행된다.
-- 완료: Codex CLI와 OpenCode Zen/Go를 worker/reviewer provider로 설정할 수 있다.
+- 완료: Codex CLI, Claude CLI, OpenCode Zen/Go를 worker/reviewer provider로 설정할 수 있다.
 - 완료: reviewer가 여러 validated attempt를 비교해 하나의 winner를 선택한다.
 - 완료: 여러 에이전트가 동시에 완료되어도 기본 프로젝트 통합은 짧은 프로젝트 락으로 직렬화된다.
 - 완료: 겹치는 dirty file, staged change, cherry-pick 충돌은 자동 overwrite 대신 blocked로 처리된다.

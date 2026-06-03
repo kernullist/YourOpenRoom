@@ -9,6 +9,7 @@ export type LLMProvider =
   | 'openrouter'
   | 'opencode'
   | 'opencode-go'
+  | 'claude-cli'
   | 'codex-cli';
 
 export type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
@@ -134,11 +135,31 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
 
   deepseek: {
     displayName: 'DeepSeek',
-    baseUrl: 'https://api.deepseek.com/v1',
-    defaultModel: 'deepseek-chat',
+    baseUrl: 'https://api.deepseek.com',
+    defaultModel: 'deepseek-v4-pro',
     models: [
-      { id: 'deepseek-chat', name: 'DeepSeek Chat', category: 'general' },
-      { id: 'deepseek-reasoner', name: 'DeepSeek Reasoner', category: 'thinking' },
+      {
+        id: 'deepseek-v4-pro',
+        name: 'DeepSeek V4 Pro',
+        category: 'flagship',
+        defaultReasoningEffort: 'high',
+        supportedReasoningEfforts: ['none', 'high', 'xhigh'],
+      },
+      {
+        id: 'deepseek-v4-flash',
+        name: 'DeepSeek V4 Flash',
+        category: 'general',
+        defaultReasoningEffort: 'high',
+        supportedReasoningEfforts: ['none', 'high', 'xhigh'],
+      },
+      { id: 'deepseek-chat', name: 'DeepSeek Chat legacy', category: 'general' },
+      {
+        id: 'deepseek-reasoner',
+        name: 'DeepSeek Reasoner legacy',
+        category: 'thinking',
+        defaultReasoningEffort: 'high',
+        supportedReasoningEfforts: ['none', 'high', 'xhigh'],
+      },
     ],
   },
 
@@ -282,6 +303,22 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
     ],
   },
 
+  'claude-cli': {
+    displayName: 'Claude CLI',
+    baseUrl: '',
+    defaultModel: 'claude-sonnet-4-6',
+    models: [
+      { id: 'claude-opus-4-6', name: 'Claude Opus 4.6', category: 'flagship' },
+      { id: 'claude-opus-4-5', name: 'Claude Opus 4.5', category: 'flagship' },
+      { id: 'claude-sonnet-4-6', name: 'Claude Sonnet 4.6', category: 'general' },
+      { id: 'claude-sonnet-4-5', name: 'Claude Sonnet 4.5', category: 'general' },
+      { id: 'claude-haiku-4-5', name: 'Claude Haiku 4.5', category: 'lightweight' },
+      { id: 'opus', name: 'Claude Opus alias', category: 'flagship' },
+      { id: 'sonnet', name: 'Claude Sonnet alias', category: 'general' },
+      { id: 'haiku', name: 'Claude Haiku alias', category: 'lightweight' },
+    ],
+  },
+
   'codex-cli': {
     displayName: 'Codex CLI',
     baseUrl: '',
@@ -310,6 +347,7 @@ export function getDefaultProviderConfig(provider: LLMProvider): Omit<LLMConfig,
     baseUrl: config.baseUrl,
     model: config.defaultModel,
     ...(provider === 'codex-cli' ? { command: 'codex' } : {}),
+    ...(provider === 'claude-cli' ? { command: 'claude' } : {}),
   };
 }
 
@@ -341,6 +379,10 @@ export function normalizeProviderModelId(provider: LLMProvider, modelId: string)
     return model.slice('opencode-go/'.length);
   }
   return model;
+}
+
+export function isDeepSeekProvider(provider: LLMProvider | undefined): provider is 'deepseek' {
+  return provider === 'deepseek';
 }
 
 export function normalizeReasoningEffort(value: unknown): LLMReasoningEffort | undefined {
@@ -607,4 +649,42 @@ export function applyOpenAiResponsesOutputSchema(
       schema,
     },
   };
+}
+
+function mapDeepSeekReasoningEffort(
+  effort: LLMReasoningEffort | undefined,
+): 'high' | 'max' | undefined {
+  if (!effort || effort === 'none') {
+    return undefined;
+  }
+  if (effort === 'xhigh') {
+    return 'max';
+  }
+  return 'high';
+}
+
+export function applyDeepSeekChatRuntimeOptions(
+  body: Record<string, unknown>,
+  config: Pick<LLMConfig, 'provider' | 'reasoningEffort'>,
+): void {
+  if (!isDeepSeekProvider(config.provider)) {
+    return;
+  }
+
+  const reasoningEffort = normalizeReasoningEffort(config.reasoningEffort);
+  if (!reasoningEffort) {
+    return;
+  }
+
+  if (reasoningEffort === 'none') {
+    body.thinking = { type: 'disabled' };
+    delete body.reasoning_effort;
+    return;
+  }
+
+  body.thinking = { type: 'enabled' };
+  const mappedEffort = mapDeepSeekReasoningEffort(reasoningEffort);
+  if (mappedEffort) {
+    body.reasoning_effort = mappedEffort;
+  }
 }

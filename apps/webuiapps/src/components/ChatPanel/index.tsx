@@ -29,6 +29,7 @@ import {
   getDefaultProviderConfig,
   getModelInfo,
   getProviderDisplayName,
+  isDeepSeekProvider,
   type LLMApiStyle,
   type LLMConfig,
   type LLMProvider,
@@ -564,7 +565,7 @@ function buildIdeOpenAck(
 }
 
 function hasUsableLLMConfig(config: LLMConfig | null | undefined): config is LLMConfig {
-  if (config?.provider === 'codex-cli') {
+  if (config?.provider === 'codex-cli' || config?.provider === 'claude-cli') {
     return !!config.model.trim();
   }
   return !!config?.baseUrl.trim() && !!config.model.trim();
@@ -3956,6 +3957,7 @@ const MODEL_PROVIDER_OPTIONS: Array<{ value: LLMProvider; label: string }> = [
   'z.ai',
   'kimi',
   'openrouter',
+  'claude-cli',
   'codex-cli',
   'opencode',
   'opencode-go',
@@ -4021,7 +4023,7 @@ function canInheritKiraApiKey(
   mainApiKey: string,
 ): boolean {
   return (
-    roleProvider !== 'codex-cli' && roleProvider === mainProvider && Boolean(mainApiKey.trim())
+    !isLoginCliProvider(roleProvider) && roleProvider === mainProvider && Boolean(mainApiKey.trim())
   );
 }
 
@@ -4049,19 +4051,49 @@ function isCodexCliProvider(provider: LLMProvider): boolean {
   return provider === 'codex-cli';
 }
 
+function isClaudeCliProvider(provider: LLMProvider): boolean {
+  return provider === 'claude-cli';
+}
+
+function isLoginCliProvider(provider: LLMProvider): boolean {
+  return isCodexCliProvider(provider) || isClaudeCliProvider(provider);
+}
+
+function getDefaultCliCommand(provider: LLMProvider): string {
+  return isClaudeCliProvider(provider) ? 'claude' : 'codex';
+}
+
+function getLoginCliHint(provider: LLMProvider): string {
+  if (isClaudeCliProvider(provider)) {
+    return 'Uses your local Claude CLI auth session. Run `claude auth` or complete the Claude Code login flow before using this provider.';
+  }
+  return 'Uses your local Codex CLI login. Run `codex login` before using this provider.';
+}
+
 function isOpenCodeProvider(provider: LLMProvider): boolean {
   return provider === 'opencode' || provider === 'opencode-go';
+}
+
+function getProviderApiKeyPlaceholder(provider: LLMProvider, fallback: string): string {
+  if (isDeepSeekProvider(provider)) {
+    return 'DeepSeek API key';
+  }
+  if (isOpenCodeProvider(provider)) {
+    return 'OpenCode API key';
+  }
+  return fallback;
 }
 
 function getDefaultKiraRoleConfig(
   provider: KiraAgentProvider,
   _mainConfig: LLMConfig | null,
 ): KiraRoleLlmConfig {
-  if (provider === 'codex-cli') {
+  if (isLoginCliProvider(provider)) {
+    const defaults = getDefaultProviderConfig(provider);
     return {
       provider,
-      command: 'codex',
-      model: 'gpt-5.3-codex',
+      command: defaults.command ?? getDefaultCliCommand(provider),
+      model: defaults.model,
     };
   }
   if (provider === 'opencode') {
@@ -4160,10 +4192,11 @@ function kiraDraftToConfig(draft: KiraRoleDraft): KiraRoleLlmConfig {
     ...(parallelToolCalls !== undefined ? { parallelToolCalls } : {}),
   };
 
-  if (draft.provider === 'codex-cli') {
+  if (isLoginCliProvider(draft.provider)) {
+    const defaultCommand = getDefaultCliCommand(draft.provider);
     return {
       ...base,
-      ...(draft.command.trim() && draft.command.trim() !== 'codex'
+      ...(draft.command.trim() && draft.command.trim() !== defaultCommand
         ? { command: draft.command.trim() }
         : {}),
     };
@@ -4227,7 +4260,9 @@ const SettingsModal: React.FC<{
     config?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
   );
   const [model, setModel] = useState(config?.model || getDefaultProviderConfig('openrouter').model);
-  const [command, setCommand] = useState(config?.command || 'codex');
+  const [command, setCommand] = useState(
+    config?.command || getDefaultCliCommand(config?.provider || 'codex-cli'),
+  );
   const [apiStyle, setApiStyle] = useState<LLMApiStyle | ''>(config?.apiStyle || '');
   const [customHeaders, setCustomHeaders] = useState(config?.customHeaders || '');
   const [reasoningEffort, setReasoningEffort] = useState<LLMReasoningEffort | ''>(
@@ -4275,7 +4310,8 @@ const SettingsModal: React.FC<{
   const [dialogEnabled, setDialogEnabled] = useState(
     Boolean(
       dialogConfig?.model?.trim() &&
-      (dialogConfig.provider === 'codex-cli' || dialogConfig?.baseUrl?.trim()),
+      ((dialogConfig.provider && isLoginCliProvider(dialogConfig.provider)) ||
+        dialogConfig?.baseUrl?.trim()),
     ),
   );
   const [dialogProvider, setDialogProvider] = useState<LLMProvider>(
@@ -4286,7 +4322,9 @@ const SettingsModal: React.FC<{
     dialogConfig?.baseUrl || config?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
   );
   const [dialogModel, setDialogModel] = useState(dialogConfig?.model || '');
-  const [dialogCommand, setDialogCommand] = useState(dialogConfig?.command || 'codex');
+  const [dialogCommand, setDialogCommand] = useState(
+    dialogConfig?.command || getDefaultCliCommand(dialogConfig?.provider || 'codex-cli'),
+  );
   const [dialogApiStyle, setDialogApiStyle] = useState<LLMApiStyle | ''>(
     dialogConfig?.apiStyle || '',
   );
@@ -4421,7 +4459,7 @@ const SettingsModal: React.FC<{
     const defaults = getDefaultProviderConfig(p);
     setBaseUrl(defaults.baseUrl);
     setModel(defaults.model);
-    setCommand(defaults.command || 'codex');
+    setCommand(defaults.command || getDefaultCliCommand(p));
     setApiStyle(defaults.apiStyle || '');
     setReasoningEffort('');
     setReasoningSummary('');
@@ -4447,7 +4485,7 @@ const SettingsModal: React.FC<{
     setDialogProvider(p);
     const defaults = getDefaultProviderConfig(p);
     setDialogBaseUrl(defaults.baseUrl);
-    setDialogCommand(defaults.command || 'codex');
+    setDialogCommand(defaults.command || getDefaultCliCommand(p));
     setDialogApiStyle(defaults.apiStyle || '');
     setDialogModel(defaults.model);
     setDialogReasoningEffort('');
@@ -4640,7 +4678,7 @@ const SettingsModal: React.FC<{
     onProviderChange: (provider: KiraAgentProvider) => void,
     removable?: boolean,
   ) => {
-    const isCodexCli = isCodexCliProvider(draft.provider);
+    const isLoginCli = isLoginCliProvider(draft.provider);
     const isOpenCode = isOpenCodeProvider(draft.provider);
     const roleModelOptions = getProviderModelOptions(draft.provider, runtimeModels);
     const hasPresetRoleModel = roleModelOptions.includes(draft.model);
@@ -4694,7 +4732,7 @@ const SettingsModal: React.FC<{
           </select>
         </div>
 
-        {isCodexCli ? (
+        {isLoginCli ? (
           <>
             <div className={styles.field}>
               <label className={styles.label}>Command</label>
@@ -4702,11 +4740,9 @@ const SettingsModal: React.FC<{
                 className={styles.fieldInput}
                 value={draft.command}
                 onChange={(e) => onChange({ command: e.target.value })}
-                placeholder="codex"
+                placeholder={getDefaultCliCommand(draft.provider)}
               />
-              <span className={styles.modelHint}>
-                Uses your local Codex CLI session. Run `codex login` before using this provider.
-              </span>
+              <span className={styles.modelHint}>{getLoginCliHint(draft.provider)}</span>
             </div>
 
             <div className={styles.field}>
@@ -4732,7 +4768,7 @@ const SettingsModal: React.FC<{
                   className={styles.fieldInput}
                   value={draft.model}
                   onChange={(e) => onChange({ model: e.target.value })}
-                  placeholder="gpt-5.3-codex"
+                  placeholder={getDefaultProviderConfig(draft.provider).model}
                 />
               )}
               {draft.provider === 'openrouter' ? (
@@ -4758,9 +4794,10 @@ const SettingsModal: React.FC<{
                 placeholder={
                   usesInheritedApiKey
                     ? 'Inherited from Main LLM'
-                    : isOpenCode
-                      ? 'Optional if OPENCODE_API_KEY is set'
-                      : 'Optional if inherited from environment'
+                    : getProviderApiKeyPlaceholder(
+                        draft.provider,
+                        'Optional if inherited from environment',
+                      )
                 }
               />
               {usesInheritedApiKey ? (
@@ -4852,8 +4889,8 @@ const SettingsModal: React.FC<{
           onChange,
         )}
         <span className={styles.modelHint}>
-          Applied to Codex CLI and OpenAI Responses-compatible Kira calls. Unsupported model routes
-          keep their provider defaults.
+          Applied to CLI providers and OpenAI Responses-compatible Kira calls. Unsupported model
+          routes keep their provider defaults.
         </span>
       </div>
     );
@@ -5025,19 +5062,16 @@ const SettingsModal: React.FC<{
                   </select>
                 </div>
 
-                {isCodexCliProvider(provider) ? (
+                {isLoginCliProvider(provider) ? (
                   <div className={styles.field}>
                     <label className={styles.label}>Command</label>
                     <input
                       className={styles.fieldInput}
                       value={command}
                       onChange={(e) => setCommand(e.target.value)}
-                      placeholder="codex"
+                      placeholder={getDefaultCliCommand(provider)}
                     />
-                    <span className={styles.modelHint}>
-                      Uses your local Codex CLI login. Tool calls are not available through this
-                      chat provider.
-                    </span>
+                    <span className={styles.modelHint}>{getLoginCliHint(provider)}</span>
                   </div>
                 ) : (
                   <>
@@ -5048,11 +5082,10 @@ const SettingsModal: React.FC<{
                         type="password"
                         value={apiKey}
                         onChange={(e) => setApiKey(e.target.value)}
-                        placeholder={
-                          isOpenCodeProvider(provider)
-                            ? 'OpenCode API key'
-                            : 'Optional for local servers'
-                        }
+                        placeholder={getProviderApiKeyPlaceholder(
+                          provider,
+                          'Optional for local servers',
+                        )}
                       />
                     </div>
 
@@ -5159,6 +5192,12 @@ const SettingsModal: React.FC<{
                   {provider === 'openrouter' ? (
                     <span className={styles.modelHint}>{openRouterStatusHint}</span>
                   ) : null}
+                  {isDeepSeekProvider(provider) ? (
+                    <span className={styles.modelHint}>
+                      Uses the official DeepSeek API endpoint. Legacy deepseek-chat and
+                      deepseek-reasoner model names are compatibility aliases until 2026-07-24.
+                    </span>
+                  ) : null}
                 </div>
 
                 {renderModelRuntimeFields(
@@ -5188,11 +5227,11 @@ const SettingsModal: React.FC<{
                   },
                 )}
                 <span className={styles.modelHint}>
-                  These options follow the Codex model contract for Responses API and local Codex
-                  CLI runs.
+                  These options follow the model runtime contract for Responses API and local CLI
+                  runs.
                 </span>
 
-                {!isCodexCliProvider(provider) ? (
+                {!isLoginCliProvider(provider) ? (
                   <div className={styles.field}>
                     <label className={styles.label}>
                       Custom Headers (one per line, Key: Value)
@@ -5241,15 +5280,16 @@ const SettingsModal: React.FC<{
                       </select>
                     </div>
 
-                    {isCodexCliProvider(dialogProvider) ? (
+                    {isLoginCliProvider(dialogProvider) ? (
                       <div className={styles.field}>
                         <label className={styles.label}>Command</label>
                         <input
                           className={styles.fieldInput}
                           value={dialogCommand}
                           onChange={(e) => setDialogCommand(e.target.value)}
-                          placeholder="codex"
+                          placeholder={getDefaultCliCommand(dialogProvider)}
                         />
+                        <span className={styles.modelHint}>{getLoginCliHint(dialogProvider)}</span>
                       </div>
                     ) : (
                       <>
@@ -5260,11 +5300,10 @@ const SettingsModal: React.FC<{
                             type="password"
                             value={dialogApiKey}
                             onChange={(e) => setDialogApiKey(e.target.value)}
-                            placeholder={
-                              isOpenCodeProvider(dialogProvider)
-                                ? 'OpenCode API key'
-                                : 'Optional — falls back to main config when blank'
-                            }
+                            placeholder={getProviderApiKeyPlaceholder(
+                              dialogProvider,
+                              'Optional — falls back to main config when blank',
+                            )}
                           />
                         </div>
 
@@ -5411,7 +5450,7 @@ const SettingsModal: React.FC<{
                       },
                     )}
 
-                    {!isCodexCliProvider(dialogProvider) ? (
+                    {!isLoginCliProvider(dialogProvider) ? (
                       <div className={styles.field}>
                         <label className={styles.label}>Custom Headers (optional)</label>
                         <textarea
@@ -5840,21 +5879,23 @@ const SettingsModal: React.FC<{
           <button
             className={styles.saveBtn}
             onClick={() => {
-              const mainIsCodexCli = isCodexCliProvider(provider);
-              const dialogIsCodexCli = isCodexCliProvider(dialogProvider);
+              const mainIsLoginCli = isLoginCliProvider(provider);
+              const dialogIsLoginCli = isLoginCliProvider(dialogProvider);
+              const mainDefaultCommand = getDefaultCliCommand(provider);
+              const dialogDefaultCommand = getDefaultCliCommand(dialogProvider);
               const mainParallelToolCalls = parallelToolCallsOptionToConfig(parallelToolCalls);
               const dialogParallelToolCallsValue =
                 parallelToolCallsOptionToConfig(dialogParallelToolCalls);
               const llmCfg: LLMConfig = {
                 provider,
-                apiKey: mainIsCodexCli ? '' : apiKey,
-                baseUrl: mainIsCodexCli ? '' : baseUrl.trim(),
+                apiKey: mainIsLoginCli ? '' : apiKey,
+                baseUrl: mainIsLoginCli ? '' : baseUrl.trim(),
                 model,
-                ...(mainIsCodexCli && command.trim() && command.trim() !== 'codex'
+                ...(mainIsLoginCli && command.trim() && command.trim() !== mainDefaultCommand
                   ? { command: command.trim() }
                   : {}),
-                ...(!mainIsCodexCli && apiStyle ? { apiStyle } : {}),
-                ...(!mainIsCodexCli && customHeaders.trim() ? { customHeaders } : {}),
+                ...(!mainIsLoginCli && apiStyle ? { apiStyle } : {}),
+                ...(!mainIsLoginCli && customHeaders.trim() ? { customHeaders } : {}),
                 ...(reasoningEffort ? { reasoningEffort } : {}),
                 ...(reasoningSummary ? { reasoningSummary } : {}),
                 ...(verbosity ? { verbosity } : {}),
@@ -5873,21 +5914,21 @@ const SettingsModal: React.FC<{
                   }
                 : null;
               const dialogCfg: DialogLlmConfig | null =
-                dialogEnabled && dialogModel.trim() && (dialogIsCodexCli || dialogBaseUrl.trim())
+                dialogEnabled && dialogModel.trim() && (dialogIsLoginCli || dialogBaseUrl.trim())
                   ? {
                       provider: dialogProvider,
                       model: dialogModel.trim(),
-                      baseUrl: dialogIsCodexCli ? '' : dialogBaseUrl.trim(),
-                      ...(dialogIsCodexCli &&
+                      baseUrl: dialogIsLoginCli ? '' : dialogBaseUrl.trim(),
+                      ...(dialogIsLoginCli &&
                       dialogCommand.trim() &&
-                      dialogCommand.trim() !== 'codex'
+                      dialogCommand.trim() !== dialogDefaultCommand
                         ? { command: dialogCommand.trim() }
                         : {}),
-                      ...(!dialogIsCodexCli && dialogApiKey.trim()
+                      ...(!dialogIsLoginCli && dialogApiKey.trim()
                         ? { apiKey: dialogApiKey.trim() }
                         : {}),
-                      ...(!dialogIsCodexCli && dialogApiStyle ? { apiStyle: dialogApiStyle } : {}),
-                      ...(!dialogIsCodexCli && dialogCustomHeaders.trim()
+                      ...(!dialogIsLoginCli && dialogApiStyle ? { apiStyle: dialogApiStyle } : {}),
+                      ...(!dialogIsLoginCli && dialogCustomHeaders.trim()
                         ? { customHeaders: dialogCustomHeaders }
                         : {}),
                       ...(dialogReasoningEffort ? { reasoningEffort: dialogReasoningEffort } : {}),

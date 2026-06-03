@@ -133,18 +133,18 @@
         "verbosity": "low"
       },
       {
-        "name": "OpenCode Go worker",
-        "provider": "opencode-go",
-        "apiKey": "YOUR_OPENCODE_API_KEY",
-        "model": "opencode-go/kimi-k2.5",
-        "parallelToolCalls": false
+        "name": "DeepSeek API worker",
+        "provider": "deepseek",
+        "apiKey": "YOUR_DEEPSEEK_API_KEY",
+        "baseUrl": "https://api.deepseek.com",
+        "model": "deepseek-v4-pro",
+        "reasoningEffort": "high"
       }
     ],
     "reviewerLlm": {
-      "provider": "opencode",
-      "apiKey": "YOUR_OPENCODE_API_KEY",
-      "model": "opencode/claude-sonnet-4-6",
-      "reasoningSummary": "concise"
+      "provider": "claude-cli",
+      "model": "claude-sonnet-4-6",
+      "reasoningEffort": "high"
     }
   },
   "openvscode": {

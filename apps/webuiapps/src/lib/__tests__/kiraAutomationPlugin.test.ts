@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
   buildDesignReviewGate,
+  buildClaudeCliArgs,
   buildCodexCliArgs,
   buildKiraPromptCacheKey,
   buildOperatorInterruptComment,
@@ -1995,6 +1996,47 @@ describe('resolveRoleLlmConfig()', () => {
     });
   });
 
+  it('supports Claude CLI roles without API endpoint settings', () => {
+    const resolved = resolveRoleLlmConfig(
+      null,
+      {
+        provider: 'claude-cli',
+        model: 'claude-sonnet-4-6',
+        command: 'claude',
+        reasoningEffort: 'xhigh',
+      },
+      null,
+    );
+
+    expect(resolved).toEqual({
+      provider: 'claude-cli',
+      apiKey: '',
+      baseUrl: '',
+      model: 'claude-sonnet-4-6',
+      command: 'claude',
+      reasoningEffort: 'xhigh',
+    });
+  });
+
+  it('defaults DeepSeek API roles to the official endpoint', () => {
+    const resolved = resolveRoleLlmConfig(
+      null,
+      {
+        provider: 'deepseek',
+        apiKey: 'ds-test',
+        model: 'deepseek-v4-pro',
+      },
+      null,
+    );
+
+    expect(resolved).toEqual({
+      provider: 'deepseek',
+      apiKey: 'ds-test',
+      baseUrl: 'https://api.deepseek.com',
+      model: 'deepseek-v4-pro',
+    });
+  });
+
   it('defaults OpenCode API roles to the Zen endpoint', () => {
     const resolved = resolveRoleLlmConfig(
       null,
@@ -2275,6 +2317,56 @@ describe('buildCodexCliArgs()', () => {
     expect(args).toContain('gpt-5.5');
     expect(args).not.toContain('-c');
     expect(args.at(-1)).toBe('-');
+  });
+});
+
+describe('buildClaudeCliArgs()', () => {
+  it('uses non-interactive Claude CLI flags for writable agent runs', () => {
+    const args = buildClaudeCliArgs(
+      {
+        provider: 'claude-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'claude-sonnet-4-6',
+        reasoningEffort: 'xhigh',
+      },
+      true,
+    );
+
+    expect(args).toEqual(
+      expect.arrayContaining([
+        '--print',
+        '--input-format',
+        'text',
+        '--output-format',
+        'text',
+        '--no-session-persistence',
+        '--permission-mode',
+        'bypassPermissions',
+        '--allow-dangerously-skip-permissions',
+        '--model',
+        'claude-sonnet-4-6',
+        '--effort',
+        'xhigh',
+      ]),
+    );
+  });
+
+  it('maps unsupported minimal effort to the closest Claude CLI effort', () => {
+    const args = buildClaudeCliArgs(
+      {
+        provider: 'claude-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'sonnet',
+        reasoningEffort: 'minimal',
+      },
+      false,
+    );
+
+    expect(args).toContain('plan');
+    expect(args).not.toContain('--allow-dangerously-skip-permissions');
+    expect(args).toEqual(expect.arrayContaining(['--effort', 'low']));
   });
 });
 

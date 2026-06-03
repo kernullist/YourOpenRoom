@@ -66,10 +66,10 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Evidence Vault` | Classified-style evidence browser for structured dossier files stored in app data                                                                                                    |
 | `CyberNews`      | Live cybersecurity news pulled from RSS feeds plus a case-board investigation view                                                                                                   |
 | `Calendar`       | Local event/reminder planner with month navigation, selected-day agenda, date picker to `Date & Time` sync, and reminder metadata saved in app storage                               |
-| `Notes`          | Local markdown notes with pinned collections, tag/search filtering, sorting, formatting helpers, safer delete confirmation, autosaved view state, and preview mode                    |
+| `Notes`          | Local markdown notes with pinned collections, tag/search filtering, sorting, formatting helpers, safer delete confirmation, autosaved view state, and preview mode                   |
 | `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
 | `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
-| `Aoi's IDE`      | Local workspace tree/editor with file creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                               |
+| `Aoi's IDE`      | Local workspace tree/editor with file creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                              |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
 
 ## PE Analyst + IDA MCP
@@ -166,17 +166,16 @@ Alternative Worker uses a separate git worktree and must produce a materially di
 Reviewer and Integrator still select one winning patch rather than merging pieces from several
 attempts. Kira records the adaptive agent graph in each attempt: Planner, Context Scout, Primary
 Worker, optional Alternative Worker, Reviewer, and Integrator. The Debugger role is intentionally
-omitted; validation failures feed back into the worker/reviewer loop.
-Kira also limits concurrent calls to the same provider/baseUrl/model route: local model routes
-(`llama.cpp`, localhost, or private-network base URLs) run one at a time, while other routes allow
-up to two concurrent calls.
-Each model call sets the response output token cap to 8192 tokens.
-Kira does not impose a fixed tool-call count cap; cancellation, request timeouts, and execution
-policy checks remain the stopping controls.
-When final review, Integrator selection, validation, or a timeout blocks the work, Kira leaves a
-main-model status comment with the current state, concrete issues, possible solutions, and, when the
-solution is review-pass feedback, a `Retry with feedback` section. Blocked work with that section can
-be resumed from the Kira details panel; the retry comment is fed back into the next worker attempt.
+omitted; validation failures feed back into the worker/reviewer loop. Kira also limits concurrent
+calls to the same provider/baseUrl/model route: local model routes (`llama.cpp`, localhost, or
+private-network base URLs) run one at a time, while other routes allow up to two concurrent calls.
+Each model call sets the response output token cap to 8192 tokens. Kira does not impose a fixed
+tool-call count cap; cancellation, request timeouts, and execution policy checks remain the stopping
+controls. When final review, Integrator selection, validation, or a timeout blocks the work, Kira
+leaves a main-model status comment with the current state, concrete issues, possible solutions, and,
+when the solution is review-pass feedback, a `Retry with feedback` section. Blocked work with that
+section can be resumed from the Kira details panel; the retry comment is fed back into the next
+worker attempt.
 
 When `autoCommit` is enabled for a git project, approved work is committed in the winning isolated
 worktree and then integrated back into the primary project worktree with a short project-level
@@ -305,16 +304,17 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
         "model": "gpt-5.3-codex"
       },
       {
-        "name": "OpenCode Go worker",
-        "provider": "opencode-go",
-        "apiKey": "YOUR_OPENCODE_API_KEY",
-        "model": "opencode-go/kimi-k2.5"
+        "name": "DeepSeek API worker",
+        "provider": "deepseek",
+        "apiKey": "YOUR_DEEPSEEK_API_KEY",
+        "baseUrl": "https://api.deepseek.com",
+        "model": "deepseek-v4-pro",
+        "reasoningEffort": "high"
       }
     ],
     "reviewerLlm": {
-      "provider": "opencode",
-      "apiKey": "YOUR_OPENCODE_API_KEY",
-      "model": "opencode/claude-sonnet-4-6"
+      "provider": "claude-cli",
+      "model": "claude-sonnet-4-6"
     }
   },
   "openvscode": {
@@ -342,7 +342,8 @@ Notes:
 - `openvscode.workspacePath` is the real workspace used by Aoi's IDE and the IDE tooling APIs.
 - If `openvscode.workspacePath` is omitted, the current code defaults to the repo root.
 - `gmail.clientId` must be a Google OAuth **Desktop App** client ID.
-- `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled.
+- `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled unless it uses
+  a local login CLI provider.
 - `kira.workRootDirectory` can point either to a project folder itself or to a parent folder that
   contains multiple project folders. If the root has project markers such as `.git`, `package.json`,
   or `requirements.txt`, Kira treats that root as one project.
@@ -351,6 +352,12 @@ Notes:
   model.
 - `provider: "codex-cli"` runs the local Codex CLI with your existing ChatGPT login. Run
   `codex login` once outside Kira before using it.
+- `provider: "claude-cli"` runs the local Claude CLI with your existing Claude Code auth session.
+  Run `claude auth` or finish the Claude Code login flow once before using it.
+- `provider: "deepseek"` uses the official DeepSeek OpenAI-compatible API at
+  `https://api.deepseek.com`. Current presets include `deepseek-v4-pro` and `deepseek-v4-flash`;
+  `deepseek-chat` and `deepseek-reasoner` are kept only as compatibility aliases until July
+  24, 2026.
 - `provider: "opencode"` and `"opencode-go"` use OpenCode Zen/Go API keys. Kira defaults their base
   URLs to `https://opencode.ai/zen` and `https://opencode.ai/zen/go`; set `apiStyle` only when you
   need to force `openai-chat`, `openai-responses`, or `anthropic-messages`.

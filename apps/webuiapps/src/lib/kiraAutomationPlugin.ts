@@ -7,10 +7,12 @@ import { promisify } from 'util';
 import { basename, dirname, join, resolve } from 'path';
 import type { Plugin } from 'vite';
 import {
+  applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesOutputSchema,
   applyOpenAiResponsesRuntimeOptions,
   getEffectiveModelRuntimeOptions,
   getExplicitModelRuntimeOptions,
+  isDeepSeekProvider,
   normalizeProviderModelId,
   normalizeReasoningEffort,
   normalizeReasoningSummary,
@@ -34,6 +36,7 @@ type LLMProvider =
   | 'openrouter'
   | 'opencode'
   | 'opencode-go'
+  | 'claude-cli'
   | 'codex-cli';
 
 type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
@@ -3932,7 +3935,7 @@ function loadLlmConfig(configFile: string): LLMConfig | null {
     if (!fs.existsSync(configFile)) return null;
     const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as { llm?: LLMConfig };
     if (!raw.llm?.model?.trim()) return null;
-    if (raw.llm.provider !== 'codex-cli' && !raw.llm.baseUrl?.trim()) return null;
+    if (!isLoginCliProvider(raw.llm.provider) && !raw.llm.baseUrl?.trim()) return null;
     return {
       ...raw.llm,
       apiKey: raw.llm.apiKey ?? '',
@@ -3977,6 +3980,7 @@ function getOptionalApiStyle(value: unknown): LLMApiStyle | undefined {
 }
 
 function defaultBaseUrlForProvider(provider: LLMProvider | undefined): string | undefined {
+  if (provider === 'deepseek') return 'https://api.deepseek.com';
   if (provider === 'opencode') return 'https://opencode.ai/zen';
   if (provider === 'opencode-go') return 'https://opencode.ai/zen/go';
   return undefined;
@@ -3984,6 +3988,14 @@ function defaultBaseUrlForProvider(provider: LLMProvider | undefined): string | 
 
 function isCodexCliProvider(provider: LLMProvider | undefined): boolean {
   return provider === 'codex-cli';
+}
+
+function isClaudeCliProvider(provider: LLMProvider | undefined): boolean {
+  return provider === 'claude-cli';
+}
+
+function isLoginCliProvider(provider: LLMProvider | undefined): boolean {
+  return isCodexCliProvider(provider) || isClaudeCliProvider(provider);
 }
 
 function isOpenCodeProvider(provider: LLMProvider | undefined): boolean {
@@ -4176,14 +4188,20 @@ export async function runWithKiraModelRouteLimit<T>(
   }
 }
 
-function resolveOpenCodeApiKey(config: LLMConfig): string {
-  if (!isOpenCodeProvider(config.provider) || config.apiKey.trim()) return config.apiKey;
-  return (
-    process.env.OPENCODE_API_KEY ??
-    process.env.OPENCODE_ZEN_API_KEY ??
-    process.env.OPENCODE_GO_API_KEY ??
-    ''
-  );
+function resolveProviderApiKey(config: LLMConfig): string {
+  if (config.apiKey.trim()) return config.apiKey;
+  if (isOpenCodeProvider(config.provider)) {
+    return (
+      process.env.OPENCODE_API_KEY ??
+      process.env.OPENCODE_ZEN_API_KEY ??
+      process.env.OPENCODE_GO_API_KEY ??
+      ''
+    );
+  }
+  if (isDeepSeekProvider(config.provider)) {
+    return process.env.DEEPSEEK_API_KEY ?? '';
+  }
+  return config.apiKey;
 }
 
 function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
@@ -4283,7 +4301,7 @@ export function resolveRoleLlmConfig(
     (canInheritBaseProviderSettings ? baseConfig?.parallelToolCalls : undefined);
 
   if (!provider) return null;
-  if (isCodexCliProvider(provider as LLMProvider)) {
+  if (isLoginCliProvider(provider as LLMProvider)) {
     return {
       provider: provider as LLMProvider,
       apiKey: '',
@@ -4430,7 +4448,10 @@ function hasVersionSuffix(url: string): boolean {
   return /\/v\d+\/?$/.test(url);
 }
 
-function getOpenAICompletionsPath(baseUrl: string): string {
+function getOpenAICompletionsPath(baseUrl: string, provider?: LLMProvider): string {
+  if (isDeepSeekProvider(provider)) {
+    return 'chat/completions';
+  }
   return hasVersionSuffix(baseUrl) ? 'chat/completions' : 'v1/chat/completions';
 }
 
@@ -4620,8 +4641,11 @@ async function callOpenAiCompatible(
   usage?: KiraLlmTokenUsage;
   rateLimit?: KiraLlmRateLimitSnapshot;
 }> {
-  const targetUrl = joinUrl(config.baseUrl, getOpenAICompletionsPath(config.baseUrl));
-  const apiKey = resolveOpenCodeApiKey(config);
+  const targetUrl = joinUrl(
+    config.baseUrl,
+    getOpenAICompletionsPath(config.baseUrl, config.provider),
+  );
+  const apiKey = resolveProviderApiKey(config);
   const messages = history.map((message) => {
     if (message.role === 'assistant') {
       const reasoningContent = getOpenAiAssistantReasoningContent(config, message);
@@ -4659,6 +4683,7 @@ async function callOpenAiCompatible(
     body.thinking = { type: 'disabled' };
     body.reasoning = { enabled: false };
   }
+  applyDeepSeekChatRuntimeOptions(body, config);
   if (tools.length > 0) body.tools = toOpenAITools(tools);
 
   const headers: Record<string, string> = {
@@ -4727,7 +4752,7 @@ async function callOpenAiResponses(
     config.baseUrl,
     hasVersionSuffix(config.baseUrl) ? 'responses' : 'v1/responses',
   );
-  const apiKey = resolveOpenCodeApiKey(config);
+  const apiKey = resolveProviderApiKey(config);
   const input: Array<Record<string, unknown>> = [];
 
   for (const message of history) {
@@ -4848,7 +4873,7 @@ async function callAnthropicCompatible(
   rateLimit?: KiraLlmRateLimitSnapshot;
 }> {
   const targetUrl = joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl));
-  const apiKey = resolveOpenCodeApiKey(config);
+  const apiKey = resolveProviderApiKey(config);
   const messages = history.map((message) => {
     if (message.role === 'tool') {
       return {
@@ -6298,6 +6323,22 @@ function getCodexCliRuntimeConfigArgs(config: LLMConfig): string[] {
   return args;
 }
 
+function getClaudeCliEffortArg(config: LLMConfig): string | undefined {
+  const runtimeOptions = getExplicitModelRuntimeOptions(config);
+  if (!runtimeOptions.reasoningEffort || runtimeOptions.reasoningEffort === 'none') {
+    return undefined;
+  }
+  if (runtimeOptions.reasoningEffort === 'minimal') {
+    return 'low';
+  }
+  return runtimeOptions.reasoningEffort;
+}
+
+function getClaudeCliRuntimeConfigArgs(config: LLMConfig): string[] {
+  const effort = getClaudeCliEffortArg(config);
+  return effort ? ['--effort', effort] : [];
+}
+
 function formatModelRuntimeTrace(config: LLMConfig): string {
   const runtimeOptions = getEffectiveModelRuntimeOptions(config);
   const details = [
@@ -6336,6 +6377,27 @@ export function buildCodexCliArgs(
   }
   args.push(...getCodexCliRuntimeConfigArgs(config));
   args.push('-');
+  return args;
+}
+
+export function buildClaudeCliArgs(config: LLMConfig, writable: boolean): string[] {
+  const args = [
+    '--print',
+    '--input-format',
+    'text',
+    '--output-format',
+    'text',
+    '--no-session-persistence',
+    '--permission-mode',
+    writable ? 'bypassPermissions' : 'plan',
+  ];
+  if (writable) {
+    args.push('--allow-dangerously-skip-permissions');
+  }
+  if (config.model.trim()) {
+    args.push('--model', config.model.trim());
+  }
+  args.push(...getClaudeCliRuntimeConfigArgs(config));
   return args;
 }
 
@@ -6689,6 +6751,27 @@ async function runCodexCliAgent(
   }
 }
 
+async function runClaudeCliAgent(
+  config: LLMConfig,
+  projectRoot: string,
+  prompt: string,
+  systemPrompt: string,
+  writable: boolean,
+  signal?: AbortSignal,
+): Promise<string> {
+  const command = config.command?.trim() || 'claude';
+  const input = buildExternalAgentPrompt(systemPrompt, prompt);
+  const result = await runProcessWithInput(
+    command,
+    buildClaudeCliArgs(config, writable),
+    projectRoot,
+    input,
+    signal,
+    EXTERNAL_AGENT_TIMEOUT_MS,
+  );
+  return result.stdout.trim();
+}
+
 async function runToolAgent(
   config: LLMConfig,
   projectRoot: string,
@@ -6701,7 +6784,7 @@ async function runToolAgent(
   options?: RunToolAgentOptions,
 ): Promise<string> {
   const requestConfig =
-    options?.promptCacheKey && !isCodexCliProvider(config.provider)
+    options?.promptCacheKey && !isLoginCliProvider(config.provider)
       ? { ...config, promptCacheKey: options.promptCacheKey }
       : config;
   recordAttemptExploration(attemptState, formatModelRuntimeTrace(requestConfig));
@@ -6720,6 +6803,25 @@ async function runToolAgent(
     return runWithKiraModelRouteLimit(
       requestConfig,
       () => runCodexCliAgent(requestConfig, projectRoot, prompt, systemPrompt, writable, signal),
+      signal,
+    );
+  }
+  if (isClaudeCliProvider(requestConfig.provider)) {
+    recordAttemptCommand(
+      attemptState,
+      [
+        'claude --print',
+        `--permission-mode ${writable ? 'bypassPermissions' : 'plan'}`,
+        requestConfig.model ? `--model ${requestConfig.model}` : '',
+        ...getClaudeCliRuntimeConfigArgs(requestConfig),
+      ]
+        .filter(Boolean)
+        .join(' '),
+    );
+    recordAttemptExploration(attemptState, `external_agent ${requestConfig.provider}`);
+    return runWithKiraModelRouteLimit(
+      requestConfig,
+      () => runClaudeCliAgent(requestConfig, projectRoot, prompt, systemPrompt, writable, signal),
       signal,
     );
   }

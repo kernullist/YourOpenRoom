@@ -71,7 +71,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 | `Evidence Vault` | 구조화된 증거/조사 파일을 보는 로컬 자료 보관 앱                                                                                |
 | `CyberNews`      | RSS 기반 실시간 보안 뉴스와 case-board 조사 화면                                                                                |
 | `Calendar`       | 월간 탐색, 선택일 agenda, 날짜 선택과 `Date & Time` 동기화, 리마인더 메타데이터를 지원하는 로컬 일정 플래너                     |
-| `Notes`          | 고정 컬렉션, 태그/검색 필터, 정렬, 서식 도구, 안전한 삭제 확인, 저장되는 보기 상태, 미리보기가 있는 로컬 Markdown 노트           |
+| `Notes`          | 고정 컬렉션, 태그/검색 필터, 정렬, 서식 도구, 안전한 삭제 확인, 저장되는 보기 상태, 미리보기가 있는 로컬 Markdown 노트          |
 | `Browser Reader` | 내장 브라우징, reader 추출, 북마크/히스토리, Google 결과 대체 UI, Notes 저장                                                    |
 | `Kira`           | 작업 보드, work item/comment, discovery 분석, 워커 배정 전 clarification 질문, 자동화 handoff                                   |
 | `Aoi's IDE`      | 새 파일 생성이 가능한 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령                    |
@@ -173,21 +173,19 @@ Alternative Worker 는 별도 git worktree 에서 Primary 와 다른 접근의 a
 Integrator 는 여러 patch 를 직접 섞지 않고 하나의 winning patch 만 선택합니다. 각 attempt 에는
 Planner, Context Scout, Primary Worker, 조건부 Alternative Worker, Reviewer, Integrator 로 구성된
 adaptive agent graph 가 저장됩니다. Debugger 역할은 의도적으로 제외했고, 검증 실패는 worker/reviewer
-루프로 다시 전달합니다.
-같은 provider/baseUrl/model route 로 동시에 모델을 호출할 때는 로컬 모델 route(`llama.cpp`,
-localhost, private-network base URL)는 1개씩만 실행하고, 그 외 route 는 최대 2개까지만 동시에
-실행합니다.
-각 모델 호출의 response output token cap 은 8192 token 으로 설정됩니다.
-Kira 는 고정 tool-call 횟수 cap 을 두지 않으며, 중단 기준은 cancellation, request timeout,
-execution policy check 입니다.
-최종 리뷰, Integrator 선택, 검증, timeout 등으로 작업이 막히면 main model 이 상태 댓글을 남깁니다.
-댓글에는 현재 상태, 구체적인 이슈, 가능한 해결책이 포함되고, 해결책이 리뷰 통과용 피드백이면
-`Retry with feedback` 섹션이 함께 저장됩니다. 이런 blocked 작업은 Kira 상세 패널에서
-`피드백으로 재시도`를 눌러 바로 재개할 수 있고, 해당 피드백은 다음 worker attempt 로 전달됩니다.
+루프로 다시 전달합니다. 같은 provider/baseUrl/model route 로 동시에 모델을 호출할 때는 로컬 모델
+route(`llama.cpp`, localhost, private-network base URL)는 1개씩만 실행하고, 그 외 route 는 최대
+2개까지만 동시에 실행합니다. 각 모델 호출의 response output token cap 은 8192 token 으로 설정됩니다.
+Kira 는 고정 tool-call 횟수 cap 을 두지 않으며, 중단 기준은 cancellation, request timeout, execution
+policy check 입니다. 최종 리뷰, Integrator 선택, 검증, timeout 등으로 작업이 막히면 main model 이
+상태 댓글을 남깁니다. 댓글에는 현재 상태, 구체적인 이슈, 가능한 해결책이 포함되고, 해결책이 리뷰
+통과용 피드백이면 `Retry with feedback` 섹션이 함께 저장됩니다. 이런 blocked 작업은 Kira 상세
+패널에서 `피드백으로 재시도`를 눌러 바로 재개할 수 있고, 해당 피드백은 다음 worker attempt 로
+전달됩니다.
 
 git 프로젝트에서 `autoCommit` 이 켜져 있으면 승인된 작업은 winning 격리 worktree 에서 먼저 커밋한
-뒤, 짧은 프로젝트 단위 cherry-pick 락을 잡고 기본 프로젝트 worktree 로 통합합니다. Alternative Worker
-가 켜지고 `autoCommit` 이 꺼져 있어도 Kira 는 attempt 별 worktree 를 사용하고, 선택된 diff 를
+뒤, 짧은 프로젝트 단위 cherry-pick 락을 잡고 기본 프로젝트 worktree 로 통합합니다. Alternative
+Worker 가 켜지고 `autoCommit` 이 꺼져 있어도 Kira 는 attempt 별 worktree 를 사용하고, 선택된 diff 를
 `cherry-pick --no-commit` 으로 통합합니다. 기본 worktree 에 겹치는 dirty file, staged change,
 cherry-pick 충돌이 있으면 로컬 작업을 덮어쓰지 않고 task 를 blocked 로 전환하며, 수동 복구를 위해
 winning worktree 를 남깁니다.
@@ -311,16 +309,17 @@ pnpm dev
         "model": "gpt-5.3-codex"
       },
       {
-        "name": "OpenCode Go worker",
-        "provider": "opencode-go",
-        "apiKey": "YOUR_OPENCODE_API_KEY",
-        "model": "opencode-go/kimi-k2.5"
+        "name": "DeepSeek API worker",
+        "provider": "deepseek",
+        "apiKey": "YOUR_DEEPSEEK_API_KEY",
+        "baseUrl": "https://api.deepseek.com",
+        "model": "deepseek-v4-pro",
+        "reasoningEffort": "high"
       }
     ],
     "reviewerLlm": {
-      "provider": "opencode",
-      "apiKey": "YOUR_OPENCODE_API_KEY",
-      "model": "opencode/claude-sonnet-4-6"
+      "provider": "claude-cli",
+      "model": "claude-sonnet-4-6"
     }
   },
   "openvscode": {
@@ -348,7 +347,8 @@ pnpm dev
 - `openvscode.workspacePath` 는 Aoi's IDE 와 IDE 툴 API 가 바라보는 실제 로컬 프로젝트입니다
 - `openvscode.workspacePath` 가 없으면 현재 코드는 저장소 루트를 기본값으로 사용합니다
 - `gmail.clientId` 는 Google OAuth **Desktop App** client ID 여야 합니다
-- `dialogLlm` 을 쓰려면 최소 `baseUrl` 과 `model` 이 필요합니다
+- `dialogLlm` 을 쓰려면 최소 `baseUrl` 과 `model` 이 필요합니다. 단, 로컬 로그인 CLI provider 는
+  `model` 만 있으면 됩니다
 - `kira.workRootDirectory` 는 프로젝트 폴더 자체를 가리켜도 되고, 여러 프로젝트 폴더를 담은 상위
   폴더를 가리켜도 됩니다. 루트에 `.git`, `package.json`, `requirements.txt` 같은 프로젝트 마커가
   있으면 Kira 는 그 루트 자체를 하나의 프로젝트로 취급합니다
@@ -356,6 +356,11 @@ pnpm dev
   3개 항목까지만 사용합니다. 각 worker 는 서로 다른 provider/model 을 사용할 수 있습니다
 - `provider: "codex-cli"` 는 로컬 Codex CLI 를 ChatGPT 로그인 세션으로 실행합니다. Kira 에서 쓰기
   전에 터미널에서 `codex login` 을 한 번 완료해야 합니다
+- `provider: "claude-cli"` 는 로컬 Claude CLI 를 Claude Code 인증 세션으로 실행합니다. 쓰기 전에
+  터미널에서 `claude auth` 또는 Claude Code 로그인 흐름을 한 번 완료해야 합니다
+- `provider: "deepseek"` 는 공식 DeepSeek OpenAI-compatible API `https://api.deepseek.com` 을
+  사용합니다. 현재 preset 은 `deepseek-v4-pro`, `deepseek-v4-flash` 를 포함하고, `deepseek-chat`,
+  `deepseek-reasoner` 는 2026년 7월 24일까지의 호환 alias 로만 남겨둡니다
 - `provider: "opencode"` 와 `"opencode-go"` 는 OpenCode Zen/Go API 키를 사용합니다. 기본 base URL 은
   각각 `https://opencode.ai/zen`, `https://opencode.ai/zen/go` 이며, 필요할 때만 `apiStyle` 로
   `openai-chat`, `openai-responses`, `anthropic-messages` 중 하나를 강제하면 됩니다
