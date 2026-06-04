@@ -68,6 +68,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Calendar`       | Local event/reminder planner with month navigation, selected-day agenda, date picker to `Date & Time` sync, and reminder metadata saved in app storage                               |
 | `Notes`          | Local markdown notes with pinned collections, tag/search filtering, sorting, formatting helpers, safer delete confirmation, autosaved view state, and preview mode                   |
 | `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
+| `Room Shop`      | Cheerful desktop decoration shop for previewing, applying, and resetting built-in Aoi room wallpaper looks and desk mood themes                                                      |
 | `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
 | `Aoi's IDE`      | Local workspace tree/editor with file creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                              |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |

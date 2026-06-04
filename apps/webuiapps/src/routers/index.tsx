@@ -20,6 +20,7 @@ const BrowserReader = lazy(() => import('@/pages/BrowserReader'));
 const Kira = lazy(() => import('@/pages/Kira'));
 const OpenVSCode = lazy(() => import('@/pages/OpenVSCode'));
 const PeAnalyzer = lazy(() => import('@/pages/PeAnalyzer'));
+const RoomShop = lazy(() => import('@/pages/RoomShop'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -156,6 +157,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <PeAnalyzer />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/roomshop',
+    element: (
+      <React.Suspense>
+        <RoomShop />
       </React.Suspense>
     ),
   },

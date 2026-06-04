@@ -22,7 +22,7 @@
   width: 100%;
   height: 100%;
   object-fit: cover;
-  filter: saturate(1.08) contrast(1.04) brightness(0.82);
+  filter: var(--room-live-filter, saturate(1.08) contrast(1.04) brightness(0.82));
   transform: scale(1.03);
 }
 
@@ -51,6 +51,7 @@
 }
 
 .desktop {
+  box-sizing: border-box;
   width: 100%;
   height: 100%;
   position: absolute;
@@ -59,28 +60,34 @@
   display: flex;
   align-items: flex-start;
   padding: 32px;
-  background: linear-gradient(
-    to right,
-    rgba(0, 0, 0, 0.7) 0%,
-    rgba(0, 0, 0, 0.3) 14%,
-    rgba(0, 0, 0, 0.05) 35%,
-    rgba(0, 0, 0, 0.05) 70%,
-    rgba(0, 0, 0, 0.3) 90%,
-    rgba(0, 0, 0, 0.65) 100%
+  background: var(
+    --room-desktop-overlay,
+    linear-gradient(
+      to right,
+      rgba(0, 0, 0, 0.7) 0%,
+      rgba(0, 0, 0, 0.3) 14%,
+      rgba(0, 0, 0, 0.05) 35%,
+      rgba(0, 0, 0, 0.05) 70%,
+      rgba(0, 0, 0, 0.3) 90%,
+      rgba(0, 0, 0, 0.65) 100%
+    )
   );
   z-index: 1;
   transition: padding-left 0.2s ease;
 }
 
 .desktopLive {
-  background: linear-gradient(
-    to right,
-    rgba(0, 0, 0, 0.42) 0%,
-    rgba(0, 0, 0, 0.14) 16%,
-    rgba(0, 0, 0, 0.04) 36%,
-    rgba(0, 0, 0, 0.04) 70%,
-    rgba(0, 0, 0, 0.16) 88%,
-    rgba(0, 0, 0, 0.44) 100%
+  background: var(
+    --room-desktop-live-overlay,
+    linear-gradient(
+      to right,
+      rgba(0, 0, 0, 0.42) 0%,
+      rgba(0, 0, 0, 0.14) 16%,
+      rgba(0, 0, 0, 0.04) 36%,
+      rgba(0, 0, 0, 0.04) 70%,
+      rgba(0, 0, 0, 0.16) 88%,
+      rgba(0, 0, 0, 0.44) 100%
+    )
   );
 }
 
@@ -184,9 +191,9 @@
   z-index: 99999;
   padding: 8px 16px;
   border-radius: 24px;
-  background: rgba(0, 0, 0, 0.45);
+  background: var(--room-bottom-bar-background, rgba(0, 0, 0, 0.45));
   backdrop-filter: blur(16px);
-  border: 1px solid rgba(255, 255, 255, 0.1);
+  border: 1px solid var(--room-bottom-bar-border, rgba(255, 255, 255, 0.1));
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
   transition:
     left 0.2s ease,
@@ -264,13 +271,13 @@
   position: relative;
   width: 38px;
   height: 38px;
-  background: #faea5f;
+  background: var(--room-accent, #faea5f);
   color: #121214;
   border: 2px solid rgba(255, 255, 255, 0.3);
 
   &:hover {
     transform: scale(1.1);
-    background: #faea5f;
+    background: var(--room-accent, #faea5f);
   }
 }
 
@@ -292,7 +299,7 @@
   height: 42px;
   border-radius: 50%;
   border: 2px solid rgba(255, 255, 255, 0.2);
-  background: rgba(250, 234, 95, 0.9);
+  background: var(--room-accent, rgba(250, 234, 95, 0.9));
   color: #121214;
   cursor: pointer;
   display: flex;
@@ -304,7 +311,7 @@
 
   &:hover {
     transform: scale(1.12);
-    background: #faea5f;
+    background: var(--room-accent, #faea5f);
   }
 }
 

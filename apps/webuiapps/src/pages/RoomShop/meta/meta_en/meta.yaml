@@ -1,0 +1,42 @@
+app_id: 21
+app_name: roomshop
+app_display_name: Room Shop
+version: '1.0.0'
+description: >
+  Room Shop is a cheerful desktop decoration app. It lets the user preview, apply, and reset
+  wallpaper and room mood items that tint the YourOpenRoom shell while preserving the Aoi room.
+displayDesc: >
+  Browse cozy room themes, preview them on the desktop, and apply the selected Aoi room look.
+
+actions:
+  - type: REFRESH_ROOM_SHOP
+    name: Refresh Room Shop
+    description: >
+      Reload the Room Shop state from app storage and refresh the visible shop UI.
+    params: []
+
+  - type: PREVIEW_ROOM_ITEM
+    name: Preview Room Item
+    description: >
+      Temporarily preview a Room Shop item on the desktop without saving it as the active theme.
+    params:
+      - name: itemId
+        type: string
+        description: Room Shop item ID, for example rainy-window-desk
+        required: true
+
+  - type: APPLY_ROOM_ITEM
+    name: Apply Room Item
+    description: >
+      Apply and persist a Room Shop item as the active wallpaper look or desk mood.
+    params:
+      - name: itemId
+        type: string
+        description: Room Shop item ID, for example lofi-cafe-night
+        required: true
+
+  - type: RESET_ROOM_THEME
+    name: Reset Room Theme
+    description: >
+      Restore the default Aoi Commander Room wallpaper and shell mood.
+    params: []

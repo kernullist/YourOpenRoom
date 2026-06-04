@@ -46,4 +46,23 @@ describe('validateAppDataWrite()', () => {
       expect(result.errors[0]).toContain('folder must be one of');
     }
   });
+
+  it('validates a room shop state payload', () => {
+    const result = validateAppDataWrite(
+      'apps/roomshop/data/state.json',
+      JSON.stringify({
+        activeWallpaperId: 'rainy-window-desk',
+        activeMoodId: 'rainy-window-desk',
+        previewItemId: null,
+        liveWallpaper: false,
+        updatedAt: 1776200000000,
+      }),
+    );
+
+    expect(result?.ok).toBe(true);
+    if (result && result.ok) {
+      expect(result.schemaId).toBe('roomshop-state');
+      expect(JSON.parse(result.normalizedContent).activeWallpaperId).toBe('rainy-window-desk');
+    }
+  });
 });

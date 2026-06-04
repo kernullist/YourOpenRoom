@@ -6,7 +6,7 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including Notes, Kira, Aoi's IDE, and PE Analyst
+- built-in apps under `src/pages/`, including Notes, Room Shop, Kira, Aoi's IDE, and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
   Analyst, TTS lab synthesis, session persistence, and config storage work in local development
@@ -20,8 +20,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - chat panel
   - app windows
 - `src/pages/`
-  - built-in desktop apps such as Email, Kira, Browser Reader, Notes, Calendar, YouTube, Chess,
-    OpenVSCode, and PE Analyst
+  - built-in desktop apps such as Email, Room Shop, Kira, Browser Reader, Notes, Calendar, YouTube,
+    Chess, OpenVSCode, and PE Analyst
 - `src/routers/`
   - standalone desktop routing
 - `src/common.scss`
@@ -128,6 +128,9 @@ If you run only a static build without equivalent backend endpoints, these featu
 
 - Desktop icons can be rearranged with drag and drop. The order is stored in browser local storage
   and normalized so newly added apps appear after the user's saved order.
+- Room Shop stores the active wallpaper look and desk mood in app data, while the shell keeps a
+  small local-storage snapshot for fast startup and preview/apply/reset events. Non-default looks
+  preserve the default Aoi live room as the desktop base and apply overlay/filter tokens on top.
 - App windows expose minimize, maximize/restore, and close controls. Maximized windows use the
   available desktop area outside the chat panel.
 - Minimized app windows remain mounted so long-running in-app behavior, such as YouTube playback,

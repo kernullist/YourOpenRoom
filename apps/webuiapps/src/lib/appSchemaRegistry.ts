@@ -230,6 +230,20 @@ const APP_SCHEMAS: AppSchemaDocument[] = [
     },
   },
   {
+    id: 'roomshop-state',
+    appName: 'roomshop',
+    entityName: 'state',
+    pathPattern: /^apps\/roomshop\/data\/state\.json$/,
+    description: 'Room Shop active theme state',
+    fields: {
+      activeWallpaperId: primitive('string', { required: true }),
+      activeMoodId: primitive('string', { required: true }),
+      previewItemId: primitive('nullable-string'),
+      liveWallpaper: primitive('boolean', { required: true }),
+      updatedAt: primitive('integer', { required: true }),
+    },
+  },
+  {
     id: 'calendar-event',
     appName: 'calendar',
     entityName: 'event',

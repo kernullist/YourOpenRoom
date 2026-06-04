@@ -208,6 +208,16 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#0f766e',
     defaultSize: { width: 1320, height: 820 },
   },
+  {
+    appId: 21,
+    appName: 'roomshop',
+    route: '/roomshop',
+    displayName: 'Room Shop',
+    sourceDir: 'RoomShop',
+    icon: 'Palette',
+    color: '#fb9f3f',
+    defaultSize: { width: 1120, height: 720 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

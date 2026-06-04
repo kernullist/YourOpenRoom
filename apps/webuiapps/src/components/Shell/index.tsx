@@ -31,6 +31,7 @@ import {
   Upload,
   FileImage,
   FileArchive,
+  Palette,
   type LucideIcon,
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
@@ -61,6 +62,17 @@ import type { ModConfig } from '@/lib/modManager';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { logger } from '@/lib/logger';
 import { OPEN_APP_SETTINGS_EVENT } from '@/lib/settingsEvents';
+import {
+  ROOM_THEME_EVENT,
+  ROOM_THEME_STORAGE_KEY,
+  buildRoomThemeSnapshot,
+  getRoomThemeCssVars,
+  getWallpaperBackgroundImage,
+  isVideoWallpaper,
+  loadRoomThemeState,
+  normalizeRoomThemeState,
+  type RoomThemeState,
+} from '@/lib/roomTheme';
 import styles from './index.module.scss';
 
 function useWindows() {
@@ -87,18 +99,13 @@ const ICON_MAP: Record<string, LucideIcon> = {
   Code2,
   FileArchive,
   MessageCircle,
+  Palette,
 };
 
 const DESKTOP_APPS = getDesktopApps().map((app) => ({
   ...app,
   IconComp: ICON_MAP[app.icon] || Circle,
 }));
-
-const VIDEO_WALLPAPER =
-  'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/1609284623_1772622757413_1.mp4';
-
-const STATIC_WALLPAPER =
-  'https://cdn.openroom.ai/public-cdn-s3-us-west-2/talkie-op-img/image/437110625_1772619481913_Aoi_default_Commander_Room.jpg';
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
@@ -119,15 +126,6 @@ interface KiraAutomationEvent {
 
 interface KiraAutomationNotice extends KiraAutomationEvent {
   localId: string;
-}
-
-function isVideoUrl(url: string): boolean {
-  try {
-    const pathname = new URL(url).pathname.toLowerCase();
-    return /\.(mp4|webm|mov|ogg)$/.test(pathname);
-  } catch {
-    return false;
-  }
 }
 
 function normalizeDesktopIconOrder(value: unknown): number[] {
@@ -197,8 +195,14 @@ const Shell: React.FC = () => {
       return 'right';
     }
   });
+  const [roomThemeState, setRoomThemeState] = useState<RoomThemeState>(() => loadRoomThemeState());
+  const roomThemeSnapshot = useMemo(() => buildRoomThemeSnapshot(roomThemeState), [roomThemeState]);
+  const roomThemeCssVars = useMemo(
+    () => getRoomThemeCssVars(roomThemeSnapshot),
+    [roomThemeSnapshot],
+  );
   const [reportEnabled, setReportEnabled] = useState(true);
-  const [liveWallpaper, setLiveWallpaper] = useState(true);
+  const [liveWallpaper, setLiveWallpaper] = useState(() => roomThemeSnapshot.liveWallpaper);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [extractResult, setExtractResult] = useState<ExtractResult | null>(null);
@@ -458,13 +462,14 @@ const Shell: React.FC = () => {
       setExtracting(false);
     }
   }, [uploadedFile, generateMod]);
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  const [wallpaper, setWallpaper] = useState(VIDEO_WALLPAPER);
+  const [wallpaper, setWallpaper] = useState(() => roomThemeSnapshot.wallpaper);
   const [chatZIndex, setChatZIndex] = useState(() => claimZIndex());
   const windows = useWindows();
 
-  const bgWallpaper = isVideoUrl(wallpaper) ? STATIC_WALLPAPER : wallpaper;
-  const showVideo = liveWallpaper && isVideoUrl(wallpaper);
+  const wallpaperIsVideo = isVideoWallpaper(wallpaper);
+  const showVideo = liveWallpaper && wallpaperIsVideo;
+  const bgWallpaper = wallpaperIsVideo ? roomThemeSnapshot.staticFallback : wallpaper;
+  const chatPanelCompact = chatDockSide === 'left' || showVideo;
 
   useEffect(() => {
     const syncMaximizedWindows = () => {
@@ -478,7 +483,7 @@ const Shell: React.FC = () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', syncMaximizedWindows);
     };
-  }, [chatOpen, chatDockSide, showVideo]);
+  }, [chatOpen, chatDockSide, chatPanelCompact]);
 
   useEffect(() => {
     const handleOpenSettings = () => {
@@ -512,9 +517,41 @@ const Shell: React.FC = () => {
   useEffect(() => {
     return onOSEvent((event) => {
       if (event.type === 'SET_WALLPAPER' && typeof event.wallpaper_url === 'string') {
-        setWallpaper(event.wallpaper_url);
+        const nextWallpaper = event.wallpaper_url.trim();
+        setWallpaper(nextWallpaper);
+        if (isVideoWallpaper(nextWallpaper)) {
+          setLiveWallpaper(true);
+        }
       }
     });
+  }, []);
+
+  useEffect(() => {
+    const applyRoomThemeState = (nextState: RoomThemeState) => {
+      const normalized = normalizeRoomThemeState(nextState);
+      const snapshot = buildRoomThemeSnapshot(normalized);
+      setRoomThemeState(normalized);
+      setWallpaper(snapshot.wallpaper);
+      setLiveWallpaper(snapshot.liveWallpaper);
+    };
+
+    const handleRoomThemeEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ state?: unknown }>).detail;
+      applyRoomThemeState(normalizeRoomThemeState(detail?.state));
+    };
+
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key === null || event.key === ROOM_THEME_STORAGE_KEY) {
+        applyRoomThemeState(loadRoomThemeState());
+      }
+    };
+
+    window.addEventListener(ROOM_THEME_EVENT, handleRoomThemeEvent);
+    window.addEventListener('storage', handleStorage);
+    return () => {
+      window.removeEventListener(ROOM_THEME_EVENT, handleRoomThemeEvent);
+      window.removeEventListener('storage', handleStorage);
+    };
   }, []);
 
   useEffect(() => {
@@ -572,7 +609,8 @@ const Shell: React.FC = () => {
       className={styles.shell}
       data-testid="shell"
       style={{
-        backgroundImage: `url(${bgWallpaper})`,
+        ...roomThemeCssVars,
+        backgroundImage: getWallpaperBackgroundImage(bgWallpaper),
         backgroundSize: 'cover',
         backgroundPosition: 'center',
       }}
@@ -595,7 +633,7 @@ const Shell: React.FC = () => {
       <div
         className={`${styles.desktop} ${showVideo ? styles.desktopLive : ''} ${
           chatOpen && chatDockSide === 'left'
-            ? showVideo
+            ? chatPanelCompact
               ? styles.desktopChatLeftCompact
               : styles.desktopChatLeft
             : ''
@@ -650,7 +688,7 @@ const Shell: React.FC = () => {
         visible={chatOpen}
         zIndex={chatZIndex}
         onFocus={() => setChatZIndex(claimZIndex())}
-        compact={showVideo}
+        compact={chatPanelCompact}
       />
 
       {/* Upload Modal */}
