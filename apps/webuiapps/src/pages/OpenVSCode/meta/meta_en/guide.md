@@ -30,6 +30,8 @@ The user can also update the workspace path from inside the app.
 4. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
 5. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
+6. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
+   diffs.
 
 ## Current File Context
 

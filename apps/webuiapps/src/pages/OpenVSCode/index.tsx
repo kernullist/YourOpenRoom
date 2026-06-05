@@ -92,8 +92,8 @@ const STATE_FILE = '/state.json';
 const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
-type ActivityView = 'explorer' | 'search' | 'settings';
-type BottomPanel = 'problems' | 'output' | 'preview' | 'terminal';
+type ActivityView = 'explorer' | 'search' | 'source' | 'settings';
+type BottomPanel = 'problems' | 'output' | 'preview' | 'git' | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
@@ -171,6 +171,14 @@ interface TerminalEntry {
   durationMs: number;
   stdout: string;
   stderr: string;
+}
+
+interface GitStatusEntry {
+  raw: string;
+  path: string;
+  originalPath?: string;
+  indexStatus: string;
+  worktreeStatus: string;
 }
 
 interface ProblemItem {
@@ -587,6 +595,35 @@ function normalizeDiagnosticFilePath(
   return normalizedPath.replace(/^\/+/, '');
 }
 
+function quoteWorkspaceCommandArg(value: string): string {
+  return `"${value.replace(/\\/g, '/').replace(/"/g, '\\"')}"`;
+}
+
+function parseGitStatus(output: string): GitStatusEntry[] {
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => {
+      const rawStatus = line.slice(0, 2).padEnd(2, ' ');
+      const rawPath = line.slice(3).trim();
+      const renameParts = rawPath.split(' -> ');
+      const path = renameParts[1] || rawPath;
+      return {
+        raw: line,
+        path,
+        originalPath: renameParts[1] ? renameParts[0] : undefined,
+        indexStatus: rawStatus[0] || ' ',
+        worktreeStatus: rawStatus[1] || ' ',
+      };
+    });
+}
+
+function getGitStatusLabel(entry: GitStatusEntry): string {
+  const status = `${entry.indexStatus}${entry.worktreeStatus}`.trim();
+  return status || 'M';
+}
+
 function createProblemId(): string {
   return `problem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -625,6 +662,11 @@ const OpenVSCodePage: React.FC = () => {
   const [diagnosticItems, setDiagnosticItems] = useState<ProblemItem[]>([]);
   const [lastDiagnosticRun, setLastDiagnosticRun] = useState<DiagnosticRunState | null>(null);
   const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
+  const [gitStatusEntries, setGitStatusEntries] = useState<GitStatusEntry[]>([]);
+  const [selectedGitPath, setSelectedGitPath] = useState<string | null>(null);
+  const [gitDiffText, setGitDiffText] = useState('');
+  const [gitErrorText, setGitErrorText] = useState<string | null>(null);
+  const [isGitLoading, setIsGitLoading] = useState(false);
   const [gitBranch, setGitBranch] = useState('main');
   const [isSplitView, setIsSplitView] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -895,6 +937,22 @@ const OpenVSCodePage: React.FC = () => {
     }
   }, []);
 
+  const runWorkspaceCommand = useCallback(
+    async (command: string, timeoutMs = 10000): Promise<CommandRunResponse> => {
+      const res = await fetch('/api/openvscode/run', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ command, timeout_ms: timeoutMs }),
+      });
+      const data = (await res.json()) as CommandRunResponse & { error?: string };
+      if (!res.ok) {
+        throw new Error(data.error || `Command API error ${res.status}`);
+      }
+      return data;
+    },
+    [],
+  );
+
   const saveCurrentFile = useCallback(async () => {
     if (!activeTab) return;
     setIsSaving(true);
@@ -1108,6 +1166,65 @@ const OpenVSCodePage: React.FC = () => {
       }
     },
     [terminalCommand],
+  );
+
+  const loadGitDiff = useCallback(
+    async (path: string): Promise<string> => {
+      const quotedPath = quoteWorkspaceCommandArg(path);
+      const unstaged = await runWorkspaceCommand(`git diff -- ${quotedPath}`, 15000);
+      let diffText = unstaged.stdout.trimEnd();
+
+      if (!diffText) {
+        const staged = await runWorkspaceCommand(`git diff --cached -- ${quotedPath}`, 15000);
+        diffText = staged.stdout.trimEnd();
+      }
+
+      setSelectedGitPath(path);
+      setGitDiffText(diffText);
+      setGitErrorText(null);
+      setIsBottomPanelOpen(true);
+      setBottomPanel('git');
+      return diffText;
+    },
+    [runWorkspaceCommand],
+  );
+
+  const loadGitStatus = useCallback(async (): Promise<GitStatusEntry[]> => {
+    setIsGitLoading(true);
+    try {
+      const status = await runWorkspaceCommand('git status --short', 10000);
+      const entries = parseGitStatus(status.stdout);
+      setGitStatusEntries(entries);
+      setGitErrorText(status.exitCode === 0 ? null : status.stderr || status.stdout);
+      if (entries.length === 0) {
+        setSelectedGitPath(null);
+        setGitDiffText('');
+      } else if (!selectedGitPath || !entries.some((entry) => entry.path === selectedGitPath)) {
+        setSelectedGitPath(entries[0].path);
+        await loadGitDiff(entries[0].path);
+      }
+      return entries;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setGitStatusEntries([]);
+      setGitErrorText(message);
+      return [];
+    } finally {
+      setIsGitLoading(false);
+    }
+  }, [loadGitDiff, runWorkspaceCommand, selectedGitPath]);
+
+  const openGitStatusEntry = useCallback(
+    async (entry: GitStatusEntry) => {
+      setSelectedGitPath(entry.path);
+      setIsBottomPanelOpen(true);
+      setBottomPanel('git');
+      await loadGitDiff(entry.path);
+      if (entry.worktreeStatus !== 'D' && entry.indexStatus !== 'D') {
+        await loadFile(entry.path);
+      }
+    },
+    [loadFile, loadGitDiff],
   );
 
   const runDiagnostics = useCallback(
@@ -1535,6 +1652,14 @@ const OpenVSCodePage: React.FC = () => {
         await refreshWorkspace();
       } else if (id === 'search') {
         focusSearch();
+      } else if (id === 'source') {
+        setActivityView('source');
+        setIsSidebarOpen(true);
+        await loadGitStatus();
+      } else if (id === 'refreshGit') {
+        setActivityView('source');
+        setIsSidebarOpen(true);
+        await loadGitStatus();
       } else if (id === 'settings') {
         setActivityView('settings');
         setIsSidebarOpen(true);
@@ -1564,6 +1689,7 @@ const OpenVSCodePage: React.FC = () => {
     },
     [
       focusSearch,
+      loadGitStatus,
       previewUnsavedActiveFile,
       refreshWorkspace,
       runTerminalCommand,
@@ -1578,6 +1704,8 @@ const OpenVSCodePage: React.FC = () => {
       { id: 'saveAll', label: t('commandPalette.commands.saveAll'), shortcut: '' },
       { id: 'refresh', label: t('commandPalette.commands.refresh'), shortcut: '' },
       { id: 'search', label: t('commandPalette.commands.search'), shortcut: 'Ctrl+F' },
+      { id: 'source', label: t('commandPalette.commands.source'), shortcut: '' },
+      { id: 'refreshGit', label: t('commandPalette.commands.refreshGit'), shortcut: '' },
       { id: 'terminal', label: t('commandPalette.commands.terminal'), shortcut: 'Ctrl+`' },
       { id: 'diagnostics', label: t('commandPalette.commands.diagnostics'), shortcut: '' },
       { id: 'newFile', label: t('commandPalette.commands.newFile'), shortcut: '' },
@@ -1640,6 +1768,7 @@ const OpenVSCodePage: React.FC = () => {
       `${t('output.dirtyTabs')}: ${dirtyTabs.length}`,
       `${t('output.searchMatches')}: ${searchResult?.total_matches ?? 0}`,
       `${t('output.branch')}: ${gitBranch}`,
+      `${t('output.gitChanges')}: ${gitStatusEntries.length}`,
       `${t('output.diagnostics')}: ${
         lastDiagnosticRun
           ? t('diagnostics.summary', {
@@ -1653,6 +1782,7 @@ const OpenVSCodePage: React.FC = () => {
     [
       dirtyTabs.length,
       gitBranch,
+      gitStatusEntries.length,
       lastDiagnosticRun,
       openTabs.length,
       searchResult?.total_matches,
@@ -1841,6 +1971,12 @@ const OpenVSCodePage: React.FC = () => {
             await runSearch(query);
             return 'success';
           }
+          case 'REFRESH_GIT_STATUS': {
+            setActivityView('source');
+            setIsSidebarOpen(true);
+            const entries = await loadGitStatus();
+            return JSON.stringify({ changed_files: entries.length });
+          }
           case 'RUN_COMMAND': {
             const command = action.params?.command?.trim();
             if (!command) return 'error: missing command';
@@ -1872,6 +2008,7 @@ const OpenVSCodePage: React.FC = () => {
         diagnosticCommand,
         discardPatchPreview,
         loadFile,
+        loadGitStatus,
         patchPreview,
         previewActiveFilePatch,
         previewActiveFileReplacement,
@@ -2122,6 +2259,19 @@ const OpenVSCodePage: React.FC = () => {
             <Search size={22} />
           </button>
           <button
+            className={`${styles.activityButton} ${
+              activityView === 'source' ? styles.activityButtonActive : ''
+            }`}
+            onClick={() => {
+              setActivityView('source');
+              setIsSidebarOpen(true);
+              void loadGitStatus();
+            }}
+            title={t('activity.source')}
+          >
+            <GitBranch size={22} />
+          </button>
+          <button
             className={styles.activityButton}
             onClick={() => {
               setIsBottomPanelOpen(true);
@@ -2350,6 +2500,53 @@ const OpenVSCodePage: React.FC = () => {
               </>
             ) : null}
 
+            {activityView === 'source' ? (
+              <>
+                <div className={styles.sidebarHeader}>
+                  <div className={styles.sidebarTitle}>
+                    <span>{t('source.title')}</span>
+                    <small>
+                      {isGitLoading
+                        ? t('actions.refreshing')
+                        : t('source.changeCount', { count: gitStatusEntries.length })}
+                    </small>
+                  </div>
+                  <div className={styles.sidebarActions}>
+                    <button
+                      type="button"
+                      className={styles.iconButton}
+                      onClick={() => void loadGitStatus()}
+                      title={t('actions.refresh')}
+                    >
+                      <RefreshCw size={15} />
+                    </button>
+                  </div>
+                </div>
+                <div className={styles.sourcePanel}>
+                  {gitErrorText ? <p className={styles.inlineError}>{gitErrorText}</p> : null}
+                  {gitStatusEntries.length === 0 && !gitErrorText ? (
+                    <div className={styles.panelEmpty}>{t('source.clean')}</div>
+                  ) : null}
+                  {gitStatusEntries.map((entry) => (
+                    <button
+                      key={`${entry.raw}-${entry.path}`}
+                      className={`${styles.sourceItem} ${
+                        selectedGitPath === entry.path ? styles.sourceItemActive : ''
+                      }`}
+                      onClick={() => void openGitStatusEntry(entry)}
+                      title={
+                        entry.originalPath ? `${entry.originalPath} -> ${entry.path}` : entry.path
+                      }
+                    >
+                      <span>{getGitStatusLabel(entry)}</span>
+                      <strong>{getFileName(entry.path)}</strong>
+                      <small>{entry.path}</small>
+                    </button>
+                  ))}
+                </div>
+              </>
+            ) : null}
+
             {activityView === 'settings' ? (
               <div className={styles.settingsPanel}>
                 <div className={styles.sidebarHeader}>
@@ -2526,19 +2723,24 @@ const OpenVSCodePage: React.FC = () => {
                 {isBottomPanelOpen ? (
                   <div className={styles.bottomPanel} data-testid="openvscode-bottom-panel">
                     <div className={styles.bottomTabs}>
-                      {(['problems', 'output', 'preview', 'terminal'] as const).map((panel) => (
-                        <button
-                          key={panel}
-                          className={bottomPanel === panel ? styles.bottomTabActive : ''}
-                          onClick={() => setBottomPanel(panel)}
-                        >
-                          {t(`bottom.${panel}`)}
-                          {panel === 'problems' && problemItems.length > 0 ? (
-                            <span>{problemItems.length}</span>
-                          ) : null}
-                          {panel === 'preview' && patchPreview ? <span>1</span> : null}
-                        </button>
-                      ))}
+                      {(['problems', 'output', 'preview', 'git', 'terminal'] as const).map(
+                        (panel) => (
+                          <button
+                            key={panel}
+                            className={bottomPanel === panel ? styles.bottomTabActive : ''}
+                            onClick={() => setBottomPanel(panel)}
+                          >
+                            {t(`bottom.${panel}`)}
+                            {panel === 'problems' && problemItems.length > 0 ? (
+                              <span>{problemItems.length}</span>
+                            ) : null}
+                            {panel === 'preview' && patchPreview ? <span>1</span> : null}
+                            {panel === 'git' && gitStatusEntries.length > 0 ? (
+                              <span>{gitStatusEntries.length}</span>
+                            ) : null}
+                          </button>
+                        ),
+                      )}
                       <button
                         className={styles.panelClose}
                         onClick={() => setIsBottomPanelOpen(false)}
@@ -2694,6 +2896,33 @@ const OpenVSCodePage: React.FC = () => {
                             </>
                           ) : (
                             <div className={styles.panelEmpty}>{t('preview.empty')}</div>
+                          )}
+                        </div>
+                      ) : null}
+                      {bottomPanel === 'git' ? (
+                        <div className={styles.gitDiffPane}>
+                          <div className={styles.gitDiffHeader}>
+                            <div>
+                              <strong>{selectedGitPath || t('source.noSelection')}</strong>
+                              <span>{t('source.diffHint')}</span>
+                            </div>
+                            <button
+                              className={styles.secondaryButton}
+                              onClick={() => void loadGitStatus()}
+                              disabled={isGitLoading}
+                            >
+                              <RefreshCw size={14} />
+                              <span>
+                                {isGitLoading ? t('actions.refreshing') : t('actions.refresh')}
+                              </span>
+                            </button>
+                          </div>
+                          {gitDiffText.trim() ? (
+                            <pre>{gitDiffText}</pre>
+                          ) : (
+                            <div className={styles.panelEmpty}>
+                              {selectedGitPath ? t('source.noDiff') : t('source.noSelection')}
+                            </div>
                           )}
                         </div>
                       ) : null}

@@ -5,6 +5,7 @@ const en = {
     label: 'IDE activity',
     explorer: 'Explorer',
     search: 'Search',
+    source: 'Source Control',
     settings: 'Settings',
   },
   actions: {
@@ -71,7 +72,16 @@ const en = {
     problems: 'Problems',
     output: 'Output',
     preview: 'Preview',
+    git: 'Git',
     terminal: 'Terminal',
+  },
+  source: {
+    title: 'Source Control',
+    changeCount: '{{count}} changes',
+    clean: 'No Git changes.',
+    noSelection: 'No changed file selected',
+    noDiff: 'No diff to display.',
+    diffHint: 'Shows unstaged diff first, then staged diff when unstaged is empty.',
   },
   preview: {
     empty: 'No pending patch preview.',
@@ -96,6 +106,7 @@ const en = {
     dirtyTabs: 'Dirty tabs',
     searchMatches: 'Search matches',
     branch: 'Branch',
+    gitChanges: 'Git changes',
     diagnostics: 'Diagnostics',
   },
   diagnostics: {
@@ -118,6 +129,8 @@ const en = {
       saveAll: 'File: Save All',
       refresh: 'Workspace: Refresh Explorer',
       search: 'Search: Focus Workspace Search',
+      source: 'Source Control: Open Changes',
+      refreshGit: 'Source Control: Refresh Git Status',
       terminal: 'Terminal: Focus Terminal',
       diagnostics: 'Problems: Focus Diagnostics Command',
       newFile: 'File: New File',

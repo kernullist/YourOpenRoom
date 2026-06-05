@@ -610,6 +610,69 @@
   }
 }
 
+.sourcePanel {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.sourceItem {
+  width: 100%;
+  min-height: 46px;
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  align-items: center;
+  column-gap: 8px;
+  border: 0;
+  border-radius: 5px;
+  padding: 6px 7px;
+  color: #d7dde8;
+  background: transparent;
+  text-align: left;
+
+  > span {
+    grid-row: 1 / 3;
+    width: 24px;
+    height: 24px;
+    border-radius: 5px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #0f1117;
+    background: #f2cc60;
+    font-size: 10px;
+    font-weight: 800;
+  }
+
+  strong,
+  small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  small {
+    color: #7b8493;
+    font-size: 10px;
+  }
+}
+
+.sourceItem:hover,
+.sourceItemActive {
+  background: #1c2330;
+}
+
+.sourceItemActive {
+  box-shadow: inset 2px 0 0 #2f81f7;
+}
+
 .settingsPanel {
   min-height: 0;
   padding-bottom: 12px;
@@ -1075,6 +1138,62 @@
 .diffRemove {
   color: #ffd1d1;
   background: rgba(248, 81, 73, 0.16);
+}
+
+.gitDiffPane {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+
+  pre {
+    flex: 1;
+    min-height: 0;
+    margin: 0;
+    overflow: auto;
+    padding: 10px 12px 14px;
+    color: #c9d1d9;
+    background: #0f131b;
+    font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    line-height: 1.55;
+    white-space: pre;
+  }
+}
+
+.gitDiffHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+
+  div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  strong,
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: #d7dde8;
+    font-size: 12px;
+  }
+
+  span {
+    color: #7b8493;
+    font-size: 11px;
+  }
 }
 
 .terminalPane {

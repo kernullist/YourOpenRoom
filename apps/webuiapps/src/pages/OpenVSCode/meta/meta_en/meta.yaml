@@ -193,3 +193,7 @@ actions:
         description:
           Safe command accepted by the workspace command policy. Defaults to the current Problems
           panel command.
+  - type: REFRESH_GIT_STATUS
+    name: Refresh Git Status
+    description:
+      Refresh the Source Control panel with safe read-only git status and diff information.

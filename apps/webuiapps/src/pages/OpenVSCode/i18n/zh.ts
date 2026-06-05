@@ -5,6 +5,7 @@ const zh = {
     label: 'IDE 活动',
     explorer: '资源管理器',
     search: '搜索',
+    source: '源代码管理',
     settings: '设置',
   },
   actions: {
@@ -70,7 +71,16 @@ const zh = {
     problems: '问题',
     output: '输出',
     preview: '预览',
+    git: 'Git',
     terminal: '终端',
+  },
+  source: {
+    title: '源代码管理',
+    changeCount: '{{count}} 个修改',
+    clean: '没有 Git 修改。',
+    noSelection: '未选择修改文件',
+    noDiff: '没有可显示的 diff。',
+    diffHint: '优先显示 unstaged diff；为空时显示 staged diff。',
   },
   preview: {
     empty: '没有待处理的补丁预览。',
@@ -95,6 +105,7 @@ const zh = {
     dirtyTabs: '修改标签',
     searchMatches: '搜索匹配',
     branch: '分支',
+    gitChanges: 'Git 修改',
     diagnostics: '诊断',
   },
   diagnostics: {
@@ -117,6 +128,8 @@ const zh = {
       saveAll: '文件: 全部保存',
       refresh: '工作区: 刷新资源管理器',
       search: '搜索: 聚焦工作区搜索',
+      source: '源代码管理: 打开修改列表',
+      refreshGit: '源代码管理: 刷新 Git 状态',
       terminal: '终端: 聚焦终端',
       diagnostics: '问题: 聚焦诊断命令',
       newFile: '文件: 新建文件',

@@ -27,6 +27,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   can be inspected before applying or saving.
 - Aoi's IDE Problems panel can now run safe diagnostics, parse structured lint/typecheck/test
   findings, and jump to the reported file and line.
+- Aoi's IDE now includes a read-only Source Control panel for Git status and per-file diff review.
 - Chat tooling can now read the current Aoi's IDE editor buffer through `ide_current_file`,
   including unsaved content snapshots, and can route active-file edits through IDE app actions.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk

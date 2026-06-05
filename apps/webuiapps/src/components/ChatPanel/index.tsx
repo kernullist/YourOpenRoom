@@ -764,6 +764,7 @@ Rules:
 - Use run_command only for safe, read-only workspace verification in Aoi's IDE context, such as git status/diff or pnpm/npm test/lint/build.
 - Use structured_diagnostics when the user wants lint/typecheck/test failures in structured form instead of raw command output.
 - Use RUN_DIAGNOSTICS on Aoi's IDE when the user wants diagnostics to appear in the IDE Problems panel.
+- Use REFRESH_GIT_STATUS on Aoi's IDE when the user wants current Git changes shown in the Source Control panel.
 - Use find_references and list_exports for codebase understanding when raw text search is not enough.
 - Use peek_definition for a tight symbol definition excerpt, and rename_preview before any broad refactor or rename.
 - Use apply_semantic_rename only after rename_preview, and prefer it over raw text patching for straightforward symbol renames in the IDE workspace.

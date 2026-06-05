@@ -5,6 +5,7 @@ const ko = {
     label: 'IDE 활동',
     explorer: '탐색기',
     search: '검색',
+    source: '소스 제어',
     settings: '설정',
   },
   actions: {
@@ -71,7 +72,16 @@ const ko = {
     problems: '문제',
     output: '출력',
     preview: '미리보기',
+    git: 'Git',
     terminal: '터미널',
+  },
+  source: {
+    title: '소스 제어',
+    changeCount: '{{count}}개 변경',
+    clean: 'Git 변경 파일이 없습니다.',
+    noSelection: '선택한 변경 파일 없음',
+    noDiff: '표시할 diff가 없습니다.',
+    diffHint: 'unstaged diff를 우선 표시하고 없으면 staged diff를 표시합니다.',
   },
   preview: {
     empty: '대기 중인 패치 미리보기가 없습니다.',
@@ -96,6 +106,7 @@ const ko = {
     dirtyTabs: '변경 탭',
     searchMatches: '검색 결과',
     branch: '브랜치',
+    gitChanges: 'Git 변경',
     diagnostics: '진단',
   },
   diagnostics: {
@@ -118,6 +129,8 @@ const ko = {
       saveAll: '파일: 모두 저장',
       refresh: '워크스페이스: 탐색기 새로고침',
       search: '검색: 워크스페이스 검색 포커스',
+      source: '소스 제어: 변경 파일 열기',
+      refreshGit: '소스 제어: Git 상태 새로고침',
       terminal: '터미널: 터미널 포커스',
       diagnostics: '문제: 진단 명령 포커스',
       newFile: '파일: 새 파일',
