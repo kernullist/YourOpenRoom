@@ -2941,7 +2941,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     }
     return '/';
   };
-  const skipLegacy = env.VITE_SKIP_LEGACY === 'true';
+  const skipLegacy = env.VITE_SKIP_LEGACY !== 'false';
   const plugins: PluginOption[] = [
     llmConfigPlugin(),
     sessionDataPlugin(),

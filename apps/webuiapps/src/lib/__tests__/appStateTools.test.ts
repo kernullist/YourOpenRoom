@@ -74,7 +74,31 @@ describe('executeAppStateTool()', () => {
         minimized: false,
       },
     ]);
-    mockedGetFile.mockResolvedValue({ selectedFile: 'README.md' });
+    mockedGetFile.mockResolvedValue({
+      workspaceRoot: 'F:/kernullist/YourOpenRoom',
+      workspaceExists: true,
+      activePath: 'README.md',
+      activeFile: {
+        path: 'README.md',
+        name: 'README.md',
+        language: 'markdown',
+        dirty: true,
+        lineCount: 12,
+        charCount: 320,
+        contentTruncated: false,
+        cursor: { line: 3, column: 8 },
+      },
+      openTabs: [
+        {
+          path: 'README.md',
+          name: 'README.md',
+          language: 'markdown',
+          dirty: true,
+          lineCount: 12,
+          charCount: 320,
+        },
+      ],
+    });
     mockedLoadPersistedConfig.mockResolvedValue({
       openvscode: {
         workspacePath: 'F:/kernullist/YourOpenRoom',
@@ -86,12 +110,29 @@ describe('executeAppStateTool()', () => {
     const result = await executeAppStateTool({ app_name: 'openvscode' });
     const parsed = JSON.parse(result) as {
       app: { app_name: string };
-      state: { selectedFile: string } | null;
+      state: { activePath: string } | null;
+      state_summary: {
+        active_path: string;
+        active_file: { path: string; dirty: boolean; line_count: number };
+        open_tab_count: number;
+      };
       workspace: { workspace_path: string | null; port: number | null } | null;
     };
 
     expect(parsed.app.app_name).toBe('openvscode');
-    expect(parsed.state).toEqual({ selectedFile: 'README.md' });
+    expect(parsed.state?.activePath).toBe('README.md');
+    expect(parsed.state_summary.active_path).toBe('README.md');
+    expect(parsed.state_summary.active_file).toEqual({
+      path: 'README.md',
+      name: 'README.md',
+      language: 'markdown',
+      dirty: true,
+      cursor: { line: 3, column: 8 },
+      line_count: 12,
+      char_count: 320,
+      content_truncated: false,
+    });
+    expect(parsed.state_summary.open_tab_count).toBe(1);
     expect(parsed.workspace).toEqual({
       workspace_path: 'F:/kernullist/YourOpenRoom',
       base_url: null,

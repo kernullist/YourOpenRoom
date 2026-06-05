@@ -96,7 +96,13 @@ import {
   getAppSchemaToolDefinitions,
   isAppSchemaTool,
 } from '@/lib/appSchemaTools';
-import { executeIdeTool, getIdeToolDefinitions, isIdeTool } from '@/lib/ideTools';
+import {
+  executeIdeTool,
+  getIdeToolDefinitions,
+  getIdeToolPendingSummary,
+  isIdeMutationTool,
+  isIdeTool,
+} from '@/lib/ideTools';
 import {
   executeSemanticTool,
   getSemanticToolDefinitions,
@@ -722,6 +728,7 @@ When the user wants to interact with an app, first identify the target app from 
 2a. get_app_schema — if available, use the machine-readable schema for the target app's data files.
 3. If you do not know the exact file path yet, use workspace_search to find candidate paths before file_read.
 3a. If the user is asking about the real IDE workspace or source code, use ide_search instead.
+3a-1. If the user says current file, active file, opened file, currently visible file, 현재 파일, 활성 파일, or 열린 파일 in Aoi's IDE, first use ide_current_file or get_app_state(app_name="openvscode"). Do not guess the file path.
 3b. If the user asks for a specific symbol or definition, use open_symbol.
 4. Decide whether the action is:
    - an operation action (open, search, play, navigate, switch mode, etc.), or
@@ -737,7 +744,7 @@ When the user wants to interact with an app, first identify the target app from 
 
 Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
-- Data mutations MUST go through file_patch/file_write/file_delete. app_action only notifies the app to reload, it cannot write data.
+- Data mutations MUST go through file_patch/file_write/file_delete. app_action only notifies the app to reload, it cannot write data. Exception: Aoi's IDE active-editor actions such as APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, and REPLACE_ACTIVE_FILE intentionally edit the current editor buffer and save it when requested.
 - Operation actions do NOT require file_write when the app action itself performs the interaction.
 - After file_patch/file_write, ALWAYS call app_action with the corresponding REFRESH action.
 - Do NOT skip step 6. If the user asked to save/create/add something, you must persist the data with file_patch/file_write/file_delete. file_list alone does not save anything.
@@ -746,6 +753,9 @@ Rules:
 - Use workspace_search before file_read/file_patch/file_write whenever the exact file path is unknown.
 - workspace_search is for app storage under apps/{appName}/data. ide_search is for the real OpenVSCode workspace on disk.
 - workspace_search is read-only. Never treat it as a write or refresh action.
+- For reviewing the current IDE file, use ide_current_file. For reading a known workspace file, use ide_read_file.
+- For adding or editing the current active IDE file, prefer app_action on Aoi's IDE with APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, or REPLACE_ACTIVE_FILE so unsaved editor content is respected. Pass save=true unless the user explicitly asks for a draft-only buffer edit.
+- For editing a known IDE workspace file that is not the active editor buffer, use ide_patch_file or ide_write_file with an explicit relative path.
 - Prefer file_patch over file_write when you only need a small exact text replacement in an existing file.
 - Use preview_changes before risky file mutations when you want to inspect the exact impact first.
 - If a mutation went wrong, use undo_last_action to revert the latest reversible file change in this session.
@@ -2639,12 +2649,20 @@ const ChatPanel: React.FC<{
             }
 
             if (isIdeTool(tc.function.name)) {
-              const result = await runCachedTool(tc.function.name, params, () =>
-                executeIdeTool(params),
-              );
+              const result = isIdeMutationTool(tc.function.name)
+                ? await executeIdeTool(tc.function.name, params)
+                : await runCachedTool(tc.function.name, params, () =>
+                    executeIdeTool(tc.function.name, params),
+                  );
+              if (!/^error:/i.test(result) && isIdeMutationTool(tc.function.name)) {
+                clearToolCache();
+                if (latestDiagnosticsParams && latestDiagnosticsHadIssues) {
+                  fileMutatedSinceDiagnostics = true;
+                }
+              }
               return {
                 toolCallId: tc.id,
-                pendingSummary: `ide_search(${String(params.query || '').slice(0, 48)})`,
+                pendingSummary: getIdeToolPendingSummary(tc.function.name, params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -3066,16 +3084,23 @@ const ChatPanel: React.FC<{
 
         // ---- IDE workspace search ----
         if (isIdeTool(tc.function.name)) {
-          pendingToolCallsRef.current.push(
-            `ide_search(${String(params.query || '').slice(0, 48)})`,
-          );
+          pendingToolCallsRef.current.push(getIdeToolPendingSummary(tc.function.name, params));
           try {
-            const result = await runCachedTool(tc.function.name, params, () =>
-              executeIdeTool(params),
-            );
+            const result = isIdeMutationTool(tc.function.name)
+              ? await executeIdeTool(tc.function.name, params)
+              : await runCachedTool(tc.function.name, params, () =>
+                  executeIdeTool(tc.function.name, params),
+                );
             console.info('[ChatPanel] IDE tool result', {
+              tool: tc.function.name,
               resultPreview: result.slice(0, 200),
             });
+            if (!/^error:/i.test(result) && isIdeMutationTool(tc.function.name)) {
+              clearToolCache();
+              if (latestDiagnosticsParams && latestDiagnosticsHadIssues) {
+                fileMutatedSinceDiagnostics = true;
+              }
+            }
             const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
             currentMessages = [
               ...currentMessages,

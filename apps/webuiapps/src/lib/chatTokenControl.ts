@@ -6,6 +6,7 @@ const MAX_HISTORY_SUMMARY_CHARS = 1400;
 const MAX_HISTORY_ITEM_CHARS = 180;
 const MAX_GENERIC_TOOL_RESULT_CHARS = 2200;
 const MAX_FILE_TOOL_RESULT_CHARS = 3200;
+const MAX_IDE_FILE_CONTENT_CHARS = 12000;
 const MAX_LIST_RESULT_LINES = 60;
 const MAX_SEARCH_RESULTS = 3;
 const MAX_SEARCH_ANSWER_CHARS = 500;
@@ -143,16 +144,77 @@ function summarizeWorkspaceSearchResult(result: string): string {
         match_type: match.match_type || 'path',
         snippets: (match.snippets || []).slice(0, MAX_WORKSPACE_SNIPPETS).map((snippet) => ({
           line: snippet.line ?? 0,
-          text: truncateForTokenBudget(
-            snippet.text || '',
-            MAX_WORKSPACE_SNIPPET_CHARS,
-            '…',
-          ),
+          text: truncateForTokenBudget(snippet.text || '', MAX_WORKSPACE_SNIPPET_CHARS, '…'),
         })),
       })),
     });
   } catch {
     return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
+  }
+}
+
+function summarizeIdeFileToolResult(result: string): string {
+  try {
+    const parsed = JSON.parse(result) as {
+      path?: string;
+      source?: string;
+      line_count?: number;
+      char_count?: number;
+      range?: unknown;
+      content_truncated?: boolean;
+      content?: string;
+      active_path?: string | null;
+      active_file?: {
+        path?: string;
+        name?: string;
+        language?: string;
+        dirty?: boolean;
+        cursor?: unknown;
+        line_count?: number;
+        char_count?: number;
+        content_truncated?: boolean;
+        source?: string;
+        content?: string;
+      } | null;
+      open_tabs?: Array<Record<string, unknown>>;
+      workspace_root?: string | null;
+      workspace_exists?: boolean | null;
+      ui?: unknown;
+      updated_at?: unknown;
+    };
+
+    if (parsed.active_file) {
+      return JSON.stringify({
+        active_path: parsed.active_path ?? parsed.active_file.path ?? null,
+        active_file: {
+          ...parsed.active_file,
+          content:
+            typeof parsed.active_file.content === 'string'
+              ? truncateForTokenBudget(parsed.active_file.content, MAX_IDE_FILE_CONTENT_CHARS, '…')
+              : undefined,
+        },
+        open_tabs: (parsed.open_tabs || []).slice(0, 10),
+        workspace_root: parsed.workspace_root ?? null,
+        workspace_exists: parsed.workspace_exists ?? null,
+        ui: parsed.ui ?? null,
+        updated_at: parsed.updated_at ?? null,
+      });
+    }
+
+    return JSON.stringify({
+      path: parsed.path ?? '',
+      source: parsed.source ?? null,
+      line_count: parsed.line_count ?? null,
+      char_count: parsed.char_count ?? null,
+      range: parsed.range ?? null,
+      content_truncated: !!parsed.content_truncated,
+      content:
+        typeof parsed.content === 'string'
+          ? truncateForTokenBudget(parsed.content, MAX_IDE_FILE_CONTENT_CHARS, '…')
+          : '',
+    });
+  } catch {
+    return truncateForTokenBudget(result, MAX_IDE_FILE_CONTENT_CHARS);
   }
 }
 
@@ -218,6 +280,7 @@ function summarizeAppStateToolResult(result: string): string {
       app?: Record<string, unknown>;
       state?: unknown;
       state_summary?: unknown;
+      workspace?: unknown;
     };
 
     return JSON.stringify({
@@ -225,6 +288,7 @@ function summarizeAppStateToolResult(result: string): string {
       active_app_name: parsed.active_app_name ?? null,
       app: parsed.app ?? null,
       windows: (parsed.windows || []).slice(0, MAX_APP_STATE_WINDOWS),
+      workspace: parsed.workspace ?? null,
       state_summary: parsed.state_summary ?? null,
       state:
         parsed.state === undefined
@@ -332,14 +396,18 @@ function summarizeCheckpointToolResult(result: string): string {
 
 function summarizeAutofixMacroResult(result: string): string {
   try {
-    const parsed = JSON.parse(result) as { checkpoint_id?: string; command?: string; diagnostics?: unknown };
+    const parsed = JSON.parse(result) as {
+      checkpoint_id?: string;
+      command?: string;
+      diagnostics?: unknown;
+    };
     return JSON.stringify({
       checkpoint_id: parsed.checkpoint_id ?? null,
       command: parsed.command ?? '',
       diagnostics:
         parsed.diagnostics && typeof parsed.diagnostics === 'object'
           ? JSON.parse(summarizeDiagnosticsToolResult(JSON.stringify(parsed.diagnostics)))
-          : parsed.diagnostics ?? null,
+          : (parsed.diagnostics ?? null),
     });
   } catch {
     return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
@@ -359,6 +427,12 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
     case 'workspace_search':
     case 'ide_search':
       return summarizeWorkspaceSearchResult(trimmed);
+    case 'ide_current_file':
+    case 'ide_read_file':
+      return summarizeIdeFileToolResult(trimmed);
+    case 'ide_patch_file':
+    case 'ide_write_file':
+      return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
     case 'get_app_schema':
       return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
     case 'read_url':
@@ -443,8 +517,10 @@ function hasAppStateIntent(text: string): boolean {
 
 function hasCodebaseIntent(text: string): boolean {
   return [
+    /\b(current|active|opened?|selected|visible)\s+file\b/i,
     /\b(find|search|locate|grep|open|read|inspect|check)\b.*\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b/i,
     /\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b.*\b(find|search|locate|grep|open|read|inspect|check)\b/i,
+    /(현재|활성|열린|보이는)\s*파일/,
     /(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅).*(찾아|검색|열어|읽어|확인|검사)/,
     /(찾아|검색|열어|읽어|확인|검사).*(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅)/,
   ].some((pattern) => pattern.test(text));

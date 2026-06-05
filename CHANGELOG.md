@@ -21,6 +21,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   day.
 - Aoi's IDE can create new workspace files from the sidebar or through the `CREATE_FILE` app action,
   then opens the new file in the editor.
+- Aoi's IDE now provides a VSCode-style Monaco editor with tabs, workspace search, safe terminal
+  commands, split preview, sidebar/bottom-panel toggles, and active-file context for chat.
+- Chat tooling can now read the current Aoi's IDE editor buffer through `ide_current_file`,
+  including unsaved content snapshots, and can route active-file edits through IDE app actions.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 
@@ -45,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   sections to the work brief.
 - Kira automation now writes and returns a single consistent `updatedAt` value when updating work
   files.
+- Aoi's IDE disk mutation tools now reject the active editor tab, preventing stale Monaco buffers
+  when the chat model edits the currently open file.
 
 ## [0.1.0] - 2026-03-03
 

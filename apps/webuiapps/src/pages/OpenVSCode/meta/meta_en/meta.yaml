@@ -1,7 +1,8 @@
 app_display_name: Aoi's IDE
 description: >
-  Lightweight built-in code editor for a local workspace folder. Browse files, open text files, edit
-  them, and save changes directly from OpenRoom.
+  VSCode-style built-in workspace editor for OpenRoom. Browse files, open multiple text files, edit
+  with Monaco, search the workspace, run safe verification commands, and save changes directly from
+  the in-app IDE.
 actions:
   - type: OPEN_FILE
     name: Open File
@@ -22,3 +23,86 @@ actions:
   - type: REFRESH_WORKSPACE
     name: Refresh Workspace
     description: Reload the workspace tree from disk.
+  - type: SAVE_FILE
+    name: Save File
+    description: Save the currently active editor tab to disk.
+  - type: APPEND_ACTIVE_FILE
+    name: Append To Active File
+    description:
+      Append or prepend text to the currently active editor tab. Saves to disk by default.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Text to add to the active file.
+      - name: position
+        type: string
+        required: false
+        description: Use "end" to append or "start" to prepend. Defaults to "end".
+      - name: separator
+        type: string
+        required: false
+        description: Text inserted between existing content and new content. Defaults to a newline.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" to keep the edit in the editor buffer without saving. Defaults to true.
+  - type: PATCH_ACTIVE_FILE
+    name: Patch Active File
+    description:
+      Replace exact text in the currently active editor tab. Saves to disk by default and preserves
+      unsaved editor content.
+    params:
+      - name: old_text
+        type: string
+        required: true
+        description: Exact text to replace in the active editor buffer.
+      - name: new_text
+        type: string
+        required: true
+        description: Replacement text.
+      - name: expected_occurrences
+        type: string
+        required: false
+        description: Optional exact expected number of old_text occurrences.
+      - name: replace_all
+        type: string
+        required: false
+        description: Set to "true" to replace all occurrences. Defaults to false.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" to keep the edit in the editor buffer without saving. Defaults to true.
+  - type: REPLACE_ACTIVE_FILE
+    name: Replace Active File
+    description:
+      Replace the full content of the currently active editor tab. Saves to disk by default.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Full file content to place in the active editor buffer.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" to keep the edit in the editor buffer without saving. Defaults to true.
+  - type: SEARCH_WORKSPACE
+    name: Search Workspace
+    description: Search the IDE workspace by file path and file content.
+    params:
+      - name: query
+        type: string
+        required: true
+        description: Search query to match against workspace file paths or content.
+  - type: RUN_COMMAND
+    name: Run Safe Command
+    description:
+      Run a safe read-only command in the IDE workspace, such as git status or pnpm build.
+    params:
+      - name: command
+        type: string
+        required: true
+        description: Safe command accepted by the workspace command policy.

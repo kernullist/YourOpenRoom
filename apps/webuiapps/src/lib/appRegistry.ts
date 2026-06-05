@@ -196,7 +196,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     sourceDir: 'OpenVSCode',
     icon: 'Code2',
     color: '#38bdf8',
-    defaultSize: { width: 1360, height: 820 },
+    defaultSize: { width: 1360, height: 760 },
   },
   {
     appId: 20,

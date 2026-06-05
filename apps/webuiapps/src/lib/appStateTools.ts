@@ -108,6 +108,48 @@ async function buildStateSummary(
         stats: normalizedState?.stats ?? null,
         history_count: await countFiles('apps/gomoku/data/history'),
       };
+    case 'openvscode': {
+      const activeFile =
+        normalizedState?.activeFile &&
+        typeof normalizedState.activeFile === 'object' &&
+        !Array.isArray(normalizedState.activeFile)
+          ? (normalizedState.activeFile as Record<string, unknown>)
+          : null;
+      const openTabs = Array.isArray(normalizedState?.openTabs)
+        ? normalizedState.openTabs.filter(
+            (tab): tab is Record<string, unknown> =>
+              !!tab && typeof tab === 'object' && !Array.isArray(tab),
+          )
+        : [];
+      return {
+        workspace_root: normalizedState?.workspaceRoot ?? null,
+        workspace_exists: normalizedState?.workspaceExists ?? null,
+        active_path: normalizedState?.activePath ?? activeFile?.path ?? null,
+        active_file: activeFile
+          ? {
+              path: activeFile.path ?? null,
+              name: activeFile.name ?? null,
+              language: activeFile.language ?? null,
+              dirty: activeFile.dirty ?? null,
+              cursor: activeFile.cursor ?? null,
+              line_count: activeFile.lineCount ?? null,
+              char_count: activeFile.charCount ?? null,
+              content_truncated: activeFile.contentTruncated ?? null,
+            }
+          : null,
+        open_tab_count: openTabs.length,
+        open_tabs: openTabs.slice(0, 10).map((tab) => ({
+          path: tab.path ?? null,
+          name: tab.name ?? null,
+          language: tab.language ?? null,
+          dirty: tab.dirty ?? null,
+          line_count: tab.lineCount ?? null,
+          char_count: tab.charCount ?? null,
+        })),
+        ui: normalizedState?.ui ?? null,
+        updated_at: normalizedState?.updatedAt ?? null,
+      };
+    }
     case 'freecell':
       return {
         game_id: normalizedState?.gameId ?? null,

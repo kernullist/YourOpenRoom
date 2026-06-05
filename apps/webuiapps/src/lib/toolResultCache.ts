@@ -10,6 +10,8 @@ const CACHEABLE_TOOL_NAMES = new Set([
   'file_list',
   'workspace_search',
   'ide_search',
+  'ide_current_file',
+  'ide_read_file',
   'get_app_schema',
   'open_symbol',
   'find_references',

@@ -36,7 +36,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - `src/lib/workspaceTools.ts`
   - session app-storage search
 - `src/lib/ideTools.ts`
-  - real workspace text search
+  - real workspace search, file reads, non-active file patch/write tools, and active IDE file
+    context
 - `src/lib/openVscode*`
   - symbol, search, and TypeScript semantic helpers
 - `src/lib/idaPe*`
@@ -176,6 +177,12 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders
   are rejected by the local `/api/openvscode/file` endpoint.
+- Aoi's IDE publishes the active editor tab to `apps/openvscode/data/state.json`, including the
+  current buffer snapshot, cursor, dirty state, open tabs, and panel state. Chat requests such as
+  "current file" or "현재 파일" should use `ide_current_file` before reviewing or editing.
+- Active editor edits must use the IDE app actions `APPEND_ACTIVE_FILE`, `PATCH_ACTIVE_FILE`, or
+  `REPLACE_ACTIVE_FILE` so Monaco's buffer and disk stay in sync. `ide_patch_file` and
+  `ide_write_file` are reserved for explicit non-active workspace paths.
 - `PE Analyst` supports two modes today:
   - current-IDB mode through `ida_pro_mcp` style endpoints such as `http://127.0.0.1:13337/mcp`
   - sample-upload / headless mode through `ida-headless-mcp` style endpoints such as
