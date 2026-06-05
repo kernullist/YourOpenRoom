@@ -1140,6 +1140,102 @@
   background: rgba(248, 81, 73, 0.16);
 }
 
+.modelActionsPane {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.modelActionsHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+
+  div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  strong,
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    color: #d7dde8;
+    font-size: 12px;
+  }
+
+  span {
+    color: #8d96a8;
+    font-size: 11px;
+  }
+}
+
+.modelActionList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 10px 12px;
+}
+
+.modelActionItem {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  border-bottom: 1px solid #1d2430;
+  padding: 8px 0;
+  color: #d7dde8;
+
+  > svg {
+    color: #8ab4ff;
+  }
+
+  div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  strong,
+  span,
+  code,
+  small {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  span,
+  small {
+    color: #8d96a8;
+    font-size: 11px;
+  }
+
+  code {
+    color: #b8c0cc;
+    font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+}
+
 .gitDiffPane {
   height: 100%;
   min-height: 0;

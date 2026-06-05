@@ -108,6 +108,16 @@ describe('executeAppStateTool()', () => {
           charCount: 320,
         },
       ],
+      modelActions: [
+        {
+          id: 'action-1',
+          actionType: 'PATCH_ACTIVE_FILE',
+          status: 'success',
+          path: 'README.md',
+          reversible: true,
+          undone: false,
+        },
+      ],
     });
     mockedLoadPersistedConfig.mockResolvedValue({
       openvscode: {
@@ -125,6 +135,8 @@ describe('executeAppStateTool()', () => {
         active_path: string;
         active_file: { path: string; dirty: boolean; line_count: number };
         open_tab_count: number;
+        model_action_count: number;
+        recent_model_actions: Array<{ action_type: string; reversible: boolean }>;
       };
       workspace: { workspace_path: string | null; port: number | null } | null;
     };
@@ -152,6 +164,14 @@ describe('executeAppStateTool()', () => {
       },
     });
     expect(parsed.state_summary.open_tab_count).toBe(1);
+    expect(parsed.state_summary.model_action_count).toBe(1);
+    expect(parsed.state_summary.recent_model_actions[0]).toEqual({
+      action_type: 'PATCH_ACTIVE_FILE',
+      status: 'success',
+      path: 'README.md',
+      reversible: true,
+      undone: false,
+    });
     expect(parsed.workspace).toEqual({
       workspace_path: 'F:/kernullist/YourOpenRoom',
       base_url: null,

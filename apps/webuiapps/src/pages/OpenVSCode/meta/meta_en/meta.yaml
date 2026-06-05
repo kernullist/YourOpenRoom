@@ -118,6 +118,16 @@ actions:
   - type: DISCARD_ACTIVE_FILE_PREVIEW
     name: Discard Active File Preview
     description: Discard the pending active-file patch preview without changing the editor buffer.
+  - type: UNDO_MODEL_ACTION
+    name: Undo Model Action
+    description:
+      Restore the previous editor content for the most recent reversible model action, or a specific
+      action id if one is provided.
+    params:
+      - name: id
+        type: string
+        required: false
+        description: Optional model action id from the Actions panel or state summary.
   - type: APPEND_ACTIVE_FILE
     name: Append To Active File
     description:

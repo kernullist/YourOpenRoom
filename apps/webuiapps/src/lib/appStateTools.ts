@@ -127,6 +127,12 @@ async function buildStateSummary(
               !!tab && typeof tab === 'object' && !Array.isArray(tab),
           )
         : [];
+      const modelActions = Array.isArray(normalizedState?.modelActions)
+        ? normalizedState.modelActions.filter(
+            (entry): entry is Record<string, unknown> =>
+              !!entry && typeof entry === 'object' && !Array.isArray(entry),
+          )
+        : [];
       return {
         workspace_root: normalizedState?.workspaceRoot ?? null,
         workspace_exists: normalizedState?.workspaceExists ?? null,
@@ -162,6 +168,14 @@ async function buildStateSummary(
           dirty: tab.dirty ?? null,
           line_count: tab.lineCount ?? null,
           char_count: tab.charCount ?? null,
+        })),
+        model_action_count: modelActions.length,
+        recent_model_actions: modelActions.slice(0, 5).map((entry) => ({
+          action_type: entry.actionType ?? null,
+          status: entry.status ?? null,
+          path: entry.path ?? null,
+          reversible: entry.reversible ?? null,
+          undone: entry.undone ?? null,
         })),
         ui: normalizedState?.ui ?? null,
         updated_at: normalizedState?.updatedAt ?? null,

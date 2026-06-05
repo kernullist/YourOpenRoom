@@ -63,6 +63,16 @@ Use this flow when the user says "current file", "active file", "opened file", "
 Active-file edit actions save to disk by default. Pass `save: "false"` only when the user explicitly
 asks for a draft buffer edit.
 
+## Model Action Log And Undo
+
+The bottom Actions panel records app actions received from chat. Successful active-editor mutations
+and applied previews are reversible. Use `UNDO_MODEL_ACTION` to restore the previous editor content
+for the latest reversible action, or pass an `id` from the Actions panel/state summary to undo a
+specific action.
+
+Undo saves the restored content back to disk when the original model action saved to disk.
+Draft-only model edits are restored in the editor buffer without saving.
+
 Users can also preview their own unsaved editor changes from the toolbar or command palette before
 saving. Applying that preview saves the current buffer to disk.
 

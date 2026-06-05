@@ -36,6 +36,7 @@ import {
   FolderOpen,
   GitBranch,
   GitCompareArrows,
+  History,
   PanelBottom,
   PanelLeft,
   Play,
@@ -45,6 +46,7 @@ import {
   Settings2,
   SplitSquareHorizontal,
   TerminalSquare,
+  Undo2,
   X,
 } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
@@ -94,10 +96,11 @@ const ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT = 20_000;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'source' | 'settings';
-type BottomPanel = 'problems' | 'output' | 'preview' | 'git' | 'terminal';
+type BottomPanel = 'problems' | 'output' | 'preview' | 'actions' | 'git' | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
+type ModelActionStatus = 'success' | 'error';
 type MonacoBeforeMount = Parameters<
   NonNullable<React.ComponentProps<typeof Editor>['beforeMount']>
 >[0];
@@ -237,6 +240,27 @@ interface PatchPreviewLine {
   text: string;
 }
 
+interface ModelActionUndoSnapshot {
+  path: string;
+  beforeContent: string;
+  saveOnUndo: boolean;
+}
+
+interface ModelActionLogEntry {
+  id: string;
+  actionType: string;
+  status: ModelActionStatus;
+  path?: string;
+  summary: string;
+  resultPreview: string;
+  createdAt: number;
+  durationMs: number;
+  reversible: boolean;
+  undone: boolean;
+  undoSnapshot?: ModelActionUndoSnapshot;
+  undoError?: string;
+}
+
 interface RuntimeSelectionState {
   startLine: number;
   startColumn: number;
@@ -283,6 +307,18 @@ interface OpenVscodeRuntimeState {
     afterCharCount: number;
     saveOnApply: boolean;
   } | null;
+  modelActions: Array<{
+    id: string;
+    actionType: string;
+    status: ModelActionStatus;
+    path?: string;
+    summary: string;
+    resultPreview: string;
+    reversible: boolean;
+    undone: boolean;
+    createdAt: number;
+    durationMs: number;
+  }>;
   updatedAt: number;
 }
 
@@ -579,6 +615,7 @@ function buildOpenVscodeRuntimeState(args: {
   bottomPanel: BottomPanel;
   isSplitView: boolean;
   patchPreview: PatchPreview | null;
+  modelActionLog: ModelActionLogEntry[];
 }): OpenVscodeRuntimeState {
   return {
     version: 1,
@@ -614,6 +651,18 @@ function buildOpenVscodeRuntimeState(args: {
           saveOnApply: args.patchPreview.saveOnApply,
         }
       : null,
+    modelActions: args.modelActionLog.slice(0, 20).map((entry) => ({
+      id: entry.id,
+      actionType: entry.actionType,
+      status: entry.status,
+      path: entry.path,
+      summary: entry.summary,
+      resultPreview: entry.resultPreview,
+      reversible: entry.reversible,
+      undone: entry.undone,
+      createdAt: entry.createdAt,
+      durationMs: entry.durationMs,
+    })),
     updatedAt: Date.now(),
   };
 }
@@ -653,6 +702,26 @@ function formatBytes(size: number): string {
 
 function createTerminalId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createModelActionId(): string {
+  return `action-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildActionResultPreview(result: string): string {
+  return result.length > 240 ? `${result.slice(0, 240)}...` : result;
+}
+
+function getActionPathFromResult(result: string): string | undefined {
+  if (!result.trim().startsWith('{')) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(result) as { path?: unknown };
+    return typeof parsed.path === 'string' ? parsed.path : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function normalizeDiagnosticFilePath(
@@ -755,6 +824,7 @@ const OpenVSCodePage: React.FC = () => {
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
   const [patchPreview, setPatchPreview] = useState<PatchPreview | null>(null);
+  const [modelActionLog, setModelActionLog] = useState<ModelActionLogEntry[]>([]);
   const activePathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenFileTab[]>([]);
   const editorSelectionRef = useRef<RuntimeSelectionState | null>(null);
@@ -857,6 +927,7 @@ const OpenVSCodePage: React.FC = () => {
       bottomPanel,
       isSplitView,
       patchPreview,
+      modelActionLog,
     });
     const serialized = JSON.stringify(runtimeState);
     if (serialized === lastPublishedStateRef.current) return;
@@ -878,6 +949,7 @@ const OpenVSCodePage: React.FC = () => {
     isLoading,
     isSidebarOpen,
     isSplitView,
+    modelActionLog,
     openTabs,
     patchPreview,
     flushRuntimeState,
@@ -1952,6 +2024,7 @@ const OpenVSCodePage: React.FC = () => {
       `${t('output.searchMatches')}: ${searchResult?.total_matches ?? 0}`,
       `${t('output.branch')}: ${gitBranch}`,
       `${t('output.gitChanges')}: ${gitStatusEntries.length}`,
+      `${t('output.modelActions')}: ${modelActionLog.length}`,
       `${t('output.diagnostics')}: ${
         lastDiagnosticRun
           ? t('diagnostics.summary', {
@@ -1967,6 +2040,7 @@ const OpenVSCodePage: React.FC = () => {
       gitBranch,
       gitStatusEntries.length,
       lastDiagnosticRun,
+      modelActionLog.length,
       openTabs.length,
       searchResult?.total_matches,
       t,
@@ -1974,266 +2048,421 @@ const OpenVSCodePage: React.FC = () => {
     ],
   );
 
+  const captureUndoSnapshotForAction = useCallback(
+    (action: CharacterAppAction): ModelActionUndoSnapshot | null => {
+      if (action.action_type === 'APPLY_ACTIVE_FILE_PREVIEW') {
+        return patchPreview
+          ? {
+              path: patchPreview.path,
+              beforeContent: normalizeEditorContent(patchPreview.beforeContent),
+              saveOnUndo: patchPreview.saveOnApply,
+            }
+          : null;
+      }
+
+      const reversibleActiveActions = new Set([
+        'APPEND_ACTIVE_FILE',
+        'PATCH_ACTIVE_FILE',
+        'REPLACE_ACTIVE_FILE',
+        'REPLACE_ACTIVE_SELECTION',
+      ]);
+      if (!reversibleActiveActions.has(action.action_type)) {
+        return null;
+      }
+
+      const path = activePathRef.current;
+      const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+      if (!path || !tab) {
+        return null;
+      }
+
+      return {
+        path,
+        beforeContent: normalizeEditorContent(tab.content),
+        saveOnUndo: parseActionBoolean(action.params?.save, true),
+      };
+    },
+    [patchPreview],
+  );
+
+  const recordModelAction = useCallback(
+    (
+      action: CharacterAppAction,
+      result: string,
+      startedAt: number,
+      undoSnapshot: ModelActionUndoSnapshot | null,
+    ) => {
+      const status: ModelActionStatus = /^error:/i.test(result) ? 'error' : 'success';
+      const path = undoSnapshot?.path ?? getActionPathFromResult(result);
+      const entry: ModelActionLogEntry = {
+        id: createModelActionId(),
+        actionType: action.action_type,
+        status,
+        path,
+        summary: status === 'success' ? action.action_type : result.replace(/^error:\s*/i, ''),
+        resultPreview: buildActionResultPreview(result),
+        createdAt: Date.now(),
+        durationMs: Math.max(0, Date.now() - startedAt),
+        reversible: status === 'success' && !!undoSnapshot,
+        undone: false,
+        ...(status === 'success' && undoSnapshot ? { undoSnapshot } : {}),
+      };
+      setModelActionLog((prev) => [entry, ...prev].slice(0, 60));
+    },
+    [],
+  );
+
+  const undoModelAction = useCallback(
+    async (actionId?: string): Promise<string> => {
+      const entry = modelActionLog.find(
+        (item) =>
+          item.reversible &&
+          !item.undone &&
+          !!item.undoSnapshot &&
+          (!actionId || item.id === actionId),
+      );
+      if (!entry?.undoSnapshot) {
+        return 'error: no reversible model action';
+      }
+
+      const snapshot = entry.undoSnapshot;
+      if (snapshot.saveOnUndo) {
+        setIsSaving(true);
+        try {
+          await saveFileContent(snapshot.path, snapshot.beforeContent);
+          const parentPath = getParentPath(snapshot.path);
+          if (tree[parentPath]) {
+            await loadDirectory(parentPath);
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          setModelActionLog((prev) =>
+            prev.map((item) => (item.id === entry.id ? { ...item, undoError: message } : item)),
+          );
+          setErrorText(message);
+          return `error: ${message}`;
+        } finally {
+          setIsSaving(false);
+        }
+      }
+
+      setOpenTabs((prev) => {
+        const existing = prev.find((tab) => tab.path === snapshot.path);
+        if (existing) {
+          return prev.map((tab) =>
+            tab.path === snapshot.path
+              ? {
+                  ...tab,
+                  content: snapshot.beforeContent,
+                  savedContent: snapshot.saveOnUndo ? snapshot.beforeContent : tab.savedContent,
+                }
+              : tab,
+          );
+        }
+
+        return [
+          ...prev,
+          {
+            path: snapshot.path,
+            content: snapshot.beforeContent,
+            savedContent: snapshot.beforeContent,
+            language: detectMonacoLanguage(snapshot.path),
+          },
+        ];
+      });
+      setActivePath(snapshot.path);
+      clearEditorSelection();
+      setPatchPreview(null);
+      setModelActionLog((prev) =>
+        prev.map((item) => (item.id === entry.id ? { ...item, undone: true } : item)),
+      );
+      setIsBottomPanelOpen(true);
+      setBottomPanel('actions');
+      setErrorText(null);
+
+      return JSON.stringify({
+        undone_action_id: entry.id,
+        action_type: entry.actionType,
+        path: snapshot.path,
+        saved: snapshot.saveOnUndo,
+      });
+    },
+    [clearEditorSelection, loadDirectory, modelActionLog, saveFileContent, tree],
+  );
+
+  const executeOpenVscodeAction = useCallback(
+    async (action: CharacterAppAction): Promise<string> => {
+      switch (action.action_type) {
+        case 'OPEN_FILE': {
+          const path = action.params?.path?.trim();
+          if (!path) return 'error: missing path';
+          await loadFile(path);
+          return 'success';
+        }
+        case 'REFRESH_WORKSPACE': {
+          await refreshWorkspace();
+          return 'success';
+        }
+        case 'CREATE_FILE': {
+          const path = action.params?.path?.trim();
+          if (!path) return 'error: missing path';
+          const result = await createNewFile(path);
+          return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
+        }
+        case 'PREVIEW_APPEND_ACTIVE_FILE': {
+          const content = action.params?.content;
+          if (content === undefined) return 'error: missing content';
+          const path = activePathRef.current;
+          const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+          if (!path || !tab) return 'error: no active file';
+          const position = action.params?.position === 'start' ? 'start' : 'end';
+          const separator = action.params?.separator ?? '\n';
+          const save = parseActionBoolean(action.params?.save, true);
+          const currentContent = normalizeEditorContent(tab.content);
+          const nextContent =
+            position === 'start'
+              ? `${content}${currentContent ? separator : ''}${currentContent}`
+              : `${currentContent}${currentContent ? separator : ''}${content}`;
+          const preview = previewActiveFileReplacement(nextContent, { source: 'agent', save });
+          return preview
+            ? JSON.stringify({
+                preview_id: preview.id,
+                path: preview.path,
+                summary: preview.summary,
+                save_on_apply: preview.saveOnApply,
+              })
+            : 'error: preview failed';
+        }
+        case 'PREVIEW_PATCH_ACTIVE_FILE': {
+          const oldText = action.params?.old_text ?? action.params?.oldText ?? '';
+          const newText = action.params?.new_text ?? action.params?.newText ?? '';
+          const expectedOccurrences = parseOptionalPositiveInteger(
+            action.params?.expected_occurrences ?? action.params?.expectedOccurrences,
+          );
+          const replaceAll = parseActionBoolean(
+            action.params?.replace_all ?? action.params?.replaceAll,
+            false,
+          );
+          const save = parseActionBoolean(action.params?.save, true);
+          const preview = previewActiveFilePatch({
+            oldText,
+            newText,
+            expectedOccurrences,
+            replaceAll,
+            save,
+            source: 'agent',
+          });
+          return typeof preview === 'string'
+            ? preview
+            : JSON.stringify({
+                preview_id: preview.id,
+                path: preview.path,
+                summary: preview.summary,
+                occurrences: preview.occurrences,
+                replaced: preview.replaced,
+                save_on_apply: preview.saveOnApply,
+              });
+        }
+        case 'PREVIEW_REPLACE_ACTIVE_FILE': {
+          if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+            return 'error: missing content';
+          }
+          const save = parseActionBoolean(action.params.save, true);
+          const preview = previewActiveFileReplacement(action.params.content ?? '', {
+            source: 'agent',
+            save,
+          });
+          return preview
+            ? JSON.stringify({
+                preview_id: preview.id,
+                path: preview.path,
+                summary: preview.summary,
+                save_on_apply: preview.saveOnApply,
+              })
+            : 'error: preview failed';
+        }
+        case 'PREVIEW_REPLACE_ACTIVE_SELECTION': {
+          if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+            return 'error: missing content';
+          }
+          const save = parseActionBoolean(action.params.save, true);
+          const preview = previewActiveSelectionReplacement(action.params.content ?? '', {
+            source: 'agent',
+            save,
+          });
+          return typeof preview === 'string'
+            ? preview
+            : JSON.stringify({
+                preview_id: preview.id,
+                path: preview.path,
+                summary: preview.summary,
+                save_on_apply: preview.saveOnApply,
+              });
+        }
+        case 'APPLY_ACTIVE_FILE_PREVIEW': {
+          const applied = await applyPatchPreview();
+          return applied
+            ? JSON.stringify({
+                preview_id: applied.id,
+                path: applied.path,
+                saved: applied.saveOnApply,
+                summary: applied.summary,
+              })
+            : 'error: no preview to apply';
+        }
+        case 'DISCARD_ACTIVE_FILE_PREVIEW': {
+          if (!patchPreview) return 'error: no preview to discard';
+          discardPatchPreview();
+          return 'success';
+        }
+        case 'APPEND_ACTIVE_FILE': {
+          const content = action.params?.content;
+          if (content === undefined) return 'error: missing content';
+          const path = activePathRef.current;
+          const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+          if (!path || !tab) return 'error: no active file';
+          const position = action.params?.position === 'start' ? 'start' : 'end';
+          const separator = action.params?.separator ?? '\n';
+          const save = parseActionBoolean(action.params?.save, true);
+          const currentContent = normalizeEditorContent(tab.content);
+          const nextContent =
+            position === 'start'
+              ? `${content}${currentContent ? separator : ''}${currentContent}`
+              : `${currentContent}${currentContent ? separator : ''}${content}`;
+          const result = await setActiveFileContentFromAgent(nextContent, { save });
+          return result.ok ? JSON.stringify(result) : `error: ${result.error || 'append failed'}`;
+        }
+        case 'PATCH_ACTIVE_FILE': {
+          const oldText = action.params?.old_text ?? action.params?.oldText ?? '';
+          const newText = action.params?.new_text ?? action.params?.newText ?? '';
+          if (!oldText) return 'error: missing old_text';
+          const path = activePathRef.current;
+          const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+          if (!path || !tab) return 'error: no active file';
+          const currentContent = normalizeEditorContent(tab.content);
+          const occurrences = countOccurrences(currentContent, oldText);
+          if (occurrences === 0) return 'error: old_text not found';
+          const expectedOccurrences = parseOptionalPositiveInteger(
+            action.params?.expected_occurrences ?? action.params?.expectedOccurrences,
+          );
+          if (expectedOccurrences !== null && occurrences !== expectedOccurrences) {
+            return `error: expected ${expectedOccurrences} occurrence(s), found ${occurrences}`;
+          }
+          const replaceAll = parseActionBoolean(
+            action.params?.replace_all ?? action.params?.replaceAll,
+            false,
+          );
+          const save = parseActionBoolean(action.params?.save, true);
+          const nextContent = replaceAll
+            ? currentContent.split(oldText).join(newText)
+            : currentContent.replace(oldText, newText);
+          const result = await setActiveFileContentFromAgent(nextContent, { save });
+          return result.ok
+            ? JSON.stringify({ ...result, occurrences, replaced: replaceAll ? occurrences : 1 })
+            : `error: ${result.error || 'patch failed'}`;
+        }
+        case 'REPLACE_ACTIVE_FILE': {
+          if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+            return 'error: missing content';
+          }
+          const save = parseActionBoolean(action.params.save, true);
+          const result = await setActiveFileContentFromAgent(action.params.content ?? '', {
+            save,
+          });
+          return result.ok ? JSON.stringify(result) : `error: ${result.error || 'replace failed'}`;
+        }
+        case 'REPLACE_ACTIVE_SELECTION': {
+          if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+            return 'error: missing content';
+          }
+          const save = parseActionBoolean(action.params.save, true);
+          const result = await replaceActiveSelectionFromAgent(action.params.content ?? '', {
+            save,
+          });
+          return result.ok
+            ? JSON.stringify(result)
+            : `error: ${result.error || 'selection replace failed'}`;
+        }
+        case 'SAVE_FILE': {
+          await saveCurrentFile();
+          return 'success';
+        }
+        case 'SEARCH_WORKSPACE': {
+          const query = action.params?.query?.trim();
+          if (!query) return 'error: missing query';
+          setActivityView('search');
+          setIsSidebarOpen(true);
+          setSearchQuery(query);
+          await runSearch(query);
+          return 'success';
+        }
+        case 'REFRESH_GIT_STATUS': {
+          setActivityView('source');
+          setIsSidebarOpen(true);
+          const entries = await loadGitStatus();
+          return JSON.stringify({ changed_files: entries.length });
+        }
+        case 'RUN_COMMAND': {
+          const command = action.params?.command?.trim();
+          if (!command) return 'error: missing command';
+          setIsBottomPanelOpen(true);
+          setBottomPanel('terminal');
+          const result = await runTerminalCommand(command);
+          return result && result.exitCode === 0 ? 'success' : 'error: command failed';
+        }
+        case 'RUN_DIAGNOSTICS': {
+          const command = action.params?.command?.trim() || diagnosticCommand;
+          if (!command.trim()) return 'error: missing command';
+          const result = await runDiagnostics(command);
+          return result
+            ? JSON.stringify({
+                command: result.command,
+                exitCode: result.exitCode,
+                diagnostic_count: result.diagnosticCount,
+                timedOut: result.timedOut,
+              })
+            : 'error: diagnostics failed';
+        }
+        case 'UNDO_MODEL_ACTION': {
+          return undoModelAction(action.params?.id?.trim());
+        }
+        default:
+          return `error: unknown action_type ${action.action_type}`;
+      }
+    },
+    [
+      applyPatchPreview,
+      createNewFile,
+      diagnosticCommand,
+      discardPatchPreview,
+      loadFile,
+      loadGitStatus,
+      patchPreview,
+      previewActiveFilePatch,
+      previewActiveFileReplacement,
+      previewActiveSelectionReplacement,
+      refreshWorkspace,
+      replaceActiveSelectionFromAgent,
+      runDiagnostics,
+      runSearch,
+      runTerminalCommand,
+      saveCurrentFile,
+      setActiveFileContentFromAgent,
+      undoModelAction,
+    ],
+  );
+
   useAgentActionListener(
     APP_ID,
     useCallback(
       async (action: CharacterAppAction): Promise<string> => {
-        switch (action.action_type) {
-          case 'OPEN_FILE': {
-            const path = action.params?.path?.trim();
-            if (!path) return 'error: missing path';
-            await loadFile(path);
-            return 'success';
-          }
-          case 'REFRESH_WORKSPACE': {
-            await refreshWorkspace();
-            return 'success';
-          }
-          case 'CREATE_FILE': {
-            const path = action.params?.path?.trim();
-            if (!path) return 'error: missing path';
-            const result = await createNewFile(path);
-            return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
-          }
-          case 'PREVIEW_APPEND_ACTIVE_FILE': {
-            const content = action.params?.content;
-            if (content === undefined) return 'error: missing content';
-            const path = activePathRef.current;
-            const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
-            if (!path || !tab) return 'error: no active file';
-            const position = action.params?.position === 'start' ? 'start' : 'end';
-            const separator = action.params?.separator ?? '\n';
-            const save = parseActionBoolean(action.params?.save, true);
-            const currentContent = normalizeEditorContent(tab.content);
-            const nextContent =
-              position === 'start'
-                ? `${content}${currentContent ? separator : ''}${currentContent}`
-                : `${currentContent}${currentContent ? separator : ''}${content}`;
-            const preview = previewActiveFileReplacement(nextContent, { source: 'agent', save });
-            return preview
-              ? JSON.stringify({
-                  preview_id: preview.id,
-                  path: preview.path,
-                  summary: preview.summary,
-                  save_on_apply: preview.saveOnApply,
-                })
-              : 'error: preview failed';
-          }
-          case 'PREVIEW_PATCH_ACTIVE_FILE': {
-            const oldText = action.params?.old_text ?? action.params?.oldText ?? '';
-            const newText = action.params?.new_text ?? action.params?.newText ?? '';
-            const expectedOccurrences = parseOptionalPositiveInteger(
-              action.params?.expected_occurrences ?? action.params?.expectedOccurrences,
-            );
-            const replaceAll = parseActionBoolean(
-              action.params?.replace_all ?? action.params?.replaceAll,
-              false,
-            );
-            const save = parseActionBoolean(action.params?.save, true);
-            const preview = previewActiveFilePatch({
-              oldText,
-              newText,
-              expectedOccurrences,
-              replaceAll,
-              save,
-              source: 'agent',
-            });
-            return typeof preview === 'string'
-              ? preview
-              : JSON.stringify({
-                  preview_id: preview.id,
-                  path: preview.path,
-                  summary: preview.summary,
-                  occurrences: preview.occurrences,
-                  replaced: preview.replaced,
-                  save_on_apply: preview.saveOnApply,
-                });
-          }
-          case 'PREVIEW_REPLACE_ACTIVE_FILE': {
-            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
-              return 'error: missing content';
-            }
-            const save = parseActionBoolean(action.params.save, true);
-            const preview = previewActiveFileReplacement(action.params.content ?? '', {
-              source: 'agent',
-              save,
-            });
-            return preview
-              ? JSON.stringify({
-                  preview_id: preview.id,
-                  path: preview.path,
-                  summary: preview.summary,
-                  save_on_apply: preview.saveOnApply,
-                })
-              : 'error: preview failed';
-          }
-          case 'PREVIEW_REPLACE_ACTIVE_SELECTION': {
-            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
-              return 'error: missing content';
-            }
-            const save = parseActionBoolean(action.params.save, true);
-            const preview = previewActiveSelectionReplacement(action.params.content ?? '', {
-              source: 'agent',
-              save,
-            });
-            return typeof preview === 'string'
-              ? preview
-              : JSON.stringify({
-                  preview_id: preview.id,
-                  path: preview.path,
-                  summary: preview.summary,
-                  save_on_apply: preview.saveOnApply,
-                });
-          }
-          case 'APPLY_ACTIVE_FILE_PREVIEW': {
-            const applied = await applyPatchPreview();
-            return applied
-              ? JSON.stringify({
-                  preview_id: applied.id,
-                  path: applied.path,
-                  saved: applied.saveOnApply,
-                  summary: applied.summary,
-                })
-              : 'error: no preview to apply';
-          }
-          case 'DISCARD_ACTIVE_FILE_PREVIEW': {
-            if (!patchPreview) return 'error: no preview to discard';
-            discardPatchPreview();
-            return 'success';
-          }
-          case 'APPEND_ACTIVE_FILE': {
-            const content = action.params?.content;
-            if (content === undefined) return 'error: missing content';
-            const path = activePathRef.current;
-            const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
-            if (!path || !tab) return 'error: no active file';
-            const position = action.params?.position === 'start' ? 'start' : 'end';
-            const separator = action.params?.separator ?? '\n';
-            const save = parseActionBoolean(action.params?.save, true);
-            const currentContent = normalizeEditorContent(tab.content);
-            const nextContent =
-              position === 'start'
-                ? `${content}${currentContent ? separator : ''}${currentContent}`
-                : `${currentContent}${currentContent ? separator : ''}${content}`;
-            const result = await setActiveFileContentFromAgent(nextContent, { save });
-            return result.ok ? JSON.stringify(result) : `error: ${result.error || 'append failed'}`;
-          }
-          case 'PATCH_ACTIVE_FILE': {
-            const oldText = action.params?.old_text ?? action.params?.oldText ?? '';
-            const newText = action.params?.new_text ?? action.params?.newText ?? '';
-            if (!oldText) return 'error: missing old_text';
-            const path = activePathRef.current;
-            const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
-            if (!path || !tab) return 'error: no active file';
-            const currentContent = normalizeEditorContent(tab.content);
-            const occurrences = countOccurrences(currentContent, oldText);
-            if (occurrences === 0) return 'error: old_text not found';
-            const expectedOccurrences = parseOptionalPositiveInteger(
-              action.params?.expected_occurrences ?? action.params?.expectedOccurrences,
-            );
-            if (expectedOccurrences !== null && occurrences !== expectedOccurrences) {
-              return `error: expected ${expectedOccurrences} occurrence(s), found ${occurrences}`;
-            }
-            const replaceAll = parseActionBoolean(
-              action.params?.replace_all ?? action.params?.replaceAll,
-              false,
-            );
-            const save = parseActionBoolean(action.params?.save, true);
-            const nextContent = replaceAll
-              ? currentContent.split(oldText).join(newText)
-              : currentContent.replace(oldText, newText);
-            const result = await setActiveFileContentFromAgent(nextContent, { save });
-            return result.ok
-              ? JSON.stringify({ ...result, occurrences, replaced: replaceAll ? occurrences : 1 })
-              : `error: ${result.error || 'patch failed'}`;
-          }
-          case 'REPLACE_ACTIVE_FILE': {
-            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
-              return 'error: missing content';
-            }
-            const save = parseActionBoolean(action.params.save, true);
-            const result = await setActiveFileContentFromAgent(action.params.content ?? '', {
-              save,
-            });
-            return result.ok
-              ? JSON.stringify(result)
-              : `error: ${result.error || 'replace failed'}`;
-          }
-          case 'REPLACE_ACTIVE_SELECTION': {
-            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
-              return 'error: missing content';
-            }
-            const save = parseActionBoolean(action.params.save, true);
-            const result = await replaceActiveSelectionFromAgent(action.params.content ?? '', {
-              save,
-            });
-            return result.ok
-              ? JSON.stringify(result)
-              : `error: ${result.error || 'selection replace failed'}`;
-          }
-          case 'SAVE_FILE': {
-            await saveCurrentFile();
-            return 'success';
-          }
-          case 'SEARCH_WORKSPACE': {
-            const query = action.params?.query?.trim();
-            if (!query) return 'error: missing query';
-            setActivityView('search');
-            setIsSidebarOpen(true);
-            setSearchQuery(query);
-            await runSearch(query);
-            return 'success';
-          }
-          case 'REFRESH_GIT_STATUS': {
-            setActivityView('source');
-            setIsSidebarOpen(true);
-            const entries = await loadGitStatus();
-            return JSON.stringify({ changed_files: entries.length });
-          }
-          case 'RUN_COMMAND': {
-            const command = action.params?.command?.trim();
-            if (!command) return 'error: missing command';
-            setIsBottomPanelOpen(true);
-            setBottomPanel('terminal');
-            const result = await runTerminalCommand(command);
-            return result && result.exitCode === 0 ? 'success' : 'error: command failed';
-          }
-          case 'RUN_DIAGNOSTICS': {
-            const command = action.params?.command?.trim() || diagnosticCommand;
-            if (!command.trim()) return 'error: missing command';
-            const result = await runDiagnostics(command);
-            return result
-              ? JSON.stringify({
-                  command: result.command,
-                  exitCode: result.exitCode,
-                  diagnostic_count: result.diagnosticCount,
-                  timedOut: result.timedOut,
-                })
-              : 'error: diagnostics failed';
-          }
-          default:
-            return `error: unknown action_type ${action.action_type}`;
-        }
+        const startedAt = Date.now();
+        const undoSnapshot = captureUndoSnapshotForAction(action);
+        const result = await executeOpenVscodeAction(action);
+        recordModelAction(action, result, startedAt, undoSnapshot);
+        return result;
       },
-      [
-        applyPatchPreview,
-        createNewFile,
-        diagnosticCommand,
-        discardPatchPreview,
-        loadFile,
-        loadGitStatus,
-        patchPreview,
-        previewActiveFilePatch,
-        previewActiveFileReplacement,
-        previewActiveSelectionReplacement,
-        refreshWorkspace,
-        replaceActiveSelectionFromAgent,
-        runDiagnostics,
-        runSearch,
-        runTerminalCommand,
-        saveCurrentFile,
-        setActiveFileContentFromAgent,
-      ],
+      [captureUndoSnapshotForAction, executeOpenVscodeAction, recordModelAction],
     ),
   );
 
@@ -2952,24 +3181,27 @@ const OpenVSCodePage: React.FC = () => {
                 {isBottomPanelOpen ? (
                   <div className={styles.bottomPanel} data-testid="openvscode-bottom-panel">
                     <div className={styles.bottomTabs}>
-                      {(['problems', 'output', 'preview', 'git', 'terminal'] as const).map(
-                        (panel) => (
-                          <button
-                            key={panel}
-                            className={bottomPanel === panel ? styles.bottomTabActive : ''}
-                            onClick={() => setBottomPanel(panel)}
-                          >
-                            {t(`bottom.${panel}`)}
-                            {panel === 'problems' && problemItems.length > 0 ? (
-                              <span>{problemItems.length}</span>
-                            ) : null}
-                            {panel === 'preview' && patchPreview ? <span>1</span> : null}
-                            {panel === 'git' && gitStatusEntries.length > 0 ? (
-                              <span>{gitStatusEntries.length}</span>
-                            ) : null}
-                          </button>
-                        ),
-                      )}
+                      {(
+                        ['problems', 'output', 'preview', 'actions', 'git', 'terminal'] as const
+                      ).map((panel) => (
+                        <button
+                          key={panel}
+                          className={bottomPanel === panel ? styles.bottomTabActive : ''}
+                          onClick={() => setBottomPanel(panel)}
+                        >
+                          {t(`bottom.${panel}`)}
+                          {panel === 'problems' && problemItems.length > 0 ? (
+                            <span>{problemItems.length}</span>
+                          ) : null}
+                          {panel === 'preview' && patchPreview ? <span>1</span> : null}
+                          {panel === 'actions' && modelActionLog.length > 0 ? (
+                            <span>{modelActionLog.length}</span>
+                          ) : null}
+                          {panel === 'git' && gitStatusEntries.length > 0 ? (
+                            <span>{gitStatusEntries.length}</span>
+                          ) : null}
+                        </button>
+                      ))}
                       <button
                         className={styles.panelClose}
                         onClick={() => setIsBottomPanelOpen(false)}
@@ -3125,6 +3357,65 @@ const OpenVSCodePage: React.FC = () => {
                             </>
                           ) : (
                             <div className={styles.panelEmpty}>{t('preview.empty')}</div>
+                          )}
+                        </div>
+                      ) : null}
+                      {bottomPanel === 'actions' ? (
+                        <div className={styles.modelActionsPane}>
+                          <div className={styles.modelActionsHeader}>
+                            <div>
+                              <strong>{t('modelActions.title')}</strong>
+                              <span>{t('modelActions.description')}</span>
+                            </div>
+                            <button
+                              className={styles.secondaryButton}
+                              onClick={() => void undoModelAction()}
+                              disabled={
+                                !modelActionLog.some(
+                                  (entry) => entry.reversible && !entry.undone,
+                                ) || isSaving
+                              }
+                            >
+                              <Undo2 size={14} />
+                              <span>{t('modelActions.undoLatest')}</span>
+                            </button>
+                          </div>
+                          {modelActionLog.length === 0 ? (
+                            <div className={styles.panelEmpty}>{t('modelActions.empty')}</div>
+                          ) : (
+                            <div className={styles.modelActionList}>
+                              {modelActionLog.map((entry) => (
+                                <div className={styles.modelActionItem} key={entry.id}>
+                                  <History size={15} />
+                                  <div>
+                                    <strong>{entry.actionType}</strong>
+                                    <span>
+                                      {entry.path || t('modelActions.noPath')} -{' '}
+                                      {entry.status === 'success'
+                                        ? t('modelActions.success')
+                                        : t('modelActions.error')}
+                                      {entry.undone ? ` - ${t('modelActions.undone')}` : ''}
+                                    </span>
+                                    <code>{entry.resultPreview}</code>
+                                    {entry.undoError ? <small>{entry.undoError}</small> : null}
+                                  </div>
+                                  <button
+                                    className={styles.secondaryButton}
+                                    onClick={() => void undoModelAction(entry.id)}
+                                    disabled={!entry.reversible || entry.undone || isSaving}
+                                  >
+                                    <Undo2 size={14} />
+                                    <span>
+                                      {entry.undone
+                                        ? t('modelActions.undone')
+                                        : entry.reversible
+                                          ? t('modelActions.undo')
+                                          : t('modelActions.notReversible')}
+                                    </span>
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                       ) : null}

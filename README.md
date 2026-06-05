@@ -200,6 +200,7 @@ lives. The current `/api/openvscode/*` endpoints support:
 - semantic rename preview and apply
 - active-file patch preview/apply/discard for model proposals and unsaved editor changes
 - active selection context and selected-text replacement actions for chat-driven edits
+- model action logging with undo for reversible active-editor edits
 - structured diagnostics surfaced in the IDE Problems panel with file/line navigation
 - read-only Source Control panel for `git status` and per-file diff inspection
 - safe command execution
