@@ -43,9 +43,10 @@ the selected file.
 5. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
 6. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
-7. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
+7. Use `RUN_TESTS` when the user wants test execution visible in the IDE Tests panel.
+8. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
    diffs.
-8. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
+9. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
    wants an in-app definition, references, or exports view.
 
 ## Current File Context

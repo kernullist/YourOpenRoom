@@ -90,6 +90,7 @@ const APP_NAME = 'openvscode';
 const DEFAULT_WINDOW_STYLE = { width: 1360, height: 760 };
 const DEFAULT_TERMINAL_COMMAND = 'git status --short';
 const DEFAULT_DIAGNOSTICS_COMMAND = 'pnpm exec eslint src/pages/OpenVSCode/index.tsx';
+const DEFAULT_TEST_COMMAND = 'pnpm test';
 const STATE_FILE = '/state.json';
 const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
 const ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT = 20_000;
@@ -97,7 +98,7 @@ const WORKSPACE_HISTORY_LIMIT = 8;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'symbols' | 'source' | 'settings';
-type BottomPanel = 'problems' | 'output' | 'preview' | 'actions' | 'git' | 'terminal';
+type BottomPanel = 'problems' | 'output' | 'preview' | 'actions' | 'git' | 'tests' | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
 type SemanticMode = 'definition' | 'references' | 'exports';
 type PatchPreviewSource = 'agent' | 'manual';
@@ -237,6 +238,13 @@ interface TerminalEntry {
   durationMs: number;
   stdout: string;
   stderr: string;
+}
+
+type TestRunStatus = 'passed' | 'failed' | 'timed_out';
+
+interface TestRunEntry extends TerminalEntry {
+  status: TestRunStatus;
+  summary: string;
 }
 
 interface GitStatusEntry {
@@ -822,6 +830,56 @@ function buildActionResultPreview(result: string): string {
   return result.length > 240 ? `${result.slice(0, 240)}...` : result;
 }
 
+const ANSI_ESCAPE_PATTERN = new RegExp(String.raw`\x1B\[[0-9;]*m`, 'g');
+
+function stripAnsi(value: string): string {
+  return value.replace(ANSI_ESCAPE_PATTERN, '');
+}
+
+function summarizeTestRun(result: CommandRunResponse): { status: TestRunStatus; summary: string } {
+  const output = stripAnsi(`${result.stdout}\n${result.stderr}`).replace(/\r\n/g, '\n');
+  if (result.timedOut) {
+    return { status: 'timed_out', summary: `Timed out after ${result.durationMs} ms` };
+  }
+
+  const testFilesMatch = output.match(/Test Files\s+([^\n]+)/i);
+  const testsMatch = output.match(/Tests\s+([^\n]+)/i);
+  const suitesMatch = output.match(/Test Suites:\s+([^\n]+)/i);
+  const summaryParts = [testFilesMatch?.[1], testsMatch?.[1], suitesMatch?.[1]]
+    .filter(Boolean)
+    .map((part) => part?.replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+
+  if (summaryParts.length > 0) {
+    return {
+      status: result.exitCode === 0 ? 'passed' : 'failed',
+      summary: summaryParts.join(' | '),
+    };
+  }
+
+  const fallbackLine =
+    output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .find((line) => /pass|fail|error|test/i.test(line)) || '';
+
+  return {
+    status: result.exitCode === 0 ? 'passed' : 'failed',
+    summary: fallbackLine || `exit ${result.exitCode} - ${result.durationMs} ms`,
+  };
+}
+
+function getTestStatusClass(status: TestRunStatus): string {
+  if (status === 'passed') {
+    return styles.testStatus_passed;
+  }
+  if (status === 'timed_out') {
+    return styles.testStatus_timed_out;
+  }
+  return styles.testStatus_failed;
+}
+
 function getActionPathFromResult(result: string): string | undefined {
   if (!result.trim().startsWith('{')) {
     return undefined;
@@ -961,6 +1019,9 @@ const OpenVSCodePage: React.FC = () => {
   const [terminalCommand, setTerminalCommand] = useState(DEFAULT_TERMINAL_COMMAND);
   const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
   const [isRunningCommand, setIsRunningCommand] = useState(false);
+  const [testCommand, setTestCommand] = useState(DEFAULT_TEST_COMMAND);
+  const [testHistory, setTestHistory] = useState<TestRunEntry[]>([]);
+  const [isRunningTests, setIsRunningTests] = useState(false);
   const [diagnosticCommand, setDiagnosticCommand] = useState(DEFAULT_DIAGNOSTICS_COMMAND);
   const [diagnosticItems, setDiagnosticItems] = useState<ProblemItem[]>([]);
   const [lastDiagnosticRun, setLastDiagnosticRun] = useState<DiagnosticRunState | null>(null);
@@ -985,6 +1046,7 @@ const OpenVSCodePage: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
+  const testInputRef = useRef<HTMLInputElement | null>(null);
   const diagnosticsInputRef = useRef<HTMLInputElement | null>(null);
   const semanticRunIdRef = useRef(0);
   const lastPublishedStateRef = useRef('');
@@ -1415,6 +1477,8 @@ const OpenVSCodePage: React.FC = () => {
     setGitDiffText('');
     setGitErrorText(null);
     setTerminalHistory([]);
+    setTestHistory([]);
+    setIsRunningTests(false);
     setPatchPreview(null);
     setModelActionLog([]);
   }, [clearEditorSelection]);
@@ -1693,6 +1757,57 @@ const OpenVSCodePage: React.FC = () => {
       }
     },
     [terminalCommand],
+  );
+
+  const runTests = useCallback(
+    async (commandOverride?: string): Promise<TestRunEntry | null> => {
+      const command = (commandOverride ?? testCommand).trim();
+      if (!command) return null;
+
+      setIsBottomPanelOpen(true);
+      setBottomPanel('tests');
+      setIsRunningTests(true);
+      try {
+        const data = await runWorkspaceCommand(command, 120000);
+        const summary = summarizeTestRun(data);
+        const entry: TestRunEntry = {
+          id: createTerminalId(),
+          command: data.command,
+          cwd: data.cwd,
+          exitCode: data.exitCode,
+          timedOut: data.timedOut,
+          durationMs: data.durationMs,
+          stdout: stripAnsi(data.stdout),
+          stderr: stripAnsi(data.stderr),
+          status: summary.status,
+          summary: summary.summary,
+        };
+        setTestHistory((prev) => [entry, ...prev].slice(0, 12));
+        setTestCommand(command);
+        setErrorText(null);
+        return entry;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const entry: TestRunEntry = {
+          id: createTerminalId(),
+          command,
+          cwd: workspaceRoot || '.',
+          exitCode: 1,
+          timedOut: false,
+          durationMs: 0,
+          stdout: '',
+          stderr: message,
+          status: 'failed',
+          summary: message,
+        };
+        setTestHistory((prev) => [entry, ...prev].slice(0, 12));
+        setErrorText(message);
+        return entry;
+      } finally {
+        setIsRunningTests(false);
+      }
+    },
+    [runWorkspaceCommand, testCommand, workspaceRoot],
   );
 
   const loadGitDiff = useCallback(
@@ -2281,6 +2396,10 @@ const OpenVSCodePage: React.FC = () => {
         setIsBottomPanelOpen(true);
         setBottomPanel('problems');
         window.requestAnimationFrame(() => diagnosticsInputRef.current?.focus());
+      } else if (id === 'tests') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('tests');
+        window.requestAnimationFrame(() => testInputRef.current?.focus());
       } else if (id === 'actions') {
         setIsBottomPanelOpen(true);
         setBottomPanel('actions');
@@ -2300,6 +2419,8 @@ const OpenVSCodePage: React.FC = () => {
         previewUnsavedActiveFile();
       } else if (id === 'build') {
         await runTerminalCommand('pnpm build');
+      } else if (id === 'runTests') {
+        await runTests();
       }
     },
     [
@@ -2308,6 +2429,7 @@ const OpenVSCodePage: React.FC = () => {
       previewUnsavedActiveFile,
       refreshWorkspace,
       runTerminalCommand,
+      runTests,
       saveAllFiles,
       saveCurrentFile,
     ],
@@ -2373,6 +2495,12 @@ const OpenVSCodePage: React.FC = () => {
         group: t('commandPalette.groups.panel'),
       },
       {
+        id: 'tests',
+        kind: 'command',
+        label: t('commandPalette.commands.tests'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
         id: 'actions',
         kind: 'command',
         label: t('commandPalette.commands.actions'),
@@ -2432,6 +2560,12 @@ const OpenVSCodePage: React.FC = () => {
         id: 'build',
         kind: 'command',
         label: t('commandPalette.commands.build'),
+        group: t('commandPalette.groups.tasks'),
+      },
+      {
+        id: 'runTests',
+        kind: 'command',
+        label: t('commandPalette.commands.runTests'),
         group: t('commandPalette.groups.tasks'),
       },
     ],
@@ -2554,8 +2688,16 @@ const OpenVSCodePage: React.FC = () => {
         message: t('problems.commandFailed', { command: lastFailedCommand.command }),
       });
     }
+    const lastFailedTest = testHistory.find((entry) => entry.status !== 'passed');
+    if (lastFailedTest) {
+      items.push({
+        severity: 'error',
+        source: 'Tests',
+        message: t('problems.testsFailed', { command: lastFailedTest.command }),
+      });
+    }
     return items;
-  }, [diagnosticItems, dirtyTabs, errorText, t, terminalHistory]);
+  }, [diagnosticItems, dirtyTabs, errorText, t, terminalHistory, testHistory]);
 
   const outputLines = useMemo(
     () => [
@@ -2566,6 +2708,15 @@ const OpenVSCodePage: React.FC = () => {
       `${t('output.branch')}: ${gitBranch}`,
       `${t('output.gitChanges')}: ${gitStatusEntries.length}`,
       `${t('output.modelActions')}: ${modelActionLog.length}`,
+      `${t('output.tests')}: ${
+        testHistory[0]
+          ? t('tests.summary', {
+              status: t(`tests.status.${testHistory[0].status}`),
+              detail: testHistory[0].summary,
+              ms: testHistory[0].durationMs,
+            })
+          : t('tests.notRun')
+      }`,
       `${t('output.diagnostics')}: ${
         lastDiagnosticRun
           ? t('diagnostics.summary', {
@@ -2585,6 +2736,7 @@ const OpenVSCodePage: React.FC = () => {
       openTabs.length,
       searchResult?.total_matches,
       t,
+      testHistory,
       workspaceRoot,
     ],
   );
@@ -2991,6 +3143,20 @@ const OpenVSCodePage: React.FC = () => {
               })
             : 'error: diagnostics failed';
         }
+        case 'RUN_TESTS': {
+          const command = action.params?.command?.trim() || testCommand;
+          if (!command.trim()) return 'error: missing command';
+          const result = await runTests(command);
+          return result
+            ? JSON.stringify({
+                command: result.command,
+                exitCode: result.exitCode,
+                status: result.status,
+                summary: result.summary,
+                timedOut: result.timedOut,
+              })
+            : 'error: tests failed';
+        }
         case 'UNDO_MODEL_ACTION': {
           return undoModelAction(action.params?.id?.trim());
         }
@@ -3016,8 +3182,10 @@ const OpenVSCodePage: React.FC = () => {
       runSearch,
       runSemanticNavigation,
       runTerminalCommand,
+      runTests,
       saveCurrentFile,
       semanticDirectory,
+      testCommand,
       setActiveFileContentFromAgent,
       undoModelAction,
     ],
@@ -3970,7 +4138,15 @@ const OpenVSCodePage: React.FC = () => {
                   <div className={styles.bottomPanel} data-testid="openvscode-bottom-panel">
                     <div className={styles.bottomTabs}>
                       {(
-                        ['problems', 'output', 'preview', 'actions', 'git', 'terminal'] as const
+                        [
+                          'problems',
+                          'output',
+                          'preview',
+                          'actions',
+                          'git',
+                          'tests',
+                          'terminal',
+                        ] as const
                       ).map((panel) => (
                         <button
                           key={panel}
@@ -3987,6 +4163,9 @@ const OpenVSCodePage: React.FC = () => {
                           ) : null}
                           {panel === 'git' && gitStatusEntries.length > 0 ? (
                             <span>{gitStatusEntries.length}</span>
+                          ) : null}
+                          {panel === 'tests' && testHistory.length > 0 ? (
+                            <span>{testHistory[0].status === 'passed' ? 'OK' : '!'}</span>
                           ) : null}
                         </button>
                       ))}
@@ -4232,6 +4411,61 @@ const OpenVSCodePage: React.FC = () => {
                               {selectedGitPath ? t('source.noDiff') : t('source.noSelection')}
                             </div>
                           )}
+                        </div>
+                      ) : null}
+                      {bottomPanel === 'tests' ? (
+                        <div className={styles.testPane}>
+                          <form
+                            className={styles.testInputRow}
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void runTests();
+                            }}
+                          >
+                            <span>{t('tests.label')}</span>
+                            <input
+                              ref={testInputRef}
+                              value={testCommand}
+                              onChange={(event) => setTestCommand(event.target.value)}
+                              placeholder={t('tests.placeholder')}
+                              disabled={isRunningTests}
+                            />
+                            <button
+                              type="submit"
+                              className={styles.runButton}
+                              disabled={!testCommand.trim() || isRunningTests}
+                            >
+                              <Play size={14} />
+                              <span>{isRunningTests ? t('actions.running') : t('tests.run')}</span>
+                            </button>
+                          </form>
+                          <div className={styles.testHistory}>
+                            {testHistory.length === 0 ? (
+                              <div className={styles.panelEmpty}>{t('tests.empty')}</div>
+                            ) : (
+                              testHistory.map((entry) => (
+                                <div className={styles.testEntry} key={entry.id}>
+                                  <div className={styles.testCommand}>
+                                    <span className={getTestStatusClass(entry.status)}>
+                                      {t(`tests.status.${entry.status}`)}
+                                    </span>
+                                    <strong>{entry.command}</strong>
+                                    <small>
+                                      {t('tests.summary', {
+                                        status: t(`tests.status.${entry.status}`),
+                                        detail: entry.summary,
+                                        ms: entry.durationMs,
+                                      })}
+                                    </small>
+                                  </div>
+                                  {entry.stdout ? <pre>{entry.stdout}</pre> : null}
+                                  {entry.stderr ? (
+                                    <pre className={styles.stderr}>{entry.stderr}</pre>
+                                  ) : null}
+                                </div>
+                              ))
+                            )}
+                          </div>
                         </div>
                       ) : null}
                       {bottomPanel === 'terminal' ? (

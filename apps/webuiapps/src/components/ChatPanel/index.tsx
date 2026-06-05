@@ -767,6 +767,7 @@ Rules:
 - Use run_command only for safe, read-only workspace verification in Aoi's IDE context, such as git status/diff or pnpm/npm test/lint/build.
 - Use structured_diagnostics when the user wants lint/typecheck/test failures in structured form instead of raw command output.
 - Use RUN_DIAGNOSTICS on Aoi's IDE when the user wants diagnostics to appear in the IDE Problems panel.
+- Use RUN_TESTS on Aoi's IDE when the user wants test execution and pass/fail history visible in the IDE Tests panel.
 - Use REFRESH_GIT_STATUS on Aoi's IDE when the user wants current Git changes shown in the Source Control panel.
 - Use OPEN_SEMANTIC_NAVIGATION on Aoi's IDE when the user wants definition, references, or exports results visible inside the IDE.
 - Use find_references and list_exports for codebase understanding when raw text search is not enough.

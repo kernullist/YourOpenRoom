@@ -96,6 +96,7 @@ const en = {
     preview: 'Preview',
     actions: 'Actions',
     git: 'Git',
+    tests: 'Tests',
     terminal: 'Terminal',
   },
   source: {
@@ -121,6 +122,7 @@ const en = {
     none: 'No workspace problems are visible.',
     unsavedFile: 'File has unsaved changes',
     commandFailed: 'Command failed: {{command}}',
+    testsFailed: 'Tests failed: {{command}}',
   },
   output: {
     workspace: 'Workspace',
@@ -131,7 +133,21 @@ const en = {
     branch: 'Branch',
     gitChanges: 'Git changes',
     modelActions: 'Model actions',
+    tests: 'Tests',
     diagnostics: 'Diagnostics',
+  },
+  tests: {
+    label: 'tests $',
+    placeholder: 'pnpm test',
+    run: 'Run tests',
+    empty: 'Run a safe test command to see results here.',
+    notRun: 'Not run yet',
+    summary: '{{status}} - {{detail}} - {{ms}} ms',
+    status: {
+      passed: 'Passed',
+      failed: 'Failed',
+      timed_out: 'Timed out',
+    },
   },
   modelActions: {
     title: 'Model actions',
@@ -181,6 +197,7 @@ const en = {
       refreshGit: 'Source Control: Refresh Git Status',
       terminal: 'Terminal: Focus Terminal',
       diagnostics: 'Problems: Focus Diagnostics Command',
+      tests: 'Tests: Focus Test Runner',
       actions: 'Actions: Show Model Actions',
       previewPanel: 'Preview: Show Patch Preview',
       gitPanel: 'Git: Show Selected Diff',
@@ -191,6 +208,7 @@ const en = {
       previewUnsaved: 'Preview: Review Current File Changes',
       settings: 'Preferences: Open Workspace Settings',
       build: 'Tasks: Run Build',
+      runTests: 'Tasks: Run Tests',
     },
   },
   empty: {

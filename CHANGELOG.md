@@ -40,6 +40,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   the command palette, or the `SWITCH_WORKSPACE_ROOT` app action.
 - Aoi's IDE now includes a Symbols panel for definition, references, and exports navigation, with
   result clicks opening Monaco at the reported file and line.
+- Aoi's IDE now includes a bottom Tests panel for safe test command runs, summarized pass/fail
+  status, and recent test history.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 

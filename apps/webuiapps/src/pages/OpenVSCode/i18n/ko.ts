@@ -96,6 +96,7 @@ const ko = {
     preview: '미리보기',
     actions: '액션',
     git: 'Git',
+    tests: '테스트',
     terminal: '터미널',
   },
   source: {
@@ -121,6 +122,7 @@ const ko = {
     none: '표시할 워크스페이스 문제가 없습니다.',
     unsavedFile: '파일에 저장되지 않은 변경이 있습니다',
     commandFailed: '명령 실패: {{command}}',
+    testsFailed: '테스트 실패: {{command}}',
   },
   output: {
     workspace: '워크스페이스',
@@ -131,7 +133,21 @@ const ko = {
     branch: '브랜치',
     gitChanges: 'Git 변경',
     modelActions: '모델 액션',
+    tests: '테스트',
     diagnostics: '진단',
+  },
+  tests: {
+    label: 'tests $',
+    placeholder: 'pnpm test',
+    run: '테스트 실행',
+    empty: '안전한 테스트 명령을 실행하면 결과가 여기에 표시됩니다.',
+    notRun: '아직 실행하지 않음',
+    summary: '{{status}} - {{detail}} - {{ms}} ms',
+    status: {
+      passed: '통과',
+      failed: '실패',
+      timed_out: '시간 초과',
+    },
   },
   modelActions: {
     title: '모델 액션',
@@ -181,6 +197,7 @@ const ko = {
       refreshGit: '소스 제어: Git 상태 새로고침',
       terminal: '터미널: 터미널 포커스',
       diagnostics: '문제: 진단 명령 포커스',
+      tests: '테스트: 테스트 러너 포커스',
       actions: '액션: 모델 액션 표시',
       previewPanel: '미리보기: 패치 미리보기 표시',
       gitPanel: 'Git: 선택한 diff 표시',
@@ -191,6 +208,7 @@ const ko = {
       previewUnsaved: '미리보기: 현재 파일 변경 검토',
       settings: '환경설정: 워크스페이스 설정 열기',
       build: '작업: 빌드 실행',
+      runTests: '작업: 테스트 실행',
     },
   },
   empty: {

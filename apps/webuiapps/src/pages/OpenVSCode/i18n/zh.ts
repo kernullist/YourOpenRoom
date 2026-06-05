@@ -95,6 +95,7 @@ const zh = {
     preview: '预览',
     actions: '操作',
     git: 'Git',
+    tests: '测试',
     terminal: '终端',
   },
   source: {
@@ -120,6 +121,7 @@ const zh = {
     none: '当前没有可见的工作区问题。',
     unsavedFile: '文件包含未保存修改',
     commandFailed: '命令失败: {{command}}',
+    testsFailed: '测试失败: {{command}}',
   },
   output: {
     workspace: '工作区',
@@ -130,7 +132,21 @@ const zh = {
     branch: '分支',
     gitChanges: 'Git 修改',
     modelActions: '模型操作',
+    tests: '测试',
     diagnostics: '诊断',
+  },
+  tests: {
+    label: 'tests $',
+    placeholder: 'pnpm test',
+    run: '运行测试',
+    empty: '运行安全测试命令后，结果会显示在这里。',
+    notRun: '尚未运行',
+    summary: '{{status}} - {{detail}} - {{ms}} ms',
+    status: {
+      passed: '通过',
+      failed: '失败',
+      timed_out: '超时',
+    },
   },
   modelActions: {
     title: '模型操作',
@@ -180,6 +196,7 @@ const zh = {
       refreshGit: '源代码管理: 刷新 Git 状态',
       terminal: '终端: 聚焦终端',
       diagnostics: '问题: 聚焦诊断命令',
+      tests: '测试: 聚焦测试运行器',
       actions: '操作: 显示模型操作',
       previewPanel: '预览: 显示补丁预览',
       gitPanel: 'Git: 显示所选 diff',
@@ -190,6 +207,7 @@ const zh = {
       previewUnsaved: '预览: 查看当前文件修改',
       settings: '首选项: 打开工作区设置',
       build: '任务: 运行构建',
+      runTests: '任务: 运行测试',
     },
   },
   empty: {

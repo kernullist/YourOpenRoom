@@ -243,6 +243,17 @@ actions:
         description:
           Safe command accepted by the workspace command policy. Defaults to the current Problems
           panel command.
+  - type: RUN_TESTS
+    name: Run Tests
+    description:
+      Run a safe test command in the IDE workspace and show the result in the bottom Tests panel.
+    params:
+      - name: command
+        type: string
+        required: false
+        description:
+          Safe test command accepted by the workspace command policy. Defaults to the current Tests
+          panel command.
   - type: REFRESH_GIT_STATUS
     name: Refresh Git Status
     description:

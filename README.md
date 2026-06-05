@@ -205,6 +205,7 @@ lives. The current `/api/openvscode/*` endpoints support:
 - recent workspace root quick switching from settings, command palette, or app action
 - command palette search across commands, recent roots, open tabs, and loaded workspace files
 - structured diagnostics surfaced in the IDE Problems panel with file/line navigation
+- bottom Tests panel for safe test command runs and pass/fail history
 - read-only Source Control panel for `git status` and per-file diff inspection
 - safe command execution
 
