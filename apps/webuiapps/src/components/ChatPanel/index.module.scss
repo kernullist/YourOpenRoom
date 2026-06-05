@@ -59,6 +59,7 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+  --chat-font-size: 13px;
 }
 
 .header {
@@ -171,7 +172,7 @@
   max-width: 90%;
   padding: 8px 12px;
   border-radius: 12px;
-  font-size: 13px;
+  font-size: var(--chat-font-size);
   line-height: 1.5;
   word-break: break-word;
   white-space: pre-wrap;
@@ -228,7 +229,7 @@
   background: rgba(125, 211, 252, 0.08);
   color: #bae6fd;
   cursor: pointer;
-  font-size: 11px;
+  font-size: max(10px, calc(var(--chat-font-size) - 2px));
   line-height: 1.4;
 
   &:hover {
@@ -240,7 +241,7 @@
   align-self: flex-start;
   background: rgba(250, 234, 95, 0.08);
   color: rgba(255, 255, 255, 0.6);
-  font-size: 11px;
+  font-size: max(10px, calc(var(--chat-font-size) - 2px));
   padding: 4px 8px;
   border-radius: 6px;
   border: 1px solid rgba(250, 234, 95, 0.15);
@@ -257,7 +258,7 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 6px;
   color: rgba(255, 255, 255, 0.5);
-  font-size: 12px;
+  font-size: max(10px, calc(var(--chat-font-size) - 1px));
   padding: 4px 10px;
   cursor: pointer;
   display: flex;
@@ -275,7 +276,7 @@
   padding: 6px 10px;
   background: rgba(255, 255, 255, 0.03);
   border-radius: 6px;
-  font-size: 11px;
+  font-size: max(10px, calc(var(--chat-font-size) - 2px));
   color: rgba(255, 255, 255, 0.45);
   line-height: 1.6;
 }
@@ -294,7 +295,7 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
   border-radius: 16px;
   color: rgba(255, 255, 255, 0.75);
-  font-size: 12px;
+  font-size: max(10px, calc(var(--chat-font-size) - 1px));
   padding: 6px 12px;
   cursor: pointer;
   transition: all 0.15s;
@@ -322,7 +323,7 @@
   border-radius: 8px;
   padding: 8px 12px;
   color: rgba(255, 255, 255, 0.9);
-  font-size: 13px;
+  font-size: var(--chat-font-size);
   outline: none;
   resize: none;
   font-family: inherit;
@@ -639,7 +640,7 @@
   align-items: center;
   justify-content: center;
   color: rgba(255, 255, 255, 0.35);
-  font-size: 13px;
+  font-size: var(--chat-font-size);
   text-align: center;
   padding: 24px;
 }
@@ -654,7 +655,7 @@
 .loading {
   align-self: flex-start;
   color: rgba(255, 255, 255, 0.5);
-  font-size: 13px;
+  font-size: var(--chat-font-size);
   padding: 8px 12px;
 }
 

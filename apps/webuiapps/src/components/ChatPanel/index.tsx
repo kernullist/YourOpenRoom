@@ -226,6 +226,11 @@ type ChatDockSide = 'left' | 'right';
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+const CHAT_FONT_SIZE_KEY = 'openroom-chat-font-size';
+const CHAT_FONT_SIZE_DEFAULT = 13;
+const CHAT_FONT_SIZE_MIN = 11;
+const CHAT_FONT_SIZE_MAX = 22;
+const CHAT_FONT_SIZE_STEP = 1;
 
 interface CalendarReminderEvent {
   id: string;
@@ -297,6 +302,26 @@ function hasPersistedConversation(data: ChatHistoryData | null): boolean {
   const messages = data?.messages ?? [];
   const history = data?.chatHistory ?? [];
   return messages.length > 0 || history.length > 0;
+}
+
+function clampChatFontSize(value: number): number {
+  return Math.min(CHAT_FONT_SIZE_MAX, Math.max(CHAT_FONT_SIZE_MIN, value));
+}
+
+function loadChatFontSize(): number {
+  try {
+    const raw = localStorage.getItem(CHAT_FONT_SIZE_KEY);
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return clampChatFontSize(parsed);
+      }
+    }
+  } catch {
+    // ignore persistence failures
+  }
+
+  return CHAT_FONT_SIZE_DEFAULT;
 }
 
 function detectReplyLanguage(text: string): 'ko' | 'ja' | 'zh' | 'en' {
@@ -1318,6 +1343,14 @@ const ChatPanel: React.FC<{
       return 'right';
     }
   });
+  const [chatFontSize, setChatFontSize] = useState(loadChatFontSize);
+  const chatFontStyle = useMemo(
+    () =>
+      ({
+        '--chat-font-size': `${chatFontSize}px`,
+      }) as React.CSSProperties,
+    [chatFontSize],
+  );
 
   useEffect(() => {
     try {
@@ -1327,6 +1360,14 @@ const ChatPanel: React.FC<{
       // ignore persistence failures
     }
   }, [dockSide]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHAT_FONT_SIZE_KEY, String(chatFontSize));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [chatFontSize]);
 
   useEffect(() => {
     const handler = (event: Event) => {
@@ -3644,6 +3685,19 @@ const ChatPanel: React.FC<{
     window.open(url, '_blank', 'noopener,noreferrer');
   }, []);
 
+  const handleChatWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
+    if (!event.ctrlKey && !event.metaKey) {
+      return;
+    }
+    if (event.deltaY === 0) {
+      return;
+    }
+
+    event.preventDefault();
+    const direction = event.deltaY < 0 ? 1 : -1;
+    setChatFontSize((prev) => clampChatFontSize(prev + direction * CHAT_FONT_SIZE_STEP));
+  }, []);
+
   if (!visible) return null;
 
   return (
@@ -3668,7 +3722,13 @@ const ChatPanel: React.FC<{
         )}
 
         {/* Right: Chat */}
-        <div className={styles.chatSide}>
+        <div
+          className={styles.chatSide}
+          style={chatFontStyle}
+          onWheel={handleChatWheel}
+          data-chat-font-size={chatFontSize}
+          title="Ctrl+mouse wheel adjusts chat font size"
+        >
           <div className={styles.header}>
             <div
               className={styles.headerLeft}

@@ -82,6 +82,34 @@ test.describe('Chat panel – settings modal', () => {
 });
 
 test.describe('Chat panel – input interaction', () => {
+  test('ctrl mouse wheel adjusts and persists chat font size', async ({ page }) => {
+    await page.goto('/');
+    await page.evaluate(() => {
+      window.localStorage.removeItem('openroom-chat-font-size');
+    });
+    await page.reload();
+
+    const messages = page.locator('[data-testid="chat-messages"]');
+    const input = page.locator('[data-testid="chat-input"]');
+    await expect(messages).toBeVisible();
+    await expect(input).toHaveCSS('font-size', '13px');
+
+    await messages.evaluate((element) => {
+      element.dispatchEvent(
+        new WheelEvent('wheel', {
+          bubbles: true,
+          cancelable: true,
+          ctrlKey: true,
+          deltaY: -100,
+        }),
+      );
+    });
+    await expect(input).toHaveCSS('font-size', '14px');
+
+    await page.reload();
+    await expect(page.locator('[data-testid="chat-input"]')).toHaveCSS('font-size', '14px');
+  });
+
   test('send button is disabled when input is empty and enabled when text is entered', async ({
     page,
   }) => {
