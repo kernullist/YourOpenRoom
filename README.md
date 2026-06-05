@@ -197,6 +197,7 @@ lives. The current `/api/openvscode/*` endpoints support:
 - reference lookup
 - export listing
 - definition peeking
+- in-app Symbols panel for definition, references, and exports navigation
 - semantic rename preview and apply
 - active-file patch preview/apply/discard for model proposals and unsaved editor changes
 - active selection context and selected-text replacement actions for chat-driven edits

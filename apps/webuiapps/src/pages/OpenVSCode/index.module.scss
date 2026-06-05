@@ -401,6 +401,7 @@
 
 .createFileForm,
 .searchPanel,
+.semanticPanel,
 .settingsPanel {
   display: flex;
   flex-direction: column;
@@ -608,6 +609,83 @@
     font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
     font-size: 11px;
   }
+}
+
+.semanticPanel {
+  padding: 10px;
+  border-bottom: 1px solid #242a35;
+}
+
+.semanticResults {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px;
+}
+
+.semanticGroupTitle {
+  margin: 10px 2px 5px;
+  color: #788293;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.semanticItem {
+  width: 100%;
+  min-height: 70px;
+  display: grid;
+  grid-template-columns: 72px minmax(0, 1fr);
+  grid-template-rows: auto auto auto;
+  align-items: center;
+  column-gap: 8px;
+  row-gap: 3px;
+  border: 0;
+  border-radius: 5px;
+  padding: 7px;
+  color: #d7dde8;
+  background: transparent;
+  text-align: left;
+
+  > span {
+    grid-row: 1 / 4;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: #8ab4ff;
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  strong,
+  small,
+  code {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  small {
+    color: #7b8493;
+    font-size: 10px;
+  }
+
+  code {
+    color: #aeb7c6;
+    font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+    font-size: 11px;
+  }
+}
+
+.semanticItem:hover {
+  background: #1c2330;
 }
 
 .sourcePanel {

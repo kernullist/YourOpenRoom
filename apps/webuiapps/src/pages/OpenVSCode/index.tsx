@@ -96,9 +96,10 @@ const ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT = 20_000;
 const WORKSPACE_HISTORY_LIMIT = 8;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
-type ActivityView = 'explorer' | 'search' | 'source' | 'settings';
+type ActivityView = 'explorer' | 'search' | 'symbols' | 'source' | 'settings';
 type BottomPanel = 'problems' | 'output' | 'preview' | 'actions' | 'git' | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
+type SemanticMode = 'definition' | 'references' | 'exports';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type ModelActionStatus = 'success' | 'error';
@@ -154,6 +155,65 @@ interface SearchResponse {
   total_matches: number;
   has_more: boolean;
   matches: SearchMatch[];
+}
+
+interface SymbolMatchItem {
+  path: string;
+  line: number;
+  column: number;
+  kind: string;
+  preview: string;
+}
+
+interface SymbolSearchResponse {
+  symbol: string;
+  directory: string;
+  total_matches: number;
+  matches: SymbolMatchItem[];
+}
+
+interface SemanticDefinitionItem {
+  path: string;
+  line: number;
+  column: number;
+  kind: string;
+  preview: string;
+  context: string[];
+}
+
+interface SemanticDefinitionResponse {
+  symbol: string;
+  definition: SemanticDefinitionItem | null;
+}
+
+interface SemanticReferenceItem {
+  path: string;
+  line: number;
+  column: number;
+  kind: 'reference' | 'import' | 'declaration';
+  preview: string;
+}
+
+interface SemanticReferencesResponse {
+  symbol: string;
+  directory: string;
+  total_matches: number;
+  references: SemanticReferenceItem[];
+}
+
+interface SemanticExportItem {
+  path: string;
+  line: number;
+  column: number;
+  name: string;
+  kind: string;
+  preview: string;
+}
+
+interface SemanticExportsResponse {
+  directory: string;
+  total_matches: number;
+  exports: SemanticExportItem[];
 }
 
 interface CommandRunResponse {
@@ -853,6 +913,13 @@ function createProblemId(): string {
   return `problem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function parseSemanticMode(value: string | undefined): SemanticMode {
+  if (value === 'references' || value === 'exports') {
+    return value;
+  }
+  return 'definition';
+}
+
 const OpenVSCodePage: React.FC = () => {
   const { t } = useTranslation('openvscode');
   const [workspaceRoot, setWorkspaceRoot] = useState('');
@@ -879,6 +946,15 @@ const OpenVSCodePage: React.FC = () => {
   const [searchMode, setSearchMode] = useState<SearchMode>('auto');
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
   const [isSearching, setIsSearching] = useState(false);
+  const [semanticMode, setSemanticMode] = useState<SemanticMode>('definition');
+  const [semanticQuery, setSemanticQuery] = useState('');
+  const [semanticDirectory, setSemanticDirectory] = useState('');
+  const [symbolMatches, setSymbolMatches] = useState<SymbolMatchItem[]>([]);
+  const [semanticDefinition, setSemanticDefinition] = useState<SemanticDefinitionItem | null>(null);
+  const [semanticReferences, setSemanticReferences] = useState<SemanticReferenceItem[]>([]);
+  const [semanticExports, setSemanticExports] = useState<SemanticExportItem[]>([]);
+  const [semanticErrorText, setSemanticErrorText] = useState<string | null>(null);
+  const [isSemanticLoading, setIsSemanticLoading] = useState(false);
   const [bottomPanel, setBottomPanel] = useState<BottomPanel>('terminal');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isBottomPanelOpen, setIsBottomPanelOpen] = useState(true);
@@ -910,6 +986,7 @@ const OpenVSCodePage: React.FC = () => {
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
   const diagnosticsInputRef = useRef<HTMLInputElement | null>(null);
+  const semanticRunIdRef = useRef(0);
   const lastPublishedStateRef = useRef('');
   const pendingRuntimeStateRef = useRef<{
     serialized: string;
@@ -1322,6 +1399,15 @@ const OpenVSCodePage: React.FC = () => {
     clearEditorSelection();
     setSearchQuery('');
     setSearchResult(null);
+    setSemanticQuery('');
+    setSemanticDirectory('');
+    setSymbolMatches([]);
+    setSemanticDefinition(null);
+    setSemanticReferences([]);
+    setSemanticExports([]);
+    setSemanticErrorText(null);
+    setIsSemanticLoading(false);
+    semanticRunIdRef.current += 1;
     setDiagnosticItems([]);
     setLastDiagnosticRun(null);
     setGitStatusEntries([]);
@@ -1419,6 +1505,140 @@ const OpenVSCodePage: React.FC = () => {
       }
     },
     [searchMode, searchQuery],
+  );
+
+  const fetchSemanticJson = useCallback(
+    async <T,>(endpoint: string, params: Record<string, string>): Promise<T> => {
+      const url = new URL(endpoint, window.location.origin);
+      Object.entries(params).forEach(([key, value]) => {
+        if (value.trim()) {
+          url.searchParams.set(key, value.trim());
+        }
+      });
+
+      const res = await fetch(url.toString());
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok) {
+        if (contentType.includes('application/json')) {
+          const data = (await res.json()) as { error?: string };
+          throw new Error(data.error || `Semantic API error ${res.status}`);
+        }
+        throw new Error(await res.text());
+      }
+
+      return (await res.json()) as T;
+    },
+    [],
+  );
+
+  const openSemanticLocation = useCallback(
+    async (path: string, line?: number) => {
+      setActivityView('symbols');
+      setIsSidebarOpen(true);
+      await loadFile(path, line);
+    },
+    [loadFile],
+  );
+
+  const runSemanticNavigation = useCallback(
+    async (
+      modeOverride?: SemanticMode,
+      queryOverride?: string,
+      directoryOverride?: string,
+    ): Promise<boolean> => {
+      const mode = modeOverride ?? semanticMode;
+      const symbol = (queryOverride ?? semanticQuery).trim();
+      const directory = (directoryOverride ?? semanticDirectory).trim();
+
+      setSemanticMode(mode);
+      if (queryOverride !== undefined) {
+        setSemanticQuery(symbol);
+      }
+      if (directoryOverride !== undefined) {
+        setSemanticDirectory(directory);
+      }
+      setActivityView('symbols');
+      setIsSidebarOpen(true);
+
+      if (mode !== 'exports' && !symbol) {
+        setSemanticErrorText(t('semantic.missingSymbol'));
+        return false;
+      }
+
+      const runId = semanticRunIdRef.current + 1;
+      semanticRunIdRef.current = runId;
+      setIsSemanticLoading(true);
+      setSemanticErrorText(null);
+      try {
+        if (mode === 'definition') {
+          setSymbolMatches([]);
+          setSemanticDefinition(null);
+          const [symbols, definition] = await Promise.all([
+            fetchSemanticJson<SymbolSearchResponse>('/api/openvscode/symbol', {
+              symbol,
+              directory,
+            }),
+            fetchSemanticJson<SemanticDefinitionResponse>('/api/openvscode/peek-definition', {
+              symbol,
+              directory,
+            }),
+          ]);
+          if (semanticRunIdRef.current !== runId) {
+            return false;
+          }
+          setSymbolMatches(symbols.matches);
+          setSemanticDefinition(definition.definition);
+          return true;
+        }
+
+        if (mode === 'references') {
+          setSymbolMatches([]);
+          setSemanticReferences([]);
+          const [symbols, references] = await Promise.all([
+            fetchSemanticJson<SymbolSearchResponse>('/api/openvscode/symbol', {
+              symbol,
+              directory,
+            }),
+            fetchSemanticJson<SemanticReferencesResponse>('/api/openvscode/references', {
+              symbol,
+              directory,
+              max_results: '30',
+            }),
+          ]);
+          if (semanticRunIdRef.current !== runId) {
+            return false;
+          }
+          setSymbolMatches(symbols.matches);
+          setSemanticReferences(references.references);
+          return true;
+        }
+
+        setSemanticExports([]);
+        const exportsResult = await fetchSemanticJson<SemanticExportsResponse>(
+          '/api/openvscode/exports',
+          {
+            directory,
+            max_results: '30',
+          },
+        );
+        if (semanticRunIdRef.current !== runId) {
+          return false;
+        }
+        setSemanticExports(exportsResult.exports);
+        return true;
+      } catch (error) {
+        if (semanticRunIdRef.current !== runId) {
+          return false;
+        }
+        setSemanticErrorText(error instanceof Error ? error.message : String(error));
+        return false;
+      } finally {
+        if (semanticRunIdRef.current === runId) {
+          setIsSemanticLoading(false);
+        }
+      }
+    },
+    [fetchSemanticJson, semanticDirectory, semanticMode, semanticQuery, t],
   );
 
   const runTerminalCommand = useCallback(
@@ -2035,6 +2255,9 @@ const OpenVSCodePage: React.FC = () => {
         await refreshWorkspace();
       } else if (id === 'search') {
         focusSearch();
+      } else if (id === 'symbols') {
+        setActivityView('symbols');
+        setIsSidebarOpen(true);
       } else if (id === 'source') {
         setActivityView('source');
         setIsSidebarOpen(true);
@@ -2117,6 +2340,12 @@ const OpenVSCodePage: React.FC = () => {
         label: t('commandPalette.commands.search'),
         group: t('commandPalette.groups.workspace'),
         shortcut: 'Ctrl+F',
+      },
+      {
+        id: 'symbols',
+        kind: 'command',
+        label: t('commandPalette.commands.symbols'),
+        group: t('commandPalette.groups.workspace'),
       },
       {
         id: 'source',
@@ -2721,6 +2950,20 @@ const OpenVSCodePage: React.FC = () => {
           await runSearch(query);
           return 'success';
         }
+        case 'OPEN_SEMANTIC_NAVIGATION': {
+          const mode = parseSemanticMode(action.params?.mode?.trim());
+          const symbol = action.params?.symbol?.trim() || '';
+          const directory = action.params?.directory?.trim() || semanticDirectory;
+          if (!symbol && mode !== 'exports') {
+            setSemanticMode(mode);
+            setSemanticDirectory(directory);
+            setActivityView('symbols');
+            setIsSidebarOpen(true);
+            return JSON.stringify({ mode, opened: true });
+          }
+          const ok = await runSemanticNavigation(mode, symbol, directory);
+          return ok ? JSON.stringify({ mode, symbol, directory }) : 'error: semantic lookup failed';
+        }
         case 'REFRESH_GIT_STATUS': {
           setActivityView('source');
           setIsSidebarOpen(true);
@@ -2771,8 +3014,10 @@ const OpenVSCodePage: React.FC = () => {
       replaceActiveSelectionFromAgent,
       runDiagnostics,
       runSearch,
+      runSemanticNavigation,
       runTerminalCommand,
       saveCurrentFile,
+      semanticDirectory,
       setActiveFileContentFromAgent,
       undoModelAction,
     ],
@@ -3059,6 +3304,18 @@ const OpenVSCodePage: React.FC = () => {
           </button>
           <button
             className={`${styles.activityButton} ${
+              activityView === 'symbols' ? styles.activityButtonActive : ''
+            }`}
+            onClick={() => {
+              setActivityView('symbols');
+              setIsSidebarOpen(true);
+            }}
+            title={t('activity.symbols')}
+          >
+            <FileCode2 size={22} />
+          </button>
+          <button
+            className={`${styles.activityButton} ${
               activityView === 'source' ? styles.activityButtonActive : ''
             }`}
             onClick={() => {
@@ -3295,6 +3552,165 @@ const OpenVSCodePage: React.FC = () => {
                       ))}
                     </div>
                   ))}
+                </div>
+              </>
+            ) : null}
+
+            {activityView === 'symbols' ? (
+              <>
+                <div className={styles.sidebarHeader}>
+                  <div className={styles.sidebarTitle}>
+                    <span>{t('semantic.title')}</span>
+                    <small>{isSemanticLoading ? t('semantic.loading') : t('semantic.ready')}</small>
+                  </div>
+                </div>
+                <div className={styles.semanticPanel}>
+                  <label className={styles.fieldLabel}>
+                    <span>{t('semantic.symbol')}</span>
+                    <input
+                      className={styles.textInput}
+                      value={semanticQuery}
+                      onChange={(event) => setSemanticQuery(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          void runSemanticNavigation();
+                        }
+                      }}
+                      placeholder={t('semantic.symbolPlaceholder')}
+                    />
+                  </label>
+                  <label className={styles.fieldLabel}>
+                    <span>{t('semantic.directory')}</span>
+                    <input
+                      className={styles.textInput}
+                      value={semanticDirectory}
+                      onChange={(event) => setSemanticDirectory(event.target.value)}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') {
+                          void runSemanticNavigation();
+                        }
+                      }}
+                      placeholder={t('semantic.directoryPlaceholder')}
+                    />
+                  </label>
+                  <div className={styles.segmented}>
+                    {(['definition', 'references', 'exports'] as const).map((mode) => (
+                      <button
+                        key={mode}
+                        className={semanticMode === mode ? styles.segmentedActive : ''}
+                        onClick={() => setSemanticMode(mode)}
+                      >
+                        {t(`semantic.modes.${mode}`)}
+                      </button>
+                    ))}
+                  </div>
+                  <button
+                    className={styles.primaryButton}
+                    onClick={() => void runSemanticNavigation()}
+                    disabled={
+                      isSemanticLoading || (semanticMode !== 'exports' && !semanticQuery.trim())
+                    }
+                  >
+                    <Search size={15} />
+                    <span>{isSemanticLoading ? t('semantic.loading') : t('semantic.run')}</span>
+                  </button>
+                  {editorSelection?.text ? (
+                    <button
+                      className={styles.secondaryButton}
+                      onClick={() => setSemanticQuery(editorSelection.text?.trim() ?? '')}
+                    >
+                      {t('semantic.useSelection')}
+                    </button>
+                  ) : null}
+                  {semanticErrorText ? (
+                    <p className={styles.inlineError}>{semanticErrorText}</p>
+                  ) : null}
+                </div>
+                <div className={styles.semanticResults}>
+                  {semanticMode === 'definition' ? (
+                    <>
+                      {semanticDefinition ? (
+                        <button
+                          className={styles.semanticItem}
+                          onClick={() =>
+                            void openSemanticLocation(
+                              semanticDefinition.path,
+                              semanticDefinition.line,
+                            )
+                          }
+                          title={`${semanticDefinition.path}:${semanticDefinition.line}`}
+                        >
+                          <span>{semanticDefinition.kind}</span>
+                          <strong>{getFileName(semanticDefinition.path)}</strong>
+                          <small>{`${semanticDefinition.path}:${semanticDefinition.line}`}</small>
+                          <code>{semanticDefinition.preview}</code>
+                        </button>
+                      ) : null}
+                      {symbolMatches.length > 0 ? (
+                        <div className={styles.semanticGroupTitle}>
+                          {t('semantic.symbolMatches', { count: symbolMatches.length })}
+                        </div>
+                      ) : null}
+                      {symbolMatches.map((match) => (
+                        <button
+                          key={`symbol-${match.path}-${match.line}-${match.column}-${match.kind}`}
+                          className={styles.semanticItem}
+                          onClick={() => void openSemanticLocation(match.path, match.line)}
+                          title={`${match.path}:${match.line}`}
+                        >
+                          <span>{match.kind}</span>
+                          <strong>{getFileName(match.path)}</strong>
+                          <small>{`${match.path}:${match.line}`}</small>
+                          <code>{match.preview}</code>
+                        </button>
+                      ))}
+                      {!semanticDefinition && symbolMatches.length === 0 && !isSemanticLoading ? (
+                        <div className={styles.panelEmpty}>{t('semantic.empty')}</div>
+                      ) : null}
+                    </>
+                  ) : null}
+
+                  {semanticMode === 'references' ? (
+                    <>
+                      {semanticReferences.map((reference) => (
+                        <button
+                          key={`reference-${reference.path}-${reference.line}-${reference.column}-${reference.kind}`}
+                          className={styles.semanticItem}
+                          onClick={() => void openSemanticLocation(reference.path, reference.line)}
+                          title={`${reference.path}:${reference.line}`}
+                        >
+                          <span>{reference.kind}</span>
+                          <strong>{getFileName(reference.path)}</strong>
+                          <small>{`${reference.path}:${reference.line}`}</small>
+                          <code>{reference.preview}</code>
+                        </button>
+                      ))}
+                      {semanticReferences.length === 0 && !isSemanticLoading ? (
+                        <div className={styles.panelEmpty}>{t('semantic.empty')}</div>
+                      ) : null}
+                    </>
+                  ) : null}
+
+                  {semanticMode === 'exports' ? (
+                    <>
+                      {semanticExports.map((item) => (
+                        <button
+                          key={`export-${item.path}-${item.line}-${item.column}-${item.name}`}
+                          className={styles.semanticItem}
+                          onClick={() => void openSemanticLocation(item.path, item.line)}
+                          title={`${item.path}:${item.line}`}
+                        >
+                          <span>{item.kind}</span>
+                          <strong>{item.name}</strong>
+                          <small>{`${item.path}:${item.line}`}</small>
+                          <code>{item.preview}</code>
+                        </button>
+                      ))}
+                      {semanticExports.length === 0 && !isSemanticLoading ? (
+                        <div className={styles.panelEmpty}>{t('semantic.empty')}</div>
+                      ) : null}
+                    </>
+                  ) : null}
                 </div>
               </>
             ) : null}

@@ -768,6 +768,7 @@ Rules:
 - Use structured_diagnostics when the user wants lint/typecheck/test failures in structured form instead of raw command output.
 - Use RUN_DIAGNOSTICS on Aoi's IDE when the user wants diagnostics to appear in the IDE Problems panel.
 - Use REFRESH_GIT_STATUS on Aoi's IDE when the user wants current Git changes shown in the Source Control panel.
+- Use OPEN_SEMANTIC_NAVIGATION on Aoi's IDE when the user wants definition, references, or exports results visible inside the IDE.
 - Use find_references and list_exports for codebase understanding when raw text search is not enough.
 - Use peek_definition for a tight symbol definition excerpt, and rename_preview before any broad refactor or rename.
 - Use apply_semantic_rename only after rename_preview, and prefer it over raw text patching for straightforward symbol renames in the IDE workspace.

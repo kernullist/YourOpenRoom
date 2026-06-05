@@ -247,3 +247,20 @@ actions:
     name: Refresh Git Status
     description:
       Refresh the Source Control panel with safe read-only git status and diff information.
+  - type: OPEN_SEMANTIC_NAVIGATION
+    name: Open Semantic Navigation
+    description:
+      Open the IDE Symbols panel and optionally run a definition, references, or exports lookup.
+    params:
+      - name: symbol
+        type: string
+        required: false
+        description: Symbol name to resolve. Required for definition and references modes.
+      - name: mode
+        type: string
+        required: false
+        description: One of "definition", "references", or "exports". Defaults to "definition".
+      - name: directory
+        type: string
+        required: false
+        description: Optional relative directory scope inside the IDE workspace.

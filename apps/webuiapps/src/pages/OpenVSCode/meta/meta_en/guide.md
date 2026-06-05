@@ -2,7 +2,8 @@
 
 This app provides a VSCode-style editor for a local workspace folder. It supports a file explorer,
 Monaco text editing, tabs, workspace search, a safe command terminal, a bottom panel, and editor
-state sharing with the chat model.
+state sharing with the chat model. The Symbols panel can run definition, references, and exports
+lookups against the IDE workspace and open the selected result in Monaco.
 
 ## Configuration
 
@@ -44,6 +45,8 @@ the selected file.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
 7. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
    diffs.
+8. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
+   wants an in-app definition, references, or exports view.
 
 ## Current File Context
 

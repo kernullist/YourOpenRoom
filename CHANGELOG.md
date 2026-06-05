@@ -38,6 +38,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   keyboard result navigation.
 - Aoi's IDE now remembers recent workspace roots and can quick-switch them from Workspace settings,
   the command palette, or the `SWITCH_WORKSPACE_ROOT` app action.
+- Aoi's IDE now includes a Symbols panel for definition, references, and exports navigation, with
+  result clicks opening Monaco at the reported file and line.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 
