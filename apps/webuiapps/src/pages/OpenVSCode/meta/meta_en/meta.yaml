@@ -254,6 +254,47 @@ actions:
         description:
           Safe test command accepted by the workspace command policy. Defaults to the current Tests
           panel command.
+  - type: LIST_WORKSPACE_CHECKPOINTS
+    name: List Workspace Checkpoints
+    description:
+      Load existing IDE/app-storage checkpoints and show them in the bottom Checkpoints panel.
+  - type: CREATE_WORKSPACE_CHECKPOINT
+    name: Create Workspace Checkpoint
+    description: Create a checkpoint for one or more IDE workspace roots before risky edits.
+    params:
+      - name: name
+        type: string
+        required: false
+        description: Optional checkpoint name.
+      - name: root
+        type: string
+        required: false
+        description: Single relative file or directory root. Defaults to the active file or ".".
+      - name: roots
+        type: string
+        required: false
+        description: JSON array or comma-separated relative roots.
+      - name: scope
+        type: string
+        required: false
+        description: '"ide" or "app_storage". Defaults to "ide".'
+  - type: RESTORE_WORKSPACE_CHECKPOINT
+    name: Restore Workspace Checkpoint
+    description:
+      Restore a checkpoint by ID and refresh the IDE workspace view after IDE-scope restores.
+    params:
+      - name: checkpoint_id
+        type: string
+        required: true
+        description: Checkpoint ID to restore.
+  - type: DELETE_WORKSPACE_CHECKPOINT
+    name: Delete Workspace Checkpoint
+    description: Delete a checkpoint by ID and refresh the bottom Checkpoints panel.
+    params:
+      - name: checkpoint_id
+        type: string
+        required: true
+        description: Checkpoint ID to delete.
   - type: REFRESH_GIT_STATUS
     name: Refresh Git Status
     description:

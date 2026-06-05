@@ -88,6 +88,17 @@ async function walkIdeFiles(root: string): Promise<CheckpointFileEntry[]> {
   const visited = new Set<string>();
   const files: CheckpointFileEntry[] = [];
 
+  const readIdeFile = async (path: string): Promise<CheckpointFileEntry> => {
+    const fileUrl = new URL('/api/openvscode/file', window.location.origin);
+    fileUrl.searchParams.set('path', path);
+    const fileRes = await fetch(fileUrl.toString());
+    if (!fileRes.ok) {
+      return { scope: 'ide', path, content: null };
+    }
+    const fileData = (await fileRes.json()) as { content: string };
+    return { scope: 'ide', path, content: fileData.content };
+  };
+
   while (pending.length > 0) {
     const current = pending.shift() ?? '';
     if (visited.has(current)) continue;
@@ -96,7 +107,7 @@ async function walkIdeFiles(root: string): Promise<CheckpointFileEntry[]> {
     if (current) url.searchParams.set('path', current);
     const res = await fetch(url.toString());
     if (!res.ok) {
-      files.push({ scope: 'ide', path: normalizedRoot, content: null });
+      files.push(await readIdeFile(current || normalizedRoot));
       continue;
     }
     const data = (await res.json()) as {
@@ -107,22 +118,17 @@ async function walkIdeFiles(root: string): Promise<CheckpointFileEntry[]> {
         pending.push(entry.path);
         continue;
       }
-      const fileUrl = new URL('/api/openvscode/file', window.location.origin);
-      fileUrl.searchParams.set('path', entry.path);
-      const fileRes = await fetch(fileUrl.toString());
-      if (!fileRes.ok) {
-        files.push({ scope: 'ide', path: entry.path, content: null });
-        continue;
-      }
-      const fileData = (await fileRes.json()) as { content: string };
-      files.push({ scope: 'ide', path: entry.path, content: fileData.content });
+      files.push(await readIdeFile(entry.path));
     }
   }
 
   return files;
 }
 
-async function captureCheckpointFiles(scope: CheckpointScope, roots: string[]): Promise<CheckpointFileEntry[]> {
+async function captureCheckpointFiles(
+  scope: CheckpointScope,
+  roots: string[],
+): Promise<CheckpointFileEntry[]> {
   const allFiles: CheckpointFileEntry[] = [];
   for (const root of roots) {
     const rootPath = normalizePath(root);
@@ -167,9 +173,16 @@ async function createCheckpoint(options: {
 async function restoreCheckpoint(checkpoint: WorkspaceCheckpoint): Promise<void> {
   const groupedByRoot = new Map<string, CheckpointFileEntry[]>();
   for (const file of checkpoint.files) {
-    const root = checkpoint.roots.find((item) => file.path === item || file.path.startsWith(`${item}/`)) || checkpoint.roots[0] || '';
-    if (!groupedByRoot.has(root)) groupedByRoot.set(root, []);
-    groupedByRoot.get(root)!.push(file);
+    const root =
+      checkpoint.roots.find((item) => file.path === item || file.path.startsWith(`${item}/`)) ||
+      checkpoint.roots[0] ||
+      '';
+    const group = groupedByRoot.get(root);
+    if (group) {
+      group.push(file);
+    } else {
+      groupedByRoot.set(root, [file]);
+    }
   }
 
   for (const [root, files] of groupedByRoot) {
@@ -187,7 +200,9 @@ async function restoreCheckpoint(checkpoint: WorkspaceCheckpoint): Promise<void>
         const parts = file.path.split('/');
         const name = parts.pop() || file.path;
         const dir = parts.join('/');
-        await idb.putTextFilesByJSON({ files: [{ path: dir || undefined, name, content: file.content }] });
+        await idb.putTextFilesByJSON({
+          files: [{ path: dir || undefined, name, content: file.content }],
+        });
       }
     } else {
       const currentFiles = await walkIdeFiles(root);
@@ -267,14 +282,16 @@ export async function executeCheckpointTool(params: Record<string, unknown>): Pr
   if (mode === 'list') {
     const items = await Promise.all((await listCheckpointFiles()).map(loadCheckpoint));
     return JSON.stringify({
-      checkpoints: items.filter((item): item is WorkspaceCheckpoint => item !== null).map((item) => ({
-        id: item.id,
-        name: item.name,
-        scope: item.scope,
-        roots: item.roots,
-        createdAt: item.createdAt,
-        fileCount: item.files.length,
-      })),
+      checkpoints: items
+        .filter((item): item is WorkspaceCheckpoint => item !== null)
+        .map((item) => ({
+          id: item.id,
+          name: item.name,
+          scope: item.scope,
+          roots: item.roots,
+          createdAt: item.createdAt,
+          fileCount: item.files.length,
+        })),
     });
   }
 

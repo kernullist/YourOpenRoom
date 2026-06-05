@@ -42,6 +42,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   result clicks opening Monaco at the reported file and line.
 - Aoi's IDE now includes a bottom Tests panel for safe test command runs, summarized pass/fail
   status, and recent test history.
+- Aoi's IDE now includes a bottom Checkpoints panel for creating, listing, restoring, and deleting
+  IDE/app-storage checkpoints from the UI or app actions.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 

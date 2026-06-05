@@ -44,10 +44,13 @@ the selected file.
 6. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
 7. Use `RUN_TESTS` when the user wants test execution visible in the IDE Tests panel.
-8. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
+8. Use `CREATE_WORKSPACE_CHECKPOINT`, `LIST_WORKSPACE_CHECKPOINTS`, `RESTORE_WORKSPACE_CHECKPOINT`,
+   and `DELETE_WORKSPACE_CHECKPOINT` when the user wants IDE restore points visible in the bottom
+   Checkpoints panel.
+9. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
    diffs.
-9. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
-   wants an in-app definition, references, or exports view.
+10. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
+    wants an in-app definition, references, or exports view.
 
 ## Current File Context
 
@@ -91,6 +94,13 @@ Draft-only model edits are restored in the editor buffer without saving.
 
 Users can also preview their own unsaved editor changes from the toolbar or command palette before
 saving. Applying that preview saves the current buffer to disk.
+
+## Checkpoints
+
+The bottom Checkpoints panel lists reusable IDE/app-storage checkpoints. Create an IDE checkpoint
+before broad or risky edits, using the active file path for tight changes or `.` for the workspace
+root. Restoring an IDE-scope checkpoint refreshes the explorer and closes stale editor buffers so
+the visible files match disk again.
 
 Use `ide_read_file` for known workspace files. Use `ide_patch_file` or `ide_write_file` only with an
 explicit path that is not the current active editor buffer; active editor mutations must go through

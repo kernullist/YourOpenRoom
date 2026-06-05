@@ -23,6 +23,7 @@ const mockedExecuteDiagnosticsTool = vi.mocked(executeDiagnosticsTool);
 
 describe('checkpoint/autofix tools', () => {
   beforeEach(() => {
+    vi.unstubAllGlobals();
     mockedListFiles.mockReset();
     mockedGetFile.mockReset();
     mockedPutTextFilesByJSON.mockReset();
@@ -44,6 +45,50 @@ describe('checkpoint/autofix tools', () => {
     expect(parsed.scope).toBe('app_storage');
     expect(parsed.roots).toEqual(['apps/notes/data/notes']);
     expect(mockedPutTextFilesByJSON).toHaveBeenCalled();
+  });
+
+  it('captures a single IDE file root with content', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const parsedUrl = new URL(url);
+      if (parsedUrl.pathname === '/api/openvscode/list') {
+        return {
+          ok: false,
+          json: async () => ({ error: 'Directory not found' }),
+        } as Response;
+      }
+      if (parsedUrl.pathname === '/api/openvscode/file') {
+        return {
+          ok: true,
+          json: async () => ({ content: 'export const answer = 42;\n' }),
+        } as Response;
+      }
+      return {
+        ok: false,
+        json: async () => ({ error: 'unexpected endpoint' }),
+      } as Response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await executeCheckpointTool({
+      mode: 'create',
+      scope: 'ide',
+      roots: ['src/file.ts'],
+      name: 'File snapshot',
+    });
+    const parsed = JSON.parse(result) as { fileCount: number };
+    const saved = mockedPutTextFilesByJSON.mock.calls[0][0] as {
+      files: Array<{ content: string }>;
+    };
+    const checkpoint = JSON.parse(saved.files[0].content) as {
+      files: Array<{ path: string; content: string | null }>;
+    };
+
+    expect(parsed.fileCount).toBe(1);
+    expect(checkpoint.files[0]).toEqual({
+      scope: 'ide',
+      path: 'src/file.ts',
+      content: 'export const answer = 42;\n',
+    });
   });
 
   it('creates an autofix checkpoint and returns diagnostics together', async () => {

@@ -1539,6 +1539,146 @@
   color: #f2cc60 !important;
 }
 
+.checkpointPane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.checkpointHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+}
+
+.checkpointHeader div {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.checkpointHeader strong {
+  color: #d7dde8;
+  font-size: 12px;
+}
+
+.checkpointHeader span {
+  color: #7b8493;
+  font-size: 11px;
+}
+
+.checkpointForm {
+  flex: 0 0 auto;
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(180px, 1.3fr) minmax(120px, 0.6fr) auto auto;
+  align-items: end;
+  gap: 8px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+}
+
+.checkpointForm label {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.checkpointForm label span {
+  color: #7b8493;
+  font-size: 11px;
+}
+
+.checkpointForm input,
+.checkpointForm select {
+  height: 28px;
+  min-width: 0;
+  border: 1px solid #313a49;
+  border-radius: 4px;
+  outline: none;
+  color: #d7dde8;
+  background: #111722;
+  font-size: 12px;
+}
+
+.checkpointForm input {
+  padding: 0 8px;
+}
+
+.checkpointForm select {
+  padding: 0 6px;
+}
+
+.checkpointList {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 10px 12px;
+}
+
+.checkpointEntry {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid #1d2430;
+  padding: 9px 0;
+}
+
+.checkpointMeta {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.checkpointMeta strong,
+.checkpointMeta span,
+.checkpointMeta small {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.checkpointMeta strong {
+  color: #d7dde8;
+  font-size: 12px;
+}
+
+.checkpointMeta span,
+.checkpointMeta small {
+  color: #7b8493;
+  font-size: 11px;
+}
+
+.checkpointActions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.panelError,
+.panelStatus {
+  flex: 0 0 auto;
+  border-bottom: 1px solid #202733;
+  padding: 7px 10px;
+  font-size: 12px;
+}
+
+.panelError {
+  color: #ffb4ab;
+}
+
+.panelStatus {
+  color: #7ee787;
+}
+
 .testEntry pre,
 .terminalEntry pre {
   margin: 0;
@@ -1742,6 +1882,14 @@
       display: none;
     }
   }
+
+  .checkpointForm {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+
+  .checkpointForm label:nth-child(2) {
+    grid-column: span 2;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1773,6 +1921,19 @@
 
   .bottomPanel {
     flex-basis: 210px;
+  }
+
+  .checkpointForm,
+  .checkpointEntry {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .checkpointForm label:nth-child(2) {
+    grid-column: auto;
+  }
+
+  .checkpointActions {
+    justify-content: flex-start;
   }
 
   .statusBar {

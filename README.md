@@ -128,6 +128,7 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - `preview_changes`
   - `undo_last_action`
   - `workspace_checkpoint`
+  - IDE checkpoint create/list/restore/delete app actions
   - `autofix_diagnostics`
   - `background_watch`
 
@@ -206,6 +207,7 @@ lives. The current `/api/openvscode/*` endpoints support:
 - command palette search across commands, recent roots, open tabs, and loaded workspace files
 - structured diagnostics surfaced in the IDE Problems panel with file/line navigation
 - bottom Tests panel for safe test command runs and pass/fail history
+- bottom Checkpoints panel for IDE/app-storage checkpoint creation, restore, delete, and refresh
 - read-only Source Control panel for `git status` and per-file diff inspection
 - safe command execution
 

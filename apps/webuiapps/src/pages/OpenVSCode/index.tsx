@@ -58,6 +58,7 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import { loadPersistedConfig, savePersistedConfig } from '@/lib/configPersistence';
+import { executeCheckpointTool } from '@/lib/checkpointTools';
 import { executeDiagnosticsTool } from '@/lib/diagnosticsTools';
 import './i18n';
 import styles from './index.module.scss';
@@ -98,9 +99,18 @@ const WORKSPACE_HISTORY_LIMIT = 8;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'symbols' | 'source' | 'settings';
-type BottomPanel = 'problems' | 'output' | 'preview' | 'actions' | 'git' | 'tests' | 'terminal';
+type BottomPanel =
+  | 'problems'
+  | 'output'
+  | 'preview'
+  | 'actions'
+  | 'git'
+  | 'tests'
+  | 'checkpoints'
+  | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
 type SemanticMode = 'definition' | 'references' | 'exports';
+type CheckpointScope = 'ide' | 'app_storage';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type ModelActionStatus = 'success' | 'error';
@@ -247,6 +257,15 @@ interface TestRunEntry extends TerminalEntry {
   summary: string;
 }
 
+interface CheckpointSummary {
+  id: string;
+  name: string;
+  scope: CheckpointScope;
+  roots: string[];
+  createdAt: number;
+  fileCount: number;
+}
+
 interface GitStatusEntry {
   raw: string;
   path: string;
@@ -388,6 +407,7 @@ interface OpenVscodeRuntimeState {
     afterCharCount: number;
     saveOnApply: boolean;
   } | null;
+  checkpoints: CheckpointSummary[];
   modelActions: Array<{
     id: string;
     actionType: string;
@@ -732,6 +752,7 @@ function buildOpenVscodeRuntimeState(args: {
   bottomPanel: BottomPanel;
   isSplitView: boolean;
   patchPreview: PatchPreview | null;
+  checkpointItems: CheckpointSummary[];
   modelActionLog: ModelActionLogEntry[];
 }): OpenVscodeRuntimeState {
   return {
@@ -769,6 +790,7 @@ function buildOpenVscodeRuntimeState(args: {
           saveOnApply: args.patchPreview.saveOnApply,
         }
       : null,
+    checkpoints: args.checkpointItems.slice(0, 20),
     modelActions: args.modelActionLog.slice(0, 20).map((entry) => ({
       id: entry.id,
       actionType: entry.actionType,
@@ -878,6 +900,57 @@ function getTestStatusClass(status: TestRunStatus): string {
     return styles.testStatus_timed_out;
   }
   return styles.testStatus_failed;
+}
+
+function parseCheckpointResult<T>(result: string): T {
+  if (/^error:/i.test(result.trim())) {
+    throw new Error(result);
+  }
+  return JSON.parse(result) as T;
+}
+
+function sortCheckpoints(items: CheckpointSummary[]): CheckpointSummary[] {
+  return [...items].sort((a, b) => b.createdAt - a.createdAt);
+}
+
+function formatCheckpointDate(value: number): string {
+  if (!Number.isFinite(value)) {
+    return '';
+  }
+  return new Date(value).toLocaleString();
+}
+
+function confirmCheckpointAction(message: string): boolean {
+  const confirmAction = window.confirm.bind(window);
+  return confirmAction(message);
+}
+
+function parseCheckpointRoots(
+  params: Record<string, string> | undefined,
+  fallbackRoot: string,
+): string[] {
+  const rawRoots = params?.roots?.trim();
+  if (rawRoots?.startsWith('[')) {
+    try {
+      const parsed = JSON.parse(rawRoots) as unknown;
+      if (Array.isArray(parsed)) {
+        const roots = parsed.map((item) => String(item).trim()).filter(Boolean);
+        return roots.length > 0 ? roots : [''];
+      }
+    } catch {
+      // Fall back to delimiter parsing below.
+    }
+  }
+
+  const rootText = rawRoots || params?.root || fallbackRoot;
+  if (!rootText.trim()) {
+    return [''];
+  }
+  const roots = rootText
+    .split(/[,;]/)
+    .map((item) => item.trim().replace(/\\/g, '/'))
+    .filter(Boolean);
+  return roots.length > 0 ? roots : [''];
 }
 
 function getActionPathFromResult(result: string): string | undefined {
@@ -1022,6 +1095,14 @@ const OpenVSCodePage: React.FC = () => {
   const [testCommand, setTestCommand] = useState(DEFAULT_TEST_COMMAND);
   const [testHistory, setTestHistory] = useState<TestRunEntry[]>([]);
   const [isRunningTests, setIsRunningTests] = useState(false);
+  const [checkpointName, setCheckpointName] = useState('');
+  const [checkpointRoot, setCheckpointRoot] = useState('');
+  const [checkpointScope, setCheckpointScope] = useState<CheckpointScope>('ide');
+  const [checkpointItems, setCheckpointItems] = useState<CheckpointSummary[]>([]);
+  const [checkpointStatusText, setCheckpointStatusText] = useState<string | null>(null);
+  const [checkpointErrorText, setCheckpointErrorText] = useState<string | null>(null);
+  const [isCheckpointLoading, setIsCheckpointLoading] = useState(false);
+  const [checkpointBusyId, setCheckpointBusyId] = useState<string | null>(null);
   const [diagnosticCommand, setDiagnosticCommand] = useState(DEFAULT_DIAGNOSTICS_COMMAND);
   const [diagnosticItems, setDiagnosticItems] = useState<ProblemItem[]>([]);
   const [lastDiagnosticRun, setLastDiagnosticRun] = useState<DiagnosticRunState | null>(null);
@@ -1047,6 +1128,7 @@ const OpenVSCodePage: React.FC = () => {
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
   const testInputRef = useRef<HTMLInputElement | null>(null);
+  const checkpointRootInputRef = useRef<HTMLInputElement | null>(null);
   const diagnosticsInputRef = useRef<HTMLInputElement | null>(null);
   const semanticRunIdRef = useRef(0);
   const lastPublishedStateRef = useRef('');
@@ -1143,6 +1225,7 @@ const OpenVSCodePage: React.FC = () => {
       bottomPanel,
       isSplitView,
       patchPreview,
+      checkpointItems,
       modelActionLog,
     });
     const serialized = JSON.stringify(runtimeState);
@@ -1159,6 +1242,7 @@ const OpenVSCodePage: React.FC = () => {
     activeTab,
     activityView,
     bottomPanel,
+    checkpointItems,
     cursorPosition,
     editorSelection,
     isBottomPanelOpen,
@@ -1513,6 +1597,11 @@ const OpenVSCodePage: React.FC = () => {
       }
 
       resetWorkspaceSession();
+      setCheckpointRoot('');
+      setCheckpointStatusText(null);
+      setCheckpointErrorText(null);
+      setIsCheckpointLoading(false);
+      setCheckpointBusyId(null);
       await refreshWorkspace();
       await loadGitBranch();
       setActivityView('explorer');
@@ -1808,6 +1897,166 @@ const OpenVSCodePage: React.FC = () => {
       }
     },
     [runWorkspaceCommand, testCommand, workspaceRoot],
+  );
+
+  const refreshCheckpoints = useCallback(
+    async (announce = false): Promise<CheckpointSummary[]> => {
+      setIsCheckpointLoading(true);
+      setCheckpointErrorText(null);
+      try {
+        const raw = await executeCheckpointTool({ mode: 'list' });
+        const parsed = parseCheckpointResult<{ checkpoints?: CheckpointSummary[] }>(raw);
+        const items = sortCheckpoints(parsed.checkpoints ?? []);
+        setCheckpointItems(items);
+        if (announce) {
+          setCheckpointStatusText(t('checkpoints.loadedStatus', { count: items.length }));
+        }
+        return items;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCheckpointErrorText(message);
+        return [];
+      } finally {
+        setIsCheckpointLoading(false);
+      }
+    },
+    [t],
+  );
+
+  const refreshAfterCheckpointRestore = useCallback(
+    async (scope: CheckpointScope) => {
+      if (scope !== 'ide') {
+        return;
+      }
+      resetWorkspaceSession();
+      await refreshWorkspace();
+      await loadGitBranch();
+      setIsBottomPanelOpen(true);
+      setBottomPanel('checkpoints');
+    },
+    [loadGitBranch, refreshWorkspace, resetWorkspaceSession],
+  );
+
+  const createCheckpoint = useCallback(
+    async (options?: {
+      name?: string;
+      roots?: string[];
+      scope?: CheckpointScope;
+    }): Promise<CheckpointSummary | null> => {
+      const scope = options?.scope ?? checkpointScope;
+      const roots =
+        options?.roots && options.roots.length > 0
+          ? options.roots
+          : [normalizeWorkspacePathInput(checkpointRoot) || activePath || '.'];
+      const name = options?.name?.trim() || checkpointName.trim() || undefined;
+
+      setIsBottomPanelOpen(true);
+      setBottomPanel('checkpoints');
+      setIsCheckpointLoading(true);
+      setCheckpointErrorText(null);
+      try {
+        const raw = await executeCheckpointTool({
+          mode: 'create',
+          scope,
+          roots,
+          name,
+        });
+        const checkpoint = parseCheckpointResult<CheckpointSummary>(raw);
+        setCheckpointItems((prev) => sortCheckpoints([checkpoint, ...prev]));
+        setCheckpointName('');
+        setCheckpointRoot(roots.length === 1 ? roots[0] : roots.join(', '));
+        setCheckpointStatusText(
+          t('checkpoints.createdStatus', {
+            name: checkpoint.name,
+            count: checkpoint.fileCount,
+          }),
+        );
+        await refreshCheckpoints();
+        return checkpoint;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCheckpointErrorText(message);
+        return null;
+      } finally {
+        setIsCheckpointLoading(false);
+      }
+    },
+    [activePath, checkpointName, checkpointRoot, checkpointScope, refreshCheckpoints, t],
+  );
+
+  const restoreCheckpoint = useCallback(
+    async (checkpoint: CheckpointSummary, skipConfirm = false): Promise<string> => {
+      if (
+        !skipConfirm &&
+        !confirmCheckpointAction(t('checkpoints.restoreConfirm', { name: checkpoint.name }))
+      ) {
+        return 'cancelled';
+      }
+
+      setCheckpointBusyId(checkpoint.id);
+      setCheckpointErrorText(null);
+      try {
+        const raw = await executeCheckpointTool({
+          mode: 'restore',
+          checkpoint_id: checkpoint.id,
+        });
+        const restored = parseCheckpointResult<{
+          restored: boolean;
+          checkpoint_id: string;
+          scope: CheckpointScope;
+          roots: string[];
+          fileCount: number;
+        }>(raw);
+        await refreshAfterCheckpointRestore(checkpoint.scope);
+        await refreshCheckpoints();
+        setCheckpointStatusText(
+          t('checkpoints.restoredStatus', {
+            name: checkpoint.name,
+            count: restored.fileCount,
+          }),
+        );
+        return JSON.stringify(restored);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCheckpointErrorText(message);
+        return `error: ${message}`;
+      } finally {
+        setCheckpointBusyId(null);
+      }
+    },
+    [refreshAfterCheckpointRestore, refreshCheckpoints, t],
+  );
+
+  const deleteCheckpoint = useCallback(
+    async (checkpoint: CheckpointSummary, skipConfirm = false): Promise<string> => {
+      if (
+        !skipConfirm &&
+        !confirmCheckpointAction(t('checkpoints.deleteConfirm', { name: checkpoint.name }))
+      ) {
+        return 'cancelled';
+      }
+
+      setCheckpointBusyId(checkpoint.id);
+      setCheckpointErrorText(null);
+      try {
+        const raw = await executeCheckpointTool({
+          mode: 'delete',
+          checkpoint_id: checkpoint.id,
+        });
+        const deleted = parseCheckpointResult<{ deleted: boolean; checkpoint_id: string }>(raw);
+        setCheckpointItems((prev) => prev.filter((item) => item.id !== checkpoint.id));
+        setCheckpointStatusText(t('checkpoints.deletedStatus', { name: checkpoint.name }));
+        await refreshCheckpoints();
+        return JSON.stringify(deleted);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCheckpointErrorText(message);
+        return `error: ${message}`;
+      } finally {
+        setCheckpointBusyId(null);
+      }
+    },
+    [refreshCheckpoints, t],
   );
 
   const loadGitDiff = useCallback(
@@ -2400,6 +2649,11 @@ const OpenVSCodePage: React.FC = () => {
         setIsBottomPanelOpen(true);
         setBottomPanel('tests');
         window.requestAnimationFrame(() => testInputRef.current?.focus());
+      } else if (id === 'checkpoints') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('checkpoints');
+        window.requestAnimationFrame(() => checkpointRootInputRef.current?.focus());
+        void refreshCheckpoints();
       } else if (id === 'actions') {
         setIsBottomPanelOpen(true);
         setBottomPanel('actions');
@@ -2430,6 +2684,7 @@ const OpenVSCodePage: React.FC = () => {
       refreshWorkspace,
       runTerminalCommand,
       runTests,
+      refreshCheckpoints,
       saveAllFiles,
       saveCurrentFile,
     ],
@@ -2498,6 +2753,12 @@ const OpenVSCodePage: React.FC = () => {
         id: 'tests',
         kind: 'command',
         label: t('commandPalette.commands.tests'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
+        id: 'checkpoints',
+        kind: 'command',
+        label: t('commandPalette.commands.checkpoints'),
         group: t('commandPalette.groups.panel'),
       },
       {
@@ -2708,6 +2969,7 @@ const OpenVSCodePage: React.FC = () => {
       `${t('output.branch')}: ${gitBranch}`,
       `${t('output.gitChanges')}: ${gitStatusEntries.length}`,
       `${t('output.modelActions')}: ${modelActionLog.length}`,
+      `${t('output.checkpoints')}: ${checkpointItems.length}`,
       `${t('output.tests')}: ${
         testHistory[0]
           ? t('tests.summary', {
@@ -2729,6 +2991,7 @@ const OpenVSCodePage: React.FC = () => {
     ],
     [
       dirtyTabs.length,
+      checkpointItems.length,
       gitBranch,
       gitStatusEntries.length,
       lastDiagnosticRun,
@@ -3157,6 +3420,39 @@ const OpenVSCodePage: React.FC = () => {
               })
             : 'error: tests failed';
         }
+        case 'LIST_WORKSPACE_CHECKPOINTS': {
+          const checkpoints = await refreshCheckpoints(true);
+          setIsBottomPanelOpen(true);
+          setBottomPanel('checkpoints');
+          return JSON.stringify({ checkpoints });
+        }
+        case 'CREATE_WORKSPACE_CHECKPOINT': {
+          const scope: CheckpointScope =
+            action.params?.scope === 'app_storage' ? 'app_storage' : 'ide';
+          const roots = parseCheckpointRoots(action.params, activePath || '.');
+          const checkpoint = await createCheckpoint({
+            name: action.params?.name,
+            roots,
+            scope,
+          });
+          return checkpoint ? JSON.stringify(checkpoint) : 'error: checkpoint create failed';
+        }
+        case 'RESTORE_WORKSPACE_CHECKPOINT': {
+          const checkpointId = action.params?.checkpoint_id?.trim() || action.params?.id?.trim();
+          if (!checkpointId) return 'error: missing checkpoint_id';
+          const items = checkpointItems.length > 0 ? checkpointItems : await refreshCheckpoints();
+          const checkpoint = items.find((item) => item.id === checkpointId);
+          if (!checkpoint) return `error: checkpoint ${checkpointId} not found`;
+          return restoreCheckpoint(checkpoint, true);
+        }
+        case 'DELETE_WORKSPACE_CHECKPOINT': {
+          const checkpointId = action.params?.checkpoint_id?.trim() || action.params?.id?.trim();
+          if (!checkpointId) return 'error: missing checkpoint_id';
+          const items = checkpointItems.length > 0 ? checkpointItems : await refreshCheckpoints();
+          const checkpoint = items.find((item) => item.id === checkpointId);
+          if (!checkpoint) return `error: checkpoint ${checkpointId} not found`;
+          return deleteCheckpoint(checkpoint, true);
+        }
         case 'UNDO_MODEL_ACTION': {
           return undoModelAction(action.params?.id?.trim());
         }
@@ -3167,7 +3463,11 @@ const OpenVSCodePage: React.FC = () => {
     [
       applyPatchPreview,
       applyWorkspacePath,
+      activePath,
+      checkpointItems,
+      createCheckpoint,
       createNewFile,
+      deleteCheckpoint,
       diagnosticCommand,
       discardPatchPreview,
       loadFile,
@@ -3176,8 +3476,10 @@ const OpenVSCodePage: React.FC = () => {
       previewActiveFilePatch,
       previewActiveFileReplacement,
       previewActiveSelectionReplacement,
+      refreshCheckpoints,
       refreshWorkspace,
       replaceActiveSelectionFromAgent,
+      restoreCheckpoint,
       runDiagnostics,
       runSearch,
       runSemanticNavigation,
@@ -3256,6 +3558,12 @@ const OpenVSCodePage: React.FC = () => {
       reportLifecycle(AppLifecycle.DESTROYED);
     };
   }, [loadGitBranch, refreshWorkspace]);
+
+  useEffect(() => {
+    if (bottomPanel === 'checkpoints' && checkpointItems.length === 0) {
+      void refreshCheckpoints();
+    }
+  }, [bottomPanel, checkpointItems.length, refreshCheckpoints]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4145,6 +4453,7 @@ const OpenVSCodePage: React.FC = () => {
                           'actions',
                           'git',
                           'tests',
+                          'checkpoints',
                           'terminal',
                         ] as const
                       ).map((panel) => (
@@ -4166,6 +4475,9 @@ const OpenVSCodePage: React.FC = () => {
                           ) : null}
                           {panel === 'tests' && testHistory.length > 0 ? (
                             <span>{testHistory[0].status === 'passed' ? 'OK' : '!'}</span>
+                          ) : null}
+                          {panel === 'checkpoints' && checkpointItems.length > 0 ? (
+                            <span>{checkpointItems.length}</span>
                           ) : null}
                         </button>
                       ))}
@@ -4462,6 +4774,143 @@ const OpenVSCodePage: React.FC = () => {
                                   {entry.stderr ? (
                                     <pre className={styles.stderr}>{entry.stderr}</pre>
                                   ) : null}
+                                </div>
+                              ))
+                            )}
+                          </div>
+                        </div>
+                      ) : null}
+                      {bottomPanel === 'checkpoints' ? (
+                        <div className={styles.checkpointPane}>
+                          <div className={styles.checkpointHeader}>
+                            <div>
+                              <strong>{t('checkpoints.title')}</strong>
+                              <span>
+                                {t('checkpoints.count', { count: checkpointItems.length })}
+                              </span>
+                            </div>
+                            <button
+                              className={styles.secondaryButton}
+                              onClick={() => void refreshCheckpoints(true)}
+                              disabled={isCheckpointLoading || !!checkpointBusyId}
+                            >
+                              <RefreshCw size={14} />
+                              <span>
+                                {isCheckpointLoading
+                                  ? t('actions.refreshing')
+                                  : t('actions.refresh')}
+                              </span>
+                            </button>
+                          </div>
+                          <form
+                            className={styles.checkpointForm}
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void createCheckpoint();
+                            }}
+                          >
+                            <label>
+                              <span>{t('checkpoints.name')}</span>
+                              <input
+                                value={checkpointName}
+                                onChange={(event) => setCheckpointName(event.target.value)}
+                                placeholder={t('checkpoints.namePlaceholder')}
+                                disabled={isCheckpointLoading || !!checkpointBusyId}
+                              />
+                            </label>
+                            <label>
+                              <span>{t('checkpoints.root')}</span>
+                              <input
+                                ref={checkpointRootInputRef}
+                                value={checkpointRoot}
+                                onChange={(event) => setCheckpointRoot(event.target.value)}
+                                placeholder={activePath || t('checkpoints.rootPlaceholder')}
+                                disabled={isCheckpointLoading || !!checkpointBusyId}
+                              />
+                            </label>
+                            <label>
+                              <span>{t('checkpoints.scope')}</span>
+                              <select
+                                value={checkpointScope}
+                                onChange={(event) =>
+                                  setCheckpointScope(event.target.value as CheckpointScope)
+                                }
+                                disabled={isCheckpointLoading || !!checkpointBusyId}
+                              >
+                                <option value="ide">{t('checkpoints.scopes.ide')}</option>
+                                <option value="app_storage">
+                                  {t('checkpoints.scopes.app_storage')}
+                                </option>
+                              </select>
+                            </label>
+                            <button
+                              type="button"
+                              className={styles.secondaryButton}
+                              onClick={() => setCheckpointRoot(activePath || '.')}
+                              disabled={!activePath || isCheckpointLoading || !!checkpointBusyId}
+                            >
+                              <FileCode2 size={14} />
+                              <span>{t('checkpoints.useActiveFile')}</span>
+                            </button>
+                            <button
+                              type="submit"
+                              className={styles.runButton}
+                              disabled={isCheckpointLoading || !!checkpointBusyId}
+                            >
+                              <History size={14} />
+                              <span>
+                                {isCheckpointLoading
+                                  ? t('actions.running')
+                                  : t('checkpoints.create')}
+                              </span>
+                            </button>
+                          </form>
+                          {checkpointErrorText ? (
+                            <div className={styles.panelError}>{checkpointErrorText}</div>
+                          ) : null}
+                          {checkpointStatusText ? (
+                            <div className={styles.panelStatus}>{checkpointStatusText}</div>
+                          ) : null}
+                          <div className={styles.checkpointList}>
+                            {checkpointItems.length === 0 ? (
+                              <div className={styles.panelEmpty}>{t('checkpoints.empty')}</div>
+                            ) : (
+                              checkpointItems.map((checkpoint) => (
+                                <div className={styles.checkpointEntry} key={checkpoint.id}>
+                                  <div className={styles.checkpointMeta}>
+                                    <strong>{checkpoint.name}</strong>
+                                    <span title={checkpoint.id}>{checkpoint.id}</span>
+                                    <small>
+                                      {t('checkpoints.meta', {
+                                        scope: t(`checkpoints.scopes.${checkpoint.scope}`),
+                                        count: checkpoint.fileCount,
+                                        date: formatCheckpointDate(checkpoint.createdAt),
+                                      })}
+                                    </small>
+                                    <small>{checkpoint.roots.join(', ')}</small>
+                                  </div>
+                                  <div className={styles.checkpointActions}>
+                                    <button
+                                      className={styles.secondaryButton}
+                                      onClick={() => void restoreCheckpoint(checkpoint)}
+                                      disabled={!!checkpointBusyId || isCheckpointLoading}
+                                    >
+                                      <Undo2 size={14} />
+                                      <span>
+                                        {checkpointBusyId === checkpoint.id
+                                          ? t('actions.running')
+                                          : t('checkpoints.restore')}
+                                      </span>
+                                    </button>
+                                    <button
+                                      className={styles.secondaryButton}
+                                      onClick={() => void deleteCheckpoint(checkpoint)}
+                                      disabled={!!checkpointBusyId || isCheckpointLoading}
+                                    >
+                                      <X size={14} />
+                                      <span>{t('checkpoints.delete')}</span>
+                                    </button>
+                                  </div>
                                 </div>
                               ))
                             )}
