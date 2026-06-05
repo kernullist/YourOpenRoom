@@ -26,6 +26,82 @@ actions:
   - type: SAVE_FILE
     name: Save File
     description: Save the currently active editor tab to disk.
+  - type: PREVIEW_APPEND_ACTIVE_FILE
+    name: Preview Append To Active File
+    description:
+      Build a patch preview for appending or prepending text to the active editor tab. Does not
+      modify the file until APPLY_ACTIVE_FILE_PREVIEW is called.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Text to add to the active file.
+      - name: position
+        type: string
+        required: false
+        description: Use "end" to append or "start" to prepend. Defaults to "end".
+      - name: separator
+        type: string
+        required: false
+        description: Text inserted between existing content and new content. Defaults to a newline.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" if applying the preview should keep the edit in the editor buffer without
+          saving. Defaults to true.
+  - type: PREVIEW_PATCH_ACTIVE_FILE
+    name: Preview Patch Active File
+    description:
+      Build a patch preview for exact text replacement in the active editor tab. Does not modify the
+      file until APPLY_ACTIVE_FILE_PREVIEW is called.
+    params:
+      - name: old_text
+        type: string
+        required: true
+        description: Exact text to replace in the active editor buffer.
+      - name: new_text
+        type: string
+        required: true
+        description: Replacement text.
+      - name: expected_occurrences
+        type: string
+        required: false
+        description: Optional exact expected number of old_text occurrences.
+      - name: replace_all
+        type: string
+        required: false
+        description: Set to "true" to replace all occurrences. Defaults to false.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" if applying the preview should keep the edit in the editor buffer without
+          saving. Defaults to true.
+  - type: PREVIEW_REPLACE_ACTIVE_FILE
+    name: Preview Replace Active File
+    description:
+      Build a full-file replacement preview for the active editor tab. Does not modify the file
+      until APPLY_ACTIVE_FILE_PREVIEW is called.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Full file content to preview in the active editor buffer.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" if applying the preview should keep the edit in the editor buffer without
+          saving. Defaults to true.
+  - type: APPLY_ACTIVE_FILE_PREVIEW
+    name: Apply Active File Preview
+    description:
+      Apply the pending active-file patch preview and save it when the preview was created with save
+      enabled.
+  - type: DISCARD_ACTIVE_FILE_PREVIEW
+    name: Discard Active File Preview
+    description: Discard the pending active-file patch preview without changing the editor buffer.
   - type: APPEND_ACTIVE_FILE
     name: Append To Active File
     description:

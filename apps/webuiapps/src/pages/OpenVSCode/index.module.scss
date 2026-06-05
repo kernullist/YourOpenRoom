@@ -914,6 +914,121 @@
   line-height: 1.55;
 }
 
+.previewPane {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.previewHeader {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+}
+
+.previewTitle {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  color: #d7dde8;
+
+  > svg {
+    flex: 0 0 auto;
+    color: #8ab4ff;
+  }
+
+  div {
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  strong,
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    font-size: 12px;
+  }
+
+  span {
+    color: #8d96a8;
+    font-size: 11px;
+  }
+}
+
+.previewActions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+
+  > span {
+    color: #8d96a8;
+    font-size: 11px;
+    white-space: nowrap;
+  }
+}
+
+.diffViewer {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 0 12px;
+  background: #0f131b;
+}
+
+.diffLine {
+  min-height: 21px;
+  display: grid;
+  grid-template-columns: 48px 48px minmax(0, 1fr);
+  align-items: stretch;
+  color: #b8c0cc;
+  font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  line-height: 21px;
+
+  > span {
+    border-right: 1px solid #1e2631;
+    padding: 0 8px;
+    color: #5f6b7d;
+    text-align: right;
+    user-select: none;
+  }
+
+  code {
+    min-width: 0;
+    overflow: hidden;
+    padding: 0 10px;
+    white-space: pre;
+  }
+}
+
+.diffContext {
+  background: transparent;
+}
+
+.diffAdd {
+  color: #c6f6d5;
+  background: rgba(46, 160, 67, 0.16);
+}
+
+.diffRemove {
+  color: #ffd1d1;
+  background: rgba(248, 81, 73, 0.16);
+}
+
 .terminalPane {
   display: flex;
   flex-direction: column;

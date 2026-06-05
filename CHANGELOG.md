@@ -23,6 +23,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   then opens the new file in the editor.
 - Aoi's IDE now provides a VSCode-style Monaco editor with tabs, workspace search, safe terminal
   commands, split preview, sidebar/bottom-panel toggles, and active-file context for chat.
+- Aoi's IDE now has an active-file patch Preview panel so model proposals and unsaved editor edits
+  can be inspected before applying or saving.
 - Chat tooling can now read the current Aoi's IDE editor buffer through `ide_current_file`,
   including unsaved content snapshots, and can route active-file edits through IDE app actions.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk

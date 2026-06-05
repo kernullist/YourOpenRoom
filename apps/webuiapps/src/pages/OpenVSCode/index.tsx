@@ -35,6 +35,7 @@ import {
   FolderClosed,
   FolderOpen,
   GitBranch,
+  GitCompareArrows,
   PanelBottom,
   PanelLeft,
   Play,
@@ -90,8 +91,10 @@ const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'settings';
-type BottomPanel = 'problems' | 'output' | 'terminal';
+type BottomPanel = 'problems' | 'output' | 'preview' | 'terminal';
 type SearchMode = 'auto' | 'path' | 'content';
+type PatchPreviewSource = 'agent' | 'manual';
+type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type MonacoBeforeMount = Parameters<
   NonNullable<React.ComponentProps<typeof Editor>['beforeMount']>
 >[0];
@@ -175,6 +178,27 @@ interface ProblemItem {
   path?: string;
 }
 
+interface PatchPreview {
+  id: string;
+  path: string;
+  beforeContent: string;
+  afterContent: string;
+  summary: string;
+  source: PatchPreviewSource;
+  createdAt: number;
+  saveOnApply: boolean;
+  occurrences?: number;
+  replaced?: number;
+}
+
+interface PatchPreviewLine {
+  id: string;
+  kind: PatchPreviewLineKind;
+  oldLine?: number;
+  newLine?: number;
+  text: string;
+}
+
 interface RuntimeFileState {
   path: string;
   name: string;
@@ -202,6 +226,13 @@ interface OpenVscodeRuntimeState {
     bottomPanel: BottomPanel;
     splitView: boolean;
   };
+  pendingPatchPreview: {
+    path: string;
+    source: PatchPreviewSource;
+    beforeCharCount: number;
+    afterCharCount: number;
+    saveOnApply: boolean;
+  } | null;
   updatedAt: number;
 }
 
@@ -224,6 +255,107 @@ function countOccurrences(haystack: string, needle: string): number {
     offset = index + needle.length;
   }
   return count;
+}
+
+function replaceOnce(content: string, oldText: string, newText: string): string {
+  const index = content.indexOf(oldText);
+  if (index < 0) return content;
+  return `${content.slice(0, index)}${newText}${content.slice(index + oldText.length)}`;
+}
+
+function createPatchPreviewId(): string {
+  return `preview-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function buildPatchSummary(beforeContent: string, afterContent: string): string {
+  const beforeLines = countLines(beforeContent);
+  const afterLines = countLines(afterContent);
+  const lineDelta = afterLines - beforeLines;
+  const charDelta = afterContent.length - beforeContent.length;
+  const linePart = lineDelta === 0 ? '0 lines' : `${lineDelta > 0 ? '+' : ''}${lineDelta} lines`;
+  const charPart = charDelta === 0 ? '0 chars' : `${charDelta > 0 ? '+' : ''}${charDelta} chars`;
+  return `${linePart}, ${charPart}`;
+}
+
+function buildPatchPreviewLines(beforeContent: string, afterContent: string): PatchPreviewLine[] {
+  const beforeLines = normalizeEditorContent(beforeContent).split('\n');
+  const afterLines = normalizeEditorContent(afterContent).split('\n');
+  const maxContextLines = 4;
+  const maxChangedLines = 80;
+
+  if (beforeContent === afterContent) {
+    return beforeLines.slice(0, maxContextLines).map((text, index) => ({
+      id: `same-${index}`,
+      kind: 'context',
+      oldLine: index + 1,
+      newLine: index + 1,
+      text,
+    }));
+  }
+
+  let prefixCount = 0;
+  const minLineCount = Math.min(beforeLines.length, afterLines.length);
+  while (prefixCount < minLineCount && beforeLines[prefixCount] === afterLines[prefixCount]) {
+    prefixCount += 1;
+  }
+
+  let suffixCount = 0;
+  while (
+    suffixCount < beforeLines.length - prefixCount &&
+    suffixCount < afterLines.length - prefixCount &&
+    beforeLines[beforeLines.length - 1 - suffixCount] ===
+      afterLines[afterLines.length - 1 - suffixCount]
+  ) {
+    suffixCount += 1;
+  }
+
+  const lines: PatchPreviewLine[] = [];
+  const beforeChangedEnd = beforeLines.length - suffixCount;
+  const afterChangedEnd = afterLines.length - suffixCount;
+  const contextStart = Math.max(0, prefixCount - maxContextLines);
+  const contextEnd = Math.min(beforeLines.length, beforeChangedEnd + maxContextLines);
+
+  for (let index = contextStart; index < prefixCount; index += 1) {
+    lines.push({
+      id: `context-before-${index}`,
+      kind: 'context',
+      oldLine: index + 1,
+      newLine: index + 1,
+      text: beforeLines[index] ?? '',
+    });
+  }
+
+  for (let index = prefixCount; index < beforeChangedEnd; index += 1) {
+    if (lines.length >= maxChangedLines) break;
+    lines.push({
+      id: `remove-${index}`,
+      kind: 'remove',
+      oldLine: index + 1,
+      text: beforeLines[index] ?? '',
+    });
+  }
+
+  for (let index = prefixCount; index < afterChangedEnd; index += 1) {
+    if (lines.length >= maxChangedLines) break;
+    lines.push({
+      id: `add-${index}`,
+      kind: 'add',
+      newLine: index + 1,
+      text: afterLines[index] ?? '',
+    });
+  }
+
+  for (let index = beforeChangedEnd; index < contextEnd; index += 1) {
+    lines.push({
+      id: `context-after-${index}`,
+      kind: 'context',
+      oldLine: index + 1,
+      newLine: index + 1 + (afterLines.length - beforeLines.length),
+      text: beforeLines[index] ?? '',
+    });
+  }
+
+  return lines;
 }
 
 function parseActionBoolean(value: string | undefined, defaultValue: boolean): boolean {
@@ -328,6 +460,7 @@ function buildOpenVscodeRuntimeState(args: {
   isBottomPanelOpen: boolean;
   bottomPanel: BottomPanel;
   isSplitView: boolean;
+  patchPreview: PatchPreview | null;
 }): OpenVscodeRuntimeState {
   return {
     version: 1,
@@ -353,6 +486,15 @@ function buildOpenVscodeRuntimeState(args: {
       bottomPanel: args.bottomPanel,
       splitView: args.isSplitView,
     },
+    pendingPatchPreview: args.patchPreview
+      ? {
+          path: args.patchPreview.path,
+          source: args.patchPreview.source,
+          beforeCharCount: args.patchPreview.beforeContent.length,
+          afterCharCount: args.patchPreview.afterContent.length,
+          saveOnApply: args.patchPreview.saveOnApply,
+        }
+      : null,
     updatedAt: Date.now(),
   };
 }
@@ -428,6 +570,7 @@ const OpenVSCodePage: React.FC = () => {
   const [isSplitView, setIsSplitView] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [patchPreview, setPatchPreview] = useState<PatchPreview | null>(null);
   const activePathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenFileTab[]>([]);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -458,6 +601,13 @@ const OpenVSCodePage: React.FC = () => {
   );
   const lineCount = useMemo(() => countLines(activeTab?.content ?? ''), [activeTab?.content]);
   const fileExtensionLabel = useMemo(() => getFileExtensionLabel(activePath), [activePath]);
+  const patchPreviewLines = useMemo(
+    () =>
+      patchPreview
+        ? buildPatchPreviewLines(patchPreview.beforeContent, patchPreview.afterContent)
+        : [],
+    [patchPreview],
+  );
 
   useEffect(() => {
     activePathRef.current = activePath;
@@ -505,6 +655,7 @@ const OpenVSCodePage: React.FC = () => {
       isBottomPanelOpen,
       bottomPanel,
       isSplitView,
+      patchPreview,
     });
     const serialized = JSON.stringify(runtimeState);
     if (serialized === lastPublishedStateRef.current) return;
@@ -526,6 +677,7 @@ const OpenVSCodePage: React.FC = () => {
     isSidebarOpen,
     isSplitView,
     openTabs,
+    patchPreview,
     flushRuntimeState,
     workspaceExists,
     workspaceRoot,
@@ -992,6 +1144,173 @@ const OpenVSCodePage: React.FC = () => {
     [loadDirectory, saveFileContent, tree],
   );
 
+  const createPatchPreview = useCallback((preview: Omit<PatchPreview, 'id' | 'createdAt'>) => {
+    const nextPreview: PatchPreview = {
+      ...preview,
+      id: createPatchPreviewId(),
+      createdAt: Date.now(),
+    };
+    setPatchPreview(nextPreview);
+    setIsBottomPanelOpen(true);
+    setBottomPanel('preview');
+    setErrorText(null);
+    return nextPreview;
+  }, []);
+
+  const previewUnsavedActiveFile = useCallback((): PatchPreview | null => {
+    const path = activePathRef.current;
+    const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+    if (!path || !tab) {
+      setErrorText(t('preview.noActiveFile'));
+      return null;
+    }
+
+    const beforeContent = normalizeEditorContent(tab.savedContent);
+    const afterContent = normalizeEditorContent(tab.content);
+    if (beforeContent === afterContent) {
+      setErrorText(t('preview.noChanges'));
+      return null;
+    }
+
+    return createPatchPreview({
+      path,
+      beforeContent,
+      afterContent,
+      summary: buildPatchSummary(beforeContent, afterContent),
+      source: 'manual',
+      saveOnApply: true,
+    });
+  }, [createPatchPreview, t]);
+
+  const previewActiveFileReplacement = useCallback(
+    (
+      afterContent: string,
+      options: { source: PatchPreviewSource; save: boolean },
+    ): PatchPreview | null => {
+      const path = activePathRef.current;
+      const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+      if (!path || !tab) {
+        setErrorText(t('preview.noActiveFile'));
+        return null;
+      }
+
+      const beforeContent = normalizeEditorContent(tab.content);
+      const normalizedAfterContent = normalizeEditorContent(afterContent);
+      if (beforeContent === normalizedAfterContent) {
+        setErrorText(t('preview.noChanges'));
+        return null;
+      }
+
+      return createPatchPreview({
+        path,
+        beforeContent,
+        afterContent: normalizedAfterContent,
+        summary: buildPatchSummary(beforeContent, normalizedAfterContent),
+        source: options.source,
+        saveOnApply: options.save,
+      });
+    },
+    [createPatchPreview, t],
+  );
+
+  const previewActiveFilePatch = useCallback(
+    (args: {
+      oldText: string;
+      newText: string;
+      expectedOccurrences: number | null;
+      replaceAll: boolean;
+      save: boolean;
+      source: PatchPreviewSource;
+    }): PatchPreview | string => {
+      const path = activePathRef.current;
+      const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+      if (!path || !tab) return 'error: no active file';
+      if (!args.oldText) return 'error: missing old_text';
+
+      const beforeContent = normalizeEditorContent(tab.content);
+      const occurrences = countOccurrences(beforeContent, args.oldText);
+      if (occurrences === 0) return 'error: old_text not found';
+      if (args.expectedOccurrences !== null && occurrences !== args.expectedOccurrences) {
+        return `error: expected ${args.expectedOccurrences} occurrence(s), found ${occurrences}`;
+      }
+
+      const afterContent = args.replaceAll
+        ? beforeContent.split(args.oldText).join(args.newText)
+        : replaceOnce(beforeContent, args.oldText, args.newText);
+      if (beforeContent === afterContent) return 'error: preview would not change the file';
+
+      return createPatchPreview({
+        path,
+        beforeContent,
+        afterContent,
+        summary: buildPatchSummary(beforeContent, afterContent),
+        source: args.source,
+        saveOnApply: args.save,
+        occurrences,
+        replaced: args.replaceAll ? occurrences : 1,
+      });
+    },
+    [createPatchPreview],
+  );
+
+  const applyPatchPreview = useCallback(async (): Promise<PatchPreview | null> => {
+    const preview = patchPreview;
+    if (!preview) return null;
+
+    setOpenTabs((prev) =>
+      prev.some((tab) => tab.path === preview.path)
+        ? prev.map((tab) =>
+            tab.path === preview.path ? { ...tab, content: preview.afterContent } : tab,
+          )
+        : [
+            ...prev,
+            {
+              path: preview.path,
+              content: preview.afterContent,
+              savedContent: preview.beforeContent,
+              language: detectMonacoLanguage(preview.path),
+            },
+          ],
+    );
+    setActivePath(preview.path);
+
+    if (!preview.saveOnApply) {
+      setPatchPreview(null);
+      setErrorText(null);
+      return preview;
+    }
+
+    setIsSaving(true);
+    try {
+      await saveFileContent(preview.path, preview.afterContent);
+      setOpenTabs((prev) =>
+        prev.map((tab) =>
+          tab.path === preview.path
+            ? { ...tab, content: preview.afterContent, savedContent: preview.afterContent }
+            : tab,
+        ),
+      );
+      const parentPath = getParentPath(preview.path);
+      if (tree[parentPath]) {
+        await loadDirectory(parentPath);
+      }
+      setPatchPreview(null);
+      setErrorText(null);
+      return preview;
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setErrorText(message);
+      return null;
+    } finally {
+      setIsSaving(false);
+    }
+  }, [loadDirectory, patchPreview, saveFileContent, tree]);
+
+  const discardPatchPreview = useCallback(() => {
+    setPatchPreview(null);
+    setErrorText(null);
+  }, []);
+
   const configureMonaco = useCallback((monacoInstance: MonacoBeforeMount) => {
     monacoInstance.editor.defineTheme('openroom-vscode', {
       base: 'vs-dark',
@@ -1088,11 +1407,20 @@ const OpenVSCodePage: React.FC = () => {
         setIsSidebarOpen((prev) => !prev);
       } else if (id === 'toggleBottomPanel') {
         setIsBottomPanelOpen((prev) => !prev);
+      } else if (id === 'previewUnsaved') {
+        previewUnsavedActiveFile();
       } else if (id === 'build') {
         await runTerminalCommand('pnpm build');
       }
     },
-    [focusSearch, refreshWorkspace, runTerminalCommand, saveAllFiles, saveCurrentFile],
+    [
+      focusSearch,
+      previewUnsavedActiveFile,
+      refreshWorkspace,
+      runTerminalCommand,
+      saveAllFiles,
+      saveCurrentFile,
+    ],
   );
 
   const commandItems = useMemo(
@@ -1113,6 +1441,11 @@ const OpenVSCodePage: React.FC = () => {
         id: 'toggleBottomPanel',
         label: t('commandPalette.commands.toggleBottomPanel'),
         shortcut: 'Ctrl+J',
+      },
+      {
+        id: 'previewUnsaved',
+        label: t('commandPalette.commands.previewUnsaved'),
+        shortcut: '',
       },
       { id: 'settings', label: t('commandPalette.commands.settings'), shortcut: '' },
       { id: 'build', label: t('commandPalette.commands.build'), shortcut: '' },
@@ -1181,6 +1514,94 @@ const OpenVSCodePage: React.FC = () => {
             if (!path) return 'error: missing path';
             const result = await createNewFile(path);
             return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
+          }
+          case 'PREVIEW_APPEND_ACTIVE_FILE': {
+            const content = action.params?.content;
+            if (content === undefined) return 'error: missing content';
+            const path = activePathRef.current;
+            const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+            if (!path || !tab) return 'error: no active file';
+            const position = action.params?.position === 'start' ? 'start' : 'end';
+            const separator = action.params?.separator ?? '\n';
+            const save = parseActionBoolean(action.params?.save, true);
+            const currentContent = normalizeEditorContent(tab.content);
+            const nextContent =
+              position === 'start'
+                ? `${content}${currentContent ? separator : ''}${currentContent}`
+                : `${currentContent}${currentContent ? separator : ''}${content}`;
+            const preview = previewActiveFileReplacement(nextContent, { source: 'agent', save });
+            return preview
+              ? JSON.stringify({
+                  preview_id: preview.id,
+                  path: preview.path,
+                  summary: preview.summary,
+                  save_on_apply: preview.saveOnApply,
+                })
+              : 'error: preview failed';
+          }
+          case 'PREVIEW_PATCH_ACTIVE_FILE': {
+            const oldText = action.params?.old_text ?? action.params?.oldText ?? '';
+            const newText = action.params?.new_text ?? action.params?.newText ?? '';
+            const expectedOccurrences = parseOptionalPositiveInteger(
+              action.params?.expected_occurrences ?? action.params?.expectedOccurrences,
+            );
+            const replaceAll = parseActionBoolean(
+              action.params?.replace_all ?? action.params?.replaceAll,
+              false,
+            );
+            const save = parseActionBoolean(action.params?.save, true);
+            const preview = previewActiveFilePatch({
+              oldText,
+              newText,
+              expectedOccurrences,
+              replaceAll,
+              save,
+              source: 'agent',
+            });
+            return typeof preview === 'string'
+              ? preview
+              : JSON.stringify({
+                  preview_id: preview.id,
+                  path: preview.path,
+                  summary: preview.summary,
+                  occurrences: preview.occurrences,
+                  replaced: preview.replaced,
+                  save_on_apply: preview.saveOnApply,
+                });
+          }
+          case 'PREVIEW_REPLACE_ACTIVE_FILE': {
+            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+              return 'error: missing content';
+            }
+            const save = parseActionBoolean(action.params.save, true);
+            const preview = previewActiveFileReplacement(action.params.content ?? '', {
+              source: 'agent',
+              save,
+            });
+            return preview
+              ? JSON.stringify({
+                  preview_id: preview.id,
+                  path: preview.path,
+                  summary: preview.summary,
+                  save_on_apply: preview.saveOnApply,
+                })
+              : 'error: preview failed';
+          }
+          case 'APPLY_ACTIVE_FILE_PREVIEW': {
+            const applied = await applyPatchPreview();
+            return applied
+              ? JSON.stringify({
+                  preview_id: applied.id,
+                  path: applied.path,
+                  saved: applied.saveOnApply,
+                  summary: applied.summary,
+                })
+              : 'error: no preview to apply';
+          }
+          case 'DISCARD_ACTIVE_FILE_PREVIEW': {
+            if (!patchPreview) return 'error: no preview to discard';
+            discardPatchPreview();
+            return 'success';
           }
           case 'APPEND_ACTIVE_FILE': {
             const content = action.params?.content;
@@ -1266,8 +1687,13 @@ const OpenVSCodePage: React.FC = () => {
         }
       },
       [
+        applyPatchPreview,
         createNewFile,
+        discardPatchPreview,
         loadFile,
+        patchPreview,
+        previewActiveFilePatch,
+        previewActiveFileReplacement,
         refreshWorkspace,
         runSearch,
         runTerminalCommand,
@@ -1807,6 +2233,14 @@ const OpenVSCodePage: React.FC = () => {
             <div className={styles.tabActions}>
               <button
                 className={styles.toolbarButton}
+                onClick={previewUnsavedActiveFile}
+                disabled={!activeTab || !isDirty}
+                title={t('actions.previewChanges')}
+              >
+                <GitCompareArrows size={15} />
+              </button>
+              <button
+                className={styles.toolbarButton}
                 onClick={() => void saveCurrentFile()}
                 disabled={!activeTab || !isDirty || isSaving}
                 title={t('actions.save')}
@@ -1910,7 +2344,7 @@ const OpenVSCodePage: React.FC = () => {
                 {isBottomPanelOpen ? (
                   <div className={styles.bottomPanel} data-testid="openvscode-bottom-panel">
                     <div className={styles.bottomTabs}>
-                      {(['problems', 'output', 'terminal'] as const).map((panel) => (
+                      {(['problems', 'output', 'preview', 'terminal'] as const).map((panel) => (
                         <button
                           key={panel}
                           className={bottomPanel === panel ? styles.bottomTabActive : ''}
@@ -1920,6 +2354,7 @@ const OpenVSCodePage: React.FC = () => {
                           {panel === 'problems' && problemItems.length > 0 ? (
                             <span>{problemItems.length}</span>
                           ) : null}
+                          {panel === 'preview' && patchPreview ? <span>1</span> : null}
                         </button>
                       ))}
                       <button
@@ -1963,6 +2398,76 @@ const OpenVSCodePage: React.FC = () => {
                       ) : null}
                       {bottomPanel === 'output' ? (
                         <pre className={styles.outputPane}>{outputLines.join('\n')}</pre>
+                      ) : null}
+                      {bottomPanel === 'preview' ? (
+                        <div className={styles.previewPane}>
+                          {patchPreview ? (
+                            <>
+                              <div className={styles.previewHeader}>
+                                <div className={styles.previewTitle}>
+                                  <GitCompareArrows size={16} />
+                                  <div>
+                                    <strong>{patchPreview.path}</strong>
+                                    <span>
+                                      {patchPreview.summary} -{' '}
+                                      {patchPreview.source === 'agent'
+                                        ? t('preview.sourceAgent')
+                                        : t('preview.sourceManual')}
+                                    </span>
+                                  </div>
+                                </div>
+                                <div className={styles.previewActions}>
+                                  <span>
+                                    {patchPreview.saveOnApply
+                                      ? t('preview.willSave')
+                                      : t('preview.willDraft')}
+                                  </span>
+                                  <button
+                                    className={styles.secondaryButton}
+                                    onClick={discardPatchPreview}
+                                    disabled={isSaving}
+                                  >
+                                    {t('preview.discard')}
+                                  </button>
+                                  <button
+                                    className={styles.primaryButton}
+                                    onClick={() => void applyPatchPreview()}
+                                    disabled={isSaving}
+                                  >
+                                    {isSaving ? t('actions.saving') : t('preview.apply')}
+                                  </button>
+                                </div>
+                              </div>
+                              <div className={styles.diffViewer}>
+                                {patchPreviewLines.map((line) => (
+                                  <div
+                                    key={line.id}
+                                    className={`${styles.diffLine} ${
+                                      line.kind === 'add'
+                                        ? styles.diffAdd
+                                        : line.kind === 'remove'
+                                          ? styles.diffRemove
+                                          : styles.diffContext
+                                    }`}
+                                  >
+                                    <span>{line.oldLine ?? ''}</span>
+                                    <span>{line.newLine ?? ''}</span>
+                                    <code>
+                                      {line.kind === 'add'
+                                        ? '+'
+                                        : line.kind === 'remove'
+                                          ? '-'
+                                          : ' '}
+                                      {line.text}
+                                    </code>
+                                  </div>
+                                ))}
+                              </div>
+                            </>
+                          ) : (
+                            <div className={styles.panelEmpty}>{t('preview.empty')}</div>
+                          )}
+                        </div>
                       ) : null}
                       {bottomPanel === 'terminal' ? (
                         <div className={styles.terminalPane}>

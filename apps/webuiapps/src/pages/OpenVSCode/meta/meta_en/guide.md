@@ -40,12 +40,20 @@ Use this flow when the user says "current file", "active file", "opened file", "
 
 1. Call `ide_current_file` to read the active editor buffer.
 2. For review or explanation, answer from that result.
-3. For appending text to the active file, call `APPEND_ACTIVE_FILE`.
-4. For exact replacements in the active file, call `PATCH_ACTIVE_FILE`.
-5. For full-file replacement, call `REPLACE_ACTIVE_FILE`.
+3. When the user wants to inspect the change first, call `PREVIEW_APPEND_ACTIVE_FILE`,
+   `PREVIEW_PATCH_ACTIVE_FILE`, or `PREVIEW_REPLACE_ACTIVE_FILE`. The pending diff appears in the
+   IDE bottom Preview panel.
+4. Call `APPLY_ACTIVE_FILE_PREVIEW` after the user approves the preview, or
+   `DISCARD_ACTIVE_FILE_PREVIEW` when the proposal should be dropped.
+5. For immediate appends, call `APPEND_ACTIVE_FILE`.
+6. For immediate exact replacements, call `PATCH_ACTIVE_FILE`.
+7. For immediate full-file replacement, call `REPLACE_ACTIVE_FILE`.
 
 Active-file edit actions save to disk by default. Pass `save: "false"` only when the user explicitly
 asks for a draft buffer edit.
+
+Users can also preview their own unsaved editor changes from the toolbar or command palette before
+saving. Applying that preview saves the current buffer to disk.
 
 Use `ide_read_file` for known workspace files. Use `ide_patch_file` or `ide_write_file` only with an
 explicit path that is not the current active editor buffer; active editor mutations must go through
