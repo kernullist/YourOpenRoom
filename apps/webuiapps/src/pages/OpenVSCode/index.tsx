@@ -101,6 +101,7 @@ type SearchMode = 'auto' | 'path' | 'content';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type ModelActionStatus = 'success' | 'error';
+type PaletteItemKind = 'command' | 'file' | 'tab';
 type MonacoBeforeMount = Parameters<
   NonNullable<React.ComponentProps<typeof Editor>['beforeMount']>
 >[0];
@@ -259,6 +260,16 @@ interface ModelActionLogEntry {
   undone: boolean;
   undoSnapshot?: ModelActionUndoSnapshot;
   undoError?: string;
+}
+
+interface CommandPaletteItem {
+  id: string;
+  kind: PaletteItemKind;
+  label: string;
+  group: string;
+  shortcut?: string;
+  description?: string;
+  path?: string;
 }
 
 interface RuntimeSelectionState {
@@ -775,6 +786,30 @@ function getGitStatusLabel(entry: GitStatusEntry): string {
   return status || 'M';
 }
 
+function paletteMatches(item: CommandPaletteItem, query: string): boolean {
+  const normalizedQuery = query.trim().toLowerCase();
+  if (!normalizedQuery) {
+    return true;
+  }
+
+  const haystack = `${item.group} ${item.label} ${item.description ?? ''} ${item.path ?? ''}`
+    .toLowerCase()
+    .replace(/[^a-z0-9가-힣]+/g, ' ');
+  if (haystack.includes(normalizedQuery)) {
+    return true;
+  }
+
+  let offset = 0;
+  for (const char of normalizedQuery.replace(/\s+/g, '')) {
+    const nextOffset = haystack.indexOf(char, offset);
+    if (nextOffset < 0) {
+      return false;
+    }
+    offset = nextOffset + 1;
+  }
+  return true;
+}
+
 function createProblemId(): string {
   return `problem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -823,6 +858,7 @@ const OpenVSCodePage: React.FC = () => {
   const [isSplitView, setIsSplitView] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
   const [commandQuery, setCommandQuery] = useState('');
+  const [selectedPaletteIndex, setSelectedPaletteIndex] = useState(0);
   const [patchPreview, setPatchPreview] = useState<PatchPreview | null>(null);
   const [modelActionLog, setModelActionLog] = useState<ModelActionLogEntry[]>([]);
   const activePathRef = useRef<string | null>(null);
@@ -1930,6 +1966,15 @@ const OpenVSCodePage: React.FC = () => {
         setIsBottomPanelOpen(true);
         setBottomPanel('problems');
         window.requestAnimationFrame(() => diagnosticsInputRef.current?.focus());
+      } else if (id === 'actions') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('actions');
+      } else if (id === 'previewPanel') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('preview');
+      } else if (id === 'gitPanel') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('git');
       } else if (id === 'split') {
         setIsSplitView((prev) => !prev);
       } else if (id === 'toggleSidebar') {
@@ -1953,44 +1998,196 @@ const OpenVSCodePage: React.FC = () => {
     ],
   );
 
-  const commandItems = useMemo(
+  const commandItems = useMemo<CommandPaletteItem[]>(
     () => [
-      { id: 'save', label: t('commandPalette.commands.save'), shortcut: 'Ctrl+S' },
-      { id: 'saveAll', label: t('commandPalette.commands.saveAll'), shortcut: '' },
-      { id: 'refresh', label: t('commandPalette.commands.refresh'), shortcut: '' },
-      { id: 'search', label: t('commandPalette.commands.search'), shortcut: 'Ctrl+F' },
-      { id: 'source', label: t('commandPalette.commands.source'), shortcut: '' },
-      { id: 'refreshGit', label: t('commandPalette.commands.refreshGit'), shortcut: '' },
-      { id: 'terminal', label: t('commandPalette.commands.terminal'), shortcut: 'Ctrl+`' },
-      { id: 'diagnostics', label: t('commandPalette.commands.diagnostics'), shortcut: '' },
-      { id: 'newFile', label: t('commandPalette.commands.newFile'), shortcut: '' },
-      { id: 'split', label: t('commandPalette.commands.split'), shortcut: '' },
+      {
+        id: 'save',
+        kind: 'command',
+        label: t('commandPalette.commands.save'),
+        group: t('commandPalette.groups.file'),
+        shortcut: 'Ctrl+S',
+      },
+      {
+        id: 'saveAll',
+        kind: 'command',
+        label: t('commandPalette.commands.saveAll'),
+        group: t('commandPalette.groups.file'),
+      },
+      {
+        id: 'refresh',
+        kind: 'command',
+        label: t('commandPalette.commands.refresh'),
+        group: t('commandPalette.groups.workspace'),
+      },
+      {
+        id: 'search',
+        kind: 'command',
+        label: t('commandPalette.commands.search'),
+        group: t('commandPalette.groups.workspace'),
+        shortcut: 'Ctrl+F',
+      },
+      {
+        id: 'source',
+        kind: 'command',
+        label: t('commandPalette.commands.source'),
+        group: t('commandPalette.groups.source'),
+      },
+      {
+        id: 'refreshGit',
+        kind: 'command',
+        label: t('commandPalette.commands.refreshGit'),
+        group: t('commandPalette.groups.source'),
+      },
+      {
+        id: 'terminal',
+        kind: 'command',
+        label: t('commandPalette.commands.terminal'),
+        group: t('commandPalette.groups.panel'),
+        shortcut: 'Ctrl+`',
+      },
+      {
+        id: 'diagnostics',
+        kind: 'command',
+        label: t('commandPalette.commands.diagnostics'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
+        id: 'actions',
+        kind: 'command',
+        label: t('commandPalette.commands.actions'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
+        id: 'previewPanel',
+        kind: 'command',
+        label: t('commandPalette.commands.previewPanel'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
+        id: 'gitPanel',
+        kind: 'command',
+        label: t('commandPalette.commands.gitPanel'),
+        group: t('commandPalette.groups.panel'),
+      },
+      {
+        id: 'newFile',
+        kind: 'command',
+        label: t('commandPalette.commands.newFile'),
+        group: t('commandPalette.groups.file'),
+      },
+      {
+        id: 'split',
+        kind: 'command',
+        label: t('commandPalette.commands.split'),
+        group: t('commandPalette.groups.view'),
+      },
       {
         id: 'toggleSidebar',
+        kind: 'command',
         label: t('commandPalette.commands.toggleSidebar'),
+        group: t('commandPalette.groups.view'),
         shortcut: 'Ctrl+B',
       },
       {
         id: 'toggleBottomPanel',
+        kind: 'command',
         label: t('commandPalette.commands.toggleBottomPanel'),
+        group: t('commandPalette.groups.view'),
         shortcut: 'Ctrl+J',
       },
       {
         id: 'previewUnsaved',
+        kind: 'command',
         label: t('commandPalette.commands.previewUnsaved'),
-        shortcut: '',
+        group: t('commandPalette.groups.file'),
       },
-      { id: 'settings', label: t('commandPalette.commands.settings'), shortcut: '' },
-      { id: 'build', label: t('commandPalette.commands.build'), shortcut: '' },
+      {
+        id: 'settings',
+        kind: 'command',
+        label: t('commandPalette.commands.settings'),
+        group: t('commandPalette.groups.workspace'),
+      },
+      {
+        id: 'build',
+        kind: 'command',
+        label: t('commandPalette.commands.build'),
+        group: t('commandPalette.groups.tasks'),
+      },
     ],
     [t],
   );
 
-  const filteredCommands = useMemo(() => {
+  const openTabPaletteItems = useMemo<CommandPaletteItem[]>(
+    () =>
+      openTabs.map((tab) => ({
+        id: `tab:${tab.path}`,
+        kind: 'tab',
+        label: getFileName(tab.path),
+        group: t('commandPalette.groups.openEditors'),
+        description: tab.path,
+        path: tab.path,
+      })),
+    [openTabs, t],
+  );
+
+  const loadedFilePaletteItems = useMemo<CommandPaletteItem[]>(() => {
+    const filesByPath = new Map<string, WorkspaceEntry>();
+    Object.values(tree).forEach((entries) => {
+      entries.forEach((entry) => {
+        if (entry.type === 'file') {
+          filesByPath.set(entry.path, entry);
+        }
+      });
+    });
+
+    return Array.from(filesByPath.values())
+      .sort((a, b) => a.path.localeCompare(b.path))
+      .slice(0, 80)
+      .map((entry) => ({
+        id: `file:${entry.path}`,
+        kind: 'file',
+        label: entry.name,
+        group: t('commandPalette.groups.files'),
+        description: entry.path,
+        path: entry.path,
+      }));
+  }, [t, tree]);
+
+  const paletteItems = useMemo(
+    () => [...commandItems, ...openTabPaletteItems, ...loadedFilePaletteItems],
+    [commandItems, loadedFilePaletteItems, openTabPaletteItems],
+  );
+
+  const filteredPaletteItems = useMemo(() => {
     const query = commandQuery.trim().toLowerCase();
-    if (!query) return commandItems;
-    return commandItems.filter((item) => item.label.toLowerCase().includes(query));
-  }, [commandItems, commandQuery]);
+    return paletteItems.filter((item) => paletteMatches(item, query)).slice(0, 40);
+  }, [commandQuery, paletteItems]);
+
+  const executePaletteItem = useCallback(
+    async (item: CommandPaletteItem) => {
+      setShowCommandPalette(false);
+      setCommandQuery('');
+      setSelectedPaletteIndex(0);
+
+      if (item.kind === 'command') {
+        await executePaletteCommand(item.id);
+        return;
+      }
+
+      if (!item.path) {
+        return;
+      }
+
+      if (item.kind === 'tab') {
+        setActivePath(item.path);
+        editorRef.current?.focus();
+        return;
+      }
+
+      await loadFile(item.path);
+    },
+    [executePaletteCommand, loadFile],
+  );
 
   const problemItems = useMemo<ProblemItem[]>(() => {
     const items: ProblemItem[] = [...diagnosticItems];
@@ -2576,6 +2773,19 @@ const OpenVSCodePage: React.FC = () => {
     if (!showCommandPalette) return;
     window.requestAnimationFrame(() => commandInputRef.current?.focus());
   }, [showCommandPalette]);
+
+  useEffect(() => {
+    setSelectedPaletteIndex(0);
+  }, [commandQuery]);
+
+  useEffect(() => {
+    setSelectedPaletteIndex((prev) => {
+      if (filteredPaletteItems.length === 0) {
+        return 0;
+      }
+      return Math.min(prev, filteredPaletteItems.length - 1);
+    });
+  }, [filteredPaletteItems.length]);
 
   useEffect(() => {
     if (activityView !== 'search') return;
@@ -3552,20 +3762,44 @@ const OpenVSCodePage: React.FC = () => {
                   if (event.key === 'Escape') {
                     setShowCommandPalette(false);
                   }
-                  if (event.key === 'Enter' && filteredCommands[0]) {
-                    void executePaletteCommand(filteredCommands[0].id);
+                  if (event.key === 'ArrowDown') {
+                    event.preventDefault();
+                    setSelectedPaletteIndex((prev) =>
+                      filteredPaletteItems.length === 0
+                        ? 0
+                        : Math.min(prev + 1, filteredPaletteItems.length - 1),
+                    );
+                  }
+                  if (event.key === 'ArrowUp') {
+                    event.preventDefault();
+                    setSelectedPaletteIndex((prev) => Math.max(prev - 1, 0));
+                  }
+                  if (event.key === 'Enter' && filteredPaletteItems[selectedPaletteIndex]) {
+                    event.preventDefault();
+                    void executePaletteItem(filteredPaletteItems[selectedPaletteIndex]);
                   }
                 }}
                 placeholder={t('commandPalette.placeholder')}
               />
             </div>
             <div className={styles.paletteResults}>
-              {filteredCommands.length === 0 ? (
+              {filteredPaletteItems.length === 0 ? (
                 <div className={styles.panelEmpty}>{t('commandPalette.noResults')}</div>
               ) : (
-                filteredCommands.map((item) => (
-                  <button key={item.id} onClick={() => void executePaletteCommand(item.id)}>
-                    <span>{item.label}</span>
+                filteredPaletteItems.map((item, index) => (
+                  <button
+                    key={item.id}
+                    className={index === selectedPaletteIndex ? styles.paletteItemActive : ''}
+                    onMouseEnter={() => setSelectedPaletteIndex(index)}
+                    onClick={() => void executePaletteItem(item)}
+                  >
+                    <span>
+                      <strong>{item.label}</strong>
+                      <small>
+                        {item.group}
+                        {item.description ? ` - ${item.description}` : ''}
+                      </small>
+                    </span>
                     {item.shortcut ? <kbd>{item.shortcut}</kbd> : null}
                   </button>
                 ))

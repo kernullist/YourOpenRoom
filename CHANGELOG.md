@@ -34,6 +34,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   through previewable or direct selected-text actions.
 - Aoi's IDE now logs chat-driven model actions in a bottom Actions panel and can undo reversible
   active-editor edits.
+- Aoi's IDE command palette now searches commands, open tabs, and loaded workspace files with
+  keyboard result navigation.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 

@@ -21,6 +21,12 @@ Example:
 
 The user can also update the workspace path from inside the app.
 
+## Command Palette
+
+Press `Ctrl+P` or click the command input to open the command palette. It searches IDE commands,
+currently open tabs, and files from the loaded workspace tree. Use `Up`/`Down` to move through
+results and `Enter` to run the selected command or open the selected file.
+
 ## Agent Workflow
 
 1. Use `OPEN_APP` to open Aoi's IDE.

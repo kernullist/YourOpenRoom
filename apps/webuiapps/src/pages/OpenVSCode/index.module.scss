@@ -1509,7 +1509,7 @@
 
 .paletteResults button {
   width: 100%;
-  height: 36px;
+  min-height: 44px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -1522,15 +1522,35 @@
   text-align: left;
 }
 
-.paletteResults button:hover {
+.paletteResults button:hover,
+.paletteResults .paletteItemActive {
   background: #1f4e85;
 }
 
 .paletteResults button span {
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow: hidden;
+}
+
+.paletteResults button strong,
+.paletteResults button small {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.paletteResults button strong {
+  color: #f3f6fb;
+  font-size: 12px;
+}
+
+.paletteResults button small {
+  color: #9ca8bb;
+  font-size: 11px;
 }
 
 @media (max-width: 980px) {
