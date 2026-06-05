@@ -93,6 +93,7 @@ const DEFAULT_DIAGNOSTICS_COMMAND = 'pnpm exec eslint src/pages/OpenVSCode/index
 const STATE_FILE = '/state.json';
 const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
 const ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT = 20_000;
+const WORKSPACE_HISTORY_LIMIT = 8;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'source' | 'settings';
@@ -101,7 +102,7 @@ type SearchMode = 'auto' | 'path' | 'content';
 type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type ModelActionStatus = 'success' | 'error';
-type PaletteItemKind = 'command' | 'file' | 'tab';
+type PaletteItemKind = 'command' | 'file' | 'tab' | 'root';
 type MonacoBeforeMount = Parameters<
   NonNullable<React.ComponentProps<typeof Editor>['beforeMount']>
 >[0];
@@ -301,6 +302,7 @@ interface OpenVscodeRuntimeState {
   version: 1;
   workspaceRoot: string;
   workspaceExists: boolean;
+  workspaceHistory: string[];
   activePath: string | null;
   activeFile: RuntimeFileState | null;
   openTabs: RuntimeFileState[];
@@ -540,6 +542,41 @@ function normalizeWorkspacePathInput(value: string): string {
     .replace(/\/{2,}/g, '/');
 }
 
+function normalizeWorkspaceRootPath(value: string): string {
+  return value.trim().replace(/^["']|["']$/g, '');
+}
+
+function getWorkspaceRootKey(value: string): string {
+  return normalizeWorkspaceRootPath(value).replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+}
+
+function getWorkspaceRootName(value: string): string {
+  const normalized = normalizeWorkspaceRootPath(value).replace(/\\/g, '/').replace(/\/+$/, '');
+  return normalized.split('/').filter(Boolean).pop() || normalized || value;
+}
+
+function buildWorkspaceHistory(
+  nextWorkspace: string,
+  previousHistory: string[] | undefined,
+): string[] {
+  const seen = new Set<string>();
+  const roots = [nextWorkspace, ...(previousHistory ?? [])]
+    .map(normalizeWorkspaceRootPath)
+    .filter(Boolean);
+
+  const history: string[] = [];
+  roots.forEach((root) => {
+    const key = getWorkspaceRootKey(root);
+    if (!key || seen.has(key)) {
+      return;
+    }
+    seen.add(key);
+    history.push(root);
+  });
+
+  return history.slice(0, WORKSPACE_HISTORY_LIMIT);
+}
+
 function isRelativeWorkspaceFilePath(filePath: string): boolean {
   if (!filePath || filePath === '.' || filePath.endsWith('/')) return false;
   if (/^(?:[a-zA-Z]:|\/)/.test(filePath)) return false;
@@ -615,6 +652,7 @@ function buildRuntimeFileState(
 function buildOpenVscodeRuntimeState(args: {
   workspaceRoot: string;
   workspaceExists: boolean;
+  workspaceHistory: string[];
   activePath: string | null;
   activeTab: OpenFileTab | null;
   openTabs: OpenFileTab[];
@@ -632,6 +670,7 @@ function buildOpenVscodeRuntimeState(args: {
     version: 1,
     workspaceRoot: args.workspaceRoot,
     workspaceExists: args.workspaceExists,
+    workspaceHistory: args.workspaceHistory,
     activePath: args.activePath,
     activeFile: args.activeTab
       ? buildRuntimeFileState(args.activeTab, {
@@ -819,6 +858,7 @@ const OpenVSCodePage: React.FC = () => {
   const [workspaceRoot, setWorkspaceRoot] = useState('');
   const [workspaceExists, setWorkspaceExists] = useState(true);
   const [workspaceDraft, setWorkspaceDraft] = useState('');
+  const [workspaceHistory, setWorkspaceHistory] = useState<string[]>([]);
   const [activityView, setActivityView] = useState<ActivityView>('explorer');
   const [showCreateFile, setShowCreateFile] = useState(false);
   const [newFilePath, setNewFilePath] = useState('');
@@ -952,6 +992,7 @@ const OpenVSCodePage: React.FC = () => {
     const runtimeState = buildOpenVscodeRuntimeState({
       workspaceRoot,
       workspaceExists,
+      workspaceHistory,
       activePath,
       activeTab,
       openTabs,
@@ -990,6 +1031,7 @@ const OpenVSCodePage: React.FC = () => {
     patchPreview,
     flushRuntimeState,
     workspaceExists,
+    workspaceHistory,
     workspaceRoot,
   ]);
 
@@ -1271,32 +1313,82 @@ const OpenVSCodePage: React.FC = () => {
     [createNewFile, newFilePath],
   );
 
-  const saveWorkspacePath = useCallback(async () => {
-    setErrorText(null);
-    try {
-      const nextWorkspace = workspaceDraft.trim();
+  const resetWorkspaceSession = useCallback(() => {
+    setTree({});
+    setExpandedDirs(['']);
+    setOpenTabs([]);
+    setActivePath(null);
+    setCursorPosition({ line: 1, column: 1 });
+    clearEditorSelection();
+    setSearchQuery('');
+    setSearchResult(null);
+    setDiagnosticItems([]);
+    setLastDiagnosticRun(null);
+    setGitStatusEntries([]);
+    setSelectedGitPath(null);
+    setGitDiffText('');
+    setGitErrorText(null);
+    setTerminalHistory([]);
+    setPatchPreview(null);
+    setModelActionLog([]);
+  }, [clearEditorSelection]);
+
+  const applyWorkspacePath = useCallback(
+    async (requestedPath?: string): Promise<{ workspacePath: string; history: string[] }> => {
+      const nextWorkspace = normalizeWorkspaceRootPath(requestedPath ?? workspaceDraft);
+      const isSameWorkspace =
+        !!workspaceRoot &&
+        getWorkspaceRootKey(nextWorkspace) === getWorkspaceRootKey(workspaceRoot);
       const existing = await loadPersistedConfig();
+      const nextHistory = buildWorkspaceHistory(
+        nextWorkspace,
+        existing?.openvscode?.workspaceHistory ?? workspaceHistory,
+      );
+
       await savePersistedConfig({
         ...(existing ?? {}),
         openvscode: {
           ...(existing?.openvscode ?? {}),
           workspacePath: nextWorkspace || undefined,
+          workspaceHistory: nextHistory.length > 0 ? nextHistory : undefined,
         },
       });
+
       setWorkspaceRoot(nextWorkspace);
       setWorkspaceDraft(nextWorkspace);
-      setTree({});
-      setExpandedDirs(['']);
-      setOpenTabs([]);
-      setActivePath(null);
-      setCursorPosition({ line: 1, column: 1 });
-      clearEditorSelection();
+      setWorkspaceHistory(nextHistory);
+      if (isSameWorkspace) {
+        setErrorText(null);
+        return { workspacePath: nextWorkspace, history: nextHistory };
+      }
+
+      resetWorkspaceSession();
       await refreshWorkspace();
+      await loadGitBranch();
       setActivityView('explorer');
+      setIsSidebarOpen(true);
+      setErrorText(null);
+
+      return { workspacePath: nextWorkspace, history: nextHistory };
+    },
+    [
+      loadGitBranch,
+      refreshWorkspace,
+      resetWorkspaceSession,
+      workspaceDraft,
+      workspaceHistory,
+      workspaceRoot,
+    ],
+  );
+
+  const saveWorkspacePath = useCallback(async () => {
+    setErrorText(null);
+    try {
+      await applyWorkspacePath();
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : String(error));
     }
-  }, [clearEditorSelection, refreshWorkspace, workspaceDraft]);
+  }, [applyWorkspacePath]);
 
   const runSearch = useCallback(
     async (queryOverride?: string): Promise<SearchResponse | null> => {
@@ -2153,9 +2245,27 @@ const OpenVSCodePage: React.FC = () => {
       }));
   }, [t, tree]);
 
+  const workspaceRootPaletteItems = useMemo<CommandPaletteItem[]>(
+    () =>
+      workspaceHistory.map((root) => ({
+        id: `root:${getWorkspaceRootKey(root)}`,
+        kind: 'root',
+        label: getWorkspaceRootName(root),
+        group: t('commandPalette.groups.workspaceRoots'),
+        description: root,
+        path: root,
+      })),
+    [t, workspaceHistory],
+  );
+
   const paletteItems = useMemo(
-    () => [...commandItems, ...openTabPaletteItems, ...loadedFilePaletteItems],
-    [commandItems, loadedFilePaletteItems, openTabPaletteItems],
+    () => [
+      ...commandItems,
+      ...workspaceRootPaletteItems,
+      ...openTabPaletteItems,
+      ...loadedFilePaletteItems,
+    ],
+    [commandItems, loadedFilePaletteItems, openTabPaletteItems, workspaceRootPaletteItems],
   );
 
   const filteredPaletteItems = useMemo(() => {
@@ -2184,9 +2294,14 @@ const OpenVSCodePage: React.FC = () => {
         return;
       }
 
+      if (item.kind === 'root') {
+        await applyWorkspacePath(item.path);
+        return;
+      }
+
       await loadFile(item.path);
     },
-    [executePaletteCommand, loadFile],
+    [applyWorkspacePath, executePaletteCommand, loadFile],
   );
 
   const problemItems = useMemo<ProblemItem[]>(() => {
@@ -2399,6 +2514,19 @@ const OpenVSCodePage: React.FC = () => {
         case 'REFRESH_WORKSPACE': {
           await refreshWorkspace();
           return 'success';
+        }
+        case 'SWITCH_WORKSPACE_ROOT': {
+          const path = action.params?.path?.trim();
+          if (!path) return 'error: missing path';
+          try {
+            const result = await applyWorkspacePath(path);
+            return JSON.stringify({
+              workspace_path: result.workspacePath,
+              recent_roots: result.history.length,
+            });
+          } catch (error) {
+            return `error: ${error instanceof Error ? error.message : String(error)}`;
+          }
         }
         case 'CREATE_FILE': {
           const path = action.params?.path?.trim();
@@ -2629,6 +2757,7 @@ const OpenVSCodePage: React.FC = () => {
     },
     [
       applyPatchPreview,
+      applyWorkspacePath,
       createNewFile,
       diagnosticCommand,
       discardPatchPreview,
@@ -2688,7 +2817,12 @@ const OpenVSCodePage: React.FC = () => {
 
         const persisted = await loadPersistedConfig();
         const configuredWorkspace = persisted?.openvscode?.workspacePath?.trim() || '';
+        const configuredHistory = buildWorkspaceHistory(
+          configuredWorkspace,
+          persisted?.openvscode?.workspaceHistory,
+        );
         setWorkspaceDraft(configuredWorkspace);
+        setWorkspaceHistory(configuredHistory);
 
         await refreshWorkspace();
         await loadGitBranch();
@@ -3234,6 +3368,34 @@ const OpenVSCodePage: React.FC = () => {
                   <Save size={15} />
                   <span>{t('actions.saveWorkspace')}</span>
                 </button>
+                {workspaceHistory.length > 0 ? (
+                  <div className={styles.workspaceHistoryList}>
+                    <div className={styles.workspaceHistoryTitle}>{t('settings.recentRoots')}</div>
+                    {workspaceHistory.map((root) => {
+                      const isCurrentRoot =
+                        getWorkspaceRootKey(root) === getWorkspaceRootKey(workspaceRoot);
+                      return (
+                        <button
+                          key={getWorkspaceRootKey(root)}
+                          className={`${styles.workspaceHistoryItem} ${
+                            isCurrentRoot ? styles.workspaceHistoryItemActive : ''
+                          }`}
+                          onClick={() => {
+                            setErrorText(null);
+                            void applyWorkspacePath(root).catch((error) => {
+                              setErrorText(error instanceof Error ? error.message : String(error));
+                            });
+                          }}
+                          title={root}
+                        >
+                          <FolderOpen size={14} />
+                          <span>{getWorkspaceRootName(root)}</span>
+                          <small>{root}</small>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
                 {!workspaceExists ? (
                   <p className={styles.inlineError}>{t('errors.workspaceMissing')}</p>
                 ) : null}

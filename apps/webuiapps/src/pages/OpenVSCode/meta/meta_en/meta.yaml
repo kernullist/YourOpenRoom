@@ -23,6 +23,16 @@ actions:
   - type: REFRESH_WORKSPACE
     name: Refresh Workspace
     description: Reload the workspace tree from disk.
+  - type: SWITCH_WORKSPACE_ROOT
+    name: Switch Workspace Root
+    description:
+      Change the IDE workspace root to a user-provided local folder path, persist it in
+      ~/.openroom/config.json, and add it to the recent workspace root list.
+    params:
+      - name: path
+        type: string
+        required: true
+        description: Absolute local folder path to use as the IDE workspace root.
   - type: SAVE_FILE
     name: Save File
     description: Save the currently active editor tab to disk.

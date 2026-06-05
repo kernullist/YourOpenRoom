@@ -133,9 +133,15 @@ async function buildStateSummary(
               !!entry && typeof entry === 'object' && !Array.isArray(entry),
           )
         : [];
+      const workspaceHistory = Array.isArray(normalizedState?.workspaceHistory)
+        ? normalizedState.workspaceHistory.filter(
+            (root): root is string => typeof root === 'string' && root.trim().length > 0,
+          )
+        : [];
       return {
         workspace_root: normalizedState?.workspaceRoot ?? null,
         workspace_exists: normalizedState?.workspaceExists ?? null,
+        workspace_history: workspaceHistory.slice(0, 8),
         active_path: normalizedState?.activePath ?? activeFile?.path ?? null,
         active_file: activeFile
           ? {
@@ -317,6 +323,9 @@ export async function executeAppStateTool(params: Record<string, unknown>): Prom
     result.workspace = persisted?.openvscode
       ? {
           workspace_path: persisted.openvscode.workspacePath || null,
+          workspace_history: Array.isArray(persisted.openvscode.workspaceHistory)
+            ? persisted.openvscode.workspaceHistory
+            : [],
           base_url: persisted.openvscode.baseUrl || null,
           host: persisted.openvscode.host || null,
           port: persisted.openvscode.port || null,

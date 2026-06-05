@@ -45,6 +45,7 @@ export interface OpenVscodeConfig {
   baseUrl?: string;
   executablePath?: string;
   workspacePath?: string;
+  workspaceHistory?: string[];
   host?: string;
   port?: number;
   connectionToken?: string;

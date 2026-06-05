@@ -36,6 +36,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   active-editor edits.
 - Aoi's IDE command palette now searches commands, open tabs, and loaded workspace files with
   keyboard result navigation.
+- Aoi's IDE now remembers recent workspace roots and can quick-switch them from Workspace settings,
+  the command palette, or the `SWITCH_WORKSPACE_ROOT` app action.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
 

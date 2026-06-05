@@ -744,7 +744,7 @@ When the user wants to interact with an app, first identify the target app from 
 
 Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
-- Data mutations MUST go through file_patch/file_write/file_delete. app_action only notifies the app to reload, it cannot write data. Exception: Aoi's IDE active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested.
+- Data mutations MUST go through file_patch/file_write/file_delete. app_action only notifies the app to reload, it cannot write data. Exception: Aoi's IDE active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested. SWITCH_WORKSPACE_ROOT also persists the IDE workspace setting when the user explicitly asks to change roots.
 - Operation actions do NOT require file_write when the app action itself performs the interaction.
 - After file_patch/file_write, ALWAYS call app_action with the corresponding REFRESH action.
 - Do NOT skip step 6. If the user asked to save/create/add something, you must persist the data with file_patch/file_write/file_delete. file_list alone does not save anything.
@@ -758,6 +758,7 @@ Rules:
 - For adding or editing the current active IDE file, prefer app_action on Aoi's IDE so unsaved editor content is respected. When the user asks to inspect, preview, review, or approve the change first, use PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, or PREVIEW_REPLACE_ACTIVE_FILE, then wait for approval before APPLY_ACTIVE_FILE_PREVIEW. For direct edits, use APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, or REPLACE_ACTIVE_FILE. Pass save=true unless the user explicitly asks for a draft-only buffer edit.
 - If an Aoi's IDE active-editor action went wrong, use UNDO_MODEL_ACTION on Aoi's IDE to restore the latest reversible model edit instead of file_patch/file_write.
 - For editing a known IDE workspace file that is not the active editor buffer, use ide_patch_file or ide_write_file with an explicit relative path.
+- To change Aoi's IDE workspace root when the user explicitly asks, use SWITCH_WORKSPACE_ROOT with an absolute local folder path.
 - Prefer file_patch over file_write when you only need a small exact text replacement in an existing file.
 - Use preview_changes before risky file mutations when you want to inspect the exact impact first.
 - If a mutation went wrong, use undo_last_action to revert the latest reversible file change in this session.

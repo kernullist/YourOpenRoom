@@ -19,24 +19,30 @@ Example:
 }
 ```
 
-The user can also update the workspace path from inside the app.
+The user can also update the workspace path from inside the app. Saved workspace paths are kept in
+`openvscode.workspaceHistory`, shown in the Workspace settings panel, and searchable from the
+command palette as quick-switch roots.
 
 ## Command Palette
 
 Press `Ctrl+P` or click the command input to open the command palette. It searches IDE commands,
-currently open tabs, and files from the loaded workspace tree. Use `Up`/`Down` to move through
-results and `Enter` to run the selected command or open the selected file.
+recent workspace roots, currently open tabs, and files from the loaded workspace tree. Use
+`Up`/`Down` to move through results and `Enter` to run the selected command, switch roots, or open
+the selected file.
 
 ## Agent Workflow
 
 1. Use `OPEN_APP` to open Aoi's IDE.
 2. Use `OPEN_FILE` with a path relative to the workspace root to focus a file.
-3. Use `CREATE_FILE` with a relative path to create an empty file and open it. Absolute paths,
+3. Use `SWITCH_WORKSPACE_ROOT` with an absolute local folder path when the user explicitly asks to
+   change the IDE workspace root. This clears root-specific editor state and persists the recent
+   root.
+4. Use `CREATE_FILE` with a relative path to create an empty file and open it. Absolute paths,
    parent-directory traversal, existing files, and directory paths are rejected.
-4. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
-5. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
+5. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
+6. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
-6. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
+7. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
    diffs.
 
 ## Current File Context

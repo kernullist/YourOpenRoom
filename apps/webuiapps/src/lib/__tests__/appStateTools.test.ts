@@ -77,6 +77,7 @@ describe('executeAppStateTool()', () => {
     mockedGetFile.mockResolvedValue({
       workspaceRoot: 'F:/kernullist/YourOpenRoom',
       workspaceExists: true,
+      workspaceHistory: ['F:/kernullist/YourOpenRoom', 'F:/kernullist/analyze-ue5'],
       activePath: 'README.md',
       activeFile: {
         path: 'README.md',
@@ -122,6 +123,7 @@ describe('executeAppStateTool()', () => {
     mockedLoadPersistedConfig.mockResolvedValue({
       openvscode: {
         workspacePath: 'F:/kernullist/YourOpenRoom',
+        workspaceHistory: ['F:/kernullist/YourOpenRoom', 'F:/kernullist/analyze-ue5'],
         host: '127.0.0.1',
         port: 3001,
       },
@@ -134,16 +136,25 @@ describe('executeAppStateTool()', () => {
       state_summary: {
         active_path: string;
         active_file: { path: string; dirty: boolean; line_count: number };
+        workspace_history: string[];
         open_tab_count: number;
         model_action_count: number;
         recent_model_actions: Array<{ action_type: string; reversible: boolean }>;
       };
-      workspace: { workspace_path: string | null; port: number | null } | null;
+      workspace: {
+        workspace_path: string | null;
+        workspace_history: string[];
+        port: number | null;
+      } | null;
     };
 
     expect(parsed.app.app_name).toBe('openvscode');
     expect(parsed.state?.activePath).toBe('README.md');
     expect(parsed.state_summary.active_path).toBe('README.md');
+    expect(parsed.state_summary.workspace_history).toEqual([
+      'F:/kernullist/YourOpenRoom',
+      'F:/kernullist/analyze-ue5',
+    ]);
     expect(parsed.state_summary.active_file).toEqual({
       path: 'README.md',
       name: 'README.md',
@@ -174,6 +185,7 @@ describe('executeAppStateTool()', () => {
     });
     expect(parsed.workspace).toEqual({
       workspace_path: 'F:/kernullist/YourOpenRoom',
+      workspace_history: ['F:/kernullist/YourOpenRoom', 'F:/kernullist/analyze-ue5'],
       base_url: null,
       host: '127.0.0.1',
       port: 3001,

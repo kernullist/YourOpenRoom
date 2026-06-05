@@ -201,7 +201,8 @@ lives. The current `/api/openvscode/*` endpoints support:
 - active-file patch preview/apply/discard for model proposals and unsaved editor changes
 - active selection context and selected-text replacement actions for chat-driven edits
 - model action logging with undo for reversible active-editor edits
-- command palette search across commands, open tabs, and loaded workspace files
+- recent workspace root quick switching from settings, command palette, or app action
+- command palette search across commands, recent roots, open tabs, and loaded workspace files
 - structured diagnostics surfaced in the IDE Problems panel with file/line navigation
 - read-only Source Control panel for `git status` and per-file diff inspection
 - safe command execution
@@ -325,7 +326,8 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
     }
   },
   "openvscode": {
-    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
+    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project",
+    "workspaceHistory": ["C:\\Users\\your-name\\workspace\\your-project"]
   },
   "tavily": {
     "apiKey": "tvly-YOUR_API_KEY"
@@ -348,6 +350,8 @@ Notes:
 
 - `openvscode.workspacePath` is the real workspace used by Aoi's IDE and the IDE tooling APIs.
 - If `openvscode.workspacePath` is omitted, the current code defaults to the repo root.
+- `openvscode.workspaceHistory` stores recent IDE roots for quick switching in Workspace settings
+  and the command palette.
 - `gmail.clientId` must be a Google OAuth **Desktop App** client ID.
 - `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled unless it uses
   a local login CLI provider.

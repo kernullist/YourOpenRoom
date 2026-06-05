@@ -33,6 +33,7 @@ const en = {
       'Choose which local folder the in-app editor should read, search, run safe checks in, and save files to.',
     workspacePath: 'Workspace path',
     workspacePlaceholder: 'Defaults to the current OpenRoom project root',
+    recentRoots: 'Recent roots',
   },
   sidebar: {
     explorer: 'Explorer',
@@ -144,6 +145,7 @@ const en = {
       files: 'Files',
       openEditors: 'Open editors',
       workspace: 'Workspace',
+      workspaceRoots: 'Workspace roots',
       source: 'Source Control',
       panel: 'Panel',
       view: 'View',

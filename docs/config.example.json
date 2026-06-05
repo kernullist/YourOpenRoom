@@ -148,7 +148,8 @@
     }
   },
   "openvscode": {
-    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
+    "workspacePath": "C:\\Users\\your-name\\workspace\\your-project",
+    "workspaceHistory": ["C:\\Users\\your-name\\workspace\\your-project"]
   },
   "tavily": {
     "apiKey": "tvly-YOUR_API_KEY"
