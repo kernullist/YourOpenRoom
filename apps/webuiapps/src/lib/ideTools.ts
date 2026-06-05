@@ -9,6 +9,7 @@ const PATCH_FILE_TOOL_NAME = 'ide_patch_file';
 const WRITE_FILE_TOOL_NAME = 'ide_write_file';
 const OPENVSCODE_STATE_FILE = 'apps/openvscode/data/state.json';
 const DEFAULT_MAX_CONTENT_CHARS = 80_000;
+const DEFAULT_MAX_SELECTION_CHARS = 20_000;
 
 const IDE_TOOL_NAMES = new Set([
   SEARCH_TOOL_NAME,
@@ -30,6 +31,7 @@ interface OpenVscodeActiveFileState {
   charCount?: unknown;
   content?: unknown;
   contentTruncated?: unknown;
+  selection?: unknown;
 }
 
 interface OpenVscodeRuntimeState {
@@ -82,6 +84,12 @@ function clampMaxChars(value: unknown): number {
   return Math.max(1000, Math.min(DEFAULT_MAX_CONTENT_CHARS, Math.floor(parsed)));
 }
 
+function clampMaxSelectionChars(value: unknown): number {
+  const parsed = asOptionalNumber(value);
+  if (!parsed) return DEFAULT_MAX_SELECTION_CHARS;
+  return Math.max(500, Math.min(DEFAULT_MAX_SELECTION_CHARS, Math.floor(parsed)));
+}
+
 function normalizeEditorContent(content: string): string {
   return content.replace(/\r\n/g, '\n');
 }
@@ -111,6 +119,39 @@ function truncateContent(
     return { content, truncated: false };
   }
   return { content: content.slice(0, maxChars), truncated: true };
+}
+
+function normalizeActiveSelection(
+  value: unknown,
+  options: { includeText: boolean; maxChars: number },
+): Record<string, unknown> | null {
+  const selection = asRecord(value);
+  if (!selection) return null;
+
+  const startLine = asOptionalNumber(selection.startLine);
+  const startColumn = asOptionalNumber(selection.startColumn);
+  const endLine = asOptionalNumber(selection.endLine);
+  const endColumn = asOptionalNumber(selection.endColumn);
+  const charCount = asOptionalNumber(selection.charCount);
+  const lineCount = asOptionalNumber(selection.lineCount);
+  if (!startLine || !startColumn || !endLine || !endColumn || charCount === null) {
+    return null;
+  }
+
+  const selectedText =
+    typeof selection.text === 'string' ? normalizeEditorContent(selection.text) : '';
+  const truncatedText = truncateContent(selectedText, options.maxChars);
+
+  return {
+    start_line: startLine,
+    start_column: startColumn,
+    end_line: endLine,
+    end_column: endColumn,
+    line_count: lineCount ?? countLines(selectedText),
+    char_count: charCount,
+    text_truncated: selection.textTruncated === true || truncatedText.truncated,
+    ...(options.includeText ? { text: truncatedText.content } : {}),
+  };
 }
 
 function normalizePathInput(value: unknown): string {
@@ -279,7 +320,9 @@ async function executeSearchTool(params: Record<string, unknown>): Promise<strin
 
 async function executeCurrentFileTool(params: Record<string, unknown>): Promise<string> {
   const includeContent = params.include_content !== false;
+  const includeSelection = params.include_selection !== false;
   const maxChars = clampMaxChars(params.max_chars);
+  const maxSelectionChars = clampMaxSelectionChars(params.max_selection_chars);
   const state = await getOpenVscodeState();
   const activePath = getActivePathFromState(state);
   if (!activePath) {
@@ -298,6 +341,10 @@ async function executeCurrentFileTool(params: Record<string, unknown>): Promise<
   if (typeof file === 'string') return file;
   const truncated = truncateContent(file.content, maxChars);
   const activeFile = asRecord(state?.activeFile);
+  const selection = normalizeActiveSelection(activeFile?.selection, {
+    includeText: includeSelection,
+    maxChars: maxSelectionChars,
+  });
   const lineCount = file.lineCount ?? countLines(file.content);
   const charCount = file.charCount ?? file.content.length;
 
@@ -316,6 +363,7 @@ async function executeCurrentFileTool(params: Record<string, unknown>): Promise<
         activeFile?.contentTruncated === true ||
         file.sourceContentTruncated === true,
       source: file.source,
+      ...(selection ? { selection } : {}),
       ...(includeContent ? { content: truncated.content } : {}),
     },
     open_tabs: Array.isArray(state?.openTabs) ? state?.openTabs : [],
@@ -444,7 +492,8 @@ export function getIdeToolDefinitions(): ToolDef[] {
         name: CURRENT_FILE_TOOL_NAME,
         description:
           "Read Aoi's IDE currently active editor file, including unsaved editor buffer content when available. " +
-          'Use this first when the user says current file, active file, opened file, or currently visible file.',
+          'Also returns the current selected editor text when a selection is active. ' +
+          'Use this first when the user says current file, active file, opened file, selected text, selection, or currently visible file.',
         parameters: {
           type: 'object',
           properties: {
@@ -455,6 +504,15 @@ export function getIdeToolDefinitions(): ToolDef[] {
             max_chars: {
               type: 'number',
               description: 'Maximum content characters to return, capped at 80000.',
+            },
+            include_selection: {
+              type: 'boolean',
+              description:
+                'Include selected editor text when a selection is active. Defaults to true.',
+            },
+            max_selection_chars: {
+              type: 'number',
+              description: 'Maximum selected-text characters to return, capped at 20000.',
             },
           },
           required: [],

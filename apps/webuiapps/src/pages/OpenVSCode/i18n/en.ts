@@ -66,6 +66,7 @@ const en = {
     discardConfirm: 'Discard unsaved changes in this tab?',
     stats: '{{lines}} lines, {{chars}} chars',
     cursor: 'Ln {{line}}, Col {{column}}',
+    selection: '{{chars}} selected',
     noOpenEditors: 'No open editors',
   },
   bottom: {

@@ -115,6 +115,12 @@ async function buildStateSummary(
         !Array.isArray(normalizedState.activeFile)
           ? (normalizedState.activeFile as Record<string, unknown>)
           : null;
+      const activeSelection =
+        activeFile?.selection &&
+        typeof activeFile.selection === 'object' &&
+        !Array.isArray(activeFile.selection)
+          ? (activeFile.selection as Record<string, unknown>)
+          : null;
       const openTabs = Array.isArray(normalizedState?.openTabs)
         ? normalizedState.openTabs.filter(
             (tab): tab is Record<string, unknown> =>
@@ -135,6 +141,17 @@ async function buildStateSummary(
               line_count: activeFile.lineCount ?? null,
               char_count: activeFile.charCount ?? null,
               content_truncated: activeFile.contentTruncated ?? null,
+              selection: activeSelection
+                ? {
+                    start_line: activeSelection.startLine ?? null,
+                    start_column: activeSelection.startColumn ?? null,
+                    end_line: activeSelection.endLine ?? null,
+                    end_column: activeSelection.endColumn ?? null,
+                    line_count: activeSelection.lineCount ?? null,
+                    char_count: activeSelection.charCount ?? null,
+                    text_truncated: activeSelection.textTruncated ?? null,
+                  }
+                : null,
             }
           : null,
         open_tab_count: openTabs.length,

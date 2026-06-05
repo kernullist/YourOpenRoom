@@ -87,6 +87,16 @@ describe('executeAppStateTool()', () => {
         charCount: 320,
         contentTruncated: false,
         cursor: { line: 3, column: 8 },
+        selection: {
+          startLine: 3,
+          startColumn: 1,
+          endLine: 3,
+          endColumn: 10,
+          lineCount: 1,
+          charCount: 9,
+          textTruncated: false,
+          text: 'selection',
+        },
       },
       openTabs: [
         {
@@ -131,6 +141,15 @@ describe('executeAppStateTool()', () => {
       line_count: 12,
       char_count: 320,
       content_truncated: false,
+      selection: {
+        start_line: 3,
+        start_column: 1,
+        end_line: 3,
+        end_column: 10,
+        line_count: 1,
+        char_count: 9,
+        text_truncated: false,
+      },
     });
     expect(parsed.state_summary.open_tab_count).toBe(1);
     expect(parsed.workspace).toEqual({

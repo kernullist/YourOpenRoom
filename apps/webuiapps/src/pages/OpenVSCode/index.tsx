@@ -90,6 +90,7 @@ const DEFAULT_TERMINAL_COMMAND = 'git status --short';
 const DEFAULT_DIAGNOSTICS_COMMAND = 'pnpm exec eslint src/pages/OpenVSCode/index.tsx';
 const STATE_FILE = '/state.json';
 const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
+const ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT = 20_000;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
 
 type ActivityView = 'explorer' | 'search' | 'source' | 'settings';
@@ -236,6 +237,17 @@ interface PatchPreviewLine {
   text: string;
 }
 
+interface RuntimeSelectionState {
+  startLine: number;
+  startColumn: number;
+  endLine: number;
+  endColumn: number;
+  lineCount: number;
+  charCount: number;
+  textTruncated: boolean;
+  text?: string;
+}
+
 interface RuntimeFileState {
   path: string;
   name: string;
@@ -247,6 +259,7 @@ interface RuntimeFileState {
   contentTruncated: boolean;
   content?: string;
   cursor?: { line: number; column: number };
+  selection?: RuntimeSelectionState | null;
 }
 
 interface OpenVscodeRuntimeState {
@@ -292,6 +305,68 @@ function countOccurrences(haystack: string, needle: string): number {
     offset = index + needle.length;
   }
   return count;
+}
+
+function buildSelectionSnapshot(
+  editor: monaco.editor.IStandaloneCodeEditor,
+): RuntimeSelectionState | null {
+  const selection = editor.getSelection();
+  const model = editor.getModel();
+  if (!selection || !model || selection.isEmpty()) {
+    return null;
+  }
+
+  const start = selection.getStartPosition();
+  const end = selection.getEndPosition();
+  const selectedText = normalizeEditorContent(model.getValueInRange(selection));
+  const textTruncated = selectedText.length > ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT;
+
+  return {
+    startLine: start.lineNumber,
+    startColumn: start.column,
+    endLine: end.lineNumber,
+    endColumn: end.column,
+    lineCount: countLines(selectedText),
+    charCount: selectedText.length,
+    textTruncated,
+    text: textTruncated
+      ? selectedText.slice(0, ACTIVE_SELECTION_SNAPSHOT_CHAR_LIMIT)
+      : selectedText,
+  };
+}
+
+function getPositionOffset(content: string, lineNumber: number, column: number): number {
+  const normalizedContent = normalizeEditorContent(content);
+  const lines = normalizedContent.split('\n');
+  const safeLine = Math.max(1, Math.min(lines.length, Math.floor(lineNumber)));
+  const lineStart = lines
+    .slice(0, safeLine - 1)
+    .reduce((offset, line) => offset + line.length + 1, 0);
+  const safeColumn = Math.max(
+    1,
+    Math.min((lines[safeLine - 1] ?? '').length + 1, Math.floor(column)),
+  );
+  return lineStart + safeColumn - 1;
+}
+
+function replaceSelectionRange(
+  content: string,
+  selection: RuntimeSelectionState,
+  replacement: string,
+): string {
+  const normalizedContent = normalizeEditorContent(content);
+  const startOffset = getPositionOffset(
+    normalizedContent,
+    selection.startLine,
+    selection.startColumn,
+  );
+  const endOffset = getPositionOffset(normalizedContent, selection.endLine, selection.endColumn);
+  const rangeStart = Math.min(startOffset, endOffset);
+  const rangeEnd = Math.max(startOffset, endOffset);
+  if (rangeStart === rangeEnd) {
+    return normalizedContent;
+  }
+  return `${normalizedContent.slice(0, rangeStart)}${normalizeEditorContent(replacement)}${normalizedContent.slice(rangeEnd)}`;
 }
 
 function replaceOnce(content: string, oldText: string, newText: string): string {
@@ -459,7 +534,11 @@ function getFileExtensionLabel(filePath: string | null): string {
 
 function buildRuntimeFileState(
   tab: OpenFileTab,
-  options: { includeContent: boolean; cursor?: { line: number; column: number } },
+  options: {
+    includeContent: boolean;
+    cursor?: { line: number; column: number };
+    selection?: RuntimeSelectionState | null;
+  },
 ): RuntimeFileState {
   const normalizedContent = normalizeEditorContent(tab.content);
   const normalizedSavedContent = normalizeEditorContent(tab.savedContent);
@@ -475,6 +554,7 @@ function buildRuntimeFileState(
     savedCharCount: normalizedSavedContent.length,
     contentTruncated,
     ...(options.cursor ? { cursor: options.cursor } : {}),
+    ...(options.selection !== undefined ? { selection: options.selection } : {}),
     ...(options.includeContent
       ? {
           content: contentTruncated
@@ -492,6 +572,7 @@ function buildOpenVscodeRuntimeState(args: {
   activeTab: OpenFileTab | null;
   openTabs: OpenFileTab[];
   cursorPosition: { line: number; column: number };
+  editorSelection: RuntimeSelectionState | null;
   activityView: ActivityView;
   isSidebarOpen: boolean;
   isBottomPanelOpen: boolean;
@@ -508,6 +589,7 @@ function buildOpenVscodeRuntimeState(args: {
       ? buildRuntimeFileState(args.activeTab, {
           includeContent: true,
           cursor: args.cursorPosition,
+          selection: args.editorSelection,
         })
       : null,
     openTabs: args.openTabs.map((tab) =>
@@ -648,6 +730,7 @@ const OpenVSCodePage: React.FC = () => {
   const [isCreatingFile, setIsCreatingFile] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
+  const [editorSelection, setEditorSelection] = useState<RuntimeSelectionState | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchMode, setSearchMode] = useState<SearchMode>('auto');
   const [searchResult, setSearchResult] = useState<SearchResponse | null>(null);
@@ -674,6 +757,7 @@ const OpenVSCodePage: React.FC = () => {
   const [patchPreview, setPatchPreview] = useState<PatchPreview | null>(null);
   const activePathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenFileTab[]>([]);
+  const editorSelectionRef = useRef<RuntimeSelectionState | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const pendingRevealLineRef = useRef<number | null>(null);
   const searchInputRef = useRef<HTMLInputElement | null>(null);
@@ -719,6 +803,20 @@ const OpenVSCodePage: React.FC = () => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
 
+  const syncEditorSelection = useCallback(
+    (editor: monaco.editor.IStandaloneCodeEditor | null = editorRef.current) => {
+      const nextSelection = editor ? buildSelectionSnapshot(editor) : null;
+      editorSelectionRef.current = nextSelection;
+      setEditorSelection(nextSelection);
+    },
+    [],
+  );
+
+  const clearEditorSelection = useCallback(() => {
+    editorSelectionRef.current = null;
+    setEditorSelection(null);
+  }, []);
+
   const flushRuntimeState = useCallback(async () => {
     if (isPublishingRuntimeStateRef.current) return;
     isPublishingRuntimeStateRef.current = true;
@@ -752,6 +850,7 @@ const OpenVSCodePage: React.FC = () => {
       activeTab,
       openTabs,
       cursorPosition,
+      editorSelection,
       activityView,
       isSidebarOpen,
       isBottomPanelOpen,
@@ -774,6 +873,7 @@ const OpenVSCodePage: React.FC = () => {
     activityView,
     bottomPanel,
     cursorPosition,
+    editorSelection,
     isBottomPanelOpen,
     isLoading,
     isSidebarOpen,
@@ -814,46 +914,51 @@ const OpenVSCodePage: React.FC = () => {
     editorRef.current.focus();
   }, []);
 
-  const loadFile = useCallback(async (path: string, revealToLine?: number) => {
-    const alreadyOpen = openTabsRef.current.find((tab) => tab.path === path);
-    if (alreadyOpen) {
-      setActivePath(path);
-      if (revealToLine) {
-        pendingRevealLineRef.current = revealToLine;
+  const loadFile = useCallback(
+    async (path: string, revealToLine?: number) => {
+      const alreadyOpen = openTabsRef.current.find((tab) => tab.path === path);
+      if (alreadyOpen) {
+        clearEditorSelection();
+        setActivePath(path);
+        if (revealToLine) {
+          pendingRevealLineRef.current = revealToLine;
+        }
+        return;
       }
-      return;
-    }
 
-    setIsFileLoading(true);
-    try {
-      const res = await fetch(`/api/openvscode/file?path=${encodeURIComponent(path)}`);
-      const data = (await res.json()) as FileResponse & { error?: string };
-      if (!res.ok) {
-        throw new Error(data.error || `File API error ${res.status}`);
+      setIsFileLoading(true);
+      try {
+        const res = await fetch(`/api/openvscode/file?path=${encodeURIComponent(path)}`);
+        const data = (await res.json()) as FileResponse & { error?: string };
+        if (!res.ok) {
+          throw new Error(data.error || `File API error ${res.status}`);
+        }
+        const normalizedContent = normalizeEditorContent(data.content);
+        const tab: OpenFileTab = {
+          path: data.path,
+          content: normalizedContent,
+          savedContent: normalizedContent,
+          language: detectMonacoLanguage(data.path),
+        };
+        setOpenTabs((prev) => {
+          const withoutExisting = prev.filter((item) => item.path !== data.path);
+          return [...withoutExisting, tab];
+        });
+        setActivePath(data.path);
+        setCursorPosition({ line: revealToLine ?? 1, column: 1 });
+        clearEditorSelection();
+        if (revealToLine) {
+          pendingRevealLineRef.current = revealToLine;
+        }
+        setErrorText(null);
+      } catch (error) {
+        setErrorText(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsFileLoading(false);
       }
-      const normalizedContent = normalizeEditorContent(data.content);
-      const tab: OpenFileTab = {
-        path: data.path,
-        content: normalizedContent,
-        savedContent: normalizedContent,
-        language: detectMonacoLanguage(data.path),
-      };
-      setOpenTabs((prev) => {
-        const withoutExisting = prev.filter((item) => item.path !== data.path);
-        return [...withoutExisting, tab];
-      });
-      setActivePath(data.path);
-      setCursorPosition({ line: revealToLine ?? 1, column: 1 });
-      if (revealToLine) {
-        pendingRevealLineRef.current = revealToLine;
-      }
-      setErrorText(null);
-    } catch (error) {
-      setErrorText(error instanceof Error ? error.message : String(error));
-    } finally {
-      setIsFileLoading(false);
-    }
-  }, []);
+    },
+    [clearEditorSelection],
+  );
 
   const refreshWorkspace = useCallback(async () => {
     setIsTreeLoading(true);
@@ -867,6 +972,7 @@ const OpenVSCodePage: React.FC = () => {
         setOpenTabs([]);
         setActivePath(null);
         setCursorPosition({ line: 1, column: 1 });
+        clearEditorSelection();
         return;
       }
       const rootEntries = await loadDirectory('');
@@ -884,7 +990,7 @@ const OpenVSCodePage: React.FC = () => {
     } finally {
       setIsTreeLoading(false);
     }
-  }, [fetchWorkspaceInfo, loadDirectory, loadFile]);
+  }, [clearEditorSelection, fetchWorkspaceInfo, loadDirectory, loadFile]);
 
   const loadGitBranch = useCallback(async () => {
     try {
@@ -1076,12 +1182,13 @@ const OpenVSCodePage: React.FC = () => {
       setOpenTabs([]);
       setActivePath(null);
       setCursorPosition({ line: 1, column: 1 });
+      clearEditorSelection();
       await refreshWorkspace();
       setActivityView('explorer');
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : String(error));
     }
-  }, [refreshWorkspace, workspaceDraft]);
+  }, [clearEditorSelection, refreshWorkspace, workspaceDraft]);
 
   const runSearch = useCallback(
     async (queryOverride?: string): Promise<SearchResponse | null> => {
@@ -1515,6 +1622,77 @@ const OpenVSCodePage: React.FC = () => {
     [createPatchPreview],
   );
 
+  const previewActiveSelectionReplacement = useCallback(
+    (
+      replacement: string,
+      options: { source: PatchPreviewSource; save: boolean },
+    ): PatchPreview | string => {
+      const path = activePathRef.current;
+      const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+      const selection = editorSelectionRef.current;
+      if (!path || !tab) {
+        return 'error: no active file';
+      }
+      if (!selection) {
+        return 'error: no active selection';
+      }
+
+      const beforeContent = normalizeEditorContent(tab.content);
+      const afterContent = replaceSelectionRange(beforeContent, selection, replacement);
+      if (beforeContent === afterContent) {
+        return 'error: selection replacement would not change the file';
+      }
+
+      return createPatchPreview({
+        path,
+        beforeContent,
+        afterContent,
+        summary: `selection ${buildPatchSummary(beforeContent, afterContent)}`,
+        source: options.source,
+        saveOnApply: options.save,
+      });
+    },
+    [createPatchPreview],
+  );
+
+  const replaceActiveSelectionFromAgent = useCallback(
+    async (
+      replacement: string,
+      options: { save: boolean },
+    ): Promise<{
+      ok: boolean;
+      path?: string;
+      saved?: boolean;
+      lineCount?: number;
+      charCount?: number;
+      selectionCharCount?: number;
+      error?: string;
+    }> => {
+      const path = activePathRef.current;
+      const tab = path ? openTabsRef.current.find((item) => item.path === path) : null;
+      const selection = editorSelectionRef.current;
+      if (!path || !tab) {
+        return { ok: false, error: 'no active file' };
+      }
+      if (!selection) {
+        return { ok: false, error: 'no active selection' };
+      }
+
+      const beforeContent = normalizeEditorContent(tab.content);
+      const afterContent = replaceSelectionRange(beforeContent, selection, replacement);
+      if (beforeContent === afterContent) {
+        return { ok: false, path, error: 'selection replacement would not change the file' };
+      }
+
+      const result = await setActiveFileContentFromAgent(afterContent, options);
+      clearEditorSelection();
+      return result.ok
+        ? { ...result, selectionCharCount: selection.charCount }
+        : { ...result, selectionCharCount: selection.charCount };
+    },
+    [clearEditorSelection, setActiveFileContentFromAgent],
+  );
+
   const applyPatchPreview = useCallback(async (): Promise<PatchPreview | null> => {
     const preview = patchPreview;
     if (!preview) return null;
@@ -1535,6 +1713,7 @@ const OpenVSCodePage: React.FC = () => {
           ],
     );
     setActivePath(preview.path);
+    clearEditorSelection();
 
     if (!preview.saveOnApply) {
       setPatchPreview(null);
@@ -1566,7 +1745,7 @@ const OpenVSCodePage: React.FC = () => {
     } finally {
       setIsSaving(false);
     }
-  }, [loadDirectory, patchPreview, saveFileContent, tree]);
+  }, [clearEditorSelection, loadDirectory, patchPreview, saveFileContent, tree]);
 
   const discardPatchPreview = useCallback(() => {
     setPatchPreview(null);
@@ -1609,6 +1788,9 @@ const OpenVSCodePage: React.FC = () => {
       editor.onDidChangeCursorPosition((event) => {
         setCursorPosition({ line: event.position.lineNumber, column: event.position.column });
       });
+      editor.onDidChangeCursorSelection(() => {
+        syncEditorSelection(editor);
+      });
       editor.addCommand(monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyS, () => {
         void saveCurrentFile();
       });
@@ -1620,8 +1802,9 @@ const OpenVSCodePage: React.FC = () => {
         pendingRevealLineRef.current = null;
         revealLine(pendingLine);
       }
+      syncEditorSelection(editor);
     },
-    [revealLine, saveCurrentFile],
+    [revealLine, saveCurrentFile, syncEditorSelection],
   );
 
   const openSearchResult = useCallback(
@@ -1884,6 +2067,24 @@ const OpenVSCodePage: React.FC = () => {
                 })
               : 'error: preview failed';
           }
+          case 'PREVIEW_REPLACE_ACTIVE_SELECTION': {
+            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+              return 'error: missing content';
+            }
+            const save = parseActionBoolean(action.params.save, true);
+            const preview = previewActiveSelectionReplacement(action.params.content ?? '', {
+              source: 'agent',
+              save,
+            });
+            return typeof preview === 'string'
+              ? preview
+              : JSON.stringify({
+                  preview_id: preview.id,
+                  path: preview.path,
+                  summary: preview.summary,
+                  save_on_apply: preview.saveOnApply,
+                });
+          }
           case 'APPLY_ACTIVE_FILE_PREVIEW': {
             const applied = await applyPatchPreview();
             return applied
@@ -1958,6 +2159,18 @@ const OpenVSCodePage: React.FC = () => {
               ? JSON.stringify(result)
               : `error: ${result.error || 'replace failed'}`;
           }
+          case 'REPLACE_ACTIVE_SELECTION': {
+            if (!action.params || !Object.prototype.hasOwnProperty.call(action.params, 'content')) {
+              return 'error: missing content';
+            }
+            const save = parseActionBoolean(action.params.save, true);
+            const result = await replaceActiveSelectionFromAgent(action.params.content ?? '', {
+              save,
+            });
+            return result.ok
+              ? JSON.stringify(result)
+              : `error: ${result.error || 'selection replace failed'}`;
+          }
           case 'SAVE_FILE': {
             await saveCurrentFile();
             return 'success';
@@ -2012,7 +2225,9 @@ const OpenVSCodePage: React.FC = () => {
         patchPreview,
         previewActiveFilePatch,
         previewActiveFileReplacement,
+        previewActiveSelectionReplacement,
         refreshWorkspace,
+        replaceActiveSelectionFromAgent,
         runDiagnostics,
         runSearch,
         runTerminalCommand,
@@ -2116,6 +2331,17 @@ const OpenVSCodePage: React.FC = () => {
     pendingRevealLineRef.current = null;
     window.requestAnimationFrame(() => revealLine(line));
   }, [activeTab?.path, revealLine]);
+
+  useEffect(() => {
+    clearEditorSelection();
+    if (!activeTab) {
+      return;
+    }
+    const frame = window.requestAnimationFrame(() => {
+      syncEditorSelection();
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeTab?.path, clearEditorSelection, syncEditorSelection]);
 
   useEffect(() => {
     if (!showCommandPalette) return;
@@ -2672,7 +2898,10 @@ const OpenVSCodePage: React.FC = () => {
                         value={activeTab.content}
                         language={activeTab.language}
                         theme="openroom-vscode"
-                        onChange={(value) => updateActiveTabContent(value ?? '')}
+                        onChange={(value) => {
+                          updateActiveTabContent(value ?? '');
+                          window.requestAnimationFrame(() => syncEditorSelection());
+                        }}
                         options={{
                           automaticLayout: true,
                           fontFamily:
@@ -3011,6 +3240,9 @@ const OpenVSCodePage: React.FC = () => {
         <span>
           {t('editor.cursor', { line: cursorPosition.line, column: cursorPosition.column })}
         </span>
+        {editorSelection ? (
+          <span>{t('editor.selection', { chars: editorSelection.charCount })}</span>
+        ) : null}
         <span>
           {t('editor.stats', { lines: lineCount, chars: activeTab?.content.length ?? 0 })}
         </span>

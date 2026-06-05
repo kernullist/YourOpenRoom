@@ -70,6 +70,16 @@ describe('executeIdeTool()', () => {
         contentTruncated: false,
         lineCount: 2,
         charCount: 20,
+        selection: {
+          startLine: 2,
+          startColumn: 1,
+          endLine: 2,
+          endColumn: 13,
+          lineCount: 1,
+          charCount: 12,
+          textTruncated: false,
+          text: 'Unsaved text',
+        },
       },
       openTabs: [{ path: 'README.md', dirty: true }],
     });
@@ -77,13 +87,60 @@ describe('executeIdeTool()', () => {
     const result = await executeIdeTool('ide_current_file', {});
     const parsed = JSON.parse(result) as {
       active_path: string;
-      active_file: { content: string; dirty: boolean; source: string };
+      active_file: {
+        content: string;
+        dirty: boolean;
+        source: string;
+        selection: { text: string; char_count: number };
+      };
     };
 
     expect(parsed.active_path).toBe('README.md');
     expect(parsed.active_file.content).toBe('# Draft\nUnsaved text');
     expect(parsed.active_file.dirty).toBe(true);
     expect(parsed.active_file.source).toBe('editor_state');
+    expect(parsed.active_file.selection).toEqual({
+      start_line: 2,
+      start_column: 1,
+      end_line: 2,
+      end_column: 13,
+      line_count: 1,
+      char_count: 12,
+      text_truncated: false,
+      text: 'Unsaved text',
+    });
+  });
+
+  it('can omit selected text while preserving the active selection range', async () => {
+    mockedGetFile.mockResolvedValue({
+      activePath: 'README.md',
+      activeFile: {
+        path: 'README.md',
+        name: 'README.md',
+        language: 'markdown',
+        dirty: false,
+        content: '# Title\nSelected paragraph',
+        contentTruncated: false,
+        selection: {
+          startLine: 2,
+          startColumn: 1,
+          endLine: 2,
+          endColumn: 19,
+          lineCount: 1,
+          charCount: 18,
+          textTruncated: false,
+          text: 'Selected paragraph',
+        },
+      },
+    });
+
+    const result = await executeIdeTool('ide_current_file', { include_selection: false });
+    const parsed = JSON.parse(result) as {
+      active_file: { selection: { text?: string; char_count: number } };
+    };
+
+    expect(parsed.active_file.selection.char_count).toBe(18);
+    expect(parsed.active_file.selection.text).toBeUndefined();
   });
 
   it('returns truncated active editor snapshots instead of failing review reads', async () => {

@@ -94,6 +94,22 @@ actions:
         description:
           Set to "false" if applying the preview should keep the edit in the editor buffer without
           saving. Defaults to true.
+  - type: PREVIEW_REPLACE_ACTIVE_SELECTION
+    name: Preview Replace Active Selection
+    description:
+      Build a patch preview that replaces only the currently selected editor text. Does not modify
+      the file until APPLY_ACTIVE_FILE_PREVIEW is called.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Replacement text for the selected range.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" if applying the preview should keep the edit in the editor buffer without
+          saving. Defaults to true.
   - type: APPLY_ACTIVE_FILE_PREVIEW
     name: Apply Active File Preview
     description:
@@ -160,6 +176,20 @@ actions:
         type: string
         required: true
         description: Full file content to place in the active editor buffer.
+      - name: save
+        type: string
+        required: false
+        description:
+          Set to "false" to keep the edit in the editor buffer without saving. Defaults to true.
+  - type: REPLACE_ACTIVE_SELECTION
+    name: Replace Active Selection
+    description:
+      Replace only the currently selected text in the active editor tab. Saves to disk by default.
+    params:
+      - name: content
+        type: string
+        required: true
+        description: Replacement text for the selected range.
       - name: save
         type: string
         required: false
