@@ -199,6 +199,7 @@ lives. The current `/api/openvscode/*` endpoints support:
 - definition peeking
 - semantic rename preview and apply
 - active-file patch preview/apply/discard for model proposals and unsaved editor changes
+- structured diagnostics surfaced in the IDE Problems panel with file/line navigation
 - safe command execution
 
 Where possible, semantic features use the local TypeScript language service.

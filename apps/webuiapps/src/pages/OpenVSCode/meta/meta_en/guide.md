@@ -28,6 +28,8 @@ The user can also update the workspace path from inside the app.
 3. Use `CREATE_FILE` with a relative path to create an empty file and open it. Absolute paths,
    parent-directory traversal, existing files, and directory paths are rejected.
 4. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
+5. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
+   Parsed diagnostics can be clicked in the IDE to open the file and line.
 
 ## Current File Context
 

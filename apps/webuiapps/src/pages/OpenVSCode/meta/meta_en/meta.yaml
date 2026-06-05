@@ -182,3 +182,14 @@ actions:
         type: string
         required: true
         description: Safe command accepted by the workspace command policy.
+  - type: RUN_DIAGNOSTICS
+    name: Run Diagnostics
+    description:
+      Run a safe verification command, parse diagnostics, and populate the IDE Problems panel.
+    params:
+      - name: command
+        type: string
+        required: false
+        description:
+          Safe command accepted by the workspace command policy. Defaults to the current Problems
+          panel command.

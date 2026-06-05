@@ -96,6 +96,13 @@ const ko = {
     dirtyTabs: '변경 탭',
     searchMatches: '검색 결과',
     branch: '브랜치',
+    diagnostics: '진단',
+  },
+  diagnostics: {
+    label: 'diagnostics $',
+    placeholder: 'pnpm exec eslint src/pages/OpenVSCode/index.tsx',
+    notRun: '아직 실행하지 않음',
+    summary: '{{count}}개 진단, exit {{code}} - {{ms}} ms',
   },
   terminal: {
     placeholder: 'git status --short',
@@ -112,6 +119,7 @@ const ko = {
       refresh: '워크스페이스: 탐색기 새로고침',
       search: '검색: 워크스페이스 검색 포커스',
       terminal: '터미널: 터미널 포커스',
+      diagnostics: '문제: 진단 명령 포커스',
       newFile: '파일: 새 파일',
       split: '보기: 분할 편집기 전환',
       toggleSidebar: '보기: 좌측 패널 전환',

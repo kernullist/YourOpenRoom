@@ -96,6 +96,13 @@ const en = {
     dirtyTabs: 'Dirty tabs',
     searchMatches: 'Search matches',
     branch: 'Branch',
+    diagnostics: 'Diagnostics',
+  },
+  diagnostics: {
+    label: 'diagnostics $',
+    placeholder: 'pnpm exec eslint src/pages/OpenVSCode/index.tsx',
+    notRun: 'Not run yet',
+    summary: '{{count}} diagnostics, exit {{code}} - {{ms}} ms',
   },
   terminal: {
     placeholder: 'git status --short',
@@ -112,6 +119,7 @@ const en = {
       refresh: 'Workspace: Refresh Explorer',
       search: 'Search: Focus Workspace Search',
       terminal: 'Terminal: Focus Terminal',
+      diagnostics: 'Problems: Focus Diagnostics Command',
       newFile: 'File: New File',
       split: 'View: Toggle Split Editor',
       toggleSidebar: 'View: Toggle Sidebar',

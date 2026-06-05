@@ -859,7 +859,55 @@
 }
 
 .problemList {
-  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+}
+
+.diagnosticsToolbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  border-bottom: 1px solid #202733;
+  padding: 8px 10px;
+}
+
+.diagnosticsInputRow {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+
+  > span {
+    color: #5eead4;
+    font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    white-space: nowrap;
+  }
+
+  input {
+    height: 28px;
+    min-width: 0;
+    border: 1px solid #263241;
+    border-radius: 5px;
+    outline: none;
+    padding: 0 8px;
+    color: #d7dde8;
+    background: #0f131b;
+    font-family: 'Cascadia Code', 'IBM Plex Mono', monospace;
+    font-size: 12px;
+  }
+
+  input:focus {
+    border-color: #2f81f7;
+    box-shadow: 0 0 0 1px rgba(47, 129, 247, 0.28);
+  }
+}
+
+.diagnosticsSummary {
+  color: #7b8493;
+  font-size: 11px;
 }
 
 .problemItem {

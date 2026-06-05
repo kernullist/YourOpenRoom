@@ -95,6 +95,13 @@ const zh = {
     dirtyTabs: '修改标签',
     searchMatches: '搜索匹配',
     branch: '分支',
+    diagnostics: '诊断',
+  },
+  diagnostics: {
+    label: 'diagnostics $',
+    placeholder: 'pnpm exec eslint src/pages/OpenVSCode/index.tsx',
+    notRun: '尚未运行',
+    summary: '{{count}} 个诊断, exit {{code}} - {{ms}} ms',
   },
   terminal: {
     placeholder: 'git status --short',
@@ -111,6 +118,7 @@ const zh = {
       refresh: '工作区: 刷新资源管理器',
       search: '搜索: 聚焦工作区搜索',
       terminal: '终端: 聚焦终端',
+      diagnostics: '问题: 聚焦诊断命令',
       newFile: '文件: 新建文件',
       split: '视图: 切换分栏编辑器',
       toggleSidebar: '视图: 切换侧边栏',

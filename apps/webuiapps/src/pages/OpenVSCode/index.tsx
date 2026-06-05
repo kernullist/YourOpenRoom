@@ -56,6 +56,7 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import { loadPersistedConfig, savePersistedConfig } from '@/lib/configPersistence';
+import { executeDiagnosticsTool } from '@/lib/diagnosticsTools';
 import './i18n';
 import styles from './index.module.scss';
 
@@ -86,6 +87,7 @@ const APP_ID = 19;
 const APP_NAME = 'openvscode';
 const DEFAULT_WINDOW_STYLE = { width: 1360, height: 760 };
 const DEFAULT_TERMINAL_COMMAND = 'git status --short';
+const DEFAULT_DIAGNOSTICS_COMMAND = 'pnpm exec eslint src/pages/OpenVSCode/index.tsx';
 const STATE_FILE = '/state.json';
 const ACTIVE_FILE_SNAPSHOT_CHAR_LIMIT = 80_000;
 const openvscodeFileApi = createAppFileApi(APP_NAME);
@@ -176,6 +178,33 @@ interface ProblemItem {
   source: string;
   message: string;
   path?: string;
+  line?: number;
+  column?: number;
+  code?: string;
+  testName?: string;
+}
+
+interface DiagnosticToolItem {
+  file?: string;
+  line?: number;
+  column?: number;
+  severity: 'error' | 'warning' | 'info';
+  code?: string;
+  message: string;
+  test_name?: string;
+}
+
+interface DiagnosticRunState {
+  id: string;
+  command: string;
+  cwd: string;
+  exitCode: number;
+  timedOut: boolean;
+  durationMs: number;
+  diagnosticCount: number;
+  stdout: string;
+  stderr: string;
+  ranAt: number;
 }
 
 interface PatchPreview {
@@ -536,6 +565,32 @@ function createTerminalId(): string {
   return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function normalizeDiagnosticFilePath(
+  filePath: string | undefined,
+  workspaceRoot: string,
+): string | undefined {
+  if (!filePath) return undefined;
+  const normalizedPath = filePath
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\.\/+/, '');
+  if (!normalizedPath) return undefined;
+
+  const normalizedWorkspace = workspaceRoot.trim().replace(/\\/g, '/').replace(/\/+$/, '');
+  if (
+    normalizedWorkspace &&
+    normalizedPath.toLowerCase().startsWith(`${normalizedWorkspace.toLowerCase()}/`)
+  ) {
+    return normalizedPath.slice(normalizedWorkspace.length + 1);
+  }
+
+  return normalizedPath.replace(/^\/+/, '');
+}
+
+function createProblemId(): string {
+  return `problem-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 const OpenVSCodePage: React.FC = () => {
   const { t } = useTranslation('openvscode');
   const [workspaceRoot, setWorkspaceRoot] = useState('');
@@ -566,6 +621,10 @@ const OpenVSCodePage: React.FC = () => {
   const [terminalCommand, setTerminalCommand] = useState(DEFAULT_TERMINAL_COMMAND);
   const [terminalHistory, setTerminalHistory] = useState<TerminalEntry[]>([]);
   const [isRunningCommand, setIsRunningCommand] = useState(false);
+  const [diagnosticCommand, setDiagnosticCommand] = useState(DEFAULT_DIAGNOSTICS_COMMAND);
+  const [diagnosticItems, setDiagnosticItems] = useState<ProblemItem[]>([]);
+  const [lastDiagnosticRun, setLastDiagnosticRun] = useState<DiagnosticRunState | null>(null);
+  const [isRunningDiagnostics, setIsRunningDiagnostics] = useState(false);
   const [gitBranch, setGitBranch] = useState('main');
   const [isSplitView, setIsSplitView] = useState(false);
   const [showCommandPalette, setShowCommandPalette] = useState(false);
@@ -578,6 +637,7 @@ const OpenVSCodePage: React.FC = () => {
   const searchInputRef = useRef<HTMLInputElement | null>(null);
   const commandInputRef = useRef<HTMLInputElement | null>(null);
   const terminalInputRef = useRef<HTMLInputElement | null>(null);
+  const diagnosticsInputRef = useRef<HTMLInputElement | null>(null);
   const lastPublishedStateRef = useRef('');
   const pendingRuntimeStateRef = useRef<{
     serialized: string;
@@ -1050,6 +1110,91 @@ const OpenVSCodePage: React.FC = () => {
     [terminalCommand],
   );
 
+  const runDiagnostics = useCallback(
+    async (commandOverride?: string): Promise<DiagnosticRunState | null> => {
+      const command = (commandOverride ?? diagnosticCommand).trim();
+      if (!command) return null;
+
+      setIsBottomPanelOpen(true);
+      setBottomPanel('problems');
+      setIsRunningDiagnostics(true);
+      try {
+        const raw = await executeDiagnosticsTool({ command, timeout_ms: 30000 });
+        if (/^error:/i.test(raw)) {
+          throw new Error(raw.replace(/^error:\s*/i, ''));
+        }
+
+        const parsed = JSON.parse(raw) as {
+          command?: string;
+          cwd?: string;
+          exitCode?: number;
+          timedOut?: boolean;
+          durationMs?: number;
+          diagnostic_count?: number;
+          diagnostics?: DiagnosticToolItem[];
+          stdout?: string;
+          stderr?: string;
+        };
+
+        const nextItems = (parsed.diagnostics ?? []).map<ProblemItem>((item) => ({
+          severity: item.severity,
+          source: 'Diagnostics',
+          message: item.message,
+          path: normalizeDiagnosticFilePath(item.file, workspaceRoot),
+          line: item.line,
+          column: item.column,
+          code: item.code,
+          testName: item.test_name,
+        }));
+        const runState: DiagnosticRunState = {
+          id: createProblemId(),
+          command: parsed.command || command,
+          cwd: parsed.cwd || workspaceRoot || '.',
+          exitCode: parsed.exitCode ?? -1,
+          timedOut: !!parsed.timedOut,
+          durationMs: parsed.durationMs ?? 0,
+          diagnosticCount: parsed.diagnostic_count ?? nextItems.length,
+          stdout: parsed.stdout || '',
+          stderr: parsed.stderr || '',
+          ranAt: Date.now(),
+        };
+
+        setDiagnosticItems(nextItems);
+        setLastDiagnosticRun(runState);
+        setDiagnosticCommand(command);
+        setErrorText(null);
+        return runState;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const runState: DiagnosticRunState = {
+          id: createProblemId(),
+          command,
+          cwd: workspaceRoot || '.',
+          exitCode: -1,
+          timedOut: false,
+          durationMs: 0,
+          diagnosticCount: 1,
+          stdout: '',
+          stderr: message,
+          ranAt: Date.now(),
+        };
+        setDiagnosticItems([
+          {
+            severity: 'error',
+            source: 'Diagnostics',
+            message,
+          },
+        ]);
+        setLastDiagnosticRun(runState);
+        setErrorText(null);
+        return runState;
+      } finally {
+        setIsRunningDiagnostics(false);
+      }
+    },
+    [diagnosticCommand, workspaceRoot],
+  );
+
   const closeTab = useCallback(
     (path: string) => {
       const tab = openTabsRef.current.find((item) => item.path === path);
@@ -1401,6 +1546,10 @@ const OpenVSCodePage: React.FC = () => {
         setIsBottomPanelOpen(true);
         setBottomPanel('terminal');
         window.requestAnimationFrame(() => terminalInputRef.current?.focus());
+      } else if (id === 'diagnostics') {
+        setIsBottomPanelOpen(true);
+        setBottomPanel('problems');
+        window.requestAnimationFrame(() => diagnosticsInputRef.current?.focus());
       } else if (id === 'split') {
         setIsSplitView((prev) => !prev);
       } else if (id === 'toggleSidebar') {
@@ -1430,6 +1579,7 @@ const OpenVSCodePage: React.FC = () => {
       { id: 'refresh', label: t('commandPalette.commands.refresh'), shortcut: '' },
       { id: 'search', label: t('commandPalette.commands.search'), shortcut: 'Ctrl+F' },
       { id: 'terminal', label: t('commandPalette.commands.terminal'), shortcut: 'Ctrl+`' },
+      { id: 'diagnostics', label: t('commandPalette.commands.diagnostics'), shortcut: '' },
       { id: 'newFile', label: t('commandPalette.commands.newFile'), shortcut: '' },
       { id: 'split', label: t('commandPalette.commands.split'), shortcut: '' },
       {
@@ -1460,7 +1610,7 @@ const OpenVSCodePage: React.FC = () => {
   }, [commandItems, commandQuery]);
 
   const problemItems = useMemo<ProblemItem[]>(() => {
-    const items: ProblemItem[] = [];
+    const items: ProblemItem[] = [...diagnosticItems];
     if (errorText) {
       items.push({ severity: 'error', source: 'OpenRoom IDE', message: errorText });
     }
@@ -1481,7 +1631,7 @@ const OpenVSCodePage: React.FC = () => {
       });
     }
     return items;
-  }, [dirtyTabs, errorText, t, terminalHistory]);
+  }, [diagnosticItems, dirtyTabs, errorText, t, terminalHistory]);
 
   const outputLines = useMemo(
     () => [
@@ -1490,8 +1640,25 @@ const OpenVSCodePage: React.FC = () => {
       `${t('output.dirtyTabs')}: ${dirtyTabs.length}`,
       `${t('output.searchMatches')}: ${searchResult?.total_matches ?? 0}`,
       `${t('output.branch')}: ${gitBranch}`,
+      `${t('output.diagnostics')}: ${
+        lastDiagnosticRun
+          ? t('diagnostics.summary', {
+              count: lastDiagnosticRun.diagnosticCount,
+              code: lastDiagnosticRun.exitCode,
+              ms: lastDiagnosticRun.durationMs,
+            })
+          : t('diagnostics.notRun')
+      }`,
     ],
-    [dirtyTabs.length, gitBranch, openTabs.length, searchResult?.total_matches, t, workspaceRoot],
+    [
+      dirtyTabs.length,
+      gitBranch,
+      lastDiagnosticRun,
+      openTabs.length,
+      searchResult?.total_matches,
+      t,
+      workspaceRoot,
+    ],
   );
 
   useAgentActionListener(
@@ -1682,6 +1849,19 @@ const OpenVSCodePage: React.FC = () => {
             const result = await runTerminalCommand(command);
             return result && result.exitCode === 0 ? 'success' : 'error: command failed';
           }
+          case 'RUN_DIAGNOSTICS': {
+            const command = action.params?.command?.trim() || diagnosticCommand;
+            if (!command.trim()) return 'error: missing command';
+            const result = await runDiagnostics(command);
+            return result
+              ? JSON.stringify({
+                  command: result.command,
+                  exitCode: result.exitCode,
+                  diagnostic_count: result.diagnosticCount,
+                  timedOut: result.timedOut,
+                })
+              : 'error: diagnostics failed';
+          }
           default:
             return `error: unknown action_type ${action.action_type}`;
         }
@@ -1689,12 +1869,14 @@ const OpenVSCodePage: React.FC = () => {
       [
         applyPatchPreview,
         createNewFile,
+        diagnosticCommand,
         discardPatchPreview,
         loadFile,
         patchPreview,
         previewActiveFilePatch,
         previewActiveFileReplacement,
         refreshWorkspace,
+        runDiagnostics,
         runSearch,
         runTerminalCommand,
         saveCurrentFile,
@@ -2368,6 +2550,43 @@ const OpenVSCodePage: React.FC = () => {
                     <div className={styles.bottomContent}>
                       {bottomPanel === 'problems' ? (
                         <div className={styles.problemList}>
+                          <form
+                            className={styles.diagnosticsToolbar}
+                            onSubmit={(event) => {
+                              event.preventDefault();
+                              void runDiagnostics();
+                            }}
+                          >
+                            <div className={styles.diagnosticsInputRow}>
+                              <span>{t('diagnostics.label')}</span>
+                              <input
+                                ref={diagnosticsInputRef}
+                                value={diagnosticCommand}
+                                onChange={(event) => setDiagnosticCommand(event.target.value)}
+                                placeholder={t('diagnostics.placeholder')}
+                                disabled={isRunningDiagnostics}
+                              />
+                              <button
+                                type="submit"
+                                className={styles.runButton}
+                                disabled={!diagnosticCommand.trim() || isRunningDiagnostics}
+                              >
+                                <Play size={14} />
+                                <span>
+                                  {isRunningDiagnostics ? t('actions.running') : t('actions.run')}
+                                </span>
+                              </button>
+                            </div>
+                            <div className={styles.diagnosticsSummary}>
+                              {lastDiagnosticRun
+                                ? t('diagnostics.summary', {
+                                    count: lastDiagnosticRun.diagnosticCount,
+                                    code: lastDiagnosticRun.exitCode,
+                                    ms: lastDiagnosticRun.durationMs,
+                                  })
+                                : t('diagnostics.notRun')}
+                            </div>
+                          </form>
                           {problemItems.length === 0 ? (
                             <div className={styles.panelEmpty}>{t('problems.none')}</div>
                           ) : (
@@ -2375,9 +2594,9 @@ const OpenVSCodePage: React.FC = () => {
                               <button
                                 key={`${item.source}-${item.message}-${index}`}
                                 className={styles.problemItem}
-                                onClick={() => {
+                                onClick={async () => {
                                   if (item.path) {
-                                    void loadFile(item.path);
+                                    await loadFile(item.path, item.line);
                                   }
                                 }}
                               >
@@ -2389,8 +2608,17 @@ const OpenVSCodePage: React.FC = () => {
                                       : styles.problemWarning
                                   }
                                 />
-                                <span>{item.message}</span>
-                                <small>{item.path || item.source}</small>
+                                <span>
+                                  {item.code ? `${item.code}: ` : ''}
+                                  {item.message}
+                                </span>
+                                <small>
+                                  {item.path
+                                    ? `${item.path}${item.line ? `:${item.line}` : ''}${
+                                        item.column ? `:${item.column}` : ''
+                                      }`
+                                    : item.testName || item.source}
+                                </small>
                               </button>
                             ))
                           )}
