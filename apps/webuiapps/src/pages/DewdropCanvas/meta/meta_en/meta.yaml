@@ -1,0 +1,26 @@
+app_id: 22
+app_name: dewdropcanvas
+app_display_name: Dewdrop Canvas
+version: '1.0.0'
+description: >
+  Dewdrop Canvas embeds the local F:/kernullist/dewdrop-canvas liquid mind-map board inside
+  YourOpenRoom and serves its project storage and AI synthesis APIs through the in-app runtime.
+displayDesc: >
+  Open the tactile liquid thought board with persistent projects, markdown export, and offline
+  synthesis fallback.
+
+actions:
+  - type: REFRESH_DEWDROP_CANVAS
+    name: Refresh Dewdrop Canvas
+    description: Reload the embedded Dewdrop Canvas frame and re-check the local service status.
+    params: []
+
+  - type: CHECK_DEWDROP_CANVAS_STATUS
+    name: Check Dewdrop Canvas Status
+    description: Return whether the local Dewdrop Canvas source folder and in-app API bridge are available.
+    params: []
+
+  - type: OPEN_DEWDROP_CANVAS_EXTERNAL
+    name: Open Dewdrop Canvas External
+    description: Open the same Dewdrop Canvas runtime in a normal browser tab.
+    params: []

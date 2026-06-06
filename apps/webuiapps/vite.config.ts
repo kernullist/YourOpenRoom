@@ -11,6 +11,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { basename, dirname, join } from 'path';
 import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
+import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
 import { gmailPlugin } from './src/lib/gmailPlugin';
@@ -2962,6 +2963,9 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     }),
     browserReaderProxyPlugin(),
     cyberNewsProxyPlugin(),
+    dewdropCanvasPlugin({
+      configFile: LLM_CONFIG_FILE,
+    }),
     youtubeSearchPlugin(),
     tavilyProxyPlugin(),
     openVscodeManagerPlugin(),

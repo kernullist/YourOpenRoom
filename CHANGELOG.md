@@ -46,6 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   IDE/app-storage checkpoints from the UI or app actions.
 - Room Shop adds a cheerful desktop decoration app with built-in Aoi room wallpaper looks, desk
   moods, live preview, apply, and reset actions.
+- Dewdrop Canvas is now available as a desktop app backed by an in-app bridge for
+  `F:/kernullist/dewdrop-canvas` static files, project storage, and synthesis APIs.
 
 ### Changed
 

@@ -218,6 +218,16 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#fb9f3f',
     defaultSize: { width: 1120, height: 720 },
   },
+  {
+    appId: 22,
+    appName: 'dewdropcanvas',
+    route: '/dewdrop-canvas',
+    displayName: 'Dewdrop Canvas',
+    sourceDir: 'DewdropCanvas',
+    icon: 'Droplets',
+    color: '#06b6d4',
+    defaultSize: { width: 1380, height: 820 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

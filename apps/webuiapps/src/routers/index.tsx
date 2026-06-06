@@ -21,6 +21,7 @@ const Kira = lazy(() => import('@/pages/Kira'));
 const OpenVSCode = lazy(() => import('@/pages/OpenVSCode'));
 const PeAnalyzer = lazy(() => import('@/pages/PeAnalyzer'));
 const RoomShop = lazy(() => import('@/pages/RoomShop'));
+const DewdropCanvas = lazy(() => import('@/pages/DewdropCanvas'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -165,6 +166,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <RoomShop />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/dewdrop-canvas',
+    element: (
+      <React.Suspense>
+        <DewdropCanvas />
       </React.Suspense>
     ),
   },

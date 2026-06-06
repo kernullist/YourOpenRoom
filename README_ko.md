@@ -51,6 +51,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - Tavily 프록시
   - OpenVSCode 워크스페이스 API
   - PE Analyst IDA / PE 분석 브리지
+  - Dewdrop Canvas 로컬 앱 브리지
   - TTS lab 합성 API
   - Kira 자동화 API
   - 설정 및 세션 데이터 저장
@@ -74,6 +75,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 | `Notes`          | 고정 컬렉션, 태그/검색 필터, 정렬, 서식 도구, 안전한 삭제 확인, 저장되는 보기 상태, 미리보기가 있는 로컬 Markdown 노트          |
 | `Browser Reader` | 내장 브라우징, reader 추출, 북마크/히스토리, Google 결과 대체 UI, Notes 저장                                                    |
 | `Room Shop`      | Aoi 방을 유지한 채 내장 wallpaper look 과 desk mood 를 미리보기, 적용, 초기화할 수 있는 가벼운 데스크톱 꾸미기 상점             |
+| `Dewdrop Canvas` | `F:/kernullist/dewdrop-canvas` 액체 마인드맵 보드를 인앱으로 열고, 정적 파일/API 브리지, 프로젝트 저장, Markdown export 를 제공 |
 | `Kira`           | 작업 보드, work item/comment, discovery 분석, 워커 배정 전 clarification 질문, 자동화 handoff                                   |
 | `Aoi's IDE`      | 새 파일 생성이 가능한 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령                    |
 | `PE Analyst`     | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
