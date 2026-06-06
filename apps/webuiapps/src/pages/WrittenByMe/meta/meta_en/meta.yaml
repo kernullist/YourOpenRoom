@@ -1,0 +1,27 @@
+app_id: 23
+app_name: writtenbyme
+app_display_name: Written By Me
+version: '1.0.0'
+description: >
+  Written By Me embeds the local F:/kernullist/written-by-me writing style analyzer inside
+  YourOpenRoom and routes analysis, translation, upload, URL fetch, download, and log APIs through
+  the in-app runtime. LLM calls use the configured AOI main model from Settings > Models.
+displayDesc: >
+  Analyze documents, pasted text, or URLs to generate a portable Skill.md that captures your
+  writing style using the AOI main model.
+
+actions:
+  - type: REFRESH_WRITTEN_BY_ME
+    name: Refresh Written By Me
+    description: Reload the embedded Written By Me frame and re-check the local bridge status.
+    params: []
+
+  - type: CHECK_WRITTEN_BY_ME_STATUS
+    name: Check Written By Me Status
+    description: Return whether the local Written By Me source folder, in-app API bridge, and AOI main LLM configuration are available.
+    params: []
+
+  - type: OPEN_WRITTEN_BY_ME_EXTERNAL
+    name: Open Written By Me External
+    description: Open the same Written By Me runtime in a normal browser tab.
+    params: []

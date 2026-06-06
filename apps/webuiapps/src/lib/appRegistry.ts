@@ -228,6 +228,16 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#06b6d4',
     defaultSize: { width: 1380, height: 820 },
   },
+  {
+    appId: 23,
+    appName: 'writtenbyme',
+    route: '/written-by-me',
+    displayName: 'Written By Me',
+    sourceDir: 'WrittenByMe',
+    icon: 'Feather',
+    color: '#58a6ff',
+    defaultSize: { width: 1180, height: 780 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

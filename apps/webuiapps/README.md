@@ -6,10 +6,12 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including Notes, Room Shop, Kira, Aoi's IDE, and PE Analyst
+- built-in apps under `src/pages/`, including Notes, Room Shop, Written By Me, Kira, Aoi's IDE,
+  and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
-  Analyst, TTS lab synthesis, session persistence, and config storage work in local development
+  Analyst, Written By Me, TTS lab synthesis, session persistence, and config storage work in local
+  development
 
 ## What Lives Here
 
@@ -21,7 +23,7 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - app windows
 - `src/pages/`
   - built-in desktop apps such as Email, Room Shop, Kira, Browser Reader, Notes, Calendar, YouTube,
-    Chess, OpenVSCode, and PE Analyst
+    Chess, OpenVSCode, Written By Me, and PE Analyst
 - `src/routers/`
   - standalone desktop routing
 - `src/common.scss`

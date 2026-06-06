@@ -48,6 +48,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   moods, live preview, apply, and reset actions.
 - Dewdrop Canvas is now available as a desktop app backed by an in-app bridge for
   `F:/kernullist/dewdrop-canvas` static files, project storage, and synthesis APIs.
+- Written By Me is now available as a desktop app backed by an in-app bridge for
+  `F:/kernullist/written-by-me`, with upload, URL fetch, analysis, translation, download, and log
+  APIs routed through the configured AOI main model.
 
 ### Changed
 

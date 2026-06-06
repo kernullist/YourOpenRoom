@@ -70,6 +70,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Browser Reader` | Embedded browsing, reader extraction, bookmarks/history, Google result fallback UI, and save-to-Notes                                                                                |
 | `Room Shop`      | Cheerful desktop decoration shop for previewing, applying, and resetting built-in Aoi room wallpaper looks and desk mood themes                                                      |
 | `Dewdrop Canvas` | Embedded `F:/kernullist/dewdrop-canvas` liquid mind-map board with in-app static/API bridging, persistent projects, markdown export, and offline synthesis fallback                  |
+| `Written By Me`  | Embedded `F:/kernullist/written-by-me` writing-style analyzer with in-app upload/URL/API bridging and AOI main-model analysis/translation                                            |
 | `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
 | `Aoi's IDE`      | Local workspace tree/editor with file creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                              |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |

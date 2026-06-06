@@ -33,6 +33,7 @@ import {
   FileImage,
   FileArchive,
   Palette,
+  Feather,
   type LucideIcon,
 } from 'lucide-react';
 import ChatPanel from '../ChatPanel';
@@ -102,6 +103,7 @@ const ICON_MAP: Record<string, LucideIcon> = {
   FileArchive,
   MessageCircle,
   Palette,
+  Feather,
 };
 
 const DESKTOP_APPS = getDesktopApps().map((app) => ({

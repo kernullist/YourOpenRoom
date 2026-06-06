@@ -13,7 +13,7 @@ const STATIC_PREFIX = '/dewdrop-canvas';
 const API_PREFIX = '/api/dewdrop-canvas';
 const DEFAULT_SOURCE_ROOT = 'F:/kernullist/dewdrop-canvas';
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
-const LLM_REQUEST_TIMEOUT_MS = 90 * 1000;
+const LLM_REQUEST_TIMEOUT_MS = 300 * 1000;
 
 type NextFunction = () => void;
 type MiddlewareStack = {
@@ -379,7 +379,7 @@ function normalizeApiStyle(value: unknown): LLMApiStyle | undefined {
   return undefined;
 }
 
-function loadAoiMainLlmConfig(configFile: string): LLMConfig | null {
+export function loadAoiMainLlmConfig(configFile: string): LLMConfig | null {
   try {
     if (!fs.existsSync(configFile)) return null;
     const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as Record<string, unknown>;
@@ -445,7 +445,7 @@ function resolveAoiProviderApiKey(config: LLMConfig): string {
   return '';
 }
 
-function getAoiLlmStatus(configFile: string): Record<string, unknown> {
+export function getAoiLlmStatus(configFile: string): Record<string, unknown> {
   const config = loadAoiMainLlmConfig(configFile);
   if (!config) {
     return { configured: false };
@@ -640,7 +640,7 @@ async function callAoiAnthropicModel(
     .trim();
 }
 
-async function callAoiMainTextModel(
+export async function callAoiMainTextModel(
   config: LLMConfig,
   serverOrigin: string,
   prompt: string,
