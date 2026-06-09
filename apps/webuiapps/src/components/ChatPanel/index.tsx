@@ -196,8 +196,10 @@ import {
   type AoiWorkshopSkill,
 } from '@/lib/aoiSkillsWorkshop';
 import {
+  applyAoiMcpPluginHealthCheckResult,
   buildAoiMcpPluginPrompt,
   createUserAoiMcpPluginEntry,
+  isAoiMcpPluginTrustLocked,
   loadAoiMcpPluginAdmin,
   probeAoiMcpPluginEndpoint,
   removeAoiMcpPluginEntry,
@@ -5354,7 +5356,7 @@ const SettingsModal: React.FC<{
 
   const checkAoiMcpPluginDraft = useCallback(async (entry: AoiMcpPluginEntry) => {
     const checked = await probeAoiMcpPluginEndpoint(entry);
-    setAoiMcpPluginDrafts((prev) => upsertAoiMcpPluginEntry(prev, checked));
+    setAoiMcpPluginDrafts((prev) => applyAoiMcpPluginHealthCheckResult(prev, checked));
   }, []);
 
   const refreshOpenRouterModels = useCallback(async () => {
@@ -7024,7 +7026,7 @@ const SettingsModal: React.FC<{
                               onClick={() =>
                                 updateAoiMcpPluginDraft(entry.id, { trusted: !entry.trusted })
                               }
-                              disabled={entry.source === 'built-in' && entry.trusted}
+                              disabled={isAoiMcpPluginTrustLocked(entry)}
                             >
                               {entry.trusted ? 'Trusted' : 'Untrusted'}
                             </button>

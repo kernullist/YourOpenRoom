@@ -2,8 +2,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DEFAULT_AOI_MCP_PLUGIN_ENTRIES,
+  applyAoiMcpPluginHealthCheckResult,
   buildAoiMcpPluginPrompt,
   createUserAoiMcpPluginEntry,
+  isAoiMcpPluginTrustLocked,
   probeAoiMcpPluginEndpoint,
   removeAoiMcpPluginEntry,
   summarizeAoiMcpPluginAdmin,
@@ -87,5 +89,59 @@ describe('aoiMcpPluginAdmin', () => {
 
     expect(summary.errors).toBe(0);
     expect(prompt).toContain('[plugin, unknown]');
+  });
+
+  it('locks trust only for built-ins that are trusted by default', () => {
+    let entries = updateAoiMcpPluginEntry(
+      DEFAULT_AOI_MCP_PLUGIN_ENTRIES,
+      'ida-pe-mcp-backend',
+      { trusted: true },
+      400,
+    );
+    expect(entries.find((entry) => entry.id === 'ida-pe-mcp-backend')?.trusted).toBe(true);
+    expect(
+      isAoiMcpPluginTrustLocked(entries.find((entry) => entry.id === 'ida-pe-mcp-backend')!),
+    ).toBe(false);
+
+    entries = updateAoiMcpPluginEntry(entries, 'ida-pe-mcp-backend', { trusted: false }, 410);
+
+    expect(entries.find((entry) => entry.id === 'ida-pe-mcp-backend')?.trusted).toBe(false);
+    expect(isAoiMcpPluginTrustLocked(DEFAULT_AOI_MCP_PLUGIN_ENTRIES[0])).toBe(true);
+  });
+
+  it('applies health check results without restoring stale control state', () => {
+    const userEntry = createUserAoiMcpPluginEntry({
+      name: 'Racey MCP',
+      endpointUrl: 'http://127.0.0.1:9999/mcp',
+      kind: 'mcp-server',
+      now: 500,
+    });
+    const checkedEntry: AoiMcpPluginEntry = {
+      ...userEntry,
+      trusted: false,
+      enabled: true,
+      healthStatus: 'healthy',
+      healthMessage: 'HTTP 200',
+      lastCheckedAt: 520,
+      updatedAt: 520,
+    };
+    const toggledEntries = updateAoiMcpPluginEntry(
+      upsertAoiMcpPluginEntry(DEFAULT_AOI_MCP_PLUGIN_ENTRIES, userEntry),
+      userEntry.id,
+      { trusted: true, enabled: false },
+      510,
+    );
+    const mergedEntries = applyAoiMcpPluginHealthCheckResult(toggledEntries, checkedEntry);
+    const merged = mergedEntries.find((entry) => entry.id === userEntry.id);
+
+    expect(merged?.trusted).toBe(true);
+    expect(merged?.enabled).toBe(false);
+    expect(merged?.healthStatus).toBe('healthy');
+    expect(merged?.healthMessage).toBe('HTTP 200');
+
+    const deletedEntries = removeAoiMcpPluginEntry(toggledEntries, userEntry.id);
+    const afterDeletedCheck = applyAoiMcpPluginHealthCheckResult(deletedEntries, checkedEntry);
+
+    expect(afterDeletedCheck.some((entry) => entry.id === userEntry.id)).toBe(false);
   });
 });

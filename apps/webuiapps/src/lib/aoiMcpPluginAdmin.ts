@@ -172,10 +172,7 @@ export function updateAoiMcpPluginEntry(
         ? {
             ...entry,
             ...updates,
-            trusted:
-              entry.source === 'built-in' && entry.trusted
-                ? true
-                : (updates.trusted ?? entry.trusted),
+            trusted: isAoiMcpPluginTrustLocked(entry) ? true : (updates.trusted ?? entry.trusted),
             updatedAt: now,
           }
         : entry,
@@ -189,6 +186,35 @@ export function removeAoiMcpPluginEntry(
 ): AoiMcpPluginEntry[] {
   return normalizeAoiMcpPluginEntries(
     entries.filter((entry) => entry.id !== entryId || entry.source === 'built-in'),
+  );
+}
+
+export function applyAoiMcpPluginHealthCheckResult(
+  entries: AoiMcpPluginEntry[],
+  checkedEntry: AoiMcpPluginEntry,
+): AoiMcpPluginEntry[] {
+  if (!entries.some((entry) => entry.id === checkedEntry.id)) {
+    return normalizeAoiMcpPluginEntries(entries);
+  }
+
+  return updateAoiMcpPluginEntry(
+    entries,
+    checkedEntry.id,
+    {
+      healthStatus: checkedEntry.healthStatus,
+      healthMessage: checkedEntry.healthMessage,
+      lastCheckedAt: checkedEntry.lastCheckedAt,
+    },
+    checkedEntry.updatedAt,
+  );
+}
+
+export function isAoiMcpPluginTrustLocked(
+  entry: Pick<AoiMcpPluginEntry, 'id' | 'source'>,
+): boolean {
+  return (
+    entry.source === 'built-in' &&
+    DEFAULT_AOI_MCP_PLUGIN_ENTRIES.some((builtIn) => builtIn.id === entry.id && builtIn.trusted)
   );
 }
 
