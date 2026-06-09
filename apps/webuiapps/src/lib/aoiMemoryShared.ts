@@ -73,6 +73,24 @@ export interface AoiKiraAutomationEvent {
   type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
+export interface AoiKiraAutomationMemoryContext {
+  attemptNo?: number;
+  attemptStatus?: string;
+  changedFiles?: string[];
+  validationPassedCount?: number;
+  validationFailedCount?: number;
+  integrationStatus?: string;
+  commitHash?: string;
+  pullRequestUrl?: string;
+  connectorStatuses?: string[];
+  reviewApproved?: boolean;
+  reviewSummary?: string;
+  reviewFindingCount?: number;
+  missingValidationCount?: number;
+  reviewEvidenceFiles?: string[];
+  residualRiskCount?: number;
+}
+
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
@@ -109,26 +127,156 @@ export function makeAoiKiraAutomationEpisodeId(eventId: string): string {
   return `aoi_kira_${sanitizeAoiStoragePart(eventId)}`;
 }
 
+function formatAoiCount(label: string, value: number | undefined): string | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  return `${label}=${Math.max(0, Math.round(value))}`;
+}
+
+function sanitizeContextText(value: string | undefined, maxChars: number): string | null {
+  if (!value?.trim()) return null;
+  const normalized = normalizeWhitespace(value).slice(0, maxChars);
+  return normalized || null;
+}
+
+function sanitizeContextList(values: string[] | undefined, maxItems: number): string[] {
+  if (!Array.isArray(values)) return [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const item = sanitizeContextText(value, 96);
+    if (!item) continue;
+    seen.add(item);
+    if (seen.size >= maxItems) break;
+  }
+  return [...seen];
+}
+
+function buildCompletedKiraMemoryContent(
+  title: string,
+  projectName: string,
+  context: AoiKiraAutomationMemoryContext | undefined,
+): string {
+  const details: string[] = [];
+
+  if (typeof context?.attemptNo === 'number' && Number.isFinite(context.attemptNo)) {
+    const attemptStatus = sanitizeContextText(context.attemptStatus, 32);
+    details.push(
+      `attempt ${Math.max(0, Math.round(context.attemptNo))}${attemptStatus ? ` ${attemptStatus}` : ''}`,
+    );
+  }
+
+  const integrationStatus = sanitizeContextText(context?.integrationStatus, 32);
+  if (integrationStatus) {
+    const commitHash = sanitizeContextText(context?.commitHash, 40);
+    const commitSuffix = commitHash ? ` ${commitHash.slice(0, 12)}` : '';
+    details.push(`integration ${integrationStatus}${commitSuffix}`);
+  }
+
+  const validationCounts = [
+    formatAoiCount('passed', context?.validationPassedCount),
+    formatAoiCount('failed', context?.validationFailedCount),
+  ].filter((item): item is string => Boolean(item));
+  if (validationCounts.length > 0) {
+    details.push(`validation ${validationCounts.join(' ')}`);
+  }
+
+  if (typeof context?.reviewApproved === 'boolean') {
+    const reviewCounts = [
+      formatAoiCount('findings', context.reviewFindingCount),
+      formatAoiCount('missingValidation', context.missingValidationCount),
+      formatAoiCount('residualRisk', context.residualRiskCount),
+    ].filter((item): item is string => Boolean(item));
+    const evidenceFiles = sanitizeContextList(context.reviewEvidenceFiles, 3);
+    const reviewParts = [
+      context.reviewApproved ? 'approved' : 'not approved',
+      ...reviewCounts,
+      evidenceFiles.length > 0 ? `evidence ${evidenceFiles.join(', ')}` : null,
+    ].filter((item): item is string => Boolean(item));
+    details.push(`review ${reviewParts.join(' ')}`);
+  }
+
+  const changedFiles = sanitizeContextList(context?.changedFiles, 4);
+  if (changedFiles.length > 0) {
+    details.push(`files ${changedFiles.join(', ')}`);
+  }
+
+  const connectorStatuses = sanitizeContextList(context?.connectorStatuses, 3);
+  if (connectorStatuses.length > 0) {
+    details.push(`connectors ${connectorStatuses.join(', ')}`);
+  }
+
+  if (context?.pullRequestUrl) {
+    details.push('PR linked');
+  }
+
+  const reviewSummary = sanitizeContextText(context?.reviewSummary, 96);
+  if (reviewSummary) {
+    details.push(`review summary: ${reviewSummary}`);
+  }
+
+  const suffix = details.length > 0 ? ` ${details.join('; ')}.` : '';
+  return truncateAoiMemoryContent(
+    `Kira completed project work "${title}" for ${projectName}.${suffix}`,
+  );
+}
+
 export function buildAoiKiraAutomationMemoryCandidates(
   event: AoiKiraAutomationEvent,
+  context?: AoiKiraAutomationMemoryContext,
 ): AoiMemoryCandidate[] {
   const title = truncateAoiMemoryContent(event.title || event.workId || 'Untitled Kira work');
   const projectName = truncateAoiMemoryContent(event.projectName || 'unknown project');
   const message = truncateAoiMemoryContent(event.message);
   const projectKey = normalizeAoiProjectKey(projectName);
   const baseTags = ['kira', 'automation'];
-  const entities = [projectName, title].filter((item) => item.trim());
+  const entities = [
+    projectName,
+    title,
+    ...sanitizeContextList(context?.changedFiles, 4),
+    ...sanitizeContextList(context?.reviewEvidenceFiles, 4),
+  ].filter((item) => item.trim());
 
   if (event.type === 'completed') {
+    const tags = [...baseTags, 'completed'];
+    if (typeof context?.reviewApproved === 'boolean') {
+      tags.push('reviewed');
+      if (context.reviewApproved) {
+        tags.push('review-approved');
+      }
+    }
+    if (
+      typeof context?.validationPassedCount === 'number' ||
+      typeof context?.validationFailedCount === 'number'
+    ) {
+      tags.push('validation');
+    }
+    if ((context?.validationFailedCount ?? 0) > 0) {
+      tags.push('validation-failed');
+    }
+    const integrationStatus = sanitizeContextText(context?.integrationStatus, 32);
+    if (integrationStatus) {
+      if (integrationStatus === 'committed') {
+        tags.push('committed');
+      } else if (integrationStatus === 'integrated') {
+        tags.push('integrated');
+      } else if (integrationStatus === 'failed') {
+        tags.push('integration-failed');
+      } else {
+        tags.push('integration');
+      }
+    }
+    if (context?.pullRequestUrl) {
+      tags.push('pull-request');
+    }
+
     return [
       {
         scope: 'project',
         type: 'action',
-        content: `Kira completed project work "${title}" for ${projectName}.`,
+        content: buildCompletedKiraMemoryContent(title, projectName, context),
         importance: 0.76,
         confidence: 0.82,
         projectKey,
-        tags: [...baseTags, 'completed'],
+        tags,
         entities,
       },
     ];

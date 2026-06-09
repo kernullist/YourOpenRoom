@@ -4,10 +4,11 @@ import {
   buildAoiKiraAutomationMemoryCandidates,
   makeAoiKiraAutomationEpisodeId,
   type AoiKiraAutomationEvent,
+  type AoiKiraAutomationMemoryContext,
 } from './aoiMemoryShared';
 
 export { buildAoiKiraAutomationMemoryCandidates };
-export type { AoiKiraAutomationEvent };
+export type { AoiKiraAutomationEvent, AoiKiraAutomationMemoryContext };
 
 const API_PATH = '/api/session-data';
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';

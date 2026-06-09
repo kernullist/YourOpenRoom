@@ -23,6 +23,7 @@ import {
   type LLMVerbosity,
 } from './llmModels';
 import { syncAoiMemoryFromKiraAutomationEventServer } from './aoiMemoryServerWriter';
+import type { AoiKiraAutomationMemoryContext } from './aoiMemoryShared';
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -1567,6 +1568,8 @@ const MAX_SEMANTIC_GRAPH_NODES = 12;
 const MAX_TEST_IMPACT_TARGETS = 8;
 const MAX_RUNTIME_EVIDENCE_CHARS = 700;
 const MAX_SCORED_MEMORY_ITEMS = 18;
+const MAX_AOI_MEMORY_CONTEXT_FILES = 8;
+const MAX_AOI_MEMORY_CONTEXT_TEXT_CHARS = 160;
 const SMALL_PATCH_FILE_LIMIT = 10;
 const SMALL_PATCH_LINE_LIMIT = 900;
 const SMALL_PATCH_PLAN_FILE_LIMIT = 8;
@@ -3873,6 +3876,208 @@ function shouldSuppressAutomationEvent(event: KiraAutomationEvent): boolean {
   );
 }
 
+function compactAoiMemoryContextText(
+  value: unknown,
+  maxChars = MAX_AOI_MEMORY_CONTEXT_TEXT_CHARS,
+): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.slice(0, maxChars);
+}
+
+function compactAoiMemoryContextList(
+  values: unknown,
+  maxItems = MAX_AOI_MEMORY_CONTEXT_FILES,
+): string[] {
+  if (!Array.isArray(values)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  for (const value of values) {
+    const item = compactAoiMemoryContextText(value, 120);
+    if (!item) {
+      continue;
+    }
+    seen.add(item);
+    if (seen.size >= maxItems) {
+      break;
+    }
+  }
+  return [...seen];
+}
+
+function countAoiMemoryContextItems(value: unknown): number | undefined {
+  return Array.isArray(value) ? value.length : undefined;
+}
+
+function loadKiraAttemptRecordsForAoiMemory(
+  sessionsDir: string,
+  sessionPath: string,
+  workId: string,
+): KiraAttemptRecord[] {
+  return listJsonFiles(getKiraAttemptsDir(sessionsDir, sessionPath))
+    .map((filePath) => readJsonFile<KiraAttemptRecord>(filePath))
+    .filter((record): record is KiraAttemptRecord =>
+      Boolean(record && record.workId === workId && typeof record.attemptNo === 'number'),
+    );
+}
+
+function selectKiraAttemptRecordForAoiMemory(
+  records: KiraAttemptRecord[],
+): KiraAttemptRecord | undefined {
+  return [...records].sort((a, b) => {
+    const approvedDelta = Number(b.status === 'approved') - Number(a.status === 'approved');
+    if (approvedDelta !== 0) {
+      return approvedDelta;
+    }
+
+    const finishedDelta = (b.finishedAt ?? 0) - (a.finishedAt ?? 0);
+    if (finishedDelta !== 0) {
+      return finishedDelta;
+    }
+
+    const attemptDelta = b.attemptNo - a.attemptNo;
+    if (attemptDelta !== 0) {
+      return attemptDelta;
+    }
+
+    return Number(Boolean(b.integration)) - Number(Boolean(a.integration));
+  })[0];
+}
+
+function loadKiraReviewRecordForAoiMemory(
+  sessionsDir: string,
+  sessionPath: string,
+  workId: string,
+  attemptNo: number,
+): KiraReviewRecord | null {
+  const direct = readJsonFile<KiraReviewRecord>(
+    join(getKiraReviewsDir(sessionsDir, sessionPath), `${workId}-${attemptNo}.json`),
+  );
+  if (direct?.workId === workId && direct.attemptNo === attemptNo) {
+    return direct;
+  }
+
+  return (
+    listJsonFiles(getKiraReviewsDir(sessionsDir, sessionPath))
+      .map((filePath) => readJsonFile<KiraReviewRecord>(filePath))
+      .find((record) => record?.workId === workId && record.attemptNo === attemptNo) ?? null
+  );
+}
+
+function buildKiraAutomationAoiMemoryContext(
+  sessionsDir: string,
+  sessionPath: string,
+  event: KiraAutomationEvent,
+): AoiKiraAutomationMemoryContext | undefined {
+  if (event.type !== 'completed') {
+    return undefined;
+  }
+
+  const attempt = selectKiraAttemptRecordForAoiMemory(
+    loadKiraAttemptRecordsForAoiMemory(sessionsDir, sessionPath, event.workId),
+  );
+  if (!attempt) {
+    return undefined;
+  }
+
+  const review = loadKiraReviewRecordForAoiMemory(
+    sessionsDir,
+    sessionPath,
+    event.workId,
+    attempt.attemptNo,
+  );
+  const context: AoiKiraAutomationMemoryContext = {
+    attemptNo: attempt.attemptNo,
+  };
+
+  const attemptStatus = compactAoiMemoryContextText(attempt.status, 48);
+  if (attemptStatus) {
+    context.attemptStatus = attemptStatus;
+  }
+
+  const changedFiles = compactAoiMemoryContextList(attempt.changedFiles);
+  if (changedFiles.length > 0) {
+    context.changedFiles = changedFiles;
+  }
+
+  const validationPassedCount = countAoiMemoryContextItems(attempt.validationReruns?.passed);
+  if (validationPassedCount !== undefined) {
+    context.validationPassedCount = validationPassedCount;
+  }
+
+  const validationFailedCount = countAoiMemoryContextItems(attempt.validationReruns?.failed);
+  if (validationFailedCount !== undefined) {
+    context.validationFailedCount = validationFailedCount;
+  }
+
+  const integrationStatus = compactAoiMemoryContextText(attempt.integration?.status, 48);
+  if (integrationStatus) {
+    context.integrationStatus = integrationStatus;
+  }
+
+  const commitHash = compactAoiMemoryContextText(attempt.integration?.commitHash, 64);
+  if (commitHash) {
+    context.commitHash = commitHash;
+  }
+
+  const pullRequestUrl = compactAoiMemoryContextText(attempt.integration?.pullRequestUrl, 160);
+  if (pullRequestUrl) {
+    context.pullRequestUrl = pullRequestUrl;
+  }
+
+  const connectorStatuses = compactAoiMemoryContextList(
+    attempt.integration?.connectors?.map(
+      (connector) => `${connector.connectorId}:${connector.status}`,
+    ),
+  );
+  if (connectorStatuses.length > 0) {
+    context.connectorStatuses = connectorStatuses;
+  }
+
+  if (review) {
+    context.reviewApproved = review.approved;
+
+    const reviewSummary = compactAoiMemoryContextText(review.summary, 160);
+    if (reviewSummary) {
+      context.reviewSummary = reviewSummary;
+    }
+
+    const reviewFindingCount = countAoiMemoryContextItems(review.findings);
+    if (reviewFindingCount !== undefined) {
+      context.reviewFindingCount = reviewFindingCount;
+    }
+
+    const missingValidationCount = countAoiMemoryContextItems(review.missingValidation);
+    if (missingValidationCount !== undefined) {
+      context.missingValidationCount = missingValidationCount;
+    }
+
+    const residualRiskCount = countAoiMemoryContextItems(review.residualRisk);
+    if (residualRiskCount !== undefined) {
+      context.residualRiskCount = residualRiskCount;
+    }
+
+    const reviewEvidenceFiles = compactAoiMemoryContextList([
+      ...(Array.isArray(review.evidenceChecked)
+        ? review.evidenceChecked.map((item) => item.file)
+        : []),
+      ...(Array.isArray(review.filesChecked) ? review.filesChecked : []),
+    ]);
+    if (reviewEvidenceFiles.length > 0) {
+      context.reviewEvidenceFiles = reviewEvidenceFiles;
+    }
+  }
+
+  return context;
+}
+
 function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutomationEvent): void {
   if (shouldSuppressAutomationEvent(event)) return;
   const queuePath = getAutomationEventQueuePath(sessionsDir, sessionPath);
@@ -3882,7 +4087,8 @@ function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutom
   queue.push(event);
   writeJsonFile(queuePath, queue);
   try {
-    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, sessionPath, event);
+    const memoryContext = buildKiraAutomationAoiMemoryContext(sessionsDir, sessionPath, event);
+    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, sessionPath, event, memoryContext);
   } catch (error) {
     console.warn('[Kira] Failed to record Aoi memory for automation event:', error);
   }

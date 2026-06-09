@@ -86,6 +86,74 @@ describe('Aoi server memory writer', () => {
     expect(second[0].sourceEpisodeIds).toEqual(['aoi_kira_event-1']);
   });
 
+  it('enriches completed Kira memories with attempt and review evidence', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const event = {
+      id: 'event-2',
+      workId: 'work-2',
+      title: 'Persist Kira evidence',
+      projectName: 'YourOpenRoom',
+      message: 'Kira completed the work.',
+      createdAt: 200,
+      type: 'completed' as const,
+    };
+    const context = {
+      attemptNo: 2,
+      attemptStatus: 'approved',
+      changedFiles: ['src/lib/kiraAutomationPlugin.ts', 'src/lib/aoiMemoryShared.ts'],
+      validationPassedCount: 3,
+      validationFailedCount: 0,
+      integrationStatus: 'committed',
+      commitHash: 'abcdef1234567890',
+      pullRequestUrl: 'https://github.com/kernullist/YourOpenRoom/pull/42',
+      connectorStatuses: ['github:applied'],
+      reviewApproved: true,
+      reviewSummary: 'Reviewer checked the server writer and Kira enqueue flow.',
+      reviewFindingCount: 0,
+      missingValidationCount: 0,
+      reviewEvidenceFiles: ['src/lib/kiraAutomationPlugin.ts', 'src/lib/aoiMemoryServerWriter.ts'],
+      residualRiskCount: 1,
+    };
+
+    const first = syncAoiMemoryFromKiraAutomationEventServer(
+      sessionsDir,
+      'aoi/default',
+      event,
+      context,
+    );
+    const second = syncAoiMemoryFromKiraAutomationEventServer(
+      sessionsDir,
+      'aoi/default',
+      event,
+      context,
+    );
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(second[0].hits).toBe(1);
+    expect(second[0].content).toContain('attempt 2 approved');
+    expect(second[0].content).toContain('integration committed abcdef123456');
+    expect(second[0].content).toContain('validation passed=3 failed=0');
+    expect(second[0].content).toContain('review approved');
+    expect(second[0].tags).toEqual(
+      expect.arrayContaining([
+        'completed',
+        'reviewed',
+        'review-approved',
+        'validation',
+        'committed',
+        'pull-request',
+      ]),
+    );
+    expect(second[0].entities).toEqual(
+      expect.arrayContaining([
+        'YourOpenRoom',
+        'Persist Kira evidence',
+        'src/lib/kiraAutomationPlugin.ts',
+      ]),
+    );
+  });
+
   it('ignores transient Kira progress events', () => {
     const sessionsDir = makeTempSessionsDir();
 

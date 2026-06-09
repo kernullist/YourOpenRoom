@@ -80,6 +80,8 @@ import {
   verifyPatchIntent,
 } from '../kiraAutomationPlugin';
 
+const GIT_BACKED_TEST_TIMEOUT_MS = 15_000;
+
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(join(os.tmpdir(), prefix));
 }
@@ -1247,32 +1249,36 @@ describe('adaptive agent orchestration plan', () => {
 });
 
 describe('review diff collection', () => {
-  it('builds review evidence and stats for untracked new files', async () => {
-    const projectRoot = makeTempDir('kira-untracked-diff-');
-    try {
-      execFileSync('git', ['init'], { cwd: projectRoot, stdio: 'ignore' });
-      fs.mkdirSync(join(projectRoot, 'src'), { recursive: true });
-      fs.writeFileSync(
-        join(projectRoot, 'src', 'new-feature.ts'),
-        'export const feature = true;\n',
-        'utf-8',
-      );
+  it(
+    'builds review evidence and stats for untracked new files',
+    async () => {
+      const projectRoot = makeTempDir('kira-untracked-diff-');
+      try {
+        execFileSync('git', ['init'], { cwd: projectRoot, stdio: 'ignore' });
+        fs.mkdirSync(join(projectRoot, 'src'), { recursive: true });
+        fs.writeFileSync(
+          join(projectRoot, 'src', 'new-feature.ts'),
+          'export const feature = true;\n',
+          'utf-8',
+        );
 
-      const excerpts = await collectReviewerDiffExcerpts(projectRoot, ['src/new-feature.ts']);
-      const stats = await collectGitDiffStats(projectRoot, ['src/new-feature.ts']);
+        const excerpts = await collectReviewerDiffExcerpts(projectRoot, ['src/new-feature.ts']);
+        const stats = await collectGitDiffStats(projectRoot, ['src/new-feature.ts']);
 
-      expect(excerpts.join('\n')).toContain('new file mode 100644');
-      expect(excerpts.join('\n')).toContain('+export const feature = true;');
-      expect(stats).toEqual({
-        files: 1,
-        additions: 1,
-        deletions: 0,
-        hunks: 1,
-      });
-    } finally {
-      fs.rmSync(projectRoot, { recursive: true, force: true });
-    }
-  });
+        expect(excerpts.join('\n')).toContain('new file mode 100644');
+        expect(excerpts.join('\n')).toContain('+export const feature = true;');
+        expect(stats).toEqual({
+          files: 1,
+          additions: 1,
+          deletions: 0,
+          hunks: 1,
+        });
+      } finally {
+        fs.rmSync(projectRoot, { recursive: true, force: true });
+      }
+    },
+    GIT_BACKED_TEST_TIMEOUT_MS,
+  );
 });
 
 describe('project intelligence profile', () => {

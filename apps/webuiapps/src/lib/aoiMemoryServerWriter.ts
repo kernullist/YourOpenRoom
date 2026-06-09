@@ -7,6 +7,7 @@ import {
   normalizeAoiSessionPathForStorage,
   truncateAoiMemoryContent,
   type AoiKiraAutomationEvent,
+  type AoiKiraAutomationMemoryContext,
   type AoiMemoryCandidate,
   type AoiMemoryEntry,
   type AoiMemoryEpisode,
@@ -279,8 +280,9 @@ export function syncAoiMemoryFromKiraAutomationEventServer(
   sessionsDir: string,
   sessionPath: string,
   event: AoiKiraAutomationEvent,
+  context?: AoiKiraAutomationMemoryContext,
 ): AoiMemoryEntry[] {
-  const candidates = buildAoiKiraAutomationMemoryCandidates(event);
+  const candidates = buildAoiKiraAutomationMemoryCandidates(event, context);
   if (candidates.length === 0) {
     return loadServerAoiMemories(sessionsDir);
   }
