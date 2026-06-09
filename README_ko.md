@@ -40,7 +40,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - 장기 메모리 저장
   - 이미지 생성
   - Tavily 실시간 웹 검색
-  - prompt budget / capability registry / tool inspector
+  - prompt budget / run ledger / capability registry / tool inspector
 - 세션 단위 앱 데이터 저장: `~/.openroom/sessions/...`
 - 원래 iframe 런타임 대신 로컬 `@gui/vibe-container` mock 사용
 - Vite middleware 기반 로컬 API:
@@ -147,6 +147,10 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
     parallel-safety 기준으로 분류합니다
   - 현재 턴에 실제 노출된 tool 목록만 system prompt 에 주입합니다
   - Advanced -> Tool Inspector 에 등록 수, high-risk tool, unknown tool 경고를 표시합니다
+- **Run Ledger 와 goal 추적**
+  - 최신 사용자 메시지에서 현재 run goal 을 압축해 기록합니다
+  - 최근 실행은 세션의 `aoi-run-ledger/runs.json` 에 저장됩니다
+  - Advanced -> Aoi Run Ledger 에 run 상태, model route, iteration 수, tool-call 총량을 표시합니다
 
 안전 장치도 현재 코드에 반영되어 있습니다.
 

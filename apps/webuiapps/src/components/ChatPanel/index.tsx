@@ -171,6 +171,18 @@ import {
   getAoiCapabilityRows,
   summarizeAoiCapabilityRegistry,
 } from '@/lib/aoiCapabilityRegistry';
+import {
+  appendAoiRunLedgerEvent,
+  buildAoiRunGoalPrompt,
+  createAoiRunGoalFromMessage,
+  createAoiRunLedgerEntry,
+  finalizeAoiRunLedgerEntry,
+  loadAoiRunLedger,
+  saveAoiRunLedger,
+  summarizeAoiRunLedger,
+  upsertAoiRunLedgerEntry,
+  type AoiRunLedgerEntry,
+} from '@/lib/aoiRunLedger';
 import { createAppFileApi } from '@/lib/fileApi';
 import {
   loadConversationPreferencesSync,
@@ -848,6 +860,7 @@ function buildSystemPrompt(
   hasTavily = false,
   aoiMemoryPrompt = '',
   capabilityPrompt = '',
+  runGoalPrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -967,6 +980,7 @@ Tool rule:
 - If you call save_memory, you must also call respond_to_user in the same assistant turn.
 - Never call save_memory by itself and stop there.`;
 
+  prompt += runGoalPrompt;
   prompt += capabilityPrompt;
   prompt += aoiMemoryPrompt;
   prompt += buildMemoryPrompt(memories);
@@ -1568,6 +1582,7 @@ const ChatPanel: React.FC<{
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
   const [aoiMemories, setAoiMemories] = useState<AoiMemoryEntry[]>([]);
   const [promptBudgetEntries, setPromptBudgetEntries] = useState<PromptBudgetEntry[]>([]);
+  const [aoiRunLedger, setAoiRunLedger] = useState<AoiRunLedgerEntry[]>([]);
 
   // Pending tool calls for current response (grouped per assistant turn)
   const pendingToolCallsRef = useRef<string[]>([]);
@@ -1757,6 +1772,10 @@ const ChatPanel: React.FC<{
     // Load memories for SP injection
     loadMemories(sessionPath).then(setMemories);
     loadAoiMemories().then(setAoiMemories);
+    loadAoiRunLedger(sessionPath).then((entries) => {
+      aoiRunLedgerRef.current = entries;
+      setAoiRunLedger(entries);
+    });
   }, [sessionPath]);
 
   // Load configs from file (async override).
@@ -1856,6 +1875,8 @@ const ChatPanel: React.FC<{
     setChatHistory([]);
     setSuggestedReplies([]);
     setMemories([]);
+    aoiRunLedgerRef.current = [];
+    setAoiRunLedger([]);
     setCurrentEmotion(undefined);
     pendingImageAttachmentsRef.current = [];
     setPendingImageAttachments([]);
@@ -1962,6 +1983,8 @@ const ChatPanel: React.FC<{
   memoriesRef.current = memories;
   const aoiMemoriesRef = useRef(aoiMemories);
   aoiMemoriesRef.current = aoiMemories;
+  const aoiRunLedgerRef = useRef(aoiRunLedger);
+  aoiRunLedgerRef.current = aoiRunLedger;
   const toolCacheRef = useRef(createToolResultCache());
 
   const clearToolCache = useCallback(() => {
@@ -2007,6 +2030,21 @@ const ChatPanel: React.FC<{
         .catch((error) => {
           console.warn('[ChatPanel] Aoi memory sync failed', error);
         });
+    },
+    [],
+  );
+
+  const publishAoiRunLedgerEntry = useCallback(
+    (sessionPathForRun: string, entry: AoiRunLedgerEntry, persist = false) => {
+      const nextEntries = upsertAoiRunLedgerEntry(aoiRunLedgerRef.current, entry);
+      aoiRunLedgerRef.current = nextEntries;
+      setAoiRunLedger(nextEntries);
+
+      if (persist) {
+        void saveAoiRunLedger(sessionPathForRun, nextEntries).catch((error) => {
+          console.warn('[ChatPanel] Aoi run ledger save failed', error);
+        });
+      }
     },
     [],
   );
@@ -2829,6 +2867,7 @@ const ChatPanel: React.FC<{
       addMessage,
       clearPendingImages,
       emitAssistantMessage,
+      publishAoiRunLedgerEntry,
       recordAoiMemoryTurn,
       refreshAoiMemories,
       refreshConversationConfigs,
@@ -2899,6 +2938,8 @@ const ChatPanel: React.FC<{
         ];
     const selectedToolNames = tools.map((tool) => tool.function.name);
     const capabilityPrompt = buildAoiCapabilityPrompt(selectedToolNames);
+    const runGoal = createAoiRunGoalFromMessage(latestUserMessage);
+    const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
     console.info('[ChatPanel] Tool selection', {
       latestUserMessage,
       useDialogModel,
@@ -2919,6 +2960,7 @@ const ChatPanel: React.FC<{
       hasTavily,
       currentAoiMemoryPrompt,
       capabilityPrompt,
+      runGoalPrompt,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -2948,6 +2990,28 @@ const ChatPanel: React.FC<{
         },
       ].slice(-MAX_PROMPT_BUDGET_ENTRIES),
     );
+    const runSessionPath = sessionPathRef.current;
+    let runLedgerEntry = createAoiRunLedgerEntry({
+      goal: runGoal,
+      modelRoute: activeModelRoute,
+      modelId: activeCfg.model,
+      includeAppTools,
+      exposedToolNames: selectedToolNames,
+    });
+    publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry);
+
+    const recordRunLedgerEvent = (
+      event: Parameters<typeof appendAoiRunLedgerEvent>[1],
+      persist = false,
+    ) => {
+      runLedgerEntry = appendAoiRunLedgerEvent(runLedgerEntry, event);
+      publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry, persist);
+    };
+
+    const finalizeRunLedger = (status: 'completed' | 'failed', message?: string) => {
+      runLedgerEntry = finalizeAoiRunLedgerEntry(runLedgerEntry, status, message);
+      publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry, true);
+    };
 
     let currentMessages = fullMessages;
     let iterations = 0;
@@ -3006,11 +3070,26 @@ const ChatPanel: React.FC<{
           },
         ].slice(-MAX_PROMPT_BUDGET_ENTRIES),
       );
-      const response = await chat(currentMessages, tools, activeCfg);
+      let response: Awaited<ReturnType<typeof chat>>;
+      try {
+        response = await chat(currentMessages, tools, activeCfg);
+      } catch (error) {
+        finalizeRunLedger(
+          'failed',
+          error instanceof Error ? error.message : `Model call failed: ${String(error)}`,
+        );
+        throw error;
+      }
       console.info('[ChatPanel] LLM iteration response', {
         iteration: iterations,
         contentPreview: response.content.slice(0, 200),
         toolCallCount: response.toolCalls.length,
+        toolNames: response.toolCalls.map((tc) => tc.function.name),
+      });
+      recordRunLedgerEvent({
+        type: 'model_response',
+        iteration: iterations,
+        message: response.content.slice(0, 200),
         toolNames: response.toolCalls.map((tc) => tc.function.name),
       });
 
@@ -3031,6 +3110,12 @@ const ChatPanel: React.FC<{
           deliveredToolCalls =
             pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
           pendingToolCallsRef.current = [];
+          recordRunLedgerEvent({
+            type: 'plain_text_fallback',
+            iteration: iterations,
+            message: response.content.slice(0, 200),
+            toolNames: deliveredToolCalls,
+          });
         }
         break;
       }
@@ -3306,6 +3391,12 @@ const ChatPanel: React.FC<{
           deliveredAssistantContent = content;
           deliveredToolCalls = deliveredPendingToolCalls;
           pendingToolCallsRef.current = [];
+          recordRunLedgerEvent({
+            type: 'assistant_delivered',
+            iteration: iterations,
+            message: content.slice(0, 200),
+            toolNames: deliveredToolCalls,
+          });
           currentMessages = [
             ...currentMessages,
             { role: 'tool', content: 'Message delivered.', tool_call_id: tc.id },
@@ -4130,6 +4221,12 @@ const ChatPanel: React.FC<{
           pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
         setSuggestedReplies([]);
         pendingToolCallsRef.current = [];
+        recordRunLedgerEvent({
+          type: 'assistant_delivered',
+          iteration: iterations,
+          message: fallbackContent.slice(0, 200),
+          toolNames: deliveredToolCalls,
+        });
         break;
       }
 
@@ -4146,6 +4243,9 @@ const ChatPanel: React.FC<{
         source: 'chat_turn',
         llmConfig: activeCfg,
       });
+      finalizeRunLedger('completed', deliveredAssistantContent);
+    } else {
+      finalizeRunLedger('failed', 'No assistant response was delivered before the run ended.');
     }
 
     console.info('[ChatPanel] runConversation end', {
@@ -4488,6 +4588,7 @@ const ChatPanel: React.FC<{
           imageGenConfig={imageGenConfig}
           promptBudgetEntries={promptBudgetEntries}
           aoiMemories={aoiMemories}
+          aoiRunLedger={aoiRunLedger}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
           initialTab={settingsInitialTab}
@@ -4874,6 +4975,7 @@ const SettingsModal: React.FC<{
   imageGenConfig: ImageGenConfig | null;
   promptBudgetEntries: PromptBudgetEntry[];
   aoiMemories: AoiMemoryEntry[];
+  aoiRunLedger: AoiRunLedgerEntry[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
   initialTab?: AppSettingsTabKey;
@@ -4903,6 +5005,7 @@ const SettingsModal: React.FC<{
   imageGenConfig,
   promptBudgetEntries,
   aoiMemories,
+  aoiRunLedger,
   recentToolActivity,
   toolSafetyPolicy,
   initialTab = 'chat',
@@ -5044,6 +5147,8 @@ const SettingsModal: React.FC<{
     () => summarizePromptBudget(promptBudgetEntries),
     [promptBudgetEntries],
   );
+  const runLedgerSummary = useMemo(() => summarizeAoiRunLedger(aoiRunLedger), [aoiRunLedger]);
+  const recentRunLedgerEntries = useMemo(() => aoiRunLedger.slice(0, 6), [aoiRunLedger]);
   const aoiMemoryOverview = useMemo(() => {
     const activeCount = aoiMemories.filter((memory) => memory.status === 'active').length;
     const archivedCount = aoiMemories.filter((memory) => memory.status === 'archived').length;
@@ -6547,6 +6652,62 @@ const SettingsModal: React.FC<{
                           ))}
                       </div>
                     </div>
+                  )}
+                </div>
+              </div>
+
+              <div className={styles.settingsSectionCard} data-testid="aoi-run-ledger">
+                <div className={styles.settingsSectionTitle}>Aoi Run Ledger</div>
+                <div className={styles.promptBudgetCard}>
+                  <div className={styles.promptBudgetGrid}>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Runs</span>
+                      <strong>{runLedgerSummary.total}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Running</span>
+                      <strong>{runLedgerSummary.running}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Completed</span>
+                      <strong>{runLedgerSummary.completed}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Failed</span>
+                      <strong>{runLedgerSummary.failed}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Tool calls</span>
+                      <strong>{runLedgerSummary.totalToolCalls}</strong>
+                    </div>
+                  </div>
+
+                  {recentRunLedgerEntries.length > 0 ? (
+                    <div className={styles.promptBudgetLog}>
+                      {recentRunLedgerEntries.map((entry) => (
+                        <div key={entry.id}>
+                          <strong>
+                            {entry.status} · {entry.goal.summary}
+                          </strong>
+                          <span>
+                            {' '}
+                            [{entry.modelRoute}
+                            {entry.modelId ? ` ${entry.modelId}` : ''}]
+                          </span>
+                          <span>
+                            {' '}
+                            iter {entry.metrics.iterations} · tools{' '}
+                            {entry.metrics.toolCallCount} ·{' '}
+                            {new Date(entry.updatedAt).toLocaleTimeString()}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className={styles.modelHint}>
+                      Send a message to record Aoi's current goal, model iterations, tool calls,
+                      and final delivery status.
+                    </p>
                   )}
                 </div>
               </div>

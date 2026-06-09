@@ -42,7 +42,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
   - long-term memory saving
   - image generation
   - live web search through Tavily
-  - prompt budget, capability registry, and tool inspector panels
+  - prompt budget, run ledger, capability registry, and tool inspector panels
 - Session-scoped app storage persisted under `~/.openroom/sessions/...`.
 - A local mock of `@gui/vibe-container`, so the open-source standalone build works without the
   original iframe runtime.
@@ -141,6 +141,10 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     exposed for that turn
   - Advanced -> Tool Inspector shows registered capability counts, high-risk tools, and unknown
     tool warnings
+- **Run ledger and goal tracking**
+  - each model run gets a compact goal derived from the latest user message
+  - recent runs persist under the session's `aoi-run-ledger/runs.json`
+  - Advanced -> Aoi Run Ledger shows run status, model route, iteration counts, and tool-call totals
 
 These tools are guarded by the current implementation:
 

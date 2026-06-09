@@ -18,6 +18,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Aoi chat tools now have a capability registry that classifies exposed tools by risk, surface,
   access type, cacheability, and parallel-safety, with the active registry injected into the system
   prompt and surfaced in Advanced -> Tool Inspector.
+- Aoi chat runs now persist a compact run ledger with a per-turn goal, model route, iteration
+  count, tool-call totals, completion status, and an Advanced -> Aoi Run Ledger inspector.
 - Album can browse a user-selected local photo folder, remember a saved folder path, and expose
   search, sort, grid density, and preview controls.
 - Calendar now stores the selected calendar date in view state so the planner reopens on the same
