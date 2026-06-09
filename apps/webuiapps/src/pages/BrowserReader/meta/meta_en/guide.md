@@ -15,12 +15,12 @@
 
 ## Bookmark Files `/bookmarks/{bookmarkId}.json`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | Bookmark ID, same as filename without `.json` |
-| url | string | Yes | Full http/https URL |
-| title | string | Yes | Display title |
-| createdAt | number | Yes | Unix timestamp in milliseconds |
+| Field     | Type   | Required | Description                                   |
+| --------- | ------ | -------- | --------------------------------------------- |
+| id        | string | Yes      | Bookmark ID, same as filename without `.json` |
+| url       | string | Yes      | Full http/https URL                           |
+| title     | string | Yes      | Display title                                 |
+| createdAt | number | Yes      | Unix timestamp in milliseconds                |
 
 Example:
 
@@ -37,21 +37,21 @@ Example:
 
 These are frontend-managed records of recently visited pages.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | History ID |
-| url | string | Yes | Full http/https URL |
-| title | string | Yes | Best-known page title |
-| visitedAt | number | Yes | Unix timestamp in milliseconds |
+| Field     | Type   | Required | Description                    |
+| --------- | ------ | -------- | ------------------------------ |
+| id        | string | Yes      | History ID                     |
+| url       | string | Yes      | Full http/https URL            |
+| title     | string | Yes      | Best-known page title          |
+| visitedAt | number | Yes      | Unix timestamp in milliseconds |
 
 ## State File `/state.json`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| currentUrl | string | Yes | URL currently open |
-| inputUrl | string | Yes | Current address-bar text |
-| viewMode | string | Yes | Either `browse` or `reader` |
-| sidebarOpen | boolean | Yes | Whether the left library sidebar is currently expanded |
+| Field       | Type    | Required | Description                                            |
+| ----------- | ------- | -------- | ------------------------------------------------------ |
+| currentUrl  | string  | Yes      | URL currently open                                     |
+| inputUrl    | string  | Yes      | Current address-bar text                               |
+| viewMode    | string  | Yes      | Either `browse` or `reader`                            |
+| sidebarOpen | boolean | Yes      | Whether the left library sidebar is currently expanded |
 
 Example:
 

@@ -33,13 +33,13 @@ The package is still useful because it keeps:
 
 ## Files
 
-| Path | Role |
-| --- | --- |
-| `index.ts` | Public entry point |
-| `src/types/index.ts` | Shared runtime types |
+| Path                            | Role                      |
+| ------------------------------- | ------------------------- |
+| `index.ts`                      | Public entry point        |
+| `src/types/index.ts`            | Shared runtime types      |
 | `src/clientComManager/index.ts` | Client-side manager shape |
-| `src/parentComManager/index.ts` | Parent-side manager stub |
-| `src/utils/index.ts` | Small shared helpers |
+| `src/parentComManager/index.ts` | Parent-side manager stub  |
+| `src/utils/index.ts`            | Small shared helpers      |
 
 ## Practical Takeaway
 

@@ -8,8 +8,8 @@ Dewdrop Canvas is loaded from `F:/kernullist/dewdrop-canvas` through the in-app 
 - API bridge: `/api/dewdrop-canvas/*`
 - Project data: `F:/kernullist/dewdrop-canvas/data/projects/*.json`
 
-The bridge rewrites the original app's `/api/*` calls into the namespaced in-app API, so it does
-not collide with other YourOpenRoom tools.
+The bridge rewrites the original app's `/api/*` calls into the namespaced in-app API, so it does not
+collide with other YourOpenRoom tools.
 
 ## Agent Workflow
 
@@ -19,6 +19,5 @@ not collide with other YourOpenRoom tools.
 
 ## Storage Notes
 
-Projects remain in the original Dewdrop Canvas folder. The in-app bridge creates
-`data/projects/` and `data/last_active.json` on demand, matching the source app's local server
-behavior.
+Projects remain in the original Dewdrop Canvas folder. The in-app bridge creates `data/projects/`
+and `data/last_active.json` on demand, matching the source app's local server behavior.

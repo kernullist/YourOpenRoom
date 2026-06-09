@@ -29,8 +29,7 @@
           radial-gradient(circle at top right, rgba(248, 196, 79, 0.12), transparent 28%),
           linear-gradient(180deg, #0e1014, var(--bg));
         color: var(--text);
-        font-family:
-          "Segoe UI", "Noto Sans KR", "Hiragino Sans", "Yu Gothic", sans-serif;
+        font-family: 'Segoe UI', 'Noto Sans KR', 'Hiragino Sans', 'Yu Gothic', sans-serif;
       }
 
       main {
@@ -256,8 +255,8 @@
         <div class="eyebrow">Aoi Voice Lab</div>
         <h1>Aoi용 TTS 후보를 직접 들어보는 페이지</h1>
         <p>
-          Google 기본 후보 5개를 같은 대사로 바로 비교하고, ElevenLabs 계정 음성과 Voice
-          Library 후보도 같은 자리에서 들어볼 수 있게 구성했습니다.
+          Google 기본 후보 5개를 같은 대사로 바로 비교하고, ElevenLabs 계정 음성과 Voice Library
+          후보도 같은 자리에서 들어볼 수 있게 구성했습니다.
         </p>
         <div id="status" class="status"></div>
       </section>
@@ -307,8 +306,8 @@
             </div>
           </div>
           <div class="hint">
-            계정 음성은 바로 합성 가능합니다. 저장된 Voice Library 음성이나 복제 음성이 있으면 여기에
-            같이 잡힐 수 있습니다.
+            계정 음성은 바로 합성 가능합니다. 저장된 Voice Library 음성이나 복제 음성이 있으면
+            여기에 같이 잡힐 수 있습니다.
           </div>
           <div id="accountVoiceError" class="error"></div>
           <div id="accountVoiceResults" class="resultGrid"></div>
@@ -321,7 +320,11 @@
               <p>일본어 여성 목소리 위주로 훑고, preview로 먼저 성향을 들어보는 섹션입니다.</p>
             </div>
             <div class="row">
-              <input id="sharedVoiceSearch" value="anime" placeholder="검색어 예: anime, calm, elegant" />
+              <input
+                id="sharedVoiceSearch"
+                value="anime"
+                placeholder="검색어 예: anime, calm, elegant"
+              />
               <button id="loadSharedVoices" class="secondary">라이브러리 후보 찾기</button>
             </div>
           </div>

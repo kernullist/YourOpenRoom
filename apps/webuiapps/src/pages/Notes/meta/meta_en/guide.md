@@ -14,15 +14,15 @@
 
 Each note is stored as a separate JSON file. The filename must match `id`.
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| id | string | Yes | Unique note ID, same as filename without `.json` |
-| title | string | Yes | Note title. Can be a fallback title like "Untitled note" |
-| content | string | Yes | Markdown body content |
-| tags | string[] | Yes | Array of simple tag strings without `#` |
-| pinned | boolean | Yes | Whether the note is pinned to the top |
-| createdAt | number | Yes | Unix timestamp in milliseconds |
-| updatedAt | number | Yes | Unix timestamp in milliseconds |
+| Field     | Type     | Required | Description                                              |
+| --------- | -------- | -------- | -------------------------------------------------------- |
+| id        | string   | Yes      | Unique note ID, same as filename without `.json`         |
+| title     | string   | Yes      | Note title. Can be a fallback title like "Untitled note" |
+| content   | string   | Yes      | Markdown body content                                    |
+| tags      | string[] | Yes      | Array of simple tag strings without `#`                  |
+| pinned    | boolean  | Yes      | Whether the note is pinned to the top                    |
+| createdAt | number   | Yes      | Unix timestamp in milliseconds                           |
+| updatedAt | number   | Yes      | Unix timestamp in milliseconds                           |
 
 Example:
 
@@ -40,12 +40,12 @@ Example:
 
 ## State File `/state.json`
 
-| Field | Type | Required | Description |
-|---|---|---|---|
-| selectedNoteId | string \| null | No | Currently focused note |
-| activeTag | string \| null | No | Active tag filter |
-| searchQuery | string | Yes | Current search text |
-| previewMode | boolean | Yes | Whether the editor is in preview mode |
+| Field          | Type           | Required | Description                           |
+| -------------- | -------------- | -------- | ------------------------------------- |
+| selectedNoteId | string \| null | No       | Currently focused note                |
+| activeTag      | string \| null | No       | Active tag filter                     |
+| searchQuery    | string         | Yes      | Current search text                   |
+| previewMode    | boolean        | Yes      | Whether the editor is in preview mode |
 
 Example:
 
