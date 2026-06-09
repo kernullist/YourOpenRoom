@@ -77,8 +77,8 @@ Prompt injection is ranked, not latest-first. The score combines:
 - query overlap
 - hit count
 - scope boost for user/agent memory
-- a capped Kira evidence boost for project memories with review, validation, commit, or PR
-  provenance
+- a capped conversation-continuity boost for user identity, preferences, durable instructions,
+  explicit remember requests, session decisions, and LLM-distilled chat memories
 
 Only active, non-expired memories above the confidence floor are eligible. The prompt text
 explicitly states that durable memories are context, not higher-priority instructions.
@@ -118,7 +118,8 @@ memories without editing JSON files by hand.
 
 ## Phase 4 Kira Bridge
 
-Phase 4 starts connecting Kira automation outcomes to Aoi memory.
+Phase 4 started connecting Kira automation outcomes to the same local memory schema, but this is a
+separate project-memory integration path rather than the active conversation-memory focus.
 
 - Kira automation `completed` events become `project/action` memories.
 - Kira `needs_attention` and `interrupted` events become lower-confidence `project/event` memories.
@@ -133,8 +134,9 @@ Phase 4 starts connecting Kira automation outcomes to Aoi memory.
   compact memory context includes attempt number/status, changed files, validation pass/fail counts,
   integration status, commit/PR evidence, review approval, review summary, and checked evidence
   files.
-- Prompt retrieval gives these evidence-backed Kira memories a small capped boost when the user asks
-  about Kira work, review, validation, commits, PRs, evidence, tests, or builds.
+- Prompt retrieval no longer gives Kira-specific evidence memories a special boost in ordinary Aoi
+  conversation mode. Kira recall should be handled as an explicit project-memory query mode if it is
+  expanded later.
 
 The server writer deliberately stays separate from the browser LLM distiller. It has no `window`,
 `fetch`, or `localStorage` dependency and only records deterministic Kira outcome memories.
@@ -152,6 +154,24 @@ The deterministic extractor remains active for:
 The heuristic path is still the fallback and baseline. The raw episode stream is preserved so future
 distillers or external providers can reprocess old episodes without losing evidence.
 
+## Conversation Memory Focus
+
+Aoi's primary memory loop is conversation continuity:
+
+- preserve the raw chat turn as source evidence
+- extract only stable facts, preferences, durable instructions, reusable procedures, decisions, and
+  important completed actions
+- rank personal and session continuity above shallow events
+- keep prompt injection small enough that memory does not drown the current user message
+- keep review controls available because automatic extraction is allowed to be conservative, not
+  magical
+
+Project automation memories, including Kira-derived outcomes, are treated as a separate integration
+layer. They can remain in the same storage schema for provenance and operator review, but ordinary
+conversation prompt selection does not give them special ranking. If Kira needs first-class recall
+later, it should be designed as a separate project-memory retrieval mode instead of being mixed into
+personal conversation memory.
+
 ## Provider Roadmap
 
 The local schema is intentionally provider-neutral.
@@ -164,12 +184,17 @@ The local schema is intentionally provider-neutral.
   - map episodes into temporal graph episodes
   - use graph retrieval for people/projects/decisions that change over time
   - keep prompt admission gated by the local trust policy
+- Conversation memory quality
+  - current: write chat episodes and durable memory candidates locally
+  - current: use deterministic extraction plus optional provider-backed JSON distillation
+  - current: prioritize durable user/session continuity during prompt selection
+  - next: add an operator-visible audit view for accepted, rejected, and superseded chat memories
+  - next: add source-episode replay so improved distillers can reprocess old conversations
 - Kira bridge
-  - current: write server-side Kira completed/attention/interrupted events as `project` memories
-  - current: enrich completed project memories with attempt integration and review evidence
-  - current: rank evidence-backed Kira memories slightly higher during prompt selection
-  - next: add an operator-visible memory quality audit for Kira-derived memories
-  - keep project memory separate from personal Aoi preferences
+  - separate: write server-side Kira completed/attention/interrupted events as `project` memories
+  - separate: enrich completed project memories with attempt integration and review evidence
+  - separate: keep project automation recall out of ordinary conversation-memory ranking unless the
+    user explicitly enters a project-memory retrieval mode
 
 ## Validation Targets
 
@@ -181,4 +206,4 @@ Minimum tests for this phase:
 - duplicate memory writes increment `hits`
 - conflicting name facts supersede older entries
 - prompt selection excludes superseded entries
-- prompt selection prioritizes evidence-backed Kira memories over shallow completed-event memories
+- prompt selection prioritizes durable conversation preferences over shallow event memories

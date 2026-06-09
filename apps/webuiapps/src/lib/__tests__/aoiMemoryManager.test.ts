@@ -220,55 +220,45 @@ describe('Aoi prompt memory selection', () => {
     expect(prompt).not.toContain('English answers');
   });
 
-  it('prioritizes Kira memories with review, validation, and integration evidence', () => {
+  it('prioritizes durable conversation preferences over shallow event memories', () => {
     const now = 1_000;
-    const plainKiraMemory = makeMemory({
-      id: 'plain-kira',
-      scope: 'project',
-      type: 'action',
-      content: 'Kira completed project work "Persist memory" for YourOpenRoom.',
-      importance: 0.76,
-      confidence: 0.82,
-      hits: 1,
-      updatedAt: 100,
-      sourceEpisodeIds: ['aoi_kira_plain'],
-      tags: ['kira', 'automation', 'completed'],
-      entities: ['YourOpenRoom', 'Persist memory'],
-    });
-    const evidenceKiraMemory = makeMemory({
-      id: 'evidence-kira',
-      scope: 'project',
-      type: 'action',
+    const preferenceMemory = makeMemory({
+      id: 'conversation-preference',
+      scope: 'user',
+      type: 'preference',
       content:
-        'Kira completed project work "Persist memory" for YourOpenRoom. attempt 2 approved; integration committed abcdef123456; validation passed=3 failed=0; review approved evidence src/lib/aoiMemoryManager.ts.',
-      importance: 0.76,
-      confidence: 0.82,
+        'The user prefers Korean security engineering answers with concrete implementation details.',
+      importance: 0.7,
+      confidence: 0.8,
       hits: 1,
       updatedAt: 100,
-      sourceEpisodeIds: ['aoi_kira_evidence'],
-      tags: [
-        'kira',
-        'automation',
-        'completed',
-        'reviewed',
-        'review-approved',
-        'validation',
-        'committed',
-        'pull-request',
-      ],
-      entities: ['YourOpenRoom', 'Persist memory', 'src/lib/aoiMemoryManager.ts'],
+      sourceEpisodeIds: ['aoi_ep_preference'],
+      tags: ['preference', 'llm-distilled'],
+      entities: ['Korean', 'security engineering'],
+    });
+    const shallowEventMemory = makeMemory({
+      id: 'shallow-event',
+      scope: 'project',
+      type: 'event',
+      content: 'A temporary file scan completed during the previous turn.',
+      importance: 0.7,
+      confidence: 0.8,
+      hits: 1,
+      updatedAt: 100,
+      sourceEpisodeIds: ['aoi_ep_event'],
+      tags: ['event'],
     });
 
-    const query = 'Kira review validation evidence for YourOpenRoom';
-    const plainScore = scoreAoiMemoryForQuery(plainKiraMemory, query, now);
-    const evidenceScore = scoreAoiMemoryForQuery(evidenceKiraMemory, query, now);
-    const selected = selectAoiMemoriesForPrompt([plainKiraMemory, evidenceKiraMemory], query, {
+    const query = '앞으로 보안 엔지니어링 답변 스타일은 어떻게 맞춰야 해?';
+    const preferenceScore = scoreAoiMemoryForQuery(preferenceMemory, query, now);
+    const eventScore = scoreAoiMemoryForQuery(shallowEventMemory, query, now);
+    const selected = selectAoiMemoriesForPrompt([shallowEventMemory, preferenceMemory], query, {
       now,
       limit: 1,
     });
 
-    expect(evidenceScore).toBeGreaterThan(plainScore + 0.08);
-    expect(selected.map((memory) => memory.id)).toEqual(['evidence-kira']);
+    expect(preferenceScore).toBeGreaterThan(eventScore + 0.08);
+    expect(selected.map((memory) => memory.id)).toEqual(['conversation-preference']);
   });
 });
 
