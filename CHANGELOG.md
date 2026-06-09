@@ -22,6 +22,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   count, tool-call totals, completion status, and an Advanced -> Aoi Run Ledger inspector.
 - Aoi now includes a Skills Workshop with built-in and user-authored trigger-matched skills,
   trusted-skill prompt injection, and Advanced settings controls for enable/trust/add/delete flows.
+- Aoi now includes an MCP / Plugin Admin registry for built-in and user-registered integrations,
+  trusted integration prompt context, and endpoint health checks from Advanced settings.
 - Album can browse a user-selected local photo folder, remember a saved folder path, and expose
   search, sort, grid density, and preview controls.
 - Calendar now stores the selected calendar date in view state so the planner reopens on the same

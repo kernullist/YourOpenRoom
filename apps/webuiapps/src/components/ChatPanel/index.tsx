@@ -195,6 +195,19 @@ import {
   upsertAoiWorkshopSkill,
   type AoiWorkshopSkill,
 } from '@/lib/aoiSkillsWorkshop';
+import {
+  buildAoiMcpPluginPrompt,
+  createUserAoiMcpPluginEntry,
+  loadAoiMcpPluginAdmin,
+  probeAoiMcpPluginEndpoint,
+  removeAoiMcpPluginEntry,
+  saveAoiMcpPluginAdmin,
+  summarizeAoiMcpPluginAdmin,
+  updateAoiMcpPluginEntry,
+  upsertAoiMcpPluginEntry,
+  type AoiMcpPluginEntry,
+  type AoiMcpPluginKind,
+} from '@/lib/aoiMcpPluginAdmin';
 import { createAppFileApi } from '@/lib/fileApi';
 import {
   loadConversationPreferencesSync,
@@ -874,6 +887,7 @@ function buildSystemPrompt(
   capabilityPrompt = '',
   runGoalPrompt = '',
   skillsPrompt = '',
+  mcpPluginPrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -995,6 +1009,7 @@ Tool rule:
 
   prompt += runGoalPrompt;
   prompt += skillsPrompt;
+  prompt += mcpPluginPrompt;
   prompt += capabilityPrompt;
   prompt += aoiMemoryPrompt;
   prompt += buildMemoryPrompt(memories);
@@ -1598,6 +1613,9 @@ const ChatPanel: React.FC<{
   const [promptBudgetEntries, setPromptBudgetEntries] = useState<PromptBudgetEntry[]>([]);
   const [aoiRunLedger, setAoiRunLedger] = useState<AoiRunLedgerEntry[]>([]);
   const [aoiSkills, setAoiSkills] = useState<AoiWorkshopSkill[]>(() => loadAoiSkillsWorkshop());
+  const [aoiMcpPlugins, setAoiMcpPlugins] = useState<AoiMcpPluginEntry[]>(() =>
+    loadAoiMcpPluginAdmin(),
+  );
 
   // Pending tool calls for current response (grouped per assistant turn)
   const pendingToolCallsRef = useRef<string[]>([]);
@@ -2002,6 +2020,8 @@ const ChatPanel: React.FC<{
   aoiRunLedgerRef.current = aoiRunLedger;
   const aoiSkillsRef = useRef(aoiSkills);
   aoiSkillsRef.current = aoiSkills;
+  const aoiMcpPluginsRef = useRef(aoiMcpPlugins);
+  aoiMcpPluginsRef.current = aoiMcpPlugins;
   const toolCacheRef = useRef(createToolResultCache());
 
   const clearToolCache = useCallback(() => {
@@ -2959,6 +2979,7 @@ const ChatPanel: React.FC<{
     const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
     const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
     const skillsPrompt = buildAoiSkillsPrompt(activeSkillMatches);
+    const mcpPluginPrompt = buildAoiMcpPluginPrompt(aoiMcpPluginsRef.current);
     console.info('[ChatPanel] Tool selection', {
       latestUserMessage,
       useDialogModel,
@@ -2966,6 +2987,9 @@ const ChatPanel: React.FC<{
       includeAppTools,
       toolNames: selectedToolNames,
       activeSkills: activeSkillMatches.map((match) => match.skill.id),
+      activeMcpPlugins: aoiMcpPluginsRef.current
+        .filter((entry) => entry.enabled && entry.trusted)
+        .map((entry) => entry.id),
     });
 
     const currentMemories = memoriesRef.current;
@@ -2982,6 +3006,7 @@ const ChatPanel: React.FC<{
       capabilityPrompt,
       runGoalPrompt,
       skillsPrompt,
+      mcpPluginPrompt,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -4611,6 +4636,7 @@ const ChatPanel: React.FC<{
           aoiMemories={aoiMemories}
           aoiRunLedger={aoiRunLedger}
           aoiSkills={aoiSkills}
+          aoiMcpPlugins={aoiMcpPlugins}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
           initialTab={settingsInitialTab}
@@ -4628,6 +4654,7 @@ const ChatPanel: React.FC<{
             nextConversationPreferences,
             nextToolSafetyPolicy,
             nextAoiSkills,
+            nextAoiMcpPlugins,
           ) => {
             setConfig(c);
             setDialogLlmConfig(dcfg);
@@ -4638,9 +4665,11 @@ const ChatPanel: React.FC<{
             setImageGenConfig(igc);
             setToolSafetyPolicy(nextToolSafetyPolicy);
             setAoiSkills(nextAoiSkills);
+            setAoiMcpPlugins(nextAoiMcpPlugins);
             userProfileRef.current = nextUserProfile;
             conversationPreferencesRef.current = nextConversationPreferences;
             aoiSkillsRef.current = nextAoiSkills;
+            aoiMcpPluginsRef.current = nextAoiMcpPlugins;
             saveConfig(
               c,
               igc,
@@ -4655,6 +4684,7 @@ const ChatPanel: React.FC<{
             saveConversationPreferences(nextConversationPreferences);
             saveToolSafetyPolicy(nextToolSafetyPolicy);
             saveAoiSkillsWorkshop(nextAoiSkills);
+            saveAoiMcpPluginAdmin(nextAoiMcpPlugins);
             dispatchAppSettingsSaved(settingsInitialTab);
             setShowSettings(false);
           }}
@@ -5003,6 +5033,7 @@ const SettingsModal: React.FC<{
   aoiMemories: AoiMemoryEntry[];
   aoiRunLedger: AoiRunLedgerEntry[];
   aoiSkills: AoiWorkshopSkill[];
+  aoiMcpPlugins: AoiMcpPluginEntry[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
   initialTab?: AppSettingsTabKey;
@@ -5020,6 +5051,7 @@ const SettingsModal: React.FC<{
     _conversationPreferences: ConversationPreferencesConfig | null,
     _toolSafetyPolicy: ToolSafetyPolicy,
     _aoiSkills: AoiWorkshopSkill[],
+    _aoiMcpPlugins: AoiMcpPluginEntry[],
   ) => void;
   onClose: () => void;
 }> = ({
@@ -5035,6 +5067,7 @@ const SettingsModal: React.FC<{
   aoiMemories,
   aoiRunLedger,
   aoiSkills,
+  aoiMcpPlugins,
   recentToolActivity,
   toolSafetyPolicy,
   initialTab = 'chat',
@@ -5218,6 +5251,11 @@ const SettingsModal: React.FC<{
   const [newAoiSkillName, setNewAoiSkillName] = useState('');
   const [newAoiSkillTriggers, setNewAoiSkillTriggers] = useState('');
   const [newAoiSkillBody, setNewAoiSkillBody] = useState('');
+  const [aoiMcpPluginDrafts, setAoiMcpPluginDrafts] =
+    useState<AoiMcpPluginEntry[]>(aoiMcpPlugins);
+  const [newAoiMcpName, setNewAoiMcpName] = useState('');
+  const [newAoiMcpUrl, setNewAoiMcpUrl] = useState('');
+  const [newAoiMcpKind, setNewAoiMcpKind] = useState<AoiMcpPluginKind>('mcp-server');
   const recentMutations = useMemo(() => listRecentMutations().slice(0, 8), []);
   const activeBackgroundWatches = useMemo(() => listBackgroundWatches().slice(0, 8), []);
   const capabilitySummary = useMemo(
@@ -5229,6 +5267,14 @@ const SettingsModal: React.FC<{
     [aoiSkillDrafts],
   );
   const visibleAoiSkills = useMemo(() => aoiSkillDrafts.slice(0, 8), [aoiSkillDrafts]);
+  const mcpPluginSummary = useMemo(
+    () => summarizeAoiMcpPluginAdmin(aoiMcpPluginDrafts),
+    [aoiMcpPluginDrafts],
+  );
+  const visibleMcpPlugins = useMemo(
+    () => aoiMcpPluginDrafts.slice(0, 8),
+    [aoiMcpPluginDrafts],
+  );
   const capabilityRows = useMemo(
     () =>
       getAoiCapabilityRows(AOI_DEFAULT_CAPABILITY_NAMES)
@@ -5282,6 +5328,37 @@ const SettingsModal: React.FC<{
 
   const deleteAoiSkillDraft = useCallback((skillId: string) => {
     setAoiSkillDrafts((prev) => removeAoiWorkshopSkill(prev, skillId));
+  }, []);
+
+  const addAoiMcpPluginDraft = useCallback(() => {
+    if (!newAoiMcpName.trim() || !newAoiMcpUrl.trim()) {
+      return;
+    }
+    const entry = createUserAoiMcpPluginEntry({
+      name: newAoiMcpName,
+      endpointUrl: newAoiMcpUrl,
+      kind: newAoiMcpKind,
+    });
+    setAoiMcpPluginDrafts((prev) => upsertAoiMcpPluginEntry(prev, entry));
+    setNewAoiMcpName('');
+    setNewAoiMcpUrl('');
+    setNewAoiMcpKind('mcp-server');
+  }, [newAoiMcpKind, newAoiMcpName, newAoiMcpUrl]);
+
+  const updateAoiMcpPluginDraft = useCallback(
+    (entryId: string, updates: Parameters<typeof updateAoiMcpPluginEntry>[2]) => {
+      setAoiMcpPluginDrafts((prev) => updateAoiMcpPluginEntry(prev, entryId, updates));
+    },
+    [],
+  );
+
+  const deleteAoiMcpPluginDraft = useCallback((entryId: string) => {
+    setAoiMcpPluginDrafts((prev) => removeAoiMcpPluginEntry(prev, entryId));
+  }, []);
+
+  const checkAoiMcpPluginDraft = useCallback(async (entry: AoiMcpPluginEntry) => {
+    const checked = await probeAoiMcpPluginEndpoint(entry);
+    setAoiMcpPluginDrafts((prev) => upsertAoiMcpPluginEntry(prev, checked));
   }, []);
 
   const refreshOpenRouterModels = useCallback(async () => {
@@ -6896,6 +6973,131 @@ const SettingsModal: React.FC<{
                 </div>
               </div>
 
+              <div className={styles.settingsSectionCard} data-testid="aoi-mcp-plugin-admin">
+                <div className={styles.settingsSectionTitle}>MCP / Plugin Admin</div>
+                <div className={styles.promptBudgetCard}>
+                  <div className={styles.promptBudgetGrid}>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Entries</span>
+                      <strong>{mcpPluginSummary.total}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Enabled</span>
+                      <strong>{mcpPluginSummary.enabled}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Trusted</span>
+                      <strong>{mcpPluginSummary.trusted}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Healthy</span>
+                      <strong>{mcpPluginSummary.healthy}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Errors</span>
+                      <strong>{mcpPluginSummary.errors}</strong>
+                    </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Registered Integrations</span>
+                    <div className={styles.promptBudgetLog}>
+                      {visibleMcpPlugins.map((entry) => (
+                        <div key={entry.id}>
+                          <strong>{entry.name}</strong>
+                          <span>
+                            {' '}
+                            [{entry.kind} · {entry.healthStatus}]
+                          </span>
+                          <span> {entry.description}</span>
+                          <span> {entry.endpointUrl || 'no endpoint configured'}</span>
+                          {entry.healthMessage && <span> · {entry.healthMessage}</span>}
+                          <div>
+                            <button
+                              type="button"
+                              className={entry.enabled ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() =>
+                                updateAoiMcpPluginDraft(entry.id, { enabled: !entry.enabled })
+                              }
+                            >
+                              {entry.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                            <button
+                              type="button"
+                              className={entry.trusted ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() =>
+                                updateAoiMcpPluginDraft(entry.id, { trusted: !entry.trusted })
+                              }
+                              disabled={entry.source === 'built-in' && entry.trusted}
+                            >
+                              {entry.trusted ? 'Trusted' : 'Untrusted'}
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.cancelBtn}
+                              onClick={() => void checkAoiMcpPluginDraft(entry)}
+                            >
+                              Check
+                            </button>
+                            {entry.source === 'user' && (
+                              <button
+                                type="button"
+                                className={styles.cancelBtn}
+                                onClick={() => deleteAoiMcpPluginDraft(entry.id)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Add Integration</span>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Name</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={newAoiMcpName}
+                        onChange={(event) => setNewAoiMcpName(event.target.value)}
+                        placeholder="Local MCP Gateway"
+                      />
+                    </div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Kind</label>
+                      <select
+                        className={styles.select}
+                        value={newAoiMcpKind}
+                        onChange={(event) => setNewAoiMcpKind(event.target.value as AoiMcpPluginKind)}
+                      >
+                        <option value="mcp-server">MCP server</option>
+                        <option value="plugin">Plugin</option>
+                        <option value="connector">Connector</option>
+                      </select>
+                    </div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Endpoint URL</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={newAoiMcpUrl}
+                        onChange={(event) => setNewAoiMcpUrl(event.target.value)}
+                        placeholder="http://127.0.0.1:7331/mcp"
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.saveBtn}
+                      onClick={addAoiMcpPluginDraft}
+                      disabled={!newAoiMcpName.trim() || !newAoiMcpUrl.trim()}
+                    >
+                      Add Integration
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className={styles.settingsSectionCard} data-testid="tool-inspector">
                 <div className={styles.settingsSectionTitle}>Tool Inspector</div>
                 <div className={styles.promptBudgetCard}>
@@ -7194,6 +7396,7 @@ const SettingsModal: React.FC<{
                   requirePreviewBeforeMutation,
                 },
                 aoiSkillDrafts,
+                aoiMcpPluginDrafts,
               );
             }}
           >

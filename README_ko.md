@@ -40,7 +40,8 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - 장기 메모리 저장
   - 이미지 생성
   - Tavily 실시간 웹 검색
-  - prompt budget / run ledger / skills workshop / capability registry / tool inspector
+  - prompt budget / run ledger / skills workshop / MCP/plugin admin / capability registry /
+    tool inspector
 - 세션 단위 앱 데이터 저장: `~/.openroom/sessions/...`
 - 원래 iframe 런타임 대신 로컬 `@gui/vibe-container` mock 사용
 - Vite middleware 기반 로컬 API:
@@ -155,6 +156,12 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - built-in skill 과 사용자가 만든 skill 을 trigger term 으로 매칭합니다
   - enabled 이면서 trusted 인 skill 만 system prompt 에 주입합니다
   - Advanced -> Aoi Skills Workshop 에서 skill toggle, trust, 추가, user skill 삭제가 가능합니다
+- **MCP / plugin admin**
+  - built-in 및 사용자 등록 integration 을 kind, endpoint, enabled/trusted 상태, health 로
+    추적합니다
+  - enabled 이면서 trusted 인 integration context 만 system prompt 에 주입합니다
+  - Advanced -> MCP / Plugin Admin 에서 endpoint 추가, trust toggle, health check 를 실행할 수
+    있습니다
 
 안전 장치도 현재 코드에 반영되어 있습니다.
 

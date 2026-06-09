@@ -42,7 +42,8 @@ The main runtime that ships today lives in `apps/webuiapps`.
   - long-term memory saving
   - image generation
   - live web search through Tavily
-  - prompt budget, run ledger, skills workshop, capability registry, and tool inspector panels
+  - prompt budget, run ledger, skills workshop, MCP/plugin admin, capability registry, and tool
+    inspector panels
 - Session-scoped app storage persisted under `~/.openroom/sessions/...`.
 - A local mock of `@gui/vibe-container`, so the open-source standalone build works without the
   original iframe runtime.
@@ -149,6 +150,12 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - built-in and user-authored skills are matched by trigger terms before a chat turn
   - only enabled and trusted skills are injected into the system prompt
   - Advanced -> Aoi Skills Workshop can toggle, trust, add, or delete user skill capsules
+- **MCP / plugin admin**
+  - built-in and user-registered integrations are tracked with kind, endpoint, enabled/trusted
+    state, and health status
+  - only enabled and trusted integration context is injected into the system prompt
+  - Advanced -> MCP / Plugin Admin can add endpoints, toggle trust, and run lightweight health
+    checks
 
 These tools are guarded by the current implementation:
 
