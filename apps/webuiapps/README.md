@@ -61,8 +61,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - `src/lib/memoryManager.ts`
   - long-term memory persistence and prompt injection
 - `src/lib/aoiMemoryManager.ts`
-  - Aoi v2 durable memory episodes, conservative extraction, conflict handling, and ranked prompt
-    context
+  - Aoi v2 durable memory episodes, conservative extraction, optional LLM distillation, conflict
+    handling, and ranked prompt context
 - `src/lib/aoiTts.ts`
   - Aoi message playback, phrase prewarming, and TTS status tracking
 
@@ -179,7 +179,9 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   often affect the desktop, Kira, and Aoi's IDE together.
 - Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
 - Aoi durable memory v2 stores raw turn episodes and selected memories under
-  `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset.
+  `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset. Background
+  sync can use the configured LLM as a distiller, but invalid or timed-out distillation falls back
+  to deterministic extraction.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders

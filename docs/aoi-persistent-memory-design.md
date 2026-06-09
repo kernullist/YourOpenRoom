@@ -81,9 +81,27 @@ Prompt injection is ranked, not latest-first. The score combines:
 Only active, non-expired memories above the confidence floor are eligible. The prompt text
 explicitly states that durable memories are context, not higher-priority instructions.
 
+## Phase 2 Distillation
+
+Phase 2 adds an optional LLM distiller inside the same background sync path.
+
+The distiller:
+
+- runs only after the user-facing assistant response is already delivered
+- reuses the configured `llmClient.chat()` provider path instead of introducing a separate API
+  client
+- skips direct app actions and manual memory writes, which already have deterministic provenance
+- gates short or trivial turns before spending an extra model call
+- asks the model to return strict JSON with at most five durable memory candidates
+- filters sensitive-looking secrets such as passwords, API keys, and tokens
+- falls back to deterministic candidates if the model times out or returns invalid JSON
+
+This keeps the raw episode log as ground truth while allowing richer extraction for durable
+preferences, decisions, procedures, and project context.
+
 ## Conservative Extraction
 
-Phase 1 uses deterministic extraction for:
+The deterministic extractor remains active for:
 
 - explicit "remember this" requests
 - user name facts
@@ -91,8 +109,8 @@ Phase 1 uses deterministic extraction for:
 - durable "always/never/from now on" style instructions
 - session-level decision markers
 
-This avoids an extra model call on every turn. The raw episode stream is preserved so a future
-LLM-based distiller can reprocess old episodes without losing evidence.
+The heuristic path is still the fallback and baseline. The raw episode stream is preserved so future
+distillers or external providers can reprocess old episodes without losing evidence.
 
 ## Provider Roadmap
 
@@ -115,6 +133,8 @@ The local schema is intentionally provider-neutral.
 Minimum tests for this phase:
 
 - heuristic extraction accepts durable facts and rejects transient turns
+- LLM distiller JSON is parsed defensively
+- sensitive-looking LLM candidates are filtered
 - duplicate memory writes increment `hits`
 - conflicting name facts supersede older entries
 - prompt selection excludes superseded entries

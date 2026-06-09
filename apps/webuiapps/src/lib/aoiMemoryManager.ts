@@ -1,4 +1,5 @@
 import type { LLMConfig } from './llmModels';
+import { chat, type ChatMessage } from './llmClient';
 
 const API_PATH = '/api/session-data';
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
@@ -6,6 +7,9 @@ const MAX_MEMORY_CONTENT_CHARS = 360;
 const MAX_PROMPT_MEMORY_ENTRIES = 10;
 const MAX_PROMPT_MEMORY_CHARS = 1800;
 const MIN_PROMPT_CONFIDENCE = 0.45;
+const MAX_DISTILLER_INPUT_CHARS = 1800;
+const MAX_DISTILLER_CANDIDATES = 5;
+const DISTILLER_TIMEOUT_MS = 25_000;
 
 export type AoiMemoryScope = 'user' | 'agent' | 'session' | 'project';
 export type AoiMemoryType =
@@ -65,6 +69,8 @@ export interface AoiMemoryCandidate {
   expiresAt?: number;
 }
 
+export type AoiMemoryDistillerChat = typeof chat;
+
 export interface AoiMemorySyncParams {
   sessionPath: string;
   userMessage: string;
@@ -72,6 +78,8 @@ export interface AoiMemorySyncParams {
   toolCalls?: string[];
   source?: AoiMemoryEpisodeSource;
   llmConfig?: LLMConfig | null;
+  llmDistiller?: boolean;
+  distillerChat?: AoiMemoryDistillerChat;
 }
 
 function clampScore(value: number, fallback: number): number {
@@ -108,6 +116,28 @@ function normalizeExtractedName(value: string): string {
     .replace(/[.!?,。]+$/g, '')
     .replace(/(이야|예요|이에요|입니다|야)$/u, '')
     .trim();
+}
+
+function isValidScope(value: unknown): value is AoiMemoryScope {
+  return value === 'user' || value === 'agent' || value === 'session' || value === 'project';
+}
+
+function isValidType(value: unknown): value is AoiMemoryType {
+  return (
+    value === 'fact' ||
+    value === 'preference' ||
+    value === 'decision' ||
+    value === 'event' ||
+    value === 'procedure' ||
+    value === 'action' ||
+    value === 'emotion'
+  );
+}
+
+function looksSensitive(value: string): boolean {
+  return /\b(?:password|passwd|secret|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key)\b/i.test(
+    value,
+  );
 }
 
 function tokenize(value: string): Set<string> {
@@ -415,6 +445,151 @@ export function extractHeuristicAoiMemoryCandidates(params: {
     .filter((candidate): candidate is AoiMemoryCandidate => candidate !== null);
 }
 
+function extractJsonObject(raw: string): unknown {
+  const cleaned = raw
+    .trim()
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```$/i, '')
+    .trim();
+  try {
+    return JSON.parse(cleaned);
+  } catch {
+    const start = cleaned.indexOf('{');
+    const end = cleaned.lastIndexOf('}');
+    if (start < 0 || end <= start) return null;
+    try {
+      return JSON.parse(cleaned.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+}
+
+export function parseAoiMemoryDistillerResponse(raw: string): AoiMemoryCandidate[] {
+  const parsed = extractJsonObject(raw);
+  if (!parsed || typeof parsed !== 'object') return [];
+
+  const maybeMemories = (parsed as { memories?: unknown }).memories;
+  if (!Array.isArray(maybeMemories)) return [];
+
+  const candidates: AoiMemoryCandidate[] = [];
+  for (const item of maybeMemories.slice(0, MAX_DISTILLER_CANDIDATES)) {
+    if (!item || typeof item !== 'object') continue;
+    const record = item as Record<string, unknown>;
+    const content = typeof record.content === 'string' ? record.content : '';
+    if (!content.trim() || looksSensitive(content)) continue;
+    if (!isValidType(record.type)) continue;
+
+    const candidate = normalizeAoiMemoryCandidate({
+      scope: isValidScope(record.scope) ? record.scope : 'user',
+      type: record.type,
+      content,
+      importance: typeof record.importance === 'number' ? record.importance : 0.65,
+      confidence: typeof record.confidence === 'number' ? record.confidence : 0.65,
+      tags: [...normalizeTags(record.tags), 'llm-distilled'],
+      entities: normalizeEntities(record.entities),
+    });
+    if (candidate) candidates.push(candidate);
+  }
+  return candidates;
+}
+
+function hasUsableDistillerConfig(config: LLMConfig | null | undefined): config is LLMConfig {
+  if (!config?.model.trim()) return false;
+  if (config.provider === 'codex-cli' || config.provider === 'claude-cli') return true;
+  return Boolean(config.baseUrl.trim());
+}
+
+function shouldRunLlmDistiller(params: AoiMemorySyncParams, heuristicCount: number): boolean {
+  if (params.llmDistiller === false) return false;
+  if (params.source === 'direct_action' || params.source === 'manual_memory') return false;
+  if (!params.assistantMessage.trim()) return false;
+  const userLength = normalizeWhitespace(params.userMessage).length;
+  const assistantLength = normalizeWhitespace(params.assistantMessage).length;
+  const toolCount = params.toolCalls?.length ?? 0;
+  return heuristicCount > 0 || toolCount > 0 || userLength >= 24 || assistantLength >= 80;
+}
+
+function truncateDistillerInput(value: string): string {
+  const normalized = normalizeWhitespace(value);
+  if (normalized.length <= MAX_DISTILLER_INPUT_CHARS) return normalized;
+  return normalized.slice(0, MAX_DISTILLER_INPUT_CHARS - 1).trimEnd() + '...';
+}
+
+function makeDistillerConfig(config: LLMConfig): LLMConfig {
+  return {
+    ...config,
+    reasoningEffort: 'low',
+    reasoningSummary: 'none',
+    verbosity: 'low',
+    parallelToolCalls: false,
+  };
+}
+
+function buildDistillerMessages(params: AoiMemorySyncParams): ChatMessage[] {
+  const toolCalls = params.toolCalls?.length ? params.toolCalls.join(', ') : 'none';
+  const transcript = [
+    `Source: ${params.source ?? 'chat_turn'}`,
+    `Tool calls: ${toolCalls}`,
+    `User: ${truncateDistillerInput(params.userMessage)}`,
+    `Assistant: ${truncateDistillerInput(params.assistantMessage)}`,
+  ].join('\n');
+
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are Aoi memory distiller.',
+        'Extract only durable memories that will help future conversations.',
+        'Return strict JSON only, with this shape:',
+        '{"memories":[{"scope":"user|agent|session|project","type":"fact|preference|decision|event|procedure|action|emotion","content":"short standalone memory","importance":0.0,"confidence":0.0,"tags":["short"],"entities":["name"]}]}',
+        'Rules:',
+        '- Prefer no memories over weak memories.',
+        '- Do not store trivial acknowledgements, one-off requests, temporary wording, passwords, API keys, tokens, or secrets.',
+        '- Store stable user preferences, identity facts, project decisions, reusable procedures, and important completed actions.',
+        '- Keep content concise and source-grounded. Do not infer beyond the turn.',
+        `- Return at most ${MAX_DISTILLER_CANDIDATES} memories.`,
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: transcript,
+    },
+  ];
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = window.setTimeout(() => {
+      reject(new Error(`${label} timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+export async function distillAoiMemoryCandidatesWithLlm(
+  params: AoiMemorySyncParams,
+): Promise<AoiMemoryCandidate[]> {
+  if (!hasUsableDistillerConfig(params.llmConfig)) return [];
+
+  const distillerChat = params.distillerChat ?? chat;
+  const response = await withTimeout(
+    distillerChat(buildDistillerMessages(params), [], makeDistillerConfig(params.llmConfig)),
+    DISTILLER_TIMEOUT_MS,
+    'Aoi memory distiller',
+  );
+  return parseAoiMemoryDistillerResponse(response.content);
+}
+
 export async function loadAoiMemories(): Promise<AoiMemoryEntry[]> {
   const files = await listJsonFiles(`${AOI_MEMORY_ROOT}/memories`);
   const reads = await Promise.all(
@@ -482,6 +657,16 @@ export async function syncAoiMemoryFromTurn(
     userMessage: params.userMessage,
     assistantMessage: params.assistantMessage,
   });
+  if (
+    hasUsableDistillerConfig(params.llmConfig) &&
+    shouldRunLlmDistiller(params, candidates.length)
+  ) {
+    try {
+      candidates.push(...(await distillAoiMemoryCandidatesWithLlm(params)));
+    } catch (error) {
+      console.warn('[AoiMemory] LLM distiller failed; using heuristic candidates only', error);
+    }
+  }
   if (candidates.length === 0) {
     return loadAoiMemories();
   }

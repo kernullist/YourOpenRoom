@@ -1,11 +1,22 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAoiMemoryPrompt,
+  distillAoiMemoryCandidatesWithLlm,
   extractHeuristicAoiMemoryCandidates,
   mergeAoiMemoryCandidates,
+  parseAoiMemoryDistillerResponse,
   selectAoiMemoriesForPrompt,
   type AoiMemoryEntry,
 } from '../aoiMemoryManager';
+import type { ChatMessage, ToolDef } from '../llmClient';
+import type { LLMConfig } from '../llmModels';
+
+const MOCK_LLM_CONFIG: LLMConfig = {
+  provider: 'openai',
+  apiKey: 'sk-test',
+  baseUrl: 'https://api.openai.com/v1',
+  model: 'gpt-5-mini',
+};
 
 function makeMemory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
   return {
@@ -138,5 +149,75 @@ describe('Aoi prompt memory selection', () => {
     expect(prompt).toContain('Durable Aoi memory');
     expect(prompt).toContain('Korean answers');
     expect(prompt).not.toContain('English answers');
+  });
+});
+
+describe('Aoi LLM memory distiller', () => {
+  it('parses fenced JSON memory candidates and filters sensitive content', () => {
+    const raw = [
+      '```json',
+      '{',
+      '  "memories": [',
+      '    {',
+      '      "scope": "user",',
+      '      "type": "preference",',
+      '      "content": "The user prefers Korean security engineering answers.",',
+      '      "importance": 0.82,',
+      '      "confidence": 0.88,',
+      '      "tags": ["language"],',
+      '      "entities": ["Korean"]',
+      '    },',
+      '    {',
+      '      "scope": "user",',
+      '      "type": "fact",',
+      '      "content": "The user\'s API key is sk-secret.",',
+      '      "importance": 0.99,',
+      '      "confidence": 0.99',
+      '    }',
+      '  ]',
+      '}',
+      '```',
+    ].join('\n');
+    const candidates = parseAoiMemoryDistillerResponse(raw);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].type).toBe('preference');
+    expect(candidates[0].tags).toContain('llm-distilled');
+  });
+
+  it('uses the configured chat client and returns normalized distiller candidates', async () => {
+    const calls: Array<{ messageCount: number; toolCount: number; model: string }> = [];
+    const distillerChat = async (messages: ChatMessage[], tools: ToolDef[], config: LLMConfig) => {
+      calls.push({ messageCount: messages.length, toolCount: tools.length, model: config.model });
+      return {
+        content: JSON.stringify({
+          memories: [
+            {
+              scope: 'project',
+              type: 'decision',
+              content: 'Aoi memory should use background distillation with heuristic fallback.',
+              importance: 0.86,
+              confidence: 0.84,
+              tags: ['architecture'],
+            },
+          ],
+        }),
+        toolCalls: [],
+      };
+    };
+
+    const candidates = await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '다음 단계는 LLM distiller fallback 구조로 하자.',
+      assistantMessage:
+        'LLM distiller를 background sync에 붙이고 실패 시 휴리스틱으로 유지하겠습니다.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+    });
+
+    expect(calls).toEqual([{ messageCount: 2, toolCount: 0, model: 'gpt-5-mini' }]);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].scope).toBe('project');
+    expect(candidates[0].type).toBe('decision');
   });
 });
