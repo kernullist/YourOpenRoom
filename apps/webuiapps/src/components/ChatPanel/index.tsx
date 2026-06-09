@@ -183,6 +183,18 @@ import {
   upsertAoiRunLedgerEntry,
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
+import {
+  buildAoiSkillsPrompt,
+  createUserAoiWorkshopSkill,
+  loadAoiSkillsWorkshop,
+  removeAoiWorkshopSkill,
+  resolveAoiActiveSkills,
+  saveAoiSkillsWorkshop,
+  summarizeAoiSkillsWorkshop,
+  updateAoiWorkshopSkill,
+  upsertAoiWorkshopSkill,
+  type AoiWorkshopSkill,
+} from '@/lib/aoiSkillsWorkshop';
 import { createAppFileApi } from '@/lib/fileApi';
 import {
   loadConversationPreferencesSync,
@@ -861,6 +873,7 @@ function buildSystemPrompt(
   aoiMemoryPrompt = '',
   capabilityPrompt = '',
   runGoalPrompt = '',
+  skillsPrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -981,6 +994,7 @@ Tool rule:
 - Never call save_memory by itself and stop there.`;
 
   prompt += runGoalPrompt;
+  prompt += skillsPrompt;
   prompt += capabilityPrompt;
   prompt += aoiMemoryPrompt;
   prompt += buildMemoryPrompt(memories);
@@ -1583,6 +1597,7 @@ const ChatPanel: React.FC<{
   const [aoiMemories, setAoiMemories] = useState<AoiMemoryEntry[]>([]);
   const [promptBudgetEntries, setPromptBudgetEntries] = useState<PromptBudgetEntry[]>([]);
   const [aoiRunLedger, setAoiRunLedger] = useState<AoiRunLedgerEntry[]>([]);
+  const [aoiSkills, setAoiSkills] = useState<AoiWorkshopSkill[]>(() => loadAoiSkillsWorkshop());
 
   // Pending tool calls for current response (grouped per assistant turn)
   const pendingToolCallsRef = useRef<string[]>([]);
@@ -1985,6 +2000,8 @@ const ChatPanel: React.FC<{
   aoiMemoriesRef.current = aoiMemories;
   const aoiRunLedgerRef = useRef(aoiRunLedger);
   aoiRunLedgerRef.current = aoiRunLedger;
+  const aoiSkillsRef = useRef(aoiSkills);
+  aoiSkillsRef.current = aoiSkills;
   const toolCacheRef = useRef(createToolResultCache());
 
   const clearToolCache = useCallback(() => {
@@ -2940,12 +2957,15 @@ const ChatPanel: React.FC<{
     const capabilityPrompt = buildAoiCapabilityPrompt(selectedToolNames);
     const runGoal = createAoiRunGoalFromMessage(latestUserMessage);
     const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
+    const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
+    const skillsPrompt = buildAoiSkillsPrompt(activeSkillMatches);
     console.info('[ChatPanel] Tool selection', {
       latestUserMessage,
       useDialogModel,
       activeModel: activeCfg.model,
       includeAppTools,
       toolNames: selectedToolNames,
+      activeSkills: activeSkillMatches.map((match) => match.skill.id),
     });
 
     const currentMemories = memoriesRef.current;
@@ -2961,6 +2981,7 @@ const ChatPanel: React.FC<{
       currentAoiMemoryPrompt,
       capabilityPrompt,
       runGoalPrompt,
+      skillsPrompt,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -4589,6 +4610,7 @@ const ChatPanel: React.FC<{
           promptBudgetEntries={promptBudgetEntries}
           aoiMemories={aoiMemories}
           aoiRunLedger={aoiRunLedger}
+          aoiSkills={aoiSkills}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
           initialTab={settingsInitialTab}
@@ -4605,6 +4627,7 @@ const ChatPanel: React.FC<{
             nextUserProfile,
             nextConversationPreferences,
             nextToolSafetyPolicy,
+            nextAoiSkills,
           ) => {
             setConfig(c);
             setDialogLlmConfig(dcfg);
@@ -4614,8 +4637,10 @@ const ChatPanel: React.FC<{
             setConversationPreferences(nextConversationPreferences);
             setImageGenConfig(igc);
             setToolSafetyPolicy(nextToolSafetyPolicy);
+            setAoiSkills(nextAoiSkills);
             userProfileRef.current = nextUserProfile;
             conversationPreferencesRef.current = nextConversationPreferences;
+            aoiSkillsRef.current = nextAoiSkills;
             saveConfig(
               c,
               igc,
@@ -4629,6 +4654,7 @@ const ChatPanel: React.FC<{
             saveUserProfileConfig(nextUserProfile);
             saveConversationPreferences(nextConversationPreferences);
             saveToolSafetyPolicy(nextToolSafetyPolicy);
+            saveAoiSkillsWorkshop(nextAoiSkills);
             dispatchAppSettingsSaved(settingsInitialTab);
             setShowSettings(false);
           }}
@@ -4976,6 +5002,7 @@ const SettingsModal: React.FC<{
   promptBudgetEntries: PromptBudgetEntry[];
   aoiMemories: AoiMemoryEntry[];
   aoiRunLedger: AoiRunLedgerEntry[];
+  aoiSkills: AoiWorkshopSkill[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
   initialTab?: AppSettingsTabKey;
@@ -4992,6 +5019,7 @@ const SettingsModal: React.FC<{
     _userProfile: UserProfileConfig | null,
     _conversationPreferences: ConversationPreferencesConfig | null,
     _toolSafetyPolicy: ToolSafetyPolicy,
+    _aoiSkills: AoiWorkshopSkill[],
   ) => void;
   onClose: () => void;
 }> = ({
@@ -5006,6 +5034,7 @@ const SettingsModal: React.FC<{
   promptBudgetEntries,
   aoiMemories,
   aoiRunLedger,
+  aoiSkills,
   recentToolActivity,
   toolSafetyPolicy,
   initialTab = 'chat',
@@ -5185,12 +5214,21 @@ const SettingsModal: React.FC<{
   const [requirePreviewBeforeMutation, setRequirePreviewBeforeMutation] = useState(
     toolSafetyPolicy.requirePreviewBeforeMutation,
   );
+  const [aoiSkillDrafts, setAoiSkillDrafts] = useState<AoiWorkshopSkill[]>(aoiSkills);
+  const [newAoiSkillName, setNewAoiSkillName] = useState('');
+  const [newAoiSkillTriggers, setNewAoiSkillTriggers] = useState('');
+  const [newAoiSkillBody, setNewAoiSkillBody] = useState('');
   const recentMutations = useMemo(() => listRecentMutations().slice(0, 8), []);
   const activeBackgroundWatches = useMemo(() => listBackgroundWatches().slice(0, 8), []);
   const capabilitySummary = useMemo(
     () => summarizeAoiCapabilityRegistry(AOI_DEFAULT_CAPABILITY_NAMES),
     [],
   );
+  const skillsWorkshopSummary = useMemo(
+    () => summarizeAoiSkillsWorkshop(aoiSkillDrafts),
+    [aoiSkillDrafts],
+  );
+  const visibleAoiSkills = useMemo(() => aoiSkillDrafts.slice(0, 8), [aoiSkillDrafts]);
   const capabilityRows = useMemo(
     () =>
       getAoiCapabilityRows(AOI_DEFAULT_CAPABILITY_NAMES)
@@ -5216,6 +5254,35 @@ const SettingsModal: React.FC<{
     dialogProvider === 'openrouter' ||
     kiraReviewer.provider === 'openrouter' ||
     kiraWorkers.some((worker) => worker.provider === 'openrouter');
+
+  const addAoiSkillDraft = useCallback(() => {
+    if (!newAoiSkillName.trim() || !newAoiSkillBody.trim()) {
+      return;
+    }
+    const skill = createUserAoiWorkshopSkill({
+      name: newAoiSkillName,
+      triggerTerms: newAoiSkillTriggers
+        .split(',')
+        .map((term) => term.trim())
+        .filter(Boolean),
+      body: newAoiSkillBody,
+    });
+    setAoiSkillDrafts((prev) => upsertAoiWorkshopSkill(prev, skill));
+    setNewAoiSkillName('');
+    setNewAoiSkillTriggers('');
+    setNewAoiSkillBody('');
+  }, [newAoiSkillBody, newAoiSkillName, newAoiSkillTriggers]);
+
+  const updateAoiSkillDraft = useCallback(
+    (skillId: string, updates: Parameters<typeof updateAoiWorkshopSkill>[2]) => {
+      setAoiSkillDrafts((prev) => updateAoiWorkshopSkill(prev, skillId, updates));
+    },
+    [],
+  );
+
+  const deleteAoiSkillDraft = useCallback((skillId: string) => {
+    setAoiSkillDrafts((prev) => removeAoiWorkshopSkill(prev, skillId));
+  }, []);
 
   const refreshOpenRouterModels = useCallback(async () => {
     setOpenRouterModelsStatus('loading');
@@ -6712,6 +6779,123 @@ const SettingsModal: React.FC<{
                 </div>
               </div>
 
+              <div className={styles.settingsSectionCard} data-testid="aoi-skills-workshop">
+                <div className={styles.settingsSectionTitle}>Aoi Skills Workshop</div>
+                <div className={styles.promptBudgetCard}>
+                  <div className={styles.promptBudgetGrid}>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Skills</span>
+                      <strong>{skillsWorkshopSummary.total}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Enabled</span>
+                      <strong>{skillsWorkshopSummary.enabled}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Trusted</span>
+                      <strong>{skillsWorkshopSummary.trusted}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>Built-in</span>
+                      <strong>{skillsWorkshopSummary.builtIn}</strong>
+                    </div>
+                    <div className={styles.promptBudgetMetric}>
+                      <span className={styles.promptBudgetLabel}>User</span>
+                      <strong>{skillsWorkshopSummary.user}</strong>
+                    </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Registered Skills</span>
+                    <div className={styles.promptBudgetLog}>
+                      {visibleAoiSkills.map((skill) => (
+                        <div key={skill.id}>
+                          <strong>{skill.name}</strong>
+                          <span>
+                            {' '}
+                            [{skill.source}
+                            {skill.triggerTerms.length
+                              ? ` · ${skill.triggerTerms.slice(0, 4).join(', ')}`
+                              : ''}]
+                          </span>
+                          <span> {skill.description}</span>
+                          <div>
+                            <button
+                              type="button"
+                              className={skill.enabled ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() =>
+                                updateAoiSkillDraft(skill.id, { enabled: !skill.enabled })
+                              }
+                            >
+                              {skill.enabled ? 'Enabled' : 'Disabled'}
+                            </button>
+                            <button
+                              type="button"
+                              className={skill.trusted ? styles.saveBtn : styles.cancelBtn}
+                              onClick={() =>
+                                updateAoiSkillDraft(skill.id, { trusted: !skill.trusted })
+                              }
+                              disabled={skill.source === 'built-in'}
+                            >
+                              {skill.trusted ? 'Trusted' : 'Untrusted'}
+                            </button>
+                            {skill.source === 'user' && (
+                              <button
+                                type="button"
+                                className={styles.cancelBtn}
+                                onClick={() => deleteAoiSkillDraft(skill.id)}
+                              >
+                                Delete
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Add User Skill</span>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Name</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={newAoiSkillName}
+                        onChange={(event) => setNewAoiSkillName(event.target.value)}
+                        placeholder="Code Review Guard"
+                      />
+                    </div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Triggers</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={newAoiSkillTriggers}
+                        onChange={(event) => setNewAoiSkillTriggers(event.target.value)}
+                        placeholder="review, 검토, audit"
+                      />
+                    </div>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Instructions</label>
+                      <textarea
+                        className={styles.fieldInput}
+                        value={newAoiSkillBody}
+                        onChange={(event) => setNewAoiSkillBody(event.target.value)}
+                        rows={4}
+                        placeholder="When this skill matches, apply these instructions..."
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.saveBtn}
+                      onClick={addAoiSkillDraft}
+                      disabled={!newAoiSkillName.trim() || !newAoiSkillBody.trim()}
+                    >
+                      Add Skill
+                    </button>
+                  </div>
+                </div>
+              </div>
+
               <div className={styles.settingsSectionCard} data-testid="tool-inspector">
                 <div className={styles.settingsSectionTitle}>Tool Inspector</div>
                 <div className={styles.promptBudgetCard}>
@@ -7009,6 +7193,7 @@ const SettingsModal: React.FC<{
                   allowBackgroundWatches,
                   requirePreviewBeforeMutation,
                 },
+                aoiSkillDrafts,
               );
             }}
           >

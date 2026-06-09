@@ -20,6 +20,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   prompt and surfaced in Advanced -> Tool Inspector.
 - Aoi chat runs now persist a compact run ledger with a per-turn goal, model route, iteration
   count, tool-call totals, completion status, and an Advanced -> Aoi Run Ledger inspector.
+- Aoi now includes a Skills Workshop with built-in and user-authored trigger-matched skills,
+  trusted-skill prompt injection, and Advanced settings controls for enable/trust/add/delete flows.
 - Album can browse a user-selected local photo folder, remember a saved folder path, and expose
   search, sort, grid density, and preview controls.
 - Calendar now stores the selected calendar date in view state so the planner reopens on the same
