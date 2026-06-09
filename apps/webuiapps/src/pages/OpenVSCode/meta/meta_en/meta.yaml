@@ -20,6 +20,14 @@ actions:
         type: string
         required: true
         description: File path relative to the configured workspace root.
+  - type: CREATE_FOLDER
+    name: Create Folder
+    description: Create a directory in the IDE workspace and refresh the explorer tree.
+    params:
+      - name: path
+        type: string
+        required: true
+        description: Folder path relative to the configured workspace root.
   - type: REFRESH_WORKSPACE
     name: Refresh Workspace
     description: Reload the workspace tree from disk.

@@ -34,6 +34,7 @@ import {
   Files,
   FolderClosed,
   FolderOpen,
+  FolderPlus,
   GitBranch,
   GitCompareArrows,
   History,
@@ -115,6 +116,7 @@ type PatchPreviewSource = 'agent' | 'manual';
 type PatchPreviewLineKind = 'context' | 'remove' | 'add';
 type ModelActionStatus = 'success' | 'error';
 type PaletteItemKind = 'command' | 'file' | 'tab' | 'root';
+type CreateEntryMode = 'file' | 'folder';
 type MonacoBeforeMount = Parameters<
   NonNullable<React.ComponentProps<typeof Editor>['beforeMount']>
 >[0];
@@ -630,6 +632,10 @@ function normalizeWorkspacePathInput(value: string): string {
     .replace(/\/{2,}/g, '/');
 }
 
+function normalizeWorkspaceDirectoryPathInput(value: string): string {
+  return normalizeWorkspacePathInput(value).replace(/\/+$/, '');
+}
+
 function normalizeWorkspaceRootPath(value: string): string {
   return value.trim().replace(/^["']|["']$/g, '');
 }
@@ -673,6 +679,14 @@ function isRelativeWorkspaceFilePath(filePath: string): boolean {
   return true;
 }
 
+function isRelativeWorkspaceDirectoryPath(directoryPath: string): boolean {
+  if (!directoryPath || directoryPath === '.') return false;
+  if (/^(?:[a-zA-Z]:|\/)/.test(directoryPath)) return false;
+  if (/(^|\/)\.\.(?:\/|$)/.test(directoryPath)) return false;
+  if (directoryPath.split('/').some((segment) => !segment || segment === '.')) return false;
+  return true;
+}
+
 function getParentPath(filePath: string): string {
   return filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
 }
@@ -690,6 +704,10 @@ function getAncestorDirectoryPaths(filePath: string): string[] {
       paths.push(current);
     });
   return paths;
+}
+
+function getCreatedDirectoryRefreshPaths(directoryPath: string): string[] {
+  return getAncestorDirectoryPaths(`${directoryPath}/.directory`);
 }
 
 function getFileName(filePath: string): string {
@@ -1058,9 +1076,10 @@ const OpenVSCodePage: React.FC = () => {
   const [workspaceDraft, setWorkspaceDraft] = useState('');
   const [workspaceHistory, setWorkspaceHistory] = useState<string[]>([]);
   const [activityView, setActivityView] = useState<ActivityView>('explorer');
-  const [showCreateFile, setShowCreateFile] = useState(false);
-  const [newFilePath, setNewFilePath] = useState('');
-  const [createFileError, setCreateFileError] = useState<string | null>(null);
+  const [showCreateEntry, setShowCreateEntry] = useState(false);
+  const [createEntryMode, setCreateEntryMode] = useState<CreateEntryMode>('file');
+  const [newEntryPath, setNewEntryPath] = useState('');
+  const [createEntryError, setCreateEntryError] = useState<string | null>(null);
   const [tree, setTree] = useState<Record<string, WorkspaceEntry[]>>({});
   const [expandedDirs, setExpandedDirs] = useState<string[]>(['']);
   const [openTabs, setOpenTabs] = useState<OpenFileTab[]>([]);
@@ -1069,7 +1088,7 @@ const OpenVSCodePage: React.FC = () => {
   const [isTreeLoading, setIsTreeLoading] = useState(false);
   const [isFileLoading, setIsFileLoading] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
-  const [isCreatingFile, setIsCreatingFile] = useState(false);
+  const [isCreatingEntry, setIsCreatingEntry] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [cursorPosition, setCursorPosition] = useState({ line: 1, column: 1 });
   const [editorSelection, setEditorSelection] = useState<RuntimeSelectionState | null>(null);
@@ -1121,6 +1140,7 @@ const OpenVSCodePage: React.FC = () => {
   const [modelActionLog, setModelActionLog] = useState<ModelActionLogEntry[]>([]);
   const activePathRef = useRef<string | null>(null);
   const openTabsRef = useRef<OpenFileTab[]>([]);
+  const expandedDirsRef = useRef<string[]>(['']);
   const editorSelectionRef = useRef<RuntimeSelectionState | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
   const pendingRevealLineRef = useRef<number | null>(null);
@@ -1169,6 +1189,10 @@ const OpenVSCodePage: React.FC = () => {
   useEffect(() => {
     openTabsRef.current = openTabs;
   }, [openTabs]);
+
+  useEffect(() => {
+    expandedDirsRef.current = expandedDirs;
+  }, [expandedDirs]);
 
   const syncEditorSelection = useCallback(
     (editor: monaco.editor.IStandaloneCodeEditor | null = editorRef.current) => {
@@ -1267,15 +1291,23 @@ const OpenVSCodePage: React.FC = () => {
     return data;
   }, []);
 
-  const loadDirectory = useCallback(async (path = ''): Promise<WorkspaceEntry[]> => {
+  const fetchDirectory = useCallback(async (path = ''): Promise<DirectoryResponse> => {
     const res = await fetch(`/api/openvscode/list?path=${encodeURIComponent(path)}`);
     const data = (await res.json()) as DirectoryResponse & { error?: string };
     if (!res.ok) {
       throw new Error(data.error || `Directory API error ${res.status}`);
     }
-    setTree((prev) => ({ ...prev, [path]: data.entries }));
-    return data.entries;
+    return data;
   }, []);
+
+  const loadDirectory = useCallback(
+    async (path = ''): Promise<WorkspaceEntry[]> => {
+      const data = await fetchDirectory(path);
+      setTree((prev) => ({ ...prev, [path]: data.entries }));
+      return data.entries;
+    },
+    [fetchDirectory],
+  );
 
   const revealLine = useCallback((line: number) => {
     if (!editorRef.current) {
@@ -1348,7 +1380,28 @@ const OpenVSCodePage: React.FC = () => {
         clearEditorSelection();
         return;
       }
-      const rootEntries = await loadDirectory('');
+      const expandedPaths = Array.from(new Set(['', ...expandedDirsRef.current]));
+      const nextTree: Record<string, WorkspaceEntry[]> = {};
+      const nextExpandedDirs: string[] = [];
+      let rootEntries: WorkspaceEntry[] = [];
+
+      for (const directoryPath of expandedPaths) {
+        try {
+          const directory = await fetchDirectory(directoryPath);
+          nextTree[directoryPath] = directory.entries;
+          nextExpandedDirs.push(directoryPath);
+          if (directoryPath === '') {
+            rootEntries = directory.entries;
+          }
+        } catch (error) {
+          if (directoryPath === '') {
+            throw error;
+          }
+        }
+      }
+
+      setTree(nextTree);
+      setExpandedDirs(nextExpandedDirs.length > 0 ? nextExpandedDirs : ['']);
       if (!activePathRef.current) {
         const preferred = rootEntries.find(
           (entry) => entry.type === 'file' && /^(README|package)\./i.test(entry.name),
@@ -1363,7 +1416,7 @@ const OpenVSCodePage: React.FC = () => {
     } finally {
       setIsTreeLoading(false);
     }
-  }, [clearEditorSelection, fetchWorkspaceInfo, loadDirectory, loadFile]);
+  }, [clearEditorSelection, fetchDirectory, fetchWorkspaceInfo, loadFile]);
 
   const loadGitBranch = useCallback(async () => {
     try {
@@ -1487,12 +1540,12 @@ const OpenVSCodePage: React.FC = () => {
       const normalizedPath = normalizeWorkspacePathInput(requestedPath);
       if (!isRelativeWorkspaceFilePath(normalizedPath)) {
         const message = t('errors.invalidFilePath');
-        setCreateFileError(message);
+        setCreateEntryError(message);
         return { ok: false, error: message };
       }
 
-      setIsCreatingFile(true);
-      setCreateFileError(null);
+      setIsCreatingEntry(true);
+      setCreateEntryError(null);
       try {
         const res = await fetch('/api/openvscode/file', {
           method: 'POST',
@@ -1510,30 +1563,96 @@ const OpenVSCodePage: React.FC = () => {
           await loadDirectory(directoryPath);
         }
 
-        setShowCreateFile(false);
-        setNewFilePath('');
+        setShowCreateEntry(false);
+        setNewEntryPath('');
         await loadFile(normalizedPath);
         editorRef.current?.focus();
         setErrorText(null);
-        setCreateFileError(null);
+        setCreateEntryError(null);
         return { ok: true };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        setCreateFileError(message);
+        setCreateEntryError(message);
         return { ok: false, error: message };
       } finally {
-        setIsCreatingFile(false);
+        setIsCreatingEntry(false);
       }
     },
     [loadDirectory, loadFile, t],
   );
 
-  const submitCreateFile = useCallback(
+  const createNewFolder = useCallback(
+    async (requestedPath: string): Promise<{ ok: boolean; error?: string }> => {
+      const normalizedPath = normalizeWorkspaceDirectoryPathInput(requestedPath);
+      if (!isRelativeWorkspaceDirectoryPath(normalizedPath)) {
+        const message = t('errors.invalidFolderPath');
+        setCreateEntryError(message);
+        return { ok: false, error: message };
+      }
+
+      setIsCreatingEntry(true);
+      setCreateEntryError(null);
+      try {
+        const res = await fetch('/api/openvscode/directory', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: normalizedPath }),
+        });
+        const data = (await res.json()) as { error?: string; path?: string };
+        if (!res.ok) {
+          throw new Error(data.error || `Create folder API error ${res.status}`);
+        }
+
+        const createdPath = data.path || normalizedPath;
+        const refreshPaths = getCreatedDirectoryRefreshPaths(createdPath);
+        setExpandedDirs((prev) => Array.from(new Set([...prev, ...refreshPaths])));
+        for (const directoryPath of refreshPaths) {
+          await loadDirectory(directoryPath);
+        }
+
+        setActivityView('explorer');
+        setIsSidebarOpen(true);
+        setShowCreateEntry(false);
+        setNewEntryPath('');
+        setErrorText(null);
+        setCreateEntryError(null);
+        return { ok: true };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setCreateEntryError(message);
+        return { ok: false, error: message };
+      } finally {
+        setIsCreatingEntry(false);
+      }
+    },
+    [loadDirectory, t],
+  );
+
+  const openCreateEntryForm = useCallback((mode: CreateEntryMode) => {
+    setActivityView('explorer');
+    setIsSidebarOpen(true);
+    setCreateEntryMode(mode);
+    setShowCreateEntry(true);
+    setNewEntryPath('');
+    setCreateEntryError(null);
+  }, []);
+
+  const closeCreateEntryForm = useCallback(() => {
+    setShowCreateEntry(false);
+    setNewEntryPath('');
+    setCreateEntryError(null);
+  }, []);
+
+  const submitCreateEntry = useCallback(
     (event: React.FormEvent<HTMLFormElement>) => {
       event.preventDefault();
-      void createNewFile(newFilePath);
+      if (createEntryMode === 'folder') {
+        void createNewFolder(newEntryPath);
+      } else {
+        void createNewFile(newEntryPath);
+      }
     },
-    [createNewFile, newFilePath],
+    [createEntryMode, createNewFile, createNewFolder, newEntryPath],
   );
 
   const resetWorkspaceSession = useCallback(() => {
@@ -2634,9 +2753,9 @@ const OpenVSCodePage: React.FC = () => {
         setActivityView('settings');
         setIsSidebarOpen(true);
       } else if (id === 'newFile') {
-        setActivityView('explorer');
-        setIsSidebarOpen(true);
-        setShowCreateFile(true);
+        openCreateEntryForm('file');
+      } else if (id === 'newFolder') {
+        openCreateEntryForm('folder');
       } else if (id === 'terminal') {
         setIsBottomPanelOpen(true);
         setBottomPanel('terminal');
@@ -2680,6 +2799,7 @@ const OpenVSCodePage: React.FC = () => {
     [
       focusSearch,
       loadGitStatus,
+      openCreateEntryForm,
       previewUnsavedActiveFile,
       refreshWorkspace,
       runTerminalCommand,
@@ -2783,6 +2903,12 @@ const OpenVSCodePage: React.FC = () => {
         id: 'newFile',
         kind: 'command',
         label: t('commandPalette.commands.newFile'),
+        group: t('commandPalette.groups.file'),
+      },
+      {
+        id: 'newFolder',
+        kind: 'command',
+        label: t('commandPalette.commands.newFolder'),
         group: t('commandPalette.groups.file'),
       },
       {
@@ -3178,6 +3304,12 @@ const OpenVSCodePage: React.FC = () => {
           const result = await createNewFile(path);
           return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
         }
+        case 'CREATE_FOLDER': {
+          const path = action.params?.path?.trim();
+          if (!path) return 'error: missing path';
+          const result = await createNewFolder(path);
+          return result.ok ? 'success' : `error: ${result.error || 'create failed'}`;
+        }
         case 'PREVIEW_APPEND_ACTIVE_FILE': {
           const content = action.params?.content;
           if (content === undefined) return 'error: missing content';
@@ -3467,6 +3599,7 @@ const OpenVSCodePage: React.FC = () => {
       checkpointItems,
       createCheckpoint,
       createNewFile,
+      createNewFolder,
       deleteCheckpoint,
       diagnosticCommand,
       discardPatchPreview,
@@ -3847,13 +3980,31 @@ const OpenVSCodePage: React.FC = () => {
                       type="button"
                       className={styles.iconButton}
                       onClick={() => {
-                        setShowCreateFile((prev) => !prev);
-                        setCreateFileError(null);
+                        if (showCreateEntry && createEntryMode === 'file') {
+                          closeCreateEntryForm();
+                        } else {
+                          openCreateEntryForm('file');
+                        }
                       }}
                       disabled={!workspaceExists}
                       title={t('actions.newFile')}
                     >
                       <FilePlus2 size={15} />
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.iconButton}
+                      onClick={() => {
+                        if (showCreateEntry && createEntryMode === 'folder') {
+                          closeCreateEntryForm();
+                        } else {
+                          openCreateEntryForm('folder');
+                        }
+                      }}
+                      disabled={!workspaceExists}
+                      title={t('actions.newFolder')}
+                    >
+                      <FolderPlus size={15} />
                     </button>
                     <button
                       type="button"
@@ -3868,43 +4019,41 @@ const OpenVSCodePage: React.FC = () => {
                 <div className={styles.workspaceName} title={workspaceRoot}>
                   {workspaceRoot || t('title')}
                 </div>
-                {showCreateFile ? (
-                  <form className={styles.createFileForm} onSubmit={submitCreateFile}>
+                {showCreateEntry ? (
+                  <form className={styles.createFileForm} onSubmit={submitCreateEntry}>
                     <label className={styles.fieldLabel}>
-                      <span>{t('createFile.label')}</span>
+                      <span>{t(`createEntry.${createEntryMode}.label`)}</span>
                       <input
                         className={styles.textInput}
-                        value={newFilePath}
+                        value={newEntryPath}
                         onChange={(event) => {
-                          setNewFilePath(event.target.value);
-                          setCreateFileError(null);
+                          setNewEntryPath(event.target.value);
+                          setCreateEntryError(null);
                         }}
-                        placeholder={t('createFile.placeholder')}
-                        disabled={isCreatingFile}
+                        placeholder={t(`createEntry.${createEntryMode}.placeholder`)}
+                        disabled={isCreatingEntry}
                         autoFocus
                       />
                     </label>
-                    {createFileError ? (
-                      <p className={styles.inlineError}>{createFileError}</p>
+                    {createEntryError ? (
+                      <p className={styles.inlineError}>{createEntryError}</p>
                     ) : null}
                     <div className={styles.formActions}>
                       <button
                         type="button"
                         className={styles.secondaryButton}
-                        onClick={() => {
-                          setShowCreateFile(false);
-                          setNewFilePath('');
-                          setCreateFileError(null);
-                        }}
+                        onClick={closeCreateEntryForm}
                       >
                         {t('actions.cancel')}
                       </button>
                       <button
                         type="submit"
                         className={styles.primaryButton}
-                        disabled={isCreatingFile || !newFilePath.trim()}
+                        disabled={isCreatingEntry || !newEntryPath.trim()}
                       >
-                        {isCreatingFile ? t('actions.creating') : t('actions.createFile')}
+                        {isCreatingEntry
+                          ? t('actions.creating')
+                          : t(`createEntry.${createEntryMode}.submit`)}
                       </button>
                     </div>
                   </form>

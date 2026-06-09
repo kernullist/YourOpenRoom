@@ -12,7 +12,7 @@ const en = {
   actions: {
     settings: 'Workspace',
     newFile: 'New file',
-    createFile: 'Create file',
+    newFolder: 'New folder',
     creating: 'Creating...',
     cancel: 'Cancel',
     refresh: 'Refresh',
@@ -41,9 +41,17 @@ const en = {
     ready: 'Ready',
     notReady: 'Missing',
   },
-  createFile: {
-    label: 'Relative file path',
-    placeholder: 'src/new-file.ts',
+  createEntry: {
+    file: {
+      label: 'Relative file path',
+      placeholder: 'src/new-file.ts',
+      submit: 'Create file',
+    },
+    folder: {
+      label: 'Relative folder path',
+      placeholder: 'src/new-folder',
+      submit: 'Create folder',
+    },
   },
   search: {
     title: 'Search',
@@ -231,6 +239,7 @@ const en = {
       previewPanel: 'Preview: Show Patch Preview',
       gitPanel: 'Git: Show Selected Diff',
       newFile: 'File: New File',
+      newFolder: 'File: New Folder',
       split: 'View: Toggle Split Editor',
       toggleSidebar: 'View: Toggle Sidebar',
       toggleBottomPanel: 'View: Toggle Bottom Panel',
@@ -247,6 +256,7 @@ const en = {
   },
   errors: {
     invalidFilePath: 'Enter a relative file path inside the workspace.',
+    invalidFolderPath: 'Enter a relative folder path inside the workspace.',
     workspaceMissing:
       'The configured workspace folder could not be found. Update the workspace path and refresh.',
   },

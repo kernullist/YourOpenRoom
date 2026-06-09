@@ -60,7 +60,7 @@ YourOpenRoom 最初来自 MiniMax OpenRoom，但当前代码已经明显偏离�
 | `Notes`          | 支持置顶集合、标签/搜索过滤、排序、格式工具、安全删除确认、持久化视图状态和预览的本地 Markdown 笔记                                                  |
 | `Browser Reader` | 内嵌浏览、reader 提取、书签/历史、Google 搜索结果回退 UI、保存到 Notes                                                                               |
 | `Kira`           | 项目工作看板，管理 work item、评论、discovery 分析、worker 分配前 clarification 问题和自动化交接                                                     |
-| `Aoi's IDE`      | 支持新建文件的本地工作区文件树/编辑器，以及搜索、符号、引用、rename preview/apply、安全命令等接口                                                    |
+| `Aoi's IDE`      | 支持新建文件/文件夹的本地工作区文件树/编辑器，以及搜索、符号、引用、rename preview/apply、安全命令等接口                                             |
 | `PE Analyst`     | 面向 PE 的分析工作台，支持 `ida_pro_mcp` 的当前 IDB 模式、上传样本的 pre-scan / headless 流程，以及 findings/imports/sections/strings/functions 视图 |
 
 ## PE Analyst 与 IDA MCP
@@ -156,7 +156,7 @@ item，并追加到 Markdown brief 后，再把任务恢复为 `todo` 继续自�
 Aoi's IDE 前端是一个内置文件树和编辑器，但真正强的是 `/api/openvscode/*` 这组接口：
 
 - 工作区目录浏览与文件读写删除
-- 基于相对工作区路径创建空文件，并阻止重复创建
+- 基于相对工作区路径创建空文件/文件夹，并阻止重复创建
 - 文本搜索
 - 符号搜索
 - 引用查询

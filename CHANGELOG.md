@@ -19,8 +19,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   search, sort, grid density, and preview controls.
 - Calendar now stores the selected calendar date in view state so the planner reopens on the same
   day.
-- Aoi's IDE can create new workspace files from the sidebar or through the `CREATE_FILE` app action,
-  then opens the new file in the editor.
+- Aoi's IDE can create new workspace files and folders from the sidebar or through the `CREATE_FILE`
+  and `CREATE_FOLDER` app actions, opening new files in the editor and refreshing new folders in the
+  explorer.
 - Aoi's IDE now provides a VSCode-style Monaco editor with tabs, workspace search, safe terminal
   commands, split preview, sidebar/bottom-panel toggles, and active-file context for chat.
 - Aoi's IDE now has an active-file patch Preview panel so model proposals and unsaved editor edits

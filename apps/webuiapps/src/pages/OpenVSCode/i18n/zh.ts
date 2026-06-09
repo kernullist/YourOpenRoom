@@ -12,7 +12,7 @@ const zh = {
   actions: {
     settings: '工作区',
     newFile: '新建文件',
-    createFile: '创建文件',
+    newFolder: '新建文件夹',
     creating: '创建中...',
     cancel: '取消',
     refresh: '刷新',
@@ -40,9 +40,17 @@ const zh = {
     ready: '就绪',
     notReady: '缺失',
   },
-  createFile: {
-    label: '相对文件路径',
-    placeholder: 'src/new-file.ts',
+  createEntry: {
+    file: {
+      label: '相对文件路径',
+      placeholder: 'src/new-file.ts',
+      submit: '创建文件',
+    },
+    folder: {
+      label: '相对文件夹路径',
+      placeholder: 'src/new-folder',
+      submit: '创建文件夹',
+    },
   },
   search: {
     title: '搜索',
@@ -229,6 +237,7 @@ const zh = {
       previewPanel: '预览: 显示补丁预览',
       gitPanel: 'Git: 显示所选 diff',
       newFile: '文件: 新建文件',
+      newFolder: '文件: 新建文件夹',
       split: '视图: 切换分栏编辑器',
       toggleSidebar: '视图: 切换侧边栏',
       toggleBottomPanel: '视图: 切换底部面板',
@@ -245,6 +254,7 @@ const zh = {
   },
   errors: {
     invalidFilePath: '请输入工作区内的相对文件路径。',
+    invalidFolderPath: '请输入工作区内的相对文件夹路径。',
     workspaceMissing: '当前配置的工作区文件夹不存在。请更新工作区路径后再刷新。',
   },
 };

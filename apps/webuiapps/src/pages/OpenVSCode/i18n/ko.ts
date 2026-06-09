@@ -12,7 +12,7 @@ const ko = {
   actions: {
     settings: '워크스페이스',
     newFile: '새 파일',
-    createFile: '파일 생성',
+    newFolder: '새 폴더',
     creating: '생성 중...',
     cancel: '취소',
     refresh: '새로고침',
@@ -41,9 +41,17 @@ const ko = {
     ready: '준비됨',
     notReady: '없음',
   },
-  createFile: {
-    label: '상대 파일 경로',
-    placeholder: 'src/new-file.ts',
+  createEntry: {
+    file: {
+      label: '상대 파일 경로',
+      placeholder: 'src/new-file.ts',
+      submit: '파일 생성',
+    },
+    folder: {
+      label: '상대 폴더 경로',
+      placeholder: 'src/new-folder',
+      submit: '폴더 생성',
+    },
   },
   search: {
     title: '검색',
@@ -230,6 +238,7 @@ const ko = {
       previewPanel: '미리보기: 패치 미리보기 표시',
       gitPanel: 'Git: 선택한 diff 표시',
       newFile: '파일: 새 파일',
+      newFolder: '파일: 새 폴더',
       split: '보기: 분할 편집기 전환',
       toggleSidebar: '보기: 좌측 패널 전환',
       toggleBottomPanel: '보기: 하단 패널 전환',
@@ -246,6 +255,7 @@ const ko = {
   },
   errors: {
     invalidFilePath: '워크스페이스 안의 상대 파일 경로를 입력하세요.',
+    invalidFolderPath: '워크스페이스 안의 상대 폴더 경로를 입력하세요.',
     workspaceMissing: '설정된 워크스페이스 폴더를 찾을 수 없습니다. 경로를 바꾼 뒤 새로고침하세요.',
   },
 };

@@ -1080,6 +1080,22 @@ function openVscodeManagerPlugin(): Plugin {
       .replace(/^[\\/]+/, '')
       .replace(/\\/g, '/');
 
+  const normalizeRelativeWorkspaceDirectoryPath = (value: string): string =>
+    value
+      .trim()
+      .replace(/\\/g, '/')
+      .replace(/^\.\/+/, '')
+      .replace(/\/{2,}/g, '/')
+      .replace(/\/+$/, '');
+
+  const isSafeRelativeWorkspaceDirectoryPath = (relativePath: string): boolean => {
+    if (!relativePath || relativePath === '.') return false;
+    if (/^(?:[a-zA-Z]:|\/)/.test(relativePath)) return false;
+    if (/(^|\/)\.\.(?:\/|$)/.test(relativePath)) return false;
+    if (relativePath.split('/').some((segment) => !segment || segment === '.')) return false;
+    return true;
+  };
+
   const truncateOutput = (value: string): string => {
     if (value.length <= MAX_COMMAND_OUTPUT_CHARS) return value;
     return `${value.slice(0, MAX_COMMAND_OUTPUT_CHARS).trimEnd()}\n...[truncated]`;
@@ -1498,6 +1514,74 @@ function openVscodeManagerPlugin(): Plugin {
             JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
           );
         }
+      });
+
+      server.middlewares.use('/api/openvscode/directory', (req, res) => {
+        res.setHeader('Content-Type', 'application/json');
+
+        if (req.method !== 'POST') {
+          res.writeHead(405);
+          res.end(JSON.stringify({ error: 'Method not allowed' }));
+          return;
+        }
+
+        readRequestBody(
+          req,
+          async (body) => {
+            try {
+              const relativePath =
+                typeof body.path === 'string'
+                  ? normalizeRelativeWorkspaceDirectoryPath(body.path)
+                  : '';
+              if (!isSafeRelativeWorkspaceDirectoryPath(relativePath)) {
+                res.writeHead(400);
+                res.end(JSON.stringify({ error: 'Invalid directory path' }));
+                return;
+              }
+
+              const workspaceRoot = getWorkspaceRoot();
+              const absolutePath = ensureInsideWorkspace(relativePath);
+              if (fs.existsSync(absolutePath)) {
+                res.writeHead(409);
+                res.end(
+                  JSON.stringify({
+                    error: fs.statSync(absolutePath).isDirectory()
+                      ? 'Directory already exists'
+                      : 'A file already exists at that path',
+                  }),
+                );
+                return;
+              }
+
+              const parentPath = dirname(absolutePath);
+              if (fs.existsSync(parentPath) && !fs.statSync(parentPath).isDirectory()) {
+                res.writeHead(409);
+                res.end(JSON.stringify({ error: 'Parent path is not a directory' }));
+                return;
+              }
+
+              fs.mkdirSync(absolutePath, { recursive: true });
+              res.writeHead(200);
+              res.end(
+                JSON.stringify({
+                  ok: true,
+                  path: toRelativePath(workspaceRoot, absolutePath),
+                }),
+              );
+            } catch (error) {
+              res.writeHead(500);
+              res.end(
+                JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+              );
+            }
+          },
+          (error) => {
+            res.writeHead(400);
+            res.end(
+              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+            );
+          },
+        );
       });
 
       server.middlewares.use('/api/openvscode/file', (req, res) => {

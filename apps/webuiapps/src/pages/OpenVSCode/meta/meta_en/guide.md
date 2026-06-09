@@ -40,16 +40,19 @@ the selected file.
    root.
 4. Use `CREATE_FILE` with a relative path to create an empty file and open it. Absolute paths,
    parent-directory traversal, existing files, and directory paths are rejected.
-5. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
-6. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
+5. Use `CREATE_FOLDER` with a relative path to create a directory and refresh the explorer tree.
+   Absolute paths, parent-directory traversal, existing directories, and existing files are
+   rejected.
+6. Use `REFRESH_WORKSPACE` if files changed on disk and the tree needs reloading.
+7. Use `RUN_DIAGNOSTICS` to run a safe lint/typecheck/test command and populate the Problems panel.
    Parsed diagnostics can be clicked in the IDE to open the file and line.
-7. Use `RUN_TESTS` when the user wants test execution visible in the IDE Tests panel.
-8. Use `CREATE_WORKSPACE_CHECKPOINT`, `LIST_WORKSPACE_CHECKPOINTS`, `RESTORE_WORKSPACE_CHECKPOINT`,
+8. Use `RUN_TESTS` when the user wants test execution visible in the IDE Tests panel.
+9. Use `CREATE_WORKSPACE_CHECKPOINT`, `LIST_WORKSPACE_CHECKPOINTS`, `RESTORE_WORKSPACE_CHECKPOINT`,
    and `DELETE_WORKSPACE_CHECKPOINT` when the user wants IDE restore points visible in the bottom
    Checkpoints panel.
-9. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
-   diffs.
-10. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
+10. Use `REFRESH_GIT_STATUS` to update the read-only Source Control panel with changed files and
+    diffs.
+11. Use `OPEN_SEMANTIC_NAVIGATION` to show semantic results in the IDE Symbols panel when the user
     wants an in-app definition, references, or exports view.
 
 ## Current File Context
@@ -110,5 +113,5 @@ the active-file app actions so Monaco's in-memory buffer and disk stay synchroni
 
 - This IDE is text-file focused and does not provide LSP or a full git UI.
 - Large files, binary files, and paths outside the workspace root are blocked by the dev-server API.
-- The sidebar also exposes the same create-file flow with inline validation and duplicate
-  protection.
+- The sidebar also exposes the same create-file and create-folder flows with inline validation and
+  duplicate protection.
