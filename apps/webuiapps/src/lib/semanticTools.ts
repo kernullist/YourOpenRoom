@@ -135,7 +135,8 @@ export function getSemanticToolDefinitions(): ToolDef[] {
             },
             create_checkpoint: {
               type: 'boolean',
-              description: 'When true, create an IDE checkpoint before applying the rename. Defaults to true.',
+              description:
+                'When true, create an IDE checkpoint before applying the rename. Defaults to true.',
             },
           },
           required: ['symbol', 'new_name', 'preview_signature'],
@@ -170,7 +171,7 @@ export async function executeSemanticTool(
             ? '/api/openvscode/rename-preview'
             : toolName === APPLY_RENAME_TOOL
               ? '/api/openvscode/apply-rename'
-        : '';
+              : '';
 
   if (!endpoint) return `error: unknown semantic tool ${toolName}`;
 
@@ -206,7 +207,11 @@ export async function executeSemanticTool(
       const checkpointRaw = await executeCheckpointTool({
         mode: 'create',
         scope: 'ide',
-        roots: [typeof params.directory === 'string' && params.directory.trim() ? params.directory.trim() : ''],
+        roots: [
+          typeof params.directory === 'string' && params.directory.trim()
+            ? params.directory.trim()
+            : '',
+        ],
         name: `Semantic rename ${String(params.symbol || '').trim()} -> ${String(params.new_name || '').trim()}`,
       });
       if (!/^error:/i.test(checkpointRaw)) {

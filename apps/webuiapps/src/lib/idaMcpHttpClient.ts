@@ -248,7 +248,10 @@ export class McpHttpClient {
     return headers;
   }
 
-  private createTimeoutController(): { controller: AbortController; timeoutId: ReturnType<typeof setTimeout> } {
+  private createTimeoutController(): {
+    controller: AbortController;
+    timeoutId: ReturnType<typeof setTimeout>;
+  } {
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), this.requestTimeoutMs);
     return { controller, timeoutId };
@@ -293,11 +296,12 @@ export class McpHttpClient {
   }
 
   private unwrapToolResult(result: unknown): unknown {
-    const toolResult = (result as {
-      structuredContent?: unknown;
-      content?: Array<{ type?: string; text?: string }>;
-      isError?: boolean;
-    } | null) ?? null;
+    const toolResult =
+      (result as {
+        structuredContent?: unknown;
+        content?: Array<{ type?: string; text?: string }>;
+        isError?: boolean;
+      } | null) ?? null;
 
     if (!toolResult) return null;
     if (toolResult.isError) {
@@ -331,16 +335,21 @@ export class McpHttpClient {
   }
 
   private unwrapResourceResult(result: unknown): unknown {
-    const resourceResult = (result as {
-      contents?: Array<{
-        uri?: string;
-        mimeType?: string;
-        text?: string;
-      }>;
-      isError?: boolean;
-    } | null) ?? null;
+    const resourceResult =
+      (result as {
+        contents?: Array<{
+          uri?: string;
+          mimeType?: string;
+          text?: string;
+        }>;
+        isError?: boolean;
+      } | null) ?? null;
 
-    if (!resourceResult || !Array.isArray(resourceResult.contents) || resourceResult.contents.length === 0) {
+    if (
+      !resourceResult ||
+      !Array.isArray(resourceResult.contents) ||
+      resourceResult.contents.length === 0
+    ) {
       return null;
     }
 

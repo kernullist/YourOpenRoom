@@ -197,7 +197,14 @@ function sendJson(res: ServerResponse, statusCode: number, payload: unknown): vo
 function sanitizeFileName(fileName: string): string {
   const decoded = decodeURIComponent(fileName || '').trim();
   const fallback = decoded || 'sample.bin';
-  return fallback.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_').replace(/\s+/g, ' ');
+  return replaceUnsafeFileNameCharacters(fallback).replace(/\s+/g, ' ');
+}
+
+function replaceUnsafeFileNameCharacters(value: string): string {
+  return Array.from(value, (char) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f || '<>:"/\\|?*'.includes(char) ? '_' : char;
+  }).join('');
 }
 
 function sha256(buffer: Buffer): string {

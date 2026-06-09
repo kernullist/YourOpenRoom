@@ -1,7 +1,8 @@
 const en = {
   kicker: 'Web Intake',
   title: 'Browser / Reader',
-  subtitle: 'Open a page, switch to a calm reading surface, then clip the important bits into your workspace.',
+  subtitle:
+    'Open a page, switch to a calm reading surface, then clip the important bits into your workspace.',
   bookmarks: 'Bookmarks',
   history: 'Recent history',
   remove: 'Remove',
@@ -17,7 +18,8 @@ const en = {
   bookmark: 'Bookmark',
   unsave: 'Unsave',
   saveToNotes: 'Save to Notes',
-  browseNotice: 'Some websites may render partially. If a page looks noisy or broken, switch to Reader mode.',
+  browseNotice:
+    'Some websites may render partially. If a page looks noisy or broken, switch to Reader mode.',
   readerLoading: 'Building a clean reading view...',
   noReaderContent: 'This page did not expose enough readable article text.',
   readerFallback: 'Open a page to build a reading view.',

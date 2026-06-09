@@ -73,7 +73,10 @@ function truncateSnippet(text: string): string {
 }
 
 function toRelativePath(rootDir: string, absolutePath: string): string {
-  return absolutePath.slice(rootDir.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+  return absolutePath
+    .slice(rootDir.length)
+    .replace(/^[\\/]+/, '')
+    .replace(/\\/g, '/');
 }
 
 function getExtension(filePath: string): string {
@@ -200,7 +203,8 @@ export function searchOpenVscodeWorkspace(options: {
         path: relativePath,
         type: 'file',
         size,
-        match_type: pathMatched && contentMatched ? 'path+content' : pathMatched ? 'path' : 'content',
+        match_type:
+          pathMatched && contentMatched ? 'path+content' : pathMatched ? 'path' : 'content',
         ...(snippets.length > 0 ? { snippets } : {}),
       });
     }

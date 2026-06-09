@@ -297,7 +297,11 @@ const EmailItem: React.FC<EmailItemProps> = ({
       className={`${styles.emailItem} ${isSelected ? styles.selected : ''} ${!email.isRead ? styles.unread : ''}`}
       onClick={() => onSelect(email)}
     >
-      {!email.isRead ? <div className={styles.unreadDot} /> : <div className={styles.readPlaceholder} />}
+      {!email.isRead ? (
+        <div className={styles.unreadDot} />
+      ) : (
+        <div className={styles.readPlaceholder} />
+      )}
       <button
         className={`${styles.emailStarBtn} ${email.isStarred ? styles.starred : ''}`}
         onClick={(event) => {
@@ -399,10 +403,14 @@ const EmailDetail: React.FC<EmailDetailProps> = ({
       <div className={styles.detailHeader}>
         <h2 className={styles.detailSubject}>{email.subject || t('noSubject')}</h2>
         <div className={styles.detailMeta}>
-          <div className={styles.detailAvatar}>{getInitial(email.from.name || email.from.address)}</div>
+          <div className={styles.detailAvatar}>
+            {getInitial(email.from.name || email.from.address)}
+          </div>
           <div className={styles.detailSenderInfo}>
             <div className={styles.detailSenderRow}>
-              <span className={styles.detailSenderName}>{email.from.name || email.from.address}</span>
+              <span className={styles.detailSenderName}>
+                {email.from.name || email.from.address}
+              </span>
               <span className={styles.detailSenderAddress}>&lt;{email.from.address}&gt;</span>
             </div>
             <div className={styles.detailRecipients}>
@@ -410,7 +418,9 @@ const EmailDetail: React.FC<EmailDetailProps> = ({
               {email.cc.length > 0 ? ` | ${t('cc')}: ${joinAddresses(email.cc)}` : ''}
             </div>
             {email.accountEmail ? (
-              <div className={styles.detailAccount}>{t('syncedAccount', { email: email.accountEmail })}</div>
+              <div className={styles.detailAccount}>
+                {t('syncedAccount', { email: email.accountEmail })}
+              </div>
             ) : null}
           </div>
           <span className={styles.detailTime}>{formatDetailTime(email.timestamp)}</span>
@@ -438,7 +448,10 @@ const EmailPage: React.FC = () => {
   const [emails, setEmails] = useState<Email[]>([]);
   const [selectedEmailId, setSelectedEmailId] = useState<string | null>(null);
   const [currentFolder, setCurrentFolder] = useState<FolderType>('inbox');
-  const [gmailStatus, setGmailStatus] = useState<GmailStatus>({ configured: false, connected: false });
+  const [gmailStatus, setGmailStatus] = useState<GmailStatus>({
+    configured: false,
+    connected: false,
+  });
   const [composeState, setComposeState] = useState<ComposeState>(DEFAULT_COMPOSE_STATE);
   const [settingsState, setSettingsState] = useState<SettingsState>(DEFAULT_SETTINGS_STATE);
   const [isInitialized, setIsInitialized] = useState(false);
@@ -505,7 +518,10 @@ const EmailPage: React.FC = () => {
     async (focusId?: string | null, folder?: FolderType | null) => {
       await initFromCloud();
       const nextEmails = loadEmailsFromFS();
-      const savedState = loadState() ?? { selectedEmailId: null, currentFolder: 'inbox' as FolderType };
+      const savedState = loadState() ?? {
+        selectedEmailId: null,
+        currentFolder: 'inbox' as FolderType,
+      };
       const nextFolder = folder ?? savedState.currentFolder ?? 'inbox';
       const preferredId = focusId ?? savedState.selectedEmailId ?? null;
       setEmails(nextEmails);
@@ -633,7 +649,9 @@ const EmailPage: React.FC = () => {
         } else {
           await trashGmailMessage(email.id);
           const nextEmail = { ...email, folder: 'trash' as FolderType };
-          setEmails((previous) => previous.map((item) => (item.id === email.id ? nextEmail : item)));
+          setEmails((previous) =>
+            previous.map((item) => (item.id === email.id ? nextEmail : item)),
+          );
           upsertLocalEmail(nextEmail);
         }
         if (selectedEmailId === email.id) {
@@ -789,7 +807,9 @@ const EmailPage: React.FC = () => {
       return;
     }
 
-    popup.document.write(`<p style="font-family: sans-serif; padding: 16px;">${t('openingGoogle')}</p>`);
+    popup.document.write(
+      `<p style="font-family: sans-serif; padding: 16px;">${t('openingGoogle')}</p>`,
+    );
     oauthPopupRef.current = popup;
     setIsConnecting(true);
     setErrorText(null);
@@ -839,7 +859,11 @@ const EmailPage: React.FC = () => {
 
         switch (action.action_type) {
           case 'SYNC_EMAIL': {
-            await runSync(action.params?.focusId ?? null, (action.params?.folder as FolderType | undefined) ?? null, false);
+            await runSync(
+              action.params?.focusId ?? null,
+              (action.params?.folder as FolderType | undefined) ?? null,
+              false,
+            );
             return 'success';
           }
           case 'SEND_EMAIL': {
@@ -994,7 +1018,10 @@ const EmailPage: React.FC = () => {
           <div className={styles.topBarStatus}>{connectedStatusText}</div>
         </div>
         <div className={styles.topBarActions}>
-          <ToolbarButton icon={<Settings size={16} />} onClick={() => setSettingsState((previous) => ({ ...previous, open: true }))}>
+          <ToolbarButton
+            icon={<Settings size={16} />}
+            onClick={() => setSettingsState((previous) => ({ ...previous, open: true }))}
+          >
             {t('settings')}
           </ToolbarButton>
           <ToolbarButton
@@ -1010,7 +1037,11 @@ const EmailPage: React.FC = () => {
               {t('compose')}
             </ToolbarButton>
           ) : (
-            <ToolbarButton icon={<MailPlus size={16} />} busy={isConnecting} onClick={() => void handleConnectGmail()}>
+            <ToolbarButton
+              icon={<MailPlus size={16} />}
+              busy={isConnecting}
+              onClick={() => void handleConnectGmail()}
+            >
               {t('connectGmail')}
             </ToolbarButton>
           )}
@@ -1022,14 +1053,23 @@ const EmailPage: React.FC = () => {
       {!gmailStatus.connected && !isLoading ? (
         <div className={styles.centerStage}>
           <div className={styles.emptyCard}>
-            <div className={styles.emptyHeadline}>{t(gmailStatus.configured ? 'connectHeadline' : 'setupHeadline')}</div>
+            <div className={styles.emptyHeadline}>
+              {t(gmailStatus.configured ? 'connectHeadline' : 'setupHeadline')}
+            </div>
             <p>{t(gmailStatus.configured ? 'connectDescription' : 'setupDescription')}</p>
             <div className={styles.emptyActions}>
-              <ToolbarButton icon={<Settings size={16} />} onClick={() => setSettingsState((previous) => ({ ...previous, open: true }))}>
+              <ToolbarButton
+                icon={<Settings size={16} />}
+                onClick={() => setSettingsState((previous) => ({ ...previous, open: true }))}
+              >
                 {t('openSettings')}
               </ToolbarButton>
               {gmailStatus.configured ? (
-                <ToolbarButton icon={<MailPlus size={16} />} busy={isConnecting} onClick={() => void handleConnectGmail()}>
+                <ToolbarButton
+                  icon={<MailPlus size={16} />}
+                  busy={isConnecting}
+                  onClick={() => void handleConnectGmail()}
+                >
                   {t('connectGmail')}
                 </ToolbarButton>
               ) : null}

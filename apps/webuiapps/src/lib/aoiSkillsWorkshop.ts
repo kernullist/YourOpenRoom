@@ -35,8 +35,7 @@ export const DEFAULT_AOI_WORKSHOP_SKILLS: AoiWorkshopSkill[] = [
     name: 'Review Mode',
     description: 'Re-check implemented work, identify bugs, fix them, then verify again.',
     triggerTerms: ['review mode', '리뷰모드', '다시 검토', '버그를 수정', '검토해서'],
-    body:
-      'After a meaningful implementation step, switch to review mode: inspect the diff, look for correctness, stability, security, and missing validation risks, fix concrete issues, then run focused verification before reporting completion.',
+    body: 'After a meaningful implementation step, switch to review mode: inspect the diff, look for correctness, stability, security, and missing validation risks, fix concrete issues, then run focused verification before reporting completion.',
     enabled: true,
     trusted: true,
     source: 'built-in',
@@ -48,8 +47,7 @@ export const DEFAULT_AOI_WORKSHOP_SKILLS: AoiWorkshopSkill[] = [
     name: 'Current Research',
     description: 'Use live research before answering unstable or latest-information requests.',
     triggerTerms: ['latest', 'current', 'recent', '최신', '조사', '트렌드', 'verify'],
-    body:
-      'For current, latest, or fast-moving topics, gather fresh evidence before answering. Prefer primary or official sources when available, compare dates, and separate confirmed facts from implementation recommendations.',
+    body: 'For current, latest, or fast-moving topics, gather fresh evidence before answering. Prefer primary or official sources when available, compare dates, and separate confirmed facts from implementation recommendations.',
     enabled: true,
     trusted: true,
     source: 'built-in',
@@ -61,8 +59,7 @@ export const DEFAULT_AOI_WORKSHOP_SKILLS: AoiWorkshopSkill[] = [
     name: 'Stepwise Delivery',
     description: 'Break large work into explicit stages with verification before moving on.',
     triggerTerms: ['단계별', 'step by step', '구현하고', '검증', '커밋', 'commit'],
-    body:
-      'For multi-stage work, handle one stage at a time: implement, review the changed surface, fix issues, verify with targeted tests or build checks, record the result, and only then move to the next stage.',
+    body: 'For multi-stage work, handle one stage at a time: implement, review the changed surface, fix issues, verify with targeted tests or build checks, record the result, and only then move to the next stage.',
     enabled: true,
     trusted: true,
     source: 'built-in',
@@ -74,8 +71,7 @@ export const DEFAULT_AOI_WORKSHOP_SKILLS: AoiWorkshopSkill[] = [
     name: 'Windows Security Engineering',
     description: 'Favor practical anti-cheat and Windows security engineering details.',
     triggerTerms: ['anti-cheat', '안티치트', 'windows security', 'kernel', '커널', 'ue5', '보안'],
-    body:
-      'For Windows security, anti-cheat, kernel/user-mode telemetry, memory inspection, TPM verification, or Unreal Engine security topics, prioritize practical architecture, failure paths, compatibility notes, false-positive control, and operational verification.',
+    body: 'For Windows security, anti-cheat, kernel/user-mode telemetry, memory inspection, TPM verification, or Unreal Engine security topics, prioritize practical architecture, failure paths, compatibility notes, false-positive control, and operational verification.',
     enabled: true,
     trusted: true,
     source: 'built-in',
@@ -143,7 +139,10 @@ export function createUserAoiWorkshopSkill(params: {
     id: `user-${slugify(name)}-${now.toString(36)}`,
     name,
     description: truncateSingleLine(params.description?.trim() || 'User-authored Aoi skill.', 180),
-    triggerTerms: (params.triggerTerms ?? []).map((term) => term.trim()).filter(Boolean).slice(0, 16),
+    triggerTerms: (params.triggerTerms ?? [])
+      .map((term) => term.trim())
+      .filter(Boolean)
+      .slice(0, 16),
     body: truncateText(params.body.trim(), MAX_SKILL_BODY_CHARS),
     enabled: true,
     trusted: false,
@@ -160,7 +159,10 @@ export function upsertAoiWorkshopSkill(
   return normalizeAoiWorkshopSkills([skill, ...skills.filter((item) => item.id !== skill.id)]);
 }
 
-export function removeAoiWorkshopSkill(skills: AoiWorkshopSkill[], skillId: string): AoiWorkshopSkill[] {
+export function removeAoiWorkshopSkill(
+  skills: AoiWorkshopSkill[],
+  skillId: string,
+): AoiWorkshopSkill[] {
   return normalizeAoiWorkshopSkills(
     skills.filter((skill) => skill.id !== skillId || skill.source === 'built-in'),
   );
@@ -169,7 +171,9 @@ export function removeAoiWorkshopSkill(skills: AoiWorkshopSkill[], skillId: stri
 export function updateAoiWorkshopSkill(
   skills: AoiWorkshopSkill[],
   skillId: string,
-  updates: Partial<Pick<AoiWorkshopSkill, 'enabled' | 'trusted' | 'body' | 'description' | 'triggerTerms'>>,
+  updates: Partial<
+    Pick<AoiWorkshopSkill, 'enabled' | 'trusted' | 'body' | 'description' | 'triggerTerms'>
+  >,
   now = Date.now(),
 ): AoiWorkshopSkill[] {
   return normalizeAoiWorkshopSkills(
@@ -195,14 +199,14 @@ export function resolveAoiActiveSkills(
   return normalizeAoiWorkshopSkills(skills)
     .filter((skill) => skill.enabled && skill.trusted)
     .map((skill) => {
-      const matchedTerms = skill.triggerTerms.filter((term) =>
-        text.includes(term.toLowerCase()),
-      );
+      const matchedTerms = skill.triggerTerms.filter((term) => text.includes(term.toLowerCase()));
       const score = matchedTerms.length;
       return { skill, score, matchedTerms };
     })
     .filter((match) => match.score > 0)
-    .sort((left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name))
+    .sort(
+      (left, right) => right.score - left.score || left.skill.name.localeCompare(right.skill.name),
+    )
     .slice(0, maxSkills);
 }
 
@@ -218,9 +222,7 @@ export function buildAoiSkillsPrompt(matches: AoiWorkshopSkillMatch[]): string {
   ];
 
   matches.forEach((match) => {
-    lines.push(
-      `- ${match.skill.name}: ${truncateText(match.skill.body, MAX_SKILL_BODY_CHARS)}`,
-    );
+    lines.push(`- ${match.skill.name}: ${truncateText(match.skill.body, MAX_SKILL_BODY_CHARS)}`);
   });
 
   return `\n${lines.join('\n')}`;

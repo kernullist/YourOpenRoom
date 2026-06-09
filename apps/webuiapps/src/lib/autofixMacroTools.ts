@@ -22,7 +22,8 @@ export function getAutofixMacroToolDefinitions(): ToolDef[] {
             },
             directory: {
               type: 'string',
-              description: 'Optional IDE workspace directory to scope both the checkpoint and diagnostics.',
+              description:
+                'Optional IDE workspace directory to scope both the checkpoint and diagnostics.',
             },
           },
           required: ['command'],

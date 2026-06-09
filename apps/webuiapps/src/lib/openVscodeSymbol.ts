@@ -40,7 +40,10 @@ export interface SymbolSearchResult {
 }
 
 function toRelativePath(rootDir: string, absolutePath: string): string {
-  return absolutePath.slice(rootDir.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+  return absolutePath
+    .slice(rootDir.length)
+    .replace(/^[\\/]+/, '')
+    .replace(/\\/g, '/');
 }
 
 function getExtension(filePath: string): string {
@@ -69,7 +72,11 @@ export function searchWorkspaceSymbol(options: {
   maxResults?: number;
 }): SymbolSearchResult {
   const rootDir = resolve(options.rootDir);
-  const directory = (options.directory || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  const directory = (options.directory || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
   const searchRoot = directory ? resolve(rootDir, directory) : rootDir;
   const ignoredDirs = options.ignoredDirs ?? new Set<string>();
   const maxResults = Math.min(12, Math.max(1, Math.floor(options.maxResults ?? 6)));
@@ -128,7 +135,11 @@ export function searchWorkspaceSymbol(options: {
       if (content.includes('\u0000')) continue;
 
       const lines = content.replace(/\r\n/g, '\n').split('\n');
-      for (let lineIndex = 0; lineIndex < lines.length && matches.length < maxResults; lineIndex++) {
+      for (
+        let lineIndex = 0;
+        lineIndex < lines.length && matches.length < maxResults;
+        lineIndex++
+      ) {
         const line = lines[lineIndex];
         for (const pattern of matchPatterns) {
           const regexMatch = line.match(pattern.regex);

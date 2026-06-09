@@ -52,7 +52,10 @@ function createProjectContext(rootDir: string, directory = ''): TsProjectContext
   };
 }
 
-function findDeclarationCandidates(context: TsProjectContext, symbol: string): DeclarationCandidate[] {
+function findDeclarationCandidates(
+  context: TsProjectContext,
+  symbol: string,
+): DeclarationCandidate[] {
   const candidates: DeclarationCandidate[] = [];
 
   for (const fileName of context.fileNames) {
@@ -70,7 +73,11 @@ function findDeclarationCandidates(context: TsProjectContext, symbol: string): D
         node.name?.text === symbol
       ) {
         candidates.push({ fileName, position: node.name.getStart(sourceFile) });
-      } else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === symbol) {
+      } else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === symbol
+      ) {
         candidates.push({ fileName, position: node.name.getStart(sourceFile) });
       }
       ts.forEachChild(node, visit);
@@ -96,7 +103,10 @@ function contextLines(fileName: string, line: number, radius = 2): string[] {
   return lines.slice(start, end).map((value, index) => `${start + index + 1}: ${value}`);
 }
 
-function classifyReference(fileName: string, position: number): 'reference' | 'import' | 'declaration' {
+function classifyReference(
+  fileName: string,
+  position: number,
+): 'reference' | 'import' | 'declaration' {
   const content = fs.readFileSync(fileName, 'utf-8');
   const sourceFile = ts.createSourceFile(fileName, content, ts.ScriptTarget.Latest, true);
   let kind: 'reference' | 'import' | 'declaration' = 'reference';
@@ -172,7 +182,8 @@ export function getTsSemanticReferences(options: {
   if (!candidate) return null;
 
   const maxResults = Math.min(50, Math.max(1, Math.floor(options.maxResults ?? 20)));
-  const references = context.languageService.findReferences(candidate.fileName, candidate.position) || [];
+  const references =
+    context.languageService.findReferences(candidate.fileName, candidate.position) || [];
   const flattened: Array<{
     fileName: string;
     line: number;
@@ -195,7 +206,9 @@ export function getTsSemanticReferences(options: {
         fileName: ref.fileName,
         line: start.line + 1,
         column: start.character + 1,
-        kind: ref.isDefinition ? 'declaration' : classifyReference(ref.fileName, ref.textSpan.start),
+        kind: ref.isDefinition
+          ? 'declaration'
+          : classifyReference(ref.fileName, ref.textSpan.start),
         preview: linePreview(ref.fileName, start.line + 1),
         position: ref.textSpan.start,
       });
@@ -218,7 +231,13 @@ export function getTsSemanticRenameLocations(options: {
 
   const maxResults = Math.min(200, Math.max(1, Math.floor(options.maxResults ?? 100)));
   const locations =
-    context.languageService.findRenameLocations(candidate.fileName, candidate.position, false, false, true) || [];
+    context.languageService.findRenameLocations(
+      candidate.fileName,
+      candidate.position,
+      false,
+      false,
+      true,
+    ) || [];
 
   return locations.slice(0, maxResults).map((location) => {
     const sourceFile = ts.createSourceFile(

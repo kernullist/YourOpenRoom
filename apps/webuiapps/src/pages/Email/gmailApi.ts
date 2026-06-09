@@ -37,7 +37,9 @@ async function requestJson<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-function withSessionPath<T extends Record<string, unknown>>(payload: T): T & { sessionPath: string } {
+function withSessionPath<T extends Record<string, unknown>>(
+  payload: T,
+): T & { sessionPath: string } {
   const sessionPath = getSessionPath();
   if (!sessionPath) {
     throw new Error('The current chat session is not ready yet.');
@@ -80,7 +82,9 @@ export async function disconnectGmail(): Promise<void> {
   });
 }
 
-export async function sendGmailMessage(payload: GmailComposePayload): Promise<{ ok: true; messageId: string }> {
+export async function sendGmailMessage(
+  payload: GmailComposePayload,
+): Promise<{ ok: true; messageId: string }> {
   return requestJson('/api/gmail/send', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

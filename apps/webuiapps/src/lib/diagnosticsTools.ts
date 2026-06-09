@@ -118,7 +118,8 @@ export function getDiagnosticsToolDefinitions(): ToolDef[] {
           properties: {
             command: {
               type: 'string',
-              description: 'Safe verification command, such as "pnpm exec tsc --noEmit" or "pnpm test -- foo.test.ts"',
+              description:
+                'Safe verification command, such as "pnpm exec tsc --noEmit" or "pnpm test -- foo.test.ts"',
             },
             directory: {
               type: 'string',

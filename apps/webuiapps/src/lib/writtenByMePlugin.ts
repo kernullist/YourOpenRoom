@@ -5,11 +5,7 @@ import { createRequire } from 'module';
 import * as fs from 'fs';
 import { basename, extname, join, resolve, sep } from 'path';
 import { Readable } from 'stream';
-import {
-  callAoiMainTextModel,
-  getAoiLlmStatus,
-  loadAoiMainLlmConfig,
-} from './dewdropCanvasPlugin';
+import { callAoiMainTextModel, getAoiLlmStatus, loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import type { LLMConfig } from './llmModels';
 
 const STATIC_PREFIX = '/written-by-me';
@@ -130,11 +126,7 @@ interface LogEntry {
 interface ExternalModules {
   buildPrompt: (texts: TextSource[], preferredLanguage: string) => string;
   estimateTokens: (text: string) => number;
-  buildMergePrompt: (
-    analyses: string[],
-    totalDocs: number,
-    preferredLanguage: string,
-  ) => string;
+  buildMergePrompt: (analyses: string[], totalDocs: number, preferredLanguage: string) => string;
   extractText: (filePath: string, originalName: string) => Promise<string>;
   fetchUrlContent: (url: string) => Promise<{ title: string; text: string }>;
 }
@@ -243,7 +235,9 @@ function ensureWrittenByMeDirs(sourceRoot: string): void {
 
 function sourceIsReady(sourceRoot: string): boolean {
   const staticRoot = getStaticRoot(sourceRoot);
-  return fs.existsSync(join(staticRoot, 'index.html')) && fs.existsSync(join(staticRoot, 'script.js'));
+  return (
+    fs.existsSync(join(staticRoot, 'index.html')) && fs.existsSync(join(staticRoot, 'script.js'))
+  );
 }
 
 function resolveStaticFile(sourceRoot: string, pathname: string): string | null {
@@ -334,7 +328,10 @@ async function readJsonRequestBody(req: IncomingMessage): Promise<Record<string,
   });
 }
 
-async function readUploadedFiles(req: IncomingMessage, uploadDir: string): Promise<UploadedFileInfo[]> {
+async function readUploadedFiles(
+  req: IncomingMessage,
+  uploadDir: string,
+): Promise<UploadedFileInfo[]> {
   const webRequest = new Request('http://localhost/upload', {
     method: req.method || 'POST',
     headers: makeHeaders(req.headers),
@@ -455,7 +452,10 @@ async function analyzeWithBatching(
   const totalTokens = modules.estimateTokens(fullPrompt);
 
   if (totalTokens <= availableForInput) {
-    logEvent('info', `Strategy: single_pass (${allTexts.length} sources, approx ${totalTokens} tokens)`);
+    logEvent(
+      'info',
+      `Strategy: single_pass (${allTexts.length} sources, approx ${totalTokens} tokens)`,
+    );
     const skillMd = await analyzeStyleWithAoi(config, serverOrigin, fullPrompt);
     return { skillMd, strategy: 'single_pass', batches: 1 };
   }
@@ -666,8 +666,7 @@ export function writtenByMePlugin(options: PluginOptions = {}): Plugin {
     for (const file of uploaded) {
       const filePath = join(getUploadsDir(sourceRoot), `${file.id}${file.type}`);
       const text = await currentModules.extractText(filePath, file.name);
-      const capped =
-        text.length > MAX_STORED_CONTENT ? text.slice(0, MAX_STORED_CONTENT) : text;
+      const capped = text.length > MAX_STORED_CONTENT ? text.slice(0, MAX_STORED_CONTENT) : text;
       textStore.set(file.id, { name: file.name, content: capped });
       logEvent('info', `Uploaded: ${file.name} (${text.length} chars)`);
       extracted.push(file);
@@ -683,7 +682,10 @@ export function writtenByMePlugin(options: PluginOptions = {}): Plugin {
   ): Promise<{ analysisId: string; skillMd: string; strategy: string; batches: number }> => {
     const totalChars = texts.reduce((sum, text) => sum + text.content.length, 0);
     if (texts.length === 0 || totalChars === 0) {
-      throw new HttpError(400, 'No content available. Upload files, paste text, or add URLs first.');
+      throw new HttpError(
+        400,
+        'No content available. Upload files, paste text, or add URLs first.',
+      );
     }
     if (totalChars > MAX_TOTAL_CHARS) {
       throw new HttpError(
@@ -832,8 +834,7 @@ export function writtenByMePlugin(options: PluginOptions = {}): Plugin {
         const { title, text } = await getModules().fetchUrlContent(rawUrl);
         const id = randomUUID();
         const source = title.length > 80 ? `${title.slice(0, 80)}...` : title;
-        const capped =
-          text.length > MAX_STORED_CONTENT ? text.slice(0, MAX_STORED_CONTENT) : text;
+        const capped = text.length > MAX_STORED_CONTENT ? text.slice(0, MAX_STORED_CONTENT) : text;
         urlStore.set(id, { url: rawUrl, name: source, content: capped });
         logEvent('info', `URL fetched: ${source} (${text.length} chars)`);
         writeJson(res, 200, { ok: true, id, title: source, charCount: text.length });

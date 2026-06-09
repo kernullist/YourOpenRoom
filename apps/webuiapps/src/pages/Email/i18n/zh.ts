@@ -9,9 +9,11 @@ const zh = {
   compose: '写邮件',
   connectGmail: '连接 Gmail',
   connectHeadline: '连接你的 Gmail',
-  connectDescription: 'OAuth 客户端已经保存。连接 Gmail 后就可以同步真实的收件箱、已发送和草稿数据。',
+  connectDescription:
+    'OAuth 客户端已经保存。连接 Gmail 后就可以同步真实的收件箱、已发送和草稿数据。',
   setupHeadline: '先填写 Gmail OAuth 客户端',
-  setupDescription: '打开设置，填写 Google OAuth Desktop App Client ID，然后连接 Gmail 开始同步真实邮件。',
+  setupDescription:
+    '打开设置，填写 Google OAuth Desktop App Client ID，然后连接 Gmail 开始同步真实邮件。',
   openSettings: '打开设置',
   gmailSettings: 'Gmail 设置',
   gmailSettingsHint: '请使用 Google OAuth Desktop App 客户端。Client Secret 可选。',

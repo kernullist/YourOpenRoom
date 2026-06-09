@@ -73,7 +73,11 @@ export interface WorkspaceRenamePreviewResult {
   files: Array<{
     path: string;
     count: number;
-    previews: Array<{ line: number; kind: 'reference' | 'import' | 'declaration'; preview: string }>;
+    previews: Array<{
+      line: number;
+      kind: 'reference' | 'import' | 'declaration';
+      preview: string;
+    }>;
   }>;
 }
 
@@ -91,7 +95,10 @@ export interface WorkspaceRenameApplyResult {
 }
 
 function toRelativePath(rootDir: string, absolutePath: string): string {
-  return absolutePath.slice(rootDir.length).replace(/^[\\/]+/, '').replace(/\\/g, '/');
+  return absolutePath
+    .slice(rootDir.length)
+    .replace(/^[\\/]+/, '')
+    .replace(/\\/g, '/');
 }
 
 function getExtension(filePath: string): string {
@@ -123,7 +130,11 @@ function walkWorkspaceFiles(options: {
   ignoredDirs?: Set<string>;
 }): Array<{ absolutePath: string; relativePath: string; content: string }> {
   const rootDir = resolve(options.rootDir);
-  const directory = (options.directory || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
+  const directory = (options.directory || '')
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+/, '')
+    .replace(/\/+$/, '');
   const searchRoot = directory ? resolve(rootDir, directory) : rootDir;
   const ignoredDirs = options.ignoredDirs ?? new Set<string>();
   const pendingDirs = [searchRoot];
@@ -226,31 +237,94 @@ export function listWorkspaceExports(options: {
     const visit = (node: ts.Node) => {
       if (exports.length >= maxResults) return;
 
-      const modifiers = 'modifiers' in node ? ts.canHaveModifiers(node) ? ts.getModifiers(node) : undefined : undefined;
-      const isExported = !!modifiers?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword);
+      const modifiers =
+        'modifiers' in node
+          ? ts.canHaveModifiers(node)
+            ? ts.getModifiers(node)
+            : undefined
+          : undefined;
+      const isExported = !!modifiers?.some(
+        (modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword,
+      );
 
       if (isExported) {
         if (ts.isFunctionDeclaration(node) && node.name) {
-          pushExport(exports, file.relativePath, sourceFile, file.content, node.name, node.name.text, 'function');
+          pushExport(
+            exports,
+            file.relativePath,
+            sourceFile,
+            file.content,
+            node.name,
+            node.name.text,
+            'function',
+          );
         } else if (ts.isClassDeclaration(node) && node.name) {
-          pushExport(exports, file.relativePath, sourceFile, file.content, node.name, node.name.text, 'class');
+          pushExport(
+            exports,
+            file.relativePath,
+            sourceFile,
+            file.content,
+            node.name,
+            node.name.text,
+            'class',
+          );
         } else if (ts.isInterfaceDeclaration(node)) {
-          pushExport(exports, file.relativePath, sourceFile, file.content, node.name, node.name.text, 'interface');
+          pushExport(
+            exports,
+            file.relativePath,
+            sourceFile,
+            file.content,
+            node.name,
+            node.name.text,
+            'interface',
+          );
         } else if (ts.isTypeAliasDeclaration(node)) {
-          pushExport(exports, file.relativePath, sourceFile, file.content, node.name, node.name.text, 'type');
+          pushExport(
+            exports,
+            file.relativePath,
+            sourceFile,
+            file.content,
+            node.name,
+            node.name.text,
+            'type',
+          );
         } else if (ts.isEnumDeclaration(node)) {
-          pushExport(exports, file.relativePath, sourceFile, file.content, node.name, node.name.text, 'enum');
+          pushExport(
+            exports,
+            file.relativePath,
+            sourceFile,
+            file.content,
+            node.name,
+            node.name.text,
+            'enum',
+          );
         } else if (ts.isVariableStatement(node)) {
           for (const declaration of node.declarationList.declarations) {
             if (ts.isIdentifier(declaration.name)) {
-              pushExport(exports, file.relativePath, sourceFile, file.content, declaration.name, declaration.name.text, 'const');
+              pushExport(
+                exports,
+                file.relativePath,
+                sourceFile,
+                file.content,
+                declaration.name,
+                declaration.name.text,
+                'const',
+              );
             }
           }
         }
       }
 
       if (ts.isExportAssignment(node)) {
-        pushExport(exports, file.relativePath, sourceFile, file.content, node, 'default', 'default');
+        pushExport(
+          exports,
+          file.relativePath,
+          sourceFile,
+          file.content,
+          node,
+          'default',
+          'default',
+        );
       }
 
       ts.forEachChild(node, visit);
@@ -261,7 +335,12 @@ export function listWorkspaceExports(options: {
   }
 
   return {
-    directory: (options.directory || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '') || '/',
+    directory:
+      (options.directory || '')
+        .trim()
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '') || '/',
     total_matches: exports.length,
     exports,
   };
@@ -356,7 +435,11 @@ export function findWorkspaceReferences(options: {
     return {
       symbol: options.symbol,
       directory:
-        (options.directory || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '') || '/',
+        (options.directory || '')
+          .trim()
+          .replace(/\\/g, '/')
+          .replace(/^\/+/, '')
+          .replace(/\/+$/, '') || '/',
       total_matches: semanticReferences.length,
       references: semanticReferences.map((reference) => ({
         path: toRelativePath(resolve(options.rootDir), reference.fileName),
@@ -373,13 +456,20 @@ export function findWorkspaceReferences(options: {
   const maxResults = Math.min(20, Math.max(1, Math.floor(options.maxResults ?? 10)));
 
   for (const file of files) {
-    references.push(...collectWorkspaceReferencesForFile(file, options.symbol, maxResults - references.length));
+    references.push(
+      ...collectWorkspaceReferencesForFile(file, options.symbol, maxResults - references.length),
+    );
     if (references.length >= maxResults) break;
   }
 
   return {
     symbol: options.symbol,
-    directory: (options.directory || '').trim().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '') || '/',
+    directory:
+      (options.directory || '')
+        .trim()
+        .replace(/\\/g, '/')
+        .replace(/^\/+/, '')
+        .replace(/\/+$/, '') || '/',
     total_matches: references.length,
     references,
   };
@@ -417,16 +507,14 @@ export function peekWorkspaceDefinition(options: {
       getScriptKind(file.relativePath),
     );
 
-    let found:
-      | {
-          path: string;
-          line: number;
-          column: number;
-          kind: string;
-          preview: string;
-          context: string[];
-        }
-      | null = null;
+    let found: {
+      path: string;
+      line: number;
+      column: number;
+      kind: string;
+      preview: string;
+      context: string[];
+    } | null = null;
 
     const visit = (node: ts.Node) => {
       if (found) return;
@@ -443,12 +531,21 @@ export function peekWorkspaceDefinition(options: {
         };
       };
 
-      if (ts.isFunctionDeclaration(node) && node.name?.text === options.symbol) makeFound(node.name, 'function');
-      else if (ts.isClassDeclaration(node) && node.name?.text === options.symbol) makeFound(node.name, 'class');
-      else if (ts.isInterfaceDeclaration(node) && node.name.text === options.symbol) makeFound(node.name, 'interface');
-      else if (ts.isTypeAliasDeclaration(node) && node.name.text === options.symbol) makeFound(node.name, 'type');
-      else if (ts.isEnumDeclaration(node) && node.name.text === options.symbol) makeFound(node.name, 'enum');
-      else if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === options.symbol) {
+      if (ts.isFunctionDeclaration(node) && node.name?.text === options.symbol)
+        makeFound(node.name, 'function');
+      else if (ts.isClassDeclaration(node) && node.name?.text === options.symbol)
+        makeFound(node.name, 'class');
+      else if (ts.isInterfaceDeclaration(node) && node.name.text === options.symbol)
+        makeFound(node.name, 'interface');
+      else if (ts.isTypeAliasDeclaration(node) && node.name.text === options.symbol)
+        makeFound(node.name, 'type');
+      else if (ts.isEnumDeclaration(node) && node.name.text === options.symbol)
+        makeFound(node.name, 'enum');
+      else if (
+        ts.isVariableDeclaration(node) &&
+        ts.isIdentifier(node.name) &&
+        node.name.text === options.symbol
+      ) {
         makeFound(node.name, 'const');
       }
 
@@ -490,7 +587,15 @@ export function buildRenamePreview(options: {
 
     const grouped = new Map<
       string,
-      { path: string; count: number; previews: Array<{ line: number; kind: 'reference' | 'import' | 'declaration'; preview: string }> }
+      {
+        path: string;
+        count: number;
+        previews: Array<{
+          line: number;
+          kind: 'reference' | 'import' | 'declaration';
+          preview: string;
+        }>;
+      }
     >();
 
     for (const reference of normalizedReferences) {
@@ -529,7 +634,15 @@ export function buildRenamePreview(options: {
 
   const grouped = new Map<
     string,
-    { path: string; count: number; previews: Array<{ line: number; kind: 'reference' | 'import' | 'declaration'; preview: string }> }
+    {
+      path: string;
+      count: number;
+      previews: Array<{
+        line: number;
+        kind: 'reference' | 'import' | 'declaration';
+        preview: string;
+      }>;
+    }
   >();
 
   for (const reference of references) {
@@ -578,7 +691,11 @@ export function applyWorkspaceRename(options: {
       kind: reference.kind,
       preview: reference.preview,
     }));
-    const signature = buildReferenceSignature(options.symbol, options.newName, normalizedReferences);
+    const signature = buildReferenceSignature(
+      options.symbol,
+      options.newName,
+      normalizedReferences,
+    );
     if (options.expectedSignature && options.expectedSignature !== signature) {
       throw new Error(
         `Rename preview signature mismatch. Expected ${options.expectedSignature}, found ${signature}. Re-run rename_preview first.`,
@@ -628,7 +745,11 @@ export function applyWorkspaceRename(options: {
   const referencesByFile = new Map<string, WorkspaceReferenceWithOffsets[]>();
 
   for (const file of files) {
-    const refs = collectWorkspaceReferencesForFile(file, options.symbol, maxResults - allReferences.length);
+    const refs = collectWorkspaceReferencesForFile(
+      file,
+      options.symbol,
+      maxResults - allReferences.length,
+    );
     if (refs.length === 0) continue;
     allReferences.push(...refs);
     referencesByFile.set(file.relativePath, refs);
@@ -652,9 +773,7 @@ export function applyWorkspaceRename(options: {
     let nextContent = file.content;
     for (const reference of [...refs].sort((a, b) => b.start - a.start)) {
       nextContent =
-        nextContent.slice(0, reference.start) +
-        options.newName +
-        nextContent.slice(reference.end);
+        nextContent.slice(0, reference.start) + options.newName + nextContent.slice(reference.end);
     }
 
     if (nextContent === file.content) continue;

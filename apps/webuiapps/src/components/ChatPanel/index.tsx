@@ -5251,8 +5251,7 @@ const SettingsModal: React.FC<{
   const [newAoiSkillName, setNewAoiSkillName] = useState('');
   const [newAoiSkillTriggers, setNewAoiSkillTriggers] = useState('');
   const [newAoiSkillBody, setNewAoiSkillBody] = useState('');
-  const [aoiMcpPluginDrafts, setAoiMcpPluginDrafts] =
-    useState<AoiMcpPluginEntry[]>(aoiMcpPlugins);
+  const [aoiMcpPluginDrafts, setAoiMcpPluginDrafts] = useState<AoiMcpPluginEntry[]>(aoiMcpPlugins);
   const [newAoiMcpName, setNewAoiMcpName] = useState('');
   const [newAoiMcpUrl, setNewAoiMcpUrl] = useState('');
   const [newAoiMcpKind, setNewAoiMcpKind] = useState<AoiMcpPluginKind>('mcp-server');
@@ -5271,10 +5270,7 @@ const SettingsModal: React.FC<{
     () => summarizeAoiMcpPluginAdmin(aoiMcpPluginDrafts),
     [aoiMcpPluginDrafts],
   );
-  const visibleMcpPlugins = useMemo(
-    () => aoiMcpPluginDrafts.slice(0, 8),
-    [aoiMcpPluginDrafts],
-  );
+  const visibleMcpPlugins = useMemo(() => aoiMcpPluginDrafts.slice(0, 8), [aoiMcpPluginDrafts]);
   const capabilityRows = useMemo(
     () =>
       getAoiCapabilityRows(AOI_DEFAULT_CAPABILITY_NAMES)
@@ -6840,8 +6836,7 @@ const SettingsModal: React.FC<{
                           </span>
                           <span>
                             {' '}
-                            iter {entry.metrics.iterations} · tools{' '}
-                            {entry.metrics.toolCallCount} ·{' '}
+                            iter {entry.metrics.iterations} · tools {entry.metrics.toolCallCount} ·{' '}
                             {new Date(entry.updatedAt).toLocaleTimeString()}
                           </span>
                         </div>
@@ -6849,8 +6844,8 @@ const SettingsModal: React.FC<{
                     </div>
                   ) : (
                     <p className={styles.modelHint}>
-                      Send a message to record Aoi's current goal, model iterations, tool calls,
-                      and final delivery status.
+                      Send a message to record Aoi's current goal, model iterations, tool calls, and
+                      final delivery status.
                     </p>
                   )}
                 </div>
@@ -6893,7 +6888,8 @@ const SettingsModal: React.FC<{
                             [{skill.source}
                             {skill.triggerTerms.length
                               ? ` · ${skill.triggerTerms.slice(0, 4).join(', ')}`
-                              : ''}]
+                              : ''}
+                            ]
                           </span>
                           <span> {skill.description}</span>
                           <div>
@@ -7070,7 +7066,9 @@ const SettingsModal: React.FC<{
                       <select
                         className={styles.select}
                         value={newAoiMcpKind}
-                        onChange={(event) => setNewAoiMcpKind(event.target.value as AoiMcpPluginKind)}
+                        onChange={(event) =>
+                          setNewAoiMcpKind(event.target.value as AoiMcpPluginKind)
+                        }
                       >
                         <option value="mcp-server">MCP server</option>
                         <option value="plugin">Plugin</option>

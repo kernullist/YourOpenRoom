@@ -9,7 +9,8 @@ const en = {
   compose: 'Compose',
   connectGmail: 'Connect Gmail',
   connectHeadline: 'Connect your Gmail account',
-  connectDescription: 'Your OAuth client is saved. Connect Gmail to sync real inbox, sent, and draft data.',
+  connectDescription:
+    'Your OAuth client is saved. Connect Gmail to sync real inbox, sent, and draft data.',
   setupHeadline: 'Add your Gmail OAuth client',
   setupDescription:
     'Open settings, paste your Google OAuth desktop client ID, then connect Gmail to start syncing real mail.',

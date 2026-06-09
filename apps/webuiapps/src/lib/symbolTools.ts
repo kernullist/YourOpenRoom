@@ -9,7 +9,7 @@ export function getSymbolToolDefinitions(): ToolDef[] {
       function: {
         name: TOOL_NAME,
         description:
-          'Find likely symbol definitions in the OpenVSCode workspace and optionally open the best match in Aoi\'s IDE.',
+          "Find likely symbol definitions in the OpenVSCode workspace and optionally open the best match in Aoi's IDE.",
         parameters: {
           type: 'object',
           properties: {
@@ -23,7 +23,7 @@ export function getSymbolToolDefinitions(): ToolDef[] {
             },
             open_in_ide: {
               type: 'boolean',
-              description: 'When true, open the best match in Aoi\'s IDE after resolving it.',
+              description: "When true, open the best match in Aoi's IDE after resolving it.",
             },
           },
           required: ['symbol'],

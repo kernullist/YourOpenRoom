@@ -4,9 +4,7 @@ import { buildToolCacheKey, createToolResultCache, isCacheableToolName } from '.
 
 describe('toolResultCache', () => {
   it('builds stable cache keys for reordered objects', () => {
-    expect(
-      buildToolCacheKey('file_read', { end_line: 10, file_path: 'a.ts', start_line: 1 }),
-    ).toBe(
+    expect(buildToolCacheKey('file_read', { end_line: 10, file_path: 'a.ts', start_line: 1 })).toBe(
       buildToolCacheKey('file_read', { file_path: 'a.ts', start_line: 1, end_line: 10 }),
     );
   });

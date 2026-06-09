@@ -86,7 +86,12 @@ async function captureIdeSignature(directory: string): Promise<string> {
     const res = await fetch(url.toString());
     if (!res.ok) continue;
     const data = (await res.json()) as {
-      entries?: Array<{ path: string; type: 'file' | 'directory'; size: number; modifiedAt: number }>;
+      entries?: Array<{
+        path: string;
+        type: 'file' | 'directory';
+        size: number;
+        modifiedAt: number;
+      }>;
     };
     for (const entry of data.entries || []) {
       entries.push(`${entry.path}:${entry.type}:${entry.size}:${entry.modifiedAt}`);
@@ -97,7 +102,9 @@ async function captureIdeSignature(directory: string): Promise<string> {
   return entries.sort().join('|');
 }
 
-export async function captureBackgroundWatchSignature(watch: Pick<BackgroundWatch, 'scope' | 'directory'>): Promise<string> {
+export async function captureBackgroundWatchSignature(
+  watch: Pick<BackgroundWatch, 'scope' | 'directory'>,
+): Promise<string> {
   if (watch.scope === 'ide') {
     return captureIdeSignature(watch.directory);
   }
@@ -118,7 +125,10 @@ export async function createBackgroundWatch(params: {
     label: params.label?.trim() || params.directory.trim() || params.scope,
     poll_interval_ms: Math.min(
       MAX_POLL_INTERVAL_MS,
-      Math.max(MIN_POLL_INTERVAL_MS, Math.floor(params.poll_interval_ms ?? DEFAULT_POLL_INTERVAL_MS)),
+      Math.max(
+        MIN_POLL_INTERVAL_MS,
+        Math.floor(params.poll_interval_ms ?? DEFAULT_POLL_INTERVAL_MS),
+      ),
     ),
     last_signature: null,
     last_checked_at: 0,
@@ -152,7 +162,11 @@ export async function pollBackgroundWatches(): Promise<
 > {
   const watches = loadWatches();
   const now = Date.now();
-  const results: Array<{ watch: BackgroundWatch; changed: boolean; previous_signature: string | null }> = [];
+  const results: Array<{
+    watch: BackgroundWatch;
+    changed: boolean;
+    previous_signature: string | null;
+  }> = [];
   let hasChanges = false;
 
   for (const watch of watches) {
@@ -238,7 +252,8 @@ export async function executeBackgroundWatchTool(params: Record<string, unknown>
   }
 
   if (mode === 'create') {
-    const scope = params.scope === 'ide' ? 'ide' : params.scope === 'app_storage' ? 'app_storage' : '';
+    const scope =
+      params.scope === 'ide' ? 'ide' : params.scope === 'app_storage' ? 'app_storage' : '';
     const directory = String(params.directory || '').trim();
     if (!scope) return 'error: scope is required for create';
     if (!directory) return 'error: directory is required for create';

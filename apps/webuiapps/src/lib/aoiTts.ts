@@ -99,7 +99,12 @@ function normalizeSpokenText(text: string): string {
 }
 
 function escapeControl(text: string): string {
-  return text.replace(/[\u0000-\u001f]+/g, ' ').trim();
+  return Array.from(text, (char) => {
+    const codePoint = char.codePointAt(0) ?? 0;
+    return codePoint <= 0x1f ? ' ' : char;
+  })
+    .join('')
+    .trim();
 }
 
 function buildAoiStylePrompt(
@@ -128,7 +133,9 @@ function buildAoiStylePrompt(
 
   const moodPrompt = emotionPromptMap[emotion || 'default'] || emotionPromptMap.default;
   const characterHint = collapseWhitespace(
-    escapeControl(characterDescription || '').slice(0, 220).replace(/\n+/g, ' '),
+    escapeControl(characterDescription || '')
+      .slice(0, 220)
+      .replace(/\n+/g, ' '),
   );
 
   return [
@@ -218,15 +225,17 @@ function getOrCreateSpeechAsset(
     emotion,
     characterName,
     characterDescription,
-  ).catch((error) => {
-    speechCache.delete(cacheKey);
-    updateTtsStatus({ pendingCount: Math.max(0, ttsStatus.pendingCount - 1) });
-    throw error;
-  }).then((asset) => {
-    updateTtsStatus({ pendingCount: Math.max(0, ttsStatus.pendingCount - 1) });
-    pushRecentWarmedLine(text);
-    return asset;
-  });
+  )
+    .catch((error) => {
+      speechCache.delete(cacheKey);
+      updateTtsStatus({ pendingCount: Math.max(0, ttsStatus.pendingCount - 1) });
+      throw error;
+    })
+    .then((asset) => {
+      updateTtsStatus({ pendingCount: Math.max(0, ttsStatus.pendingCount - 1) });
+      pushRecentWarmedLine(text);
+      return asset;
+    });
   speechCache.set(cacheKey, pending);
   updateTtsStatus({ cachedCount: speechCache.size });
   return pending;
@@ -360,9 +369,7 @@ function getCommonPhrasesForLanguage(language: TtsLanguage): string[] {
   }
 }
 
-export async function prewarmAoiTtsCommonPhrases(
-  options: PrewarmAoiPhrasesOptions,
-): Promise<void> {
+export async function prewarmAoiTtsCommonPhrases(options: PrewarmAoiPhrasesOptions): Promise<void> {
   const phrases = getCommonPhrasesForLanguage(options.language);
   await prewarmAoiTtsLines({
     ...options,

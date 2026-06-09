@@ -36,7 +36,11 @@ describe('searchOpenVscodeWorkspace()', () => {
       'const value = "tool batching";\n',
       'utf-8',
     );
-    fs.writeFileSync(path.join(rootDir, 'node_modules', 'ignored', 'skip.ts'), 'ChatPanel', 'utf-8');
+    fs.writeFileSync(
+      path.join(rootDir, 'node_modules', 'ignored', 'skip.ts'),
+      'ChatPanel',
+      'utf-8',
+    );
 
     const result = searchOpenVscodeWorkspace({
       rootDir,

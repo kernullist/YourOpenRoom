@@ -421,7 +421,8 @@ export async function executeFileTool(
           return 'error: file not found';
         }
 
-        const textContent = typeof content === 'string' ? content : JSON.stringify(content, null, 2);
+        const textContent =
+          typeof content === 'string' ? content : JSON.stringify(content, null, 2);
         const occurrenceCount = countOccurrences(textContent, oldText);
         if (occurrenceCount === 0) {
           return 'error: old_text not found in file';

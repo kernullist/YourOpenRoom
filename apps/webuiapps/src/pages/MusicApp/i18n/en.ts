@@ -85,8 +85,7 @@ const en = {
     zoomIn: 'Zoom in',
     showResults: 'Show results',
     hideResults: 'Hide results',
-    hint:
-      'Search results are rendered directly inside Your Room, and the selected video plays in the panel on the right.',
+    hint: 'Search results are rendered directly inside Your Room, and the selected video plays in the panel on the right.',
     loading: 'Loading search results...',
     empty: 'No playable video results were found for this query.',
     nowPlaying: 'Selected Video',

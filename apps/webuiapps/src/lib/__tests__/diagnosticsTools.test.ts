@@ -28,8 +28,7 @@ describe('executeDiagnosticsTool()', () => {
         cwd: '.',
         exitCode: 2,
         stdout: '',
-        stderr:
-          'src/foo.ts(12,8): error TS2322: Type "number" is not assignable to type "string".',
+        stderr: 'src/foo.ts(12,8): error TS2322: Type "number" is not assignable to type "string".',
       }),
     );
 

@@ -27,11 +27,7 @@ describe('searchWorkspaceSymbol()', () => {
     fs.mkdirSync(path.join(rootDir, 'src'), { recursive: true });
     fs.writeFileSync(
       path.join(rootDir, 'src', 'chat.ts'),
-      [
-        'export function ChatPanel() {',
-        '  return "hello";',
-        '}',
-      ].join('\n'),
+      ['export function ChatPanel() {', '  return "hello";', '}'].join('\n'),
       'utf-8',
     );
 

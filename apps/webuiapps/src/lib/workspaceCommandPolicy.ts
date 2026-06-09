@@ -232,8 +232,7 @@ function validatePackageManagerArgs(
 
   return {
     ok: false,
-    error:
-      `${program} safe mode only allows test/lint/build/typecheck scripts and read-only exec commands.`,
+    error: `${program} safe mode only allows test/lint/build/typecheck scripts and read-only exec commands.`,
   };
 }
 

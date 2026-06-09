@@ -123,29 +123,12 @@ current_state:
     side_img_url: '/assets/characters/aoi/side.png',
     front_img_url: '/assets/characters/aoi/front.png',
     emotion_videos: {
-      default: [
-        '/assets/characters/aoi/default_0.mp4',
-        '/assets/characters/aoi/default_1.mp4',
-      ],
-      angry: [
-        '/assets/characters/aoi/angry_0.mp4',
-        '/assets/characters/aoi/angry_1.mp4',
-      ],
-      depressing: [
-        '/assets/characters/aoi/depressing_0.mp4',
-      ],
-      happy: [
-        '/assets/characters/aoi/happy_0.mp4',
-        '/assets/characters/aoi/happy_1.mp4',
-      ],
-      peaceful: [
-        '/assets/characters/aoi/peaceful_0.mp4',
-        '/assets/characters/aoi/peaceful_1.mp4',
-      ],
-      shy: [
-        '/assets/characters/aoi/shy_0.mp4',
-        '/assets/characters/aoi/shy_1.mp4',
-      ],
+      default: ['/assets/characters/aoi/default_0.mp4', '/assets/characters/aoi/default_1.mp4'],
+      angry: ['/assets/characters/aoi/angry_0.mp4', '/assets/characters/aoi/angry_1.mp4'],
+      depressing: ['/assets/characters/aoi/depressing_0.mp4'],
+      happy: ['/assets/characters/aoi/happy_0.mp4', '/assets/characters/aoi/happy_1.mp4'],
+      peaceful: ['/assets/characters/aoi/peaceful_0.mp4', '/assets/characters/aoi/peaceful_1.mp4'],
+      shy: ['/assets/characters/aoi/shy_0.mp4', '/assets/characters/aoi/shy_1.mp4'],
     },
   },
 };

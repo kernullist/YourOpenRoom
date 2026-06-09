@@ -125,7 +125,9 @@ export async function executePreviewTool(params: Record<string, unknown>): Promi
     const matchCount = countOccurrences(beforeContent, oldText);
     result.match_count = matchCount;
     if (matchCount === 0) return 'error: old_text not found in file';
-    afterContent = replaceAll ? beforeContent.split(oldText).join(newText) : replaceOnce(beforeContent, oldText, newText);
+    afterContent = replaceAll
+      ? beforeContent.split(oldText).join(newText)
+      : replaceOnce(beforeContent, oldText, newText);
   } else {
     return `error: unsupported preview operation ${operation}`;
   }

@@ -166,7 +166,9 @@ const HeadlineCard: React.FC<HeadlineCardProps> = ({ article, onClick }) => {
           <span className={`${styles.headlineBadge} ${styles[article.category]}`}>
             {t(`news.${article.category}`)}
           </span>
-          {article.sourceName && <span className={styles.headlineSource}>{article.sourceName}</span>}
+          {article.sourceName && (
+            <span className={styles.headlineSource}>{article.sourceName}</span>
+          )}
           <span className={styles.headlineDate}>{formatDate(article.publishedAt)}</span>
         </div>
         <h2 className={styles.headlineTitle}>{article.title}</h2>
@@ -225,7 +227,9 @@ const NewsListCard: React.FC<NewsListCardProps> = ({ article, onClick }) => {
           <span className={`${styles.newsListBadge} ${styles[article.category]}`}>
             {t(`news.${article.category}`)}
           </span>
-          {article.sourceName && <span className={styles.newsListSource}>{article.sourceName}</span>}
+          {article.sourceName && (
+            <span className={styles.newsListSource}>{article.sourceName}</span>
+          )}
           <span className={styles.newsListDate}>{formatDate(article.publishedAt)}</span>
         </div>
         <div className={styles.newsListTitleWrap}>

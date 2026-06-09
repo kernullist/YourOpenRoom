@@ -164,7 +164,8 @@ function parseGoogleSearchResults(html: string): GoogleSearchResult[] {
     results.push({
       title,
       url: targetUrl,
-      snippet: snippetCandidate.length > 260 ? `${snippetCandidate.slice(0, 260)}...` : snippetCandidate,
+      snippet:
+        snippetCandidate.length > 260 ? `${snippetCandidate.slice(0, 260)}...` : snippetCandidate,
       displayUrl,
     });
     seen.add(targetUrl);
@@ -186,9 +187,7 @@ function parseDuckDuckGoResults(html: string): GoogleSearchResult[] {
     if (seen.has(url)) continue;
 
     const container =
-      anchor.closest('.result') ||
-      anchor.closest('[data-testid="result"]') ||
-      anchor.parentElement;
+      anchor.closest('.result') || anchor.closest('[data-testid="result"]') || anchor.parentElement;
 
     const title = stripCollapsedText(anchor.textContent || '');
     if (!title) continue;
@@ -240,9 +239,11 @@ async function fetchPageSnapshot(url: string): Promise<PageSnapshot> {
 
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), READER_FETCH_TIMEOUT_MS);
-  const res = await fetch(buildBrowserReaderProxyUrl(url), { signal: controller.signal }).finally(() => {
-    window.clearTimeout(timer);
-  });
+  const res = await fetch(buildBrowserReaderProxyUrl(url), { signal: controller.signal }).finally(
+    () => {
+      window.clearTimeout(timer);
+    },
+  );
   const contentType = res.headers.get('content-type') || '';
   const finalUrl = res.headers.get('x-final-url') || url;
   if (!res.ok) {
@@ -325,18 +326,23 @@ const BrowserReaderPage: React.FC = () => {
   const { saveFile, syncToCloud, deleteFromCloud, initFromCloud, getChildrenByPath, getByPath } =
     useFileSystem({ fileApi: browserFileApi });
 
-  const loadItems = useCallback(<T,>(dirPath: string): T[] => {
-    return getChildrenByPath(dirPath)
-      .filter((node) => node.type === 'file')
-      .map((node) => {
-        try {
-          return (typeof node.content === 'string' ? JSON.parse(node.content) : node.content) as T;
-        } catch {
-          return null;
-        }
-      })
-      .filter((item): item is T => item !== null);
-  }, [getChildrenByPath]);
+  const loadItems = useCallback(
+    <T,>(dirPath: string): T[] => {
+      return getChildrenByPath(dirPath)
+        .filter((node) => node.type === 'file')
+        .map((node) => {
+          try {
+            return (
+              typeof node.content === 'string' ? JSON.parse(node.content) : node.content
+            ) as T;
+          } catch {
+            return null;
+          }
+        })
+        .filter((item): item is T => item !== null);
+    },
+    [getChildrenByPath],
+  );
 
   const saveState = useCallback(
     async (state: BrowserState) => {
@@ -348,8 +354,12 @@ const BrowserReaderPage: React.FC = () => {
 
   const refreshFromCloud = useCallback(async () => {
     await initFromCloud();
-    const nextBookmarks = loadItems<BookmarkItem>(BOOKMARKS_DIR).sort((a, b) => b.createdAt - a.createdAt);
-    const nextHistory = loadItems<HistoryItem>(HISTORY_DIR).sort((a, b) => b.visitedAt - a.visitedAt);
+    const nextBookmarks = loadItems<BookmarkItem>(BOOKMARKS_DIR).sort(
+      (a, b) => b.createdAt - a.createdAt,
+    );
+    const nextHistory = loadItems<HistoryItem>(HISTORY_DIR).sort(
+      (a, b) => b.visitedAt - a.visitedAt,
+    );
     const state = (getByPath(STATE_FILE)?.content as BrowserState | undefined) ?? DEFAULT_STATE;
 
     setBookmarks(nextBookmarks);
@@ -613,9 +623,15 @@ const BrowserReaderPage: React.FC = () => {
         '',
         pageSnapshot.excerpt,
         '',
-        ...pageSnapshot.blocks.slice(0, 12).map((block) =>
-          block.type === 'heading' ? `## ${block.text}` : block.type === 'list' ? `- ${block.text}` : block.text,
-        ),
+        ...pageSnapshot.blocks
+          .slice(0, 12)
+          .map((block) =>
+            block.type === 'heading'
+              ? `## ${block.text}`
+              : block.type === 'list'
+                ? `- ${block.text}`
+                : block.text,
+          ),
       ].join('\n'),
       tags: ['web', 'reader'],
       pinned: false,
@@ -654,7 +670,9 @@ const BrowserReaderPage: React.FC = () => {
         <section className={styles.sidebarSection}>
           <div className={styles.sidebarHeader}>
             <h2>{t('bookmarks')}</h2>
-            <button onClick={() => void saveBookmark()}>{isBookmarked ? t('remove') : t('save')}</button>
+            <button onClick={() => void saveBookmark()}>
+              {isBookmarked ? t('remove') : t('save')}
+            </button>
           </div>
           <div className={styles.sidebarList}>
             {bookmarks.length > 0 ? (
@@ -710,7 +728,11 @@ const BrowserReaderPage: React.FC = () => {
               void navigateTo(inputUrl, 'manual');
             }}
           >
-            <input value={inputUrl} onChange={(e) => setInputUrl(e.target.value)} placeholder={t('placeholder')} />
+            <input
+              value={inputUrl}
+              onChange={(e) => setInputUrl(e.target.value)}
+              placeholder={t('placeholder')}
+            />
             <button type="submit">{t('go')}</button>
           </form>
 
@@ -733,7 +755,9 @@ const BrowserReaderPage: React.FC = () => {
             >
               {t('reader')}
             </button>
-            <button onClick={() => void saveBookmark()}>{isBookmarked ? t('unsave') : t('bookmark')}</button>
+            <button onClick={() => void saveBookmark()}>
+              {isBookmarked ? t('unsave') : t('bookmark')}
+            </button>
             <button onClick={() => void saveToNotes()} disabled={!pageSnapshot}>
               {t('saveToNotes')}
             </button>
@@ -852,7 +876,10 @@ const BrowserReaderPage: React.FC = () => {
                   <div className={styles.readerBody}>
                     {pageSnapshot.blocks.length > 0 ? (
                       pageSnapshot.blocks.map((block, index) => (
-                        <div key={`${block.type}-${index}`} className={styles[`block${block.type}`]}>
+                        <div
+                          key={`${block.type}-${index}`}
+                          className={styles[`block${block.type}`]}
+                        >
                           {block.type === 'heading' ? <h3>{block.text}</h3> : <p>{block.text}</p>}
                         </div>
                       ))

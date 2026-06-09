@@ -364,7 +364,9 @@ function resolveOpenCodeApiStyle(config: LLMConfig): LLMApiStyle {
 
 function shouldUseOpenAiResponses(config: LLMConfig): boolean {
   if (config.apiStyle === 'openai-responses') return true;
-  return config.provider === 'openai' && normalizeAoiModel(config).toLowerCase().startsWith('gpt-5');
+  return (
+    config.provider === 'openai' && normalizeAoiModel(config).toLowerCase().startsWith('gpt-5')
+  );
 }
 
 function shouldDisableOpenAiThinking(config: LLMConfig): boolean {
@@ -409,7 +411,9 @@ export function loadAoiMainLlmConfig(configFile: string): LLMConfig | null {
       ...(customHeaders ? { customHeaders } : {}),
       ...(command ? { command } : {}),
       ...(apiStyle ? { apiStyle } : {}),
-      ...(reasoningEffort ? { reasoningEffort: reasoningEffort as LLMConfig['reasoningEffort'] } : {}),
+      ...(reasoningEffort
+        ? { reasoningEffort: reasoningEffort as LLMConfig['reasoningEffort'] }
+        : {}),
       ...(reasoningSummary
         ? { reasoningSummary: reasoningSummary as LLMConfig['reasoningSummary'] }
         : {}),
@@ -441,7 +445,8 @@ function resolveAoiProviderApiKey(config: LLMConfig): string {
   if (config.provider === 'openrouter') return process.env.OPENROUTER_API_KEY || '';
   if (config.provider === 'minimax') return process.env.MINIMAX_API_KEY || '';
   if (config.provider === 'z.ai') return process.env.ZAI_API_KEY || process.env.Z_AI_API_KEY || '';
-  if (config.provider === 'kimi') return process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || '';
+  if (config.provider === 'kimi')
+    return process.env.KIMI_API_KEY || process.env.MOONSHOT_API_KEY || '';
   return '';
 }
 
@@ -457,7 +462,8 @@ export function getAoiLlmStatus(configFile: string): Record<string, unknown> {
     apiStyle: config.apiStyle || null,
     cli: isAoiCliProvider(config.provider),
     baseUrlConfigured: Boolean(config.baseUrl.trim()),
-    apiKeyConfigured: isAoiCliProvider(config.provider) || Boolean(resolveAoiProviderApiKey(config)),
+    apiKeyConfigured:
+      isAoiCliProvider(config.provider) || Boolean(resolveAoiProviderApiKey(config)),
   };
 }
 
@@ -559,7 +565,8 @@ async function callAoiOpenAiChatModel(
       body: JSON.stringify(body),
     },
   );
-  if (!response.ok) throw new Error(`${config.provider} status ${response.status}: ${await response.text()}`);
+  if (!response.ok)
+    throw new Error(`${config.provider} status ${response.status}: ${await response.text()}`);
   const data = (await response.json()) as { choices?: Array<{ message?: { content?: string } }> };
   return data.choices?.[0]?.message?.content || '';
 }
@@ -584,12 +591,18 @@ async function callAoiOpenAiResponsesModel(
   };
   if (apiKey.trim()) headers.Authorization = `Bearer ${apiKey}`;
 
-  const response = await fetchWithTimeout(joinUrl(config.baseUrl, getOpenAiResponsesPath(config.baseUrl)), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(body),
-  });
-  if (!response.ok) throw new Error(`${config.provider} responses status ${response.status}: ${await response.text()}`);
+  const response = await fetchWithTimeout(
+    joinUrl(config.baseUrl, getOpenAiResponsesPath(config.baseUrl)),
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    },
+  );
+  if (!response.ok)
+    throw new Error(
+      `${config.provider} responses status ${response.status}: ${await response.text()}`,
+    );
   const data = (await response.json()) as {
     output_text?: string;
     output?: Array<{
@@ -622,16 +635,20 @@ async function callAoiAnthropicModel(
   };
   if (apiKey.trim()) headers['x-api-key'] = apiKey;
 
-  const response = await fetchWithTimeout(joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl)), {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      model: normalizeAoiModel(config),
-      max_tokens: maxTokens,
-      messages: [{ role: 'user', content: prompt }],
-    }),
-  });
-  if (!response.ok) throw new Error(`${config.provider} status ${response.status}: ${await response.text()}`);
+  const response = await fetchWithTimeout(
+    joinUrl(config.baseUrl, getAnthropicMessagesPath(config.baseUrl)),
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        model: normalizeAoiModel(config),
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content: prompt }],
+      }),
+    },
+  );
+  if (!response.ok)
+    throw new Error(`${config.provider} status ${response.status}: ${await response.text()}`);
   const data = (await response.json()) as { content?: Array<{ type?: string; text?: string }> };
   return (data.content ?? [])
     .filter((block) => block.type === 'text')
@@ -670,7 +687,9 @@ export async function callAoiMainTextModel(
 }
 
 function buildRecommendPrompt(memos: DewdropMemo[], lang: string): string {
-  const memoLines = memos.map((memo, index) => `[ID: ${memo.id}] (${index + 1}): ${memo.text}`).join('\n');
+  const memoLines = memos
+    .map((memo, index) => `[ID: ${memo.id}] (${index + 1}): ${memo.text}`)
+    .join('\n');
   if (lang === 'en') {
     return `You are a thought synergy analyzer.
 Analyze these thought dewdrops:
@@ -981,13 +1000,28 @@ function rewriteDewdropScript(script: string): string {
     .replace(/Gemini 1\.5 Flash \(기본\)/g, 'AOI Main LLM (기본)')
     .replace(/Gemini 1\.5 Flash \(Default\)/g, 'AOI Main LLM (Default)')
     .replace(/Gemini API Key \(공란 시 서버 설정 사용\)/g, 'AOI Main LLM uses Settings > Models')
-    .replace(/Gemini API Key \(Leave blank to use server setting\)/g, 'AOI Main LLM uses Settings > Models')
+    .replace(
+      /Gemini API Key \(Leave blank to use server setting\)/g,
+      'AOI Main LLM uses Settings > Models',
+    )
     .replace(/서버 \{providerName\} 키 자동 연동 완료/g, 'AOI 메인 모델 자동 연동 완료')
     .replace(/Server \{providerName\} Key Auto-linked/g, 'AOI Main LLM auto-linked')
-    .replace(/서버에 \{providerName\} 키가 없습니다 \(개별 입력 가능\)/g, 'AOI 메인 모델 설정이 없습니다')
-    .replace(/No \{providerName\} key on server \(Enter custom key\)/g, 'AOI Main LLM is not configured')
-    .replace(/Gemini가 두 메모를 유기적으로 융합했습니다\./g, 'AOI 메인 모델이 두 메모를 유기적으로 융합했습니다.')
-    .replace(/Gemini organically fused both memos\./g, 'AOI Main LLM organically fused both memos.');
+    .replace(
+      /서버에 \{providerName\} 키가 없습니다 \(개별 입력 가능\)/g,
+      'AOI 메인 모델 설정이 없습니다',
+    )
+    .replace(
+      /No \{providerName\} key on server \(Enter custom key\)/g,
+      'AOI Main LLM is not configured',
+    )
+    .replace(
+      /Gemini가 두 메모를 유기적으로 융합했습니다\./g,
+      'AOI 메인 모델이 두 메모를 유기적으로 융합했습니다.',
+    )
+    .replace(
+      /Gemini organically fused both memos\./g,
+      'AOI Main LLM organically fused both memos.',
+    );
 }
 
 function sourceIsReady(sourceRoot: string): boolean {
@@ -1045,7 +1079,11 @@ async function handleDewdropApi(
     }
 
     if (req.method === 'GET' && route === '/projects/active') {
-      writeJson(res, 200, loadActiveProject(dataDir, projectsDir, url.searchParams.get('lang') || 'ko'));
+      writeJson(
+        res,
+        200,
+        loadActiveProject(dataDir, projectsDir, url.searchParams.get('lang') || 'ko'),
+      );
       return true;
     }
 
@@ -1160,7 +1198,12 @@ async function handleDewdropApi(
           300,
           true,
         );
-        const parsed = JSON.parse(resultText.replace(/```json/g, '').replace(/```/g, '').trim()) as {
+        const parsed = JSON.parse(
+          resultText
+            .replace(/```json/g, '')
+            .replace(/```/g, '')
+            .trim(),
+        ) as {
           idA?: string;
           idB?: string;
           reason?: string;
@@ -1205,7 +1248,11 @@ async function handleDewdropApi(
       const lang = getString(body.language) || 'ko';
       const aoiConfig = loadAoiMainLlmConfig(configFile);
       if (provider === 'simulator' || !aoiConfig) {
-        writeJson(res, 200, { success: true, mode: 'simulation', text: runPoeticSimulator(textA, textB, lang) });
+        writeJson(res, 200, {
+          success: true,
+          mode: 'simulation',
+          text: runPoeticSimulator(textA, textB, lang),
+        });
         return true;
       }
 
@@ -1250,7 +1297,11 @@ async function handleDewdropApi(
       const lang = getString(body.language) || 'ko';
       const aoiConfig = loadAoiMainLlmConfig(configFile);
       if (provider === 'simulator' || !aoiConfig) {
-        writeJson(res, 200, { success: true, mode: 'simulation', text: runPoeticSingleEnhance(text, lang) });
+        writeJson(res, 200, {
+          success: true,
+          mode: 'simulation',
+          text: runPoeticSingleEnhance(text, lang),
+        });
         return true;
       }
 
@@ -1291,7 +1342,12 @@ async function handleDewdropApi(
   }
 }
 
-function handleDewdropStatic(sourceRoot: string, req: IncomingMessage, res: ServerResponse, url: URL): boolean {
+function handleDewdropStatic(
+  sourceRoot: string,
+  req: IncomingMessage,
+  res: ServerResponse,
+  url: URL,
+): boolean {
   if (url.pathname === STATIC_PREFIX) {
     res.writeHead(302, { Location: `${STATIC_PREFIX}/` });
     res.end();
@@ -1317,11 +1373,19 @@ function handleDewdropStatic(sourceRoot: string, req: IncomingMessage, res: Serv
   }
 
   if (basename(filePath) === 'app.js') {
-    writeText(res, 200, getContentType(filePath), rewriteDewdropScript(fs.readFileSync(filePath, 'utf-8')));
+    writeText(
+      res,
+      200,
+      getContentType(filePath),
+      rewriteDewdropScript(fs.readFileSync(filePath, 'utf-8')),
+    );
     return true;
   }
 
-  const payload = extname(filePath).toLowerCase() === '.html' ? fs.readFileSync(filePath, 'utf-8') : fs.readFileSync(filePath);
+  const payload =
+    extname(filePath).toLowerCase() === '.html'
+      ? fs.readFileSync(filePath, 'utf-8')
+      : fs.readFileSync(filePath);
   writeText(res, 200, getContentType(filePath), payload);
   return true;
 }

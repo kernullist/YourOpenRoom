@@ -245,7 +245,9 @@ function scoreCategory(text: string): Record<ArticleCategory, number> {
   return scores;
 }
 
-function classifyCategory(item: Pick<LiveNewsItem, 'title' | 'summary' | 'sourceName'>): ArticleCategory {
+function classifyCategory(
+  item: Pick<LiveNewsItem, 'title' | 'summary' | 'sourceName'>,
+): ArticleCategory {
   const haystack = `${item.title} ${item.summary} ${item.sourceName}`.toLowerCase();
   const scores = scoreCategory(haystack);
   const ranked = Object.entries(scores).sort((a, b) => b[1] - a[1]);
@@ -330,7 +332,9 @@ async function batchMap<T, R>(
 
   for (let index = 0; index < items.length; index += limit) {
     const batch = items.slice(index, index + limit);
-    const batchResults = await Promise.all(batch.map((item, offset) => mapper(item, index + offset)));
+    const batchResults = await Promise.all(
+      batch.map((item, offset) => mapper(item, index + offset)),
+    );
     results.push(...batchResults);
   }
 
@@ -398,7 +402,8 @@ export function cyberNewsProxyPlugin(): Plugin {
           });
 
           const filtered =
-            requestedCategory && ['breaking', 'corporate', 'street', 'tech'].includes(requestedCategory)
+            requestedCategory &&
+            ['breaking', 'corporate', 'street', 'tech'].includes(requestedCategory)
               ? enriched.filter((item) => item.category === requestedCategory)
               : enriched;
 

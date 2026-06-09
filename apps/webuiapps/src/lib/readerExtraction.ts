@@ -65,9 +65,9 @@ export function parseReadablePageSnapshot(
   const maxBlocks = Math.max(1, Math.min(32, options.maxBlocks ?? 30));
   const minBlockLength = Math.max(1, options.minBlockLength ?? 30);
   const doc = new DOMParser().parseFromString(html, 'text/html');
-  doc.querySelectorAll('script, style, noscript, iframe, svg, canvas').forEach((node) =>
-    node.remove(),
-  );
+  doc
+    .querySelectorAll('script, style, noscript, iframe, svg, canvas')
+    .forEach((node) => node.remove());
 
   const title =
     doc.querySelector('meta[property="og:title"]')?.getAttribute('content')?.trim() ||
@@ -110,7 +110,8 @@ export function parseReadablePageSnapshot(
     if (blocks.length >= maxBlocks) break;
   }
 
-  const fallbackExcerpt = excerpt || blocks.find((block) => block.type === 'paragraph')?.text || title;
+  const fallbackExcerpt =
+    excerpt || blocks.find((block) => block.type === 'paragraph')?.text || title;
   return {
     finalUrl: sourceUrl,
     title: truncateText(title, 240),

@@ -31,13 +31,18 @@ function loadHistory(sessionPath: string): MutationRecord[] {
 
 function saveHistory(sessionPath: string, history: MutationRecord[]): void {
   try {
-    localStorage.setItem(getHistoryKey(sessionPath), JSON.stringify(history.slice(-MAX_HISTORY_ITEMS)));
+    localStorage.setItem(
+      getHistoryKey(sessionPath),
+      JSON.stringify(history.slice(-MAX_HISTORY_ITEMS)),
+    );
   } catch {
     // ignore persistence failures
   }
 }
 
-export function recordFileMutation(data: Omit<FileMutationRecord, 'id' | 'kind' | 'created_at'>): void {
+export function recordFileMutation(
+  data: Omit<FileMutationRecord, 'id' | 'kind' | 'created_at'>,
+): void {
   const sessionPath = getSessionPath();
   const history = loadHistory(sessionPath);
   history.push({

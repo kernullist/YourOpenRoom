@@ -27,5 +27,8 @@ export function isParallelSafeToolName(toolName: string): boolean {
 }
 
 export function canParallelizeToolBatch(toolCalls: ToolCall[]): boolean {
-  return toolCalls.length > 1 && toolCalls.every((toolCall) => isParallelSafeToolName(toolCall.function.name));
+  return (
+    toolCalls.length > 1 &&
+    toolCalls.every((toolCall) => isParallelSafeToolName(toolCall.function.name))
+  );
 }

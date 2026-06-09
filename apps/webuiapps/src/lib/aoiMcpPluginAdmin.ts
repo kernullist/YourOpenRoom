@@ -36,7 +36,8 @@ export const DEFAULT_AOI_MCP_PLUGIN_ENTRIES: AoiMcpPluginEntry[] = [
   {
     id: 'aoi-ide-local-bridge',
     name: "Aoi's IDE Local Bridge",
-    description: 'Built-in app bridge for IDE state, diagnostics, checkpoints, and workspace tools.',
+    description:
+      'Built-in app bridge for IDE state, diagnostics, checkpoints, and workspace tools.',
     kind: 'plugin',
     endpointUrl: 'internal:aoi-ide',
     enabled: true,
@@ -171,7 +172,10 @@ export function updateAoiMcpPluginEntry(
         ? {
             ...entry,
             ...updates,
-            trusted: entry.source === 'built-in' && entry.trusted ? true : (updates.trusted ?? entry.trusted),
+            trusted:
+              entry.source === 'built-in' && entry.trusted
+                ? true
+                : (updates.trusted ?? entry.trusted),
             updatedAt: now,
           }
         : entry,
@@ -179,7 +183,10 @@ export function updateAoiMcpPluginEntry(
   );
 }
 
-export function removeAoiMcpPluginEntry(entries: AoiMcpPluginEntry[], entryId: string): AoiMcpPluginEntry[] {
+export function removeAoiMcpPluginEntry(
+  entries: AoiMcpPluginEntry[],
+  entryId: string,
+): AoiMcpPluginEntry[] {
   return normalizeAoiMcpPluginEntries(
     entries.filter((entry) => entry.id !== entryId || entry.source === 'built-in'),
   );
@@ -212,9 +219,7 @@ export function buildAoiMcpPluginPrompt(entries: AoiMcpPluginEntry[]): string {
     '- Treat only enabled and trusted admin entries as available integration context.',
   ];
   activeEntries.slice(0, 8).forEach((entry) => {
-    lines.push(
-      `- ${entry.name} [${entry.kind}, ${entry.healthStatus}]: ${entry.description}`,
-    );
+    lines.push(`- ${entry.name} [${entry.kind}, ${entry.healthStatus}]: ${entry.description}`);
   });
   return `\n${lines.join('\n')}`;
 }
@@ -283,9 +288,7 @@ function sanitizeAoiMcpPluginEntry(entry: AoiMcpPluginEntry): AoiMcpPluginEntry 
     enabled: Boolean(entry.enabled),
     trusted: Boolean(entry.trusted),
     authMode: isAoiMcpPluginAuthMode(entry.authMode) ? entry.authMode : 'none',
-    healthStatus: isAoiMcpPluginHealthStatus(entry.healthStatus)
-      ? entry.healthStatus
-      : 'unknown',
+    healthStatus: isAoiMcpPluginHealthStatus(entry.healthStatus) ? entry.healthStatus : 'unknown',
   };
 }
 

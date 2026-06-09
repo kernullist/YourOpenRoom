@@ -391,9 +391,10 @@ function normalizeBodyText(value: string): string {
   return value.replace(/\r\n/g, '\n').trim();
 }
 
-function extractMessageBody(
-  part: GmailMessagePart | undefined,
-): { plainText: string; attachments: CachedEmailAttachment[] } {
+function extractMessageBody(part: GmailMessagePart | undefined): {
+  plainText: string;
+  attachments: CachedEmailAttachment[];
+} {
   let plainText = '';
   let htmlText = '';
   const attachments: CachedEmailAttachment[] = [];
@@ -506,7 +507,10 @@ function getEmailDataPaths(sessionsDir: string, sessionPath: string) {
   };
 }
 
-function loadEmailState(stateFile: string): { selectedEmailId: string | null; currentFolder: EmailFolder } {
+function loadEmailState(stateFile: string): {
+  selectedEmailId: string | null;
+  currentFolder: EmailFolder;
+} {
   try {
     if (!fs.existsSync(stateFile)) {
       return { selectedEmailId: null, currentFolder: 'inbox' };
@@ -613,7 +617,9 @@ async function ensureAccessToken(configFile: string): Promise<GmailStoredConfig>
   const persisted = readPersistedConfig(configFile);
   const gmail = (persisted.gmail as GmailStoredConfig | undefined) ?? {};
   if (!gmail.clientId) {
-    throw new Error('Missing Gmail client ID. Open Email settings and add your Google OAuth client.');
+    throw new Error(
+      'Missing Gmail client ID. Open Email settings and add your Google OAuth client.',
+    );
   }
   if (!gmail.refreshToken) {
     throw new Error('Gmail is not connected yet.');
@@ -657,11 +663,7 @@ async function ensureAccessToken(configFile: string): Promise<GmailStoredConfig>
   }));
 }
 
-async function gmailJson<T>(
-  configFile: string,
-  url: string,
-  init: RequestInit = {},
-): Promise<T> {
+async function gmailJson<T>(configFile: string, url: string, init: RequestInit = {}): Promise<T> {
   const gmail = await ensureAccessToken(configFile);
   const response = await fetch(url, {
     ...init,
@@ -893,10 +895,14 @@ async function updateMessageLabels(
   messageId: string,
   payload: { addLabelIds?: string[]; removeLabelIds?: string[] },
 ): Promise<CachedEmailRecord | null> {
-  await gmailJson<GmailMessage>(configFile, `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/modify`, {
-    method: 'POST',
-    body: JSON.stringify(payload),
-  });
+  await gmailJson<GmailMessage>(
+    configFile,
+    `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/modify`,
+    {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    },
+  );
   return upsertMessageIntoSession(configFile, sessionsDir, sessionPath, messageId);
 }
 
@@ -906,10 +912,14 @@ async function trashMessage(
   sessionPath: string,
   messageId: string,
 ): Promise<CachedEmailRecord | null> {
-  await gmailJson<GmailMessage>(configFile, `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/trash`, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
+  await gmailJson<GmailMessage>(
+    configFile,
+    `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/trash`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
   return upsertMessageIntoSession(configFile, sessionsDir, sessionPath, messageId);
 }
 
@@ -919,10 +929,14 @@ async function untrashMessage(
   sessionPath: string,
   messageId: string,
 ): Promise<CachedEmailRecord | null> {
-  await gmailJson<GmailMessage>(configFile, `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/untrash`, {
-    method: 'POST',
-    body: JSON.stringify({}),
-  });
+  await gmailJson<GmailMessage>(
+    configFile,
+    `${GMAIL_API_BASE}/messages/${encodeURIComponent(messageId)}/untrash`,
+    {
+      method: 'POST',
+      body: JSON.stringify({}),
+    },
+  );
   return upsertMessageIntoSession(configFile, sessionsDir, sessionPath, messageId);
 }
 
@@ -933,9 +947,13 @@ async function deleteDraft(
   draftId: string,
   messageId: string,
 ): Promise<void> {
-  await gmailJson<undefined>(configFile, `${GMAIL_API_BASE}/drafts/${encodeURIComponent(draftId)}`, {
-    method: 'DELETE',
-  });
+  await gmailJson<undefined>(
+    configFile,
+    `${GMAIL_API_BASE}/drafts/${encodeURIComponent(draftId)}`,
+    {
+      method: 'DELETE',
+    },
+  );
   removeCachedEmail(sessionsDir, sessionPath, messageId);
 }
 
@@ -965,9 +983,12 @@ export function gmailPlugin(options: GmailPluginOptions): Plugin {
         }
 
         cleanupPendingAuths();
-        const gmail = (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
+        const gmail =
+          (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
         if (!gmail.clientId) {
-          sendJson(res, 400, { error: 'Missing Gmail client ID. Save it in Email settings first.' });
+          sendJson(res, 400, {
+            error: 'Missing Gmail client ID. Save it in Email settings first.',
+          });
           return;
         }
 
@@ -1008,12 +1029,17 @@ export function gmailPlugin(options: GmailPluginOptions): Plugin {
         const pending = pendingAuths.get(state);
         pendingAuths.delete(state);
         if (!pending || !code) {
-          sendHtml(res, 400, createPopupCallbackHtml(false, 'Missing or expired Gmail auth state.'));
+          sendHtml(
+            res,
+            400,
+            createPopupCallbackHtml(false, 'Missing or expired Gmail auth state.'),
+          );
           return;
         }
 
         try {
-          const gmail = (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
+          const gmail =
+            (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
           if (!gmail.clientId) {
             throw new Error('Missing Gmail client ID.');
           }
@@ -1140,7 +1166,12 @@ export function gmailPlugin(options: GmailPluginOptions): Plugin {
             return;
           }
           const message = await sendMessage(options.configFile, body);
-          await upsertMessageIntoSession(options.configFile, options.sessionsDir, body.sessionPath, message.id);
+          await upsertMessageIntoSession(
+            options.configFile,
+            options.sessionsDir,
+            body.sessionPath,
+            message.id,
+          );
           sendJson(res, 200, { ok: true, messageId: message.id });
         } catch (sendError) {
           sendJson(res, 500, {
@@ -1163,7 +1194,8 @@ export function gmailPlugin(options: GmailPluginOptions): Plugin {
           }
           const draft = await createDraft(options.configFile, body);
           const fullDraft = await getDraft(options.configFile, draft.id);
-          const gmail = (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
+          const gmail =
+            (readPersistedConfig(options.configFile).gmail as GmailStoredConfig | undefined) ?? {};
           const record = buildCachedEmailRecord(fullDraft.message, {
             draftId: draft.id,
             accountEmail: gmail.connectedEmail,
@@ -1299,7 +1331,10 @@ export function gmailPlugin(options: GmailPluginOptions): Plugin {
           sendJson(res, 200, { ok: true });
         } catch (draftDeleteError) {
           sendJson(res, 500, {
-            error: draftDeleteError instanceof Error ? draftDeleteError.message : String(draftDeleteError),
+            error:
+              draftDeleteError instanceof Error
+                ? draftDeleteError.message
+                : String(draftDeleteError),
           });
         }
       });

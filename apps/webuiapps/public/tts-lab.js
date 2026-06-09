@@ -1,3 +1,5 @@
+/* eslint-env browser */
+
 const defaultGoogleVoices = [
   { voiceName: 'Despina', note: '매끈하고 차가운 밸런스형' },
   { voiceName: 'Kore', note: '단호하고 주도적인 타입' },
@@ -15,8 +17,7 @@ const accountVoiceErrorEl = document.getElementById('accountVoiceError');
 const sharedVoiceResultsEl = document.getElementById('sharedVoiceResults');
 const sharedVoiceErrorEl = document.getElementById('sharedVoiceError');
 
-transcriptInput.value =
-  '……勘違いしないで。特別扱いしてるんじゃない。ただ、少し気にかけてるだけ。';
+transcriptInput.value = '……勘違いしないで。特別扱いしてるんじゃない。ただ、少し気にかけてるだけ。';
 stylePromptInput.value =
   '20代半ばの日本人女性。上品で少し高飛車、感情は抑えめ。冷たすぎず、余裕と色気がある。語尾は軽く流し、決して子供っぽくしない。テンポはやや 빠르게, 기본보다 10~15% 정도 빠른 호흡으로 또렷하게 말하고, 불필요하게 늘이지 않는다.';
 
@@ -168,7 +169,13 @@ function normalizeVoiceScore(voice) {
 
   let score = 0;
   if ((labels.gender || '').toLowerCase() === 'female') score += 4;
-  if (verifiedLanguages.some((item) => String(item.locale || '').toLowerCase().startsWith('ja'))) {
+  if (
+    verifiedLanguages.some((item) =>
+      String(item.locale || '')
+        .toLowerCase()
+        .startsWith('ja'),
+    )
+  ) {
     score += 6;
   }
   if (descriptionBlob.includes('japanese')) score += 4;
@@ -339,7 +346,9 @@ async function loadStatus() {
       { label: 'Eleven model', value: status.defaultElevenModel },
     ]);
   } catch (error) {
-    setStatusBadges([{ label: 'status', value: error instanceof Error ? error.message : String(error) }]);
+    setStatusBadges([
+      { label: 'status', value: error instanceof Error ? error.message : String(error) },
+    ]);
   }
 }
 
@@ -354,7 +363,9 @@ async function loadAccountVoices() {
         pageSize: '50',
       }).toString()}`,
     );
-    const rankedVoices = [...result.voices].sort((a, b) => normalizeVoiceScore(b) - normalizeVoiceScore(a));
+    const rankedVoices = [...result.voices].sort(
+      (a, b) => normalizeVoiceScore(b) - normalizeVoiceScore(a),
+    );
     if (!rankedVoices.length) {
       accountVoiceErrorEl.textContent = '계정에서 사용할 수 있는 음성을 찾지 못했습니다.';
       return;

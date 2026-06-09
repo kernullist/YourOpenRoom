@@ -66,10 +66,7 @@ function clampMaxResults(input: unknown): number {
 
 function stripSessionPrefix(path: string): string {
   const normalizedPath = path.replace(/\\/g, '/').replace(/^\/+/, '');
-  const sessionPath = getSessionPath()
-    .replace(/\\/g, '/')
-    .replace(/^\/+/, '')
-    .replace(/\/+$/, '');
+  const sessionPath = getSessionPath().replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/, '');
   if (sessionPath && normalizedPath.startsWith(`${sessionPath}/`)) {
     return normalizedPath.slice(sessionPath.length + 1);
   }
