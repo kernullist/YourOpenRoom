@@ -42,7 +42,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
   - long-term memory saving
   - image generation
   - live web search through Tavily
-  - prompt budget and tool inspector panels
+  - prompt budget, capability registry, and tool inspector panels
 - Session-scoped app storage persisted under `~/.openroom/sessions/...`.
 - A local mock of `@gui/vibe-container`, so the open-source standalone build works without the
   original iframe runtime.
@@ -134,6 +134,13 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - IDE checkpoint create/list/restore/delete app actions
   - `autofix_diagnostics`
   - `background_watch`
+- **Capability registry**
+  - each exposed chat tool is classified by risk, capability surface, access type, cacheability,
+    and parallel-safety
+  - the active tool list is injected into the system prompt so the model sees only the tools
+    exposed for that turn
+  - Advanced -> Tool Inspector shows registered capability counts, high-risk tools, and unknown
+    tool warnings
 
 These tools are guarded by the current implementation:
 

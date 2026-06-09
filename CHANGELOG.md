@@ -15,6 +15,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   visible chat panel and can be restored to their previous bounds.
 - Kira now analyzes work briefs before worker assignment and blocks ambiguous work with
   clarification questions when more information is needed.
+- Aoi chat tools now have a capability registry that classifies exposed tools by risk, surface,
+  access type, cacheability, and parallel-safety, with the active registry injected into the system
+  prompt and surfaced in Advanced -> Tool Inspector.
 - Album can browse a user-selected local photo folder, remember a saved folder path, and expose
   search, sort, grid density, and preview controls.
 - Calendar now stores the selected calendar date in view state so the planner reopens on the same

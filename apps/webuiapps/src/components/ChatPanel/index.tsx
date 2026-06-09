@@ -165,6 +165,12 @@ import {
   saveToolSafetyPolicy,
   type ToolSafetyPolicy,
 } from '@/lib/toolSafetyPolicy';
+import {
+  AOI_DEFAULT_CAPABILITY_NAMES,
+  buildAoiCapabilityPrompt,
+  getAoiCapabilityRows,
+  summarizeAoiCapabilityRegistry,
+} from '@/lib/aoiCapabilityRegistry';
 import { createAppFileApi } from '@/lib/fileApi';
 import {
   loadConversationPreferencesSync,
@@ -841,6 +847,7 @@ function buildSystemPrompt(
   memories: MemoryEntry[] = [],
   hasTavily = false,
   aoiMemoryPrompt = '',
+  capabilityPrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -960,6 +967,7 @@ Tool rule:
 - If you call save_memory, you must also call respond_to_user in the same assistant turn.
 - Never call save_memory by itself and stop there.`;
 
+  prompt += capabilityPrompt;
   prompt += aoiMemoryPrompt;
   prompt += buildMemoryPrompt(memories);
 
@@ -2889,12 +2897,14 @@ const ChatPanel: React.FC<{
               ]
             : []),
         ];
+    const selectedToolNames = tools.map((tool) => tool.function.name);
+    const capabilityPrompt = buildAoiCapabilityPrompt(selectedToolNames);
     console.info('[ChatPanel] Tool selection', {
       latestUserMessage,
       useDialogModel,
       activeModel: activeCfg.model,
       includeAppTools,
-      toolNames: tools.map((tool) => tool.function.name),
+      toolNames: selectedToolNames,
     });
 
     const currentMemories = memoriesRef.current;
@@ -2908,6 +2918,7 @@ const ChatPanel: React.FC<{
       currentMemories,
       hasTavily,
       currentAoiMemoryPrompt,
+      capabilityPrompt,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -5071,6 +5082,17 @@ const SettingsModal: React.FC<{
   );
   const recentMutations = useMemo(() => listRecentMutations().slice(0, 8), []);
   const activeBackgroundWatches = useMemo(() => listBackgroundWatches().slice(0, 8), []);
+  const capabilitySummary = useMemo(
+    () => summarizeAoiCapabilityRegistry(AOI_DEFAULT_CAPABILITY_NAMES),
+    [],
+  );
+  const capabilityRows = useMemo(
+    () =>
+      getAoiCapabilityRows(AOI_DEFAULT_CAPABILITY_NAMES)
+        .filter((row) => row.risk === 'high' || !row.registered)
+        .slice(0, 12),
+    [],
+  );
   const formatModelLabel = useCallback(
     (modelProvider: LLMProvider, modelId: string) =>
       formatProviderModelLabel(modelProvider, modelId, runtimeModelLabels),
@@ -6588,6 +6610,66 @@ const SettingsModal: React.FC<{
                         </button>
                       </div>
                     </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Capability Registry</span>
+                    <div className={styles.promptBudgetGrid}>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Registered</span>
+                        <strong>
+                          {capabilitySummary.registered} / {capabilitySummary.total}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>High risk</span>
+                        <strong>{capabilitySummary.byRisk.high}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Write / execute</span>
+                        <strong>{capabilitySummary.writeOrExecute}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Network / external</span>
+                        <strong>{capabilitySummary.external}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Parallel safe</span>
+                        <strong>{capabilitySummary.parallelSafe}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Cacheable</span>
+                        <strong>{capabilitySummary.cacheable}</strong>
+                      </div>
+                    </div>
+
+                    <ul className={styles.promptBudgetList}>
+                      {capabilitySummary.bySurface.map((item) => (
+                        <li key={item.surface}>
+                          <span>{item.surface}</span>
+                          <strong>{item.count}</strong>
+                        </li>
+                      ))}
+                    </ul>
+
+                    {capabilityRows.length > 0 ? (
+                      <div className={styles.promptBudgetLog}>
+                        {capabilityRows.map((row) => (
+                          <div key={row.name}>
+                            <strong>{row.name}</strong>
+                            <span>
+                              {' '}
+                              [{row.surface} / {row.risk}]
+                            </span>
+                            <span> {row.description}</span>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <p className={styles.modelHint}>
+                        Every exposed capability is registered with a risk and surface label.
+                      </p>
+                    )}
                   </div>
 
                   <div className={styles.promptBudgetSection}>
