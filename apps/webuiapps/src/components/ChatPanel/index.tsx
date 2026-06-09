@@ -67,6 +67,15 @@ import {
   buildMemoryPrompt,
   type MemoryEntry,
 } from '@/lib/memoryManager';
+import {
+  buildAoiMemoryPrompt,
+  loadAoiMemories,
+  saveAoiManualMemory,
+  syncAoiMemoryFromTurn,
+  type AoiMemoryEntry,
+  type AoiMemoryEpisodeSource,
+  type AoiMemoryType,
+} from '@/lib/aoiMemoryManager';
 import { logger } from '@/lib/logger';
 import {
   condenseConversationHistory,
@@ -387,6 +396,21 @@ function extractNameMemory(text: string): string | null {
   return null;
 }
 
+function mapMemoryCategoryToAoiType(category: string | undefined): AoiMemoryType {
+  switch (category) {
+    case 'preference':
+      return 'preference';
+    case 'event':
+      return 'event';
+    case 'emotion':
+      return 'emotion';
+    case 'fact':
+      return 'fact';
+    default:
+      return 'fact';
+  }
+}
+
 function parseDirectMusicIntent(text: string): { query: string } | null {
   const trimmed = text.trim();
   if (!trimmed) return null;
@@ -699,6 +723,7 @@ function buildSystemPrompt(
   conversationPreferences: ConversationPreferencesConfig | null,
   memories: MemoryEntry[] = [],
   hasTavily = false,
+  aoiMemoryPrompt = '',
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -818,6 +843,7 @@ Tool rule:
 - If you call save_memory, you must also call respond_to_user in the same assistant turn.
 - Never call save_memory by itself and stop there.`;
 
+  prompt += aoiMemoryPrompt;
   prompt += buildMemoryPrompt(memories);
 
   return prompt;
@@ -1412,6 +1438,7 @@ const ChatPanel: React.FC<{
 
   // Memories loaded for SP injection
   const [memories, setMemories] = useState<MemoryEntry[]>([]);
+  const [aoiMemories, setAoiMemories] = useState<AoiMemoryEntry[]>([]);
   const [promptBudgetEntries, setPromptBudgetEntries] = useState<PromptBudgetEntry[]>([]);
 
   // Pending tool calls for current response (grouped per assistant turn)
@@ -1594,6 +1621,7 @@ const ChatPanel: React.FC<{
     });
     // Load memories for SP injection
     loadMemories(sessionPath).then(setMemories);
+    loadAoiMemories().then(setAoiMemories);
   }, [sessionPath]);
 
   // Load configs from file (async override).
@@ -1789,11 +1817,46 @@ const ChatPanel: React.FC<{
   characterRef.current = character;
   const memoriesRef = useRef(memories);
   memoriesRef.current = memories;
+  const aoiMemoriesRef = useRef(aoiMemories);
+  aoiMemoriesRef.current = aoiMemories;
   const toolCacheRef = useRef(createToolResultCache());
 
   const clearToolCache = useCallback(() => {
     toolCacheRef.current.clear();
   }, []);
+
+  const refreshAoiMemories = useCallback(() => {
+    loadAoiMemories()
+      .then(setAoiMemories)
+      .catch((error) => {
+        console.warn('[ChatPanel] Failed to refresh Aoi memory', error);
+      });
+  }, []);
+
+  const recordAoiMemoryTurn = useCallback(
+    (params: {
+      userMessage: string;
+      assistantMessage: string;
+      toolCalls?: string[];
+      source?: AoiMemoryEpisodeSource;
+      llmConfig?: LLMConfig | null;
+    }) => {
+      if (!params.userMessage.trim() && !params.assistantMessage.trim()) return;
+      void syncAoiMemoryFromTurn({
+        sessionPath: sessionPathRef.current,
+        userMessage: params.userMessage,
+        assistantMessage: params.assistantMessage,
+        toolCalls: params.toolCalls,
+        source: params.source,
+        llmConfig: params.llmConfig,
+      })
+        .then(setAoiMemories)
+        .catch((error) => {
+          console.warn('[ChatPanel] Aoi memory sync failed', error);
+        });
+    },
+    [],
+  );
 
   useEffect(() => {
     clearToolCache();
@@ -2227,8 +2290,17 @@ const ChatPanel: React.FC<{
       if (inferredMemory) {
         try {
           const saved = await saveMemory(sessionPathRef.current, inferredMemory, 'fact');
+          await saveAoiManualMemory(sessionPathRef.current, {
+            type: 'fact',
+            scope: 'user',
+            content: inferredMemory,
+            importance: 0.95,
+            confidence: 0.9,
+            tags: ['identity', 'legacy-auto'],
+          });
           console.info('[ChatPanel] Auto-saved name memory', saved);
           loadMemories(sessionPathRef.current).then(setMemories);
+          refreshAoiMemories();
         } catch (err) {
           console.error('[ChatPanel] Failed to auto-save name memory', err);
         }
@@ -2249,6 +2321,13 @@ const ChatPanel: React.FC<{
             id: String(Date.now()),
             role: 'assistant',
             content: ack,
+          });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:open_kira'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
           });
           return;
         } catch (err) {
@@ -2272,6 +2351,13 @@ const ChatPanel: React.FC<{
             role: 'assistant',
             content: ack,
           });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:open_ide'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
           return;
         } catch (err) {
           console.error('[ChatPanel] Direct IDE open dispatch failed', err);
@@ -2294,6 +2380,13 @@ const ChatPanel: React.FC<{
             role: 'assistant',
             content: ack,
           });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:open_pe_analyst'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
           return;
         } catch (err) {
           console.error('[ChatPanel] Direct PE Analyst open dispatch failed', err);
@@ -2315,6 +2408,13 @@ const ChatPanel: React.FC<{
             id: String(Date.now()),
             role: 'assistant',
             content: ack,
+          });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:open_youtube'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
           });
           return;
         } catch (err) {
@@ -2346,6 +2446,13 @@ const ChatPanel: React.FC<{
             role: 'assistant',
             content: ack,
           });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:play_last_playlist'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
           return;
         } catch (err) {
           console.error('[ChatPanel] Direct playlist playback dispatch failed', err);
@@ -2369,6 +2476,13 @@ const ChatPanel: React.FC<{
             id: String(Date.now()),
             role: 'assistant',
             content: ack,
+          });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: ['direct:play_music'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
           });
           return;
         } catch (err) {
@@ -2398,6 +2512,8 @@ const ChatPanel: React.FC<{
       chatHistory,
       addMessage,
       emitAssistantMessage,
+      recordAoiMemoryTurn,
+      refreshAoiMemories,
       refreshConversationConfigs,
     ],
   );
@@ -2467,6 +2583,7 @@ const ChatPanel: React.FC<{
     });
 
     const currentMemories = memoriesRef.current;
+    const currentAoiMemoryPrompt = buildAoiMemoryPrompt(aoiMemoriesRef.current, latestUserMessage);
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -2475,6 +2592,7 @@ const ChatPanel: React.FC<{
       conversationPreferencesRef.current,
       currentMemories,
       hasTavily,
+      currentAoiMemoryPrompt,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -2512,6 +2630,8 @@ const ChatPanel: React.FC<{
     let latestDiagnosticsParams: Record<string, unknown> | null = null;
     let latestDiagnosticsHadIssues = false;
     let fileMutatedSinceDiagnostics = false;
+    let deliveredAssistantContent = '';
+    let deliveredToolCalls: string[] = [];
 
     const diagnosticsResultHasIssues = (result: string): boolean => {
       if (/^error:/i.test(result.trim())) return true;
@@ -2581,6 +2701,9 @@ const ChatPanel: React.FC<{
             toolCalls:
               pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
           });
+          deliveredAssistantContent = response.content;
+          deliveredToolCalls =
+            pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
           pendingToolCallsRef.current = [];
         }
         break;
@@ -2837,6 +2960,8 @@ const ChatPanel: React.FC<{
             emotion,
             replies,
           });
+          const deliveredPendingToolCalls =
+            pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
 
           emitAssistantMessage(
             {
@@ -2852,6 +2977,8 @@ const ChatPanel: React.FC<{
             },
             { updateSuggestedReplies: true, applyEmotion: true },
           );
+          deliveredAssistantContent = content;
+          deliveredToolCalls = deliveredPendingToolCalls;
           pendingToolCallsRef.current = [];
           currentMessages = [
             ...currentMessages,
@@ -3553,8 +3680,21 @@ const ChatPanel: React.FC<{
             console.info('[ChatPanel] Memory tool result', {
               resultPreview: result.slice(0, 200),
             });
+            const memoryContent = typeof params.content === 'string' ? params.content : '';
+            const memoryCategory = typeof params.category === 'string' ? params.category : 'other';
+            if (memoryContent.trim()) {
+              await saveAoiManualMemory(sessionPathRef.current, {
+                type: mapMemoryCategoryToAoiType(memoryCategory),
+                scope: 'user',
+                content: memoryContent,
+                importance: 0.85,
+                confidence: 0.82,
+                tags: ['manual', memoryCategory],
+              });
+            }
             // Refresh memories for next turn's SP
             loadMemories(sessionPathRef.current).then(setMemories);
+            refreshAoiMemories();
             const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
             currentMessages = [
               ...currentMessages,
@@ -3659,6 +3799,9 @@ const ChatPanel: React.FC<{
           toolCalls:
             pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
         });
+        deliveredAssistantContent = fallbackContent;
+        deliveredToolCalls =
+          pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
         setSuggestedReplies([]);
         pendingToolCallsRef.current = [];
         break;
@@ -3669,6 +3812,16 @@ const ChatPanel: React.FC<{
         break;
       }
     }
+    if (deliveredAssistantContent.trim()) {
+      recordAoiMemoryTurn({
+        userMessage: latestUserMessage,
+        assistantMessage: deliveredAssistantContent,
+        toolCalls: deliveredToolCalls,
+        source: 'chat_turn',
+        llmConfig: activeCfg,
+      });
+    }
+
     console.info('[ChatPanel] runConversation end', {
       iterations,
       finalMessageCount: currentMessages.length,

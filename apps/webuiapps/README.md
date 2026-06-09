@@ -6,8 +6,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including Notes, Room Shop, Written By Me, Kira, Aoi's IDE,
-  and PE Analyst
+- built-in apps under `src/pages/`, including Notes, Room Shop, Written By Me, Kira, Aoi's IDE, and
+  PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
   Analyst, Written By Me, TTS lab synthesis, session persistence, and config storage work in local
@@ -60,6 +60,9 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - polling-based watches for IDE or app-storage changes
 - `src/lib/memoryManager.ts`
   - long-term memory persistence and prompt injection
+- `src/lib/aoiMemoryManager.ts`
+  - Aoi v2 durable memory episodes, conservative extraction, conflict handling, and ranked prompt
+    context
 - `src/lib/aoiTts.ts`
   - Aoi message playback, phrase prewarming, and TTS status tracking
 
@@ -160,7 +163,7 @@ This app reads and writes to `~/.openroom/` in standalone mode:
   - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail, Aoi
     TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
 - `sessions/...`
-  - session-scoped app data and chat data
+  - session-scoped app data, chat data, and local Aoi memory v2 data
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -175,6 +178,8 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - The chat panel includes both app-level tools and real workspace tools, so changes in `src/lib/`
   often affect the desktop, Kira, and Aoi's IDE together.
 - Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
+- Aoi durable memory v2 stores raw turn episodes and selected memories under
+  `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders
