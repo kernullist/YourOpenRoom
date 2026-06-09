@@ -6,6 +6,7 @@ import {
   extractHeuristicAoiMemoryCandidates,
   mergeAoiMemoryCandidates,
   parseAoiMemoryDistillerResponse,
+  scoreAoiMemoryForQuery,
   selectAoiMemoriesForPrompt,
   type AoiMemoryEntry,
 } from '../aoiMemoryManager';
@@ -217,6 +218,57 @@ describe('Aoi prompt memory selection', () => {
     expect(prompt).toContain('Durable Aoi memory');
     expect(prompt).toContain('Korean answers');
     expect(prompt).not.toContain('English answers');
+  });
+
+  it('prioritizes Kira memories with review, validation, and integration evidence', () => {
+    const now = 1_000;
+    const plainKiraMemory = makeMemory({
+      id: 'plain-kira',
+      scope: 'project',
+      type: 'action',
+      content: 'Kira completed project work "Persist memory" for YourOpenRoom.',
+      importance: 0.76,
+      confidence: 0.82,
+      hits: 1,
+      updatedAt: 100,
+      sourceEpisodeIds: ['aoi_kira_plain'],
+      tags: ['kira', 'automation', 'completed'],
+      entities: ['YourOpenRoom', 'Persist memory'],
+    });
+    const evidenceKiraMemory = makeMemory({
+      id: 'evidence-kira',
+      scope: 'project',
+      type: 'action',
+      content:
+        'Kira completed project work "Persist memory" for YourOpenRoom. attempt 2 approved; integration committed abcdef123456; validation passed=3 failed=0; review approved evidence src/lib/aoiMemoryManager.ts.',
+      importance: 0.76,
+      confidence: 0.82,
+      hits: 1,
+      updatedAt: 100,
+      sourceEpisodeIds: ['aoi_kira_evidence'],
+      tags: [
+        'kira',
+        'automation',
+        'completed',
+        'reviewed',
+        'review-approved',
+        'validation',
+        'committed',
+        'pull-request',
+      ],
+      entities: ['YourOpenRoom', 'Persist memory', 'src/lib/aoiMemoryManager.ts'],
+    });
+
+    const query = 'Kira review validation evidence for YourOpenRoom';
+    const plainScore = scoreAoiMemoryForQuery(plainKiraMemory, query, now);
+    const evidenceScore = scoreAoiMemoryForQuery(evidenceKiraMemory, query, now);
+    const selected = selectAoiMemoriesForPrompt([plainKiraMemory, evidenceKiraMemory], query, {
+      now,
+      limit: 1,
+    });
+
+    expect(evidenceScore).toBeGreaterThan(plainScore + 0.08);
+    expect(selected.map((memory) => memory.id)).toEqual(['evidence-kira']);
   });
 });
 

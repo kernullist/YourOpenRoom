@@ -19,6 +19,7 @@ const MIN_PROMPT_CONFIDENCE = 0.45;
 const MAX_DISTILLER_INPUT_CHARS = 1800;
 const MAX_DISTILLER_CANDIDATES = 5;
 const DISTILLER_TIMEOUT_MS = 25_000;
+const MAX_KIRA_EVIDENCE_PROMPT_BOOST = 0.11;
 
 export type AoiMemoryScope = 'user' | 'agent' | 'session' | 'project';
 export type AoiMemoryType =
@@ -191,6 +192,55 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
     if (b.has(item)) overlap++;
   }
   return overlap / Math.max(1, Math.min(a.size, b.size));
+}
+
+function hasMemoryTag(memory: AoiMemoryEntry, tag: string): boolean {
+  return memory.tags.includes(tag);
+}
+
+function hasAnyMemoryTag(memory: AoiMemoryEntry, tags: string[]): boolean {
+  return tags.some((tag) => hasMemoryTag(memory, tag));
+}
+
+function queryLooksForKiraEvidence(query: string): boolean {
+  return (
+    /\b(?:kira|review|validation|validate|commit|committed|pull\s*request|pr|evidence|test|build)\b/i.test(
+      query,
+    ) || /(?:키라|리뷰|검증|커밋|증거|근거|테스트|빌드)/u.test(query)
+  );
+}
+
+function scoreKiraEvidencePromptBoost(memory: AoiMemoryEntry, query: string): number {
+  const isKiraAutomationMemory =
+    (hasMemoryTag(memory, 'kira') && hasMemoryTag(memory, 'automation')) ||
+    memory.sourceEpisodeIds.some((episodeId) => episodeId.startsWith('aoi_kira_'));
+  if (!isKiraAutomationMemory) return 0;
+
+  let boost = hasMemoryTag(memory, 'completed') ? 0.01 : 0;
+
+  if (hasMemoryTag(memory, 'review-approved')) {
+    boost += 0.03;
+  } else if (hasMemoryTag(memory, 'reviewed')) {
+    boost += 0.02;
+  }
+
+  if (hasMemoryTag(memory, 'validation')) {
+    boost += 0.02;
+  }
+
+  if (hasAnyMemoryTag(memory, ['committed', 'integrated', 'pull-request'])) {
+    boost += 0.02;
+  }
+
+  if (memory.entities.length > 2) {
+    boost += 0.01;
+  }
+
+  if (queryLooksForKiraEvidence(query)) {
+    boost += 0.025;
+  }
+
+  return Math.min(MAX_KIRA_EVIDENCE_PROMPT_BOOST, boost);
 }
 
 function arraysEqual(a: string[], b: string[]): boolean {
@@ -805,13 +855,15 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
   const lexical = overlapScore(queryTokens, memoryTokens);
   const hitBoost = Math.min(0.12, memory.hits * 0.015);
   const scopeBoost = memory.scope === 'user' || memory.scope === 'agent' ? 0.06 : 0;
+  const evidenceBoost = scoreKiraEvidencePromptBoost(memory, query);
   return (
     memory.importance * 0.34 +
     memory.confidence * 0.28 +
     recency * 0.12 +
     lexical * 0.22 +
     hitBoost +
-    scopeBoost
+    scopeBoost +
+    evidenceBoost
   );
 }
 

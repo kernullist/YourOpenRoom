@@ -77,6 +77,8 @@ Prompt injection is ranked, not latest-first. The score combines:
 - query overlap
 - hit count
 - scope boost for user/agent memory
+- a capped Kira evidence boost for project memories with review, validation, commit, or PR
+  provenance
 
 Only active, non-expired memories above the confidence floor are eligible. The prompt text
 explicitly states that durable memories are context, not higher-priority instructions.
@@ -127,12 +129,15 @@ Phase 4 starts connecting Kira automation outcomes to Aoi memory.
   preferences.
 - The Kira automation plugin writes these memories server-side when it enqueues automation events,
   so completed work can be remembered even when the chat panel is not open.
+- Completed Kira memories are enriched from saved attempt and review records when available. The
+  compact memory context includes attempt number/status, changed files, validation pass/fail counts,
+  integration status, commit/PR evidence, review approval, review summary, and checked evidence
+  files.
+- Prompt retrieval gives these evidence-backed Kira memories a small capped boost when the user asks
+  about Kira work, review, validation, commits, PRs, evidence, tests, or builds.
 
 The server writer deliberately stays separate from the browser LLM distiller. It has no `window`,
 `fetch`, or `localStorage` dependency and only records deterministic Kira outcome memories.
-
-The next provider-level step is to enrich completed work memories with the saved attempt integration
-record and final review evidence, not just the coarse automation event.
 
 ## Conservative Extraction
 
@@ -161,7 +166,9 @@ The local schema is intentionally provider-neutral.
   - keep prompt admission gated by the local trust policy
 - Kira bridge
   - current: write server-side Kira completed/attention/interrupted events as `project` memories
-  - next: enrich project memories with completed action ledgers and review feedback
+  - current: enrich completed project memories with attempt integration and review evidence
+  - current: rank evidence-backed Kira memories slightly higher during prompt selection
+  - next: add an operator-visible memory quality audit for Kira-derived memories
   - keep project memory separate from personal Aoi preferences
 
 ## Validation Targets
@@ -174,3 +181,4 @@ Minimum tests for this phase:
 - duplicate memory writes increment `hits`
 - conflicting name facts supersede older entries
 - prompt selection excludes superseded entries
+- prompt selection prioritizes evidence-backed Kira memories over shallow completed-event memories
