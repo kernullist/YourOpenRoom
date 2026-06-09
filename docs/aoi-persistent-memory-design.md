@@ -114,6 +114,22 @@ This is required operationally because automatic memory extraction can be wrong.
 suggest memories, but the user needs a direct way to inspect and remove low-quality or stale
 memories without editing JSON files by hand.
 
+## Phase 4 Kira Bridge
+
+Phase 4 starts connecting Kira automation outcomes to Aoi memory.
+
+- Kira automation `completed` events become `project/action` memories.
+- Kira `needs_attention` and `interrupted` events become lower-confidence `project/event` memories.
+- `started`, `resumed`, and `steered` progress events are ignored because they are transient.
+- Kira event memories use stable episode ids, so reprocessing the same event does not inflate memory
+  hit counts.
+- Project memories carry a `projectKey` to keep Kira project outcomes separate from personal Aoi
+  preferences.
+
+This phase records Kira events from the ChatPanel event drain path. The next provider-level step is
+to split the Aoi writer into a server-safe module so the Kira automation plugin can write completed
+ledgers and review records even when the chat panel is not open.
+
 ## Conservative Extraction
 
 The deterministic extractor remains active for:
@@ -140,7 +156,8 @@ The local schema is intentionally provider-neutral.
   - use graph retrieval for people/projects/decisions that change over time
   - keep prompt admission gated by the local trust policy
 - Kira bridge
-  - write completed action ledgers and review feedback as `project` or `session` memories
+  - current: write ChatPanel-drained Kira completed/attention events as `project` memories
+  - next: write completed action ledgers and review feedback as server-side `project` memories
   - keep project memory separate from personal Aoi preferences
 
 ## Validation Targets

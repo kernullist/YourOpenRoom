@@ -21,7 +21,11 @@ export type AoiMemoryType =
   | 'action'
   | 'emotion';
 export type AoiMemoryStatus = 'active' | 'superseded' | 'archived';
-export type AoiMemoryEpisodeSource = 'chat_turn' | 'direct_action' | 'manual_memory';
+export type AoiMemoryEpisodeSource =
+  | 'chat_turn'
+  | 'direct_action'
+  | 'manual_memory'
+  | 'kira_automation';
 
 export interface AoiMemoryEntry {
   version: 2;
@@ -64,9 +68,20 @@ export interface AoiMemoryCandidate {
   content: string;
   importance?: number;
   confidence?: number;
+  projectKey?: string;
   tags?: string[];
   entities?: string[];
   expiresAt?: number;
+}
+
+export interface AoiKiraAutomationEvent {
+  id: string;
+  workId: string;
+  title: string;
+  projectName: string;
+  message: string;
+  createdAt: number;
+  type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
 export type AoiMemoryDistillerChat = typeof chat;
@@ -81,6 +96,14 @@ export interface AoiMemorySyncParams {
   llmDistiller?: boolean;
   distillerChat?: AoiMemoryDistillerChat;
 }
+
+type AoiMemoryEpisodeInput = Omit<
+  AoiMemoryEpisode,
+  'version' | 'id' | 'sessionPath' | 'createdAt'
+> & {
+  id?: string;
+  createdAt?: number;
+};
 
 function clampScore(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -108,6 +131,19 @@ function normalizeSessionPathForStorage(value: string): string {
     .map((part) => part.replace(/[^A-Za-z0-9._-]/g, '_'))
     .filter((part) => part && part !== '.' && part !== '..');
   return parts.length > 0 ? parts.join('/') : 'default';
+}
+
+function sanitizeIdPart(value: string): string {
+  return (
+    normalizeWhitespace(value)
+      .replace(/[^A-Za-z0-9._-]/g, '_')
+      .slice(0, 96) || 'item'
+  );
+}
+
+function normalizeProjectKey(value: string | undefined): string | undefined {
+  if (!value?.trim()) return undefined;
+  return sanitizeIdPart(value.trim().toLowerCase());
 }
 
 function normalizeExtractedName(value: string): string {
@@ -156,6 +192,11 @@ function overlapScore(a: Set<string>, b: Set<string>): number {
     if (b.has(item)) overlap++;
   }
   return overlap / Math.max(1, Math.min(a.size, b.size));
+}
+
+function arraysEqual(a: string[], b: string[]): boolean {
+  if (a.length !== b.length) return false;
+  return a.every((item, index) => item === b[index]);
 }
 
 function memoryApiUrl(path: string, action?: 'list'): string {
@@ -255,6 +296,7 @@ export function normalizeAoiMemoryCandidate(
     content,
     importance: clampScore(candidate.importance ?? 0.65, 0.65),
     confidence: clampScore(candidate.confidence ?? 0.7, 0.7),
+    projectKey: normalizeProjectKey(candidate.projectKey),
     tags: normalizeTags(candidate.tags),
     entities: normalizeEntities(candidate.entities),
     ...(candidate.expiresAt && Number.isFinite(candidate.expiresAt)
@@ -292,21 +334,42 @@ export function mergeAoiMemoryCandidates(
       (memory) => memory.status === 'active' && memory.normalizedContent === normalizedContent,
     );
     if (duplicate) {
-      duplicate.importance = Math.max(duplicate.importance, candidate.importance ?? 0.65);
-      duplicate.confidence = Math.max(duplicate.confidence, candidate.confidence ?? 0.7);
-      duplicate.hits += 1;
-      duplicate.updatedAt = now;
-      duplicate.sourceEpisodeIds = Array.from(
+      const episodeAlreadySeen = duplicate.sourceEpisodeIds.includes(params.episodeId);
+      const nextImportance = Math.max(duplicate.importance, candidate.importance ?? 0.65);
+      const nextConfidence = Math.max(duplicate.confidence, candidate.confidence ?? 0.7);
+      const nextSourceEpisodeIds = Array.from(
         new Set([...duplicate.sourceEpisodeIds, params.episodeId]),
       );
-      duplicate.tags = Array.from(new Set([...duplicate.tags, ...(candidate.tags ?? [])])).slice(
+      const nextTags = Array.from(new Set([...duplicate.tags, ...(candidate.tags ?? [])])).slice(
         0,
         8,
       );
-      duplicate.entities = Array.from(
+      const nextEntities = Array.from(
         new Set([...duplicate.entities, ...(candidate.entities ?? [])]),
       ).slice(0, 10);
-      changedIds.add(duplicate.id);
+      const nextProjectKey = duplicate.projectKey ?? candidate.projectKey;
+      const changed =
+        !episodeAlreadySeen ||
+        duplicate.importance !== nextImportance ||
+        duplicate.confidence !== nextConfidence ||
+        duplicate.projectKey !== nextProjectKey ||
+        !arraysEqual(duplicate.sourceEpisodeIds, nextSourceEpisodeIds) ||
+        !arraysEqual(duplicate.tags, nextTags) ||
+        !arraysEqual(duplicate.entities, nextEntities);
+
+      if (changed) {
+        duplicate.importance = nextImportance;
+        duplicate.confidence = nextConfidence;
+        if (!episodeAlreadySeen) {
+          duplicate.hits += 1;
+        }
+        duplicate.updatedAt = now;
+        duplicate.sourceEpisodeIds = nextSourceEpisodeIds;
+        duplicate.tags = nextTags;
+        duplicate.entities = nextEntities;
+        duplicate.projectKey = nextProjectKey;
+        changedIds.add(duplicate.id);
+      }
       continue;
     }
 
@@ -338,6 +401,7 @@ export function mergeAoiMemoryCandidates(
       updatedAt: now,
       sourceEpisodeIds: [params.episodeId],
       sessionPath: params.sessionPath,
+      ...(candidate.projectKey ? { projectKey: candidate.projectKey } : {}),
       tags: candidate.tags ?? [],
       entities: candidate.entities ?? [],
       ...(candidate.expiresAt ? { expiresAt: candidate.expiresAt } : {}),
@@ -612,14 +676,15 @@ export async function loadAoiMemories(): Promise<AoiMemoryEntry[]> {
 
 export async function saveAoiMemoryEpisode(
   sessionPath: string,
-  episode: Omit<AoiMemoryEpisode, 'version' | 'id' | 'sessionPath' | 'createdAt'>,
+  episode: AoiMemoryEpisodeInput,
 ): Promise<AoiMemoryEpisode> {
+  const { id, createdAt, ...episodeBody } = episode;
   const item: AoiMemoryEpisode = {
     version: 1,
-    id: makeId('aoi_ep'),
+    id: id ?? makeId('aoi_ep'),
     sessionPath,
-    createdAt: Date.now(),
-    ...episode,
+    createdAt: createdAt ?? Date.now(),
+    ...episodeBody,
   };
   await writeJson(episodeFilePath(sessionPath, item.id), item);
   return item;
@@ -679,6 +744,89 @@ export async function syncAoiMemoryFromTurn(
     return loadAoiMemories();
   }
   return saveAoiMemoryCandidates(params.sessionPath, candidates, episode.id);
+}
+
+export function buildAoiKiraAutomationMemoryCandidates(
+  event: AoiKiraAutomationEvent,
+): AoiMemoryCandidate[] {
+  const title = truncateContent(event.title || event.workId || 'Untitled Kira work');
+  const projectName = truncateContent(event.projectName || 'unknown project');
+  const message = truncateContent(event.message);
+  const projectKey = normalizeProjectKey(projectName);
+  const baseTags = ['kira', 'automation'];
+  const entities = [projectName, title].filter((item) => item.trim());
+
+  if (event.type === 'completed') {
+    return [
+      {
+        scope: 'project',
+        type: 'action',
+        content: `Kira completed project work "${title}" for ${projectName}.`,
+        importance: 0.76,
+        confidence: 0.82,
+        projectKey,
+        tags: [...baseTags, 'completed'],
+        entities,
+      },
+    ];
+  }
+
+  if (event.type === 'needs_attention') {
+    return [
+      {
+        scope: 'project',
+        type: 'event',
+        content: `Kira needs attention on project work "${title}" for ${projectName}: ${message}`,
+        importance: 0.68,
+        confidence: 0.66,
+        projectKey,
+        tags: [...baseTags, 'needs-attention'],
+        entities,
+      },
+    ];
+  }
+
+  if (event.type === 'interrupted') {
+    return [
+      {
+        scope: 'project',
+        type: 'event',
+        content: `Kira work "${title}" for ${projectName} was interrupted before completion.`,
+        importance: 0.56,
+        confidence: 0.62,
+        projectKey,
+        tags: [...baseTags, 'interrupted'],
+        entities,
+      },
+    ];
+  }
+
+  return [];
+}
+
+export async function syncAoiMemoryFromKiraAutomationEvent(
+  sessionPath: string,
+  event: AoiKiraAutomationEvent,
+): Promise<AoiMemoryEntry[]> {
+  const candidates = buildAoiKiraAutomationMemoryCandidates(event);
+  if (candidates.length === 0) {
+    return loadAoiMemories();
+  }
+
+  const episodeInput: AoiMemoryEpisodeInput = {
+    id: `aoi_kira_${sanitizeIdPart(event.id)}`,
+    source: 'kira_automation',
+    userMessage: `Kira automation ${event.type}: ${event.title}`,
+    assistantMessage: event.message,
+    toolCalls: ['kira_automation'],
+    outcome: event.type,
+  };
+  if (Number.isFinite(event.createdAt)) {
+    episodeInput.createdAt = event.createdAt;
+  }
+
+  const episode = await saveAoiMemoryEpisode(sessionPath, episodeInput);
+  return saveAoiMemoryCandidates(sessionPath, candidates, episode.id);
 }
 
 export async function archiveAoiMemory(memoryId: string): Promise<AoiMemoryEntry[]> {

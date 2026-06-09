@@ -182,7 +182,8 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset. Background
   sync can use the configured LLM as a distiller, but invalid or timed-out distillation falls back
   to deterministic extraction. The Advanced settings tab includes an Aoi Memory Inspector for
-  review, archive, delete, and refresh operations.
+  review, archive, delete, and refresh operations. Kira automation completion and attention events
+  are also bridged into project-scoped Aoi memories from the chat event drain path.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders

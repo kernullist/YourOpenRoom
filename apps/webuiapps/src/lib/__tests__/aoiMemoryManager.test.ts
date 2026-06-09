@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAoiKiraAutomationMemoryCandidates,
   buildAoiMemoryPrompt,
   distillAoiMemoryCandidatesWithLlm,
   extractHeuristicAoiMemoryCandidates,
@@ -101,6 +102,36 @@ describe('mergeAoiMemoryCandidates()', () => {
     expect(merged.memories[0].sourceEpisodeIds).toContain('ep-2');
   });
 
+  it('does not increment hits when the same episode is replayed', () => {
+    const existing = [
+      makeMemory({
+        id: 'mem-a',
+        content: 'Kira completed project work "Fix tests" for OpenRoom.',
+        normalizedContent: 'kira completed project work "fix tests" for openroom.',
+        hits: 1,
+        updatedAt: 10,
+        sourceEpisodeIds: ['ep-1'],
+      }),
+    ];
+
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [
+        {
+          scope: 'project',
+          type: 'action',
+          content: 'Kira completed project work "Fix tests" for OpenRoom.',
+          confidence: 0.8,
+        },
+      ],
+      { sessionPath: 'aoi/default', episodeId: 'ep-1', now: 100 },
+    );
+
+    expect(merged.changedIds).toEqual([]);
+    expect(merged.memories[0].hits).toBe(1);
+    expect(merged.memories[0].updatedAt).toBe(10);
+  });
+
   it('supersedes stale name facts', () => {
     const existing = [
       makeMemory({
@@ -120,6 +151,43 @@ describe('mergeAoiMemoryCandidates()', () => {
     expect(
       merged.memories.find((memory) => memory.content.includes('NewName'))?.supersedes,
     ).toEqual(['old-name']);
+  });
+});
+
+describe('Aoi Kira memory bridge', () => {
+  it('turns completed Kira events into project action memories', () => {
+    const candidates = buildAoiKiraAutomationMemoryCandidates({
+      id: 'event-1',
+      workId: 'work-1',
+      title: 'Add review controls',
+      projectName: 'YourOpenRoom',
+      message: 'Kira 완료: "Add review controls" 작업이 끝났어요.',
+      createdAt: 100,
+      type: 'completed',
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      scope: 'project',
+      type: 'action',
+      projectKey: 'youropenroom',
+    });
+    expect(candidates[0].content).toContain('Kira completed project work');
+    expect(candidates[0].tags).toContain('completed');
+  });
+
+  it('ignores transient Kira progress events', () => {
+    const candidates = buildAoiKiraAutomationMemoryCandidates({
+      id: 'event-1',
+      workId: 'work-1',
+      title: 'Add review controls',
+      projectName: 'YourOpenRoom',
+      message: 'Kira started.',
+      createdAt: 100,
+      type: 'started',
+    });
+
+    expect(candidates).toEqual([]);
   });
 });
 
