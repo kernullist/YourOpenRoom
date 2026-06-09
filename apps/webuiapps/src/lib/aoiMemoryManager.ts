@@ -201,6 +201,14 @@ async function writeJson(path: string, value: unknown): Promise<void> {
   }
 }
 
+async function deleteJson(path: string): Promise<void> {
+  try {
+    await fetch(memoryApiUrl(path), { method: 'DELETE' });
+  } catch {
+    // Memory deletes must not break the settings UI.
+  }
+}
+
 async function listJsonFiles(path: string): Promise<Array<{ path: string; type: number }>> {
   try {
     const res = await fetch(memoryApiUrl(path, 'list'));
@@ -671,6 +679,24 @@ export async function syncAoiMemoryFromTurn(
     return loadAoiMemories();
   }
   return saveAoiMemoryCandidates(params.sessionPath, candidates, episode.id);
+}
+
+export async function archiveAoiMemory(memoryId: string): Promise<AoiMemoryEntry[]> {
+  const memories = await loadAoiMemories();
+  const memory = memories.find((item) => item.id === memoryId);
+  if (!memory) return memories;
+  const archived: AoiMemoryEntry = {
+    ...memory,
+    status: 'archived',
+    updatedAt: Date.now(),
+  };
+  await writeJson(memoryFilePath(memoryId), archived);
+  return loadAoiMemories();
+}
+
+export async function deleteAoiMemory(memoryId: string): Promise<AoiMemoryEntry[]> {
+  await deleteJson(memoryFilePath(memoryId));
+  return loadAoiMemories();
 }
 
 function isPromptEligible(memory: AoiMemoryEntry, now: number): boolean {

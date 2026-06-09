@@ -99,6 +99,21 @@ The distiller:
 This keeps the raw episode log as ground truth while allowing richer extraction for durable
 preferences, decisions, procedures, and project context.
 
+## Phase 3 Review Controls
+
+Phase 3 adds an Aoi Memory Inspector in the Advanced settings tab.
+
+The inspector exposes:
+
+- active, prompt-eligible, archived, and superseded memory counts
+- the latest durable memory entries with scope, type, status, confidence, hit count, tags, and
+  update time
+- refresh, archive, and delete controls
+
+This is required operationally because automatic memory extraction can be wrong. The assistant may
+suggest memories, but the user needs a direct way to inspect and remove low-quality or stale
+memories without editing JSON files by hand.
+
 ## Conservative Extraction
 
 The deterministic extractor remains active for:

@@ -181,7 +181,8 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - Aoi durable memory v2 stores raw turn episodes and selected memories under
   `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset. Background
   sync can use the configured LLM as a distiller, but invalid or timed-out distillation falls back
-  to deterministic extraction.
+  to deterministic extraction. The Advanced settings tab includes an Aoi Memory Inspector for
+  review, archive, delete, and refresh operations.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders

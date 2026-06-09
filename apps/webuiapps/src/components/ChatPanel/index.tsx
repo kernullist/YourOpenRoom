@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react';
 import {
+  Archive,
   Settings,
   Trash2,
   RotateCcw,
@@ -68,7 +69,9 @@ import {
   type MemoryEntry,
 } from '@/lib/memoryManager';
 import {
+  archiveAoiMemory,
   buildAoiMemoryPrompt,
+  deleteAoiMemory,
   loadAoiMemories,
   saveAoiManualMemory,
   syncAoiMemoryFromTurn,
@@ -1831,6 +1834,16 @@ const ChatPanel: React.FC<{
       .catch((error) => {
         console.warn('[ChatPanel] Failed to refresh Aoi memory', error);
       });
+  }, []);
+
+  const archiveAoiMemoryEntry = useCallback(async (memoryId: string) => {
+    const nextMemories = await archiveAoiMemory(memoryId);
+    setAoiMemories(nextMemories);
+  }, []);
+
+  const deleteAoiMemoryEntry = useCallback(async (memoryId: string) => {
+    const nextMemories = await deleteAoiMemory(memoryId);
+    setAoiMemories(nextMemories);
   }, []);
 
   const recordAoiMemoryTurn = useCallback(
@@ -4085,9 +4098,13 @@ const ChatPanel: React.FC<{
           ttsStatusSnapshot={ttsStatusSnapshot}
           imageGenConfig={imageGenConfig}
           promptBudgetEntries={promptBudgetEntries}
+          aoiMemories={aoiMemories}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
           initialTab={settingsInitialTab}
+          onRefreshAoiMemories={refreshAoiMemories}
+          onArchiveAoiMemory={archiveAoiMemoryEntry}
+          onDeleteAoiMemory={deleteAoiMemoryEntry}
           onResetAll={handleResetSessionHistory}
           onSave={(
             c,
@@ -4467,9 +4484,13 @@ const SettingsModal: React.FC<{
   ttsStatusSnapshot: AoiTtsStatusSnapshot;
   imageGenConfig: ImageGenConfig | null;
   promptBudgetEntries: PromptBudgetEntry[];
+  aoiMemories: AoiMemoryEntry[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
   initialTab?: AppSettingsTabKey;
+  onRefreshAoiMemories: () => void;
+  onArchiveAoiMemory: (memoryId: string) => Promise<void>;
+  onDeleteAoiMemory: (memoryId: string) => Promise<void>;
   onResetAll: () => void;
   onSave: (
     _config: LLMConfig,
@@ -4492,9 +4513,13 @@ const SettingsModal: React.FC<{
   ttsStatusSnapshot,
   imageGenConfig,
   promptBudgetEntries,
+  aoiMemories,
   recentToolActivity,
   toolSafetyPolicy,
   initialTab = 'chat',
+  onRefreshAoiMemories,
+  onArchiveAoiMemory,
+  onDeleteAoiMemory,
   onResetAll,
   onSave,
   onClose,
@@ -4630,6 +4655,29 @@ const SettingsModal: React.FC<{
     () => summarizePromptBudget(promptBudgetEntries),
     [promptBudgetEntries],
   );
+  const aoiMemoryOverview = useMemo(() => {
+    const activeCount = aoiMemories.filter((memory) => memory.status === 'active').length;
+    const archivedCount = aoiMemories.filter((memory) => memory.status === 'archived').length;
+    const supersededCount = aoiMemories.filter((memory) => memory.status === 'superseded').length;
+    const promptEligibleCount = aoiMemories.filter(
+      (memory) => memory.status === 'active' && memory.confidence >= 0.45,
+    ).length;
+    return {
+      activeCount,
+      archivedCount,
+      supersededCount,
+      promptEligibleCount,
+    };
+  }, [aoiMemories]);
+  const visibleAoiMemories = useMemo(
+    () =>
+      aoiMemories
+        .slice()
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, 12),
+    [aoiMemories],
+  );
+  const [pendingAoiMemoryActionId, setPendingAoiMemoryActionId] = useState<string | null>(null);
   const [autoVerifyFixes, setAutoVerifyFixes] = useState(toolSafetyPolicy.autoVerifyFixes);
   const [allowWorkspaceCommands, setAllowWorkspaceCommands] = useState(
     toolSafetyPolicy.allowWorkspaceCommands,
@@ -4699,6 +4747,18 @@ const SettingsModal: React.FC<{
       void refreshOpenRouterModels();
     }
   }, [openRouterModelsStatus, refreshOpenRouterModels, usesOpenRouterModels]);
+
+  const handleAoiMemoryAction = useCallback(
+    async (memoryId: string, action: (id: string) => Promise<void>) => {
+      setPendingAoiMemoryActionId(memoryId);
+      try {
+        await action(memoryId);
+      } finally {
+        setPendingAoiMemoryActionId(null);
+      }
+    },
+    [],
+  );
 
   const handleProviderChange = (p: LLMProvider) => {
     setProvider(p);
@@ -5870,6 +5930,99 @@ const SettingsModal: React.FC<{
 
           {activeTab === 'advanced' && (
             <div className={styles.settingsSection}>
+              <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
+                <div className={styles.settingsSectionHeader}>
+                  <div>
+                    <div className={styles.settingsSectionTitle}>Aoi Memory Inspector</div>
+                    <span className={styles.modelHint}>
+                      Durable memories selected from Aoi chat turns and manual memory saves.
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className={styles.inlineActionBtn}
+                    onClick={onRefreshAoiMemories}
+                    title="Refresh Aoi memories"
+                  >
+                    <RotateCcw size={14} />
+                    Refresh
+                  </button>
+                </div>
+
+                <div className={styles.promptBudgetGrid}>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Active</span>
+                    <strong>{aoiMemoryOverview.activeCount}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Prompt eligible</span>
+                    <strong>{aoiMemoryOverview.promptEligibleCount}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Archived</span>
+                    <strong>{aoiMemoryOverview.archivedCount}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Superseded</span>
+                    <strong>{aoiMemoryOverview.supersededCount}</strong>
+                  </div>
+                </div>
+
+                {visibleAoiMemories.length > 0 ? (
+                  <div className={styles.aoiMemoryList}>
+                    {visibleAoiMemories.map((memory) => (
+                      <div className={styles.aoiMemoryItem} key={memory.id}>
+                        <div className={styles.aoiMemoryMain}>
+                          <div className={styles.aoiMemoryMeta}>
+                            <span>{memory.scope}</span>
+                            <span>{memory.type}</span>
+                            <span>{memory.status}</span>
+                            <span>conf {memory.confidence.toFixed(2)}</span>
+                            <span>hits {memory.hits}</span>
+                          </div>
+                          <div className={styles.aoiMemoryContent}>{memory.content}</div>
+                          <div className={styles.aoiMemoryFooter}>
+                            <span>{new Date(memory.updatedAt).toLocaleString()}</span>
+                            {memory.tags.length > 0 ? (
+                              <span>{memory.tags.slice(0, 4).join(', ')}</span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className={styles.aoiMemoryActions}>
+                          <button
+                            type="button"
+                            className={styles.iconActionBtn}
+                            onClick={() =>
+                              void handleAoiMemoryAction(memory.id, onArchiveAoiMemory)
+                            }
+                            disabled={
+                              memory.status === 'archived' || pendingAoiMemoryActionId === memory.id
+                            }
+                            title="Archive memory"
+                          >
+                            <Archive size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.iconActionBtn}
+                            onClick={() => void handleAoiMemoryAction(memory.id, onDeleteAoiMemory)}
+                            disabled={pendingAoiMemoryActionId === memory.id}
+                            title="Delete memory"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <p className={styles.modelHint}>
+                    No durable Aoi memories have been stored yet. Send a few meaningful chat turns
+                    or use save_memory.
+                  </p>
+                )}
+              </div>
+
               <div className={styles.settingsSectionCard}>
                 <div className={styles.settingsSectionTitle}>PE Analyst / IDA MCP</div>
                 <div className={styles.field}>
