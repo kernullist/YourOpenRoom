@@ -1,5 +1,13 @@
 import type { LLMConfig } from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
+import {
+  buildAoiKiraAutomationMemoryCandidates,
+  makeAoiKiraAutomationEpisodeId,
+  type AoiKiraAutomationEvent,
+} from './aoiMemoryShared';
+
+export { buildAoiKiraAutomationMemoryCandidates };
+export type { AoiKiraAutomationEvent };
 
 const API_PATH = '/api/session-data';
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
@@ -72,16 +80,6 @@ export interface AoiMemoryCandidate {
   tags?: string[];
   entities?: string[];
   expiresAt?: number;
-}
-
-export interface AoiKiraAutomationEvent {
-  id: string;
-  workId: string;
-  title: string;
-  projectName: string;
-  message: string;
-  createdAt: number;
-  type: 'started' | 'resumed' | 'completed' | 'needs_attention' | 'steered' | 'interrupted';
 }
 
 export type AoiMemoryDistillerChat = typeof chat;
@@ -746,64 +744,6 @@ export async function syncAoiMemoryFromTurn(
   return saveAoiMemoryCandidates(params.sessionPath, candidates, episode.id);
 }
 
-export function buildAoiKiraAutomationMemoryCandidates(
-  event: AoiKiraAutomationEvent,
-): AoiMemoryCandidate[] {
-  const title = truncateContent(event.title || event.workId || 'Untitled Kira work');
-  const projectName = truncateContent(event.projectName || 'unknown project');
-  const message = truncateContent(event.message);
-  const projectKey = normalizeProjectKey(projectName);
-  const baseTags = ['kira', 'automation'];
-  const entities = [projectName, title].filter((item) => item.trim());
-
-  if (event.type === 'completed') {
-    return [
-      {
-        scope: 'project',
-        type: 'action',
-        content: `Kira completed project work "${title}" for ${projectName}.`,
-        importance: 0.76,
-        confidence: 0.82,
-        projectKey,
-        tags: [...baseTags, 'completed'],
-        entities,
-      },
-    ];
-  }
-
-  if (event.type === 'needs_attention') {
-    return [
-      {
-        scope: 'project',
-        type: 'event',
-        content: `Kira needs attention on project work "${title}" for ${projectName}: ${message}`,
-        importance: 0.68,
-        confidence: 0.66,
-        projectKey,
-        tags: [...baseTags, 'needs-attention'],
-        entities,
-      },
-    ];
-  }
-
-  if (event.type === 'interrupted') {
-    return [
-      {
-        scope: 'project',
-        type: 'event',
-        content: `Kira work "${title}" for ${projectName} was interrupted before completion.`,
-        importance: 0.56,
-        confidence: 0.62,
-        projectKey,
-        tags: [...baseTags, 'interrupted'],
-        entities,
-      },
-    ];
-  }
-
-  return [];
-}
-
 export async function syncAoiMemoryFromKiraAutomationEvent(
   sessionPath: string,
   event: AoiKiraAutomationEvent,
@@ -814,7 +754,7 @@ export async function syncAoiMemoryFromKiraAutomationEvent(
   }
 
   const episodeInput: AoiMemoryEpisodeInput = {
-    id: `aoi_kira_${sanitizeIdPart(event.id)}`,
+    id: makeAoiKiraAutomationEpisodeId(event.id),
     source: 'kira_automation',
     userMessage: `Kira automation ${event.type}: ${event.title}`,
     assistantMessage: event.message,

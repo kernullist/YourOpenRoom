@@ -74,7 +74,6 @@ import {
   deleteAoiMemory,
   loadAoiMemories,
   saveAoiManualMemory,
-  syncAoiMemoryFromKiraAutomationEvent,
   syncAoiMemoryFromTurn,
   type AoiMemoryEntry,
   type AoiMemoryEpisodeSource,
@@ -2170,23 +2169,6 @@ const ChatPanel: React.FC<{
               detail: event,
             }),
           );
-          if (
-            event.type === 'completed' ||
-            event.type === 'needs_attention' ||
-            event.type === 'interrupted'
-          ) {
-            try {
-              const nextAoiMemories = await syncAoiMemoryFromKiraAutomationEvent(
-                sessionPathRef.current,
-                event,
-              );
-              if (!disposed) {
-                setAoiMemories(nextAoiMemories);
-              }
-            } catch (error) {
-              logger.error('ChatPanel', 'Failed to record Kira automation memory:', error);
-            }
-          }
           const isKiraOpen = getWindows().some((win) => win.appId === 18 && !win.minimized);
           if (isKiraOpen) {
             try {

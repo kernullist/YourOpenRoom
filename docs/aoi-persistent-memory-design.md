@@ -125,10 +125,14 @@ Phase 4 starts connecting Kira automation outcomes to Aoi memory.
   hit counts.
 - Project memories carry a `projectKey` to keep Kira project outcomes separate from personal Aoi
   preferences.
+- The Kira automation plugin writes these memories server-side when it enqueues automation events,
+  so completed work can be remembered even when the chat panel is not open.
 
-This phase records Kira events from the ChatPanel event drain path. The next provider-level step is
-to split the Aoi writer into a server-safe module so the Kira automation plugin can write completed
-ledgers and review records even when the chat panel is not open.
+The server writer deliberately stays separate from the browser LLM distiller. It has no `window`,
+`fetch`, or `localStorage` dependency and only records deterministic Kira outcome memories.
+
+The next provider-level step is to enrich completed work memories with the saved attempt integration
+record and final review evidence, not just the coarse automation event.
 
 ## Conservative Extraction
 
@@ -156,8 +160,8 @@ The local schema is intentionally provider-neutral.
   - use graph retrieval for people/projects/decisions that change over time
   - keep prompt admission gated by the local trust policy
 - Kira bridge
-  - current: write ChatPanel-drained Kira completed/attention events as `project` memories
-  - next: write completed action ledgers and review feedback as server-side `project` memories
+  - current: write server-side Kira completed/attention/interrupted events as `project` memories
+  - next: enrich project memories with completed action ledgers and review feedback
   - keep project memory separate from personal Aoi preferences
 
 ## Validation Targets

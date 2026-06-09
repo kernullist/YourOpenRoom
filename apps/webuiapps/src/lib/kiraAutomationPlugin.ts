@@ -22,6 +22,7 @@ import {
   type LLMReasoningSummary,
   type LLMVerbosity,
 } from './llmModels';
+import { syncAoiMemoryFromKiraAutomationEventServer } from './aoiMemoryServerWriter';
 
 const execFileAsync = promisify(execFileCallback);
 
@@ -3880,6 +3881,11 @@ function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutom
   );
   queue.push(event);
   writeJsonFile(queuePath, queue);
+  try {
+    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, sessionPath, event);
+  } catch (error) {
+    console.warn('[Kira] Failed to record Aoi memory for automation event:', error);
+  }
 }
 
 function drainEvents(sessionsDir: string, sessionPath: string): KiraAutomationEvent[] {
