@@ -33,6 +33,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - 채팅 패널 기능:
   - OpenAI-compatible / Anthropic-compatible LLM 설정
   - 가벼운 대화용 dialog model 오버라이드
+  - 붙여넣기, 드래그앤드롭, 파일 선택으로 넣는 vision-capable main model용 이미지 입력
   - 사용자 호칭/이름 기억
   - 응답 언어 모드 (`match-user` / `english`)
   - Aoi 답변을 음성으로 읽어주는 선택형 TTS와 짧은 대사 프리로드
@@ -353,6 +354,9 @@ pnpm dev
 - `gmail.clientId` 는 Google OAuth **Desktop App** client ID 여야 합니다
 - `dialogLlm` 을 쓰려면 최소 `baseUrl` 과 `model` 이 필요합니다. 단, 로컬 로그인 CLI provider 는
   `model` 만 있으면 됩니다
+- 채팅 이미지 입력은 main LLM route 만 사용합니다. 메시지 하나에 PNG, JPEG, WebP, GIF 이미지를 최대
+  4개까지 붙일 수 있고, 각 이미지는 8 MB 로 제한됩니다. 선택된 main model 이 vision-capable 로
+  보이지 않으면 Aoi 는 첨부 이미지를 유지한 채 Models 설정을 엽니다
 - `kira.workRootDirectory` 는 프로젝트 폴더 자체를 가리켜도 되고, 여러 프로젝트 폴더를 담은 상위
   폴더를 가리켜도 됩니다. 루트에 `.git`, `package.json`, `requirements.txt` 같은 프로젝트 마커가
   있으면 Kira 는 그 루트 자체를 하나의 프로젝트로 취급합니다

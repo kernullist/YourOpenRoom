@@ -53,6 +53,13 @@ function toolToSchemaText(tool: ToolDef): string {
   return JSON.stringify(tool.function);
 }
 
+function getMessagePayloadChars(message: ChatMessage): number {
+  return (
+    message.content.length +
+    (message.attachments ?? []).reduce((sum, attachment) => sum + attachment.dataUrl.length, 0)
+  );
+}
+
 function getLargestMessages(
   messages: ChatMessage[],
   limit = 5,
@@ -60,8 +67,13 @@ function getLargestMessages(
   return [...messages]
     .map((message) => ({
       role: message.role,
-      chars: message.content.length,
-      preview: normalizeWhitespace(message.content).slice(0, 140),
+      chars: getMessagePayloadChars(message),
+      preview: [
+        normalizeWhitespace(message.content).slice(0, 140),
+        message.attachments?.length ? `[${message.attachments.length} image attachment(s)]` : '',
+      ]
+        .filter(Boolean)
+        .join(' '),
     }))
     .sort((a, b) => b.chars - a.chars)
     .slice(0, limit);
@@ -87,12 +99,12 @@ export function buildPromptBudgetSnapshot(input: {
   const systemPromptChars = input.systemPrompt.length;
   const historySummaryChars = input.historySummary?.length ?? 0;
   const recentHistoryChars = input.recentHistory.reduce(
-    (sum, message) => sum + message.content.length,
+    (sum, message) => sum + getMessagePayloadChars(message),
     0,
   );
   const toolSchemaChars = input.tools.reduce((sum, tool) => sum + toolToSchemaText(tool).length, 0);
   const messageChars = input.allMessagesForRequest.reduce(
-    (sum, message) => sum + message.content.length,
+    (sum, message) => sum + getMessagePayloadChars(message),
     0,
   );
   const totalChars = messageChars + toolSchemaChars;

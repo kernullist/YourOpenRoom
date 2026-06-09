@@ -189,10 +189,29 @@ export function loadConfigSync(): LLMConfig | null {
 export interface ChatMessage {
   role: 'system' | 'user' | 'assistant' | 'tool';
   content: string;
+  attachments?: ChatImageAttachment[];
   tool_call_id?: string;
   tool_calls?: ToolCall[];
   reasoning_content?: string;
 }
+
+export interface ChatImageAttachment {
+  id: string;
+  type: 'image';
+  name: string;
+  mimeType: string;
+  dataUrl: string;
+  size: number;
+  width?: number;
+  height?: number;
+}
+
+export const SUPPORTED_CHAT_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/gif',
+]);
 
 export interface ToolCall {
   id: string;
@@ -320,6 +339,158 @@ function isLoginCliProvider(provider: LLMConfig['provider'] | undefined): boolea
   return provider === 'codex-cli' || provider === 'claude-cli';
 }
 
+export function parseImageDataUrl(dataUrl: string): { mimeType: string; base64: string } | null {
+  const match = dataUrl.match(/^data:([^;,]+);base64,([A-Za-z0-9+/=]+)$/);
+  if (!match) return null;
+  return {
+    mimeType: match[1].toLowerCase(),
+    base64: match[2],
+  };
+}
+
+export function isSupportedChatImageMimeType(mimeType: string): boolean {
+  return SUPPORTED_CHAT_IMAGE_MIME_TYPES.has(mimeType.trim().toLowerCase());
+}
+
+function getChatImageAttachments(message: ChatMessage): ChatImageAttachment[] {
+  return (message.attachments ?? []).filter((attachment) => {
+    const parsed = parseImageDataUrl(attachment.dataUrl);
+    return (
+      attachment.type === 'image' &&
+      Boolean(parsed) &&
+      isSupportedChatImageMimeType(parsed?.mimeType ?? '')
+    );
+  });
+}
+
+function countChatImageAttachments(messages: ChatMessage[]): number {
+  return messages.reduce((count, message) => count + getChatImageAttachments(message).length, 0);
+}
+
+function validateChatImageAttachments(messages: ChatMessage[]): void {
+  for (const message of messages) {
+    for (const attachment of message.attachments ?? []) {
+      if (attachment.type !== 'image') continue;
+      const parsed = parseImageDataUrl(attachment.dataUrl);
+      if (!parsed || !isSupportedChatImageMimeType(parsed.mimeType)) {
+        throw new Error(
+          `Invalid image attachment "${attachment.name || 'image'}". Only PNG, JPEG, WebP, and GIF image data URLs are supported.`,
+        );
+      }
+    }
+  }
+}
+
+function modelLooksVisionCapable(modelId: string): boolean {
+  const model = modelId.toLowerCase();
+  return /(?:gpt-4o|gpt-4\.1|gpt-5|claude-|gemini|vision|llava|pixtral|\bvl\b|qwen[-_.]?vl|mimo[-_.]?v2[-_.]?omni)/i.test(
+    model,
+  );
+}
+
+export function supportsChatImageAttachments(
+  config: Pick<LLMConfig, 'provider' | 'model' | 'apiStyle'>,
+): boolean {
+  const normalizedModel = normalizeProviderModel(config).toLowerCase();
+  switch (config.provider) {
+    case 'openai':
+    case 'anthropic':
+      return modelLooksVisionCapable(normalizedModel);
+    case 'openrouter':
+    case 'opencode':
+      return modelLooksVisionCapable(normalizedModel);
+    case 'llama.cpp':
+    case 'minimax':
+    case 'opencode-go':
+      return modelLooksVisionCapable(normalizedModel);
+    default:
+      return false;
+  }
+}
+
+function ensureImageInputSupport(messages: ChatMessage[], config: LLMConfig): void {
+  validateChatImageAttachments(messages);
+  const imageCount = countChatImageAttachments(messages);
+  if (imageCount === 0) return;
+  if (supportsChatImageAttachments(config)) return;
+  throw new Error(
+    `Image input is not supported for ${config.provider}/${config.model}. Select a vision-capable main model before sending images.`,
+  );
+}
+
+function stripLocalMessageFields(message: ChatMessage): Omit<ChatMessage, 'attachments'> {
+  return {
+    role: message.role,
+    content: message.content,
+    ...(message.tool_call_id !== undefined ? { tool_call_id: message.tool_call_id } : {}),
+    ...(message.tool_calls !== undefined ? { tool_calls: message.tool_calls } : {}),
+    ...(message.reasoning_content !== undefined
+      ? { reasoning_content: message.reasoning_content }
+      : {}),
+  };
+}
+
+function buildOpenAiChatContent(message: ChatMessage): string | Array<Record<string, unknown>> {
+  const attachments = getChatImageAttachments(message);
+  if (message.role !== 'user' || attachments.length === 0) {
+    return message.content;
+  }
+
+  return [
+    ...(message.content.trim() ? [{ type: 'text', text: message.content }] : []),
+    ...attachments.map((attachment) => ({
+      type: 'image_url',
+      image_url: {
+        url: attachment.dataUrl,
+        detail: 'auto',
+      },
+    })),
+  ];
+}
+
+function buildOpenAiResponsesContent(
+  message: ChatMessage,
+): string | Array<Record<string, unknown>> {
+  const attachments = getChatImageAttachments(message);
+  if (message.role !== 'user' || attachments.length === 0) {
+    return message.content;
+  }
+
+  return [
+    ...(message.content.trim() ? [{ type: 'input_text', text: message.content }] : []),
+    ...attachments.map((attachment) => ({
+      type: 'input_image',
+      image_url: attachment.dataUrl,
+      detail: 'auto',
+    })),
+  ];
+}
+
+function buildAnthropicContent(message: ChatMessage): string | Array<Record<string, unknown>> {
+  const attachments = getChatImageAttachments(message);
+  if (message.role !== 'user' || attachments.length === 0) {
+    return message.content;
+  }
+
+  return [
+    ...attachments.flatMap((attachment) => {
+      const parsed = parseImageDataUrl(attachment.dataUrl);
+      if (!parsed) return [];
+      return [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: parsed.mimeType,
+            data: parsed.base64,
+          },
+        },
+      ];
+    }),
+    ...(message.content.trim() ? [{ type: 'text', text: message.content }] : []),
+  ];
+}
+
 function normalizeProviderModel(config: Pick<LLMConfig, 'provider' | 'model'>): string {
   return normalizeProviderModelId(config.provider, config.model);
 }
@@ -385,6 +556,7 @@ export async function chat(
   tools: ToolDef[],
   config: LLMConfig,
 ): Promise<LLMResponse> {
+  ensureImageInputSupport(messages, config);
   console.info('[LLM] chat() start', {
     provider: config.provider,
     model: config.model,
@@ -488,9 +660,17 @@ async function chatOpenAI(
   config: LLMConfig,
 ): Promise<LLMResponse> {
   const requestMessages = messages.map((message) => {
-    if (message.role !== 'assistant') return message;
+    if (message.role !== 'assistant') {
+      return {
+        ...stripLocalMessageFields(message),
+        content: buildOpenAiChatContent(message),
+      };
+    }
     const reasoningContent = getOpenAiAssistantReasoningContent(config, message);
-    return reasoningContent ? { ...message, reasoning_content: reasoningContent } : message;
+    const requestMessage = stripLocalMessageFields(message);
+    return reasoningContent
+      ? { ...requestMessage, reasoning_content: reasoningContent }
+      : requestMessage;
   });
   const body: Record<string, unknown> = {
     model: normalizeProviderModel(config),
@@ -626,7 +806,7 @@ async function chatOpenAIResponses(
       });
       continue;
     }
-    input.push({ role: 'user', content: message.content });
+    input.push({ role: 'user', content: buildOpenAiResponsesContent(message) });
   }
 
   const body: Record<string, unknown> = {
@@ -745,7 +925,10 @@ async function chatAnthropic(
         ],
       };
     }
-    return { role: m.role as 'user' | 'assistant', content: m.content };
+    return {
+      role: m.role as 'user' | 'assistant',
+      content: buildAnthropicContent(m),
+    };
   });
 
   const anthropicTools = tools.map((t) => ({

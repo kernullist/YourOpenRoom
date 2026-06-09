@@ -67,6 +67,9 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - browser-safe Kira memory candidate helpers and server-side Kira automation memory writes
 - `src/lib/aoiTts.ts`
   - Aoi message playback, phrase prewarming, and TTS status tracking
+- `src/lib/llmClient.ts`
+  - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
+    API, and Anthropic-compatible model routes
 
 ### TTS lab
 
@@ -165,7 +168,7 @@ This app reads and writes to `~/.openroom/` in standalone mode:
   - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail, Aoi
     TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
 - `sessions/...`
-  - session-scoped app data, chat data, and local Aoi memory v2 data
+  - session-scoped app data, chat data, chat image attachments, and local Aoi memory v2 data
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -187,6 +190,9 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   review, archive, delete, and refresh operations. Kira automation completion and attention events
   are also bridged into project-scoped Aoi memories by a server-side writer, so they persist even
   when the chat panel is not open.
+- Chat image input accepts pasted, dropped, or selected PNG, JPEG, WebP, and GIF files. Images stay
+  on the main LLM route, bypass the dialog model, and are stored in session chat history as data
+  URLs. Aoi memory sync records only attachment metadata instead of raw image payloads.
 - The TTS lab page is available at `/tts-lab.html` in local dev.
 - `openvscode.workspacePath` defaults to the repo root when not configured explicitly.
 - Aoi's IDE supports creating empty files by relative workspace path. Duplicate paths and folders

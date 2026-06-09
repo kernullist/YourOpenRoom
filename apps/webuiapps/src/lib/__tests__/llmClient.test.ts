@@ -13,6 +13,7 @@ import {
   loadConfigSync,
   saveConfig,
   chat,
+  type ChatImageAttachment,
   type ChatMessage,
   type ToolDef,
 } from '../llmClient';
@@ -50,6 +51,17 @@ const MOCK_LLAMACPP_CONFIG: LLMConfig = {
 };
 
 const MOCK_MESSAGES: ChatMessage[] = [{ role: 'user', content: 'Hello' }];
+
+const MOCK_IMAGE_ATTACHMENT: ChatImageAttachment = {
+  id: 'img-1',
+  type: 'image',
+  name: 'screen.png',
+  mimeType: 'image/png',
+  dataUrl: 'data:image/png;base64,aGVsbG8=',
+  size: 5,
+  width: 2,
+  height: 2,
+};
 
 const MOCK_TOOLS: ToolDef[] = [
   {
@@ -752,6 +764,58 @@ describe('saveConfig()', () => {
 // ─── chat() — routing & response parsing ──────────────────────────────────────
 
 describe('chat()', () => {
+  it('rejects image attachments before calling providers that do not support vision input', async () => {
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    await expect(
+      chat(
+        [
+          {
+            role: 'user',
+            content: 'Analyze this image.',
+            attachments: [MOCK_IMAGE_ATTACHMENT],
+          },
+        ],
+        [],
+        {
+          provider: 'codex-cli',
+          apiKey: '',
+          baseUrl: '',
+          model: 'gpt-5.3-codex',
+        },
+      ),
+    ).rejects.toThrow('Image input is not supported');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('rejects unsupported image attachment MIME types before provider calls', async () => {
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    await expect(
+      chat(
+        [
+          {
+            role: 'user',
+            content: 'Analyze this image.',
+            attachments: [
+              {
+                ...MOCK_IMAGE_ATTACHMENT,
+                name: 'vector.svg',
+                mimeType: 'image/svg+xml',
+                dataUrl: 'data:image/svg+xml;base64,PHN2Zy8+',
+              },
+            ],
+          },
+        ],
+        [],
+        { ...MOCK_OPENAI_CONFIG, model: 'gpt-4o' },
+      ),
+    ).rejects.toThrow('Invalid image attachment');
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
   describe('OpenAI provider', () => {
     it('calls /api/llm-proxy and returns content', async () => {
       const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('Hello!'));
@@ -815,6 +879,66 @@ describe('chat()', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
       expect(body.max_tokens).toBe(8192);
+    });
+
+    it('sends image attachments as OpenAI-compatible image_url content blocks', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(
+        [
+          {
+            role: 'user',
+            content: 'Describe this screenshot.',
+            attachments: [MOCK_IMAGE_ATTACHMENT],
+          },
+        ],
+        [],
+        { ...MOCK_OPENAI_CONFIG, model: 'gpt-4o' },
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.messages[0].content).toEqual([
+        { type: 'text', text: 'Describe this screenshot.' },
+        {
+          type: 'image_url',
+          image_url: {
+            url: MOCK_IMAGE_ATTACHMENT.dataUrl,
+            detail: 'auto',
+          },
+        },
+      ]);
+      expect(body.messages[0].attachments).toBeUndefined();
+    });
+
+    it('sends image attachments as Responses API input_image blocks', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeResponsesApiResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(
+        [
+          {
+            role: 'user',
+            content: 'Read the text in this image.',
+            attachments: [MOCK_IMAGE_ATTACHMENT],
+          },
+        ],
+        [],
+        { ...MOCK_OPENAI_CONFIG, model: 'gpt-5-mini' },
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.input[0]).toEqual({
+        role: 'user',
+        content: [
+          { type: 'input_text', text: 'Read the text in this image.' },
+          {
+            type: 'input_image',
+            image_url: MOCK_IMAGE_ATTACHMENT.dataUrl,
+            detail: 'auto',
+          },
+        ],
+      });
     });
 
     it('throws with status code when API returns error', async () => {
@@ -1062,6 +1186,36 @@ respond_to_user
       expect(body.system).toBe('You are helpful.');
       expect(body.messages.some((m: { role: string }) => m.role === 'system')).toBe(false);
       expect(body.max_tokens).toBe(8192);
+    });
+
+    it('sends image attachments as Anthropic image source blocks', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(makeAnthropicResponse('ok'));
+      globalThis.fetch = mockFetch;
+
+      await chat(
+        [
+          {
+            role: 'user',
+            content: 'What is visible here?',
+            attachments: [MOCK_IMAGE_ATTACHMENT],
+          },
+        ],
+        [],
+        MOCK_ANTHROPIC_CONFIG,
+      );
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.messages[0].content).toEqual([
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: 'aGVsbG8=',
+          },
+        },
+        { type: 'text', text: 'What is visible here?' },
+      ]);
     });
 
     it('converts tool_use blocks in response to toolCalls', async () => {

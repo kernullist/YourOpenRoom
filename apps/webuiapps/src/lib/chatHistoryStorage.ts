@@ -5,13 +5,14 @@
  * ~/.openroom/sessions/{charId}/{modId}/chat.json via dev-server API.
  */
 
-import type { ChatMessage } from './llmClient';
+import type { ChatImageAttachment, ChatMessage } from './llmClient';
 
 export interface DisplayMessage {
   id: string;
   role: 'user' | 'assistant' | 'tool';
   content: string;
   imageUrl?: string;
+  attachments?: ChatImageAttachment[];
 }
 
 export interface ChatHistoryData {

@@ -35,6 +35,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
 - A configurable chat panel with:
   - main LLM routing for OpenAI-compatible or Anthropic-compatible backends
   - optional cheaper dialog-model override for light chat turns
+  - pasted, dropped, or file-selected image input for vision-capable main models
   - remembered preferred user name
   - reply language mode (`match-user` or `english`)
   - optional Aoi TTS playback for assistant messages, with prewarmed short replies
@@ -361,6 +362,9 @@ Notes:
 - `gmail.clientId` must be a Google OAuth **Desktop App** client ID.
 - `dialogLlm` is optional, but it needs at least a `baseUrl` and `model` when enabled unless it uses
   a local login CLI provider.
+- Chat image input uses the main LLM route only. Up to four PNG, JPEG, WebP, or GIF images can be
+  attached per message, each capped at 8 MB. If the selected main model is not recognized as
+  vision-capable, Aoi keeps the pending images and opens the Models settings.
 - `kira.workRootDirectory` can point either to a project folder itself or to a parent folder that
   contains multiple project folders. If the root has project markers such as `.git`, `package.json`,
   or `requirements.txt`, Kira treats that root as one project.

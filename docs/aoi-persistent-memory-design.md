@@ -161,6 +161,8 @@ Aoi's primary memory loop is conversation continuity:
 - preserve the raw chat turn as source evidence
 - extract only stable facts, preferences, durable instructions, reusable procedures, decisions, and
   important completed actions
+- summarize image attachments by name, MIME type, size, and dimensions instead of passing raw base64
+  image data into memory extraction
 - rank personal and session continuity above shallow events
 - keep prompt injection small enough that memory does not drown the current user message
 - keep review controls available because automatic extraction is allowed to be conservative, not

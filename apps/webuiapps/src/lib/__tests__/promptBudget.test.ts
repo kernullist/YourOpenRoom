@@ -71,6 +71,36 @@ describe('buildPromptBudgetSnapshot()', () => {
     expect(snapshot.largestTools[0]?.name).toBeDefined();
     expect(snapshot.estimatedTokens).toBeGreaterThan(0);
   });
+
+  it('counts image attachment payloads in message budget estimates', () => {
+    const imageDataUrl = 'data:image/png;base64,aGVsbG8=';
+    const messages: ChatMessage[] = [
+      {
+        role: 'user',
+        content: 'Analyze this.',
+        attachments: [
+          {
+            id: 'img-1',
+            type: 'image',
+            name: 'screen.png',
+            mimeType: 'image/png',
+            dataUrl: imageDataUrl,
+            size: 5,
+          },
+        ],
+      },
+    ];
+
+    const snapshot = buildPromptBudgetSnapshot({
+      systemPrompt: '',
+      recentHistory: messages,
+      allMessagesForRequest: messages,
+      tools: [],
+    });
+
+    expect(snapshot.recentHistoryChars).toBe(messages[0].content.length + imageDataUrl.length);
+    expect(snapshot.largestMessages[0]?.preview).toContain('[1 image attachment(s)]');
+  });
 });
 
 describe('summarizePromptBudget()', () => {

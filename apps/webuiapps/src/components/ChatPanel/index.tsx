@@ -13,6 +13,8 @@ import {
   PanelLeft,
   PanelRight,
   Plus,
+  ImagePlus,
+  X,
 } from 'lucide-react';
 import {
   chat,
@@ -20,6 +22,9 @@ import {
   loadConfigSync,
   resolveLlmOverride,
   saveConfig,
+  SUPPORTED_CHAT_IMAGE_MIME_TYPES,
+  supportsChatImageAttachments,
+  type ChatImageAttachment,
   type ChatMessage,
 } from '@/lib/llmClient';
 import {
@@ -249,6 +254,8 @@ const CHAT_FONT_SIZE_DEFAULT = 13;
 const CHAT_FONT_SIZE_MIN = 11;
 const CHAT_FONT_SIZE_MAX = 22;
 const CHAT_FONT_SIZE_STEP = 1;
+const MAX_CHAT_IMAGE_ATTACHMENTS = 4;
+const MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024;
 
 interface CalendarReminderEvent {
   id: string;
@@ -342,6 +349,93 @@ function loadChatFontSize(): number {
   return CHAT_FONT_SIZE_DEFAULT;
 }
 
+function formatAttachmentSize(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function makeImageAttachmentId(): string {
+  return `chat_img_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+}
+
+function isSupportedImageFile(file: File): boolean {
+  return SUPPORTED_CHAT_IMAGE_MIME_TYPES.has(file.type.toLowerCase());
+}
+
+function readFileAsDataUrl(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      if (typeof reader.result === 'string') {
+        resolve(reader.result);
+      } else {
+        reject(new Error('Failed to read image data.'));
+      }
+    };
+    reader.onerror = () => reject(reader.error ?? new Error('Failed to read image data.'));
+    reader.readAsDataURL(file);
+  });
+}
+
+function readImageDimensions(dataUrl: string): Promise<{ width: number; height: number } | null> {
+  return new Promise((resolve) => {
+    const image = new Image();
+    image.onload = () => {
+      resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    };
+    image.onerror = () => resolve(null);
+    image.src = dataUrl;
+  });
+}
+
+async function fileToChatImageAttachment(file: File): Promise<ChatImageAttachment> {
+  if (!isSupportedImageFile(file)) {
+    throw new Error('Only PNG, JPEG, WebP, and GIF images are supported.');
+  }
+  if (file.size > MAX_CHAT_IMAGE_BYTES) {
+    throw new Error(`Image is too large. Limit is ${formatAttachmentSize(MAX_CHAT_IMAGE_BYTES)}.`);
+  }
+
+  const dataUrl = await readFileAsDataUrl(file);
+  const dimensions = await readImageDimensions(dataUrl);
+  return {
+    id: makeImageAttachmentId(),
+    type: 'image',
+    name: file.name || 'pasted-image.png',
+    mimeType: file.type,
+    dataUrl,
+    size: file.size,
+    ...(dimensions ? dimensions : {}),
+  };
+}
+
+function getClipboardImageFiles(dataTransfer: DataTransfer): File[] {
+  const files: File[] = [];
+  for (const item of Array.from(dataTransfer.items ?? [])) {
+    if (item.kind !== 'file') continue;
+    const file = item.getAsFile();
+    if (file && file.type.startsWith('image/')) {
+      files.push(file);
+    }
+  }
+  if (files.length > 0) return files;
+  return Array.from(dataTransfer.files ?? []).filter((file) => file.type.startsWith('image/'));
+}
+
+function describeImageAttachmentsForMemory(attachments: ChatImageAttachment[]): string {
+  if (attachments.length === 0) return '';
+  return attachments
+    .map((attachment) => {
+      const size = formatAttachmentSize(attachment.size);
+      const dimensions =
+        attachment.width && attachment.height ? `, ${attachment.width}x${attachment.height}` : '';
+      return `${attachment.name} (${attachment.mimeType}, ${size}${dimensions})`;
+    })
+    .join('; ');
+}
+
 function detectReplyLanguage(text: string): 'ko' | 'ja' | 'zh' | 'en' {
   if (/[가-힣]/.test(text)) return 'ko';
   if (/[\u3040-\u30ff]/.test(text)) return 'ja';
@@ -376,6 +470,22 @@ function buildMemoryAckMessage(
       return '好，我记住了。';
     default:
       return "Got it. I'll remember that.";
+  }
+}
+
+function buildDefaultImagePrompt(
+  responseLanguageMode: ResponseLanguageMode = 'match-user',
+): string {
+  const lang = detectPreferredLanguage('', responseLanguageMode);
+  switch (lang) {
+    case 'ko':
+      return '첨부한 이미지를 분석해줘.';
+    case 'ja':
+      return '添付した画像を分析して。';
+    case 'zh':
+      return '请分析这张附加图片。';
+    default:
+      return 'Please analyze the attached image.';
   }
 }
 
@@ -634,7 +744,11 @@ function selectConversationModel(
   primaryConfig: LLMConfig | null | undefined,
   dialogConfig: DialogLlmConfig | null | undefined,
 ): { config: LLMConfig | null; useDialogModel: boolean } {
-  const latestUserMessage = [...history].reverse().find((m) => m.role === 'user')?.content ?? '';
+  const latestUserTurn = [...history].reverse().find((m) => m.role === 'user');
+  const latestUserMessage = latestUserTurn?.content ?? '';
+  if (latestUserTurn?.attachments?.length) {
+    return { config: primaryConfig ?? null, useDialogModel: false };
+  }
   const resolvedDialogConfig = resolveLlmOverride(primaryConfig ?? null, dialogConfig);
   const useDialogModel =
     hasUsableLLMConfig(resolvedDialogConfig) && shouldUseDialogModel(latestUserMessage, history);
@@ -1354,6 +1468,9 @@ const ChatPanel: React.FC<{
     return cache?.chatHistory ?? [];
   });
   const [input, setInput] = useState('');
+  const [pendingImageAttachments, setPendingImageAttachments] = useState<ChatImageAttachment[]>([]);
+  const [attachmentError, setAttachmentError] = useState('');
+  const [imageDropActive, setImageDropActive] = useState(false);
   const [loading, setLoading] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<AppSettingsTabKey>('chat');
@@ -1449,8 +1566,11 @@ const ChatPanel: React.FC<{
   const hasUserInteractedRef = useRef(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const messagesRef = useRef(messages);
   messagesRef.current = messages;
+  const pendingImageAttachmentsRef = useRef(pendingImageAttachments);
+  pendingImageAttachmentsRef.current = pendingImageAttachments;
   const chatHistoryRef = useRef(chatHistory);
   chatHistoryRef.current = chatHistory;
   const suggestedRepliesRef = useRef(suggestedReplies);
@@ -1605,6 +1725,10 @@ const ChatPanel: React.FC<{
         });
         setMessages(nextMessages);
         setChatHistory(nextHistory);
+        pendingImageAttachmentsRef.current = [];
+        setPendingImageAttachments([]);
+        setAttachmentError('');
+        setImageDropActive(false);
         // Restore suggested replies from saved data, or from mod config if only prologue
         if (nextSuggestedReplies.length) {
           setSuggestedReplies(nextSuggestedReplies);
@@ -1702,6 +1826,10 @@ const ChatPanel: React.FC<{
 
   const handleClearHistory = useCallback(async () => {
     await clearChatHistory(sessionPathRef.current);
+    pendingImageAttachmentsRef.current = [];
+    setPendingImageAttachments([]);
+    setAttachmentError('');
+    setImageDropActive(false);
     await seedPrologue();
   }, [seedPrologue]);
 
@@ -1721,6 +1849,10 @@ const ChatPanel: React.FC<{
     setSuggestedReplies([]);
     setMemories([]);
     setCurrentEmotion(undefined);
+    pendingImageAttachmentsRef.current = [];
+    setPendingImageAttachments([]);
+    setAttachmentError('');
+    setImageDropActive(false);
 
     // Close all open app windows
     closeAllWindows();
@@ -1874,6 +2006,137 @@ const ChatPanel: React.FC<{
   useEffect(() => {
     clearToolCache();
   }, [clearToolCache, sessionPath]);
+
+  const addPendingImageFiles = useCallback(async (files: File[]) => {
+    const imageFiles = files.filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      setAttachmentError('Only PNG, JPEG, WebP, and GIF images can be attached.');
+      return;
+    }
+
+    const availableSlots = MAX_CHAT_IMAGE_ATTACHMENTS - pendingImageAttachmentsRef.current.length;
+    if (availableSlots <= 0) {
+      setAttachmentError(`Up to ${MAX_CHAT_IMAGE_ATTACHMENTS} images can be attached per message.`);
+      return;
+    }
+
+    const selectedFiles = imageFiles.slice(0, availableSlots);
+    const skippedCount = imageFiles.length - selectedFiles.length;
+    const nextAttachments: ChatImageAttachment[] = [];
+    const errors: string[] = [];
+
+    for (const file of selectedFiles) {
+      try {
+        nextAttachments.push(await fileToChatImageAttachment(file));
+      } catch (error) {
+        errors.push(error instanceof Error ? error.message : String(error));
+      }
+    }
+
+    if (nextAttachments.length > 0) {
+      setPendingImageAttachments((prev) => {
+        const availableSlots = MAX_CHAT_IMAGE_ATTACHMENTS - prev.length;
+        if (availableSlots <= 0) {
+          return prev;
+        }
+        const next = [...prev, ...nextAttachments.slice(0, availableSlots)];
+        pendingImageAttachmentsRef.current = next;
+        return next;
+      });
+    }
+
+    const notices = [
+      ...errors,
+      ...(skippedCount > 0
+        ? [`${skippedCount} image(s) skipped because the per-message limit was reached.`]
+        : []),
+    ];
+    setAttachmentError(notices[0] ?? '');
+  }, []);
+
+  const removePendingImageAttachment = useCallback((attachmentId: string) => {
+    setPendingImageAttachments((prev) => {
+      const next = prev.filter((attachment) => attachment.id !== attachmentId);
+      pendingImageAttachmentsRef.current = next;
+      return next;
+    });
+    setAttachmentError('');
+  }, []);
+
+  const handleImageFileInputChange = useCallback(
+    (event: React.ChangeEvent<HTMLInputElement>) => {
+      const files = Array.from(event.target.files ?? []);
+      event.target.value = '';
+      void addPendingImageFiles(files);
+    },
+    [addPendingImageFiles],
+  );
+
+  const handleInputPaste = useCallback(
+    (event: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const clipboard = event.clipboardData;
+      if (!clipboard) return;
+      const imageFiles = getClipboardImageFiles(clipboard);
+      if (imageFiles.length === 0) return;
+      if (!clipboard.getData('text/plain')) {
+        event.preventDefault();
+      }
+      void addPendingImageFiles(imageFiles);
+    },
+    [addPendingImageFiles],
+  );
+
+  const handleInputDragOver = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const hasImageFile = Array.from(event.dataTransfer.items ?? []).some(
+        (item) => item.kind === 'file' && item.type.startsWith('image/'),
+      );
+      if (!hasImageFile) return;
+      if (loading) {
+        event.preventDefault();
+        event.dataTransfer.dropEffect = 'none';
+        setImageDropActive(false);
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = 'copy';
+      setImageDropActive(true);
+    },
+    [loading],
+  );
+
+  const handleInputDragLeave = useCallback((event: React.DragEvent<HTMLDivElement>) => {
+    const relatedTarget = event.relatedTarget;
+    if (relatedTarget instanceof Node && event.currentTarget.contains(relatedTarget)) {
+      return;
+    }
+    setImageDropActive(false);
+  }, []);
+
+  const handleInputDrop = useCallback(
+    (event: React.DragEvent<HTMLDivElement>) => {
+      const files = Array.from(event.dataTransfer.files ?? []);
+      const hasImageFile = files.some((file) => file.type.startsWith('image/'));
+      if (!hasImageFile) {
+        setImageDropActive(false);
+        return;
+      }
+      event.preventDefault();
+      if (loading) {
+        setImageDropActive(false);
+        return;
+      }
+      void addPendingImageFiles(files);
+      setImageDropActive(false);
+    },
+    [addPendingImageFiles, loading],
+  );
+
+  const clearPendingImages = useCallback(() => {
+    pendingImageAttachmentsRef.current = [];
+    setPendingImageAttachments([]);
+    setAttachmentError('');
+  }, []);
 
   useEffect(() => subscribeAoiTtsStatus(setTtsStatusSnapshot), []);
 
@@ -2260,15 +2523,33 @@ const ChatPanel: React.FC<{
   // Send message
   const handleSend = useCallback(
     async (overrideText?: string) => {
-      const text = overrideText ?? input.trim();
-      if (!text || loading) return;
+      const text = (overrideText ?? input).trim();
+      const outgoingAttachments = overrideText ? [] : pendingImageAttachmentsRef.current;
+      const hasImageAttachments = outgoingAttachments.length > 0;
+      const messageText =
+        text ||
+        (hasImageAttachments
+          ? buildDefaultImagePrompt(
+              normalizeResponseLanguageMode(
+                conversationPreferencesRef.current?.responseLanguageMode,
+              ),
+            )
+          : '');
+      if (!messageText || loading) return;
       const { mainConfig: liveMainConfig, dialogConfig: liveDialogConfig } =
         await refreshConversationConfigs();
-      const selectedConversationModel = selectConversationModel(
-        [...chatHistory, { role: 'user', content: text }],
-        liveMainConfig,
-        liveDialogConfig,
-      );
+      const outgoingUserMessage: ChatMessage = {
+        role: 'user',
+        content: messageText,
+        ...(hasImageAttachments ? { attachments: outgoingAttachments } : {}),
+      };
+      const selectedConversationModel = hasImageAttachments
+        ? { config: liveMainConfig, useDialogModel: false }
+        : selectConversationModel(
+            [...chatHistory, outgoingUserMessage],
+            liveMainConfig,
+            liveDialogConfig,
+          );
       const selectedConfig = selectedConversationModel.config;
 
       if (!selectedConfig || !hasUsableLLMConfig(selectedConfig)) {
@@ -2278,12 +2559,25 @@ const ChatPanel: React.FC<{
         return;
       }
 
-      if (!overrideText) setInput('');
+      if (hasImageAttachments && !supportsChatImageAttachments(selectedConfig)) {
+        setAttachmentError(
+          `Image input is not supported by ${selectedConfig.provider}/${selectedConfig.model}. Select a vision-capable main model.`,
+        );
+        setSettingsInitialTab('models');
+        setShowSettings(true);
+        return;
+      }
+
+      if (!overrideText) {
+        setInput('');
+        clearPendingImages();
+      }
       setSuggestedReplies([]);
       hasUserInteractedRef.current = true;
       stopAoiTtsPlayback();
       console.info('[ChatPanel] Sending user message', {
-        text,
+        text: messageText,
+        imageAttachmentCount: outgoingAttachments.length,
         provider: selectedConfig.provider,
         model: selectedConfig.model,
         baseUrl: selectedConfig.baseUrl,
@@ -2292,11 +2586,12 @@ const ChatPanel: React.FC<{
       const userDisplay: CharacterDisplayMessage = {
         id: String(Date.now()),
         role: 'user',
-        content: text,
+        content: messageText,
+        ...(hasImageAttachments ? { attachments: outgoingAttachments } : {}),
       };
       addMessage(userDisplay);
 
-      const newHistory: ChatMessage[] = [...chatHistory, { role: 'user', content: text }];
+      const newHistory: ChatMessage[] = [...chatHistory, outgoingUserMessage];
       setChatHistory(newHistory);
 
       const inferredMemory = extractNameMemory(text);
@@ -2319,7 +2614,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      if (isDirectKiraOpenIntent(text)) {
+      if (!hasImageAttachments && isDirectKiraOpenIntent(text)) {
         try {
           await dispatchAgentAction({
             app_id: KIRA_APP_ID,
@@ -2348,7 +2643,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      if (isDirectIdeOpenIntent(text)) {
+      if (!hasImageAttachments && isDirectIdeOpenIntent(text)) {
         try {
           await dispatchAgentAction({
             app_id: IDE_APP_ID,
@@ -2377,7 +2672,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      if (isDirectPeAnalystOpenIntent(text)) {
+      if (!hasImageAttachments && isDirectPeAnalystOpenIntent(text)) {
         try {
           await dispatchAgentAction({
             app_id: PE_ANALYST_APP_ID,
@@ -2406,7 +2701,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      if (isDirectYouTubeOpenIntent(text)) {
+      if (!hasImageAttachments && isDirectYouTubeOpenIntent(text)) {
         try {
           await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
@@ -2435,7 +2730,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      if (isDirectPlaylistPlaybackIntent(text)) {
+      if (!hasImageAttachments && isDirectPlaylistPlaybackIntent(text)) {
         try {
           const result = await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
@@ -2473,7 +2768,7 @@ const ChatPanel: React.FC<{
       }
 
       const directMusicIntent = parseDirectMusicIntent(text);
-      if (directMusicIntent) {
+      if (!hasImageAttachments && directMusicIntent) {
         try {
           await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
@@ -2524,6 +2819,7 @@ const ChatPanel: React.FC<{
       config,
       chatHistory,
       addMessage,
+      clearPendingImages,
       emitAssistantMessage,
       recordAoiMemoryTurn,
       refreshAoiMemories,
@@ -2548,7 +2844,13 @@ const ChatPanel: React.FC<{
     const hasTavily = !!tavilyConfigRef.current?.apiKey;
     const mm = modManagerRef.current;
     const char = characterRef.current;
-    const latestUserMessage = [...history].reverse().find((m) => m.role === 'user')?.content ?? '';
+    const latestUserTurn = [...history].reverse().find((m) => m.role === 'user');
+    const latestUserMessage = latestUserTurn?.content ?? '';
+    const latestUserMemoryMessage = latestUserTurn?.attachments?.length
+      ? `${latestUserMessage}\n[Attached image(s): ${describeImageAttachmentsForMemory(
+          latestUserTurn.attachments,
+        )}]`
+      : latestUserMessage;
     const { config: activeCfg, useDialogModel } = selectConversationModel(history, cfg, dialogCfg);
     if (!hasUsableLLMConfig(activeCfg)) {
       throw new Error('No usable LLM config was found for this conversation turn.');
@@ -3827,7 +4129,7 @@ const ChatPanel: React.FC<{
     }
     if (deliveredAssistantContent.trim()) {
       recordAoiMemoryTurn({
-        userMessage: latestUserMessage,
+        userMessage: latestUserMemoryMessage,
         assistantMessage: deliveredAssistantContent,
         toolCalls: deliveredToolCalls,
         source: 'chat_turn',
@@ -4016,6 +4318,19 @@ const ChatPanel: React.FC<{
                         handleOpenLinkInBrowser,
                       )
                     : msg.content}
+                  {msg.attachments?.map((attachment) => (
+                    <div key={attachment.id} className={styles.messageAttachment}>
+                      <img
+                        src={attachment.dataUrl}
+                        alt={attachment.name}
+                        className={styles.messageAttachmentImage}
+                        data-testid="chat-message-image"
+                      />
+                      <span className={styles.messageAttachmentMeta}>
+                        {attachment.name} · {formatAttachmentSize(attachment.size)}
+                      </span>
+                    </div>
+                  ))}
                   {msg.imageUrl && (
                     <img src={msg.imageUrl} alt="Generated" className={styles.messageImage} />
                   )}
@@ -4040,25 +4355,88 @@ const ChatPanel: React.FC<{
             </div>
           )}
 
-          <div className={styles.inputArea}>
-            <textarea
-              className={styles.input}
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={handleKeyDown}
-              placeholder="Type a message..."
-              rows={1}
-              disabled={loading}
-              data-testid="chat-input"
-            />
-            <button
-              className={styles.sendBtn}
-              onClick={() => handleSend()}
-              disabled={loading || !input.trim()}
-              data-testid="send-btn"
-            >
-              Send
-            </button>
+          <div
+            className={`${styles.inputArea} ${imageDropActive ? styles.inputAreaDropActive : ''}`}
+            onDragOver={handleInputDragOver}
+            onDragLeave={handleInputDragLeave}
+            onDrop={handleInputDrop}
+          >
+            {pendingImageAttachments.length > 0 && (
+              <div className={styles.attachmentTray} data-testid="chat-image-attachment-tray">
+                {pendingImageAttachments.map((attachment) => (
+                  <div key={attachment.id} className={styles.attachmentPreview}>
+                    <img
+                      src={attachment.dataUrl}
+                      alt={attachment.name}
+                      className={styles.attachmentPreviewImage}
+                    />
+                    <div className={styles.attachmentPreviewMeta}>
+                      <span>{attachment.name}</span>
+                      <span>
+                        {formatAttachmentSize(attachment.size)}
+                        {attachment.width && attachment.height
+                          ? ` · ${attachment.width}x${attachment.height}`
+                          : ''}
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      className={styles.attachmentRemoveBtn}
+                      onClick={() => removePendingImageAttachment(attachment.id)}
+                      title="Remove image"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            {attachmentError && <div className={styles.attachmentError}>{attachmentError}</div>}
+            <div className={styles.inputRow}>
+              <button
+                type="button"
+                className={styles.attachImageBtn}
+                onClick={() => imageInputRef.current?.click()}
+                disabled={loading || pendingImageAttachments.length >= MAX_CHAT_IMAGE_ATTACHMENTS}
+                title="Attach image"
+                aria-label="Attach image"
+              >
+                <ImagePlus size={17} />
+              </button>
+              <input
+                ref={imageInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp,image/gif"
+                multiple
+                className={styles.hiddenFileInput}
+                onChange={handleImageFileInputChange}
+                disabled={loading}
+                data-testid="chat-image-file-input"
+              />
+              <textarea
+                className={styles.input}
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onPaste={handleInputPaste}
+                onKeyDown={handleKeyDown}
+                placeholder={
+                  pendingImageAttachments.length > 0
+                    ? 'Ask about the attached image...'
+                    : 'Type a message...'
+                }
+                rows={1}
+                disabled={loading}
+                data-testid="chat-input"
+              />
+              <button
+                className={styles.sendBtn}
+                onClick={() => handleSend()}
+                disabled={loading || (!input.trim() && pendingImageAttachments.length === 0)}
+                data-testid="send-btn"
+              >
+                Send
+              </button>
+            </div>
           </div>
         </div>
       </div>
