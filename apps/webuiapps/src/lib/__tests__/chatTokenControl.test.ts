@@ -151,6 +151,7 @@ describe('shouldEnableAppTools()', () => {
     expect(shouldEnableAppTools('Which window is currently active?')).toBe(true);
     expect(shouldEnableAppTools('Find the ChatPanel component in the codebase')).toBe(true);
     expect(shouldEnableAppTools('현재 파일 내용을 검토해줘')).toBe(true);
+    expect(shouldEnableAppTools('방금 말한 내용을 현재 파일에 써줘')).toBe(true);
   });
 
   it('does not enable tools for generic web questions', () => {
@@ -183,6 +184,7 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('Which window is currently active?')).toBe(false);
     expect(shouldUseDialogModel('Find the ChatPanel component in the codebase')).toBe(false);
     expect(shouldUseDialogModel('현재 파일에 TODO 내용을 추가해줘')).toBe(false);
+    expect(shouldUseDialogModel('방금 말한 내용을 현재 파일어 써줘')).toBe(false);
   });
 });
 

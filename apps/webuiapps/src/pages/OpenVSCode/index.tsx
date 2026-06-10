@@ -609,16 +609,23 @@ function buildPatchPreviewLines(beforeContent: string, afterContent: string): Pa
   return lines;
 }
 
-function parseActionBoolean(value: string | undefined, defaultValue: boolean): boolean {
-  if (value === undefined) return defaultValue;
-  const normalized = value.trim().toLowerCase();
+function parseActionBoolean(value: unknown, defaultValue: boolean): boolean {
+  if (value === undefined || value === null) return defaultValue;
+  if (typeof value === 'boolean') return value;
+  if (typeof value === 'number') {
+    if (value === 1) return true;
+    if (value === 0) return false;
+  }
+  const normalized = String(value).trim().toLowerCase();
   if (normalized === 'true' || normalized === '1' || normalized === 'yes') return true;
   if (normalized === 'false' || normalized === '0' || normalized === 'no') return false;
   return defaultValue;
 }
 
-function parseOptionalPositiveInteger(value: string | undefined): number | null {
-  if (!value?.trim()) return null;
+function parseOptionalPositiveInteger(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  if (!text) return null;
   const parsed = Number(value);
   if (!Number.isFinite(parsed)) return null;
   return Math.max(0, Math.floor(parsed));
@@ -689,6 +696,11 @@ function isRelativeWorkspaceDirectoryPath(directoryPath: string): boolean {
 
 function getParentPath(filePath: string): string {
   return filePath.includes('/') ? filePath.slice(0, filePath.lastIndexOf('/')) : '';
+}
+
+function buildCreateEntryDraftPath(directoryPath: string): string {
+  const normalizedDirectoryPath = normalizeWorkspaceDirectoryPathInput(directoryPath);
+  return normalizedDirectoryPath ? `${normalizedDirectoryPath}/` : '';
 }
 
 function getAncestorDirectoryPaths(filePath: string): string[] {
@@ -1082,6 +1094,7 @@ const OpenVSCodePage: React.FC = () => {
   const [createEntryError, setCreateEntryError] = useState<string | null>(null);
   const [tree, setTree] = useState<Record<string, WorkspaceEntry[]>>({});
   const [expandedDirs, setExpandedDirs] = useState<string[]>(['']);
+  const [selectedExplorerDirectory, setSelectedExplorerDirectory] = useState('');
   const [openTabs, setOpenTabs] = useState<OpenFileTab[]>([]);
   const [activePath, setActivePath] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -1562,6 +1575,7 @@ const OpenVSCodePage: React.FC = () => {
         for (const directoryPath of ancestorDirectories) {
           await loadDirectory(directoryPath);
         }
+        setSelectedExplorerDirectory(getParentPath(normalizedPath));
 
         setShowCreateEntry(false);
         setNewEntryPath('');
@@ -1610,6 +1624,7 @@ const OpenVSCodePage: React.FC = () => {
           await loadDirectory(directoryPath);
         }
 
+        setSelectedExplorerDirectory(createdPath);
         setActivityView('explorer');
         setIsSidebarOpen(true);
         setShowCreateEntry(false);
@@ -1628,14 +1643,21 @@ const OpenVSCodePage: React.FC = () => {
     [loadDirectory, t],
   );
 
-  const openCreateEntryForm = useCallback((mode: CreateEntryMode) => {
-    setActivityView('explorer');
-    setIsSidebarOpen(true);
-    setCreateEntryMode(mode);
-    setShowCreateEntry(true);
-    setNewEntryPath('');
-    setCreateEntryError(null);
-  }, []);
+  const openCreateEntryForm = useCallback(
+    (mode: CreateEntryMode) => {
+      const baseDirectory =
+        selectedExplorerDirectory ||
+        (activePathRef.current ? getParentPath(activePathRef.current) : '');
+
+      setActivityView('explorer');
+      setIsSidebarOpen(true);
+      setCreateEntryMode(mode);
+      setShowCreateEntry(true);
+      setNewEntryPath(buildCreateEntryDraftPath(baseDirectory));
+      setCreateEntryError(null);
+    },
+    [selectedExplorerDirectory],
+  );
 
   const closeCreateEntryForm = useCallback(() => {
     setShowCreateEntry(false);
@@ -1660,6 +1682,7 @@ const OpenVSCodePage: React.FC = () => {
     setExpandedDirs(['']);
     setOpenTabs([]);
     setActivePath(null);
+    setSelectedExplorerDirectory('');
     setCursorPosition({ line: 1, column: 1 });
     clearEditorSelection();
     setSearchQuery('');
@@ -3794,15 +3817,20 @@ const OpenVSCodePage: React.FC = () => {
         const isDir = entry.type === 'directory';
         const isExpanded = expandedDirs.includes(entry.path);
         const isActive = !isDir && activePath === entry.path;
+        const isSelectedDirectory = isDir && selectedExplorerDirectory === entry.path;
         return (
           <div key={entry.path}>
             <button
-              className={`${styles.treeItem} ${isActive ? styles.treeItemActive : ''}`}
+              className={`${styles.treeItem} ${
+                isActive || isSelectedDirectory ? styles.treeItemActive : ''
+              }`}
               style={{ paddingLeft: `${10 + depth * 14}px` }}
               onClick={() => {
                 if (isDir) {
+                  setSelectedExplorerDirectory(entry.path);
                   void toggleDirectory(entry.path);
                 } else {
+                  setSelectedExplorerDirectory(getParentPath(entry.path));
                   void loadFile(entry.path);
                 }
               }}
@@ -3835,7 +3863,7 @@ const OpenVSCodePage: React.FC = () => {
         );
       });
     },
-    [activePath, expandedDirs, loadFile, toggleDirectory, tree],
+    [activePath, expandedDirs, loadFile, selectedExplorerDirectory, toggleDirectory, tree],
   );
 
   if (isLoading) {

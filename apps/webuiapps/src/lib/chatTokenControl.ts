@@ -518,11 +518,15 @@ function hasAppStateIntent(text: string): boolean {
 function hasCodebaseIntent(text: string): boolean {
   return [
     /\b(current|active|opened?|selected|visible)\s+file\b/i,
-    /\b(find|search|locate|grep|open|read|inspect|check)\b.*\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b/i,
-    /\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b.*\b(find|search|locate|grep|open|read|inspect|check)\b/i,
+    /\b(write|save|append|prepend|add|insert|paste|replace|update|edit)\b.*\b(current|active|opened?|visible)?\s*file\b/i,
+    /\b(current|active|opened?|visible)?\s*file\b.*\b(write|save|append|prepend|add|insert|paste|replace|update|edit)\b/i,
+    /\b(find|search|locate|grep|open|read|inspect|check|write|save|append|prepend|add|insert|paste|replace|update|edit)\b.*\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b/i,
+    /\b(code|repo|repository|workspace|file|files|function|symbol|class|component|hook)\b.*\b(find|search|locate|grep|open|read|inspect|check|write|save|append|prepend|add|insert|paste|replace|update|edit)\b/i,
     /(현재|활성|열린|보이는)\s*파일/,
-    /(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅).*(찾아|검색|열어|읽어|확인|검사)/,
-    /(찾아|검색|열어|읽어|확인|검사).*(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅)/,
+    /(방금|아까|그거|이거|그 내용|위 내용|앞 내용).*(현재|활성|열린|보이는)?\s*파일.*(써줘|작성|추가|붙여|반영|저장|수정|편집)/,
+    /(현재|활성|열린|보이는)?\s*파일.*(방금|아까|그거|이거|그 내용|위 내용|앞 내용).*(써줘|작성|추가|붙여|반영|저장|수정|편집)/,
+    /(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅).*(찾아|검색|열어|읽어|확인|검사|써줘|작성|추가|붙여|반영|저장|수정|편집)/,
+    /(찾아|검색|열어|읽어|확인|검사|써줘|작성|추가|붙여|반영|저장|수정|편집).*(코드|레포|리포지토리|워크스페이스|파일|함수|심볼|클래스|컴포넌트|훅)/,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -544,7 +548,7 @@ function isShortFollowUpAction(text: string): boolean {
 function hasDirectOperationalIntent(text: string): boolean {
   return [
     /\b(open|launch|run|start|show|close|reload|refresh|search|play|listen|save|delete|remove|create|update|edit|bookmark|visit|read|summarize|extract|analyze|inspect|check)\b/i,
-    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|틀어줘|재생해|저장해|삭제해|만들어줘|수정해|편집해|읽어줘|요약해|추출해|분석해|확인해)/,
+    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|틀어줘|재생해|저장해|삭제해|만들어줘|수정해|편집해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해)/,
   ].some((pattern) => pattern.test(text));
 }
 

@@ -59,6 +59,7 @@ import {
   APP_REGISTRY,
   loadActionsFromMeta,
 } from '@/lib/appRegistry';
+import { parseAppActionToolParams } from '@/lib/appActionParams';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { dispatchAgentAction, onUserAction } from '@/lib/vibeContainerMock';
 import { closeAllWindows, getWindows } from '@/lib/windowManager';
@@ -4246,8 +4247,8 @@ const ChatPanel: React.FC<{
 
         // ---- app_action ----
         if (tc.function.name === 'app_action') {
-          const strParams = params as Record<string, string>;
-          const resolved = resolveAppAction(strParams.app_name, strParams.action_type);
+          const appAction = parseAppActionToolParams(params);
+          const resolved = resolveAppAction(appAction.appName, appAction.actionType);
           if (typeof resolved === 'string') {
             console.error('[ChatPanel] app_action resolve failed', resolved);
             currentMessages = [
@@ -4257,25 +4258,16 @@ const ChatPanel: React.FC<{
             continue;
           }
 
-          pendingToolCallsRef.current.push(`${strParams.app_name}/${strParams.action_type}`);
-
-          let actionParams: Record<string, string> = {};
-          if (strParams.params) {
-            try {
-              actionParams = JSON.parse(strParams.params);
-            } catch {
-              // empty
-            }
-          }
+          pendingToolCallsRef.current.push(`${appAction.appName}/${appAction.actionType}`);
 
           try {
             const result = await dispatchAgentAction({
               app_id: resolved.appId,
               action_type: resolved.actionType,
-              params: actionParams,
+              params: appAction.params,
             });
             console.info('[ChatPanel] app_action result', {
-              appName: strParams.app_name,
+              appName: appAction.appName,
               actionType: resolved.actionType,
               result,
             });
@@ -4287,7 +4279,7 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] app_action failed', {
-              appName: strParams.app_name,
+              appName: appAction.appName,
               actionType: resolved.actionType,
               err,
             });
