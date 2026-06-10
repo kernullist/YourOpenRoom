@@ -43,7 +43,6 @@ function Add-TargetProcess
 {
     param
     (
-        [Parameter(Mandatory = $true)]
         [System.Collections.Generic.HashSet[int]]$TargetIds,
 
         [Parameter(Mandatory = $true)]
@@ -124,6 +123,7 @@ function Stop-ExistingOpenRoomDevServers
         $isRepoProcess = $commandLine -like "*$RepoRoot*"
         $isDevCommand = (
             $commandLine -like "*vite*" -or
+            $commandLine -like "*Start-App.ps1*" -or
             $commandLine -like "*@openroom/webuiapps*" -or
             ($commandLine -like "*apps\webuiapps*" -and $commandLine -like "* dev*")
         )
@@ -158,19 +158,21 @@ function Stop-ExistingOpenRoomDevServers
     }
 
     $targets = @(
-        foreach ($targetId in $targetIds)
-        {
-            if ($byPid.ContainsKey($targetId))
+        @(
+            foreach ($targetId in $targetIds)
             {
-                $process = $byPid[$targetId]
-                [pscustomobject]@{
-                    ProcessId = [int]$process.ProcessId
-                    Name = $process.Name
-                    CommandLine = (Get-ProcessCommandLine -Process $process)
+                if ($byPid.ContainsKey($targetId))
+                {
+                    $process = $byPid[$targetId]
+                    [pscustomobject]@{
+                        ProcessId = [int]$process.ProcessId
+                        Name = $process.Name
+                        CommandLine = (Get-ProcessCommandLine -Process $process)
+                    }
                 }
             }
-        }
-    ) | Sort-Object ProcessId -Unique
+        ) | Sort-Object ProcessId -Unique
+    )
 
     if ($targets.Count -eq 0)
     {

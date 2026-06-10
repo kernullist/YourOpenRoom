@@ -41,7 +41,6 @@ function Add-TargetProcess
 {
     param
     (
-        [Parameter(Mandatory = $true)]
         [System.Collections.Generic.HashSet[int]]$TargetIds,
 
         [Parameter(Mandatory = $true)]
@@ -125,6 +124,7 @@ function Find-OpenRoomDevProcesses
         $isRepoProcess = $commandLine -like "*$RepoRoot*"
         $isDevCommand = (
             $commandLine -like "*vite*" -or
+            $commandLine -like "*Start-App.ps1*" -or
             $commandLine -like "*@openroom/webuiapps*" -or
             ($commandLine -like "*apps\webuiapps*" -and $commandLine -like "* dev*")
         )
@@ -159,20 +159,22 @@ function Find-OpenRoomDevProcesses
     }
 
     $targets = @(
-        foreach ($targetId in $targetIds)
-        {
-            if ($byPid.ContainsKey($targetId))
+        @(
+            foreach ($targetId in $targetIds)
             {
-                $process = $byPid[$targetId]
-                [pscustomobject]@{
-                    ProcessId = [int]$process.ProcessId
-                    Name = $process.Name
-                    ParentProcessId = [int]$process.ParentProcessId
-                    CommandLine = (Get-ProcessCommandLine -Process $process)
+                if ($byPid.ContainsKey($targetId))
+                {
+                    $process = $byPid[$targetId]
+                    [pscustomobject]@{
+                        ProcessId = [int]$process.ProcessId
+                        Name = $process.Name
+                        ParentProcessId = [int]$process.ParentProcessId
+                        CommandLine = (Get-ProcessCommandLine -Process $process)
+                    }
                 }
             }
-        }
-    ) | Sort-Object ProcessId -Unique
+        ) | Sort-Object ProcessId -Unique
+    )
 
     return @($targets)
 }
@@ -199,30 +201,32 @@ function Find-RemainingOpenRoomDevProcesses
 
     $allProcesses = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue)
     $remaining = @(
-        foreach ($process in $allProcesses)
-        {
-            $processId = [int]$process.ProcessId
-            if ($processId -eq $CurrentProcessId)
+        @(
+            foreach ($process in $allProcesses)
             {
-                continue
-            }
+                $processId = [int]$process.ProcessId
+                if ($processId -eq $CurrentProcessId)
+                {
+                    continue
+                }
 
-            if (-not ($devNames -contains $process.Name))
-            {
-                continue
-            }
+                if (-not ($devNames -contains $process.Name))
+                {
+                    continue
+                }
 
-            $commandLine = Get-ProcessCommandLine -Process $process
-            if ($commandLine -like "*$RepoRoot*")
-            {
-                [pscustomobject]@{
-                    ProcessId = $processId
-                    Name = $process.Name
-                    CommandLine = $commandLine
+                $commandLine = Get-ProcessCommandLine -Process $process
+                if ($commandLine -like "*$RepoRoot*")
+                {
+                    [pscustomobject]@{
+                        ProcessId = $processId
+                        Name = $process.Name
+                        CommandLine = $commandLine
+                    }
                 }
             }
-        }
-    ) | Sort-Object ProcessId -Unique
+        ) | Sort-Object ProcessId -Unique
+    )
 
     return @($remaining)
 }
@@ -249,33 +253,48 @@ do
         Write-Step "Repo: $repoRoot"
         Write-Step ("Ports: {0}" -f (($Ports | Sort-Object -Unique) -join ", "))
 
-        $targets = @(
-            Find-OpenRoomDevProcesses `
-                -RepoRoot $repoRoot `
-                -KnownPorts $Ports `
-                -CurrentProcessId $currentProcessId
-        )
-
-        if ($targets.Count -eq 0)
+        $round = 0
+        $sawTargets = $false
+        while ($round -lt 4)
         {
-            Write-Step "No OpenRoom dev process was found."
-            break
-        }
+            $round++
+            $targets = @(
+                Find-OpenRoomDevProcesses `
+                    -RepoRoot $repoRoot `
+                    -KnownPorts $Ports `
+                    -CurrentProcessId $currentProcessId
+            )
 
-        Write-Step "Matched OpenRoom dev processes."
-        $targets |
-            Select-Object ProcessId, Name, ParentProcessId, CommandLine |
-            Format-Table -AutoSize -Wrap
+            if ($targets.Count -eq 0)
+            {
+                if (-not $sawTargets)
+                {
+                    Write-Step "No OpenRoom dev process was found."
+                }
+                break
+            }
+
+            $sawTargets = $true
+            Write-Step ("Matched OpenRoom dev processes. Round {0}." -f $round)
+            $targets |
+                Select-Object ProcessId, Name, ParentProcessId, CommandLine |
+                Format-Table -AutoSize -Wrap
+
+            if ($DryRun)
+            {
+                Write-Step "Dry run only. No process was stopped."
+                break
+            }
+
+            Write-Step "Stopping matched processes."
+            Stop-Process -Id ($targets.ProcessId) -Force -ErrorAction SilentlyContinue
+            Start-Sleep -Milliseconds 1200
+        }
 
         if ($DryRun)
         {
-            Write-Step "Dry run only. No process was stopped."
             break
         }
-
-        Write-Step "Stopping matched processes."
-        Stop-Process -Id ($targets.ProcessId) -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Milliseconds 1200
 
         $remainingPorts = @(Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue |
             Where-Object { ($Ports -contains [int]$_.LocalPort) -and $_.OwningProcess -in $targets.ProcessId })
