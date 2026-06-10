@@ -1,42 +1,28 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { randomUUID } from 'crypto';
 import * as fs from 'fs';
-import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import { isAbsolute, join, relative, resolve } from 'path';
 import type { Plugin } from 'vite';
 import { getAoiLlmStatus } from './dewdropCanvasPlugin';
 import {
-  buildAoiResearchArtifactPaths,
+  cancelAoiResearchRun,
+  startAoiResearchRun,
+  type AoiResearchRunPaths,
+} from './aoiResearchEngine';
+import {
   isAoiResearchArtifactName,
   type AoiResearchArtifactName,
   type AoiResearchCancelResponse,
-  type AoiResearchLanguage,
   type AoiResearchManifest,
-  type AoiResearchMode,
-  type AoiResearchRecency,
-  type AoiResearchSourceCounts,
   type AoiResearchStartRequest,
 } from './aoiResearchTypes';
 
 const API_PREFIX = '/api/aoi-research';
 const MAX_BODY_BYTES = 256 * 1024;
-const DEFAULT_SOURCE_COUNTS: AoiResearchSourceCounts = {
-  planned: 0,
-  candidates: 0,
-  accepted: 0,
-  failed: 0,
-};
 
 export interface AoiResearchPluginOptions {
   configFile: string;
   sessionsDir: string;
-}
-
-interface ResolvedRunPaths {
-  runDir: string;
-  manifest: string;
-  report: string;
-  sources: string;
-  evidence: string;
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -52,6 +38,16 @@ function isPathInsideRoot(root: string, target: string): boolean {
   const resolvedTarget = resolve(target);
   const diff = relative(resolvedRoot, resolvedTarget);
   return diff === '' || (!diff.startsWith('..') && !isAbsolute(diff));
+}
+
+function getHeaderString(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || '' : value || '';
+}
+
+function getRequestOrigin(req: IncomingMessage): string {
+  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
+  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
+  return `${forwardedProto || 'http'}://${host}`;
 }
 
 export function normalizeAoiResearchSessionPath(value: unknown): string | null {
@@ -85,30 +81,6 @@ export function getAoiResearchRoute(pathname: string): string | null {
   return pathname.slice(API_PREFIX.length) || '/';
 }
 
-function normalizeMode(value: unknown): AoiResearchMode {
-  return value === 'quick' || value === 'deep' ? value : 'standard';
-}
-
-function normalizeLanguage(value: unknown): AoiResearchLanguage {
-  return value === 'ko' || value === 'en' ? value : 'match-user';
-}
-
-function normalizeRecency(value: unknown): AoiResearchRecency {
-  if (value === 'day' || value === 'week' || value === 'month' || value === 'year') {
-    return value;
-  }
-  return 'any';
-}
-
-function normalizeMaxSources(value: unknown, mode: AoiResearchMode): number {
-  const fallback = mode === 'quick' ? 5 : mode === 'deep' ? 24 : 12;
-  const parsed = typeof value === 'number' ? value : Number.parseInt(String(value || ''), 10);
-  if (!Number.isFinite(parsed)) {
-    return fallback;
-  }
-  return Math.min(40, Math.max(1, Math.trunc(parsed)));
-}
-
 function generateRunId(now = Date.now()): string {
   return `aoi-research-${now.toString(36)}-${randomUUID().slice(0, 8)}`;
 }
@@ -117,7 +89,7 @@ function resolveRunPaths(
   sessionsDir: string,
   sessionPath: string,
   runId: string,
-): ResolvedRunPaths {
+): AoiResearchRunPaths {
   const sessionsRoot = resolve(sessionsDir);
   const runDir = resolve(sessionsRoot, sessionPath, 'aoi-research', 'runs', runId);
   if (!isPathInsideRoot(sessionsRoot, runDir)) {
@@ -162,15 +134,6 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   });
 }
 
-function writeTextFile(filePath: string, content: string): void {
-  fs.mkdirSync(dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content, 'utf-8');
-}
-
-function writeJsonFile(filePath: string, content: unknown): void {
-  writeTextFile(filePath, JSON.stringify(content, null, 2));
-}
-
 function readManifest(filePath: string): AoiResearchManifest | null {
   if (!fs.existsSync(filePath)) {
     return null;
@@ -182,40 +145,10 @@ function readManifest(filePath: string): AoiResearchManifest | null {
   return parsed as AoiResearchManifest;
 }
 
-function createNotImplementedManifest(params: {
-  body: AoiResearchStartRequest;
-  sessionPath: string;
-  runId: string;
-  now: number;
-}): AoiResearchManifest {
-  const mode = normalizeMode(params.body.mode);
-  const error = {
-    code: 'engine_not_implemented',
-    message: 'Aoi research engine collection and synthesis are not implemented in this phase.',
-    phase: 'engine_not_implemented' as const,
-    createdAt: params.now,
-  };
-  return {
-    version: 1,
-    id: params.runId,
-    sessionPath: params.sessionPath,
-    request: params.body.request.trim(),
-    mode,
-    language: normalizeLanguage(params.body.language),
-    recency: normalizeRecency(params.body.recency),
-    maxSources: normalizeMaxSources(params.body.maxSources, mode),
-    createdAt: params.now,
-    updatedAt: params.now,
-    status: 'failed',
-    phase: 'engine_not_implemented',
-    statusMessage: error.message,
-    sourceCounts: { ...DEFAULT_SOURCE_COUNTS },
-    artifactPaths: buildAoiResearchArtifactPaths(params.runId),
-    error,
-  };
-}
-
-function readArtifactContent(paths: ResolvedRunPaths, artifact: AoiResearchArtifactName): unknown {
+function readArtifactContent(
+  paths: AoiResearchRunPaths,
+  artifact: AoiResearchArtifactName,
+): unknown {
   const filePath = paths[artifact];
   if (!fs.existsSync(filePath)) {
     throw new Error(`Research artifact not found: ${artifact}`);
@@ -226,36 +159,11 @@ function readArtifactContent(paths: ResolvedRunPaths, artifact: AoiResearchArtif
   return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as unknown;
 }
 
-function persistInitialArtifacts(paths: ResolvedRunPaths, manifest: AoiResearchManifest): void {
-  const placeholderReport = [
-    `# ${manifest.request}`,
-    '',
-    'The Aoi research foundation is installed, but the collection and synthesis engine is not implemented in this phase.',
-    '',
-    `Run id: ${manifest.id}`,
-    `Status: ${manifest.status}`,
-    `Reason: ${manifest.error?.code ?? 'unknown'}`,
-    '',
-  ].join('\n');
-  writeJsonFile(paths.manifest, manifest);
-  writeTextFile(paths.report, placeholderReport);
-  writeJsonFile(paths.sources, {
-    version: 1,
-    runId: manifest.id,
-    sources: [],
-  });
-  writeJsonFile(paths.evidence, {
-    version: 1,
-    runId: manifest.id,
-    claims: [],
-  });
-}
-
 function getRunPathsFromRequest(
   sessionsDir: string,
   sessionPathRaw: unknown,
   runIdRaw: unknown,
-): { sessionPath: string; runId: string; paths: ResolvedRunPaths } | string {
+): { sessionPath: string; runId: string; paths: AoiResearchRunPaths } | string {
   const sessionPath = normalizeAoiResearchSessionPath(sessionPathRaw);
   if (!sessionPath) {
     return 'Invalid or missing sessionPath.';
@@ -303,20 +211,21 @@ async function handleAoiResearchRequest(
       const now = Date.now();
       const runId = generateRunId(now);
       const paths = resolveRunPaths(sessionsDir, sessionPath, runId);
-      const manifest = createNotImplementedManifest({
-        body: {
-          sessionPath,
-          request,
-          mode: normalizeMode(body.mode),
-          language: normalizeLanguage(body.language),
-          recency: normalizeRecency(body.recency),
-          maxSources: normalizeMaxSources(body.maxSources, normalizeMode(body.mode)),
-        },
+      const manifest = await startAoiResearchRun({
+        configFile,
+        serverOrigin: getRequestOrigin(req),
         sessionPath,
         runId,
-        now,
+        paths,
+        request: {
+          sessionPath,
+          request,
+          mode: body.mode as AoiResearchStartRequest['mode'],
+          language: body.language as AoiResearchStartRequest['language'],
+          recency: body.recency as AoiResearchStartRequest['recency'],
+          maxSources: body.maxSources as AoiResearchStartRequest['maxSources'],
+        },
       });
-      persistInitialArtifacts(paths, manifest);
       writeJson(res, 200, {
         ok: true,
         run: manifest,
@@ -336,12 +245,12 @@ async function handleAoiResearchRequest(
         writeJson(res, 400, { error: resolved });
         return true;
       }
-      const manifest = readManifest(resolved.paths.manifest);
-      if (!manifest) {
+      const existing = readManifest(resolved.paths.manifest);
+      if (!existing) {
         writeJson(res, 404, { error: 'Research run not found.' });
         return true;
       }
-      writeJson(res, 200, { ok: true, run: manifest });
+      writeJson(res, 200, { ok: true, run: existing });
       return true;
     }
 
@@ -390,15 +299,11 @@ async function handleAoiResearchRequest(
         typeof body.reason === 'string' && body.reason.trim()
           ? body.reason.trim().slice(0, 240)
           : 'Cancelled by user.';
-      const nextManifest: AoiResearchManifest = {
-        ...manifest,
-        updatedAt: now,
-        completedAt: manifest.completedAt ?? now,
-        status: manifest.status === 'completed' ? manifest.status : 'cancelled',
-        phase: manifest.status === 'completed' ? manifest.phase : 'cancelled',
-        statusMessage: manifest.status === 'completed' ? manifest.statusMessage : reason,
-      };
-      writeJsonFile(resolved.paths.manifest, nextManifest);
+      const nextManifest = cancelAoiResearchRun(resolved.paths, reason, now);
+      if (!nextManifest) {
+        writeJson(res, 404, { error: 'Research run not found.' });
+        return true;
+      }
       const response: AoiResearchCancelResponse = { ok: true, run: nextManifest };
       writeJson(res, 200, response);
       return true;

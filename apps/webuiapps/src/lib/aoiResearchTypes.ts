@@ -66,6 +66,8 @@ export interface AoiResearchRun {
   statusMessage: string;
   sourceCounts: AoiResearchSourceCounts;
   artifactPaths: AoiResearchArtifactPaths;
+  artifactAvailability?: Record<AoiResearchArtifactName, boolean>;
+  warnings?: AoiResearchErrorDetail[];
   error?: AoiResearchErrorDetail;
 }
 
@@ -92,6 +94,8 @@ export interface AoiResearchSource {
   title: string;
   siteName?: string;
   excerpt?: string;
+  searchQuery?: string;
+  searchScore?: number;
   blocks: AoiResearchSourceBlock[];
   retrievedAt?: number;
   status: 'pending' | 'accepted' | 'failed';
