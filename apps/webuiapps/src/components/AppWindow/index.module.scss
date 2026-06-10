@@ -27,6 +27,8 @@
 }
 
 .titleBar {
+  position: relative;
+  z-index: 10;
   height: 36px;
   background: var(--bg-3, #282a2a);
   display: flex;
@@ -49,6 +51,8 @@
 }
 
 .actions {
+  position: relative;
+  z-index: 30;
   display: flex;
   gap: 6px;
 }
@@ -103,12 +107,15 @@
 
 .resizeHandle {
   position: absolute;
-  right: 0;
-  bottom: 0;
   width: 16px;
   height: 16px;
+  z-index: 20;
+}
+
+.resizeHandleBottomRight {
+  right: 0;
+  bottom: 0;
   cursor: nwse-resize;
-  z-index: 10;
 
   &::after {
     content: '';
@@ -119,6 +126,23 @@
     height: 8px;
     border-right: 2px solid rgba(255, 255, 255, 0.3);
     border-bottom: 2px solid rgba(255, 255, 255, 0.3);
+  }
+}
+
+.resizeHandleTopRight {
+  top: 0;
+  right: 0;
+  cursor: nesw-resize;
+
+  &::after {
+    content: '';
+    position: absolute;
+    top: 3px;
+    right: 3px;
+    width: 8px;
+    height: 8px;
+    border-top: 2px solid rgba(255, 255, 255, 0.3);
+    border-right: 2px solid rgba(255, 255, 255, 0.3);
   }
 }
 

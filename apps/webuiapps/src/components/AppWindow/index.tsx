@@ -1,13 +1,16 @@
 import React, { useRef, useCallback, lazy, memo, Suspense } from 'react';
 import { Maximize2, Minimize2, Minus, X } from 'lucide-react';
 import {
+  MIN_WINDOW_HEIGHT,
+  MIN_WINDOW_WIDTH,
+  type WindowBounds,
   type WindowState,
   closeWindow,
   focusWindow,
   getMaximizedWindowBounds,
   minimizeWindow,
   moveWindow,
-  resizeWindow,
+  resizeWindowBounds,
   toggleMaximizeWindow,
 } from '@/lib/windowManager';
 import { getSourceDirToAppId } from '@/lib/appRegistry';
@@ -32,6 +35,8 @@ interface Props {
   win: WindowState;
 }
 
+type ResizeCorner = 'top-right' | 'bottom-right';
+
 const WindowContent = memo(({ appId }: { appId: number }) => {
   const AppComp = APP_COMPONENTS[appId];
   if (!AppComp) return null;
@@ -49,16 +54,46 @@ const AppWindow: React.FC<Props> = ({ win }) => {
   const dragRef = useRef<{ startX: number; startY: number; winX: number; winY: number } | null>(
     null,
   );
-  const resizeRef = useRef<{ startX: number; startY: number; winW: number; winH: number } | null>(
-    null,
-  );
+  const resizeRef = useRef<{
+    startX: number;
+    startY: number;
+    winX: number;
+    winY: number;
+    winW: number;
+    winH: number;
+    corner: ResizeCorner;
+  } | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
   const resizeFrameRef = useRef<number | null>(null);
-  const pendingResizeRef = useRef<{ width: number; height: number } | null>(null);
+  const pendingResizeRef = useRef<WindowBounds | null>(null);
+
+  const computeResizeBounds = useCallback((dx: number, dy: number): WindowBounds | null => {
+    const resizeState = resizeRef.current;
+    if (!resizeState) return null;
+
+    const nextWidth = Math.max(MIN_WINDOW_WIDTH, resizeState.winW + dx);
+
+    if (resizeState.corner === 'top-right') {
+      const nextHeight = Math.max(MIN_WINDOW_HEIGHT, resizeState.winH - dy);
+      return {
+        x: resizeState.winX,
+        y: resizeState.winY + resizeState.winH - nextHeight,
+        width: nextWidth,
+        height: nextHeight,
+      };
+    }
+
+    return {
+      x: resizeState.winX,
+      y: resizeState.winY,
+      width: nextWidth,
+      height: Math.max(MIN_WINDOW_HEIGHT, resizeState.winH + dy),
+    };
+  }, []);
 
   const handleResizeMouseDown = useCallback(
-    (e: React.MouseEvent) => {
+    (corner: ResizeCorner, e: React.MouseEvent) => {
       if (win.maximized) return;
       e.stopPropagation();
       e.preventDefault();
@@ -66,24 +101,24 @@ const AppWindow: React.FC<Props> = ({ win }) => {
       resizeRef.current = {
         startX: e.clientX,
         startY: e.clientY,
+        winX: win.x,
+        winY: win.y,
         winW: win.width,
         winH: win.height,
+        corner,
       };
 
       const handleMouseMove = (ev: MouseEvent) => {
         if (!resizeRef.current) return;
         const dx = ev.clientX - resizeRef.current.startX;
         const dy = ev.clientY - resizeRef.current.startY;
-        pendingResizeRef.current = {
-          width: resizeRef.current.winW + dx,
-          height: resizeRef.current.winH + dy,
-        };
+        pendingResizeRef.current = computeResizeBounds(dx, dy);
 
         if (resizeFrameRef.current !== null) return;
         resizeFrameRef.current = requestAnimationFrame(() => {
           resizeFrameRef.current = null;
           const pendingResize = pendingResizeRef.current;
-          if (pendingResize) resizeWindow(win.appId, pendingResize.width, pendingResize.height);
+          if (pendingResize) resizeWindowBounds(win.appId, pendingResize);
         });
       };
 
@@ -93,7 +128,7 @@ const AppWindow: React.FC<Props> = ({ win }) => {
           resizeFrameRef.current = null;
         }
         const pendingResize = pendingResizeRef.current;
-        if (pendingResize) resizeWindow(win.appId, pendingResize.width, pendingResize.height);
+        if (pendingResize) resizeWindowBounds(win.appId, pendingResize);
         pendingResizeRef.current = null;
         resizeRef.current = null;
         document.removeEventListener('mousemove', handleMouseMove);
@@ -103,7 +138,7 @@ const AppWindow: React.FC<Props> = ({ win }) => {
       document.addEventListener('mousemove', handleMouseMove);
       document.addEventListener('mouseup', handleMouseUp);
     },
-    [win.appId, win.width, win.height, win.maximized],
+    [computeResizeBounds, win.appId, win.x, win.y, win.width, win.height, win.maximized],
   );
 
   const handleMouseDown = useCallback(
@@ -213,7 +248,16 @@ const AppWindow: React.FC<Props> = ({ win }) => {
           <WindowContent appId={win.appId} />
         </div>
       </div>
-      <div className={styles.resizeHandle} onMouseDown={handleResizeMouseDown} />
+      <div
+        className={`${styles.resizeHandle} ${styles.resizeHandleTopRight}`}
+        onMouseDown={(event) => handleResizeMouseDown('top-right', event)}
+        data-testid={`window-resize-top-right-${win.appId}`}
+      />
+      <div
+        className={`${styles.resizeHandle} ${styles.resizeHandleBottomRight}`}
+        onMouseDown={(event) => handleResizeMouseDown('bottom-right', event)}
+        data-testid={`window-resize-bottom-right-${win.appId}`}
+      />
     </div>
   );
 };

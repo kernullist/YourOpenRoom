@@ -35,8 +35,8 @@ let offsetCounter = 0;
 const WINDOW_LAYOUT_KEY = 'openroom_window_layout_v1';
 const BASE_X = 80;
 const BASE_Y = 40;
-const MIN_WINDOW_WIDTH = 300;
-const MIN_WINDOW_HEIGHT = 200;
+export const MIN_WINDOW_WIDTH = 300;
+export const MIN_WINDOW_HEIGHT = 200;
 
 interface SavedWindowLayout {
   offsetX: number;
@@ -274,6 +274,17 @@ export function resizeWindow(appId: number, width: number, height: number): void
     if (win.maximized) return;
     win.width = Math.max(MIN_WINDOW_WIDTH, width);
     win.height = Math.max(MIN_WINDOW_HEIGHT, height);
+    persistWindowLayout(win);
+    windows = [...windows];
+    notify();
+  }
+}
+
+export function resizeWindowBounds(appId: number, bounds: WindowBounds): void {
+  const win = windows.find((w) => w.appId === appId);
+  if (win) {
+    if (win.maximized) return;
+    applyBounds(win, bounds);
     persistWindowLayout(win);
     windows = [...windows];
     notify();
