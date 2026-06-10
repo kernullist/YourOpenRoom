@@ -13,6 +13,7 @@ import { basename, dirname, join } from 'path';
 import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
 import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
 import { writtenByMePlugin } from './src/lib/writtenByMePlugin';
+import { aoiResearchPlugin } from './src/lib/aoiResearchPlugin';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
 import { appGeneratorPlugin } from './src/lib/appGeneratorPlugin';
 import { gmailPlugin } from './src/lib/gmailPlugin';
@@ -3109,6 +3110,10 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     }),
     writtenByMePlugin({
       configFile: LLM_CONFIG_FILE,
+    }),
+    aoiResearchPlugin({
+      configFile: LLM_CONFIG_FILE,
+      sessionsDir: SESSIONS_DIR,
     }),
     youtubeSearchPlugin(),
     tavilyProxyPlugin(),
