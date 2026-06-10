@@ -93,6 +93,7 @@
   position: absolute;
   inset: 0;
   overflow: auto;
+  container-type: inline-size;
   // transform creates a new containing block, making position:fixed
   // children position relative to this container instead of viewport
   transform: translateZ(0);
