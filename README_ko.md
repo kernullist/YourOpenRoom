@@ -367,6 +367,9 @@ pnpm dev
 }
 ```
 
+Tavily 는 Aoi `Settings -> Advanced -> Tavily Web Search` 에서도 설정할 수 있습니다.
+설정이 저장되면 Aoi 는 최신 정보가 필요한 질문에서 `search_web` 툴을 먼저 사용할 수 있습니다.
+
 메모:
 
 - `openvscode.workspacePath` 는 Aoi's IDE 와 IDE 툴 API 가 바라보는 실제 로컬 프로젝트입니다

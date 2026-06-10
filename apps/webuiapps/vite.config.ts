@@ -48,6 +48,7 @@ const CHARACTERS_FILE = resolve(os.homedir(), '.openroom', 'characters.json');
 const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
 const OPENROOM_ROOT = resolve(__dirname, '../..');
 const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
+const DEFAULT_TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
 
 function readPersistedConfigFile(): Record<string, unknown> {
   try {
@@ -58,6 +59,12 @@ function readPersistedConfigFile(): Record<string, unknown> {
   } catch {
     return {};
   }
+}
+
+function normalizeTavilySearchEndpoint(baseUrl?: string): string {
+  const trimmed = baseUrl?.trim() || DEFAULT_TAVILY_SEARCH_ENDPOINT;
+  if (/\/search\/?$/i.test(trimmed)) return trimmed.replace(/\/+$/, '');
+  return `${trimmed.replace(/\/+$/, '')}/search`;
 }
 
 function getAlbumPhotoDirectory(): string | null {
@@ -336,7 +343,7 @@ function getTavilyConfig(): { apiKey: string; baseUrl: string } | null {
   if (!apiKey) return null;
   return {
     apiKey,
-    baseUrl: tavily?.baseUrl?.trim() || 'https://api.tavily.com/search',
+    baseUrl: normalizeTavilySearchEndpoint(tavily?.baseUrl),
   };
 }
 
@@ -1005,7 +1012,7 @@ function tavilyProxyPlugin(): Plugin {
 
         const tavily = getTavilyConfig();
         if (!tavily) {
-          res.writeHead(400);
+          res.writeHead(503);
           res.end(JSON.stringify({ error: 'Missing tavily.apiKey in config.json' }));
           return;
         }
@@ -1016,24 +1023,73 @@ function tavilyProxyPlugin(): Plugin {
           try {
             const body = Buffer.concat(chunks).toString() || '{}';
             const parsed = JSON.parse(body) as Record<string, unknown>;
+            const query = typeof parsed.query === 'string' ? parsed.query.trim() : '';
+            if (!query) {
+              res.writeHead(400);
+              res.end(JSON.stringify({ error: 'Missing Tavily search query' }));
+              return;
+            }
+
+            const maxResults = Number(parsed.max_results ?? 5);
+            const payload: Record<string, unknown> = {
+              query,
+              topic:
+                parsed.topic === 'news' || parsed.topic === 'finance' ? parsed.topic : 'general',
+              search_depth:
+                parsed.search_depth === 'advanced' ||
+                parsed.search_depth === 'fast' ||
+                parsed.search_depth === 'ultra-fast'
+                  ? parsed.search_depth
+                  : 'basic',
+              max_results: Number.isFinite(maxResults)
+                ? Math.min(10, Math.max(1, Math.trunc(maxResults)))
+                : 5,
+              include_answer: 'basic',
+              include_favicon: true,
+            };
+            if (
+              parsed.time_range === 'day' ||
+              parsed.time_range === 'week' ||
+              parsed.time_range === 'month' ||
+              parsed.time_range === 'year' ||
+              parsed.time_range === 'd' ||
+              parsed.time_range === 'w' ||
+              parsed.time_range === 'm' ||
+              parsed.time_range === 'y'
+            ) {
+              payload.time_range = parsed.time_range;
+            }
+
             const response = await fetch(tavily.baseUrl, {
               method: 'POST',
               headers: {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${tavily.apiKey}`,
               },
-              body: JSON.stringify({
-                ...parsed,
-                include_answer: 'basic',
-                include_favicon: true,
-              }),
+              body: JSON.stringify(payload),
             });
 
             const text = await response.text();
-            res.writeHead(response.status);
-            res.end(text);
+            if (response.ok) {
+              res.writeHead(response.status);
+              res.end(text);
+              return;
+            }
+
+            try {
+              JSON.parse(text);
+              res.writeHead(response.status);
+              res.end(text);
+            } catch {
+              res.writeHead(response.status);
+              res.end(
+                JSON.stringify({
+                  error: text.trim() || `Tavily API error ${response.status}`,
+                }),
+              );
+            }
           } catch (err) {
-            res.writeHead(500);
+            res.writeHead(err instanceof SyntaxError ? 400 : 502);
             res.end(JSON.stringify({ error: err instanceof Error ? err.message : String(err) }));
           }
         });

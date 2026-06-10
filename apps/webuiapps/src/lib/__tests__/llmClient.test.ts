@@ -28,6 +28,7 @@ import {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const CONFIG_KEY = 'webuiapps-llm-config';
+const TAVILY_CONFIG_KEY = 'webuiapps-tavily-config';
 
 const MOCK_OPENAI_CONFIG: LLMConfig = {
   provider: 'openai',
@@ -450,6 +451,102 @@ describe('saveConfig()', () => {
       model: 'openai/gpt-5-mini',
       baseUrl: 'https://openrouter.ai/api/v1',
     });
+  });
+
+  it('preserves Tavily config when saving the main LLM settings', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            tavily: {
+              apiKey: 'tvly-existing',
+              baseUrl: 'https://api.tavily.com/search',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(MOCK_OPENAI_CONFIG);
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.llm).toEqual(MOCK_OPENAI_CONFIG);
+    expect(body.tavily).toEqual({
+      apiKey: 'tvly-existing',
+      baseUrl: 'https://api.tavily.com/search',
+    });
+  });
+
+  it('saves Tavily config and syncs localStorage when provided', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({ llm: MOCK_ANTHROPIC_CONFIG }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+
+    await saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        apiKey: '  tvly-new  ',
+        baseUrl: 'https://api.tavily.com',
+      },
+    );
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.tavily).toEqual({
+      apiKey: 'tvly-new',
+      baseUrl: 'https://api.tavily.com/search',
+    });
+    expect(JSON.parse(localStorage.getItem(TAVILY_CONFIG_KEY) || '{}')).toEqual(body.tavily);
+  });
+
+  it('clears Tavily config when explicitly disabled', async () => {
+    const mockFetch = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        json: () =>
+          Promise.resolve({
+            llm: MOCK_ANTHROPIC_CONFIG,
+            tavily: {
+              apiKey: 'tvly-existing',
+              baseUrl: 'https://api.tavily.com/search',
+            },
+          }),
+      } as unknown as Response)
+      .mockResolvedValueOnce({ ok: true } as Response);
+    globalThis.fetch = mockFetch;
+    localStorage.setItem(
+      TAVILY_CONFIG_KEY,
+      JSON.stringify({ apiKey: 'tvly-existing', baseUrl: 'https://api.tavily.com/search' }),
+    );
+
+    await saveConfig(
+      MOCK_OPENAI_CONFIG,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      null,
+    );
+
+    const body = JSON.parse(mockFetch.mock.calls[1][1].body as string);
+    expect(body.tavily).toBeUndefined();
+    expect(localStorage.getItem(TAVILY_CONFIG_KEY)).toBeNull();
   });
 
   it('includes userProfile when provided', async () => {

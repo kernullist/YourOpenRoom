@@ -22,7 +22,9 @@ import {
   normalizeResponseLanguageMode,
   normalizeUserProfileDisplayName,
   savePersistedConfig,
+  type TavilyConfig,
 } from './configPersistence';
+import { normalizeTavilyConfig, saveTavilyConfigSync } from './tavilyClient';
 
 const CONFIG_KEY = 'webuiapps-llm-config';
 const LLM_MAX_OUTPUT_TOKENS = 8192;
@@ -60,6 +62,7 @@ export async function saveConfig(
     | import('./configPersistence').ConversationPreferencesConfig
     | null,
   kiraConfig?: import('./configPersistence').KiraConfig | null,
+  tavilyConfig?: TavilyConfig | null,
 ): Promise<void> {
   localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
 
@@ -73,7 +76,6 @@ export async function saveConfig(
     ...(existing?.conversationPreferences
       ? { conversationPreferences: existing.conversationPreferences }
       : {}),
-    ...(existing?.tavily ? { tavily: existing.tavily } : {}),
     ...(existing?.gmail ? { gmail: existing.gmail } : {}),
   };
   if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
@@ -97,6 +99,17 @@ export async function saveConfig(
     persisted.idaPe = idaPeConfig;
   } else if (idaPeConfig === undefined && existing?.idaPe) {
     persisted.idaPe = existing.idaPe;
+  }
+  if (tavilyConfig !== undefined) {
+    const normalizedTavilyConfig = normalizeTavilyConfig(tavilyConfig);
+    saveTavilyConfigSync(normalizedTavilyConfig);
+    if (normalizedTavilyConfig) {
+      persisted.tavily = normalizedTavilyConfig;
+    } else {
+      delete persisted.tavily;
+    }
+  } else if (existing?.tavily) {
+    persisted.tavily = normalizeTavilyConfig(existing.tavily) ?? existing.tavily;
   }
   const normalizedDisplayName = normalizeUserProfileDisplayName(userProfileConfig?.displayName);
   if (normalizedDisplayName) {

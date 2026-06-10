@@ -28,6 +28,26 @@ interface TavilySearchResponse {
   error?: string;
 }
 
+function clampMaxResults(value: unknown): number {
+  const parsed = Number(value ?? 5);
+  if (!Number.isFinite(parsed)) return 5;
+  return Math.min(10, Math.max(1, Math.trunc(parsed)));
+}
+
+function normalizeEnum<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T {
+  return allowed.includes(value as T) ? (value as T) : fallback;
+}
+
+async function readTavilyResponse(res: Response): Promise<TavilySearchResponse> {
+  const text = await res.text();
+  if (!text.trim()) return {};
+  try {
+    return JSON.parse(text) as TavilySearchResponse;
+  } catch {
+    return { error: text.slice(0, 500) };
+  }
+}
+
 export function getTavilyToolDefinitions(): ToolDef[] {
   return [
     {
@@ -82,26 +102,39 @@ export async function executeTavilyTool(
 
   const payload: TavilyToolParams = {
     query: String(params.query || '').trim(),
-    topic: (params.topic as TavilyToolParams['topic']) || 'general',
-    search_depth: (params.search_depth as TavilyToolParams['search_depth']) || 'basic',
-    max_results: Math.min(10, Math.max(1, Number(params.max_results || 5))),
+    topic: normalizeEnum(params.topic, ['general', 'news', 'finance'] as const, 'general'),
+    search_depth: normalizeEnum(
+      params.search_depth,
+      ['basic', 'advanced', 'fast', 'ultra-fast'] as const,
+      'basic',
+    ),
+    max_results: clampMaxResults(params.max_results),
     ...(params.time_range
-      ? { time_range: params.time_range as TavilyToolParams['time_range'] }
+      ? {
+          time_range: normalizeEnum(
+            params.time_range,
+            ['day', 'week', 'month', 'year', 'd', 'w', 'm', 'y'] as const,
+            'day',
+          ),
+        }
       : {}),
   };
 
   if (!payload.query) return 'error: missing query';
 
-  const res = await fetch('/api/tavily-search', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload),
-  });
-
-  const data = (await res.json()) as TavilySearchResponse;
-  if (!res.ok) {
-    return `error: ${data.error || 'Tavily search failed'}`;
+  let res: Response;
+  try {
+    res = await fetch('/api/tavily-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  } catch (err) {
+    return `error: ${err instanceof Error ? err.message : String(err)}`;
   }
+
+  const data = await readTavilyResponse(res);
+  if (!res.ok) return `error: ${data.error || `Tavily search failed (${res.status})`}`;
 
   return JSON.stringify({
     query: data.query || payload.query,

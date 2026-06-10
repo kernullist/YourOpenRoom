@@ -167,6 +167,7 @@ This app reads and writes to `~/.openroom/` in standalone mode:
 - `config.json`
   - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail, Aoi
     TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
+  - Tavily web search can be edited from Settings -> Advanced -> Tavily Web Search
 - `sessions/...`
   - session-scoped app data, chat data, chat image attachments, and local Aoi memory v2 data
 - `characters.json`

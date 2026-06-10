@@ -375,6 +375,9 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
 }
 ```
 
+Tavily can also be configured from Aoi's Settings -> Advanced -> Tavily Web Search. When
+configured, Aoi exposes `search_web` and will use it before answering current-information requests.
+
 Notes:
 
 - `openvscode.workspacePath` is the real workspace used by Aoi's IDE and the IDE tooling APIs.

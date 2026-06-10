@@ -595,6 +595,7 @@ export function shouldUseDialogModel(
   if (!latest) return false;
   if (latest.length > 240) return false;
   if (/\bhttps?:\/\//i.test(latest)) return false;
+  if (shouldUseWebSearch(latestUserMessage)) return false;
 
   const heavyIntentPatterns = [
     /\b(search|look up|verify|compare|latest|current|recent|news)\b/i,
@@ -640,4 +641,41 @@ export function shouldUseDialogModel(
   }
 
   return true;
+}
+
+const WEB_SEARCH_DIRECT_PATTERNS = [
+  /\b(search|look up|web search|internet search|latest|recent|news|breaking)\b/i,
+  /\bcurrent\b.*\b(info|information|news|price|pricing|status|version|availability|available)\b/i,
+  /\b(still|currently)\b.*\b(available|supported|works|usable|accessible)\b/i,
+  /\b(on the web|from the web|online)\b/i,
+  /\b(check|verify|confirm|fact[- ]?check)\b.*\b(web|internet|online|fact|claim|rumor|latest|current|recent)\b/i,
+  /\b(web|internet|online)\b.*\b(check|verify|confirm|fact[- ]?check)\b/i,
+  /(웹\s*검색|인터넷\s*검색|구글링|검색해|검색해줘|검색해서|조사해|조사해줘|최신|최근|뉴스|속보)/,
+];
+
+const WEB_SEARCH_TRUTH_CHECK_PATTERNS = [
+  /(?:\bis it true\b|\bis that true\b|\btrue\?|\breally\?|\bcan you confirm\b|\bfact[- ]?check this\b|\bdoes .* still\b|\bis .* still\b)/i,
+  /(진짜야|진짜임|정말이야|사실이야|사실인가|사실인지|맞아[?？]?|맞나요|맞는지|맞는\s*거야|맞는\s*건가|맞다던데|맞다고\s*하던데|확실해|가능하다던데|라던데|라는데|다던데|한다던데|라고\s*하던데)/,
+];
+
+const WEB_SEARCH_VOLATILE_FACT_PATTERNS = [
+  /\b\d{1,2}[/-]\d{1,2}\b/,
+  /\b20\d{2}[-./]\d{1,2}[-./]\d{1,2}\b/,
+  /\d{1,2}\s*월\s*\d{1,2}\s*일/,
+  /\b(api only|model|pricing|release|availability|available|deprecated|sunset|after|since|until|only|policy|announcement|launch|access|subscription|beta)\b/i,
+  /\b(openai|anthropic|claude|chatgpt|google|gemini|microsoft|github|apple|meta|tavily|fable)\b/i,
+  /(api로만|모델|가격|요금|출시|릴리스|배포|사용\s*가능|사용가능|지원|종료|중단|폐지|변경|정책|발표|공지|이후|이후로|부터|까지만|만\s*사용|만\s*가능|구독|베타|접근|제공)/i,
+  /(오픈ai|오픈AI|앤트로픽|클로드|챗gpt|챗GPT|구글|제미나이|마이크로소프트|깃허브|애플|메타|타빌리|페이블)/i,
+];
+
+export function shouldUseWebSearch(latestUserMessage: string): boolean {
+  const latest = normalizeWhitespace(latestUserMessage);
+  if (!latest) return false;
+
+  if (WEB_SEARCH_DIRECT_PATTERNS.some((pattern) => pattern.test(latest))) return true;
+
+  const hasTruthCheckCue = WEB_SEARCH_TRUTH_CHECK_PATTERNS.some((pattern) => pattern.test(latest));
+  if (!hasTruthCheckCue) return false;
+
+  return WEB_SEARCH_VOLATILE_FACT_PATTERNS.some((pattern) => pattern.test(latest));
 }

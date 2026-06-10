@@ -89,6 +89,7 @@ import {
   condenseConversationHistory,
   shouldEnableAppTools,
   shouldUseDialogModel,
+  shouldUseWebSearch,
   summarizeToolResultForModel,
 } from '@/lib/chatTokenControl';
 import {
@@ -101,7 +102,12 @@ import {
   isImageGenTool,
   executeImageGenTool,
 } from '@/lib/imageGenTools';
-import { loadTavilyConfig, loadTavilyConfigSync, type TavilyConfig } from '@/lib/tavilyClient';
+import {
+  DEFAULT_TAVILY_BASE_URL,
+  loadTavilyConfig,
+  loadTavilyConfigSync,
+  type TavilyConfig,
+} from '@/lib/tavilyClient';
 import { executeTavilyTool, getTavilyToolDefinitions, isTavilyTool } from '@/lib/tavilyTools';
 import {
   executeWorkspaceTool,
@@ -805,6 +811,21 @@ function selectConversationModel(
   return { config: primaryConfig ?? null, useDialogModel: false };
 }
 
+function buildTavilyPreSearchParams(query: string): Record<string, unknown> {
+  const normalizedQuery = query.trim();
+  const isNewsQuery =
+    /\b(news|latest|recent|today|breaking)\b/i.test(normalizedQuery) ||
+    /(뉴스|최신|최근|오늘|속보)/.test(normalizedQuery);
+
+  return {
+    query: normalizedQuery,
+    topic: isNewsQuery ? 'news' : 'general',
+    search_depth: 'basic',
+    max_results: 5,
+    ...(isNewsQuery ? { time_range: 'month' } : {}),
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Tool definitions for character system
 // ---------------------------------------------------------------------------
@@ -985,6 +1006,7 @@ IMPORTANT: You MUST use the respond_to_user tool to send all messages to the use
 
 Web search rule:
 - When the user asks you to search, look up, verify, compare current information, find recent news, or answer a fact that may have changed, use search_web first.
+- Korean verification questions like "진짜야?", "사실이야?", or "맞아?" require search_web first when they mention dates, API availability, product/model changes, vendor policy, releases, or support status.
 - Base current-information answers on search_web results instead of guessing.
 - When helpful, mention the source site names or URLs naturally in your reply.`;
   }
@@ -2943,6 +2965,8 @@ const ChatPanel: React.FC<{
     }
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const includeAppTools = !useDialogModel && shouldEnableAppTools(latestUserMessage, history);
+    const shouldPreSearchWeb =
+      hasTavily && !includeAppTools && shouldUseWebSearch(latestUserMessage);
     const condensedHistory = condenseConversationHistory(history);
 
     const tools = useDialogModel
@@ -2987,6 +3011,7 @@ const ChatPanel: React.FC<{
       useDialogModel,
       activeModel: activeCfg.model,
       includeAppTools,
+      shouldPreSearchWeb,
       toolNames: selectedToolNames,
       activeSkills: activeSkillMatches.map((match) => match.skill.id),
       activeMcpPlugins: aoiMcpPluginsRef.current
@@ -3061,7 +3086,7 @@ const ChatPanel: React.FC<{
       publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry, true);
     };
 
-    let currentMessages = fullMessages;
+    let currentMessages: ChatMessage[] = fullMessages;
     let iterations = 0;
     const maxIterations = 10;
     pendingToolCallsRef.current = [];
@@ -3070,6 +3095,46 @@ const ChatPanel: React.FC<{
     let fileMutatedSinceDiagnostics = false;
     let deliveredAssistantContent = '';
     let deliveredToolCalls: string[] = [];
+
+    if (shouldPreSearchWeb) {
+      const preSearchParams = buildTavilyPreSearchParams(latestUserMessage);
+      const pendingSummary = `search_web(${String(preSearchParams.query || '').slice(0, 48)})`;
+      pendingToolCallsRef.current.push(pendingSummary);
+      try {
+        const result = await executeTavilyTool(preSearchParams, tavilyConfigRef.current);
+        const summarizedResult = summarizeToolResultForModel('search_web', result);
+        console.info('[ChatPanel] Tavily pre-search result', {
+          resultPreview: result.slice(0, 200),
+        });
+        currentMessages = [
+          ...currentMessages,
+          {
+            role: 'system',
+            content: [
+              'Web search evidence for this turn:',
+              '- Tavily search was required because the user asked about current or time-sensitive information.',
+              '- Use these search results before answering. Do not call search_web again unless this evidence is insufficient.',
+              '',
+              summarizedResult,
+            ].join('\n'),
+          },
+        ];
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.error('[ChatPanel] Tavily pre-search failed', err);
+        currentMessages = [
+          ...currentMessages,
+          {
+            role: 'system',
+            content: [
+              'Web search was required for this turn, but the pre-search failed.',
+              `search_web error: ${message}`,
+              'Tell the user that live verification failed instead of guessing.',
+            ].join('\n'),
+          },
+        ];
+      }
+    }
 
     const diagnosticsResultHasIssues = (result: string): boolean => {
       if (/^error:/i.test(result.trim())) return true;
@@ -4634,6 +4699,7 @@ const ChatPanel: React.FC<{
           conversationPreferences={conversationPreferences}
           ttsStatusSnapshot={ttsStatusSnapshot}
           imageGenConfig={imageGenConfig}
+          tavilyConfig={tavilyConfig}
           promptBudgetEntries={promptBudgetEntries}
           aoiMemories={aoiMemories}
           aoiRunLedger={aoiRunLedger}
@@ -4657,6 +4723,7 @@ const ChatPanel: React.FC<{
             nextToolSafetyPolicy,
             nextAoiSkills,
             nextAoiMcpPlugins,
+            nextTavilyConfig,
           ) => {
             setConfig(c);
             setDialogLlmConfig(dcfg);
@@ -4665,6 +4732,7 @@ const ChatPanel: React.FC<{
             setUserProfile(nextUserProfile);
             setConversationPreferences(nextConversationPreferences);
             setImageGenConfig(igc);
+            setTavilyConfig(nextTavilyConfig);
             setToolSafetyPolicy(nextToolSafetyPolicy);
             setAoiSkills(nextAoiSkills);
             setAoiMcpPlugins(nextAoiMcpPlugins);
@@ -4672,6 +4740,7 @@ const ChatPanel: React.FC<{
             conversationPreferencesRef.current = nextConversationPreferences;
             aoiSkillsRef.current = nextAoiSkills;
             aoiMcpPluginsRef.current = nextAoiMcpPlugins;
+            tavilyConfigRef.current = nextTavilyConfig;
             saveConfig(
               c,
               igc,
@@ -4680,6 +4749,7 @@ const ChatPanel: React.FC<{
               nextUserProfile,
               nextConversationPreferences,
               nextKiraConfig,
+              nextTavilyConfig,
             );
             if (igc) saveImageGenConfig(igc);
             saveUserProfileConfig(nextUserProfile);
@@ -5031,6 +5101,7 @@ const SettingsModal: React.FC<{
   conversationPreferences: ConversationPreferencesConfig | null;
   ttsStatusSnapshot: AoiTtsStatusSnapshot;
   imageGenConfig: ImageGenConfig | null;
+  tavilyConfig: TavilyConfig | null;
   promptBudgetEntries: PromptBudgetEntry[];
   aoiMemories: AoiMemoryEntry[];
   aoiRunLedger: AoiRunLedgerEntry[];
@@ -5054,6 +5125,7 @@ const SettingsModal: React.FC<{
     _toolSafetyPolicy: ToolSafetyPolicy,
     _aoiSkills: AoiWorkshopSkill[],
     _aoiMcpPlugins: AoiMcpPluginEntry[],
+    _tavilyConfig: TavilyConfig | null,
   ) => void;
   onClose: () => void;
 }> = ({
@@ -5065,6 +5137,7 @@ const SettingsModal: React.FC<{
   conversationPreferences,
   ttsStatusSnapshot,
   imageGenConfig,
+  tavilyConfig,
   promptBudgetEntries,
   aoiMemories,
   aoiRunLedger,
@@ -5134,6 +5207,10 @@ const SettingsModal: React.FC<{
     imageGenConfig?.model || getDefaultImageGenConfig('gemini').model,
   );
   const [igCustomHeaders, setIgCustomHeaders] = useState(imageGenConfig?.customHeaders || '');
+  const [tavilyApiKey, setTavilyApiKey] = useState(tavilyConfig?.apiKey || '');
+  const [tavilyBaseUrl, setTavilyBaseUrl] = useState(
+    tavilyConfig?.baseUrl || DEFAULT_TAVILY_BASE_URL,
+  );
   const [dialogEnabled, setDialogEnabled] = useState(
     Boolean(
       dialogConfig?.model?.trim() &&
@@ -6671,6 +6748,46 @@ const SettingsModal: React.FC<{
               </div>
 
               <div className={styles.settingsSectionCard}>
+                <div className={styles.settingsSectionHeader}>
+                  <div>
+                    <div className={styles.settingsSectionTitle}>Tavily Web Search</div>
+                    <span className={styles.modelHint}>
+                      Enables Aoi's search_web tool for current web information.
+                    </span>
+                  </div>
+                  <span className={styles.modelHint}>
+                    {tavilyApiKey.trim() ? 'Configured' : 'Disabled'}
+                  </span>
+                </div>
+
+                <div className={styles.field}>
+                  <label className={styles.label}>API Key</label>
+                  <input
+                    className={styles.fieldInput}
+                    type="password"
+                    value={tavilyApiKey}
+                    onChange={(e) => setTavilyApiKey(e.target.value)}
+                    placeholder="tvly-YOUR_API_KEY"
+                    data-testid="tavily-api-key-input"
+                  />
+                </div>
+
+                <div className={styles.field}>
+                  <label className={styles.label}>Search endpoint</label>
+                  <input
+                    className={styles.fieldInput}
+                    value={tavilyBaseUrl}
+                    onChange={(e) => setTavilyBaseUrl(e.target.value)}
+                    placeholder={DEFAULT_TAVILY_BASE_URL}
+                    data-testid="tavily-base-url-input"
+                  />
+                  <span className={styles.modelHint}>
+                    Leave as the default unless you are routing Tavily through a compatible proxy.
+                  </span>
+                </div>
+              </div>
+
+              <div className={styles.settingsSectionCard}>
                 <div className={styles.settingsSectionTitle}>PE Analyst / IDA MCP</div>
                 <div className={styles.field}>
                   <label className={styles.label}>Mode</label>
@@ -7380,6 +7497,12 @@ const SettingsModal: React.FC<{
                 reviewerLlm: kiraDraftToConfig(kiraReviewer),
                 projectDefaults: nextKiraProjectDefaults,
               };
+              const nextTavilyConfig: TavilyConfig | null = tavilyApiKey.trim()
+                ? {
+                    apiKey: tavilyApiKey.trim(),
+                    baseUrl: tavilyBaseUrl.trim() || DEFAULT_TAVILY_BASE_URL,
+                  }
+                : null;
               onSave(
                 llmCfg,
                 igCfg,
@@ -7397,6 +7520,7 @@ const SettingsModal: React.FC<{
                 },
                 aoiSkillDrafts,
                 aoiMcpPluginDrafts,
+                nextTavilyConfig,
               );
             }}
           >

@@ -3,6 +3,7 @@ import {
   condenseConversationHistory,
   shouldEnableAppTools,
   shouldUseDialogModel,
+  shouldUseWebSearch,
   summarizeToolResultForModel,
   truncateForTokenBudget,
 } from '../chatTokenControl';
@@ -182,6 +183,24 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('Which window is currently active?')).toBe(false);
     expect(shouldUseDialogModel('Find the ChatPanel component in the codebase')).toBe(false);
     expect(shouldUseDialogModel('현재 파일에 TODO 내용을 추가해줘')).toBe(false);
+  });
+});
+
+describe('shouldUseWebSearch()', () => {
+  it('detects Korean time-sensitive fact checks', () => {
+    const message = '앤트로픽의 fable 은 6/22 이후로는 API로만 사용 가능하다던데 진짜야?';
+
+    expect(shouldUseWebSearch(message)).toBe(true);
+    expect(shouldUseDialogModel(message)).toBe(false);
+  });
+
+  it('does not treat casual intensifiers as search requests', () => {
+    expect(shouldUseWebSearch('고마워 진짜 좋아')).toBe(false);
+  });
+
+  it('detects explicit live web search requests', () => {
+    expect(shouldUseWebSearch('Can you verify this fact on the web?')).toBe(true);
+    expect(shouldUseWebSearch('최신 Tavily API 변경점 검색해줘')).toBe(true);
   });
 });
 

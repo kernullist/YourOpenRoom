@@ -1,18 +1,30 @@
-import { loadPersistedConfig, type TavilyConfig } from './configPersistence';
+import { loadPersistedConfig, savePersistedConfig, type TavilyConfig } from './configPersistence';
 
 const CONFIG_KEY = 'webuiapps-tavily-config';
-const DEFAULT_BASE_URL = 'https://api.tavily.com/search';
+export const DEFAULT_TAVILY_BASE_URL = 'https://api.tavily.com/search';
+
+export function normalizeTavilyBaseUrl(baseUrl?: string): string {
+  const trimmed = baseUrl?.trim() || DEFAULT_TAVILY_BASE_URL;
+  if (/\/search\/?$/i.test(trimmed)) return trimmed.replace(/\/+$/, '');
+  return `${trimmed.replace(/\/+$/, '')}/search`;
+}
+
+export function normalizeTavilyConfig(
+  config: TavilyConfig | null | undefined,
+): TavilyConfig | null {
+  const apiKey = config?.apiKey?.trim();
+  if (!apiKey) return null;
+  return {
+    apiKey,
+    baseUrl: normalizeTavilyBaseUrl(config?.baseUrl),
+  };
+}
 
 export function loadTavilyConfigSync(): TavilyConfig | null {
   try {
     const raw = localStorage.getItem(CONFIG_KEY);
     if (!raw) return null;
-    const parsed = JSON.parse(raw) as TavilyConfig;
-    if (!parsed?.apiKey?.trim()) return null;
-    return {
-      ...parsed,
-      baseUrl: parsed.baseUrl?.trim() || DEFAULT_BASE_URL,
-    };
+    return normalizeTavilyConfig(JSON.parse(raw) as TavilyConfig);
   } catch {
     return null;
   }
@@ -21,11 +33,8 @@ export function loadTavilyConfigSync(): TavilyConfig | null {
 export async function loadTavilyConfig(): Promise<TavilyConfig | null> {
   try {
     const persisted = await loadPersistedConfig();
-    if (persisted?.tavily?.apiKey?.trim()) {
-      const config: TavilyConfig = {
-        ...persisted.tavily,
-        baseUrl: persisted.tavily.baseUrl?.trim() || DEFAULT_BASE_URL,
-      };
+    const config = normalizeTavilyConfig(persisted?.tavily);
+    if (config) {
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       return config;
     }
@@ -34,6 +43,31 @@ export async function loadTavilyConfig(): Promise<TavilyConfig | null> {
   }
 
   return loadTavilyConfigSync();
+}
+
+export function saveTavilyConfigSync(config: TavilyConfig | null): TavilyConfig | null {
+  const normalized = normalizeTavilyConfig(config);
+  if (!normalized) {
+    localStorage.removeItem(CONFIG_KEY);
+    return null;
+  }
+
+  localStorage.setItem(CONFIG_KEY, JSON.stringify(normalized));
+  return normalized;
+}
+
+export async function saveTavilyConfig(config: TavilyConfig | null): Promise<TavilyConfig | null> {
+  const normalized = saveTavilyConfigSync(config);
+  const persisted = (await loadPersistedConfig()) ?? {};
+
+  if (normalized) {
+    persisted.tavily = normalized;
+  } else {
+    delete persisted.tavily;
+  }
+
+  await savePersistedConfig(persisted);
+  return normalized;
 }
 
 export type { TavilyConfig };
