@@ -69,6 +69,32 @@ describe('summarizeToolResultForModel()', () => {
     expect(summarized).not.toContain('item 100');
   });
 
+  it('preserves app names in app_action results', () => {
+    const summarized = summarizeToolResultForModel(
+      'app_action',
+      JSON.stringify({
+        ok: true,
+        source_app: { app_id: 1, app_name: 'os', display_name: 'OS' },
+        target_app: {
+          app_id: 22,
+          app_name: 'dewdropcanvas',
+          display_name: 'Dewdrop Canvas',
+        },
+        action_type: 'OPEN_APP',
+        params: { app_id: '22' },
+        user_facing_name: 'Dewdrop Canvas',
+        raw_result: 'success',
+      }),
+    );
+    const parsed = JSON.parse(summarized) as {
+      target_app: { display_name: string };
+      user_facing_name: string;
+    };
+
+    expect(parsed.target_app.display_name).toBe('Dewdrop Canvas');
+    expect(parsed.user_facing_name).toBe('Dewdrop Canvas');
+  });
+
   it('keeps workspace search payloads compact', () => {
     const raw = JSON.stringify({
       query: 'notes',
@@ -144,6 +170,8 @@ describe('shouldEnableAppTools()', () => {
   it('enables tools for explicit app mentions', () => {
     expect(shouldEnableAppTools("Open Aoi's IDE")).toBe(true);
     expect(shouldEnableAppTools('유튜브에서 틀어줘')).toBe(true);
+    expect(shouldEnableAppTools('Open Dewdrop Canvas')).toBe(true);
+    expect(shouldEnableAppTools('룸샵 열어줘')).toBe(true);
   });
 
   it('enables tools for URL-reading and app-state questions', () => {
@@ -177,6 +205,7 @@ describe('shouldUseDialogModel()', () => {
 
   it('keeps heavier intents on the main model', () => {
     expect(shouldUseDialogModel('Open the browser and search for the latest news')).toBe(false);
+    expect(shouldUseDialogModel('Open Written By Me')).toBe(false);
     expect(shouldUseDialogModel('Can you verify this fact on the web?')).toBe(false);
     expect(shouldUseDialogModel("Aoi's IDE 열어줘")).toBe(false);
     expect(shouldUseDialogModel('유튜브에서 틀어줘')).toBe(false);

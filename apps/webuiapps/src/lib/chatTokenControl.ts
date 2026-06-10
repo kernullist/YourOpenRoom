@@ -1,4 +1,5 @@
 import type { ChatMessage } from './llmClient';
+import { getAppRecognitionEntries } from './appRegistry';
 
 const MAX_RECENT_HISTORY_MESSAGES = 12;
 const MAX_SUMMARIZED_HISTORY_ITEMS = 8;
@@ -300,6 +301,35 @@ function summarizeAppStateToolResult(result: string): string {
   }
 }
 
+function summarizeAppActionToolResult(result: string): string {
+  try {
+    const parsed = JSON.parse(result) as {
+      ok?: boolean;
+      source_app?: Record<string, unknown>;
+      target_app?: Record<string, unknown> | null;
+      action_type?: string;
+      params?: Record<string, unknown>;
+      raw_result?: string;
+      user_facing_name?: string;
+    };
+
+    return JSON.stringify({
+      ok: parsed.ok ?? null,
+      source_app: parsed.source_app ?? null,
+      target_app: parsed.target_app ?? null,
+      action_type: parsed.action_type ?? '',
+      params: parsed.params ?? {},
+      user_facing_name: parsed.user_facing_name ?? null,
+      raw_result:
+        typeof parsed.raw_result === 'string'
+          ? truncateForTokenBudget(parsed.raw_result, MAX_APP_STATE_CHARS, '…')
+          : (parsed.raw_result ?? null),
+    });
+  } catch {
+    return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
+  }
+}
+
 function summarizeDiagnosticsToolResult(result: string): string {
   try {
     const parsed = JSON.parse(result) as {
@@ -452,6 +482,8 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
       return summarizeAutofixMacroResult(trimmed);
     case 'get_app_state':
       return summarizeAppStateToolResult(trimmed);
+    case 'app_action':
+      return summarizeAppActionToolResult(trimmed);
     case 'file_read':
       return truncateForTokenBudget(trimmed, MAX_FILE_TOOL_RESULT_CHARS);
     case 'file_list':
@@ -462,7 +494,43 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
   }
 }
 
+function normalizeSearchToken(value: string): string {
+  return normalizeWhitespace(value).trim();
+}
+
+function isAsciiSearchToken(value: string): boolean {
+  return /^[a-z0-9][a-z0-9' -]*$/i.test(value);
+}
+
+function hasSearchToken(text: string, token: string): boolean {
+  const normalizedToken = normalizeSearchToken(token);
+
+  if (isAsciiSearchToken(normalizedToken)) {
+    if (normalizedToken.length < 3) {
+      return false;
+    }
+
+    const pattern = normalizedToken.replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+    return new RegExp(`(^|[^a-z0-9])${pattern}(?=$|[^a-z0-9])`, 'i').test(text);
+  }
+
+  if (normalizedToken.length < 2) {
+    return false;
+  }
+
+  return normalizeWhitespace(text).toLowerCase().includes(normalizedToken.toLowerCase());
+}
+
+function hasRegistryAppMention(text: string): boolean {
+  return getAppRecognitionEntries().some((app) => {
+    const tokens = [app.displayName, app.appName, ...app.aliases];
+    return tokens.some((token) => hasSearchToken(text, token));
+  });
+}
+
 function hasExplicitAppMention(text: string): boolean {
+  if (hasRegistryAppMention(text)) return true;
+
   return [
     /\bkira\b/i,
     /\baoi'?s ide\b/i,

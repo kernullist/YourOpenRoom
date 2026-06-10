@@ -58,6 +58,9 @@ import {
   executeListApps,
   APP_REGISTRY,
   loadActionsFromMeta,
+  describeAppActionResultForModel,
+  formatAppReference,
+  getOsActionTargetApp,
 } from '@/lib/appRegistry';
 import { parseAppActionToolParams } from '@/lib/appActionParams';
 import { seedMetaFiles } from '@/lib/seedMeta';
@@ -957,6 +960,7 @@ When the user wants to interact with an app, first identify the target app from 
 
 Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
+- When talking to the user about an app, use the app's displayName or appName from list_apps/event context. Do not call known apps by raw numeric app_id such as "app 22"; app_id is only a tool parameter.
 - Data mutations MUST go through file_patch/file_write/file_delete. app_action only notifies the app to reload, it cannot write data. Exception: Aoi's IDE workspace actions such as CREATE_FILE and CREATE_FOLDER write inside the configured IDE workspace, active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested, and SWITCH_WORKSPACE_ROOT persists the IDE workspace setting when the user explicitly asks to change roots.
 - Operation actions do NOT require file_write when the app action itself performs the interaction.
 - After file_patch/file_write, ALWAYS call app_action with the corresponding REFRESH action.
@@ -1040,6 +1044,17 @@ Tool rule:
   prompt += buildMemoryPrompt(memories);
 
   return prompt;
+}
+
+function buildUserActionMessage(
+  app: { appId: number; appName: string; displayName: string },
+  action: { action_type: string; params?: Record<string, string> },
+): string {
+  const targetApp =
+    app.appName === 'os' ? getOsActionTargetApp(action.action_type, action.params) : null;
+  const source = `${app.displayName} (appName: ${app.appName}, appId: ${app.appId})`;
+  const target = targetApp ? `, targetApp: ${formatAppReference(targetApp)}` : '';
+  return `[User performed action in ${source}${target}] action_type: ${action.action_type}, params: ${JSON.stringify(action.params || {})}`;
 }
 
 function formatReminderTime(dateTime: string, language: 'ko' | 'ja' | 'zh' | 'en'): string {
@@ -2480,7 +2495,7 @@ const ChatPanel: React.FC<{
         });
       }
 
-      const actionMsg = `[User performed action in ${app.displayName} (appName: ${app.appName})] action_type: ${action.action_type}, params: ${JSON.stringify(action.params || {})}`;
+      const actionMsg = buildUserActionMessage(app, action);
       clearToolCache();
       actionQueueRef.current.push(actionMsg);
       processActionQueue();
@@ -4272,7 +4287,13 @@ const ChatPanel: React.FC<{
               result,
             });
             clearToolCache();
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const resultForModel = describeAppActionResultForModel({
+              sourceAppId: resolved.appId,
+              actionType: resolved.actionType,
+              params: appAction.params,
+              rawResult: result,
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, resultForModel);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },

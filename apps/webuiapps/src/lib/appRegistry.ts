@@ -26,7 +26,16 @@ export interface AppDef {
   appName: string;
   route: string;
   displayName: string;
+  aliases?: string[];
   actions: AppActionDef[];
+}
+
+export interface AppIdentity {
+  appId: number;
+  appName: string;
+  route: string;
+  displayName: string;
+  aliases: string[];
 }
 
 // ============ Static App Registry (without actions) ============
@@ -36,6 +45,7 @@ interface AppStaticDef {
   appName: string;
   route: string;
   displayName: string;
+  aliases?: string[];
   /** Source directory name (under src/pages/), not present for OS */
   sourceDir?: string;
   /** Lucide icon name */
@@ -63,6 +73,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'youtube',
     route: '/youtube',
     displayName: 'YouTube',
+    aliases: ['Music App', 'music', 'song', 'track', 'artist', '유튜브', '뮤직 앱', '노래', '음악'],
     sourceDir: 'MusicApp',
     icon: 'Video',
     color: '#ff3b30',
@@ -73,6 +84,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'diary',
     route: '/diary',
     displayName: 'Diary',
+    aliases: ['journal', '일기'],
     sourceDir: 'Diary',
     icon: 'BookOpen',
     color: '#faea5f',
@@ -83,6 +95,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'album',
     route: '/album',
     displayName: 'Album',
+    aliases: ['gallery', '앨범'],
     sourceDir: 'Album',
     icon: 'Image',
     color: '#58a6ff',
@@ -93,6 +106,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'gomoku',
     route: '/gomoku',
     displayName: 'Gomoku',
+    aliases: ['오목'],
     sourceDir: 'Gomoku',
     icon: 'Circle',
     color: '#f97316',
@@ -103,6 +117,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'freecell',
     route: '/freecell',
     displayName: 'FreeCell',
+    aliases: ['프리셀'],
     sourceDir: 'FreeCell',
     icon: 'LayoutGrid',
     color: '#22c55e',
@@ -113,6 +128,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'email',
     route: '/email',
     displayName: 'Email',
+    aliases: ['mail', '이메일', '메일'],
     sourceDir: 'Email',
     icon: 'Mail',
     color: '#a78bfa',
@@ -123,6 +139,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'chess',
     route: '/chess',
     displayName: 'Chess',
+    aliases: ['체스'],
     sourceDir: 'Chess',
     icon: 'Crown',
     color: '#eab308',
@@ -133,6 +150,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'evidencevault',
     route: '/evidencevault',
     displayName: 'Evidence Vault',
+    aliases: ['evidence', 'vault', '증거 보관함'],
     sourceDir: 'EvidenceVault',
     icon: 'Shield',
     color: '#ef4444',
@@ -143,6 +161,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'cyberNews',
     route: '/cyberNews',
     displayName: 'CyberNews',
+    aliases: ['cyber news', '사이버 뉴스'],
     sourceDir: 'CyberNews',
     icon: 'Newspaper',
     color: '#FAEA5F',
@@ -153,6 +172,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'calendar',
     route: '/calendar',
     displayName: 'Calendar',
+    aliases: ['캘린더', '일정'],
     sourceDir: 'Calendar',
     icon: 'CalendarDays',
     color: '#38bdf8',
@@ -163,6 +183,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'notes',
     route: '/notes',
     displayName: 'Notes',
+    aliases: ['note', 'memo', '메모', '노트'],
     sourceDir: 'Notes',
     icon: 'FileText',
     color: '#f59e0b',
@@ -173,6 +194,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'browser',
     route: '/browser',
     displayName: 'Browser',
+    aliases: ['reader', 'browser reader', 'web browser', '브라우저', '리더'],
     sourceDir: 'BrowserReader',
     icon: 'Globe',
     color: '#38bdf8',
@@ -183,6 +205,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'kira',
     route: '/kira',
     displayName: 'Kira',
+    aliases: ['키라'],
     sourceDir: 'Kira',
     icon: 'KanbanSquare',
     color: '#ff8f3d',
@@ -193,6 +216,16 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'openvscode',
     route: '/ide',
     displayName: "Aoi's IDE",
+    aliases: [
+      'Aoi IDE',
+      'IDE',
+      'VSCode',
+      'code editor',
+      'editor',
+      '아오이 IDE',
+      '에디터',
+      '코드 에디터',
+    ],
     sourceDir: 'OpenVSCode',
     icon: 'Code2',
     color: '#38bdf8',
@@ -203,6 +236,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'peanalyzer',
     route: '/peanalyzer',
     displayName: 'PE Analyst',
+    aliases: ['PE Analyzer', 'portable executable analyzer', 'PE 분석기', 'PE 애널리스트'],
     sourceDir: 'PeAnalyzer',
     icon: 'FileArchive',
     color: '#0f766e',
@@ -213,6 +247,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'roomshop',
     route: '/roomshop',
     displayName: 'Room Shop',
+    aliases: ['RoomShop', 'room store', 'room theme shop', '룸샵', '방 상점', '방 꾸미기'],
     sourceDir: 'RoomShop',
     icon: 'Palette',
     color: '#fb9f3f',
@@ -223,6 +258,16 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'dewdropcanvas',
     route: '/dewdrop-canvas',
     displayName: 'Dewdrop Canvas',
+    aliases: [
+      'Dewdrop',
+      'canvas',
+      'mind map',
+      'mindmap',
+      '드롭 캔버스',
+      '듀드롭 캔버스',
+      '마인드맵',
+      '캔버스',
+    ],
     sourceDir: 'DewdropCanvas',
     icon: 'Droplets',
     color: '#06b6d4',
@@ -233,6 +278,7 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     appName: 'writtenbyme',
     route: '/written-by-me',
     displayName: 'Written By Me',
+    aliases: ['writing style analyzer', 'style analyzer', '문체 분석기', '글쓰기 분석기', '문체'],
     sourceDir: 'WrittenByMe',
     icon: 'Feather',
     color: '#58a6ff',
@@ -244,13 +290,14 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
 const OS_ACTIONS: AppActionDef[] = [
   {
     name: 'OPEN_APP',
-    description: 'Open a specified app. Pass app_id as the application ID',
+    description:
+      'Open a specified app. Pass app_id as the application ID. When speaking to the user, use the app display name rather than the numeric app_id.',
     params: [
       {
         name: 'app_id',
         type: 'string',
         description: `Application ID (${APP_STATIC_REGISTRY.filter((a) => a.appName !== 'os')
-          .map((a) => `${a.appId}=${a.displayName}`)
+          .map((a) => `${a.appId}=${a.displayName} appName=${a.appName}`)
           .join(', ')})`,
         required: true,
       },
@@ -258,8 +305,18 @@ const OS_ACTIONS: AppActionDef[] = [
   },
   {
     name: 'CLOSE_APP',
-    description: 'Close a specified app. Pass app_id as the application ID',
-    params: [{ name: 'app_id', type: 'string', description: 'Application ID', required: true }],
+    description:
+      'Close a specified app. Pass app_id as the application ID. When speaking to the user, use the app display name rather than the numeric app_id.',
+    params: [
+      {
+        name: 'app_id',
+        type: 'string',
+        description: `Application ID (${APP_STATIC_REGISTRY.filter((a) => a.appName !== 'os')
+          .map((a) => `${a.appId}=${a.displayName} appName=${a.appName}`)
+          .join(', ')})`,
+        required: true,
+      },
+    ],
   },
   {
     name: 'SET_WALLPAPER',
@@ -281,6 +338,90 @@ const OS_ACTIONS: AppActionDef[] = [
 
 export function getAppDisplayName(appId: number): string {
   return APP_STATIC_REGISTRY.find((a) => a.appId === appId)?.displayName ?? `App ${appId}`;
+}
+
+function toAppIdentity(app: AppStaticDef | AppDef): AppIdentity {
+  return {
+    appId: app.appId,
+    appName: app.appName,
+    route: app.route,
+    displayName: app.displayName,
+    aliases: app.aliases ?? [],
+  };
+}
+
+export function getAppIdentityById(appId: number): AppIdentity | null {
+  const app =
+    APP_REGISTRY.find((a) => a.appId === appId) ??
+    APP_STATIC_REGISTRY.find((a) => a.appId === appId);
+  return app ? toAppIdentity(app) : null;
+}
+
+export function getAppIdentityByName(appName: string): AppIdentity | null {
+  const normalized = appName.trim().toLowerCase();
+  const app =
+    APP_REGISTRY.find((a) => a.appName.toLowerCase() === normalized) ??
+    APP_STATIC_REGISTRY.find((a) => a.appName.toLowerCase() === normalized);
+  return app ? toAppIdentity(app) : null;
+}
+
+export function getAppRecognitionEntries(): AppIdentity[] {
+  return APP_REGISTRY.filter((a) => a.appName !== 'os').map(toAppIdentity);
+}
+
+export function formatAppReference(app: AppIdentity): string {
+  return `${app.displayName} (appName: ${app.appName}, appId: ${app.appId})`;
+}
+
+export function getOsActionTargetApp(
+  actionType: string,
+  params?: Record<string, string>,
+): AppIdentity | null {
+  if (actionType !== 'OPEN_APP' && actionType !== 'CLOSE_APP') {
+    return null;
+  }
+
+  const appId = Number(params?.app_id);
+  if (!Number.isFinite(appId)) {
+    return null;
+  }
+
+  return getAppIdentityById(appId);
+}
+
+export function describeAppActionResultForModel(input: {
+  sourceAppId: number;
+  actionType: string;
+  params?: Record<string, string>;
+  rawResult: string;
+}): string {
+  const sourceApp = getAppIdentityById(input.sourceAppId);
+  const targetApp = getOsActionTargetApp(input.actionType, input.params);
+  return JSON.stringify({
+    ok: !/^(error|timeout):/i.test(input.rawResult.trim()),
+    source_app: sourceApp
+      ? {
+          app_id: sourceApp.appId,
+          app_name: sourceApp.appName,
+          display_name: sourceApp.displayName,
+        }
+      : {
+          app_id: input.sourceAppId,
+          app_name: `app-${input.sourceAppId}`,
+          display_name: `App ${input.sourceAppId}`,
+        },
+    target_app: targetApp
+      ? {
+          app_id: targetApp.appId,
+          app_name: targetApp.appName,
+          display_name: targetApp.displayName,
+        }
+      : null,
+    action_type: input.actionType,
+    params: input.params ?? {},
+    raw_result: input.rawResult,
+    user_facing_name: (targetApp ?? sourceApp)?.displayName ?? `App ${input.sourceAppId}`,
+  });
 }
 
 export function getAppDefaultSize(appId: number): { width: number; height: number } {
@@ -531,7 +672,8 @@ export function getAppActionToolDefinition(): {
       name: 'app_action',
       description:
         "Trigger an action on an app. Read the app's meta.yaml first to discover available action types and their parameters. " +
-        'OS-level actions (OPEN_APP, CLOSE_APP, SET_WALLPAPER) MUST use app_name="os".',
+        'OS-level actions (OPEN_APP, CLOSE_APP, SET_WALLPAPER) MUST use app_name="os". ' +
+        'Use appName/app display names when speaking to the user; numeric app_id values are only tool parameters.',
       parameters: {
         type: 'object',
         properties: {
@@ -582,21 +724,24 @@ export function getListAppsToolDefinition(): {
     function: {
       name: 'list_apps',
       description:
-        'List all available apps on the device. Returns app names and display names. Call this first to discover what apps are available.',
+        'List all available apps on the device. Returns app names, display names, aliases, and numeric app IDs. Call this first to discover what apps are available.',
       parameters: { type: 'object', properties: {}, required: [] },
     },
   };
 }
 
 export function executeListApps(): string {
-  const apps = APP_REGISTRY.filter((a) => a.appName !== 'os').map(
-    (a) => `${a.displayName} (appId: ${a.appId}, appName: ${a.appName})`,
-  );
+  const apps = APP_REGISTRY.filter((a) => a.appName !== 'os').map((a) => {
+    const aliases = a.aliases?.length ? `, aliases: ${a.aliases.join(', ')}` : '';
+    return `- ${a.displayName} (appName: ${a.appName}, appId: ${a.appId}, route: ${a.route}${aliases})`;
+  });
   return (
-    `Available apps:\n${apps.join('\n')}\n\n` +
+    'Available apps:\n' +
+    'Use displayName or appName when speaking to the user. Use appId only as an OS OPEN_APP/CLOSE_APP parameter.\n' +
+    `${apps.join('\n')}\n\n` +
     'OS-level actions (use app_name="os"):\n' +
-    '- OPEN_APP: open an app (params: app_id)\n' +
-    '- CLOSE_APP: close an app (params: app_id)\n' +
+    '- OPEN_APP: open an app (params: app_id; speak using the target app displayName)\n' +
+    '- CLOSE_APP: close an app (params: app_id; speak using the target app displayName)\n' +
     '- SET_WALLPAPER: change wallpaper (params: wallpaper_url)'
   );
 }
