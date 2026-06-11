@@ -868,7 +868,7 @@ export function validateAoiResearchReport(params: {
   const bodyCitedIds = Array.from(
     new Set(extractReportCitationIds(getReportBodyBeforeSources(report))),
   );
-  for (const citationId of citedIds) {
+  for (const citationId of bodyCitedIds) {
     const source = citationContext.sourceByCitationId.get(citationId);
     if (!source) {
       issues.push({
@@ -889,7 +889,7 @@ export function validateAoiResearchReport(params: {
   }
 
   const sourcesSection = getReportSection(report, 'Sources');
-  for (const citationId of citedIds) {
+  for (const citationId of bodyCitedIds) {
     if (!sourcesSection.includes(`[${citationId}]`)) {
       issues.push({
         code: 'source_missing_from_sources_section',
@@ -2459,16 +2459,12 @@ export async function startAoiResearchRun(
       });
 
       if (localIssues.some((issue) => issue.severity === 'blocking')) {
-        verificationWarnings.push(
-          ...localIssues.map((issue) => toVerificationWarning(issue, getNow(dependencies))),
-        );
         report = buildDeterministicReport({
           normalized,
           title: reportTitle,
           claims: citableClaims,
           sources,
           citationContext,
-          verificationWarnings,
         });
         localIssues = validateAoiResearchReport({
           report,

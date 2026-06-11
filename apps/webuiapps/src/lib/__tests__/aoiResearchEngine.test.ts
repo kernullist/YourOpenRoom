@@ -257,6 +257,65 @@ describe('Aoi research report validation', () => {
 
     expect(issues.map((issue) => issue.code)).toContain('report_body_has_no_citations');
   });
+
+  it('does not require evidence for citations that appear only in the Sources section', () => {
+    const report = [
+      makeValidSecurityReport('Sources-only citation test').trimEnd(),
+      '- [S02] src-002 - Extra source. Site: source-b.example. Retrieved: 2027-01-15. URL: https://source-b.example/article',
+      '',
+    ].join('\n');
+
+    const issues = validateAoiResearchReport({
+      report,
+      request: 'Windows security telemetry',
+      sources: [
+        {
+          version: 1,
+          id: 'src-001',
+          citationId: 'S01',
+          url: 'https://source-a.example/article',
+          finalUrl: 'https://source-a.example/article',
+          title: 'Accepted source',
+          siteName: 'source-a.example',
+          blocks: [],
+          status: 'accepted',
+        },
+        {
+          version: 1,
+          id: 'src-002',
+          citationId: 'S02',
+          url: 'https://source-b.example/article',
+          finalUrl: 'https://source-b.example/article',
+          title: 'Extra source',
+          siteName: 'source-b.example',
+          blocks: [],
+          status: 'accepted',
+        },
+      ],
+      claims: [
+        {
+          version: 1,
+          id: 'src-001-claim-1',
+          sourceId: 'src-001',
+          claim: 'Accepted source supports the requested research topic.',
+          supportText: 'This source provides concrete evidence about the requested topic.',
+          topicTags: ['evidence'],
+          confidence: 0.82,
+          caveats: [],
+          createdAt: 1_800_000_000_000,
+        },
+      ],
+    });
+
+    expect(issues).not.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'citation_without_evidence',
+          sourceIds: ['src-002'],
+        }),
+      ]),
+    );
+  });
 });
 
 describe('Aoi research engine', () => {
@@ -382,6 +441,102 @@ describe('Aoi research engine', () => {
     expect(report).toContain('## Version Boundaries');
     expect(report).toContain('[S01]');
     expect(report).toContain('## Sources');
+  });
+
+  it('does not keep stale blocking warnings after deterministic fallback fixes the report', async () => {
+    const { root, paths } = makeTempPaths();
+    const brokenDraft = makeValidSecurityReport(
+      'Investigate Windows telemetry hardening',
+      '초안 보고서',
+    ).replace(/\n## Sources\n[\s\S]*$/u, '\n');
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === TAVILY_CONFIG.baseUrl) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                title: 'Accepted source',
+                url: 'https://source-a.example/article',
+                content: 'Accepted source summary',
+                score: 0.9,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(makeHtml('Accepted source'), {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    });
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce('planner returned malformed json')
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          claims: [
+            {
+              sourceId: 'src-001',
+              claim: 'Accepted source supports the requested research topic.',
+              supportText: 'This source provides concrete evidence about the requested topic.',
+              tags: ['evidence'],
+              confidence: 0.82,
+              caveats: [],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(brokenDraft)
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: false,
+          findings: [],
+        }),
+      )
+      .mockResolvedValueOnce('')
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: false,
+          findings: [],
+        }),
+      );
+
+    const manifest = await startAoiResearchRun({
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://localhost:3000',
+      sessionPath: 'aoi/default',
+      runId: 'run-test-001',
+      paths,
+      request: {
+        sessionPath: 'aoi/default',
+        request: 'Investigate Windows telemetry hardening',
+        mode: 'standard',
+        language: 'ko',
+        maxSources: 1,
+      },
+      dependencies: {
+        fetch: fetchImpl,
+        loadLlmConfig: () => LLM_CONFIG,
+        loadTavilyConfig: () => TAVILY_CONFIG,
+        callModel,
+        resolveHost: async () => ['93.184.216.34'],
+        now: () => 1_800_000_000_000,
+      },
+    });
+
+    const warningCodes = (manifest.verificationWarnings ?? []).map((warning) => warning.code);
+    const blockingCodes = (manifest.verificationWarnings ?? [])
+      .filter((warning) => warning.severity === 'blocking')
+      .map((warning) => warning.code);
+    const report = fs.readFileSync(paths.report, 'utf-8');
+
+    expect(manifest.status).toBe('completed');
+    expect(report).toContain('## Sources');
+    expect(report).toContain('[S01]');
+    expect(warningCodes).not.toContain('source_missing_from_sources_section');
+    expect(warningCodes).not.toContain('missing_required_section');
+    expect(blockingCodes).toEqual([]);
   });
 
   it('rewrites once for verifier blocking findings and persists remaining warnings', async () => {

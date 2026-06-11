@@ -120,6 +120,7 @@ import {
   getAoiResearchToolPendingSummary,
   isAoiResearchTool,
 } from '@/lib/aoiResearchTools';
+import { buildAoiResearchStartAckMessage, type AoiResearchAckLanguage } from '@/lib/aoiResearchAck';
 import {
   executeWorkspaceTool,
   getWorkspaceToolDefinitions,
@@ -3141,6 +3142,17 @@ const ChatPanel: React.FC<{
     let fileMutatedSinceDiagnostics = false;
     let deliveredAssistantContent = '';
     let deliveredToolCalls: string[] = [];
+    let pendingResearchStartAck: string | null = null;
+    const researchAckLanguage = detectPreferredLanguage(
+      latestUserMessage,
+      normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+    ) as AoiResearchAckLanguage;
+    const rememberResearchStartAck = (result: string): void => {
+      const ack = buildAoiResearchStartAckMessage(result, researchAckLanguage);
+      if (ack) {
+        pendingResearchStartAck = ack;
+      }
+    };
 
     if (shouldPreSearchWeb) {
       const preSearchParams = buildTavilyPreSearchParams(latestUserMessage);
@@ -3254,25 +3266,29 @@ const ChatPanel: React.FC<{
 
       if (response.toolCalls.length === 0) {
         // No tool calls — fallback plain text (shouldn't happen with respond_to_user requirement)
-        if (response.content) {
+        const fallbackContent = response.content.trim()
+          ? response.content
+          : pendingResearchStartAck;
+        if (fallbackContent) {
           console.info('[ChatPanel] Assistant plain-text fallback response', {
-            contentPreview: response.content.slice(0, 200),
+            contentPreview: fallbackContent.slice(0, 200),
           });
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
-            content: response.content,
+            content: fallbackContent,
             toolCalls:
               pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
           });
-          deliveredAssistantContent = response.content;
+          deliveredAssistantContent = fallbackContent;
           deliveredToolCalls =
             pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
           pendingToolCallsRef.current = [];
+          pendingResearchStartAck = null;
           recordRunLedgerEvent({
             type: 'plain_text_fallback',
             iteration: iterations,
-            message: response.content.slice(0, 200),
+            message: fallbackContent.slice(0, 200),
             toolNames: deliveredToolCalls,
           });
         }
@@ -3533,7 +3549,8 @@ const ChatPanel: React.FC<{
             (params.character_expression as { content?: string; emotion?: string }) ?? {};
           const interaction = (params.user_interaction as { suggested_replies?: string[] }) ?? {};
 
-          const content = expr.content ?? '';
+          const rawContent = expr.content ?? '';
+          const content = rawContent.trim() ? rawContent : (pendingResearchStartAck ?? '');
           const emotion = expr.emotion;
           const replies = interaction.suggested_replies ?? [];
           console.info('[ChatPanel] respond_to_user received', {
@@ -3561,6 +3578,7 @@ const ChatPanel: React.FC<{
           deliveredAssistantContent = content;
           deliveredToolCalls = deliveredPendingToolCalls;
           pendingToolCallsRef.current = [];
+          pendingResearchStartAck = null;
           recordRunLedgerEvent({
             type: 'assistant_delivered',
             iteration: iterations,
@@ -4195,6 +4213,9 @@ const ChatPanel: React.FC<{
             const result = await runCachedTool(tc.function.name, params, () =>
               executeAoiResearchTool(tc.function.name, params, sessionPathRef.current),
             );
+            if (tc.function.name === 'start_research') {
+              rememberResearchStartAck(result);
+            }
             console.info('[ChatPanel] Aoi research tool result', {
               tool: tc.function.name,
               resultPreview: result.slice(0, 200),
@@ -4423,6 +4444,7 @@ const ChatPanel: React.FC<{
           pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
         setSuggestedReplies([]);
         pendingToolCallsRef.current = [];
+        pendingResearchStartAck = null;
         recordRunLedgerEvent({
           type: 'assistant_delivered',
           iteration: iterations,
@@ -4436,6 +4458,27 @@ const ChatPanel: React.FC<{
         console.info('[ChatPanel] Stopping conversation loop after respond_to_user');
         break;
       }
+    }
+    if (!deliveredAssistantContent.trim() && pendingResearchStartAck) {
+      const deliveredPendingToolCalls =
+        pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
+      emitAssistantMessage({
+        id: String(Date.now()),
+        role: 'assistant',
+        content: pendingResearchStartAck,
+        toolCalls:
+          pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
+      });
+      deliveredAssistantContent = pendingResearchStartAck;
+      deliveredToolCalls = deliveredPendingToolCalls;
+      pendingToolCallsRef.current = [];
+      pendingResearchStartAck = null;
+      recordRunLedgerEvent({
+        type: 'assistant_delivered',
+        iteration: iterations,
+        message: deliveredAssistantContent.slice(0, 200),
+        toolNames: deliveredToolCalls,
+      });
     }
     if (deliveredAssistantContent.trim()) {
       recordAoiMemoryTurn({
