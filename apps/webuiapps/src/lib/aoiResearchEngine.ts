@@ -19,6 +19,7 @@ import {
   type AoiResearchSourceBlock,
   type AoiResearchSourceCounts,
   type AoiResearchStartRequest,
+  type AoiResearchVerificationWarning,
 } from './aoiResearchTypes';
 
 const DEFAULT_TAVILY_BASE_URL = 'https://api.tavily.com/search';
@@ -31,6 +32,10 @@ const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;
 const LLM_PLAN_TOKENS = 1600;
 const LLM_EVIDENCE_TOKENS = 1400;
+const LLM_REPORT_TOKENS = 4200;
+const LLM_VERIFIER_TOKENS = 1800;
+const MAX_REPORT_CHARS = 28_000;
+const MAX_REPORT_EVIDENCE_CLAIMS = 30;
 
 const EMPTY_SOURCE_COUNTS: AoiResearchSourceCounts = {
   planned: 0,
@@ -124,6 +129,32 @@ interface AoiResearchEvidenceArtifact {
   runId: string;
   savedAt: number;
   claims: AoiResearchEvidenceClaim[];
+}
+
+export interface AoiResearchCitationContext {
+  sourceById: Map<string, AoiResearchSource>;
+  sourceByCitationId: Map<string, AoiResearchSource>;
+  citationIdBySourceId: Map<string, string>;
+}
+
+export interface AoiResearchReportValidationIssue {
+  code: string;
+  message: string;
+  severity: 'warning' | 'blocking';
+  sourceIds?: string[];
+}
+
+interface AoiResearchVerifierFinding {
+  code: string;
+  message: string;
+  severity: 'warning' | 'blocking';
+  sourceIds?: string[];
+  recommendation?: string;
+}
+
+interface AoiResearchVerifierResult {
+  needsRewrite: boolean;
+  findings: AoiResearchVerifierFinding[];
 }
 
 interface TavilySearchResponse {
@@ -588,6 +619,660 @@ async function buildResearchPlan(params: {
   } catch {
     return buildFallbackResearchPlan(params.normalized, params.now);
   }
+}
+
+function formatCitationId(index: number): string {
+  return `S${String(index + 1).padStart(2, '0')}`;
+}
+
+function assignCitationIdsToSources(sources: AoiResearchSource[]): AoiResearchSource[] {
+  let acceptedIndex = 0;
+  return sources.map((source) => {
+    if (source.status !== 'accepted') {
+      return source;
+    }
+    const citationId = source.citationId || formatCitationId(acceptedIndex);
+    acceptedIndex += 1;
+    return {
+      ...source,
+      citationId,
+    };
+  });
+}
+
+export function buildAoiResearchCitationContext(
+  sources: AoiResearchSource[],
+): AoiResearchCitationContext {
+  const sourceById = new Map<string, AoiResearchSource>();
+  const sourceByCitationId = new Map<string, AoiResearchSource>();
+  const citationIdBySourceId = new Map<string, string>();
+
+  for (const source of sources) {
+    sourceById.set(source.id, source);
+    if (source.status === 'accepted' && source.citationId) {
+      sourceByCitationId.set(source.citationId, source);
+      citationIdBySourceId.set(source.id, source.citationId);
+    }
+  }
+
+  return {
+    sourceById,
+    sourceByCitationId,
+    citationIdBySourceId,
+  };
+}
+
+function isSecurityResearchTopic(request: string): boolean {
+  return /\b(windows|security|anti-?cheat|kernel|driver|telemetry|etw|tpm|unreal|malware|edr|process protection|memory inspection|cheat)\b|보안|윈도우|커널|드라이버|안티치트|치트|악성코드|탐지/i.test(
+    request,
+  );
+}
+
+function getRequiredReportSections(securityTopic: boolean): string[] {
+  return [
+    'Executive Summary',
+    'Scope and Assumptions',
+    'Key Findings',
+    'Technical Detail',
+    'Comparison / Tradeoffs',
+    'Implementation Implications',
+    'Risks and Unknowns',
+    ...(securityTopic
+      ? ['Detection Opportunities', 'Operational Caveats', 'Version Boundaries']
+      : []),
+    'Recommended Next Steps',
+    'Sources',
+  ];
+}
+
+function extractReportCitationIds(report: string): string[] {
+  return Array.from(report.matchAll(/\[(S\d{2,3})\]/g), (match) => match[1]);
+}
+
+function getReportSection(report: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(
+    `(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|\\s*$)`,
+    'i',
+  );
+  const match = report.match(pattern);
+  return match?.[1]?.trim() || '';
+}
+
+function reportHasSection(report: string, heading: string): boolean {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`^##\\s+${escaped}\\s*$`, 'im').test(report);
+}
+
+function hasDirectUrlOutsideSources(report: string): boolean {
+  const sourcesIndex = report.search(/^##\s+Sources\s*$/im);
+  const body = sourcesIndex >= 0 ? report.slice(0, sourcesIndex) : report;
+  return /https?:\/\/\S+/i.test(body);
+}
+
+function getReportBodyBeforeSources(report: string): string {
+  const sourcesIndex = report.search(/^##\s+Sources\s*$/im);
+  return sourcesIndex >= 0 ? report.slice(0, sourcesIndex) : report;
+}
+
+export function validateAoiResearchReport(params: {
+  report: string;
+  sources: AoiResearchSource[];
+  claims: AoiResearchEvidenceClaim[];
+  request: string;
+}): AoiResearchReportValidationIssue[] {
+  const report = params.report.trim();
+  const securityTopic = isSecurityResearchTopic(params.request);
+  const requiredSections = getRequiredReportSections(securityTopic);
+  const citationContext = buildAoiResearchCitationContext(params.sources);
+  const issues: AoiResearchReportValidationIssue[] = [];
+
+  if (report.length < 200) {
+    issues.push({
+      code: 'report_too_short',
+      message: 'The generated report is empty or too short.',
+      severity: 'blocking',
+    });
+  }
+  if (!/^#\s+.+/m.test(report)) {
+    issues.push({
+      code: 'missing_title',
+      message: 'The report is missing a Markdown title.',
+      severity: 'blocking',
+    });
+  }
+  for (const section of requiredSections) {
+    if (!reportHasSection(report, section)) {
+      issues.push({
+        code: 'missing_required_section',
+        message: `The report is missing required section: ${section}.`,
+        severity: 'blocking',
+      });
+    }
+  }
+  if (!params.claims.length) {
+    issues.push({
+      code: 'no_evidence_claims',
+      message: 'The evidence ledger has no claims.',
+      severity: 'blocking',
+    });
+  }
+
+  const citedIds = Array.from(new Set(extractReportCitationIds(report)));
+  const bodyCitedIds = Array.from(
+    new Set(extractReportCitationIds(getReportBodyBeforeSources(report))),
+  );
+  for (const citationId of citedIds) {
+    const source = citationContext.sourceByCitationId.get(citationId);
+    if (!source) {
+      issues.push({
+        code: 'unknown_citation_id',
+        message: `The report cites ${citationId}, but no accepted source has that citation id.`,
+        severity: 'blocking',
+      });
+      continue;
+    }
+    if (!params.claims.some((claim) => claim.sourceId === source.id)) {
+      issues.push({
+        code: 'citation_without_evidence',
+        message: `The report cites ${citationId}, but no evidence claim references its source.`,
+        severity: 'blocking',
+        sourceIds: [source.id],
+      });
+    }
+  }
+
+  const sourcesSection = getReportSection(report, 'Sources');
+  for (const citationId of citedIds) {
+    if (!sourcesSection.includes(`[${citationId}]`)) {
+      issues.push({
+        code: 'source_missing_from_sources_section',
+        message: `The Sources section does not map citation ${citationId}.`,
+        severity: 'blocking',
+      });
+    }
+  }
+  if (!citedIds.length) {
+    issues.push({
+      code: 'report_has_no_citations',
+      message: 'The report does not cite any collected source ids.',
+      severity: 'blocking',
+    });
+  }
+  if (!bodyCitedIds.length) {
+    issues.push({
+      code: 'report_body_has_no_citations',
+      message: 'The report body does not cite collected source ids outside the Sources section.',
+      severity: 'blocking',
+    });
+  }
+  if (hasDirectUrlOutsideSources(report)) {
+    issues.push({
+      code: 'direct_url_outside_sources',
+      message: 'The report cites a URL outside the Sources section instead of using source ids.',
+      severity: 'blocking',
+    });
+  }
+
+  return issues;
+}
+
+function formatIsoDate(ms: number | undefined): string {
+  const value = typeof ms === 'number' && Number.isFinite(ms) ? ms : Date.now();
+  return new Date(value).toISOString().slice(0, 10);
+}
+
+function getCitableClaims(
+  claims: AoiResearchEvidenceClaim[],
+  citationContext: AoiResearchCitationContext,
+): AoiResearchEvidenceClaim[] {
+  return claims.filter((claim) => citationContext.citationIdBySourceId.has(claim.sourceId));
+}
+
+function buildSourcesSection(sources: AoiResearchSource[]): string[] {
+  const accepted = sources.filter((source) => source.status === 'accepted' && source.citationId);
+  if (!accepted.length) {
+    return ['- none'];
+  }
+  return accepted.map((source) =>
+    [
+      `- [${source.citationId}] ${source.id} - ${source.title || source.finalUrl || source.url}`,
+      `Site: ${source.siteName || 'unknown'}.`,
+      `Retrieved: ${formatIsoDate(source.retrievedAt)}.`,
+      `URL: ${source.finalUrl || source.url}`,
+    ].join(' '),
+  );
+}
+
+function buildEvidenceLedgerForReport(
+  claims: AoiResearchEvidenceClaim[],
+  citationContext: AoiResearchCitationContext,
+): string {
+  return claims
+    .slice(0, MAX_REPORT_EVIDENCE_CLAIMS)
+    .map((claim, index) => {
+      const citationId = citationContext.citationIdBySourceId.get(claim.sourceId) || 'UNKNOWN';
+      return [
+        `${index + 1}. [${citationId}] sourceId=${claim.sourceId}`,
+        `claim=${claim.claim}`,
+        `support=${claim.supportText}`,
+        `tags=${claim.topicTags.join(', ') || 'none'}`,
+        `confidence=${claim.confidence}`,
+        `caveats=${claim.caveats.join('; ') || 'none'}`,
+      ].join('\n');
+    })
+    .join('\n\n');
+}
+
+function buildReportSynthesisPrompt(params: {
+  normalized: AoiResearchNormalizedRequest;
+  title: string;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+}): string {
+  const securityTopic = isSecurityResearchTopic(params.normalized.request);
+  return [
+    'You are Aoi research report writer.',
+    'Write the final report using only the evidence ledger and source metadata below.',
+    'Return Markdown only. No code fences.',
+    'Do not use facts from background knowledge unless they are explicitly framed as assumptions or unknowns.',
+    'Every factual paragraph must cite one or more known citation ids such as [S01].',
+    'Do not cite URLs in the body. URLs may appear only in the Sources section.',
+    `Language: ${params.normalized.language === 'ko' ? 'Korean' : params.normalized.language === 'en' ? 'English' : 'Match the user request'}`,
+    `Security topic: ${securityTopic ? 'yes' : 'no'}`,
+    '',
+    'Required Markdown structure:',
+    '# {Title}',
+    ...getRequiredReportSections(securityTopic).map((section) => `## ${section}`),
+    '',
+    `Title: ${params.title}`,
+    `Research request: ${params.normalized.request}`,
+    '',
+    'Evidence ledger:',
+    buildEvidenceLedgerForReport(params.claims, params.citationContext),
+    '',
+    'Source metadata:',
+    buildSourcesSection(params.sources).join('\n'),
+  ].join('\n');
+}
+
+function normalizeModelMarkdown(raw: string, fallbackTitle: string): string {
+  const stripped = raw
+    .replace(/^```(?:markdown|md)?/i, '')
+    .replace(/```$/i, '')
+    .trim();
+  if (!stripped) {
+    return '';
+  }
+  const report = stripped.startsWith('# ') ? stripped : `# ${fallbackTitle}\n\n${stripped}`;
+  return report.slice(0, MAX_REPORT_CHARS).trim();
+}
+
+function buildDeterministicReport(params: {
+  normalized: AoiResearchNormalizedRequest;
+  title: string;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+  verificationWarnings?: AoiResearchVerificationWarning[];
+}): string {
+  const securityTopic = isSecurityResearchTopic(params.normalized.request);
+  const language = params.normalized.language;
+  const firstClaim = params.claims[0];
+  const firstCitation =
+    params.citationContext.citationIdBySourceId.get(firstClaim?.sourceId || '') || 'S01';
+  const cite = `[${firstCitation}]`;
+  const topClaims = params.claims.slice(0, 6);
+  const detailClaims = params.claims.slice(0, 10);
+  const ko =
+    language === 'ko' || (language === 'match-user' && /[가-힣]/.test(params.normalized.request));
+  const sentence = (en: string, kr: string): string => (ko ? kr : en);
+
+  const lines = [
+    `# ${params.title}`,
+    '',
+    '## Executive Summary',
+    sentence(
+      `The collected evidence supports a focused answer to the request, with the strongest material tied to ${topClaims.length} extracted claim(s) ${cite}.`,
+      `수집된 근거는 요청 주제에 대해 실행 가능한 답변을 구성하기에 충분하며, 핵심 내용은 추출된 근거 주장 ${topClaims.length}개에 연결되어 있습니다 ${cite}.`,
+    ),
+    '',
+    '## Scope and Assumptions',
+    sentence(
+      `This report is limited to the collected source evidence and treats uncited model background knowledge as out of scope ${cite}.`,
+      `이 보고서는 수집된 출처 근거에 한정하며, 인용되지 않은 모델 배경지식은 범위 밖으로 둡니다 ${cite}.`,
+    ),
+    '',
+    '## Key Findings',
+    ...topClaims.map((claim) => {
+      const citationId =
+        params.citationContext.citationIdBySourceId.get(claim.sourceId) || firstCitation;
+      return `- ${claim.claim} [${citationId}]`;
+    }),
+    '',
+    '## Technical Detail',
+    ...detailClaims.map((claim) => {
+      const citationId =
+        params.citationContext.citationIdBySourceId.get(claim.sourceId) || firstCitation;
+      return sentence(
+        `${claim.supportText} This supports the finding: ${claim.claim} [${citationId}]`,
+        `${claim.supportText} 이 근거는 다음 판단을 뒷받침합니다: ${claim.claim} [${citationId}]`,
+      );
+    }),
+    '',
+    '## Comparison / Tradeoffs',
+    sentence(
+      `The evidence favors claims that are directly supported by collected sources over broader assumptions; weaker or caveated items should be treated as conditional ${cite}.`,
+      `수집 근거는 넓은 추정보다 출처로 직접 뒷받침되는 판단을 우선하게 하며, 약하거나 caveat가 있는 항목은 조건부로 다루어야 합니다 ${cite}.`,
+    ),
+    '',
+    '## Implementation Implications',
+    sentence(
+      `Implementation should start from the cited evidence, preserve source traceability, and avoid hard conclusions where the evidence has caveats ${cite}.`,
+      `구현은 인용된 근거에서 출발해야 하며, 출처 추적성을 유지하고 caveat가 있는 부분에서는 단정적 결론을 피해야 합니다 ${cite}.`,
+    ),
+    '',
+    '## Risks and Unknowns',
+    sentence(
+      `Unknowns remain where the collected evidence is sparse, conflicting, time-sensitive, or dependent on source-specific context ${cite}.`,
+      `수집 근거가 부족하거나 서로 충돌하거나 시간에 민감하거나 특정 출처 맥락에 의존하는 부분은 미확인 리스크로 남습니다 ${cite}.`,
+    ),
+    '',
+  ];
+
+  if (securityTopic) {
+    lines.push(
+      '## Detection Opportunities',
+      sentence(
+        `Detection work should prioritize observable behaviors and version-specific signals that are explicitly supported by the evidence ${cite}.`,
+        `탐지 설계는 근거로 확인된 관찰 가능 행위와 버전별 신호를 우선해야 합니다 ${cite}.`,
+      ),
+      '',
+      '## Operational Caveats',
+      sentence(
+        `Operational use should account for false positives, source freshness, deployment environment, and evidence confidence before enforcement ${cite}.`,
+        `운영 적용 전에는 오탐, 출처 최신성, 배포 환경, 근거 신뢰도를 함께 검토해야 합니다 ${cite}.`,
+      ),
+      '',
+      '## Version Boundaries',
+      sentence(
+        `Version-specific statements should be rechecked against current vendor or product documentation before release decisions ${cite}.`,
+        `버전 의존적인 판단은 릴리즈 결정 전에 최신 벤더 또는 제품 문서로 재확인해야 합니다 ${cite}.`,
+      ),
+      '',
+    );
+  }
+
+  lines.push(
+    '## Recommended Next Steps',
+    sentence(
+      `Validate the highest-confidence findings first, then expand research for low-confidence or caveated claims ${cite}.`,
+      `신뢰도가 높은 판단부터 검증하고, 신뢰도가 낮거나 caveat가 있는 주장은 추가 조사를 통해 보강하세요 ${cite}.`,
+    ),
+    '',
+    '## Sources',
+    ...buildSourcesSection(params.sources),
+  );
+
+  const baseReport = lines.join('\n');
+  return appendVerificationWarningsSection(baseReport, params.verificationWarnings || []);
+}
+
+async function draftResearchReport(params: {
+  normalized: AoiResearchNormalizedRequest;
+  title: string;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+  llmConfig: LLMConfig;
+  serverOrigin: string;
+  dependencies?: AoiResearchEngineDependencies;
+}): Promise<string> {
+  const callModel = params.dependencies?.callModel ?? callAoiMainTextModel;
+  try {
+    const raw = await callModel(
+      params.llmConfig,
+      params.serverOrigin,
+      buildReportSynthesisPrompt(params),
+      LLM_REPORT_TOKENS,
+      false,
+    );
+    const report = normalizeModelMarkdown(raw, params.title);
+    if (report) {
+      return report;
+    }
+  } catch {
+    // Fall through to deterministic report generation.
+  }
+
+  return buildDeterministicReport(params);
+}
+
+function normalizeVerifierFindings(
+  parsed: Record<string, unknown> | null,
+): AoiResearchVerifierResult {
+  const rawFindings = Array.isArray(parsed?.findings) ? parsed.findings : [];
+  const findings = rawFindings
+    .map((item): AoiResearchVerifierFinding | null => {
+      if (!item || typeof item !== 'object') {
+        return null;
+      }
+      const record = item as Record<string, unknown>;
+      const message = truncateText(getString(record.message), 500);
+      if (!message) {
+        return null;
+      }
+      const severity = record.severity === 'blocking' ? 'blocking' : 'warning';
+      const sourceIds = extractStringList(record.sourceIds ?? record.source_ids, 10);
+      return {
+        code: truncateText(getString(record.code) || 'verifier_finding', 120),
+        message,
+        severity,
+        ...(sourceIds.length ? { sourceIds } : {}),
+        ...(getString(record.recommendation)
+          ? { recommendation: truncateText(getString(record.recommendation), 500) }
+          : {}),
+      };
+    })
+    .filter((finding): finding is AoiResearchVerifierFinding => Boolean(finding));
+
+  return {
+    needsRewrite:
+      parsed?.needsRewrite === true ||
+      parsed?.needs_rewrite === true ||
+      findings.some((finding) => finding.severity === 'blocking'),
+    findings,
+  };
+}
+
+function buildVerifierPrompt(params: {
+  normalized: AoiResearchNormalizedRequest;
+  report: string;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+}): string {
+  return [
+    'You are Aoi report verifier.',
+    'Review the Markdown report against the evidence ledger and source metadata.',
+    'Return only raw JSON. No markdown.',
+    'Schema:',
+    '{"needsRewrite":false,"findings":[{"severity":"blocking|warning","code":"short_code","message":"specific issue","sourceIds":["src-001"],"recommendation":"fix"}]}',
+    '',
+    'Check citation coverage, unsupported claims, source conflicts, weak source dependence, stale or time-sensitive claims, and overconfident recommendations.',
+    'Treat nonexistent citation ids and URL citations in the body as blocking.',
+    '',
+    `Research request: ${params.normalized.request}`,
+    '',
+    'Evidence ledger:',
+    buildEvidenceLedgerForReport(params.claims, params.citationContext),
+    '',
+    'Source metadata:',
+    buildSourcesSection(params.sources).join('\n'),
+    '',
+    'Report:',
+    params.report.slice(0, MAX_REPORT_CHARS),
+  ].join('\n');
+}
+
+async function verifyResearchReport(params: {
+  normalized: AoiResearchNormalizedRequest;
+  report: string;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+  llmConfig: LLMConfig;
+  serverOrigin: string;
+  dependencies?: AoiResearchEngineDependencies;
+}): Promise<AoiResearchVerifierResult> {
+  const callModel = params.dependencies?.callModel ?? callAoiMainTextModel;
+  try {
+    const raw = await callModel(
+      params.llmConfig,
+      params.serverOrigin,
+      buildVerifierPrompt(params),
+      LLM_VERIFIER_TOKENS,
+      true,
+    );
+    return normalizeVerifierFindings(extractAoiResearchJsonObject(raw));
+  } catch (error) {
+    return {
+      needsRewrite: false,
+      findings: [
+        {
+          code: 'verifier_failed',
+          message: error instanceof Error ? error.message : String(error),
+          severity: 'warning',
+        },
+      ],
+    };
+  }
+}
+
+function buildRewritePrompt(params: {
+  normalized: AoiResearchNormalizedRequest;
+  title: string;
+  previousReport: string;
+  issues: Array<AoiResearchReportValidationIssue | AoiResearchVerifierFinding>;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+}): string {
+  const issueLines = params.issues
+    .map((issue, index) => `${index + 1}. [${issue.severity}] ${issue.code}: ${issue.message}`)
+    .join('\n');
+  return [
+    'You are Aoi research report rewriter.',
+    'Rewrite the report once to fix the review findings.',
+    'Return Markdown only. No code fences.',
+    'Use only the evidence ledger and source metadata.',
+    'Every factual paragraph must cite valid source ids like [S01].',
+    'Do not cite URLs outside the Sources section.',
+    '',
+    `Language: ${params.normalized.language}`,
+    `Title: ${params.title}`,
+    '',
+    'Review findings to fix:',
+    issueLines || 'none',
+    '',
+    'Evidence ledger:',
+    buildEvidenceLedgerForReport(params.claims, params.citationContext),
+    '',
+    'Source metadata:',
+    buildSourcesSection(params.sources).join('\n'),
+    '',
+    'Previous report:',
+    params.previousReport.slice(0, MAX_REPORT_CHARS),
+  ].join('\n');
+}
+
+async function rewriteResearchReport(params: {
+  normalized: AoiResearchNormalizedRequest;
+  title: string;
+  previousReport: string;
+  issues: Array<AoiResearchReportValidationIssue | AoiResearchVerifierFinding>;
+  claims: AoiResearchEvidenceClaim[];
+  sources: AoiResearchSource[];
+  citationContext: AoiResearchCitationContext;
+  llmConfig: LLMConfig;
+  serverOrigin: string;
+  dependencies?: AoiResearchEngineDependencies;
+}): Promise<string> {
+  const callModel = params.dependencies?.callModel ?? callAoiMainTextModel;
+  try {
+    const raw = await callModel(
+      params.llmConfig,
+      params.serverOrigin,
+      buildRewritePrompt(params),
+      LLM_REPORT_TOKENS,
+      false,
+    );
+    const report = normalizeModelMarkdown(raw, params.title);
+    if (report) {
+      return report;
+    }
+  } catch {
+    // Fall through to deterministic report generation.
+  }
+  return buildDeterministicReport(params);
+}
+
+function toVerificationWarning(
+  finding: AoiResearchVerifierFinding | AoiResearchReportValidationIssue,
+  now: number,
+): AoiResearchVerificationWarning {
+  return {
+    code: finding.code,
+    message: finding.message,
+    severity: finding.severity,
+    ...(finding.sourceIds?.length ? { sourceIds: finding.sourceIds } : {}),
+    ...('recommendation' in finding && finding.recommendation
+      ? { recommendation: finding.recommendation }
+      : {}),
+    createdAt: now,
+  };
+}
+
+function appendVerificationWarningsSection(
+  report: string,
+  warnings: AoiResearchVerificationWarning[],
+): string {
+  const withoutExisting = report
+    .replace(/(?:^|\n)##\s+Verification Warnings\s*\n[\s\S]*?(?=\n##\s+|\s*$)/i, '')
+    .trimEnd();
+  if (!warnings.length) {
+    return `${withoutExisting}\n`;
+  }
+  const lines = [
+    withoutExisting,
+    '',
+    '## Verification Warnings',
+    ...warnings.map(
+      (warning) =>
+        `- [${warning.severity}] ${warning.code}: ${warning.message}${
+          warning.recommendation ? ` Recommendation: ${warning.recommendation}` : ''
+        }`,
+    ),
+    '',
+  ];
+  return lines.join('\n');
+}
+
+function uniqueVerificationWarnings(
+  warnings: AoiResearchVerificationWarning[],
+): AoiResearchVerificationWarning[] {
+  const seen = new Set<string>();
+  const unique: AoiResearchVerificationWarning[] = [];
+  for (const warning of warnings) {
+    const key = `${warning.severity}:${warning.code}:${warning.message}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    unique.push(warning);
+  }
+  return unique;
 }
 
 function normalizeTitleForDedupe(title: string): string {
@@ -1339,6 +2024,7 @@ export async function startAoiResearchRun(
   let claims: AoiResearchEvidenceClaim[] = [];
   let candidates: AoiResearchSearchCandidate[] = [];
   const warnings: AoiResearchErrorDetail[] = [];
+  let verificationWarnings: AoiResearchVerificationWarning[] = [];
   let manifest = createInitialManifest({
     normalized,
     runId: params.runId,
@@ -1565,6 +2251,24 @@ export async function startAoiResearchRun(
         }
       }
     }
+    if (!claims.length) {
+      throw new AoiResearchFailure(
+        'no_evidence_claims',
+        'No evidence claims were extracted from accepted sources.',
+        'extracting_evidence',
+      );
+    }
+
+    sources = assignCitationIdsToSources(sources);
+    const citationContext = buildAoiResearchCitationContext(sources);
+    const citableClaims = getCitableClaims(claims, citationContext);
+    if (!citableClaims.length) {
+      throw new AoiResearchFailure(
+        'no_citable_evidence_claims',
+        'Evidence claims do not reference accepted sources.',
+        'extracting_evidence',
+      );
+    }
     persistSources(params.paths, params.runId, sources, getNow(dependencies));
     persistEvidence(params.paths, params.runId, claims, getNow(dependencies));
 
@@ -1575,21 +2279,131 @@ export async function startAoiResearchRun(
     });
     await updateManifest({
       phase: 'drafting_report',
-      statusMessage: 'Writing collection placeholder report.',
+      statusMessage: 'Synthesizing the final research report from evidence.',
     });
 
-    persistPlaceholderReport({
-      paths: params.paths,
-      manifest,
+    const reportTitle = manifest.plan?.title || normalized.request;
+    let report = await draftResearchReport({
+      normalized,
+      title: reportTitle,
+      claims: citableClaims,
       sources,
-      claims,
+      citationContext,
+      llmConfig,
+      serverOrigin: params.serverOrigin,
+      dependencies,
     });
+
+    await ensureNotCancelled({
+      runId: params.runId,
+      phase: 'verifying_report',
+      dependencies,
+    });
+    await updateManifest({
+      phase: 'verifying_report',
+      statusMessage: 'Verifying citation coverage and support.',
+    });
+
+    let localIssues = validateAoiResearchReport({
+      report,
+      sources,
+      claims: citableClaims,
+      request: normalized.request,
+    });
+    let verifierResult = await verifyResearchReport({
+      normalized,
+      report,
+      claims: citableClaims,
+      sources,
+      citationContext,
+      llmConfig,
+      serverOrigin: params.serverOrigin,
+      dependencies,
+    });
+    const shouldRewrite =
+      localIssues.some((issue) => issue.severity === 'blocking') || verifierResult.needsRewrite;
+
+    if (shouldRewrite) {
+      report = await rewriteResearchReport({
+        normalized,
+        title: reportTitle,
+        previousReport: report,
+        issues: [...localIssues, ...verifierResult.findings],
+        claims: citableClaims,
+        sources,
+        citationContext,
+        llmConfig,
+        serverOrigin: params.serverOrigin,
+        dependencies,
+      });
+      localIssues = validateAoiResearchReport({
+        report,
+        sources,
+        claims: citableClaims,
+        request: normalized.request,
+      });
+
+      if (localIssues.some((issue) => issue.severity === 'blocking')) {
+        verificationWarnings.push(
+          ...localIssues.map((issue) => toVerificationWarning(issue, getNow(dependencies))),
+        );
+        report = buildDeterministicReport({
+          normalized,
+          title: reportTitle,
+          claims: citableClaims,
+          sources,
+          citationContext,
+          verificationWarnings,
+        });
+        localIssues = validateAoiResearchReport({
+          report,
+          sources,
+          claims: citableClaims,
+          request: normalized.request,
+        });
+      }
+
+      verifierResult = await verifyResearchReport({
+        normalized,
+        report,
+        claims: citableClaims,
+        sources,
+        citationContext,
+        llmConfig,
+        serverOrigin: params.serverOrigin,
+        dependencies,
+      });
+    }
+
+    const acceptedSourceCount = sources.filter((source) => source.status === 'accepted').length;
+    if (acceptedSourceCount < 2 && normalized.mode !== 'quick') {
+      verificationWarnings.push({
+        code: 'few_credible_sources',
+        message: 'The report is based on fewer than two accepted sources.',
+        severity: 'warning',
+        createdAt: getNow(dependencies),
+      });
+    }
+    verificationWarnings = uniqueVerificationWarnings([
+      ...verificationWarnings,
+      ...localIssues.map((issue) => toVerificationWarning(issue, getNow(dependencies))),
+      ...verifierResult.findings.map((finding) =>
+        toVerificationWarning(finding, getNow(dependencies)),
+      ),
+    ]);
+    report = appendVerificationWarningsSection(report, verificationWarnings);
+    writeTextFile(params.paths.report, report);
 
     await updateManifest({
       status: 'completed',
       phase: 'completed',
-      statusMessage: 'Research sources and evidence collected.',
+      statusMessage: verificationWarnings.length
+        ? 'Research report completed with verification warnings.'
+        : 'Verified research report completed.',
       completedAt: getNow(dependencies),
+      reportTitle,
+      claimCount: citableClaims.length,
+      verificationWarnings,
       sourceCounts: countSources(normalized.maxSources, candidates.length, sources),
     });
   } catch (error) {

@@ -43,6 +43,15 @@ export interface AoiResearchErrorDetail {
   createdAt: number;
 }
 
+export interface AoiResearchVerificationWarning {
+  code: string;
+  message: string;
+  severity: 'warning' | 'blocking';
+  sourceIds?: string[];
+  recommendation?: string;
+  createdAt: number;
+}
+
 export interface AoiResearchSourceCounts {
   planned: number;
   candidates: number;
@@ -89,6 +98,7 @@ export interface AoiResearchSourceBlock {
 export interface AoiResearchSource {
   version: 1;
   id: string;
+  citationId?: string;
   url: string;
   finalUrl?: string;
   title: string;
@@ -116,6 +126,9 @@ export interface AoiResearchEvidenceClaim {
 
 export interface AoiResearchManifest extends AoiResearchRun {
   plan?: AoiResearchPlan;
+  reportTitle?: string;
+  claimCount?: number;
+  verificationWarnings?: AoiResearchVerificationWarning[];
   completedAt?: number;
 }
 

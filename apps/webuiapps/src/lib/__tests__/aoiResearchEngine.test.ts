@@ -7,6 +7,7 @@ import {
   dedupeAoiResearchSearchCandidates,
   startAoiResearchRun,
   validateAoiResearchSourceUrl,
+  validateAoiResearchReport,
   type AoiResearchRunPaths,
   type AoiResearchTavilyConfig,
 } from '../aoiResearchEngine';
@@ -50,6 +51,49 @@ function makeHtml(title: string): string {
     '<p>The support text is specific enough for evidence extraction and source attribution.</p>',
     '</article></body></html>',
   ].join('');
+}
+
+function makeValidSecurityReport(title: string, marker = '검증된 보고서'): string {
+  return [
+    `# ${title}`,
+    '',
+    '## Executive Summary',
+    `${marker}는 수집된 근거를 기준으로 핵심 판단을 요약합니다 [S01].`,
+    '',
+    '## Scope and Assumptions',
+    '이 보고서는 evidence ledger에 있는 주장만 근거로 사용하며 배경지식은 범위 밖으로 둡니다 [S01].',
+    '',
+    '## Key Findings',
+    '- 수집된 출처는 요청 주제에 대한 구체적 근거를 제공합니다 [S01].',
+    '',
+    '## Technical Detail',
+    '출처의 support text는 operational impact와 source attribution을 함께 설명합니다 [S01].',
+    '',
+    '## Comparison / Tradeoffs',
+    '직접 인용 가능한 근거는 넓은 추정보다 우선되어야 하며, 약한 근거는 조건부로 다루어야 합니다 [S01].',
+    '',
+    '## Implementation Implications',
+    '구현 단계에서는 인용 가능한 근거와 caveat를 함께 유지해야 합니다 [S01].',
+    '',
+    '## Risks and Unknowns',
+    '수집 근거가 적거나 시간에 민감한 항목은 추가 검증 대상으로 남겨야 합니다 [S01].',
+    '',
+    '## Detection Opportunities',
+    '탐지 설계는 근거가 있는 observable behavior부터 우선순위를 잡아야 합니다 [S01].',
+    '',
+    '## Operational Caveats',
+    '운영 적용 전에는 오탐, 배포 환경, source freshness를 함께 점검해야 합니다 [S01].',
+    '',
+    '## Version Boundaries',
+    '버전 의존 판단은 최신 제품 문서와 다시 대조해야 합니다 [S01].',
+    '',
+    '## Recommended Next Steps',
+    '먼저 confidence가 높은 근거를 검증하고, caveat가 있는 주장은 후속 조사를 연결합니다 [S01].',
+    '',
+    '## Sources',
+    '- [S01] src-001 - Accepted source. Site: source-a.example. Retrieved: 2027-01-15. URL: https://source-a.example/article',
+    '',
+  ].join('\n');
 }
 
 afterEach(() => {
@@ -119,6 +163,84 @@ describe('Aoi research search candidate handling', () => {
   });
 });
 
+describe('Aoi research report validation', () => {
+  it('detects citations that do not map to collected sources', () => {
+    const report = makeValidSecurityReport('Missing citation test').replace(/\[S01\]/g, '[S99]');
+
+    const issues = validateAoiResearchReport({
+      report,
+      request: 'Windows security telemetry',
+      sources: [
+        {
+          version: 1,
+          id: 'src-001',
+          citationId: 'S01',
+          url: 'https://source-a.example/article',
+          finalUrl: 'https://source-a.example/article',
+          title: 'Accepted source',
+          siteName: 'source-a.example',
+          blocks: [],
+          status: 'accepted',
+        },
+      ],
+      claims: [
+        {
+          version: 1,
+          id: 'src-001-claim-1',
+          sourceId: 'src-001',
+          claim: 'Accepted source supports the requested research topic.',
+          supportText: 'This source provides concrete evidence about the requested topic.',
+          topicTags: ['evidence'],
+          confidence: 0.82,
+          caveats: [],
+          createdAt: 1_800_000_000_000,
+        },
+      ],
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain('unknown_citation_id');
+  });
+
+  it('requires citations in the report body, not only the Sources section', () => {
+    const validReport = makeValidSecurityReport('Body citation test');
+    const [body, sources] = validReport.split('\n## Sources\n');
+    const report = `${body.replace(/\s\[S01\]/g, '')}\n## Sources\n${sources}`;
+
+    const issues = validateAoiResearchReport({
+      report,
+      request: 'Windows security telemetry',
+      sources: [
+        {
+          version: 1,
+          id: 'src-001',
+          citationId: 'S01',
+          url: 'https://source-a.example/article',
+          finalUrl: 'https://source-a.example/article',
+          title: 'Accepted source',
+          siteName: 'source-a.example',
+          blocks: [],
+          status: 'accepted',
+        },
+      ],
+      claims: [
+        {
+          version: 1,
+          id: 'src-001-claim-1',
+          sourceId: 'src-001',
+          claim: 'Accepted source supports the requested research topic.',
+          supportText: 'This source provides concrete evidence about the requested topic.',
+          topicTags: ['evidence'],
+          confidence: 0.82,
+          caveats: [],
+          createdAt: 1_800_000_000_000,
+        },
+      ],
+    });
+
+    expect(issues.map((issue) => issue.code)).toContain('report_body_has_no_citations');
+  });
+});
+
 describe('Aoi research engine', () => {
   it('completes with a fallback plan, partial source failure, and real source ids', async () => {
     const { root, paths } = makeTempPaths();
@@ -169,6 +291,15 @@ describe('Aoi research engine', () => {
             },
           ],
         }),
+      )
+      .mockResolvedValueOnce(
+        makeValidSecurityReport('Investigate Windows telemetry hardening', '최종 보고서'),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: false,
+          findings: [],
+        }),
       );
 
     const manifest = await startAoiResearchRun({
@@ -210,18 +341,144 @@ describe('Aoi research engine', () => {
     expect(phases).toContain('planning');
     expect(phases).toContain('reading_sources');
     expect(phases).toContain('extracting_evidence');
+    expect(phases).toContain('drafting_report');
+    expect(phases).toContain('verifying_report');
+    expect(manifest.reportTitle).toBe('Investigate Windows telemetry hardening');
+    expect(manifest.claimCount).toBe(1);
 
     const sourcesArtifact = JSON.parse(fs.readFileSync(paths.sources, 'utf-8')) as {
-      sources: Array<{ id: string; status: string; error?: { code: string } }>;
+      sources: Array<{ id: string; citationId?: string; status: string; error?: { code: string } }>;
     };
     const evidenceArtifact = JSON.parse(fs.readFileSync(paths.evidence, 'utf-8')) as {
       claims: Array<{ sourceId: string }>;
     };
+    const report = fs.readFileSync(paths.report, 'utf-8');
 
     expect(sourcesArtifact.sources.map((source) => source.status)).toEqual(['accepted', 'failed']);
+    expect(sourcesArtifact.sources[0].citationId).toBe('S01');
     expect(sourcesArtifact.sources[1].error?.code).toBe('source_http_error');
     expect(evidenceArtifact.claims.map((claim) => claim.sourceId)).toEqual(['src-001']);
-    expect(fs.readFileSync(paths.report, 'utf-8')).toContain('Accepted sources: 1');
+    expect(report).toContain('## Executive Summary');
+    expect(report).toContain('## Detection Opportunities');
+    expect(report).toContain('## Operational Caveats');
+    expect(report).toContain('## Version Boundaries');
+    expect(report).toContain('[S01]');
+    expect(report).toContain('## Sources');
+  });
+
+  it('rewrites once for verifier blocking findings and persists remaining warnings', async () => {
+    const { root, paths } = makeTempPaths();
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === TAVILY_CONFIG.baseUrl) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                title: 'Accepted source',
+                url: 'https://source-a.example/article',
+                content: 'Accepted source summary',
+                score: 0.9,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(makeHtml('Accepted source'), {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    });
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          title: 'Windows anti-cheat detection',
+          researchQuestions: ['What can be detected?'],
+          searchQueries: ['windows anti cheat detection evidence'],
+          sourcePriorityRules: ['prefer primary'],
+          exclusionRules: ['avoid spam'],
+        }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          claims: [
+            {
+              sourceId: 'src-001',
+              claim: 'Accepted source supports anti-cheat detection analysis.',
+              supportText: 'This source provides concrete evidence about the requested topic.',
+              tags: ['anti-cheat', 'detection'],
+              confidence: 0.82,
+              caveats: [],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce('# Windows anti-cheat detection\n\nUnsupported body [S99]')
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: true,
+          findings: [
+            {
+              severity: 'blocking',
+              code: 'bad_citation',
+              message: 'Report cites unknown source S99.',
+              recommendation: 'Rewrite with S01 only.',
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(
+        makeValidSecurityReport('Windows anti-cheat detection', '재작성된 보고서'),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: false,
+          findings: [
+            {
+              severity: 'warning',
+              code: 'time_sensitive_claim',
+              message: 'Version-specific recommendations should be rechecked before release.',
+              recommendation: 'Refresh vendor docs before enforcement.',
+            },
+          ],
+        }),
+      );
+
+    const manifest = await startAoiResearchRun({
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://localhost:3000',
+      sessionPath: 'aoi/default',
+      runId: 'run-test-001',
+      paths,
+      request: {
+        sessionPath: 'aoi/default',
+        request: 'Windows anti-cheat detection',
+        mode: 'quick',
+        language: 'ko',
+        maxSources: 1,
+      },
+      dependencies: {
+        fetch: fetchImpl,
+        loadLlmConfig: () => LLM_CONFIG,
+        loadTavilyConfig: () => TAVILY_CONFIG,
+        callModel,
+        resolveHost: async () => ['93.184.216.34'],
+        now: () => 1_800_000_000_000,
+      },
+    });
+
+    const report = fs.readFileSync(paths.report, 'utf-8');
+
+    expect(manifest.status).toBe('completed');
+    expect(callModel).toHaveBeenCalledTimes(6);
+    expect(report).toContain('재작성된 보고서');
+    expect(report).not.toContain('[S99]');
+    expect(manifest.verificationWarnings?.map((warning) => warning.code)).toContain(
+      'time_sensitive_claim',
+    );
+    expect(report).toContain('## Verification Warnings');
+    expect(report).toContain('time_sensitive_claim');
   });
 
   it('cancels before search work when cancellation is observed', async () => {
