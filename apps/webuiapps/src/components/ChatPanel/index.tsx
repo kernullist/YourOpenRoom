@@ -1859,6 +1859,7 @@ const ChatPanel: React.FC<{
   const suggestedRepliesRef = useRef(suggestedReplies);
   suggestedRepliesRef.current = suggestedReplies;
   const aoiAutonomyRefreshInFlightRef = useRef(false);
+  const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
 
   // Debounced save
@@ -2404,6 +2405,40 @@ const ChatPanel: React.FC<{
     void refreshAoiAutonomy();
   }, [refreshAoiAutonomy]);
 
+  const runAoiAutonomySessionOpenTick = useCallback(async () => {
+    const sessionPathForAutonomy = sessionPathRef.current;
+    if (
+      !sessionPathForAutonomy ||
+      aoiAutonomySessionOpenTickPathsRef.current.has(sessionPathForAutonomy)
+    ) {
+      return;
+    }
+
+    aoiAutonomySessionOpenTickPathsRef.current.add(sessionPathForAutonomy);
+    const latestUserMessage = [...chatHistoryRef.current]
+      .reverse()
+      .find((message) => message.role === 'user')?.content;
+
+    try {
+      const result = await runAoiAutonomyManualTick({
+        sessionPath: sessionPathForAutonomy,
+        reason: 'app',
+        latestUserMessage,
+        llmConfig: configRef.current ?? undefined,
+        maxRuntimeMs: 15000,
+      });
+      if (sessionPathRef.current !== sessionPathForAutonomy) {
+        return;
+      }
+      setAoiAutonomyStatus(result.status);
+      setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
+      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? null);
+      await refreshAoiAutonomy({ silent: true });
+    } catch (error) {
+      console.warn('[ChatPanel] Aoi autonomy session-open tick failed', error);
+    }
+  }, [refreshAoiAutonomy]);
+
   const updateAoiAutonomyPolicyFromPanel = useCallback(
     async (patch: Partial<AoiAutonomyPolicy>) => {
       const sessionPathForAutonomy = sessionPathRef.current;
@@ -2449,7 +2484,7 @@ const ChatPanel: React.FC<{
       });
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
-      setAoiAutonomyLastTickAt(result.status.updatedAt || Date.now());
+      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? (result.status.updatedAt || Date.now()));
       await refreshAoiAutonomy({ silent: true });
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2602,12 +2637,13 @@ const ChatPanel: React.FC<{
 
   useEffect(() => {
     void refreshAoiAutonomy({ silent: true });
+    void runAoiAutonomySessionOpenTick();
     const intervalId = window.setInterval(() => {
       void refreshAoiAutonomy({ silent: true });
     }, 300000);
 
     return () => window.clearInterval(intervalId);
-  }, [refreshAoiAutonomy, sessionPath]);
+  }, [refreshAoiAutonomy, runAoiAutonomySessionOpenTick, sessionPath]);
 
   useEffect(() => {
     clearToolCache();
@@ -6531,9 +6567,14 @@ const SettingsModal: React.FC<{
     ? new Date(ttsStatusSnapshot.lastWarmAt).toLocaleTimeString()
     : 'Not yet';
   const aoiAutonomyPolicy = aoiAutonomyStatus?.policy ?? null;
-  const aoiAutonomyLastTickLabel = aoiAutonomyLastTickAt
-    ? new Date(aoiAutonomyLastTickAt).toLocaleString()
+  const aoiAutonomyLastTickMs = aoiAutonomyStatus?.lastTickAt ?? aoiAutonomyLastTickAt;
+  const aoiAutonomyLastTickLabel = aoiAutonomyLastTickMs
+    ? new Date(aoiAutonomyLastTickMs).toLocaleString()
     : 'Not run in this panel';
+  const aoiAutonomyNextTickLabel =
+    aoiAutonomyStatus?.nextAllowedTickAt && aoiAutonomyStatus.nextAllowedTickAt > Date.now()
+      ? new Date(aoiAutonomyStatus.nextAllowedTickAt).toLocaleTimeString()
+      : 'Ready';
   const aoiAutonomyBlockedCount = Math.max(
     aoiAutonomyProposalCounts.blocked,
     aoiAutonomyBlockedProposals.length,
@@ -7649,8 +7690,12 @@ const SettingsModal: React.FC<{
                       type="button"
                       className={styles.inlineActionBtn}
                       onClick={() => void onRunAoiAutonomyCheck()}
-                      disabled={aoiAutonomyActionId === 'tick' || aoiAutonomyLoading}
-                      title="Run a manual proposal check"
+                      disabled={
+                        aoiAutonomyActionId === 'tick' ||
+                        aoiAutonomyLoading ||
+                        aoiAutonomyStatus?.activeTick
+                      }
+                      title="Run a bounded manual proposal check"
                     >
                       Run check
                     </button>
@@ -7694,6 +7739,18 @@ const SettingsModal: React.FC<{
                   <div className={styles.promptBudgetMetric}>
                     <span className={styles.promptBudgetLabel}>Last check</span>
                     <strong>{aoiAutonomyLastTickLabel}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Next check</span>
+                    <strong>{aoiAutonomyNextTickLabel}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Tick</span>
+                    <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Observed</span>
+                    <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
                   </div>
                 </div>
 

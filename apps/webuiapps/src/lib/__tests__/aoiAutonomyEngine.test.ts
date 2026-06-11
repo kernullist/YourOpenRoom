@@ -2,10 +2,17 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runAoiAutonomyTick, type AoiAutonomyReflectionChat } from '../aoiAutonomyEngine';
+import {
+  runAoiAutonomyBackgroundTick,
+  runAoiAutonomyTick,
+  type AoiAutonomyReflectionChat,
+} from '../aoiAutonomyEngine';
 import {
   appendAoiProposalDecision,
+  beginAoiAutonomyTick,
   loadAoiActiveProposals,
+  loadAoiAutonomyTickState,
+  loadAoiObservations,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
@@ -520,5 +527,87 @@ describe('runAoiAutonomyTick()', () => {
       expect.arrayContaining(['autonomy_level_too_low', 'tool_blocked:run_command']),
     );
     expect(loadAoiActiveProposals(root, SESSION_PATH)).toEqual([]);
+  });
+});
+
+describe('runAoiAutonomyBackgroundTick()', () => {
+  it('runs a bounded event-triggered tick and persists tick state', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyBackgroundTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      minIntervalMs: 60_000,
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.skipped).toBe(false);
+    expect(result.newActiveProposalCount).toBe(1);
+    expect(result.tickState).toMatchObject({
+      activeTick: false,
+      lastTickAt: NOW,
+      nextAllowedTickAt: NOW + 60_000,
+      proposalsCreatedInLastTick: 1,
+    });
+    expect(loadAoiAutonomyTickState(root, SESSION_PATH, NOW)).toMatchObject({
+      activeTick: false,
+      lastTickReason: 'research_run',
+    });
+    expect(loadAoiObservations(root, SESSION_PATH).length).toBeGreaterThan(0);
+  });
+
+  it('skips ticks during the per-session cooldown window', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    await runAoiAutonomyBackgroundTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      minIntervalMs: 60_000,
+      now: NOW,
+    });
+    const skipped = await runAoiAutonomyBackgroundTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      minIntervalMs: 60_000,
+      now: NOW + 1_000,
+    });
+
+    expect(skipped.skipped).toBe(true);
+    expect(skipped.warnings).toContain('tick_cooldown_active');
+    expect(skipped.newActiveProposalCount).toBe(0);
+  });
+
+  it('skips overlapping ticks for the same session', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const started = beginAoiAutonomyTick(root, SESSION_PATH, {
+      reason: 'manual',
+      now: NOW,
+      lockMs: 60_000,
+    });
+
+    const skipped = await runAoiAutonomyBackgroundTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      minIntervalMs: 0,
+      now: NOW + 1_000,
+    });
+
+    expect(started.started).toBe(true);
+    expect(skipped.skipped).toBe(true);
+    expect(skipped.warnings).toContain('tick_already_running');
+    expect(skipped.status.activeTick).toBe(true);
   });
 });

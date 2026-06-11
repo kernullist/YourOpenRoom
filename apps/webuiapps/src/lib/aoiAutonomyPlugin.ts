@@ -2,12 +2,13 @@ import type { IncomingMessage, ServerResponse } from 'http';
 import { resolve } from 'path';
 import type { Plugin } from 'vite';
 import { executeAoiProposal } from './aoiAutonomyExecution';
-import { runAoiAutonomyTick } from './aoiAutonomyEngine';
+import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
 import {
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
+  loadAoiObservations,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
@@ -78,7 +79,10 @@ function isAoiAutonomyTickReason(value: unknown): value is AoiAutonomyTickReason
     value === 'turn' ||
     value === 'periodic' ||
     value === 'research_run' ||
-    value === 'kira'
+    value === 'kira' ||
+    value === 'proposal' ||
+    value === 'memory' ||
+    value === 'app'
   );
 }
 
@@ -157,6 +161,27 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/observations') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        observations: loadAoiObservations(sessionsDir, sessionPath).slice(
+          0,
+          Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 200) : 50,
+        ),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -188,7 +213,8 @@ async function handleAoiAutonomyRequest(
       }
       if (!isAoiAutonomyTickReason(body.reason)) {
         writeJson(res, 400, {
-          error: 'reason must be one of manual, turn, periodic, research_run, kira',
+          error:
+            'reason must be one of manual, turn, periodic, research_run, kira, proposal, memory, app',
           code: 'invalid_tick_reason',
         });
         return true;
@@ -197,13 +223,14 @@ async function handleAoiAutonomyRequest(
         body.llmConfig && typeof body.llmConfig === 'object' && !Array.isArray(body.llmConfig)
           ? (body.llmConfig as LLMConfig)
           : undefined;
-      const result = await runAoiAutonomyTick({
+      const result = await runAoiAutonomyBackgroundTick({
         sessionsDir,
         sessionPath,
         reason: body.reason,
         latestUserMessage:
           typeof body.latestUserMessage === 'string' ? body.latestUserMessage : undefined,
         llmConfig,
+        maxRuntimeMs: typeof body.maxRuntimeMs === 'number' ? body.maxRuntimeMs : undefined,
       });
       writeJson(res, 200, result);
       return true;

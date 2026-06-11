@@ -1,14 +1,19 @@
 import type { ChatMessage, ToolDef } from './llmClient';
 import type { LLMConfig } from './llmModels';
 import { checkAoiProposalPolicy, getAoiToolAutonomyPolicy } from './aoiAutonomyPolicy';
+import { ingestAoiObservations } from './aoiAutonomyObserver';
 import {
-  appendAoiObservation,
   appendAoiReflection,
+  beginAoiAutonomyTick,
   buildAoiAutonomyStatus,
+  completeAoiAutonomyTick,
   createAoiAutonomyId,
+  loadAoiAutonomyTickState,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
+  loadAoiObservations,
   loadAoiProposalDecisions,
+  markAoiAutonomyTickSkipped,
   normalizeAoiAutonomySessionPath,
   saveAoiActiveProposals,
 } from './aoiAutonomyStore';
@@ -18,6 +23,7 @@ import type {
   AoiAutonomyRisk,
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
+  AoiAutonomyTickState,
   AoiObservation,
   AoiProposal,
   AoiProposalAcceptAction,
@@ -46,6 +52,9 @@ const TITLE_MAX_CHARS = 96;
 const BODY_MAX_CHARS = 320;
 const REASON_MAX_CHARS = 240;
 const CLAIM_MAX_CHARS = 240;
+const DEFAULT_BACKGROUND_TICK_MIN_INTERVAL_MS = 60_000;
+const DEFAULT_BACKGROUND_TICK_LOCK_MS = 120_000;
+const DEFAULT_BACKGROUND_TICK_MAX_RUNTIME_MS = 45_000;
 
 interface AoiAutonomyReflectionResponse {
   content: string;
@@ -67,6 +76,13 @@ export interface AoiAutonomyTickParams {
   llmConfig?: LLMConfig | null;
   reflectionChat?: AoiAutonomyReflectionChat;
   now?: number;
+  maxObservations?: number;
+}
+
+export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
+  minIntervalMs?: number;
+  lockMs?: number;
+  maxRuntimeMs?: number;
 }
 
 interface CandidateBundle {
@@ -166,6 +182,7 @@ function makeEvidenceRefsFromObservation(observation: AoiObservation): string[] 
   return [
     `observation:${observation.id}`,
     ...observation.memoryIds.map((id) => `memory:${id}`),
+    ...observation.proposalIds.map((id) => `proposal:${id}`),
     ...observation.artifactRefs,
   ];
 }
@@ -175,6 +192,7 @@ function isObservationUseful(observation: AoiObservation): boolean {
     observation.summary.trim().length > 0 &&
     (observation.memoryIds.length > 0 ||
       observation.artifactRefs.length > 0 ||
+      observation.proposalIds.length > 0 ||
       Boolean(observation.payloadRef))
   );
 }
@@ -210,7 +228,9 @@ function researchRunToObservation(run: AoiResearchRunSummary): AoiObservation | 
     payloadRef: `research:${run.id}`,
     memoryIds: [],
     artifactRefs,
+    proposalIds: [],
     riskSignals,
+    dedupeKey: `research_run:${run.id}`,
   };
   return isObservationUseful(observation) ? observation : null;
 }
@@ -226,7 +246,7 @@ function memoryToObservation(sessionPath: string, memory: AoiMemoryEntry): AoiOb
   if (!isResearchMemory && !isKiraMemory) {
     return null;
   }
-  const source = isKiraMemory ? 'kira' : 'research_run';
+  const source = isKiraMemory ? 'kira' : 'memory';
   const observation: AoiObservation = {
     version: 1,
     id: makeObservationId(source, memory.id),
@@ -239,11 +259,13 @@ function memoryToObservation(sessionPath: string, memory: AoiMemoryEntry): AoiOb
     artifactRefs: memory.entities
       .filter((entity) => /^aoi-research-[A-Za-z0-9_-]+/.test(entity))
       .map((entity) => `research:${entity}`),
+    proposalIds: [],
     riskSignals: [
       ...memory.tags.filter((tag) =>
         ['needs-attention', 'interrupted', 'validation-failed', 'integration-failed'].includes(tag),
       ),
     ],
+    dedupeKey: `${source}:${memory.id}`,
   };
   return isObservationUseful(observation) ? observation : null;
 }
@@ -252,34 +274,40 @@ function activeProposalToObservation(proposal: AoiProposal): AoiObservation | nu
   const observation: AoiObservation = {
     version: 1,
     id: makeObservationId('proposal', proposal.id),
-    source: 'system',
+    source: 'proposal',
     sessionPath: proposal.sessionPath,
     createdAt: proposal.updatedAt || proposal.createdAt,
     summary: truncateText(`Active proposal "${proposal.title}" status=${proposal.status}`, 220),
     payloadRef: `proposal:${proposal.id}`,
     memoryIds: proposal.memoryIds,
-    artifactRefs: [`proposal:${proposal.id}`, ...proposal.artifactRefs],
+    artifactRefs: proposal.artifactRefs,
+    proposalIds: [proposal.id],
     riskSignals: proposal.riskSignals,
+    dedupeKey: `proposal:${proposal.id}:${proposal.status}`,
   };
   return isObservationUseful(observation) ? observation : null;
 }
 
-function decisionToObservation(
-  sessionPath: string,
-  decisionId: string,
-  createdAt: number,
-): AoiObservation {
+function decisionToObservation(decision: {
+  id: string;
+  proposalId: string;
+  sessionPath: string;
+  action: string;
+  createdAt: number;
+}): AoiObservation {
   return {
     version: 1,
-    id: makeObservationId('decision', decisionId),
-    source: 'system',
-    sessionPath,
-    createdAt,
-    summary: `Recent autonomy proposal decision ${decisionId}.`,
-    payloadRef: `decision:${decisionId}`,
+    id: makeObservationId('decision', decision.id),
+    source: 'proposal',
+    sessionPath: decision.sessionPath,
+    createdAt: decision.createdAt,
+    summary: `Recent autonomy proposal decision ${decision.action} for ${decision.proposalId}.`,
+    payloadRef: `decision:${decision.id}`,
     memoryIds: [],
-    artifactRefs: [`decision:${decisionId}`],
+    artifactRefs: [`decision:${decision.id}`],
+    proposalIds: [decision.proposalId],
     riskSignals: [],
+    dedupeKey: `decision:${decision.id}`,
   };
 }
 
@@ -287,6 +315,7 @@ function collectAoiAutonomyObservations(params: {
   sessionsDir: string;
   sessionPath: string;
   now: number;
+  maxObservations?: number;
 }): CandidateBundle {
   const researchRuns = listAoiResearchRunSummaries(params.sessionsDir, params.sessionPath);
   const memories = loadServerAoiMemories(params.sessionsDir).filter(
@@ -326,7 +355,7 @@ function collectAoiAutonomyObservations(params: {
   }
 
   for (const decision of decisions.slice(0, 6)) {
-    observations.push(decisionToObservation(params.sessionPath, decision.id, decision.createdAt));
+    observations.push(decisionToObservation(decision));
   }
 
   const unique = new Map<string, AoiObservation>();
@@ -340,7 +369,7 @@ function collectAoiAutonomyObservations(params: {
   return {
     observations: [...unique.values()]
       .sort((a, b) => b.createdAt - a.createdAt)
-      .slice(0, MAX_OBSERVATIONS_PER_TICK),
+      .slice(0, params.maxObservations ?? MAX_OBSERVATIONS_PER_TICK),
     memories,
     researchRuns,
     activeProposals,
@@ -1226,6 +1255,158 @@ function sortProposalPriority(a: AoiProposal, b: AoiProposal): number {
   return b.confidence - a.confidence || a.createdAt - b.createdAt;
 }
 
+function makeSkippedTickResult(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  reason: AoiAutonomyTickReason;
+  now: number;
+  tickState: AoiAutonomyTickState;
+  skippedReason: string;
+}): AoiAutonomyTickResult {
+  return {
+    ok: true,
+    sessionPath: params.sessionPath,
+    reason: params.reason,
+    status: buildAoiAutonomyStatus(params.sessionsDir, params.sessionPath, params.now),
+    tickState: params.tickState,
+    skipped: true,
+    newObservationCount: 0,
+    newReflectionCount: 0,
+    newActiveProposalCount: 0,
+    blockedProposalCount: 0,
+    blockedProposals: [],
+    warnings: [params.skippedReason],
+  };
+}
+
+function makeFailedTickResult(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  reason: AoiAutonomyTickReason;
+  now: number;
+  tickState: AoiAutonomyTickState;
+  warning: string;
+}): AoiAutonomyTickResult {
+  return {
+    ok: false,
+    sessionPath: params.sessionPath,
+    reason: params.reason,
+    status: buildAoiAutonomyStatus(params.sessionsDir, params.sessionPath, params.now),
+    tickState: params.tickState,
+    skipped: false,
+    newObservationCount: 0,
+    newReflectionCount: 0,
+    newActiveProposalCount: 0,
+    blockedProposalCount: 0,
+    blockedProposals: [],
+    warnings: [params.warning],
+  };
+}
+
+function withTickTimeout<T>(promise: Promise<T>, maxRuntimeMs: number): Promise<T> {
+  if (!Number.isFinite(maxRuntimeMs) || maxRuntimeMs <= 0) {
+    return promise;
+  }
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error('Aoi autonomy tick exceeded runtime budget.'));
+    }, maxRuntimeMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+    }
+  });
+}
+
+export async function runAoiAutonomyBackgroundTick(
+  params: AoiAutonomyBackgroundTickParams,
+): Promise<AoiAutonomyTickResult> {
+  const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+
+  const now = params.now ?? Date.now();
+  const minIntervalMs = Math.max(
+    0,
+    params.minIntervalMs ?? DEFAULT_BACKGROUND_TICK_MIN_INTERVAL_MS,
+  );
+  const start = beginAoiAutonomyTick(params.sessionsDir, sessionPath, {
+    reason: params.reason,
+    now,
+    minIntervalMs,
+    lockMs: params.lockMs ?? DEFAULT_BACKGROUND_TICK_LOCK_MS,
+  });
+
+  if (!start.started) {
+    const tickState =
+      start.skippedReason === 'tick_already_running'
+        ? start.state
+        : markAoiAutonomyTickSkipped(params.sessionsDir, sessionPath, {
+            skippedReason: start.skippedReason ?? 'tick_skipped',
+            now,
+          });
+    return makeSkippedTickResult({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      reason: params.reason,
+      now,
+      tickState,
+      skippedReason: start.skippedReason ?? 'tick_skipped',
+    });
+  }
+
+  try {
+    const result = await withTickTimeout(
+      runAoiAutonomyTick({
+        ...params,
+        sessionPath,
+        now,
+        maxObservations: Math.min(
+          Math.max(1, params.maxObservations ?? MAX_OBSERVATIONS_PER_TICK),
+          MAX_OBSERVATIONS_PER_TICK,
+        ),
+      }),
+      params.maxRuntimeMs ?? DEFAULT_BACKGROUND_TICK_MAX_RUNTIME_MS,
+    );
+    const completedAt = params.now ?? Date.now();
+    const tickState = completeAoiAutonomyTick(params.sessionsDir, sessionPath, {
+      reason: params.reason,
+      now: completedAt,
+      minIntervalMs,
+      recentObservationCount: loadAoiObservations(params.sessionsDir, sessionPath).length,
+      proposalsCreatedInLastTick: result.newActiveProposalCount,
+    });
+
+    return {
+      ...result,
+      status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, completedAt),
+      tickState,
+      skipped: false,
+    };
+  } catch (error) {
+    const completedAt = params.now ?? Date.now();
+    const tickState = completeAoiAutonomyTick(params.sessionsDir, sessionPath, {
+      reason: params.reason,
+      now: completedAt,
+      minIntervalMs,
+      recentObservationCount: loadAoiObservations(params.sessionsDir, sessionPath).length,
+      proposalsCreatedInLastTick: 0,
+      skippedReason: 'tick_failed',
+    });
+    return makeFailedTickResult({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      reason: params.reason,
+      now: completedAt,
+      tickState,
+      warning: error instanceof Error ? error.message : 'Aoi autonomy tick failed.',
+    });
+  }
+}
+
 export async function runAoiAutonomyTick(
   params: AoiAutonomyTickParams,
 ): Promise<AoiAutonomyTickResult> {
@@ -1240,6 +1421,7 @@ export async function runAoiAutonomyTick(
     sessionsDir: params.sessionsDir,
     sessionPath,
     now,
+    maxObservations: params.maxObservations,
   });
   if (latestUserMessage) {
     bundle.observations.unshift({
@@ -1252,13 +1434,17 @@ export async function runAoiAutonomyTick(
       payloadRef: 'chat:latest-user-message',
       memoryIds: [],
       artifactRefs: [],
+      proposalIds: [],
       riskSignals: [],
+      dedupeKey: `chat:latest-user-message:${sanitizeIdPart(latestUserMessage).slice(0, 64)}`,
     });
   }
 
-  for (const observation of bundle.observations) {
-    appendAoiObservation(params.sessionsDir, observation);
-  }
+  const observationIngestResults = ingestAoiObservations(params.sessionsDir, bundle.observations, {
+    now,
+  });
+  bundle.observations = observationIngestResults.map((result) => result.observation);
+  const observationWarnings = observationIngestResults.flatMap((result) => result.warnings);
 
   const knownEvidenceRefs = buildEvidenceRefSet({
     observations: bundle.observations,
@@ -1348,11 +1534,13 @@ export async function runAoiAutonomyTick(
     sessionPath,
     reason: params.reason,
     status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
-    newObservationCount: bundle.observations.length,
+    tickState: loadAoiAutonomyTickState(params.sessionsDir, sessionPath, now),
+    skipped: false,
+    newObservationCount: observationIngestResults.filter((result) => result.created).length,
     newReflectionCount,
     newActiveProposalCount: acceptedProposals.length,
     blockedProposalCount: blockedProposals.length,
     blockedProposals,
-    warnings: llmResult.warnings,
+    warnings: [...observationWarnings, ...llmResult.warnings],
   };
 }

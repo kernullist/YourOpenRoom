@@ -7,6 +7,7 @@ import {
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
 } from './aoiAutonomyStore';
+import { ingestAoiObservation } from './aoiAutonomyObserver';
 import {
   readAoiResearchRunArtifact,
   readAoiResearchRunStatus,
@@ -473,6 +474,33 @@ export async function executeAoiProposal(params: {
         decisionId: transition.decision.id,
         now,
       });
+      try {
+        ingestAoiObservation(
+          params.sessionsDir,
+          {
+            source: 'proposal',
+            sessionPath,
+            stableKey: `procedure-promotion:${proposal.id}:${transition.decision.id}`,
+            createdAt: now,
+            summary: `Procedure promotion executed from proposal "${proposal.title}".`,
+            payloadRef: `decision:${transition.decision.id}`,
+            memoryIds: targetMemory ? [targetMemory.id] : [],
+            artifactRefs: [
+              `procedure:${proposal.id}`,
+              targetMemory ? `memory:${targetMemory.id}` : `procedure:${proposal.id}:skill`,
+              `decision:${transition.decision.id}`,
+            ],
+            proposalIds: [proposal.id],
+            riskSignals: [...proposal.riskSignals, 'procedure-promoted'],
+          },
+          { now },
+        );
+      } catch (error) {
+        console.warn(
+          '[AoiAutonomyExecution] Failed to ingest procedure promotion observation',
+          error,
+        );
+      }
     }
     return {
       ok: true,

@@ -16,8 +16,9 @@ export type AoiObservationSource =
   | 'tool'
   | 'research_run'
   | 'kira'
+  | 'proposal'
+  | 'memory'
   | 'app'
-  | 'calendar'
   | 'system';
 
 export type AoiReflectionKind =
@@ -28,7 +29,15 @@ export type AoiReflectionKind =
 
 export type AoiProposalDecisionAction = 'accept' | 'dismiss' | 'snooze' | 'execute' | 'block';
 
-export type AoiAutonomyTickReason = 'manual' | 'turn' | 'periodic' | 'research_run' | 'kira';
+export type AoiAutonomyTickReason =
+  | 'manual'
+  | 'turn'
+  | 'periodic'
+  | 'research_run'
+  | 'kira'
+  | 'proposal'
+  | 'memory'
+  | 'app';
 
 export type AoiProposalAcceptActionKind =
   | 'open_research_artifact'
@@ -54,7 +63,24 @@ export interface AoiObservation {
   payloadRef?: string;
   memoryIds: string[];
   artifactRefs: string[];
+  proposalIds: string[];
   riskSignals: string[];
+  dedupeKey: string;
+}
+
+export interface AoiObservationIndexEntry {
+  id: string;
+  dedupeKey: string;
+  source: AoiObservationSource;
+  createdAt: number;
+  summary: string;
+}
+
+export interface AoiObservationIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiObservationIndexEntry[];
 }
 
 export interface AoiReflection {
@@ -155,6 +181,30 @@ export interface AoiAutonomyStatus {
   lastDecisionAt?: number;
   lastObservationAt?: number;
   lastReflectionAt?: number;
+  lastTickAt?: number;
+  nextAllowedTickAt?: number;
+  lastTickReason?: AoiAutonomyTickReason;
+  activeTick: boolean;
+  recentObservationCount: number;
+  proposalsCreatedInLastTick: number;
+  updatedAt: number;
+}
+
+export interface AoiAutonomyTickState {
+  version: 1;
+  sessionPath: string;
+  activeTick: boolean;
+  activeTickId?: string;
+  activeTickReason?: AoiAutonomyTickReason;
+  lockExpiresAt?: number;
+  lastTickAt?: number;
+  lastTickReason?: AoiAutonomyTickReason;
+  lastTickStartedAt?: number;
+  lastTickCompletedAt?: number;
+  nextAllowedTickAt?: number;
+  recentObservationCount: number;
+  proposalsCreatedInLastTick: number;
+  lastSkippedReason?: string;
   updatedAt: number;
 }
 
@@ -183,6 +233,8 @@ export interface AoiAutonomyTickResult {
   sessionPath: string;
   reason: AoiAutonomyTickReason;
   status: AoiAutonomyStatus;
+  tickState: AoiAutonomyTickState;
+  skipped: boolean;
   newObservationCount: number;
   newReflectionCount: number;
   newActiveProposalCount: number;

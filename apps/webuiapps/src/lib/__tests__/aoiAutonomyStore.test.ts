@@ -12,6 +12,7 @@ import {
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
+  loadAoiObservationIndex,
   loadAoiObservations,
   loadAoiProposalDecisions,
   loadAoiReflections,
@@ -130,7 +131,9 @@ describe('Aoi autonomy observations and reflections', () => {
       summary: 'Research completed.',
       memoryIds: ['memory-1'],
       artifactRefs: ['research:run-1/report'],
+      proposalIds: [],
       riskSignals: [],
+      dedupeKey: 'research_run:run-1',
     };
     const reflection: AoiReflection = {
       version: 1,
@@ -151,6 +154,7 @@ describe('Aoi autonomy observations and reflections', () => {
     appendAoiReflection(root, reflection);
 
     expect(loadAoiObservations(root, 'aoi/default')).toEqual([observation]);
+    expect(loadAoiObservationIndex(root, 'aoi/default').entries).toHaveLength(1);
     expect(loadAoiReflections(root, 'aoi/default')).toEqual([reflection]);
   });
 });
@@ -238,7 +242,9 @@ describe('Aoi autonomy proposal storage and decisions', () => {
       summary: 'Observed.',
       memoryIds: [],
       artifactRefs: [],
+      proposalIds: [],
       riskSignals: [],
+      dedupeKey: 'system:observed',
     });
 
     const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);

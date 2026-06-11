@@ -3,6 +3,7 @@ import type {
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
+  AoiObservation,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
@@ -20,6 +21,11 @@ export interface AoiAutonomyProposalList {
 export interface AoiAutonomyReflectionList {
   sessionPath: string;
   reflections: AoiReflection[];
+}
+
+export interface AoiAutonomyObservationList {
+  sessionPath: string;
+  observations: AoiObservation[];
 }
 
 export interface AoiAutonomyPolicyUpdateResult {
@@ -155,6 +161,25 @@ export async function fetchAoiAutonomyReflections(
   };
 }
 
+export async function fetchAoiAutonomyObservations(
+  sessionPath: string,
+  limit = 50,
+): Promise<AoiAutonomyObservationList> {
+  const response = await fetch(
+    `${API_PREFIX}/observations?${sessionQuery(sessionPath)}&limit=${encodeURIComponent(String(limit))}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi autonomy observations.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    observations: asArray<AoiObservation>(payload.observations),
+  };
+}
+
 export async function updateAoiAutonomyPolicy(
   sessionPath: string,
   policy: Partial<AoiAutonomyPolicy>,
@@ -185,6 +210,7 @@ export async function runAoiAutonomyManualTick(params: {
   latestUserMessage?: string;
   llmConfig?: unknown;
   reason?: AoiAutonomyTickReason;
+  maxRuntimeMs?: number;
 }): Promise<AoiAutonomyTickResult> {
   const response = await fetch(`${API_PREFIX}/tick`, {
     method: 'POST',
@@ -194,6 +220,7 @@ export async function runAoiAutonomyManualTick(params: {
       reason: params.reason ?? 'manual',
       latestUserMessage: params.latestUserMessage,
       llmConfig: params.llmConfig,
+      maxRuntimeMs: params.maxRuntimeMs,
     }),
   });
   const payload = await readJsonRecord(response, 'Failed to run Aoi autonomy check.');

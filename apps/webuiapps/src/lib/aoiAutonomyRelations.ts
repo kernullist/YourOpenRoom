@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { dirname, isAbsolute, relative, resolve } from 'path';
-import type { AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
+import type { AoiObservation, AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 
 export type AoiRelationNodeKind =
@@ -368,6 +368,51 @@ export function recordAoiProposalCreatedRelations(
     );
   }
   return upsertAoiRelations(sessionsDir, proposal.sessionPath, { nodes, edges, now });
+}
+
+export function recordAoiObservationRelations(
+  sessionsDir: string,
+  observation: AoiObservation,
+  now = Date.now(),
+): AoiRelationIndex {
+  const observationRef = `observation:${observation.id}`;
+  const observationNode = makeAoiRelationNode({
+    ref: observationRef,
+    kind: 'episode',
+    label: observation.summary,
+    status: 'active',
+    now,
+  });
+  const nodes = [observationNode];
+  const edges: AoiRelationEdge[] = [];
+  const refs = [
+    ...observation.memoryIds.map((id) => `memory:${id}`),
+    ...observation.artifactRefs,
+    ...observation.proposalIds.map((id) => `proposal:${id}`),
+  ];
+
+  for (const ref of [...new Set(refs)]) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: observationNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref, observationRef],
+        now,
+      }),
+      makeAoiRelationEdge({
+        from: observationNode.id,
+        to: node.id,
+        kind: ref.startsWith('proposal:') ? 'followed_by' : 'belongs_to',
+        evidenceRefs: [observationRef],
+        now,
+      }),
+    );
+  }
+
+  return upsertAoiRelations(sessionsDir, observation.sessionPath, { nodes, edges, now });
 }
 
 export function recordAoiProposalDecisionRelations(

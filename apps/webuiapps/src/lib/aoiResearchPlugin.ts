@@ -10,6 +10,7 @@ import {
   startAoiResearchRun,
   type AoiResearchRunPaths,
 } from './aoiResearchEngine';
+import { ingestAoiObservation } from './aoiAutonomyObserver';
 import { syncAoiMemoryFromResearchRunServer } from './aoiMemoryServerWriter';
 import {
   isAoiResearchArtifactName,
@@ -189,6 +190,37 @@ function persistResearchRunMemory(
     });
   } catch (error) {
     console.warn('[aoi-research] failed to persist research memory', error);
+  }
+}
+
+function persistResearchRunObservation(sessionsDir: string, manifest: AoiResearchManifest): void {
+  if (
+    manifest.status !== 'completed' &&
+    manifest.status !== 'failed' &&
+    manifest.status !== 'cancelled'
+  ) {
+    return;
+  }
+  try {
+    ingestAoiObservation(sessionsDir, {
+      source: 'research_run',
+      sessionPath: manifest.sessionPath,
+      stableKey: manifest.id,
+      createdAt: manifest.updatedAt || manifest.completedAt || manifest.createdAt,
+      summary: `Research ${manifest.status}: ${manifest.reportTitle || manifest.plan?.title || manifest.request}`,
+      payloadRef: `research:${manifest.id}`,
+      artifactRefs: [
+        `research:${manifest.id}`,
+        ...(manifest.artifactAvailability?.report ? [`research:${manifest.id}/report`] : []),
+      ],
+      riskSignals: [
+        manifest.status === 'failed' ? 'research-failed' : '',
+        manifest.status === 'cancelled' ? 'research-cancelled' : '',
+        manifest.error?.code ? `error:${manifest.error.code}` : '',
+      ].filter(Boolean),
+    });
+  } catch (error) {
+    console.warn('[aoi-research] failed to persist research observation', error);
   }
 }
 
@@ -380,8 +412,13 @@ export async function startAoiResearchRunFromServer(params: {
   void runPromise
     .then((finalManifest) => {
       persistResearchRunMemory(params.sessionsDir, finalManifest, paths);
+      persistResearchRunObservation(params.sessionsDir, finalManifest);
     })
     .catch((error) => {
+      const finalManifest = readManifest(paths.manifest);
+      if (finalManifest) {
+        persistResearchRunObservation(params.sessionsDir, finalManifest);
+      }
       console.error('[aoi-research] background run failed', error);
     });
   return {

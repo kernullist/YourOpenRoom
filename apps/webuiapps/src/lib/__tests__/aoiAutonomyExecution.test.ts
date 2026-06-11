@@ -8,6 +8,7 @@ import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import {
   applyAoiProposalDecision,
   loadAoiActiveProposals,
+  loadAoiObservations,
   loadAoiProposalDecisions,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
@@ -306,7 +307,11 @@ describe('executeAoiProposal()', () => {
     });
 
     const memories = loadServerAoiMemories(root);
+    const observations = loadAoiObservations(root, 'aoi/default');
     const relationIndex = loadAoiRelationIndex(root, 'aoi/default');
+    const promotionObservation = observations.find((observation) =>
+      observation.dedupeKey.startsWith('proposal:procedure-promotion:'),
+    );
     expect(result).toMatchObject({
       executed: true,
       outcome: 'executed',
@@ -322,12 +327,22 @@ describe('executeAoiProposal()', () => {
     });
     expect(memories[0].content).not.toMatch(/ignore previous instructions/i);
     expect(memories[0].content).toContain('compare source dates');
+    expect(promotionObservation).toMatchObject({
+      source: 'proposal',
+      proposalIds: ['proposal-test-001'],
+      memoryIds: [memories[0].id],
+    });
+    expect(promotionObservation?.summary).not.toMatch(/ignore previous instructions/i);
+    expect(promotionObservation?.artifactRefs).toContain('procedure:proposal-test-001');
     expect(
       relationIndex.edges.some(
         (edge) =>
           edge.kind === 'belongs_to' &&
           edge.evidenceRefs.includes(`decision:${result.decision.id}`),
       ),
+    ).toBe(true);
+    expect(
+      relationIndex.nodes.some((node) => node.ref === `observation:${promotionObservation?.id}`),
     ).toBe(true);
   });
 
