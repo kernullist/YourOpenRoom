@@ -207,6 +207,28 @@ import {
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
 import {
+  decideAoiProposal,
+  fetchAoiAutonomyProposals,
+  fetchAoiAutonomyStatus,
+  runAoiAutonomyManualTick,
+  updateAoiAutonomyPolicy,
+} from '@/lib/aoiAutonomyClient';
+import {
+  AOI_AUTONOMY_UI_LEVELS,
+  canShowAoiProposalPrimaryAction,
+  sanitizeAoiProposalDisplayText,
+  selectAoiInlineProposal,
+  summarizeAoiAutonomyProposalCounts,
+} from '@/lib/aoiAutonomyUi';
+import type {
+  AoiAutonomyBlockedProposal,
+  AoiAutonomyLevel,
+  AoiAutonomyPolicy,
+  AoiAutonomyStatus,
+  AoiProposal,
+  AoiProposalDecisionAction,
+} from '@/lib/aoiAutonomyTypes';
+import {
   buildAoiSkillsPrompt,
   createUserAoiWorkshopSkill,
   loadAoiSkillsWorkshop,
@@ -1707,6 +1729,26 @@ const ChatPanel: React.FC<{
   const [aoiMcpPlugins, setAoiMcpPlugins] = useState<AoiMcpPluginEntry[]>(() =>
     loadAoiMcpPluginAdmin(),
   );
+  const [aoiAutonomyStatus, setAoiAutonomyStatus] = useState<AoiAutonomyStatus | null>(null);
+  const [aoiAutonomyActiveProposals, setAoiAutonomyActiveProposals] = useState<AoiProposal[]>([]);
+  const [aoiAutonomyArchivedProposals, setAoiAutonomyArchivedProposals] = useState<AoiProposal[]>(
+    [],
+  );
+  const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
+    AoiAutonomyBlockedProposal[]
+  >([]);
+  const [aoiAutonomyLoading, setAoiAutonomyLoading] = useState(false);
+  const [aoiAutonomyError, setAoiAutonomyError] = useState('');
+  const [aoiAutonomyActionId, setAoiAutonomyActionId] = useState<string | null>(null);
+  const [aoiAutonomyLastTickAt, setAoiAutonomyLastTickAt] = useState<number | null>(null);
+  const [aoiInlineDismissedProposalIds, setAoiInlineDismissedProposalIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [aoiInlineSnoozedProposalIds, setAoiInlineSnoozedProposalIds] = useState<Set<string>>(
+    () => new Set(),
+  );
+  const [aoiInlineHiddenAt, setAoiInlineHiddenAt] = useState<number | null>(null);
+  const [aoiInlineShownCount, setAoiInlineShownCount] = useState(0);
 
   // Pending tool calls for current response (grouped per assistant turn)
   const pendingToolCallsRef = useRef<string[]>([]);
@@ -1722,6 +1764,8 @@ const ChatPanel: React.FC<{
   chatHistoryRef.current = chatHistory;
   const suggestedRepliesRef = useRef(suggestedReplies);
   suggestedRepliesRef.current = suggestedReplies;
+  const aoiAutonomyRefreshInFlightRef = useRef(false);
+  const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -1831,6 +1875,18 @@ const ChatPanel: React.FC<{
   // config hydration and overwrite newly typed messages with the default prologue.
   useEffect(() => {
     console.info('[ChatPanel] Loading session state', { sessionPath });
+    setAoiAutonomyStatus(null);
+    setAoiAutonomyActiveProposals([]);
+    setAoiAutonomyArchivedProposals([]);
+    setAoiAutonomyBlockedProposals([]);
+    setAoiAutonomyError('');
+    setAoiAutonomyActionId(null);
+    setAoiAutonomyLastTickAt(null);
+    setAoiInlineDismissedProposalIds(new Set());
+    setAoiInlineSnoozedProposalIds(new Set());
+    setAoiInlineHiddenAt(null);
+    setAoiInlineShownCount(0);
+    aoiInlineShownProposalIdsRef.current = new Set();
     loadChatHistory(sessionPath).then(async (data) => {
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
@@ -2176,6 +2232,149 @@ const ChatPanel: React.FC<{
     },
     [],
   );
+
+  const refreshAoiAutonomy = useCallback(async (options: { silent?: boolean } = {}) => {
+    if (aoiAutonomyRefreshInFlightRef.current) {
+      return;
+    }
+
+    const sessionPathForAutonomy = sessionPathRef.current;
+    aoiAutonomyRefreshInFlightRef.current = true;
+    if (!options.silent) {
+      setAoiAutonomyLoading(true);
+    }
+    setAoiAutonomyError('');
+
+    try {
+      const [nextStatus, nextProposals] = await Promise.all([
+        fetchAoiAutonomyStatus(sessionPathForAutonomy),
+        fetchAoiAutonomyProposals(sessionPathForAutonomy, true),
+      ]);
+      setAoiAutonomyStatus(nextStatus);
+      setAoiAutonomyActiveProposals(nextProposals.active);
+      setAoiAutonomyArchivedProposals(nextProposals.archived);
+    } catch (error) {
+      setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      aoiAutonomyRefreshInFlightRef.current = false;
+      if (!options.silent) {
+        setAoiAutonomyLoading(false);
+      }
+    }
+  }, []);
+
+  const handleAoiAutonomyAdvancedVisible = useCallback(() => {
+    void refreshAoiAutonomy();
+  }, [refreshAoiAutonomy]);
+
+  const updateAoiAutonomyPolicyFromPanel = useCallback(
+    async (patch: Partial<AoiAutonomyPolicy>) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId('policy');
+      setAoiAutonomyError('');
+
+      try {
+        const result = await updateAoiAutonomyPolicy(sessionPathForAutonomy, patch);
+        setAoiAutonomyStatus((prev) =>
+          prev
+            ? {
+                ...prev,
+                policy: result.policy,
+                updatedAt: Date.now(),
+              }
+            : null,
+        );
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  const runAoiAutonomyCheckFromPanel = useCallback(async () => {
+    const sessionPathForAutonomy = sessionPathRef.current;
+    const latestUserMessage = [...chatHistoryRef.current]
+      .reverse()
+      .find((message) => message.role === 'user')?.content;
+
+    setAoiAutonomyActionId('tick');
+    setAoiAutonomyLoading(true);
+    setAoiAutonomyError('');
+
+    try {
+      const result = await runAoiAutonomyManualTick({
+        sessionPath: sessionPathForAutonomy,
+        latestUserMessage,
+        llmConfig: configRef.current ?? undefined,
+      });
+      setAoiAutonomyStatus(result.status);
+      setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
+      setAoiAutonomyLastTickAt(result.status.updatedAt || Date.now());
+      await refreshAoiAutonomy({ silent: true });
+    } catch (error) {
+      setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAoiAutonomyLoading(false);
+      setAoiAutonomyActionId(null);
+    }
+  }, [refreshAoiAutonomy]);
+
+  const decideAoiProposalFromPanel = useCallback(
+    async (proposalId: string, action: AoiProposalDecisionAction) => {
+      const actionId = `proposal:${proposalId}:${action}`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+
+      try {
+        const result = await decideAoiProposal(sessionPathForAutonomy, {
+          proposalId,
+          action,
+          reason: `User selected ${action} in Aoi Autonomy UI.`,
+        });
+        setAoiAutonomyActiveProposals(result.active);
+        setAoiAutonomyArchivedProposals(result.archived);
+        setAoiInlineHiddenAt(Date.now());
+        if (action === 'dismiss') {
+          setAoiInlineDismissedProposalIds((prev) => new Set(prev).add(proposalId));
+        }
+        if (action === 'snooze') {
+          setAoiInlineSnoozedProposalIds((prev) => new Set(prev).add(proposalId));
+        }
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  useEffect(() => {
+    if (!showSettings) {
+      return;
+    }
+
+    void refreshAoiAutonomy({ silent: true });
+    const intervalId = window.setInterval(() => {
+      void refreshAoiAutonomy({ silent: true });
+    }, 120000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshAoiAutonomy, showSettings]);
+
+  useEffect(() => {
+    void refreshAoiAutonomy({ silent: true });
+    const intervalId = window.setInterval(() => {
+      void refreshAoiAutonomy({ silent: true });
+    }, 300000);
+
+    return () => window.clearInterval(intervalId);
+  }, [refreshAoiAutonomy, sessionPath]);
 
   useEffect(() => {
     clearToolCache();
@@ -4680,6 +4879,41 @@ const ChatPanel: React.FC<{
     setChatFontSize((prev) => clampChatFontSize(prev + direction * CHAT_FONT_SIZE_STEP));
   }, []);
 
+  const openAoiAutonomySettings = useCallback(() => {
+    setSettingsInitialTab('advanced');
+    setShowSettings(true);
+    void refreshAoiAutonomy({ silent: true });
+  }, [refreshAoiAutonomy]);
+
+  const inlineAoiProposal = useMemo(
+    () =>
+      selectAoiInlineProposal(aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, {
+        dismissedProposalIds: aoiInlineDismissedProposalIds,
+        snoozedProposalIds: aoiInlineSnoozedProposalIds,
+        lastShownAt: aoiInlineHiddenAt,
+        shownCount: aoiInlineShownCount,
+      }),
+    [
+      aoiAutonomyActiveProposals,
+      aoiAutonomyStatus?.policy,
+      aoiInlineDismissedProposalIds,
+      aoiInlineHiddenAt,
+      aoiInlineShownCount,
+      aoiInlineSnoozedProposalIds,
+    ],
+  );
+
+  useEffect(() => {
+    if (!inlineAoiProposal) {
+      return;
+    }
+    if (aoiInlineShownProposalIdsRef.current.has(inlineAoiProposal.id)) {
+      return;
+    }
+    aoiInlineShownProposalIdsRef.current.add(inlineAoiProposal.id);
+    setAoiInlineShownCount((prev) => prev + 1);
+  }, [inlineAoiProposal]);
+
   if (!visible) return null;
 
   return (
@@ -4825,6 +5059,64 @@ const ChatPanel: React.FC<{
             <div ref={messagesEndRef} />
           </div>
 
+          {inlineAoiProposal && !loading && (
+            <div className={styles.aoiInlineSuggestion} data-testid="aoi-inline-suggestion">
+              <div className={styles.aoiInlineSuggestionMain}>
+                <div className={styles.aoiInlineSuggestionMeta}>
+                  <span>Aoi proposal</span>
+                  <span>conf {inlineAoiProposal.confidence.toFixed(2)}</span>
+                  <span>{inlineAoiProposal.risk} risk</span>
+                </div>
+                <div className={styles.aoiInlineSuggestionTitle}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiProposal.title, 120)}
+                </div>
+                <div className={styles.aoiInlineSuggestionBody}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiProposal.body, 220)}
+                </div>
+                <div className={styles.aoiInlineSuggestionHint}>
+                  This is only a proposal. No tool has run.
+                </div>
+              </div>
+              <div className={styles.aoiInlineSuggestionActions}>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'accept')}
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Record approval without executing tools"
+                >
+                  Accept proposal
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'snooze')}
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Snooze this proposal"
+                >
+                  Snooze
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'dismiss')}
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Dismiss this proposal"
+                >
+                  Dismiss
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={openAoiAutonomySettings}
+                  title="Open Aoi Autonomy details"
+                >
+                  Details
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Suggested Replies */}
           {suggestedReplies.length > 0 && !loading && (
             <div className={styles.suggestedReplies}>
@@ -4960,12 +5252,25 @@ const ChatPanel: React.FC<{
           promptBudgetEntries={promptBudgetEntries}
           aoiMemories={aoiMemories}
           aoiRunLedger={aoiRunLedger}
+          aoiAutonomyStatus={aoiAutonomyStatus}
+          aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
+          aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
+          aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
+          aoiAutonomyLoading={aoiAutonomyLoading}
+          aoiAutonomyError={aoiAutonomyError}
+          aoiAutonomyActionId={aoiAutonomyActionId}
+          aoiAutonomyLastTickAt={aoiAutonomyLastTickAt}
           aoiSkills={aoiSkills}
           aoiMcpPlugins={aoiMcpPlugins}
           recentToolActivity={recentToolActivity}
           toolSafetyPolicy={toolSafetyPolicy}
           initialTab={settingsInitialTab}
           onRefreshAoiMemories={refreshAoiMemories}
+          onRefreshAoiAutonomy={refreshAoiAutonomy}
+          onAdvancedTabVisible={handleAoiAutonomyAdvancedVisible}
+          onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
+          onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
+          onDecideAoiProposal={decideAoiProposalFromPanel}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
           onResetAll={handleResetSessionHistory}
@@ -5388,12 +5693,25 @@ const SettingsModal: React.FC<{
   promptBudgetEntries: PromptBudgetEntry[];
   aoiMemories: AoiMemoryEntry[];
   aoiRunLedger: AoiRunLedgerEntry[];
+  aoiAutonomyStatus: AoiAutonomyStatus | null;
+  aoiAutonomyActiveProposals: AoiProposal[];
+  aoiAutonomyArchivedProposals: AoiProposal[];
+  aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
+  aoiAutonomyLoading: boolean;
+  aoiAutonomyError: string;
+  aoiAutonomyActionId: string | null;
+  aoiAutonomyLastTickAt: number | null;
   aoiSkills: AoiWorkshopSkill[];
   aoiMcpPlugins: AoiMcpPluginEntry[];
   recentToolActivity: string[];
   toolSafetyPolicy: ToolSafetyPolicy;
   initialTab?: AppSettingsTabKey;
   onRefreshAoiMemories: () => void;
+  onRefreshAoiAutonomy: (options?: { silent?: boolean }) => Promise<void>;
+  onAdvancedTabVisible: () => void;
+  onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
+  onRunAoiAutonomyCheck: () => Promise<void>;
+  onDecideAoiProposal: (proposalId: string, action: AoiProposalDecisionAction) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
   onResetAll: () => void;
@@ -5424,12 +5742,25 @@ const SettingsModal: React.FC<{
   promptBudgetEntries,
   aoiMemories,
   aoiRunLedger,
+  aoiAutonomyStatus,
+  aoiAutonomyActiveProposals,
+  aoiAutonomyArchivedProposals,
+  aoiAutonomyBlockedProposals,
+  aoiAutonomyLoading,
+  aoiAutonomyError,
+  aoiAutonomyActionId,
+  aoiAutonomyLastTickAt,
   aoiSkills,
   aoiMcpPlugins,
   recentToolActivity,
   toolSafetyPolicy,
   initialTab = 'chat',
   onRefreshAoiMemories,
+  onRefreshAoiAutonomy,
+  onAdvancedTabVisible,
+  onUpdateAoiAutonomyPolicy,
+  onRunAoiAutonomyCheck,
+  onDecideAoiProposal,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
   onResetAll,
@@ -5482,6 +5813,12 @@ const SettingsModal: React.FC<{
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    if (activeTab === 'advanced') {
+      onAdvancedTabVisible();
+    }
+  }, [activeTab, onAdvancedTabVisible]);
 
   // Image gen settings
   const [igProvider, setIgProvider] = useState<ImageGenProvider>(
@@ -5604,7 +5941,25 @@ const SettingsModal: React.FC<{
         .slice(0, 12),
     [aoiMemories],
   );
+  const aoiAutonomyProposalCounts = useMemo(
+    () =>
+      summarizeAoiAutonomyProposalCounts(
+        aoiAutonomyActiveProposals,
+        aoiAutonomyArchivedProposals,
+        aoiAutonomyStatus,
+      ),
+    [aoiAutonomyActiveProposals, aoiAutonomyArchivedProposals, aoiAutonomyStatus],
+  );
+  const visibleAoiAutonomyProposals = useMemo(
+    () =>
+      aoiAutonomyActiveProposals
+        .slice()
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, 8),
+    [aoiAutonomyActiveProposals],
+  );
   const [pendingAoiMemoryActionId, setPendingAoiMemoryActionId] = useState<string | null>(null);
+  const [expandedAoiProposalId, setExpandedAoiProposalId] = useState<string | null>(null);
   const [autoVerifyFixes, setAutoVerifyFixes] = useState(toolSafetyPolicy.autoVerifyFixes);
   const [allowWorkspaceCommands, setAllowWorkspaceCommands] = useState(
     toolSafetyPolicy.allowWorkspaceCommands,
@@ -5936,6 +6291,14 @@ const SettingsModal: React.FC<{
   const ttsLastWarmLabel = ttsStatusSnapshot.lastWarmAt
     ? new Date(ttsStatusSnapshot.lastWarmAt).toLocaleTimeString()
     : 'Not yet';
+  const aoiAutonomyPolicy = aoiAutonomyStatus?.policy ?? null;
+  const aoiAutonomyLastTickLabel = aoiAutonomyLastTickAt
+    ? new Date(aoiAutonomyLastTickAt).toLocaleString()
+    : 'Not run in this panel';
+  const aoiAutonomyBlockedCount = Math.max(
+    aoiAutonomyProposalCounts.blocked,
+    aoiAutonomyBlockedProposals.length,
+  );
   const settingsTabs: Array<{ key: SettingsTabKey; label: string }> = [
     { key: 'chat', label: 'Chat' },
     { key: 'models', label: 'Models' },
@@ -7024,6 +7387,290 @@ const SettingsModal: React.FC<{
 
           {activeTab === 'advanced' && (
             <div className={styles.settingsSection}>
+              <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">
+                <div className={styles.settingsSectionHeader}>
+                  <div>
+                    <div className={styles.settingsSectionTitle}>Aoi Autonomy</div>
+                    <span className={styles.modelHint}>
+                      Policy-gated reflection proposals. Decisions here do not run tools.
+                    </span>
+                  </div>
+                  <div className={styles.aoiAutonomyHeaderActions}>
+                    <button
+                      type="button"
+                      className={styles.inlineActionBtn}
+                      onClick={() => void onRefreshAoiAutonomy()}
+                      disabled={aoiAutonomyLoading}
+                      title="Refresh Aoi autonomy state"
+                    >
+                      <RotateCcw size={14} />
+                      Refresh
+                    </button>
+                    <button
+                      type="button"
+                      className={styles.inlineActionBtn}
+                      onClick={() => void onRunAoiAutonomyCheck()}
+                      disabled={aoiAutonomyActionId === 'tick' || aoiAutonomyLoading}
+                      title="Run a manual proposal check"
+                    >
+                      Run check
+                    </button>
+                  </div>
+                </div>
+
+                {aoiAutonomyError && (
+                  <div className={styles.aoiAutonomyError}>{aoiAutonomyError}</div>
+                )}
+                {aoiAutonomyLoading && (
+                  <span className={styles.modelHint}>Loading autonomy state...</span>
+                )}
+
+                <div className={styles.promptBudgetGrid}>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Enabled</span>
+                    <strong>{aoiAutonomyPolicy?.enabled ? 'On' : 'Off'}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Level</span>
+                    <strong>{aoiAutonomyPolicy?.level ?? 'L1'}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Proactive</span>
+                    <strong>{aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Active</span>
+                    <strong>{aoiAutonomyProposalCounts.active}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
+                    <strong>
+                      {aoiAutonomyProposalCounts.dismissed} / {aoiAutonomyProposalCounts.snoozed}
+                    </strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Blocked</span>
+                    <strong>{aoiAutonomyBlockedCount}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Last check</span>
+                    <strong>{aoiAutonomyLastTickLabel}</strong>
+                  </div>
+                </div>
+
+                <div className={styles.aoiAutonomyControls}>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Autonomy policy</span>
+                    <button
+                      type="button"
+                      className={aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn}
+                      onClick={() =>
+                        void onUpdateAoiAutonomyPolicy({
+                          enabled: !aoiAutonomyPolicy?.enabled,
+                        })
+                      }
+                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                    >
+                      {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
+                    </button>
+                  </div>
+                  <div className={styles.field}>
+                    <label className={styles.label}>Autonomy level</label>
+                    <select
+                      className={styles.select}
+                      value={aoiAutonomyPolicy?.level ?? 'L1'}
+                      onChange={(event) =>
+                        void onUpdateAoiAutonomyPolicy({
+                          level: event.target.value as AoiAutonomyLevel,
+                        })
+                      }
+                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                    >
+                      {AOI_AUTONOMY_UI_LEVELS.map((level) => (
+                        <option key={level} value={level}>
+                          {level}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Inline suggestions</span>
+                    <button
+                      type="button"
+                      className={
+                        aoiAutonomyPolicy?.proactiveSuggestionsEnabled
+                          ? styles.saveBtn
+                          : styles.cancelBtn
+                      }
+                      onClick={() =>
+                        void onUpdateAoiAutonomyPolicy({
+                          proactiveSuggestionsEnabled:
+                            !aoiAutonomyPolicy?.proactiveSuggestionsEnabled,
+                        })
+                      }
+                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                    >
+                      {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                    </button>
+                  </div>
+                </div>
+
+                <div className={styles.aoiAutonomyProposalSection}>
+                  <div className={styles.promptBudgetSectionTitle}>Active proposals</div>
+                  {visibleAoiAutonomyProposals.length > 0 ? (
+                    <div className={styles.aoiAutonomyProposalList}>
+                      {visibleAoiAutonomyProposals.map((proposal) => {
+                        const primaryActionAllowed = canShowAoiProposalPrimaryAction(proposal);
+                        const proposalPending = Boolean(
+                          aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
+                        );
+                        const expanded = expandedAoiProposalId === proposal.id;
+
+                        return (
+                          <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{proposal.status}</span>
+                              <span>conf {proposal.confidence.toFixed(2)}</span>
+                              <span>{proposal.risk} risk</span>
+                              <span>requires {proposal.requiredAutonomyLevel}</span>
+                              <span>evidence {proposal.evidenceRefs.length}</span>
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTitle}>
+                              {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalBody}>
+                              {sanitizeAoiProposalDisplayText(proposal.body, 360)}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalReason}>
+                              {sanitizeAoiProposalDisplayText(proposal.reason, 260)}
+                            </div>
+                            <div className={styles.aoiAutonomyProposalTools}>
+                              {proposal.suggestedTools.length > 0
+                                ? proposal.suggestedTools
+                                    .slice(0, 5)
+                                    .map((tool) => sanitizeAoiProposalDisplayText(tool, 64))
+                                    .join(', ')
+                                : 'No suggested tools'}
+                            </div>
+                            {proposal.blockedReason && (
+                              <div className={styles.aoiAutonomyBlockedReason}>
+                                Blocked:{' '}
+                                {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
+                              </div>
+                            )}
+                            {proposal.risk === 'high' && (
+                              <div className={styles.aoiAutonomyBlockedReason}>
+                                High risk: accepting records feedback only.
+                              </div>
+                            )}
+                            {expanded && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                <div>
+                                  Trigger: {sanitizeAoiProposalDisplayText(proposal.trigger, 220)}
+                                </div>
+                                <div>
+                                  Cooldown key:{' '}
+                                  {sanitizeAoiProposalDisplayText(proposal.cooldownKey, 160)}
+                                </div>
+                                <div>Evidence refs: {proposal.evidenceRefs.length}</div>
+                                {proposal.evidenceRefs.slice(0, 5).map((ref, index) => (
+                                  <div key={`${proposal.id}-evidence-${index}`}>
+                                    {sanitizeAoiProposalDisplayText(ref, 220)}
+                                  </div>
+                                ))}
+                                {proposal.riskSignals.slice(0, 5).map((signal, index) => (
+                                  <div key={`${proposal.id}-risk-${index}`}>
+                                    Risk: {sanitizeAoiProposalDisplayText(signal, 220)}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            <div className={styles.aoiAutonomyProposalActions}>
+                              {primaryActionAllowed ? (
+                                <button
+                                  type="button"
+                                  className={styles.inlineActionBtn}
+                                  onClick={() => void onDecideAoiProposal(proposal.id, 'accept')}
+                                  disabled={proposalPending}
+                                  title="Record approval without executing tools"
+                                >
+                                  Accept proposal
+                                </button>
+                              ) : (
+                                <span className={styles.modelHint}>
+                                  {proposal.blockedReason
+                                    ? 'Blocked by policy.'
+                                    : `No primary action while status is ${proposal.status}.`}
+                                </span>
+                              )}
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onDecideAoiProposal(proposal.id, 'snooze')}
+                                disabled={proposalPending || proposal.status !== 'active'}
+                                title="Snooze this proposal"
+                              >
+                                Snooze
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() => void onDecideAoiProposal(proposal.id, 'dismiss')}
+                                disabled={proposalPending || proposal.status !== 'active'}
+                                title="Dismiss this proposal"
+                              >
+                                Dismiss
+                              </button>
+                              <button
+                                type="button"
+                                className={styles.inlineActionBtn}
+                                onClick={() =>
+                                  setExpandedAoiProposalId((prev) =>
+                                    prev === proposal.id ? null : proposal.id,
+                                  )
+                                }
+                                title="Show proposal evidence and policy details"
+                              >
+                                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                                Why
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <p className={styles.modelHint}>
+                      No active autonomy proposals are available for this session.
+                    </p>
+                  )}
+                </div>
+
+                {aoiAutonomyBlockedProposals.length > 0 && (
+                  <div className={styles.aoiAutonomyProposalSection}>
+                    <div className={styles.promptBudgetSectionTitle}>Blocked in last check</div>
+                    <div className={styles.aoiAutonomyProposalList}>
+                      {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => (
+                        <div className={styles.aoiAutonomyProposalItem} key={proposal.proposalId}>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                          </div>
+                          <div className={styles.aoiAutonomyBlockedReason}>
+                            {proposal.reasons
+                              .map((reason) => sanitizeAoiProposalDisplayText(reason, 180))
+                              .join(' / ')}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>evidence {proposal.evidenceRefs.length}</span>
+                            <span>No tool execution available</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+
               <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
                 <div className={styles.settingsSectionHeader}>
                   <div>
