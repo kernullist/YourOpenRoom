@@ -29,6 +29,16 @@ export type AoiReflectionKind =
 
 export type AoiProposalDecisionAction = 'accept' | 'dismiss' | 'snooze' | 'execute' | 'block';
 
+export type AoiProposalFeedbackCategory =
+  | 'useful'
+  | 'not_useful'
+  | 'wrong_memory'
+  | 'stale'
+  | 'too_frequent'
+  | 'unsafe'
+  | 'already_done'
+  | 'needs_more_detail';
+
 export type AoiAutonomyTickReason =
   | 'manual'
   | 'turn'
@@ -226,7 +236,15 @@ export interface AoiProposalDecision {
   previousStatus: AoiProposalStatus;
   nextStatus: AoiProposalStatus;
   reason?: string;
+  feedbackCategory?: AoiProposalFeedbackCategory;
+  feedbackNote?: string;
   snoozedUntil?: number;
+  proposalTrigger?: string;
+  proposalRisk?: AoiAutonomyRisk;
+  actionKind?: AoiProposalAcceptActionKind;
+  suggestedTools?: string[];
+  evidenceRefs?: string[];
+  memoryIds?: string[];
 }
 
 export interface AoiAutonomyToolPolicy {

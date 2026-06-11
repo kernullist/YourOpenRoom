@@ -1,6 +1,11 @@
 import type { ChatMessage, ToolDef } from './llmClient';
 import type { LLMConfig } from './llmModels';
-import { checkAoiProposalPolicy, getAoiToolAutonomyPolicy } from './aoiAutonomyPolicy';
+import {
+  applyAoiFeedbackCalibrationToProposal,
+  checkAoiProposalPolicy,
+  getAoiProposalFeedbackPriorityBoost,
+  getAoiToolAutonomyPolicy,
+} from './aoiAutonomyPolicy';
 import {
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
@@ -34,6 +39,7 @@ import type {
   AoiProposal,
   AoiProposalAcceptAction,
   AoiProposalAcceptActionKind,
+  AoiProposalDecision,
   AoiReflection,
 } from './aoiAutonomyTypes';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
@@ -1279,8 +1285,14 @@ function makeBlockedReflection(params: {
   };
 }
 
-function sortProposalPriority(a: AoiProposal, b: AoiProposal): number {
-  return b.confidence - a.confidence || a.createdAt - b.createdAt;
+function sortProposalPriority(
+  a: AoiProposal,
+  b: AoiProposal,
+  recentDecisions: AoiProposalDecision[],
+): number {
+  const leftScore = a.confidence + getAoiProposalFeedbackPriorityBoost(a, recentDecisions);
+  const rightScore = b.confidence + getAoiProposalFeedbackPriorityBoost(b, recentDecisions);
+  return rightScore - leftScore || a.createdAt - b.createdAt;
 }
 
 function makeSkippedTickResult(params: {
@@ -1506,9 +1518,11 @@ export async function runAoiAutonomyTick(
     appendAoiReflection(params.sessionsDir, reflection);
   }
 
-  const candidates = [...deterministicProposals, ...llmResult.proposals].sort(sortProposalPriority);
   let activeProposals = loadAoiActiveProposals(params.sessionsDir, sessionPath);
   const recentDecisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  const candidates = [...deterministicProposals, ...llmResult.proposals]
+    .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
+    .sort((left, right) => sortProposalPriority(left, right, recentDecisions));
   const blockedProposals: AoiAutonomyBlockedProposal[] = [];
   const acceptedProposals: AoiProposal[] = [];
   let newReflectionCount = llmResult.reflections.length;

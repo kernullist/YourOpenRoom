@@ -1,7 +1,11 @@
 import * as fs from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
-import { DEFAULT_AOI_AUTONOMY_POLICY, normalizeAoiAutonomyPolicy } from './aoiAutonomyPolicy';
+import {
+  DEFAULT_AOI_AUTONOMY_POLICY,
+  isAoiProposalFeedbackCategory,
+  normalizeAoiAutonomyPolicy,
+} from './aoiAutonomyPolicy';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import type {
@@ -13,8 +17,10 @@ import type {
   AoiObservationIndex,
   AoiObservationIndexEntry,
   AoiProposal,
+  AoiProposalAcceptActionKind,
   AoiProposalDecision,
   AoiProposalDecisionAction,
+  AoiProposalFeedbackCategory,
   AoiReflection,
 } from './aoiAutonomyTypes';
 
@@ -54,6 +60,8 @@ export interface AoiProposalDecisionInput {
   action: Extract<AoiProposalDecisionAction, 'accept' | 'dismiss' | 'snooze'>;
   actor?: 'user' | 'system';
   reason?: string;
+  feedbackCategory?: unknown;
+  feedbackNote?: unknown;
   snoozeMs?: number;
   now?: number;
 }
@@ -64,6 +72,12 @@ export interface AoiProposalExecutionTransitionInput {
   actor?: 'user' | 'system';
   reason?: string;
   now?: number;
+}
+
+export interface AoiProposalFeedbackInput {
+  decisionId: string;
+  feedbackCategory: unknown;
+  feedbackNote?: unknown;
 }
 
 export interface AoiProposalDecisionResult {
@@ -162,6 +176,20 @@ function normalizeStringList(value: unknown, maxItems = 24): string[] {
     }
   }
   return [...seen];
+}
+
+function normalizeOptionalText(value: unknown, maxChars: number): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+  return normalized || undefined;
+}
+
+function normalizeAoiProposalFeedbackCategory(
+  value: unknown,
+): AoiProposalFeedbackCategory | undefined {
+  return isAoiProposalFeedbackCategory(value) ? value : undefined;
 }
 
 function normalizeObservationDedupeKey(value: unknown, fallback: string): string {
@@ -345,6 +373,46 @@ function makeProposalDecisionObservation(
     proposalIds: [proposal.id],
     riskSignals: proposal.riskSignals,
     dedupeKey: `decision:${decision.id}`,
+  };
+}
+
+function makeAoiProposalDecisionRecord(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  action: AoiProposalDecisionAction;
+  actor: 'user' | 'system';
+  previousStatus: AoiProposal['status'];
+  nextStatus: AoiProposal['status'];
+  now: number;
+  reason?: unknown;
+  feedbackCategory?: unknown;
+  feedbackNote?: unknown;
+  snoozedUntil?: number;
+}): AoiProposalDecision {
+  const reason = normalizeOptionalText(params.reason, 240);
+  const feedbackCategory = normalizeAoiProposalFeedbackCategory(params.feedbackCategory);
+  const feedbackNote = normalizeOptionalText(params.feedbackNote, 240);
+  return {
+    version: 1,
+    id: createAoiAutonomyId('aoi-decision', params.now),
+    proposalId: params.proposal.id,
+    sessionPath: params.sessionPath,
+    cooldownKey: params.proposal.cooldownKey,
+    action: params.action,
+    actor: params.actor,
+    createdAt: params.now,
+    previousStatus: params.previousStatus,
+    nextStatus: params.nextStatus,
+    ...(reason ? { reason } : {}),
+    ...(feedbackCategory ? { feedbackCategory } : {}),
+    ...(feedbackCategory && feedbackNote ? { feedbackNote } : {}),
+    ...(params.snoozedUntil ? { snoozedUntil: params.snoozedUntil } : {}),
+    proposalTrigger: params.proposal.trigger,
+    proposalRisk: params.proposal.risk,
+    ...(params.proposal.acceptAction ? { actionKind: params.proposal.acceptAction.kind } : {}),
+    suggestedTools: normalizeStringList(params.proposal.suggestedTools, 12),
+    evidenceRefs: normalizeStringList(params.proposal.evidenceRefs, 24),
+    memoryIds: normalizeStringList(params.proposal.memoryIds, 24),
   };
 }
 
@@ -733,14 +801,146 @@ export function appendAoiProposalDecision(
   return item;
 }
 
+function isAoiProposalDecisionAction(value: unknown): value is AoiProposalDecisionAction {
+  return (
+    value === 'accept' ||
+    value === 'dismiss' ||
+    value === 'snooze' ||
+    value === 'execute' ||
+    value === 'block'
+  );
+}
+
+function isAoiProposalStatus(value: unknown): value is AoiProposal['status'] {
+  return (
+    value === 'active' ||
+    value === 'accepted' ||
+    value === 'dismissed' ||
+    value === 'snoozed' ||
+    value === 'expired' ||
+    value === 'executed' ||
+    value === 'blocked'
+  );
+}
+
+function isAoiProposalAcceptActionKind(value: unknown): value is AoiProposalAcceptActionKind {
+  return (
+    value === 'open_research_artifact' ||
+    value === 'read_research_artifact' ||
+    value === 'get_research_status' ||
+    value === 'start_research' ||
+    value === 'create_kira_work' ||
+    value === 'open_app' ||
+    value === 'save_memory' ||
+    value === 'activate_goal'
+  );
+}
+
+function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const item = value as Partial<AoiProposalDecision>;
+  if (
+    item.version !== 1 ||
+    !isValidAoiAutonomyId(item.id) ||
+    !isValidAoiAutonomyId(item.proposalId) ||
+    typeof item.sessionPath !== 'string' ||
+    typeof item.cooldownKey !== 'string' ||
+    !isAoiProposalDecisionAction(item.action) ||
+    (item.actor !== 'user' && item.actor !== 'system') ||
+    typeof item.createdAt !== 'number' ||
+    !isAoiProposalStatus(item.previousStatus) ||
+    !isAoiProposalStatus(item.nextStatus)
+  ) {
+    return null;
+  }
+  const feedbackCategory = normalizeAoiProposalFeedbackCategory(item.feedbackCategory);
+  return {
+    version: 1,
+    id: item.id,
+    proposalId: item.proposalId,
+    sessionPath: normalizeAoiAutonomySessionPath(item.sessionPath) || item.sessionPath,
+    cooldownKey: normalizeOptionalText(item.cooldownKey, 180) || item.cooldownKey,
+    action: item.action,
+    actor: item.actor,
+    createdAt: item.createdAt,
+    previousStatus: item.previousStatus,
+    nextStatus: item.nextStatus,
+    ...(normalizeOptionalText(item.reason, 240)
+      ? { reason: normalizeOptionalText(item.reason, 240) }
+      : {}),
+    ...(feedbackCategory ? { feedbackCategory } : {}),
+    ...(feedbackCategory && normalizeOptionalText(item.feedbackNote, 240)
+      ? { feedbackNote: normalizeOptionalText(item.feedbackNote, 240) }
+      : {}),
+    ...(typeof item.snoozedUntil === 'number' ? { snoozedUntil: item.snoozedUntil } : {}),
+    ...(normalizeOptionalText(item.proposalTrigger, 80)
+      ? { proposalTrigger: normalizeOptionalText(item.proposalTrigger, 80) }
+      : {}),
+    ...(item.proposalRisk === 'low' ||
+    item.proposalRisk === 'medium' ||
+    item.proposalRisk === 'high'
+      ? { proposalRisk: item.proposalRisk }
+      : {}),
+    ...(isAoiProposalAcceptActionKind(item.actionKind) ? { actionKind: item.actionKind } : {}),
+    suggestedTools: normalizeStringList(item.suggestedTools, 12),
+    evidenceRefs: normalizeStringList(item.evidenceRefs, 24),
+    memoryIds: normalizeStringList(item.memoryIds, 24),
+  };
+}
+
 export function loadAoiProposalDecisions(
   sessionsDir: string,
   sessionPath: string,
 ): AoiProposalDecision[] {
   const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
-  return listJsonFiles<AoiProposalDecision>(paths.decisionsDir)
-    .filter((item) => item.version === 1 && isValidAoiAutonomyId(item.id))
+  return listJsonFiles<unknown>(paths.decisionsDir)
+    .map(normalizeLoadedAoiProposalDecision)
+    .filter((item): item is AoiProposalDecision => item !== null)
     .sort((a, b) => b.createdAt - a.createdAt);
+}
+
+export function applyAoiProposalFeedback(
+  sessionsDir: string,
+  sessionPath: string,
+  input: AoiProposalFeedbackInput,
+): AoiProposalDecision {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  if (!isValidAoiAutonomyId(input.decisionId)) {
+    throw new Error('Invalid or missing decisionId.');
+  }
+
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const decisions = loadAoiProposalDecisions(sessionsDir, normalizedSessionPath);
+  const current = decisions.find((decision) => decision.id === input.decisionId);
+  if (!current) {
+    throw new Error('Aoi proposal decision not found.');
+  }
+
+  const feedbackCategory = normalizeAoiProposalFeedbackCategory(input.feedbackCategory);
+  if (!feedbackCategory) {
+    return current;
+  }
+
+  const feedbackNote = normalizeOptionalText(input.feedbackNote, 240);
+  const currentWithoutNote = { ...current };
+  delete currentWithoutNote.feedbackNote;
+  const next: AoiProposalDecision = feedbackNote
+    ? {
+        ...current,
+        feedbackCategory,
+        feedbackNote,
+      }
+    : {
+        ...currentWithoutNote,
+        feedbackCategory,
+      };
+  writeJsonAtomic(join(paths.decisionsDir, `${next.id}.json`), next);
+  return normalizeLoadedAoiProposalDecision(next) ?? next;
 }
 
 export function applyAoiProposalDecision(
@@ -782,22 +982,19 @@ export function applyAoiProposalDecision(
     updatedAt: now,
     ...(snoozedUntil ? { snoozedUntil } : {}),
   };
-  const decision: AoiProposalDecision = {
-    version: 1,
-    id: createAoiAutonomyId('aoi-decision', now),
-    proposalId: current.id,
+  const decision = makeAoiProposalDecisionRecord({
+    proposal: current,
     sessionPath: normalizedSessionPath,
-    cooldownKey: current.cooldownKey,
     action: input.action,
     actor: input.actor ?? 'user',
-    createdAt: now,
     previousStatus: current.status,
     nextStatus,
-    ...(typeof input.reason === 'string' && input.reason.trim()
-      ? { reason: input.reason.trim().slice(0, 240) }
-      : {}),
-    ...(snoozedUntil ? { snoozedUntil } : {}),
-  };
+    now,
+    reason: input.reason,
+    feedbackCategory: input.feedbackCategory,
+    feedbackNote: input.feedbackNote,
+    snoozedUntil,
+  });
 
   let nextActive = [...activeProposals];
   let nextArchived = [...archivedProposals];
@@ -859,21 +1056,16 @@ export function applyAoiProposalExecutionTransition(
       ? { blockedReason: input.reason.trim().slice(0, 240) }
       : {}),
   };
-  const decision: AoiProposalDecision = {
-    version: 1,
-    id: createAoiAutonomyId('aoi-decision', now),
-    proposalId: current.id,
+  const decision = makeAoiProposalDecisionRecord({
+    proposal: current,
     sessionPath: normalizedSessionPath,
-    cooldownKey: current.cooldownKey,
     action: input.nextStatus === 'executed' ? 'execute' : 'block',
     actor: input.actor ?? 'system',
-    createdAt: now,
     previousStatus: current.status,
     nextStatus: input.nextStatus,
-    ...(typeof input.reason === 'string' && input.reason.trim()
-      ? { reason: input.reason.trim().slice(0, 240) }
-      : {}),
-  };
+    now,
+    reason: input.reason,
+  });
   const nextActive = [...activeProposals];
   nextActive[index] = nextProposal;
   saveAoiActiveProposals(sessionsDir, normalizedSessionPath, nextActive);

@@ -1,4 +1,4 @@
-import type { AoiProposal } from '../aoiAutonomyTypes';
+import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 export const AOI_FIXTURE_SESSION_PATH = 'aoi/default';
@@ -80,3 +80,81 @@ export const highRiskProcedureProposalFixture: AoiProposal = {
     },
   },
 };
+
+export const feedbackMemoryProposalFixture: AoiProposal = {
+  version: 1,
+  id: 'proposal-feedback-memory',
+  sessionPath: AOI_FIXTURE_SESSION_PATH,
+  status: 'active',
+  title: 'Reuse remembered kernel research',
+  body: 'A stored research memory may answer the current question.',
+  reason: 'The current topic overlaps with an Aoi memory.',
+  trigger: 'research_followup',
+  createdAt: 2000,
+  updatedAt: 2000,
+  cooldownKey: 'research-followup:memory-stale-research',
+  confidence: 0.72,
+  risk: 'low',
+  requiredAutonomyLevel: 'L3',
+  requiresUserApproval: false,
+  suggestedTools: ['read_research_artifact'],
+  evidenceRefs: ['memory:memory-stale-research'],
+  memoryIds: ['memory-stale-research'],
+  artifactRefs: ['research:aoi-research-old-001/report'],
+  riskSignals: [],
+  acceptAction: {
+    kind: 'read_research_artifact',
+    params: {
+      runId: 'aoi-research-old-001',
+      artifact: 'report',
+    },
+  },
+};
+
+export const feedbackRefreshProposalFixture: AoiProposal = {
+  ...feedbackMemoryProposalFixture,
+  id: 'proposal-feedback-refresh',
+  title: 'Refresh stale kernel research',
+  trigger: 'stale_research_memory',
+  cooldownKey: 'research-refresh:memory-stale-research',
+  confidence: 0.7,
+  risk: 'medium',
+  requiredAutonomyLevel: 'L4',
+  requiresUserApproval: true,
+  suggestedTools: ['start_research'],
+  artifactRefs: [],
+  riskSignals: ['stale-memory'],
+  acceptAction: {
+    kind: 'start_research',
+    params: {
+      sessionPath: AOI_FIXTURE_SESSION_PATH,
+      request: 'Refresh Windows kernel driver BYOVD trends',
+      mode: 'standard',
+      maxSources: 12,
+    },
+  },
+};
+
+export function makeFeedbackDecisionFixture(
+  partial: Partial<AoiProposalDecision> = {},
+): AoiProposalDecision {
+  return {
+    version: 1,
+    id: partial.id ?? 'decision-feedback-001',
+    proposalId: partial.proposalId ?? feedbackMemoryProposalFixture.id,
+    sessionPath: AOI_FIXTURE_SESSION_PATH,
+    cooldownKey: partial.cooldownKey ?? feedbackMemoryProposalFixture.cooldownKey,
+    action: partial.action ?? 'dismiss',
+    actor: partial.actor ?? 'user',
+    createdAt: partial.createdAt ?? 3000,
+    previousStatus: partial.previousStatus ?? 'active',
+    nextStatus: partial.nextStatus ?? 'dismissed',
+    proposalTrigger: partial.proposalTrigger ?? feedbackMemoryProposalFixture.trigger,
+    proposalRisk: partial.proposalRisk ?? feedbackMemoryProposalFixture.risk,
+    actionKind: partial.actionKind ?? feedbackMemoryProposalFixture.acceptAction?.kind,
+    suggestedTools: partial.suggestedTools ?? feedbackMemoryProposalFixture.suggestedTools,
+    evidenceRefs: partial.evidenceRefs ?? feedbackMemoryProposalFixture.evidenceRefs,
+    memoryIds: partial.memoryIds ?? feedbackMemoryProposalFixture.memoryIds,
+    ...partial,
+  };
+}

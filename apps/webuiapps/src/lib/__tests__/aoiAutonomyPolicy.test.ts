@@ -1,9 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { highRiskProcedureProposalFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
+import {
+  feedbackMemoryProposalFixture,
+  feedbackRefreshProposalFixture,
+  highRiskProcedureProposalFixture,
+  makeFeedbackDecisionFixture,
+} from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
+  applyAoiFeedbackCalibrationToProposal,
   checkAoiProposalPolicy,
+  compareAoiAutonomyLevel,
   evaluateAoiProposalExecution,
+  getAoiFeedbackAdjustedCooldownMs,
+  getAoiProposalFeedbackPriorityBoost,
   getAoiToolAutonomyPolicy,
   isAoiToolAllowedAtLevel,
   normalizeAoiAutonomyPolicy,
@@ -364,6 +373,126 @@ describe('checkAoiProposalPolicy()', () => {
         'tool_blocked:remote_shell',
         'high_risk_requires_approval',
       ]),
+    );
+  });
+
+  it('reinforces useful proposals without bypassing cooldown checks', () => {
+    const usefulDecision = makeFeedbackDecisionFixture({
+      action: 'accept',
+      nextStatus: 'accepted',
+      feedbackCategory: 'useful',
+    });
+    const tooFrequentDecision = makeFeedbackDecisionFixture({
+      id: 'decision-too-frequent-001',
+      feedbackCategory: 'too_frequent',
+      action: 'snooze',
+      nextStatus: 'snoozed',
+    });
+    const calibrated = applyAoiFeedbackCalibrationToProposal(feedbackMemoryProposalFixture, [
+      usefulDecision,
+    ]);
+
+    expect(calibrated.confidence).toBe(feedbackMemoryProposalFixture.confidence);
+    expect(getAoiProposalFeedbackPriorityBoost(calibrated, [usefulDecision])).toBeGreaterThan(0);
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: {
+          ...calibrated,
+          confidence: policy.confidenceFloor - 0.01,
+        },
+        recentDecisions: [usefulDecision],
+        now: 4000,
+      }).reasons,
+    ).toContain('confidence_below_floor');
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: calibrated,
+        recentDecisions: [tooFrequentDecision],
+        now: tooFrequentDecision.createdAt + policy.defaultCooldownMs + 1,
+      }).reasons,
+    ).toContain('cooldown_active');
+  });
+
+  it('penalizes proposals that reuse memory marked as wrong', () => {
+    const wrongMemoryDecision = makeFeedbackDecisionFixture({
+      feedbackCategory: 'wrong_memory',
+    });
+    const result = checkAoiProposalPolicy({
+      policy: normalizeAoiAutonomyPolicy(
+        { enabled: true, previewMode: true, level: 'L4', confidenceFloor: 0.65 },
+        DEFAULT_AOI_AUTONOMY_POLICY,
+        4000,
+      ),
+      proposal: feedbackMemoryProposalFixture,
+      recentDecisions: [wrongMemoryDecision],
+      now: 4000,
+    });
+
+    expect(result.reasons).toContain('confidence_below_floor');
+  });
+
+  it('prefers refresh proposals after stale-memory feedback', () => {
+    const staleDecision = makeFeedbackDecisionFixture({
+      feedbackCategory: 'stale',
+    });
+
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: feedbackMemoryProposalFixture,
+        recentDecisions: [staleDecision],
+        now: 4000,
+      }).reasons,
+    ).toContain('stale_memory_requires_refresh');
+
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: feedbackRefreshProposalFixture,
+        recentDecisions: [staleDecision],
+        now: 4000,
+      }).reasons,
+    ).not.toContain('stale_memory_requires_refresh');
+  });
+
+  it('escalates cooldown when proposals are marked too frequent', () => {
+    const decisions = [
+      makeFeedbackDecisionFixture({
+        id: 'decision-too-frequent-001',
+        feedbackCategory: 'too_frequent',
+        action: 'dismiss',
+      }),
+      makeFeedbackDecisionFixture({
+        id: 'decision-too-frequent-002',
+        feedbackCategory: 'too_frequent',
+        action: 'snooze',
+        nextStatus: 'snoozed',
+      }),
+    ];
+
+    expect(
+      getAoiFeedbackAdjustedCooldownMs({
+        proposal: feedbackMemoryProposalFixture,
+        recentDecisions: decisions,
+        baseCooldownMs: policy.defaultCooldownMs,
+      }),
+    ).toBe(policy.defaultCooldownMs * 3);
+  });
+
+  it('treats unsafe feedback as risk escalation, never risk reduction', () => {
+    const unsafeDecision = makeFeedbackDecisionFixture({
+      feedbackCategory: 'unsafe',
+    });
+    const calibrated = applyAoiFeedbackCalibrationToProposal(feedbackMemoryProposalFixture, [
+      unsafeDecision,
+    ]);
+
+    expect(calibrated.risk).toBe('medium');
+    expect(calibrated.requiresUserApproval).toBe(true);
+    expect(compareAoiAutonomyLevel(calibrated.requiredAutonomyLevel, 'L4')).toBeGreaterThanOrEqual(
+      0,
     );
   });
 });

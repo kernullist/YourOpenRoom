@@ -211,6 +211,7 @@ import {
   executeAoiProposalAction,
   fetchAoiAutonomyProposals,
   fetchAoiAutonomyStatus,
+  recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalExecutionResult,
@@ -230,6 +231,7 @@ import type {
   AoiAutonomyStatus,
   AoiProposal,
   AoiProposalDecisionAction,
+  AoiProposalFeedbackCategory,
 } from '@/lib/aoiAutonomyTypes';
 import {
   buildAoiSkillsPrompt,
@@ -499,6 +501,44 @@ function getAoiProposalExecutionLabel(proposal: AoiProposal): string {
   }
   return 'Continue';
 }
+
+const AOI_PROPOSAL_FEEDBACK_CONTROLS: Array<{
+  label: string;
+  title: string;
+  action: Extract<AoiProposalDecisionAction, 'accept' | 'dismiss' | 'snooze'>;
+  category: AoiProposalFeedbackCategory;
+}> = [
+  {
+    label: 'Useful',
+    title: 'Mark this proposal as useful and accept it',
+    action: 'accept',
+    category: 'useful',
+  },
+  {
+    label: 'Not useful',
+    title: 'Dismiss this proposal as not useful',
+    action: 'dismiss',
+    category: 'not_useful',
+  },
+  {
+    label: 'Wrong memory',
+    title: 'Dismiss this proposal because it used the wrong memory',
+    action: 'dismiss',
+    category: 'wrong_memory',
+  },
+  {
+    label: 'Too frequent',
+    title: 'Snooze this proposal and increase cooldown for similar suggestions',
+    action: 'snooze',
+    category: 'too_frequent',
+  },
+  {
+    label: 'Unsafe',
+    title: 'Dismiss this proposal as unsafe for future calibration',
+    action: 'dismiss',
+    category: 'unsafe',
+  },
+];
 
 function summarizeAoiExecutionResult(result: AoiAutonomyProposalExecutionResult): string {
   if (result.executed) {
@@ -1835,6 +1875,12 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyExecutionMessages, setAoiAutonomyExecutionMessages] = useState<
     Record<string, string>
   >({});
+  const [aoiAutonomyPendingFeedback, setAoiAutonomyPendingFeedback] = useState<{
+    decisionId: string;
+    proposalId: string;
+    action: Extract<AoiProposalDecisionAction, 'dismiss' | 'snooze'>;
+    title: string;
+  } | null>(null);
   const [aoiInlineDismissedProposalIds, setAoiInlineDismissedProposalIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1978,6 +2024,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyActionId(null);
     setAoiAutonomyLastTickAt(null);
     setAoiAutonomyExecutionMessages({});
+    setAoiAutonomyPendingFeedback(null);
     setAoiInlineDismissedProposalIds(new Set());
     setAoiInlineSnoozedProposalIds(new Set());
     setAoiInlineHiddenAt(null);
@@ -2495,7 +2542,11 @@ const ChatPanel: React.FC<{
   }, [refreshAoiAutonomy]);
 
   const decideAoiProposalFromPanel = useCallback(
-    async (proposalId: string, action: AoiProposalDecisionAction) => {
+    async (
+      proposalId: string,
+      action: AoiProposalDecisionAction,
+      feedbackCategory?: AoiProposalFeedbackCategory,
+    ) => {
       const actionId = `proposal:${proposalId}:${action}`;
       const sessionPathForAutonomy = sessionPathRef.current;
       setAoiAutonomyActionId(actionId);
@@ -2505,7 +2556,10 @@ const ChatPanel: React.FC<{
         const result = await decideAoiProposal(sessionPathForAutonomy, {
           proposalId,
           action,
-          reason: `User selected ${action} in Aoi Autonomy UI.`,
+          reason: feedbackCategory
+            ? `User selected ${action} with ${feedbackCategory} feedback in Aoi Autonomy UI.`
+            : `User selected ${action} in Aoi Autonomy UI.`,
+          feedbackCategory,
         });
         setAoiAutonomyActiveProposals(result.active);
         setAoiAutonomyArchivedProposals(result.archived);
@@ -2516,6 +2570,7 @@ const ChatPanel: React.FC<{
         });
         setAoiInlineHiddenAt(Date.now());
         if (action === 'accept') {
+          setAoiAutonomyPendingFeedback(null);
           recordAoiAutonomyLedgerEvent(
             result.proposal,
             'proposal_accepted',
@@ -2528,6 +2583,16 @@ const ChatPanel: React.FC<{
         if (action === 'snooze') {
           setAoiInlineSnoozedProposalIds((prev) => new Set(prev).add(proposalId));
         }
+        if ((action === 'dismiss' || action === 'snooze') && !feedbackCategory) {
+          setAoiAutonomyPendingFeedback({
+            decisionId: result.decision.id,
+            proposalId,
+            action,
+            title: result.proposal.title,
+          });
+        } else if (feedbackCategory) {
+          setAoiAutonomyPendingFeedback(null);
+        }
         await refreshAoiAutonomy({ silent: true });
       } catch (error) {
         setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2536,6 +2601,33 @@ const ChatPanel: React.FC<{
       }
     },
     [recordAoiAutonomyLedgerEvent, refreshAoiAutonomy],
+  );
+
+  const recordAoiProposalFeedbackFromPanel = useCallback(
+    async (feedbackCategory: AoiProposalFeedbackCategory) => {
+      const pending = aoiAutonomyPendingFeedback;
+      if (!pending) {
+        return;
+      }
+      const actionId = `proposal-feedback:${pending.decisionId}:${feedbackCategory}`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+
+      try {
+        await recordAoiProposalFeedback(sessionPathForAutonomy, {
+          decisionId: pending.decisionId,
+          feedbackCategory,
+        });
+        setAoiAutonomyPendingFeedback(null);
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [aoiAutonomyPendingFeedback, refreshAoiAutonomy],
   );
 
   const executeAoiProposalFromPanel = useCallback(
@@ -5530,6 +5622,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyActionId={aoiAutonomyActionId}
           aoiAutonomyLastTickAt={aoiAutonomyLastTickAt}
           aoiAutonomyExecutionMessages={aoiAutonomyExecutionMessages}
+          aoiAutonomyPendingFeedback={aoiAutonomyPendingFeedback}
           aoiSkills={aoiSkills}
           aoiMcpPlugins={aoiMcpPlugins}
           recentToolActivity={recentToolActivity}
@@ -5541,6 +5634,7 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
+          onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
           onExecuteAoiProposal={executeAoiProposalFromPanel}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
@@ -5973,6 +6067,12 @@ const SettingsModal: React.FC<{
   aoiAutonomyActionId: string | null;
   aoiAutonomyLastTickAt: number | null;
   aoiAutonomyExecutionMessages: Record<string, string>;
+  aoiAutonomyPendingFeedback: {
+    decisionId: string;
+    proposalId: string;
+    action: Extract<AoiProposalDecisionAction, 'dismiss' | 'snooze'>;
+    title: string;
+  } | null;
   aoiSkills: AoiWorkshopSkill[];
   aoiMcpPlugins: AoiMcpPluginEntry[];
   recentToolActivity: string[];
@@ -5983,7 +6083,12 @@ const SettingsModal: React.FC<{
   onAdvancedTabVisible: () => void;
   onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
   onRunAoiAutonomyCheck: () => Promise<void>;
-  onDecideAoiProposal: (proposalId: string, action: AoiProposalDecisionAction) => Promise<void>;
+  onDecideAoiProposal: (
+    proposalId: string,
+    action: AoiProposalDecisionAction,
+    feedbackCategory?: AoiProposalFeedbackCategory,
+  ) => Promise<void>;
+  onRecordAoiProposalFeedback: (feedbackCategory: AoiProposalFeedbackCategory) => Promise<void>;
   onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
@@ -6024,6 +6129,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActionId,
   aoiAutonomyLastTickAt,
   aoiAutonomyExecutionMessages,
+  aoiAutonomyPendingFeedback,
   aoiSkills,
   aoiMcpPlugins,
   recentToolActivity,
@@ -6035,6 +6141,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onRunAoiAutonomyCheck,
   onDecideAoiProposal,
+  onRecordAoiProposalFeedback,
   onExecuteAoiProposal,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
@@ -7829,6 +7936,32 @@ const SettingsModal: React.FC<{
                   </div>
                 </div>
 
+                {aoiAutonomyPendingFeedback && (
+                  <div className={styles.aoiAutonomyPendingFeedback}>
+                    <div className={styles.aoiAutonomyProposalMeta}>
+                      <span>{aoiAutonomyPendingFeedback.action}</span>
+                      <span>optional feedback</span>
+                    </div>
+                    <div className={styles.aoiAutonomyProposalTitle}>
+                      {sanitizeAoiProposalDisplayText(aoiAutonomyPendingFeedback.title, 120)}
+                    </div>
+                    <div className={styles.aoiAutonomyFeedbackActions}>
+                      {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                        <button
+                          type="button"
+                          key={`pending-feedback-${item.category}`}
+                          className={styles.inlineActionBtn}
+                          onClick={() => void onRecordAoiProposalFeedback(item.category)}
+                          disabled={aoiAutonomyActionId !== null}
+                          title={item.title}
+                        >
+                          {item.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div className={styles.aoiAutonomyProposalSection}>
                   <div className={styles.promptBudgetSectionTitle}>Active proposals</div>
                   {visibleAoiAutonomyProposals.length > 0 ? (
@@ -7987,6 +8120,28 @@ const SettingsModal: React.FC<{
                                 Why
                               </button>
                             </div>
+                            {proposal.status === 'active' && (
+                              <div className={styles.aoiAutonomyFeedbackActions}>
+                                {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                                  <button
+                                    type="button"
+                                    key={`${proposal.id}-${item.category}`}
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onDecideAoiProposal(
+                                        proposal.id,
+                                        item.action,
+                                        item.category,
+                                      )
+                                    }
+                                    disabled={proposalPending}
+                                    title={item.title}
+                                  >
+                                    {item.label}
+                                  </button>
+                                ))}
+                              </div>
+                            )}
                           </div>
                         );
                       })}

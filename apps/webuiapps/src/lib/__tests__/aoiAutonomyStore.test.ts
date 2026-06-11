@@ -6,6 +6,7 @@ import {
   appendAoiObservation,
   appendAoiReflection,
   applyAoiProposalDecision,
+  applyAoiProposalFeedback,
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
   isValidAoiAutonomyId,
@@ -213,6 +214,66 @@ describe('Aoi autonomy proposal storage and decisions', () => {
       nextStatus: 'snoozed',
       snoozedUntil: 8000,
     });
+  });
+
+  it('stores categorized feedback only when it is valid and explicit', () => {
+    const root = makeTempRoot();
+    saveAoiActiveProposals(root, 'aoi/default', [makeProposal()]);
+
+    const result = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'dismiss',
+      feedbackCategory: 'wrong_memory',
+      feedbackNote: 'Used a stale project memory.',
+      now: 3200,
+    });
+
+    expect(result.decision).toMatchObject({
+      feedbackCategory: 'wrong_memory',
+      feedbackNote: 'Used a stale project memory.',
+      memoryIds: ['aoi-memory-001'],
+    });
+    expect(loadAoiProposalDecisions(root, 'aoi/default')[0]).toMatchObject({
+      feedbackCategory: 'wrong_memory',
+      feedbackNote: 'Used a stale project memory.',
+    });
+  });
+
+  it('ignores malformed feedback safely', () => {
+    const root = makeTempRoot();
+    saveAoiActiveProposals(root, 'aoi/default', [makeProposal()]);
+
+    const result = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'dismiss',
+      feedbackCategory: 'bad_category',
+      feedbackNote: 'Should not be stored without a valid category.',
+      now: 3300,
+    });
+
+    expect(result.decision.feedbackCategory).toBeUndefined();
+    expect(result.decision.feedbackNote).toBeUndefined();
+  });
+
+  it('attaches optional feedback to an existing decision without creating a new decision', () => {
+    const root = makeTempRoot();
+    saveAoiActiveProposals(root, 'aoi/default', [makeProposal()]);
+    const dismissed = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'dismiss',
+      now: 3400,
+    });
+
+    const updated = applyAoiProposalFeedback(root, 'aoi/default', {
+      decisionId: dismissed.decision.id,
+      feedbackCategory: 'too_frequent',
+    });
+
+    expect(updated).toMatchObject({
+      id: dismissed.decision.id,
+      feedbackCategory: 'too_frequent',
+    });
+    expect(loadAoiProposalDecisions(root, 'aoi/default')).toHaveLength(1);
   });
 
   it('rejects invalid proposal transitions', () => {

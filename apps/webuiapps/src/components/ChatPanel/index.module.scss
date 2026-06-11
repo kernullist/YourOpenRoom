@@ -1178,3 +1178,19 @@
   align-items: center;
   gap: 6px;
 }
+
+.aoiAutonomyFeedbackActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding-top: 2px;
+}
+
+.aoiAutonomyPendingFeedback {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  background: rgba(15, 23, 42, 0.24);
+}

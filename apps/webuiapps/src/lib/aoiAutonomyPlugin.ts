@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import type { Plugin } from 'vite';
 import { executeAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
+import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import {
   activateAoiGoalFromProposal,
   applyAoiGoalDecision,
@@ -12,6 +13,7 @@ import {
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
 import {
+  applyAoiProposalFeedback,
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
   loadAoiActiveProposals,
@@ -209,6 +211,22 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/evaluation') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -390,6 +408,8 @@ async function handleAoiAutonomyRequest(
           action,
           actor: body.actor === 'system' ? 'system' : 'user',
           reason: typeof body.reason === 'string' ? body.reason : undefined,
+          feedbackCategory: body.feedbackCategory,
+          feedbackNote: body.feedbackNote,
           snoozeMs: typeof body.snoozeMs === 'number' ? body.snoozeMs : undefined,
         });
         const goal =
@@ -416,6 +436,39 @@ async function handleAoiAutonomyRequest(
         writeJson(res, statusCode, {
           error: message,
           code: statusCode === 404 ? 'proposal_not_found' : 'blocked_transition',
+        });
+      }
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/proposal/feedback') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      try {
+        const decision = applyAoiProposalFeedback(sessionsDir, sessionPath, {
+          decisionId: String(body.decisionId ?? ''),
+          feedbackCategory: body.feedbackCategory,
+          feedbackNote: body.feedbackNote,
+        });
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          decision,
+          evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.includes('not found') ? 404 : 400;
+        writeJson(res, statusCode, {
+          error: message,
+          code: statusCode === 404 ? 'decision_not_found' : 'invalid_feedback',
         });
       }
       return true;

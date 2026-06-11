@@ -9,8 +9,10 @@ import type {
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
+  AoiProposalFeedbackCategory,
   AoiReflection,
 } from './aoiAutonomyTypes';
+import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
 
 const API_PREFIX = '/api/aoi-autonomy';
 
@@ -35,6 +37,17 @@ export interface AoiAutonomyGoalList {
   active: AoiGoal[];
   archived: AoiGoal[];
   progress: AoiGoalProgressEvent[];
+}
+
+export interface AoiAutonomyEvaluationResponse {
+  sessionPath: string;
+  evaluation: AoiAutonomyEvaluationResult;
+}
+
+export interface AoiAutonomyProposalFeedbackResult {
+  sessionPath: string;
+  decision: AoiProposalDecision;
+  evaluation?: AoiAutonomyEvaluationResult;
 }
 
 export interface AoiAutonomyPolicyUpdateResult {
@@ -75,7 +88,15 @@ export interface AoiAutonomyProposalDecisionInput {
   proposalId: string;
   action: AoiProposalDecisionAction;
   reason?: string;
+  feedbackCategory?: AoiProposalFeedbackCategory;
+  feedbackNote?: string;
   snoozeMs?: number;
+}
+
+export interface AoiAutonomyProposalFeedbackInput {
+  decisionId: string;
+  feedbackCategory: AoiProposalFeedbackCategory;
+  feedbackNote?: string;
 }
 
 export interface AoiAutonomyProposalExecutionResult {
@@ -225,6 +246,23 @@ export async function fetchAoiAutonomyGoals(sessionPath: string): Promise<AoiAut
   };
 }
 
+export async function fetchAoiAutonomyEvaluation(
+  sessionPath: string,
+): Promise<AoiAutonomyEvaluationResponse> {
+  const response = await fetch(`${API_PREFIX}/evaluation?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi autonomy evaluation.');
+  const evaluation = requireRecordField<AoiAutonomyEvaluationResult>(
+    payload,
+    'evaluation',
+    'Aoi autonomy evaluation response was malformed.',
+  );
+
+  return {
+    sessionPath: evaluation.sessionPath || sessionPath,
+    evaluation,
+  };
+}
+
 export async function updateAoiAutonomyPolicy(
   sessionPath: string,
   policy: Partial<AoiAutonomyPolicy>,
@@ -288,6 +326,8 @@ export async function decideAoiProposal(
       action: input.action,
       actor: 'user',
       reason: input.reason,
+      feedbackCategory: input.feedbackCategory,
+      feedbackNote: input.feedbackNote,
       snoozeMs: input.snoozeMs,
     }),
   });
@@ -312,6 +352,38 @@ export async function decideAoiProposal(
     active: asArray<AoiProposal>(payload.active),
     archived: asArray<AoiProposal>(payload.archived),
     executed: false,
+  };
+}
+
+export async function recordAoiProposalFeedback(
+  sessionPath: string,
+  input: AoiAutonomyProposalFeedbackInput,
+): Promise<AoiAutonomyProposalFeedbackResult> {
+  const response = await fetch(`${API_PREFIX}/proposal/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      decisionId: input.decisionId,
+      feedbackCategory: input.feedbackCategory,
+      feedbackNote: input.feedbackNote,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi proposal feedback.');
+
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    decision: requireRecordField<AoiProposalDecision>(
+      payload,
+      'decision',
+      'Aoi proposal feedback response was malformed.',
+    ),
+    evaluation: isRecord(payload.evaluation)
+      ? (payload.evaluation as AoiAutonomyEvaluationResult)
+      : undefined,
   };
 }
 

@@ -1,11 +1,13 @@
 import type {
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
+  AoiAutonomyRisk,
   AoiAutonomyToolPolicy,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalExecutionPolicyContext,
   AoiProposalExecutionPolicyResult,
+  AoiProposalFeedbackCategory,
   AoiProposalPolicyCheckInput,
   AoiProposalPolicyCheckResult,
 } from './aoiAutonomyTypes';
@@ -136,6 +138,21 @@ const FILESYSTEM_PATH_KEY_PATTERN = /(?:^|_)(?:path|file|dir|directory|cwd|comma
 const WINDOWS_PATH_PATTERN = /(?:[a-zA-Z]:\\|\\\\)[^\s'"`<>|]*/;
 const UNIX_PATH_PATTERN =
   /(?:^|\s)(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace|etc|root)\/|~\/|\.\.\/)/;
+const WRONG_MEMORY_CONFIDENCE_PENALTY = 0.18;
+const USEFUL_FEEDBACK_CONFIDENCE_BOOST = 0.04;
+const MAX_USEFUL_FEEDBACK_BOOST = 0.08;
+const TOO_FREQUENT_COOLDOWN_MULTIPLIER_LIMIT = 4;
+
+export const AOI_PROPOSAL_FEEDBACK_CATEGORIES: readonly AoiProposalFeedbackCategory[] = [
+  'useful',
+  'not_useful',
+  'wrong_memory',
+  'stale',
+  'too_frequent',
+  'unsafe',
+  'already_done',
+  'needs_more_detail',
+];
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -146,6 +163,15 @@ function clampNumber(value: unknown, fallback: number, min: number, max: number)
 
 function normalizeBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
+}
+
+export function isAoiProposalFeedbackCategory(
+  value: unknown,
+): value is AoiProposalFeedbackCategory {
+  return (
+    typeof value === 'string' &&
+    (AOI_PROPOSAL_FEEDBACK_CATEGORIES as readonly string[]).includes(value)
+  );
 }
 
 export function isAoiAutonomyLevel(value: unknown): value is AoiAutonomyLevel {
@@ -239,6 +265,30 @@ export function requiresAoiProposalApproval(toolName: string): boolean {
 
 function getExecutionActionKind(proposal: AoiProposal): string {
   return typeof proposal.acceptAction?.kind === 'string' ? proposal.acceptAction.kind : '';
+}
+
+function riskRank(value: AoiAutonomyRisk): number {
+  if (value === 'high') {
+    return 2;
+  }
+  if (value === 'medium') {
+    return 1;
+  }
+  return 0;
+}
+
+function maxRisk(a: AoiAutonomyRisk, b: AoiAutonomyRisk): AoiAutonomyRisk {
+  return riskRank(a) >= riskRank(b) ? a : b;
+}
+
+function nextAutonomyLevel(level: AoiAutonomyLevel): AoiAutonomyLevel {
+  const nextRank = Math.min(AOI_AUTONOMY_LEVEL_ORDER.L5, AOI_AUTONOMY_LEVEL_ORDER[level] + 1);
+  return (Object.entries(AOI_AUTONOMY_LEVEL_ORDER).find(([, rank]) => rank === nextRank)?.[0] ??
+    'L5') as AoiAutonomyLevel;
+}
+
+function maxAutonomyLevel(a: AoiAutonomyLevel, b: AoiAutonomyLevel): AoiAutonomyLevel {
+  return compareAoiAutonomyLevel(a, b) >= 0 ? a : b;
 }
 
 function actionKindToToolName(actionKind: string): string {
@@ -392,12 +442,151 @@ function hasRecentCooldownDecision(params: {
   );
 }
 
+function proposalMemoryRefSet(proposal: AoiProposal): Set<string> {
+  const refs = new Set<string>(proposal.memoryIds);
+  for (const ref of proposal.evidenceRefs) {
+    if (ref.startsWith('memory:')) {
+      refs.add(ref.slice('memory:'.length));
+    }
+  }
+  return refs;
+}
+
+function decisionMemoryRefSet(decision: AoiProposalDecision): Set<string> {
+  const refs = new Set<string>(decision.memoryIds ?? []);
+  for (const ref of decision.evidenceRefs ?? []) {
+    if (ref.startsWith('memory:')) {
+      refs.add(ref.slice('memory:'.length));
+    }
+  }
+  return refs;
+}
+
+function sharesMemoryRef(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  const proposalRefs = proposalMemoryRefSet(proposal);
+  if (proposalRefs.size === 0) {
+    return false;
+  }
+  for (const ref of decisionMemoryRefSet(decision)) {
+    if (proposalRefs.has(ref)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function actionKindMatches(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  const actionKind = getExecutionActionKind(proposal);
+  if (actionKind && decision.actionKind === actionKind) {
+    return true;
+  }
+  const tools = new Set(proposal.suggestedTools);
+  return Boolean(decision.suggestedTools?.some((tool) => tools.has(tool)));
+}
+
+function decisionAppliesToProposal(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  return (
+    decision.cooldownKey === proposal.cooldownKey ||
+    decision.proposalTrigger === proposal.trigger ||
+    sharesMemoryRef(proposal, decision) ||
+    actionKindMatches(proposal, decision)
+  );
+}
+
+function feedbackDecisions(
+  proposal: AoiProposal,
+  decisions: AoiProposalDecision[] | undefined,
+  category: AoiProposalFeedbackCategory,
+): AoiProposalDecision[] {
+  return (decisions ?? []).filter(
+    (decision) =>
+      decision.feedbackCategory === category && decisionAppliesToProposal(proposal, decision),
+  );
+}
+
+function isRefreshProposal(proposal: AoiProposal): boolean {
+  return (
+    proposal.acceptAction?.kind === 'start_research' &&
+    (proposal.trigger.includes('stale') ||
+      proposal.cooldownKey.includes('refresh') ||
+      proposal.riskSignals.includes('stale-memory'))
+  );
+}
+
+export function getAoiFeedbackAdjustedCooldownMs(params: {
+  proposal: AoiProposal;
+  recentDecisions?: AoiProposalDecision[];
+  baseCooldownMs: number;
+}): number {
+  const tooFrequentCount = (params.recentDecisions ?? []).filter(
+    (decision) =>
+      decision.feedbackCategory === 'too_frequent' &&
+      decision.cooldownKey === params.proposal.cooldownKey,
+  ).length;
+  if (tooFrequentCount <= 0) {
+    return params.baseCooldownMs;
+  }
+  const multiplier = Math.min(TOO_FREQUENT_COOLDOWN_MULTIPLIER_LIMIT, 1 + tooFrequentCount);
+  return params.baseCooldownMs * multiplier;
+}
+
+export function getAoiProposalFeedbackPriorityBoost(
+  proposal: AoiProposal,
+  recentDecisions?: AoiProposalDecision[],
+): number {
+  const usefulCount = feedbackDecisions(proposal, recentDecisions, 'useful').length;
+  if (usefulCount <= 0) {
+    return 0;
+  }
+  return Math.min(MAX_USEFUL_FEEDBACK_BOOST, usefulCount * USEFUL_FEEDBACK_CONFIDENCE_BOOST);
+}
+
+export function applyAoiFeedbackCalibrationToProposal(
+  proposal: AoiProposal,
+  recentDecisions?: AoiProposalDecision[],
+): AoiProposal {
+  const wrongMemoryCount = feedbackDecisions(proposal, recentDecisions, 'wrong_memory').filter(
+    (decision) => sharesMemoryRef(proposal, decision),
+  ).length;
+  const unsafeCount = feedbackDecisions(proposal, recentDecisions, 'unsafe').filter((decision) =>
+    actionKindMatches(proposal, decision),
+  ).length;
+  const confidence = Math.min(
+    1,
+    Math.max(0, proposal.confidence - wrongMemoryCount * WRONG_MEMORY_CONFIDENCE_PENALTY),
+  );
+
+  if (unsafeCount <= 0) {
+    return {
+      ...proposal,
+      confidence,
+    };
+  }
+
+  return {
+    ...proposal,
+    confidence,
+    risk: maxRisk(proposal.risk, 'medium'),
+    requiredAutonomyLevel: maxAutonomyLevel(
+      proposal.requiredAutonomyLevel,
+      nextAutonomyLevel(proposal.requiredAutonomyLevel),
+    ),
+    requiresUserApproval: true,
+    riskSignals: [...new Set([...proposal.riskSignals, 'unsafe-feedback'])],
+  };
+}
+
 export function checkAoiProposalPolicy(
   input: AoiProposalPolicyCheckInput,
 ): AoiProposalPolicyCheckResult {
   const now = input.now ?? Date.now();
   const reasons: string[] = [];
-  const { policy, proposal } = input;
+  const { policy } = input;
+  const proposal = applyAoiFeedbackCalibrationToProposal(input.proposal, input.recentDecisions);
+  const staleMemoryFeedbackApplies =
+    feedbackDecisions(proposal, input.recentDecisions, 'stale').filter((decision) =>
+      sharesMemoryRef(proposal, decision),
+    ).length > 0;
 
   if (!policy.enabled && !policy.previewMode) {
     reasons.push('autonomy_disabled');
@@ -417,10 +606,17 @@ export function checkAoiProposalPolicy(
       proposal,
       recentDecisions: input.recentDecisions,
       now,
-      cooldownMs: policy.defaultCooldownMs,
+      cooldownMs: getAoiFeedbackAdjustedCooldownMs({
+        proposal,
+        recentDecisions: input.recentDecisions,
+        baseCooldownMs: policy.defaultCooldownMs,
+      }),
     })
   ) {
     reasons.push('cooldown_active');
+  }
+  if (staleMemoryFeedbackApplies && !isRefreshProposal(proposal)) {
+    reasons.push('stale_memory_requires_refresh');
   }
   if (policy.maxActiveProposals > 0) {
     const activeCount =
