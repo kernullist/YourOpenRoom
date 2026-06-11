@@ -192,6 +192,26 @@ export function isAoiResearchTool(toolName: string): toolName is AoiResearchTool
   return AOI_RESEARCH_TOOL_NAMES.includes(toolName as AoiResearchToolName);
 }
 
+export function getAoiResearchToolPendingSummary(
+  toolName: string,
+  params: Record<string, unknown>,
+): string {
+  if (toolName === 'start_research') {
+    return `start_research(${String(params.request || '').slice(0, 48)})`;
+  }
+  if (toolName === 'get_research_status') {
+    return `get_research_status(${String(params.run_id || '').slice(0, 48)})`;
+  }
+  if (toolName === 'read_research_artifact') {
+    const artifact = String(params.artifact || 'artifact').slice(0, 24);
+    return `read_research_artifact(${artifact}:${String(params.run_id || '').slice(0, 40)})`;
+  }
+  if (toolName === 'cancel_research') {
+    return `cancel_research(${String(params.run_id || '').slice(0, 48)})`;
+  }
+  return toolName;
+}
+
 async function readJsonToolResponse(res: Response): Promise<unknown> {
   const text = await res.text();
   if (!text.trim()) {

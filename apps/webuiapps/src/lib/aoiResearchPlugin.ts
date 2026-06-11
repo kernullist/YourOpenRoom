@@ -211,7 +211,7 @@ async function handleAoiResearchRequest(
       const now = Date.now();
       const runId = generateRunId(now);
       const paths = resolveRunPaths(sessionsDir, sessionPath, runId);
-      const manifest = await startAoiResearchRun({
+      const runPromise = startAoiResearchRun({
         configFile,
         serverOrigin: getRequestOrigin(req),
         sessionPath,
@@ -226,11 +226,16 @@ async function handleAoiResearchRequest(
           maxSources: body.maxSources as AoiResearchStartRequest['maxSources'],
         },
       });
+      const manifest = readManifest(paths.manifest) ?? (await runPromise);
+      void runPromise.catch((error) => {
+        console.error('[aoi-research] background run failed', error);
+      });
       writeJson(res, 200, {
         ok: true,
         run: manifest,
         artifactPaths: manifest.artifactPaths,
         aoiMainLlm: getAoiLlmStatus(configFile),
+        background: manifest.status === 'queued' || manifest.status === 'running',
       });
       return true;
     }
@@ -271,10 +276,16 @@ async function handleAoiResearchRequest(
         });
         return true;
       }
+      const existing = readManifest(resolved.paths.manifest);
+      if (!existing) {
+        writeJson(res, 404, { error: 'Research run not found.' });
+        return true;
+      }
       const content = readArtifactContent(resolved.paths, artifactRaw);
       writeJson(res, 200, {
         ok: true,
         runId: resolved.runId,
+        run: existing,
         artifact: artifactRaw,
         contentType: artifactRaw === 'report' ? 'text/markdown' : 'application/json',
         content,

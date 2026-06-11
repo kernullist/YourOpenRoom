@@ -33,6 +33,27 @@ describe('aoiCapabilityRegistry', () => {
     expect(byName.file_read?.cacheable).toBe(true);
   });
 
+  it('classifies Aoi research tools for chat exposure and progress reads', () => {
+    const rows = getAoiCapabilityRows([
+      'start_research',
+      'get_research_status',
+      'read_research_artifact',
+      'cancel_research',
+    ]);
+    const byName = Object.fromEntries(rows.map((row) => [row.name, row]));
+
+    expect(byName.start_research?.surface).toBe('web');
+    expect(byName.start_research?.access).toEqual(['read', 'write', 'network', 'external']);
+    expect(byName.start_research?.parallelSafe).toBe(false);
+    expect(byName.start_research?.cacheable).toBe(false);
+    expect(byName.get_research_status?.parallelSafe).toBe(true);
+    expect(byName.get_research_status?.cacheable).toBe(true);
+    expect(byName.read_research_artifact?.parallelSafe).toBe(true);
+    expect(byName.read_research_artifact?.cacheable).toBe(true);
+    expect(byName.cancel_research?.parallelSafe).toBe(false);
+    expect(byName.cancel_research?.cacheable).toBe(false);
+  });
+
   it('surfaces unknown capabilities for review', () => {
     const unknown = getUnknownAoiCapabilityNames(['file_read', 'new_remote_tool']);
     const summary = summarizeAoiCapabilityRegistry(['file_read', 'new_remote_tool']);

@@ -20,6 +20,9 @@ const MAX_URL_BLOCK_CHARS = 180;
 const MAX_COMMAND_OUTPUT_CHARS = 700;
 const MAX_APP_STATE_WINDOWS = 6;
 const MAX_APP_STATE_CHARS = 900;
+const MAX_RESEARCH_REPORT_CHARS = 6000;
+const MAX_RESEARCH_JSON_CONTENT_CHARS = 2200;
+const MAX_RESEARCH_WARNINGS = 3;
 
 function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
@@ -99,6 +102,74 @@ function summarizeSearchToolResult(result: string): string {
       response_time: parsed.response_time,
       credits: parsed.credits,
     });
+  } catch {
+    return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
+  }
+}
+
+function summarizeAoiResearchRun(run: unknown): Record<string, unknown> | null {
+  if (!run || typeof run !== 'object') return null;
+  const record = run as Record<string, unknown>;
+  const warnings = Array.isArray(record.warnings) ? record.warnings : [];
+  const verificationWarnings = Array.isArray(record.verificationWarnings)
+    ? record.verificationWarnings
+    : [];
+  return {
+    id: record.id ?? '',
+    status: record.status ?? '',
+    phase: record.phase ?? '',
+    statusMessage: record.statusMessage ?? '',
+    reportTitle: record.reportTitle ?? undefined,
+    sourceCounts: record.sourceCounts ?? undefined,
+    claimCount: record.claimCount ?? undefined,
+    artifactAvailability: record.artifactAvailability ?? undefined,
+    completedAt: record.completedAt ?? undefined,
+    warnings: warnings.slice(0, MAX_RESEARCH_WARNINGS),
+    verificationWarnings: verificationWarnings.slice(0, MAX_RESEARCH_WARNINGS),
+  };
+}
+
+function summarizeAoiResearchToolResult(toolName: string, result: string): string {
+  try {
+    const parsed = JSON.parse(result) as {
+      ok?: boolean;
+      background?: boolean;
+      runId?: string;
+      run?: unknown;
+      artifact?: string;
+      contentType?: string;
+      content?: unknown;
+      artifactPaths?: unknown;
+      aoiMainLlm?: unknown;
+    };
+    const run = summarizeAoiResearchRun(parsed.run);
+    const summary: Record<string, unknown> = {
+      ok: parsed.ok === true,
+      tool: toolName,
+      background: parsed.background === true,
+      runId: parsed.runId || (typeof run?.id === 'string' ? run.id : ''),
+      run,
+    };
+
+    if (parsed.artifact) {
+      summary.artifact = parsed.artifact;
+      summary.contentType = parsed.contentType || '';
+      if (parsed.artifact === 'report' && typeof parsed.content === 'string') {
+        summary.content = truncateForTokenBudget(parsed.content, MAX_RESEARCH_REPORT_CHARS);
+      } else if (parsed.artifact === 'manifest') {
+        summary.content = summarizeAoiResearchRun(parsed.content);
+      } else if (parsed.content !== undefined) {
+        summary.content = truncateForTokenBudget(
+          JSON.stringify(parsed.content),
+          MAX_RESEARCH_JSON_CONTENT_CHARS,
+        );
+      }
+    } else {
+      summary.artifactPaths = parsed.artifactPaths ?? undefined;
+      summary.aoiMainLlm = parsed.aoiMainLlm ?? undefined;
+    }
+
+    return JSON.stringify(summary);
   } catch {
     return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
   }
@@ -467,6 +538,11 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
       return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
     case 'read_url':
       return summarizeUrlToolResult(trimmed);
+    case 'start_research':
+    case 'get_research_status':
+    case 'read_research_artifact':
+    case 'cancel_research':
+      return summarizeAoiResearchToolResult(toolName, trimmed);
     case 'run_command':
       return summarizeCommandToolResult(trimmed);
     case 'structured_diagnostics':
@@ -667,6 +743,7 @@ export function shouldUseDialogModel(
   if (!latest) return false;
   if (latest.length > 240) return false;
   if (/\bhttps?:\/\//i.test(latest)) return false;
+  if (shouldUseAoiResearchRun(latestUserMessage)) return false;
   if (shouldUseWebSearch(latestUserMessage)) return false;
 
   const heavyIntentPatterns = [
@@ -739,6 +816,23 @@ const WEB_SEARCH_VOLATILE_FACT_PATTERNS = [
   /(api로만|모델|가격|요금|출시|릴리스|배포|사용\s*가능|사용가능|지원|종료|중단|폐지|변경|정책|발표|공지|이후|이후로|부터|까지만|만\s*사용|만\s*가능|구독|베타|접근|제공)/i,
   /(오픈ai|오픈AI|앤트로픽|클로드|챗gpt|챗GPT|구글|제미나이|마이크로소프트|깃허브|애플|메타|타빌리|페이블)/i,
 ];
+
+const AOI_RESEARCH_RUN_INTENT_PATTERNS = [
+  /\b(research|investigate|deep dive|survey|compare|analyze)\b.*\b(report|document|brief|write[- ]?up|dossier|citations?|sources?)\b/i,
+  /\b(create|write|generate|prepare|produce)\b.*\b(research|investigation|cited report|cited document|source-backed document)\b/i,
+  /\b(literature review|market research|technical research report|structured research document)\b/i,
+  /(웹|인터넷|자료|출처|근거).*(조사|연구|리서치).*(문서|보고서|정리|작성|생성|구조화)/,
+  /(조사|연구|리서치).*(자료|출처|근거).*(문서|보고서|정리|작성|생성|구조화)/,
+  /(조사|연구|리서치).*(잘\s*구조화|구조화된|심층|깊게|상세).*(문서|보고서|정리)/,
+  /(문서|보고서).*(조사|연구|리서치).*(작성|생성|만들어|정리)/,
+];
+
+export function shouldUseAoiResearchRun(latestUserMessage: string): boolean {
+  const latest = normalizeWhitespace(latestUserMessage);
+  if (!latest) return false;
+  if (/\bhttps?:\/\//i.test(latest)) return false;
+  return AOI_RESEARCH_RUN_INTENT_PATTERNS.some((pattern) => pattern.test(latest));
+}
 
 export function shouldUseWebSearch(latestUserMessage: string): boolean {
   const latest = normalizeWhitespace(latestUserMessage);

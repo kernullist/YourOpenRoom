@@ -20,6 +20,8 @@ const PARALLEL_SAFE_TOOLS = new Set([
   'structured_diagnostics',
   'preview_changes',
   'search_web',
+  'get_research_status',
+  'read_research_artifact',
 ]);
 
 export function isParallelSafeToolName(toolName: string): boolean {

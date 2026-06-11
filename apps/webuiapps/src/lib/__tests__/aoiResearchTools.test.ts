@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   executeAoiResearchTool,
+  getAoiResearchToolPendingSummary,
   getAoiResearchToolDefinitions,
   isAoiResearchTool,
   normalizeAoiResearchArtifact,
@@ -49,6 +50,30 @@ describe('Aoi research tool definitions', () => {
     expect(schemas).not.toContain('sessionPath');
     expect(schemas).not.toContain('file_path');
     expect(schemas).not.toContain('output_path');
+  });
+
+  it('builds compact pending summaries for chat progress', () => {
+    expect(
+      getAoiResearchToolPendingSummary('start_research', {
+        request: 'Investigate Windows ETW detection opportunities in depth',
+      }),
+    ).toMatch(/^start_research\(Investigate Windows ETW detection opportunities/);
+    expect(
+      getAoiResearchToolPendingSummary('get_research_status', {
+        run_id: 'aoi-research-test-1234',
+      }),
+    ).toBe('get_research_status(aoi-research-test-1234)');
+    expect(
+      getAoiResearchToolPendingSummary('read_research_artifact', {
+        run_id: 'aoi-research-test-1234',
+        artifact: 'report',
+      }),
+    ).toBe('read_research_artifact(report:aoi-research-test-1234)');
+    expect(
+      getAoiResearchToolPendingSummary('cancel_research', {
+        run_id: 'aoi-research-test-1234',
+      }),
+    ).toBe('cancel_research(aoi-research-test-1234)');
   });
 
   it('normalizes start params with conservative bounded defaults', () => {

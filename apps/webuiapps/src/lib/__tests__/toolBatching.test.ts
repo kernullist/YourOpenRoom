@@ -6,6 +6,10 @@ describe('toolBatching', () => {
   it('recognizes safe read-only tool names', () => {
     expect(isParallelSafeToolName('file_read')).toBe(true);
     expect(isParallelSafeToolName('ide_search')).toBe(true);
+    expect(isParallelSafeToolName('get_research_status')).toBe(true);
+    expect(isParallelSafeToolName('read_research_artifact')).toBe(true);
+    expect(isParallelSafeToolName('start_research')).toBe(false);
+    expect(isParallelSafeToolName('cancel_research')).toBe(false);
     expect(isParallelSafeToolName('file_write')).toBe(false);
   });
 

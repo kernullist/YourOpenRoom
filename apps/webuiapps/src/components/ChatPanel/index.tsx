@@ -92,6 +92,7 @@ import { logger } from '@/lib/logger';
 import {
   condenseConversationHistory,
   shouldEnableAppTools,
+  shouldUseAoiResearchRun,
   shouldUseDialogModel,
   shouldUseWebSearch,
   summarizeToolResultForModel,
@@ -113,6 +114,12 @@ import {
   type TavilyConfig,
 } from '@/lib/tavilyClient';
 import { executeTavilyTool, getTavilyToolDefinitions, isTavilyTool } from '@/lib/tavilyTools';
+import {
+  executeAoiResearchTool,
+  getAoiResearchToolDefinitions,
+  getAoiResearchToolPendingSummary,
+  isAoiResearchTool,
+} from '@/lib/aoiResearchTools';
 import {
   executeWorkspaceTool,
   getWorkspaceToolDefinitions,
@@ -910,6 +917,7 @@ function buildSystemPrompt(
   conversationPreferences: ConversationPreferencesConfig | null,
   memories: MemoryEntry[] = [],
   hasTavily = false,
+  hasResearchTools = false,
   aoiMemoryPrompt = '',
   capabilityPrompt = '',
   runGoalPrompt = '',
@@ -1014,6 +1022,19 @@ Web search rule:
 - Korean verification questions like "진짜야?", "사실이야?", or "맞아?" require search_web first when they mention dates, API availability, product/model changes, vendor policy, releases, or support status.
 - Base current-information answers on search_web results instead of guessing.
 - When helpful, mention the source site names or URLs naturally in your reply.`;
+  }
+
+  if (hasResearchTools) {
+    prompt += `
+
+Research run rule:
+- Use start_research for research or document-generation requests that require web investigation, source collection, evidence extraction, and a structured cited report.
+- Use search_web or read_url instead for small one-off lookups, quick fact checks, or a single URL summary. Do not turn every web question into a long research run.
+- After start_research, inspect the returned run id, status, phase, statusMessage, source counts, and artifactAvailability.
+- If the run is completed and the report artifact is available, you may call read_research_artifact with artifact="report" before summarizing the document.
+- If the run is queued or running, tell the user the run id and current phase/status, then stop instead of polling forever.
+- If the run failed or was cancelled, give the precise failure reason and mention any partial artifact availability. Do not fabricate citations or claim the document is complete unless status is completed.
+- Use get_research_status when the user asks about an active run or provides a run id. Use cancel_research only when the user asks to stop that run.`;
   }
 
   prompt +=
@@ -2981,8 +3002,13 @@ const ChatPanel: React.FC<{
     }
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const includeAppTools = !useDialogModel && shouldEnableAppTools(latestUserMessage, history);
+    const hasResearchTools = !useDialogModel && hasTavily;
+    const shouldPreferResearchRun = hasResearchTools && shouldUseAoiResearchRun(latestUserMessage);
     const shouldPreSearchWeb =
-      hasTavily && !includeAppTools && shouldUseWebSearch(latestUserMessage);
+      hasTavily &&
+      !includeAppTools &&
+      !shouldPreferResearchRun &&
+      shouldUseWebSearch(latestUserMessage);
     const condensedHistory = condenseConversationHistory(history);
 
     const tools = useDialogModel
@@ -2992,6 +3018,7 @@ const ChatPanel: React.FC<{
           getFinishTargetToolDef(),
           ...getMemoryToolDefinitions(),
           ...(hasTavily ? getTavilyToolDefinitions() : []),
+          ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
           ...(hasImageGen ? getImageGenToolDefinitions() : []),
           ...(includeAppTools
             ? [
@@ -3027,6 +3054,8 @@ const ChatPanel: React.FC<{
       useDialogModel,
       activeModel: activeCfg.model,
       includeAppTools,
+      hasResearchTools,
+      shouldPreferResearchRun,
       shouldPreSearchWeb,
       toolNames: selectedToolNames,
       activeSkills: activeSkillMatches.map((match) => match.skill.id),
@@ -3045,6 +3074,7 @@ const ChatPanel: React.FC<{
       conversationPreferencesRef.current,
       currentMemories,
       hasTavily,
+      hasResearchTools,
       currentAoiMemoryPrompt,
       capabilityPrompt,
       runGoalPrompt,
@@ -3406,6 +3436,17 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: `preview_changes(${String(params.file_path || '').slice(0, 48)})`,
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isAoiResearchTool(tc.function.name)) {
+              const result = await runCachedTool(tc.function.name, params, () =>
+                executeAoiResearchTool(tc.function.name, params, sessionPathRef.current),
+              );
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getAoiResearchToolPendingSummary(tc.function.name, params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -4133,6 +4174,41 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] Background watch tool failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- Aoi research tools ----
+        if (isAoiResearchTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(
+            getAoiResearchToolPendingSummary(tc.function.name, params),
+          );
+          try {
+            const result = await runCachedTool(tc.function.name, params, () =>
+              executeAoiResearchTool(tc.function.name, params, sessionPathRef.current),
+            );
+            console.info('[ChatPanel] Aoi research tool result', {
+              tool: tc.function.name,
+              resultPreview: result.slice(0, 200),
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] Aoi research tool failed', {
+              tool: tc.function.name,
+              err,
+            });
             currentMessages = [
               ...currentMessages,
               {

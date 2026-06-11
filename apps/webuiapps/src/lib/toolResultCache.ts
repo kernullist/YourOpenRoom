@@ -23,7 +23,29 @@ const CACHEABLE_TOOL_NAMES = new Set([
   'run_command',
   'structured_diagnostics',
   'search_web',
+  'get_research_status',
+  'read_research_artifact',
 ]);
+
+function isCompletedResearchToolResult(value: string): boolean {
+  try {
+    const parsed = JSON.parse(value) as {
+      run?: { status?: string };
+      content?: { status?: string };
+    };
+    return parsed.run?.status === 'completed' || parsed.content?.status === 'completed';
+  } catch {
+    return false;
+  }
+}
+
+export function isCacheableToolResult(toolName: string, value: string): boolean {
+  if (!isCacheableToolName(toolName)) return false;
+  if (toolName === 'get_research_status' || toolName === 'read_research_artifact') {
+    return isCompletedResearchToolResult(value);
+  }
+  return true;
+}
 
 function stableSerialize(value: unknown): string {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -58,7 +80,7 @@ export function createToolResultCache(ttlMs = 8_000) {
       return entry.value;
     },
     set(toolName: string, params: Record<string, unknown>, value: string): void {
-      if (!isCacheableToolName(toolName)) return;
+      if (!isCacheableToolResult(toolName, value)) return;
       const key = buildToolCacheKey(toolName, params);
       entries.set(key, { key, value, createdAt: Date.now() });
     },

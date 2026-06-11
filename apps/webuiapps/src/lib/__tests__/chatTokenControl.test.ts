@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   condenseConversationHistory,
   shouldEnableAppTools,
+  shouldUseAoiResearchRun,
   shouldUseDialogModel,
   shouldUseWebSearch,
   summarizeToolResultForModel,
@@ -164,6 +165,53 @@ describe('summarizeToolResultForModel()', () => {
     expect(commandSummary.stdout.length).toBeLessThan(750);
     expect(commandSummary.stderr.length).toBeLessThan(750);
   });
+
+  it('compacts Aoi research status and report artifacts', () => {
+    const statusSummary = JSON.parse(
+      summarizeToolResultForModel(
+        'start_research',
+        JSON.stringify({
+          ok: true,
+          background: true,
+          run: {
+            id: 'aoi-research-test-1234',
+            status: 'running',
+            phase: 'reading_sources',
+            statusMessage: 'Reading candidate sources.',
+            artifactAvailability: { manifest: true, report: true, sources: true, evidence: true },
+            sourceCounts: { planned: 12, candidates: 4, accepted: 2, failed: 1 },
+          },
+          artifactPaths: { report: 'aoi-research/runs/aoi-research-test-1234/report.md' },
+        }),
+      ),
+    ) as { run: { id: string; phase: string }; background: boolean };
+
+    const reportSummary = JSON.parse(
+      summarizeToolResultForModel(
+        'read_research_artifact',
+        JSON.stringify({
+          ok: true,
+          runId: 'aoi-research-test-1234',
+          run: {
+            id: 'aoi-research-test-1234',
+            status: 'completed',
+            phase: 'completed',
+            reportTitle: 'Research report',
+          },
+          artifact: 'report',
+          contentType: 'text/markdown',
+          content: `# Research report\n\n${'A'.repeat(8000)}`,
+        }),
+      ),
+    ) as { content: string; run: { status: string }; artifact: string };
+
+    expect(statusSummary.background).toBe(true);
+    expect(statusSummary.run.id).toBe('aoi-research-test-1234');
+    expect(statusSummary.run.phase).toBe('reading_sources');
+    expect(reportSummary.artifact).toBe('report');
+    expect(reportSummary.run.status).toBe('completed');
+    expect(reportSummary.content.length).toBeLessThan(6200);
+  });
 });
 
 describe('shouldEnableAppTools()', () => {
@@ -218,6 +266,17 @@ describe('shouldUseDialogModel()', () => {
 });
 
 describe('shouldUseWebSearch()', () => {
+  it('separates long research-document requests from one-off web search', () => {
+    expect(shouldUseAoiResearchRun('웹에서 관련 자료를 조사해서 구조화된 문서로 만들어줘')).toBe(
+      true,
+    );
+    expect(shouldUseAoiResearchRun('Create a cited research report about TPM attestation')).toBe(
+      true,
+    );
+    expect(shouldUseAoiResearchRun('최신 Tavily API 변경점 검색해서 알려줘')).toBe(false);
+    expect(shouldUseAoiResearchRun('https://example.com 이 URL 요약해줘')).toBe(false);
+  });
+
   it('detects Korean time-sensitive fact checks', () => {
     const message = '앤트로픽의 fable 은 6/22 이후로는 API로만 사용 가능하다던데 진짜야?';
 
