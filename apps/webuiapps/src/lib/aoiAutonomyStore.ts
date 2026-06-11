@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { DEFAULT_AOI_AUTONOMY_POLICY, normalizeAoiAutonomyPolicy } from './aoiAutonomyPolicy';
+import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import type {
   AoiAutonomyPolicy,
@@ -910,6 +911,13 @@ export function buildAoiAutonomyStatus(
   const reflections = loadAoiReflections(sessionsDir, normalizedSessionPath);
   const decisions = loadAoiProposalDecisions(sessionsDir, normalizedSessionPath);
   const tickState = loadAoiAutonomyTickState(sessionsDir, normalizedSessionPath, now);
+  const activeGoals = loadAoiActiveGoals(sessionsDir, normalizedSessionPath).filter(
+    (goal) => goal.status === 'active' || goal.status === 'blocked' || goal.status === 'paused',
+  );
+  const currentGoal = activeGoals[0];
+  const nextGoalStep = currentGoal?.plan.steps.find(
+    (step) => step.status === 'pending' || step.status === 'blocked',
+  );
   return {
     version: 1,
     sessionPath: normalizedSessionPath,
@@ -935,6 +943,9 @@ export function buildAoiAutonomyStatus(
     activeTick: tickState.activeTick,
     recentObservationCount: tickState.recentObservationCount || observations.length,
     proposalsCreatedInLastTick: tickState.proposalsCreatedInLastTick,
+    activeGoalCount: activeGoals.length,
+    currentGoalTitle: currentGoal?.title,
+    nextGoalStepTitle: nextGoalStep?.title,
     updatedAt: now,
   };
 }

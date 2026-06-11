@@ -6575,6 +6575,12 @@ const SettingsModal: React.FC<{
     aoiAutonomyStatus?.nextAllowedTickAt && aoiAutonomyStatus.nextAllowedTickAt > Date.now()
       ? new Date(aoiAutonomyStatus.nextAllowedTickAt).toLocaleTimeString()
       : 'Ready';
+  const aoiAutonomyCurrentGoalLabel = aoiAutonomyStatus?.currentGoalTitle
+    ? sanitizeAoiProposalDisplayText(aoiAutonomyStatus.currentGoalTitle, 80)
+    : 'None';
+  const aoiAutonomyNextGoalStepLabel = aoiAutonomyStatus?.nextGoalStepTitle
+    ? sanitizeAoiProposalDisplayText(aoiAutonomyStatus.nextGoalStepTitle, 96)
+    : 'None';
   const aoiAutonomyBlockedCount = Math.max(
     aoiAutonomyProposalCounts.blocked,
     aoiAutonomyBlockedProposals.length,
@@ -7751,6 +7757,18 @@ const SettingsModal: React.FC<{
                   <div className={styles.promptBudgetMetric}>
                     <span className={styles.promptBudgetLabel}>Observed</span>
                     <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Goals</span>
+                    <strong>{aoiAutonomyStatus?.activeGoalCount ?? 0}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Current goal</span>
+                    <strong>{aoiAutonomyCurrentGoalLabel}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Next goal step</span>
+                    <strong>{aoiAutonomyNextGoalStepLabel}</strong>
                   </div>
                 </div>
 

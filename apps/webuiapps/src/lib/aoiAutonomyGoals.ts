@@ -1,0 +1,1413 @@
+import * as fs from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { dirname, isAbsolute, join, relative, resolve } from 'path';
+import {
+  makeAoiRelationEdge,
+  makeAoiRelationNode,
+  upsertAoiRelations,
+} from './aoiAutonomyRelations';
+import type {
+  AoiAutonomyLevel,
+  AoiAutonomyRisk,
+  AoiGoal,
+  AoiGoalOwner,
+  AoiGoalProgressEvent,
+  AoiGoalStatus,
+  AoiObservation,
+  AoiPlan,
+  AoiPlanStep,
+  AoiPlanStepKind,
+  AoiProposal,
+  AoiProposalAcceptActionKind,
+} from './aoiAutonomyTypes';
+import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+
+const AUTONOMY_ROOT_DIR = 'aoi-autonomy';
+const GOALS_DIR = 'goals';
+const ACTIVE_GOALS_FILE = 'active.json';
+const ARCHIVE_GOALS_FILE = 'archive.json';
+const PROGRESS_EVENTS_FILE = 'progress.json';
+const MAX_ACTIVE_GOALS = 20;
+const MAX_ARCHIVED_GOALS = 120;
+const MAX_PROGRESS_EVENTS = 240;
+const TEXT_MAX_CHARS = 240;
+const PLAN_STEP_MAX = 8;
+
+export interface AoiGoalPaths {
+  root: string;
+  goalsDir: string;
+  activeGoals: string;
+  archivedGoals: string;
+  progressEvents: string;
+}
+
+export interface AoiGoalDecisionInput {
+  action: 'pause' | 'resume' | 'abandon' | 'complete' | 'block';
+  goalId: string;
+  now?: number;
+  evidenceRefs?: string[];
+  reason?: string;
+  userConfirmed?: boolean;
+}
+
+export interface AoiGoalProgressUpdateResult {
+  activeGoals: AoiGoal[];
+  archivedGoals: AoiGoal[];
+  events: AoiGoalProgressEvent[];
+}
+
+function normalizeWhitespace(value: string): string {
+  return value.replace(/\s+/g, ' ').trim();
+}
+
+function truncateText(value: string, maxChars = TEXT_MAX_CHARS): string {
+  const normalized = normalizeWhitespace(value);
+  if (normalized.length <= maxChars) {
+    return normalized;
+  }
+  return `${normalized.slice(0, maxChars - 1).trimEnd()}...`;
+}
+
+function sanitizeText(value: string, maxChars = TEXT_MAX_CHARS): string {
+  return truncateText(stripAoiSourceInstructions(redactAoiSensitiveContent(value)), maxChars);
+}
+
+function hashPart(value: string): string {
+  return createHash('sha256').update(value).digest('hex').slice(0, 16);
+}
+
+function sanitizeIdPart(value: string): string {
+  return (
+    normalizeWhitespace(value)
+      .replace(/[^A-Za-z0-9_-]/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 48) || 'item'
+  );
+}
+
+function createGoalId(prefix: string, now = Date.now()): string {
+  return `${sanitizeIdPart(prefix)}-${now.toString(36)}-${randomUUID().slice(0, 8)}`.slice(0, 96);
+}
+
+function isPathInsideRoot(root: string, target: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(target);
+  const diff = relative(resolvedRoot, resolvedTarget);
+  return diff === '' || (!diff.startsWith('..') && !isAbsolute(diff));
+}
+
+function normalizeSessionPath(value: unknown): string | null {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value
+    .trim()
+    .replace(/\\/g, '/')
+    .replace(/^\/+|\/+$/g, '');
+  if (!normalized || normalized.includes('..')) {
+    return null;
+  }
+  if (!/^[a-zA-Z0-9._/-]+$/.test(normalized)) {
+    return null;
+  }
+  if (normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
+    return null;
+  }
+  return normalized;
+}
+
+function writeJsonAtomic(filePath: string, value: unknown): void {
+  fs.mkdirSync(dirname(filePath), { recursive: true });
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID().slice(0, 8)}.tmp`;
+  fs.writeFileSync(tmpPath, `${JSON.stringify(value, null, 2)}\n`, 'utf-8');
+  fs.renameSync(tmpPath, filePath);
+}
+
+function readJson<T>(filePath: string): T | null {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    return JSON.parse(fs.readFileSync(filePath, 'utf-8')) as T;
+  } catch {
+    return null;
+  }
+}
+
+function normalizeStringArray(value: unknown, maxItems = 24): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const seen = new Set<string>();
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const normalized = normalizeWhitespace(item).slice(0, 240);
+    if (normalized) {
+      seen.add(normalized);
+    }
+    if (seen.size >= maxItems) {
+      break;
+    }
+  }
+  return [...seen];
+}
+
+function clampConfidence(value: unknown, fallback = 0.7): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback;
+  }
+  return Math.min(1, Math.max(0, value));
+}
+
+function isRisk(value: unknown): value is AoiAutonomyRisk {
+  return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function isGoalStatus(value: unknown): value is AoiGoalStatus {
+  return (
+    value === 'proposed' ||
+    value === 'active' ||
+    value === 'paused' ||
+    value === 'completed' ||
+    value === 'abandoned' ||
+    value === 'blocked'
+  );
+}
+
+function isGoalOwner(value: unknown): value is AoiGoalOwner {
+  return value === 'user' || value === 'aoi' || value === 'shared';
+}
+
+function isLevel(value: unknown): value is AoiAutonomyLevel {
+  return (
+    value === 'L0' ||
+    value === 'L1' ||
+    value === 'L2' ||
+    value === 'L3' ||
+    value === 'L4' ||
+    value === 'L5'
+  );
+}
+
+function isStepKind(value: unknown): value is AoiPlanStepKind {
+  return (
+    value === 'read' ||
+    value === 'research' ||
+    value === 'draft' ||
+    value === 'review' ||
+    value === 'execute_proposal' ||
+    value === 'ask_user' ||
+    value === 'handoff_kira'
+  );
+}
+
+function isActionKind(value: unknown): value is AoiProposalAcceptActionKind | 'none' {
+  return (
+    value === 'none' ||
+    value === 'open_research_artifact' ||
+    value === 'read_research_artifact' ||
+    value === 'get_research_status' ||
+    value === 'start_research' ||
+    value === 'create_kira_work' ||
+    value === 'open_app' ||
+    value === 'save_memory' ||
+    value === 'activate_goal'
+  );
+}
+
+function tokenize(value: string): Set<string> {
+  return new Set(
+    value
+      .toLowerCase()
+      .split(/[^a-z0-9가-힣_+-]+/i)
+      .map((item) => item.trim())
+      .filter((item) => item.length >= 2),
+  );
+}
+
+function overlapScore(leftValue: string, rightValue: string): number {
+  const left = tokenize(leftValue);
+  const right = tokenize(rightValue);
+  if (left.size === 0 || right.size === 0) {
+    return 0;
+  }
+  let overlap = 0;
+  for (const item of left) {
+    if (right.has(item)) {
+      overlap += 1;
+    }
+  }
+  return overlap / Math.max(1, Math.min(left.size, right.size));
+}
+
+export function resolveAoiGoalPaths(sessionsDir: string, sessionPath: string): AoiGoalPaths {
+  const normalizedSessionPath = normalizeSessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const sessionsRoot = resolve(sessionsDir);
+  const root = resolve(sessionsRoot, normalizedSessionPath, AUTONOMY_ROOT_DIR);
+  if (!isPathInsideRoot(sessionsRoot, root)) {
+    throw new Error('Resolved Aoi goal path escaped the sessions directory.');
+  }
+  const goalsDir = join(root, GOALS_DIR);
+  return {
+    root,
+    goalsDir,
+    activeGoals: join(goalsDir, ACTIVE_GOALS_FILE),
+    archivedGoals: join(goalsDir, ARCHIVE_GOALS_FILE),
+    progressEvents: join(goalsDir, PROGRESS_EVENTS_FILE),
+  };
+}
+
+export function aoiPlanStepRequiredLevel(
+  kind: AoiPlanStepKind,
+  risk: AoiAutonomyRisk,
+): AoiAutonomyLevel {
+  if (risk === 'high') {
+    return 'L4';
+  }
+  if (kind === 'research' || kind === 'execute_proposal' || kind === 'handoff_kira') {
+    return risk === 'medium' ? 'L4' : 'L3';
+  }
+  if (kind === 'draft' || kind === 'review') {
+    return risk === 'medium' ? 'L3' : 'L2';
+  }
+  return 'L2';
+}
+
+function makePlanStep(params: {
+  goalId: string;
+  kind: AoiPlanStepKind;
+  title: string;
+  expectedEvidence: string[];
+  allowedActionKind: AoiProposalAcceptActionKind | 'none';
+  doneCriteria: string[];
+  evidenceRefs: string[];
+  risk: AoiAutonomyRisk;
+  now: number;
+}): AoiPlanStep {
+  return {
+    version: 1,
+    id: `step-${sanitizeIdPart(params.kind)}-${hashPart(`${params.goalId}:${params.title}`)}`,
+    kind: params.kind,
+    title: sanitizeText(params.title, 120),
+    status: 'pending',
+    expectedEvidence: normalizeStringArray(params.expectedEvidence, 8),
+    allowedActionKind: params.allowedActionKind,
+    requiredAutonomyLevel: aoiPlanStepRequiredLevel(params.kind, params.risk),
+    doneCriteria: normalizeStringArray(params.doneCriteria, 8),
+    evidenceRefs: normalizeStringArray(params.evidenceRefs, 12),
+    risk: params.risk,
+  };
+}
+
+function isCurrentInfoIntent(value: string): boolean {
+  return (
+    /\b(?:latest|recent|current|today|now|updated|research|investigate)\b/i.test(value) ||
+    /(?:최신|최근|현재|오늘|요즘|업데이트|조사|리서치|연구)/u.test(value)
+  );
+}
+
+function isKiraIntent(value: string): boolean {
+  return /\bkira\b/i.test(value) || /(?:키라|자동화|작업자|리뷰)/u.test(value);
+}
+
+export function looksLikeExplicitAoiGoalIntent(value: string | undefined): boolean {
+  if (!value) {
+    return false;
+  }
+  return (
+    /\b(?:goal|objective|track this|manage this|keep track|next steps|finish this|until done|end-to-end)\b/i.test(
+      value,
+    ) || /(?:목표|끝까지|다음\s*단계|관리하자|추적|이어가|완료할\s*때까지|마무리)/u.test(value)
+  );
+}
+
+export function buildAoiPlanForGoal(params: {
+  goalId: string;
+  sessionPath: string;
+  userIntentSummary: string;
+  sourceRefs: string[];
+  risk: AoiAutonomyRisk;
+  now: number;
+}): AoiPlan {
+  const sourceRefs = normalizeStringArray(params.sourceRefs, 12);
+  const steps: AoiPlanStep[] = [
+    makePlanStep({
+      goalId: params.goalId,
+      kind: 'read',
+      title: 'Review the goal context and current evidence',
+      expectedEvidence: [
+        'Relevant observations, memories, proposals, or artifacts are identified.',
+      ],
+      allowedActionKind: 'none',
+      doneCriteria: ['Aoi can name the current objective and known evidence refs.'],
+      evidenceRefs: sourceRefs,
+      risk: 'low',
+      now: params.now,
+    }),
+  ];
+
+  if (isCurrentInfoIntent(params.userIntentSummary)) {
+    steps.push(
+      makePlanStep({
+        goalId: params.goalId,
+        kind: 'research',
+        title: 'Refresh evidence with a bounded research pass',
+        expectedEvidence: ['A completed research run or explicit reason research is unnecessary.'],
+        allowedActionKind: 'start_research',
+        doneCriteria: ['Research result, failure, or user cancellation is recorded as evidence.'],
+        evidenceRefs: sourceRefs,
+        risk: params.risk === 'high' ? 'high' : 'medium',
+        now: params.now,
+      }),
+    );
+  } else if (isKiraIntent(params.userIntentSummary)) {
+    steps.push(
+      makePlanStep({
+        goalId: params.goalId,
+        kind: 'handoff_kira',
+        title: 'Break the work into a Kira handoff candidate',
+        expectedEvidence: ['A Kira-ready task summary or explicit decision not to hand off.'],
+        allowedActionKind: 'create_kira_work',
+        doneCriteria: [
+          'The handoff proposal is accepted, dismissed, or replaced by a smaller step.',
+        ],
+        evidenceRefs: sourceRefs,
+        risk: params.risk === 'high' ? 'high' : 'medium',
+        now: params.now,
+      }),
+    );
+  } else {
+    steps.push(
+      makePlanStep({
+        goalId: params.goalId,
+        kind: 'draft',
+        title: 'Draft the next concrete step',
+        expectedEvidence: ['A draft, checklist, patch plan, or next-step proposal exists.'],
+        allowedActionKind: 'none',
+        doneCriteria: ['A small next step is ready for user review or execution proposal.'],
+        evidenceRefs: sourceRefs,
+        risk: params.risk === 'high' ? 'medium' : 'low',
+        now: params.now,
+      }),
+    );
+  }
+
+  steps.push(
+    makePlanStep({
+      goalId: params.goalId,
+      kind: 'review',
+      title: 'Review progress and decide whether the goal is done, blocked, or needs another step',
+      expectedEvidence: [
+        'Observation, proposal decision, artifact, or explicit user confirmation.',
+      ],
+      allowedActionKind: 'none',
+      doneCriteria: [
+        'Goal status is evidence-backed and no completion is inferred from a mere plan.',
+      ],
+      evidenceRefs: sourceRefs,
+      risk: 'low',
+      now: params.now,
+    }),
+  );
+
+  return {
+    version: 1,
+    id: `plan-${hashPart(params.goalId)}`,
+    goalId: params.goalId,
+    sessionPath: params.sessionPath,
+    createdAt: params.now,
+    updatedAt: params.now,
+    sourceRefs,
+    steps: steps.slice(0, PLAN_STEP_MAX),
+  };
+}
+
+function normalizePlanStep(value: unknown): AoiPlanStep | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Partial<AoiPlanStep>;
+  if (
+    record.version !== 1 ||
+    typeof record.id !== 'string' ||
+    !isStepKind(record.kind) ||
+    typeof record.title !== 'string'
+  ) {
+    return null;
+  }
+  const risk = isRisk(record.risk) ? record.risk : 'low';
+  return {
+    version: 1,
+    id: sanitizeIdPart(record.id).slice(0, 96),
+    kind: record.kind,
+    title: sanitizeText(record.title, 120),
+    status:
+      record.status === 'in_progress' || record.status === 'done' || record.status === 'blocked'
+        ? record.status
+        : 'pending',
+    expectedEvidence: normalizeStringArray(record.expectedEvidence, 8),
+    allowedActionKind: isActionKind(record.allowedActionKind) ? record.allowedActionKind : 'none',
+    requiredAutonomyLevel: isLevel(record.requiredAutonomyLevel)
+      ? record.requiredAutonomyLevel
+      : aoiPlanStepRequiredLevel(record.kind, risk),
+    doneCriteria: normalizeStringArray(record.doneCriteria, 8),
+    evidenceRefs: normalizeStringArray(record.evidenceRefs, 12),
+    risk,
+  };
+}
+
+function normalizeGoal(value: unknown): AoiGoal | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Partial<AoiGoal>;
+  const sessionPath = normalizeSessionPath(record.sessionPath);
+  if (
+    record.version !== 1 ||
+    typeof record.id !== 'string' ||
+    !sessionPath ||
+    typeof record.title !== 'string' ||
+    typeof record.userIntentSummary !== 'string' ||
+    !isGoalStatus(record.status)
+  ) {
+    return null;
+  }
+  const risk = isRisk(record.risk) ? record.risk : 'low';
+  const now = Date.now();
+  const rawPlan =
+    record.plan && typeof record.plan === 'object' && !Array.isArray(record.plan)
+      ? (record.plan as Partial<AoiPlan>)
+      : {};
+  const sourceRefs = normalizeStringArray(record.sourceRefs, 16);
+  const steps = Array.isArray(rawPlan.steps)
+    ? rawPlan.steps.map(normalizePlanStep).filter((step): step is AoiPlanStep => step !== null)
+    : [];
+  const goal: AoiGoal = {
+    version: 1,
+    id: sanitizeIdPart(record.id).slice(0, 96),
+    sessionPath,
+    title: sanitizeText(record.title, 120),
+    userIntentSummary: sanitizeText(record.userIntentSummary, TEXT_MAX_CHARS),
+    sourceRefs,
+    status: record.status,
+    createdAt: typeof record.createdAt === 'number' ? record.createdAt : now,
+    updatedAt: typeof record.updatedAt === 'number' ? record.updatedAt : now,
+    lastCheckedAt: typeof record.lastCheckedAt === 'number' ? record.lastCheckedAt : 0,
+    confidence: clampConfidence(record.confidence),
+    risk,
+    owner: isGoalOwner(record.owner) ? record.owner : 'shared',
+    plan: {
+      version: 1,
+      id: typeof rawPlan.id === 'string' ? sanitizeIdPart(rawPlan.id).slice(0, 96) : 'plan',
+      goalId: sanitizeIdPart(record.id).slice(0, 96),
+      sessionPath,
+      createdAt: typeof rawPlan.createdAt === 'number' ? rawPlan.createdAt : now,
+      updatedAt: typeof rawPlan.updatedAt === 'number' ? rawPlan.updatedAt : now,
+      sourceRefs: normalizeStringArray(rawPlan.sourceRefs, 16),
+      steps,
+    },
+  };
+  if (goal.plan.steps.length === 0) {
+    goal.plan = buildAoiPlanForGoal({
+      goalId: goal.id,
+      sessionPath,
+      userIntentSummary: goal.userIntentSummary,
+      sourceRefs,
+      risk,
+      now: goal.createdAt,
+    });
+  }
+  return goal;
+}
+
+function normalizeProgressEvent(value: unknown): AoiGoalProgressEvent | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const record = value as Partial<AoiGoalProgressEvent>;
+  const sessionPath = normalizeSessionPath(record.sessionPath);
+  if (
+    record.version !== 1 ||
+    typeof record.id !== 'string' ||
+    typeof record.goalId !== 'string' ||
+    !sessionPath ||
+    typeof record.createdAt !== 'number' ||
+    typeof record.summary !== 'string'
+  ) {
+    return null;
+  }
+  const kind =
+    record.kind === 'proposed' ||
+    record.kind === 'activated' ||
+    record.kind === 'progress' ||
+    record.kind === 'blocked' ||
+    record.kind === 'completed' ||
+    record.kind === 'abandoned' ||
+    record.kind === 'paused' ||
+    record.kind === 'resumed' ||
+    record.kind === 'continuation_proposed'
+      ? record.kind
+      : 'progress';
+  return {
+    version: 1,
+    id: sanitizeIdPart(record.id).slice(0, 96),
+    goalId: sanitizeIdPart(record.goalId).slice(0, 96),
+    sessionPath,
+    createdAt: record.createdAt,
+    kind,
+    summary: sanitizeText(record.summary, 200),
+    evidenceRefs: normalizeStringArray(record.evidenceRefs, 16),
+    observationIds: normalizeStringArray(record.observationIds, 16),
+    proposalIds: normalizeStringArray(record.proposalIds, 16),
+    ...(typeof record.planStepId === 'string' ? { planStepId: record.planStepId } : {}),
+    ...(isGoalStatus(record.fromStatus) ? { fromStatus: record.fromStatus } : {}),
+    ...(isGoalStatus(record.toStatus) ? { toStatus: record.toStatus } : {}),
+  };
+}
+
+function loadGoalList(filePath: string): AoiGoal[] {
+  const parsed = readJson<unknown>(filePath);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed.map(normalizeGoal).filter((goal): goal is AoiGoal => goal !== null);
+}
+
+function saveGoalList(filePath: string, goals: AoiGoal[], maxItems: number): AoiGoal[] {
+  const normalized = goals
+    .map(normalizeGoal)
+    .filter((goal): goal is AoiGoal => goal !== null)
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, maxItems);
+  writeJsonAtomic(filePath, normalized);
+  return normalized;
+}
+
+export function loadAoiActiveGoals(sessionsDir: string, sessionPath: string): AoiGoal[] {
+  return loadGoalList(resolveAoiGoalPaths(sessionsDir, sessionPath).activeGoals);
+}
+
+export function loadAoiArchivedGoals(sessionsDir: string, sessionPath: string): AoiGoal[] {
+  return loadGoalList(resolveAoiGoalPaths(sessionsDir, sessionPath).archivedGoals);
+}
+
+export function saveAoiActiveGoals(
+  sessionsDir: string,
+  sessionPath: string,
+  goals: AoiGoal[],
+): AoiGoal[] {
+  return saveGoalList(
+    resolveAoiGoalPaths(sessionsDir, sessionPath).activeGoals,
+    goals.filter((goal) => goal.status !== 'completed' && goal.status !== 'abandoned'),
+    MAX_ACTIVE_GOALS,
+  );
+}
+
+export function saveAoiArchivedGoals(
+  sessionsDir: string,
+  sessionPath: string,
+  goals: AoiGoal[],
+): AoiGoal[] {
+  return saveGoalList(
+    resolveAoiGoalPaths(sessionsDir, sessionPath).archivedGoals,
+    goals,
+    MAX_ARCHIVED_GOALS,
+  );
+}
+
+export function loadAoiGoalProgressEvents(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiGoalProgressEvent[] {
+  const parsed = readJson<unknown>(resolveAoiGoalPaths(sessionsDir, sessionPath).progressEvents);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed
+    .map(normalizeProgressEvent)
+    .filter((event): event is AoiGoalProgressEvent => event !== null)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, MAX_PROGRESS_EVENTS);
+}
+
+export function appendAoiGoalProgressEvent(
+  sessionsDir: string,
+  event: AoiGoalProgressEvent,
+): AoiGoalProgressEvent {
+  const normalized = normalizeProgressEvent(event);
+  if (!normalized) {
+    throw new Error('Invalid Aoi goal progress event.');
+  }
+  const paths = resolveAoiGoalPaths(sessionsDir, normalized.sessionPath);
+  const events = [
+    normalized,
+    ...loadAoiGoalProgressEvents(sessionsDir, normalized.sessionPath).filter(
+      (item) => item.id !== normalized.id,
+    ),
+  ]
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, MAX_PROGRESS_EVENTS);
+  writeJsonAtomic(paths.progressEvents, events);
+  return normalized;
+}
+
+function makeProgressEvent(params: {
+  goal: AoiGoal;
+  kind: AoiGoalProgressEvent['kind'];
+  summary: string;
+  now: number;
+  evidenceRefs?: string[];
+  observationIds?: string[];
+  proposalIds?: string[];
+  planStepId?: string;
+  fromStatus?: AoiGoalStatus;
+  toStatus?: AoiGoalStatus;
+}): AoiGoalProgressEvent {
+  return {
+    version: 1,
+    id: createGoalId(`aoi-goal-event-${params.kind}`, params.now),
+    goalId: params.goal.id,
+    sessionPath: params.goal.sessionPath,
+    createdAt: params.now,
+    kind: params.kind,
+    summary: sanitizeText(params.summary, 200),
+    evidenceRefs: normalizeStringArray(params.evidenceRefs, 16),
+    observationIds: normalizeStringArray(params.observationIds, 16),
+    proposalIds: normalizeStringArray(params.proposalIds, 16),
+    ...(params.planStepId ? { planStepId: params.planStepId } : {}),
+    ...(params.fromStatus ? { fromStatus: params.fromStatus } : {}),
+    ...(params.toStatus ? { toStatus: params.toStatus } : {}),
+  };
+}
+
+function recordGoalRelations(params: {
+  sessionsDir: string;
+  goal: AoiGoal;
+  evidenceRefs: string[];
+  proposalIds?: string[];
+  observationIds?: string[];
+  now: number;
+}): void {
+  try {
+    const goalRef = `goal:${params.goal.id}`;
+    const goalNode = makeAoiRelationNode({
+      ref: goalRef,
+      kind: 'goal',
+      label: params.goal.title,
+      status:
+        params.goal.status === 'completed' || params.goal.status === 'abandoned'
+          ? 'archived'
+          : 'active',
+      now: params.now,
+    });
+    const nodes = [goalNode];
+    const edges = [];
+    const refs = [
+      ...params.goal.sourceRefs,
+      ...params.evidenceRefs,
+      ...(params.proposalIds ?? []).map((id) => `proposal:${id}`),
+      ...(params.observationIds ?? []).map((id) => `observation:${id}`),
+    ];
+    for (const ref of [...new Set(refs)].filter(Boolean)) {
+      const node = makeAoiRelationNode({ ref, now: params.now });
+      nodes.push(node);
+      edges.push(
+        makeAoiRelationEdge({
+          from: node.id,
+          to: goalNode.id,
+          kind: 'supports',
+          evidenceRefs: [ref, goalRef],
+          now: params.now,
+        }),
+      );
+    }
+    for (const step of params.goal.plan.steps) {
+      const stepNode = makeAoiRelationNode({
+        ref: `${goalRef}/step:${step.id}`,
+        kind: 'topic',
+        label: step.title,
+        status: step.status === 'done' ? 'archived' : 'active',
+        now: params.now,
+      });
+      nodes.push(stepNode);
+      edges.push(
+        makeAoiRelationEdge({
+          from: goalNode.id,
+          to: stepNode.id,
+          kind: 'followed_by',
+          evidenceRefs: [goalRef, ...step.evidenceRefs].slice(0, 12),
+          now: params.now,
+        }),
+      );
+    }
+    upsertAoiRelations(params.sessionsDir, params.goal.sessionPath, {
+      nodes,
+      edges,
+      now: params.now,
+    });
+  } catch {
+    // Goal relation writes must never block user-governed goal state.
+  }
+}
+
+export function buildAoiGoalProposalFromUserMessage(params: {
+  sessionPath: string;
+  latestUserMessage: string;
+  now: number;
+  sourceRefs?: string[];
+}): AoiProposal | null {
+  const message = sanitizeText(params.latestUserMessage, TEXT_MAX_CHARS);
+  if (!looksLikeExplicitAoiGoalIntent(message)) {
+    return null;
+  }
+  const sourceRefs = normalizeStringArray(params.sourceRefs ?? ['observation:latest-user-message']);
+  const goalId = `goal-candidate-${hashPart(`${params.sessionPath}:${message}`)}`;
+  const risk: AoiAutonomyRisk = /(?:보안|security|driver|kernel|커널|위험|배포|release)/i.test(
+    message,
+  )
+    ? 'medium'
+    : 'low';
+  const plan = buildAoiPlanForGoal({
+    goalId,
+    sessionPath: params.sessionPath,
+    userIntentSummary: message,
+    sourceRefs,
+    risk,
+    now: params.now,
+  });
+  const title = truncateText(
+    message
+      .replace(/^(?:목표|goal|objective)\s*[:：-]?\s*/i, '')
+      .replace(/(?:관리하자|추적해줘|track this|manage this)/gi, '')
+      .trim() || message,
+    96,
+  );
+  return {
+    version: 1,
+    id: createGoalId('aoi-proposal-goal', params.now),
+    sessionPath: params.sessionPath,
+    status: 'active',
+    title: truncateText(`Track goal: ${title}`, 96),
+    body: truncateText(
+      'Aoi can remember this objective, keep a small evidence-backed plan, and propose continuations only through the existing approval flow.',
+      320,
+    ),
+    reason: truncateText(
+      'The latest user message explicitly asks Aoi to track or manage a multi-step objective.',
+      240,
+    ),
+    trigger: 'goal_candidate',
+    createdAt: params.now,
+    updatedAt: params.now,
+    cooldownKey: `goal-candidate:${hashPart(`${params.sessionPath}:${message}`)}`,
+    confidence: 0.78,
+    risk,
+    requiredAutonomyLevel: risk === 'high' ? 'L4' : 'L2',
+    requiresUserApproval: true,
+    suggestedTools: [],
+    evidenceRefs: sourceRefs,
+    memoryIds: [],
+    artifactRefs: [`goal:${goalId}`],
+    riskSignals: ['goal-candidate'],
+    acceptAction: {
+      kind: 'activate_goal',
+      params: {
+        title,
+        userIntentSummary: message,
+        sourceRefs,
+        confidence: 0.78,
+        risk,
+        owner: 'shared',
+        plan,
+      },
+    },
+  };
+}
+
+export function activateAoiGoalFromProposal(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  now?: number;
+}): AoiGoal | null {
+  if (params.proposal.acceptAction?.kind !== 'activate_goal') {
+    return null;
+  }
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath || params.proposal.sessionPath !== sessionPath) {
+    throw new Error('Invalid or mismatched sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const actionParams = params.proposal.acceptAction.params ?? {};
+  const title = sanitizeText(
+    typeof actionParams.title === 'string' ? actionParams.title : params.proposal.title,
+    120,
+  );
+  const userIntentSummary = sanitizeText(
+    typeof actionParams.userIntentSummary === 'string'
+      ? actionParams.userIntentSummary
+      : params.proposal.body,
+    TEXT_MAX_CHARS,
+  );
+  const sourceRefs = normalizeStringArray(actionParams.sourceRefs, 16);
+  const risk = isRisk(actionParams.risk) ? actionParams.risk : params.proposal.risk;
+  const owner = isGoalOwner(actionParams.owner) ? actionParams.owner : 'shared';
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath);
+  const duplicate = activeGoals.find(
+    (goal) =>
+      goal.status !== 'abandoned' &&
+      goal.status !== 'completed' &&
+      (goal.sourceRefs.some((ref) => sourceRefs.includes(ref)) ||
+        overlapScore(goal.userIntentSummary, userIntentSummary) >= 0.75),
+  );
+  if (duplicate) {
+    return duplicate;
+  }
+
+  const goalId = createGoalId('aoi-goal', now);
+  const providedPlan = normalizeGoal({
+    version: 1,
+    id: goalId,
+    sessionPath,
+    title,
+    userIntentSummary,
+    sourceRefs,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    lastCheckedAt: now,
+    confidence: clampConfidence(actionParams.confidence, params.proposal.confidence),
+    risk,
+    owner,
+    plan: actionParams.plan,
+  })?.plan;
+  const goal: AoiGoal = {
+    version: 1,
+    id: goalId,
+    sessionPath,
+    title,
+    userIntentSummary,
+    sourceRefs,
+    status: 'active',
+    createdAt: now,
+    updatedAt: now,
+    lastCheckedAt: now,
+    confidence: clampConfidence(actionParams.confidence, params.proposal.confidence),
+    risk,
+    owner,
+    plan:
+      providedPlan && providedPlan.steps.length > 0
+        ? {
+            ...providedPlan,
+            id: `plan-${hashPart(goalId)}`,
+            goalId,
+            sessionPath,
+            createdAt: now,
+            updatedAt: now,
+            sourceRefs,
+            steps: providedPlan.steps.map((step) => ({
+              ...step,
+              id: `step-${sanitizeIdPart(step.kind)}-${hashPart(`${goalId}:${step.title}`)}`,
+            })),
+          }
+        : buildAoiPlanForGoal({
+            goalId,
+            sessionPath,
+            userIntentSummary,
+            sourceRefs,
+            risk,
+            now,
+          }),
+  };
+  saveAoiActiveGoals(params.sessionsDir, sessionPath, [goal, ...activeGoals]);
+  const event = appendAoiGoalProgressEvent(
+    params.sessionsDir,
+    makeProgressEvent({
+      goal,
+      kind: 'activated',
+      summary: `Activated Aoi goal from proposal "${params.proposal.title}".`,
+      now,
+      evidenceRefs: [`proposal:${params.proposal.id}`, ...sourceRefs],
+      proposalIds: [params.proposal.id],
+      fromStatus: 'proposed',
+      toStatus: 'active',
+    }),
+  );
+  recordGoalRelations({
+    sessionsDir: params.sessionsDir,
+    goal,
+    evidenceRefs: event.evidenceRefs,
+    proposalIds: [params.proposal.id],
+    now,
+  });
+  return goal;
+}
+
+function observationRefs(observation: AoiObservation): string[] {
+  return [
+    `observation:${observation.id}`,
+    ...(observation.payloadRef ? [observation.payloadRef] : []),
+    ...observation.memoryIds.map((id) => `memory:${id}`),
+    ...observation.proposalIds.map((id) => `proposal:${id}`),
+    ...observation.artifactRefs,
+  ];
+}
+
+function observationMatchesGoal(observation: AoiObservation, goal: AoiGoal): boolean {
+  const refs = new Set(observationRefs(observation));
+  if (goal.sourceRefs.some((ref) => refs.has(ref))) {
+    return true;
+  }
+  if (refs.has(`goal:${goal.id}`) || [...refs].some((ref) => ref.startsWith(`goal:${goal.id}/`))) {
+    return true;
+  }
+  return (
+    overlapScore(observation.summary, goal.title) >= 0.35 ||
+    overlapScore(observation.summary, goal.userIntentSummary) >= 0.28
+  );
+}
+
+function observationLooksFailed(observation: AoiObservation): boolean {
+  return (
+    observation.riskSignals.some((signal) => /(?:fail|error|interrupted|blocked)/i.test(signal)) ||
+    /\b(?:failed|blocked|error|interrupted)\b/i.test(observation.summary) ||
+    /(?:실패|차단|오류|중단)/u.test(observation.summary)
+  );
+}
+
+function observationNeedsUserInput(observation: AoiObservation): boolean {
+  return (
+    observation.riskSignals.some((signal) => /(?:needs-user|clarification|input)/i.test(signal)) ||
+    /\b(?:needs user|waiting for user|clarification required|need input)\b/i.test(
+      observation.summary,
+    ) ||
+    /(?:사용자\s*입력|확인\s*필요|질문이\s*필요|명확화)/u.test(observation.summary)
+  );
+}
+
+function observationLooksCompleted(observation: AoiObservation): boolean {
+  return (
+    observation.riskSignals.includes('goal-completed') ||
+    /\b(?:completed|done|finished|resolved)\b/i.test(observation.summary) ||
+    /(?:완료|마무리|끝났|해결|달성)/u.test(observation.summary)
+  );
+}
+
+function firstOpenStep(goal: AoiGoal): AoiPlanStep | null {
+  return (
+    goal.plan.steps.find((step) => step.status === 'pending' || step.status === 'blocked') ?? null
+  );
+}
+
+function markFirstOpenStepDone(goal: AoiGoal, evidenceRefs: string[], now: number): AoiGoal {
+  let updated = false;
+  const steps = goal.plan.steps.map((step) => {
+    if (updated || (step.status !== 'pending' && step.status !== 'blocked')) {
+      return step;
+    }
+    updated = true;
+    return {
+      ...step,
+      status: 'done' as const,
+      evidenceRefs: [...new Set([...step.evidenceRefs, ...evidenceRefs])].slice(0, 12),
+    };
+  });
+  return {
+    ...goal,
+    updatedAt: now,
+    lastCheckedAt: now,
+    plan: {
+      ...goal.plan,
+      updatedAt: now,
+      steps,
+    },
+  };
+}
+
+function transitionGoal(params: {
+  goal: AoiGoal;
+  status: AoiGoalStatus;
+  now: number;
+  evidenceRefs: string[];
+}): AoiGoal {
+  return {
+    ...params.goal,
+    status: params.status,
+    updatedAt: params.now,
+    lastCheckedAt: params.now,
+    sourceRefs: [...new Set([...params.goal.sourceRefs, ...params.evidenceRefs])].slice(0, 16),
+    plan: {
+      ...params.goal.plan,
+      updatedAt: params.now,
+    },
+  };
+}
+
+export function updateAoiGoalProgressFromObservations(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  observations: AoiObservation[];
+  activeProposals?: AoiProposal[];
+  now?: number;
+}): AoiGoalProgressUpdateResult {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath);
+  const archivedGoals = loadAoiArchivedGoals(params.sessionsDir, sessionPath);
+  const nextActive: AoiGoal[] = [];
+  const nextArchived = [...archivedGoals];
+  const events: AoiGoalProgressEvent[] = [];
+  const proposals = params.activeProposals ?? [];
+
+  for (const goal of activeGoals) {
+    if (goal.status === 'proposed') {
+      nextActive.push(goal);
+      continue;
+    }
+    const matching = params.observations.filter((observation) =>
+      observationMatchesGoal(observation, goal),
+    );
+    const evidenceRefs = [...new Set(matching.flatMap(observationRefs))].slice(0, 16);
+    const observationIds = matching.map((observation) => observation.id);
+    const blockedByPolicy = proposals.some(
+      (proposal) =>
+        proposal.status === 'blocked' &&
+        (proposal.evidenceRefs.includes(`goal:${goal.id}`) ||
+          proposal.artifactRefs.includes(`goal:${goal.id}`)),
+    );
+    const failedCount = matching.filter(observationLooksFailed).length;
+    const needsInput = matching.some(observationNeedsUserInput);
+    const completed = matching.some(observationLooksCompleted);
+
+    let nextGoal = {
+      ...goal,
+      lastCheckedAt: now,
+      updatedAt: matching.length > 0 ? now : goal.updatedAt,
+    };
+
+    if (matching.length > 0 && goal.status === 'active') {
+      nextGoal = markFirstOpenStepDone(nextGoal, evidenceRefs, now);
+      const step = nextGoal.plan.steps.find((item) => item.status === 'done');
+      events.push(
+        makeProgressEvent({
+          goal: nextGoal,
+          kind: 'progress',
+          summary: `Observed progress for goal "${goal.title}".`,
+          now,
+          evidenceRefs,
+          observationIds,
+          planStepId: step?.id,
+        }),
+      );
+    }
+
+    if (completed && evidenceRefs.length > 0) {
+      nextGoal = transitionGoal({
+        goal: nextGoal,
+        status: 'completed',
+        now,
+        evidenceRefs,
+      });
+      events.push(
+        makeProgressEvent({
+          goal: nextGoal,
+          kind: 'completed',
+          summary: `Goal "${goal.title}" has completion evidence.`,
+          now,
+          evidenceRefs,
+          observationIds,
+          fromStatus: goal.status,
+          toStatus: 'completed',
+        }),
+      );
+      nextArchived.unshift(nextGoal);
+      continue;
+    }
+
+    if ((needsInput || failedCount >= 2 || blockedByPolicy) && evidenceRefs.length > 0) {
+      nextGoal = transitionGoal({
+        goal: nextGoal,
+        status: 'blocked',
+        now,
+        evidenceRefs,
+      });
+      const openStep = firstOpenStep(nextGoal);
+      if (openStep) {
+        nextGoal = {
+          ...nextGoal,
+          plan: {
+            ...nextGoal.plan,
+            steps: nextGoal.plan.steps.map((step) =>
+              step.id === openStep.id ? { ...step, status: 'blocked' as const } : step,
+            ),
+          },
+        };
+      }
+      events.push(
+        makeProgressEvent({
+          goal: nextGoal,
+          kind: 'blocked',
+          summary: `Goal "${goal.title}" is blocked by evidence.`,
+          now,
+          evidenceRefs,
+          observationIds,
+          fromStatus: goal.status,
+          toStatus: 'blocked',
+          planStepId: openStep?.id,
+        }),
+      );
+    }
+
+    nextActive.push(nextGoal);
+  }
+
+  saveAoiActiveGoals(params.sessionsDir, sessionPath, nextActive);
+  saveAoiArchivedGoals(params.sessionsDir, sessionPath, nextArchived);
+  for (const event of events) {
+    appendAoiGoalProgressEvent(params.sessionsDir, event);
+    const goal = [...nextActive, ...nextArchived].find((item) => item.id === event.goalId);
+    if (goal) {
+      recordGoalRelations({
+        sessionsDir: params.sessionsDir,
+        goal,
+        evidenceRefs: event.evidenceRefs,
+        observationIds: event.observationIds,
+        proposalIds: event.proposalIds,
+        now,
+      });
+    }
+  }
+
+  return {
+    activeGoals: nextActive,
+    archivedGoals: nextArchived.slice(0, MAX_ARCHIVED_GOALS),
+    events,
+  };
+}
+
+export function buildAoiGoalContinuationProposals(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  observations: AoiObservation[];
+  activeProposals: AoiProposal[];
+  now: number;
+}): AoiProposal[] {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath).filter(
+    (goal) => goal.status === 'active' || goal.status === 'blocked',
+  );
+  const existingCooldowns = new Set(
+    params.activeProposals
+      .filter(
+        (proposal) =>
+          proposal.status === 'active' ||
+          proposal.status === 'accepted' ||
+          proposal.status === 'snoozed',
+      )
+      .map((proposal) => proposal.cooldownKey),
+  );
+  const proposals: AoiProposal[] = [];
+
+  for (const goal of activeGoals) {
+    const step = firstOpenStep(goal);
+    if (!step) {
+      continue;
+    }
+    const matching = params.observations.filter((observation) =>
+      observationMatchesGoal(observation, goal),
+    );
+    const evidenceRefs = [
+      `goal:${goal.id}`,
+      `goal:${goal.id}/step:${step.id}`,
+      ...goal.sourceRefs,
+      ...matching.slice(0, 4).map((observation) => `observation:${observation.id}`),
+    ];
+    const cooldownKey = `goal-continuation:${goal.id}:${step.id}:${step.status}`;
+    if (existingCooldowns.has(cooldownKey)) {
+      continue;
+    }
+    const suggestedTools = step.allowedActionKind === 'start_research' ? ['start_research'] : [];
+    const acceptAction =
+      step.allowedActionKind === 'start_research'
+        ? {
+            kind: 'start_research' as const,
+            params: {
+              sessionPath,
+              request: goal.userIntentSummary,
+              mode: 'standard',
+              maxSources: 12,
+            },
+          }
+        : undefined;
+    proposals.push({
+      version: 1,
+      id: createGoalId('aoi-proposal-goal-continuation', params.now),
+      sessionPath,
+      status: 'active',
+      title: truncateText(`Continue goal: ${step.title}`, 96),
+      body: truncateText(
+        `Aoi is tracking "${goal.title}". The next proposed step is: ${step.title}.`,
+        320,
+      ),
+      reason: truncateText(
+        goal.status === 'blocked'
+          ? 'The active goal is blocked by evidence and needs a smaller continuation decision.'
+          : 'The active goal has a pending evidence-backed plan step.',
+        240,
+      ),
+      trigger: 'goal_continuation',
+      createdAt: params.now,
+      updatedAt: params.now,
+      cooldownKey,
+      confidence: goal.status === 'blocked' ? 0.74 : 0.78,
+      risk: step.risk,
+      requiredAutonomyLevel: step.requiredAutonomyLevel,
+      requiresUserApproval: step.risk === 'high' || suggestedTools.length > 0,
+      suggestedTools,
+      evidenceRefs: [...new Set(evidenceRefs)].slice(0, 12),
+      memoryIds: [],
+      artifactRefs: [`goal:${goal.id}`, `goal:${goal.id}/step:${step.id}`],
+      riskSignals: ['goal-continuation', ...(goal.status === 'blocked' ? ['goal-blocked'] : [])],
+      ...(acceptAction ? { acceptAction } : {}),
+    });
+    existingCooldowns.add(cooldownKey);
+  }
+
+  return proposals;
+}
+
+export function recordAoiGoalContinuationProposed(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  now?: number;
+}): void {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath || params.proposal.trigger !== 'goal_continuation') {
+    return;
+  }
+  const goalRef = params.proposal.artifactRefs.find((ref) => /^goal:[^/]+$/.test(ref));
+  const goalId = goalRef?.slice('goal:'.length);
+  if (!goalId) {
+    return;
+  }
+  const goal = loadAoiActiveGoals(params.sessionsDir, sessionPath).find(
+    (item) => item.id === goalId,
+  );
+  if (!goal) {
+    return;
+  }
+  const now = params.now ?? Date.now();
+  const stepRef = params.proposal.artifactRefs.find((ref) => ref.startsWith(`${goalRef}/step:`));
+  const event = appendAoiGoalProgressEvent(
+    params.sessionsDir,
+    makeProgressEvent({
+      goal,
+      kind: 'continuation_proposed',
+      summary: `Proposed continuation for goal "${goal.title}".`,
+      now,
+      evidenceRefs: params.proposal.evidenceRefs,
+      proposalIds: [params.proposal.id],
+      planStepId: stepRef?.slice(`${goalRef}/step:`.length),
+    }),
+  );
+  recordGoalRelations({
+    sessionsDir: params.sessionsDir,
+    goal,
+    evidenceRefs: event.evidenceRefs,
+    proposalIds: [params.proposal.id],
+    now,
+  });
+}
+
+export function applyAoiGoalDecision(
+  sessionsDir: string,
+  sessionPath: string,
+  input: AoiGoalDecisionInput,
+): AoiGoal {
+  const normalizedSessionPath = normalizeSessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = input.now ?? Date.now();
+  const activeGoals = loadAoiActiveGoals(sessionsDir, normalizedSessionPath);
+  const archivedGoals = loadAoiArchivedGoals(sessionsDir, normalizedSessionPath);
+  const index = activeGoals.findIndex((goal) => goal.id === input.goalId);
+  if (index < 0) {
+    throw new Error('Aoi goal not found.');
+  }
+  const current = activeGoals[index];
+  const evidenceRefs = normalizeStringArray(input.evidenceRefs, 16);
+  if ((input.action === 'block' || input.action === 'complete') && evidenceRefs.length === 0) {
+    if (input.action !== 'complete' || input.userConfirmed !== true) {
+      throw new Error('Goal status transition requires evidence or explicit user confirmation.');
+    }
+  }
+  const nextStatus: AoiGoalStatus =
+    input.action === 'pause'
+      ? 'paused'
+      : input.action === 'resume'
+        ? 'active'
+        : input.action === 'abandon'
+          ? 'abandoned'
+          : input.action === 'block'
+            ? 'blocked'
+            : 'completed';
+  const nextGoal = transitionGoal({
+    goal: current,
+    status: nextStatus,
+    now,
+    evidenceRefs,
+  });
+  const nextActive = [...activeGoals];
+  nextActive.splice(index, 1);
+  if (nextStatus !== 'completed' && nextStatus !== 'abandoned') {
+    nextActive.unshift(nextGoal);
+  }
+  const nextArchived =
+    nextStatus === 'completed' || nextStatus === 'abandoned'
+      ? [nextGoal, ...archivedGoals]
+      : archivedGoals;
+  saveAoiActiveGoals(sessionsDir, normalizedSessionPath, nextActive);
+  saveAoiArchivedGoals(sessionsDir, normalizedSessionPath, nextArchived);
+  const eventKind =
+    nextStatus === 'paused'
+      ? 'paused'
+      : nextStatus === 'active'
+        ? 'resumed'
+        : nextStatus === 'abandoned'
+          ? 'abandoned'
+          : nextStatus === 'blocked'
+            ? 'blocked'
+            : 'completed';
+  const event = appendAoiGoalProgressEvent(
+    sessionsDir,
+    makeProgressEvent({
+      goal: nextGoal,
+      kind: eventKind,
+      summary: input.reason || `Goal "${nextGoal.title}" moved to ${nextStatus}.`,
+      now,
+      evidenceRefs,
+      fromStatus: current.status,
+      toStatus: nextStatus,
+    }),
+  );
+  recordGoalRelations({
+    sessionsDir,
+    goal: nextGoal,
+    evidenceRefs: event.evidenceRefs,
+    now,
+  });
+  return nextGoal;
+}

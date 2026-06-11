@@ -1,6 +1,12 @@
 import type { ChatMessage, ToolDef } from './llmClient';
 import type { LLMConfig } from './llmModels';
 import { checkAoiProposalPolicy, getAoiToolAutonomyPolicy } from './aoiAutonomyPolicy';
+import {
+  buildAoiGoalContinuationProposals,
+  buildAoiGoalProposalFromUserMessage,
+  recordAoiGoalContinuationProposed,
+  updateAoiGoalProgressFromObservations,
+} from './aoiAutonomyGoals';
 import { ingestAoiObservations } from './aoiAutonomyObserver';
 import {
   appendAoiReflection,
@@ -754,12 +760,23 @@ function buildKiraAttentionProposal(params: {
 }
 
 function buildDeterministicProposals(params: {
+  sessionsDir: string;
   bundle: CandidateBundle;
   sessionPath: string;
   latestUserMessage: string;
   now: number;
 }): AoiProposal[] {
   const proposals: AoiProposal[] = [];
+  const goalCandidate = buildAoiGoalProposalFromUserMessage({
+    sessionPath: params.sessionPath,
+    latestUserMessage: params.latestUserMessage,
+    now: params.now,
+    sourceRefs: ['observation:latest-user-message'],
+  });
+  if (goalCandidate) {
+    proposals.push(goalCandidate);
+  }
+
   for (const run of params.bundle.researchRuns) {
     if (run.status === 'completed' && run.artifactAvailability?.report) {
       const proposal = buildResearchFollowupProposal({
@@ -827,6 +844,16 @@ function buildDeterministicProposals(params: {
   if (repeatedKira) {
     proposals.push(repeatedKira);
   }
+
+  proposals.push(
+    ...buildAoiGoalContinuationProposals({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      observations: params.bundle.observations,
+      activeProposals: params.bundle.activeProposals,
+      now: params.now,
+    }),
+  );
 
   return proposals;
 }
@@ -974,7 +1001,8 @@ function isAcceptActionKind(value: unknown): value is AoiProposalAcceptActionKin
     value === 'start_research' ||
     value === 'create_kira_work' ||
     value === 'open_app' ||
-    value === 'save_memory'
+    value === 'save_memory' ||
+    value === 'activate_goal'
   );
 }
 
@@ -1445,12 +1473,20 @@ export async function runAoiAutonomyTick(
   });
   bundle.observations = observationIngestResults.map((result) => result.observation);
   const observationWarnings = observationIngestResults.flatMap((result) => result.warnings);
+  updateAoiGoalProgressFromObservations({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    observations: bundle.observations,
+    activeProposals: bundle.activeProposals,
+    now,
+  });
 
   const knownEvidenceRefs = buildEvidenceRefSet({
     observations: bundle.observations,
     activeProposals: bundle.activeProposals,
   });
   const deterministicProposals = buildDeterministicProposals({
+    sessionsDir: params.sessionsDir,
     bundle,
     sessionPath,
     latestUserMessage,
@@ -1520,6 +1556,12 @@ export async function runAoiAutonomyTick(
     activeProposals = [proposal, ...activeProposals];
     acceptedProposals.push(proposal);
     recordAoiProposalCreatedRelations(params.sessionsDir, proposal, now);
+    recordAoiGoalContinuationProposed({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      proposal,
+      now,
+    });
     if (acceptedProposals.length >= policy.maxProposalsPerTick) {
       break;
     }

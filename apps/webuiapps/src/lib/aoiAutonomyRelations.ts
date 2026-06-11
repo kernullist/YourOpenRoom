@@ -12,6 +12,7 @@ export type AoiRelationNodeKind =
   | 'proposal'
   | 'reflection'
   | 'procedure'
+  | 'goal'
   | 'project'
   | 'topic';
 
@@ -185,6 +186,9 @@ export function inferAoiRelationNodeKind(ref: string): AoiRelationNodeKind {
   }
   if (ref.startsWith('procedure:')) {
     return 'procedure';
+  }
+  if (ref.startsWith('goal:')) {
+    return 'goal';
   }
   if (ref.startsWith('project:')) {
     return 'project';
@@ -622,6 +626,7 @@ function isAoiRelationNodeKind(value: unknown): value is AoiRelationNodeKind {
     value === 'proposal' ||
     value === 'reflection' ||
     value === 'procedure' ||
+    value === 'goal' ||
     value === 'project' ||
     value === 'topic'
   );

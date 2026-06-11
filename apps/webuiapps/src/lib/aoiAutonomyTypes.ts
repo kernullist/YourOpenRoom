@@ -46,7 +46,8 @@ export type AoiProposalAcceptActionKind =
   | 'start_research'
   | 'create_kira_work'
   | 'open_app'
-  | 'save_memory';
+  | 'save_memory'
+  | 'activate_goal';
 
 export interface AoiProposalAcceptAction {
   kind: AoiProposalAcceptActionKind;
@@ -125,6 +126,94 @@ export interface AoiProposal {
   blockedReason?: string;
 }
 
+export type AoiGoalStatus =
+  | 'proposed'
+  | 'active'
+  | 'paused'
+  | 'completed'
+  | 'abandoned'
+  | 'blocked';
+
+export type AoiGoalOwner = 'user' | 'aoi' | 'shared';
+
+export type AoiPlanStepKind =
+  | 'read'
+  | 'research'
+  | 'draft'
+  | 'review'
+  | 'execute_proposal'
+  | 'ask_user'
+  | 'handoff_kira';
+
+export type AoiPlanStepStatus = 'pending' | 'in_progress' | 'done' | 'blocked';
+
+export interface AoiPlanStep {
+  version: 1;
+  id: string;
+  kind: AoiPlanStepKind;
+  title: string;
+  status: AoiPlanStepStatus;
+  expectedEvidence: string[];
+  allowedActionKind: AoiProposalAcceptActionKind | 'none';
+  requiredAutonomyLevel: AoiAutonomyLevel;
+  doneCriteria: string[];
+  evidenceRefs: string[];
+  risk: AoiAutonomyRisk;
+}
+
+export interface AoiPlan {
+  version: 1;
+  id: string;
+  goalId: string;
+  sessionPath: string;
+  createdAt: number;
+  updatedAt: number;
+  sourceRefs: string[];
+  steps: AoiPlanStep[];
+}
+
+export interface AoiGoal {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  title: string;
+  userIntentSummary: string;
+  sourceRefs: string[];
+  status: AoiGoalStatus;
+  createdAt: number;
+  updatedAt: number;
+  lastCheckedAt: number;
+  confidence: number;
+  risk: AoiAutonomyRisk;
+  owner: AoiGoalOwner;
+  plan: AoiPlan;
+}
+
+export interface AoiGoalProgressEvent {
+  version: 1;
+  id: string;
+  goalId: string;
+  sessionPath: string;
+  createdAt: number;
+  kind:
+    | 'proposed'
+    | 'activated'
+    | 'progress'
+    | 'blocked'
+    | 'completed'
+    | 'abandoned'
+    | 'paused'
+    | 'resumed'
+    | 'continuation_proposed';
+  summary: string;
+  evidenceRefs: string[];
+  observationIds: string[];
+  proposalIds: string[];
+  planStepId?: string;
+  fromStatus?: AoiGoalStatus;
+  toStatus?: AoiGoalStatus;
+}
+
 export interface AoiProposalDecision {
   version: 1;
   id: string;
@@ -187,6 +276,9 @@ export interface AoiAutonomyStatus {
   activeTick: boolean;
   recentObservationCount: number;
   proposalsCreatedInLastTick: number;
+  activeGoalCount: number;
+  currentGoalTitle?: string;
+  nextGoalStepTitle?: string;
   updatedAt: number;
 }
 

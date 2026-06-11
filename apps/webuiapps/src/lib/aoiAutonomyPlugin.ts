@@ -4,6 +4,14 @@ import type { Plugin } from 'vite';
 import { executeAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
 import {
+  activateAoiGoalFromProposal,
+  applyAoiGoalDecision,
+  loadAoiActiveGoals,
+  loadAoiArchivedGoals,
+  loadAoiGoalProgressEvents,
+  updateAoiGoalProgressFromObservations,
+} from './aoiAutonomyGoals';
+import {
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
   loadAoiActiveProposals,
@@ -182,6 +190,25 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/goals') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        active: loadAoiActiveGoals(sessionsDir, sessionPath),
+        archived: loadAoiArchivedGoals(sessionsDir, sessionPath),
+        progress: loadAoiGoalProgressEvents(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -236,6 +263,109 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'POST' && route === '/goal/check') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const result = updateAoiGoalProgressFromObservations({
+        sessionsDir,
+        sessionPath,
+        observations: loadAoiObservations(sessionsDir, sessionPath),
+        activeProposals: loadAoiActiveProposals(sessionsDir, sessionPath),
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        active: result.activeGoals,
+        archived: result.archivedGoals,
+        progress: result.events,
+        status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/goal/decision') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const action = body.action;
+      try {
+        if (action === 'accept') {
+          const result = applyAoiProposalDecision(sessionsDir, sessionPath, {
+            proposalId: String(body.proposalId ?? ''),
+            action: 'accept',
+            actor: 'user',
+            reason: typeof body.reason === 'string' ? body.reason : undefined,
+          });
+          const goal = activateAoiGoalFromProposal({
+            sessionsDir,
+            sessionPath,
+            proposal: result.proposal,
+          });
+          writeJson(res, 200, {
+            ok: true,
+            sessionPath,
+            proposal: result.proposal,
+            decision: result.decision,
+            goal,
+            active: loadAoiActiveGoals(sessionsDir, sessionPath),
+            archived: loadAoiArchivedGoals(sessionsDir, sessionPath),
+          });
+          return true;
+        }
+        if (
+          action !== 'pause' &&
+          action !== 'resume' &&
+          action !== 'abandon' &&
+          action !== 'complete' &&
+          action !== 'block'
+        ) {
+          writeJson(res, 400, {
+            error: 'action must be one of accept, pause, resume, abandon, complete, block',
+            code: 'invalid_goal_decision_action',
+          });
+          return true;
+        }
+        const goal = applyAoiGoalDecision(sessionsDir, sessionPath, {
+          goalId: String(body.goalId ?? ''),
+          action,
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
+          evidenceRefs: Array.isArray(body.evidenceRefs)
+            ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
+            : undefined,
+          userConfirmed: body.userConfirmed === true,
+        });
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          goal,
+          active: loadAoiActiveGoals(sessionsDir, sessionPath),
+          archived: loadAoiArchivedGoals(sessionsDir, sessionPath),
+          status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.includes('not found') ? 404 : 400;
+        writeJson(res, statusCode, {
+          error: message,
+          code: statusCode === 404 ? 'goal_not_found' : 'blocked_goal_transition',
+        });
+      }
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/proposal/decision') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -262,11 +392,20 @@ async function handleAoiAutonomyRequest(
           reason: typeof body.reason === 'string' ? body.reason : undefined,
           snoozeMs: typeof body.snoozeMs === 'number' ? body.snoozeMs : undefined,
         });
+        const goal =
+          action === 'accept'
+            ? activateAoiGoalFromProposal({
+                sessionsDir,
+                sessionPath,
+                proposal: result.proposal,
+              })
+            : null;
         writeJson(res, 200, {
           ok: true,
           sessionPath,
           proposal: result.proposal,
           decision: result.decision,
+          goal,
           active: result.activeProposals,
           archived: result.archivedProposals,
           executed: false,
