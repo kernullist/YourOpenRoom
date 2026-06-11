@@ -209,8 +209,7 @@ import {
 import {
   decideAoiProposal,
   executeAoiProposalAction,
-  fetchAoiAutonomyProposals,
-  fetchAoiAutonomyStatus,
+  fetchAoiAutonomyDashboard,
   recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
   updateAoiAutonomyPolicy,
@@ -218,10 +217,15 @@ import {
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
+  buildAoiAutonomyNotificationBadge,
+  buildAoiProposalInspectorSummary,
   canShowAoiProposalPrimaryAction,
+  loadAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
+  saveAoiAutonomyPanelSettings,
   selectAoiInlineProposal,
   summarizeAoiAutonomyProposalCounts,
+  type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
@@ -229,10 +233,12 @@ import type {
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
+  AoiGoal,
   AoiProposal,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
 } from '@/lib/aoiAutonomyTypes';
+import type { AoiAutonomyEvaluationResult } from '@/lib/aoiAutonomyEvaluation';
 import {
   buildAoiSkillsPrompt,
   createUserAoiWorkshopSkill,
@@ -1865,6 +1871,11 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyArchivedProposals, setAoiAutonomyArchivedProposals] = useState<AoiProposal[]>(
     [],
   );
+  const [aoiAutonomyActiveGoals, setAoiAutonomyActiveGoals] = useState<AoiGoal[]>([]);
+  const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
+    useState<AoiAutonomyEvaluationResult | null>(null);
+  const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
+    useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
   const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
     AoiAutonomyBlockedProposal[]
   >([]);
@@ -1910,6 +1921,10 @@ const ChatPanel: React.FC<{
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    saveAoiAutonomyPanelSettings(aoiAutonomyPanelSettings);
+  }, [aoiAutonomyPanelSettings]);
 
   const recentToolActivity = useMemo(
     () =>
@@ -2019,6 +2034,8 @@ const ChatPanel: React.FC<{
     setAoiAutonomyStatus(null);
     setAoiAutonomyActiveProposals([]);
     setAoiAutonomyArchivedProposals([]);
+    setAoiAutonomyActiveGoals([]);
+    setAoiAutonomyEvaluation(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
     setAoiAutonomyActionId(null);
@@ -2431,13 +2448,12 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
 
     try {
-      const [nextStatus, nextProposals] = await Promise.all([
-        fetchAoiAutonomyStatus(sessionPathForAutonomy),
-        fetchAoiAutonomyProposals(sessionPathForAutonomy, true),
-      ]);
-      setAoiAutonomyStatus(nextStatus);
-      setAoiAutonomyActiveProposals(nextProposals.active);
-      setAoiAutonomyArchivedProposals(nextProposals.archived);
+      const snapshot = await fetchAoiAutonomyDashboard(sessionPathForAutonomy);
+      setAoiAutonomyStatus(snapshot.status);
+      setAoiAutonomyActiveProposals(snapshot.proposals.active);
+      setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
+      setAoiAutonomyActiveGoals(snapshot.goals.active);
+      setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -2513,6 +2529,16 @@ const ChatPanel: React.FC<{
     [refreshAoiAutonomy],
   );
 
+  const updateAoiAutonomyPanelSettingsFromPanel = useCallback(
+    (patch: Partial<AoiAutonomyPanelSettings>) => {
+      setAoiAutonomyPanelSettings((prev) => ({
+        ...prev,
+        ...patch,
+      }));
+    },
+    [],
+  );
+
   const runAoiAutonomyCheckFromPanel = useCallback(async () => {
     const sessionPathForAutonomy = sessionPathRef.current;
     const latestUserMessage = [...chatHistoryRef.current]
@@ -2528,6 +2554,7 @@ const ChatPanel: React.FC<{
         sessionPath: sessionPathForAutonomy,
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
+        maxRuntimeMs: 15000,
       });
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
@@ -5253,9 +5280,13 @@ const ChatPanel: React.FC<{
         snoozedProposalIds: aoiInlineSnoozedProposalIds,
         lastShownAt: aoiInlineHiddenAt,
         shownCount: aoiInlineShownCount,
+        maxPerSession: aoiAutonomyPanelSettings.maxSuggestionsPerSession,
+        quietMode: aoiAutonomyPanelSettings.quietMode,
       }),
     [
       aoiAutonomyActiveProposals,
+      aoiAutonomyPanelSettings.maxSuggestionsPerSession,
+      aoiAutonomyPanelSettings.quietMode,
       aoiAutonomyStatus?.policy,
       aoiInlineDismissedProposalIds,
       aoiInlineHiddenAt,
@@ -5616,6 +5647,9 @@ const ChatPanel: React.FC<{
           aoiAutonomyStatus={aoiAutonomyStatus}
           aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
+          aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
+          aoiAutonomyEvaluation={aoiAutonomyEvaluation}
+          aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
           aoiAutonomyLoading={aoiAutonomyLoading}
           aoiAutonomyError={aoiAutonomyError}
@@ -5632,6 +5666,7 @@ const ChatPanel: React.FC<{
           onRefreshAoiAutonomy={refreshAoiAutonomy}
           onAdvancedTabVisible={handleAoiAutonomyAdvancedVisible}
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
+          onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
@@ -6061,6 +6096,9 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus: AoiAutonomyStatus | null;
   aoiAutonomyActiveProposals: AoiProposal[];
   aoiAutonomyArchivedProposals: AoiProposal[];
+  aoiAutonomyActiveGoals: AoiGoal[];
+  aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
+  aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
   aoiAutonomyLoading: boolean;
   aoiAutonomyError: string;
@@ -6082,6 +6120,7 @@ const SettingsModal: React.FC<{
   onRefreshAoiAutonomy: (options?: { silent?: boolean }) => Promise<void>;
   onAdvancedTabVisible: () => void;
   onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
+  onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
   onDecideAoiProposal: (
     proposalId: string,
@@ -6123,6 +6162,9 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus,
   aoiAutonomyActiveProposals,
   aoiAutonomyArchivedProposals,
+  aoiAutonomyActiveGoals,
+  aoiAutonomyEvaluation,
+  aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
   aoiAutonomyLoading,
   aoiAutonomyError,
@@ -6139,6 +6181,7 @@ const SettingsModal: React.FC<{
   onRefreshAoiAutonomy,
   onAdvancedTabVisible,
   onUpdateAoiAutonomyPolicy,
+  onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
   onDecideAoiProposal,
   onRecordAoiProposalFeedback,
@@ -6339,6 +6382,29 @@ const SettingsModal: React.FC<{
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, 8),
     [aoiAutonomyActiveProposals],
+  );
+  const visibleAoiAutonomyGoals = useMemo(
+    () =>
+      aoiAutonomyActiveGoals
+        .slice()
+        .sort((left, right) => right.updatedAt - left.updatedAt)
+        .slice(0, 4),
+    [aoiAutonomyActiveGoals],
+  );
+  const aoiAutonomyNotificationBadge = useMemo(
+    () =>
+      buildAoiAutonomyNotificationBadge({
+        status: aoiAutonomyStatus,
+        proposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        settings: aoiAutonomyPanelSettings,
+      }),
+    [
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyStatus,
+    ],
   );
   const [pendingAoiMemoryActionId, setPendingAoiMemoryActionId] = useState<string | null>(null);
   const [expandedAoiProposalId, setExpandedAoiProposalId] = useState<string | null>(null);
@@ -6692,6 +6758,14 @@ const SettingsModal: React.FC<{
     aoiAutonomyProposalCounts.blocked,
     aoiAutonomyBlockedProposals.length,
   );
+  const aoiAutonomyAcceptanceLabel = aoiAutonomyEvaluation
+    ? `${Math.round(aoiAutonomyEvaluation.metrics.proposalAcceptanceRate * 100)}%`
+    : 'n/a';
+  const aoiAutonomyEvidenceLabel = aoiAutonomyEvaluation
+    ? `${Math.round(aoiAutonomyEvaluation.metrics.evidenceCoverage * 100)}%`
+    : 'n/a';
+  const aoiAutonomyNoisyTypeLabel =
+    aoiAutonomyEvaluation?.calibration.noisyProposalTypes[0]?.key ?? 'None';
   const settingsTabs: Array<{ key: SettingsTabKey; label: string }> = [
     { key: 'chat', label: 'Chat' },
     { key: 'models', label: 'Models' },
@@ -7783,12 +7857,40 @@ const SettingsModal: React.FC<{
               <div className={styles.settingsSectionCard} data-testid="aoi-autonomy-panel">
                 <div className={styles.settingsSectionHeader}>
                   <div>
-                    <div className={styles.settingsSectionTitle}>Aoi Autonomy</div>
+                    <div className={styles.settingsSectionTitle}>
+                      Aoi Autonomy
+                      {aoiAutonomyNotificationBadge?.visible && (
+                        <span className={styles.aoiAutonomyBadge}>
+                          {aoiAutonomyNotificationBadge.label}
+                        </span>
+                      )}
+                    </div>
                     <span className={styles.modelHint}>
-                      Policy-gated reflection proposals. Decisions here do not run tools.
+                      Checks, proposals, goals, and safety gates.
                     </span>
                   </div>
                   <div className={styles.aoiAutonomyHeaderActions}>
+                    <button
+                      type="button"
+                      className={styles.inlineActionBtn}
+                      onClick={() =>
+                        onUpdateAoiAutonomyPanelSettings({
+                          panelExpanded: !aoiAutonomyPanelSettings.panelExpanded,
+                        })
+                      }
+                      title={
+                        aoiAutonomyPanelSettings.panelExpanded
+                          ? 'Collapse Aoi autonomy panel'
+                          : 'Expand Aoi autonomy panel'
+                      }
+                    >
+                      {aoiAutonomyPanelSettings.panelExpanded ? (
+                        <ChevronDown size={14} />
+                      ) : (
+                        <ChevronRight size={14} />
+                      )}
+                      {aoiAutonomyPanelSettings.panelExpanded ? 'Collapse' : 'Expand'}
+                    </button>
                     <button
                       type="button"
                       className={styles.inlineActionBtn}
@@ -7815,366 +7917,561 @@ const SettingsModal: React.FC<{
                   </div>
                 </div>
 
-                {aoiAutonomyError && (
-                  <div className={styles.aoiAutonomyError}>{aoiAutonomyError}</div>
-                )}
-                {aoiAutonomyLoading && (
-                  <span className={styles.modelHint}>Loading autonomy state...</span>
-                )}
+                {aoiAutonomyPanelSettings.panelExpanded && (
+                  <>
+                    {aoiAutonomyError && (
+                      <div className={styles.aoiAutonomyError}>{aoiAutonomyError}</div>
+                    )}
+                    {aoiAutonomyLoading && (
+                      <span className={styles.modelHint}>Loading autonomy state...</span>
+                    )}
 
-                <div className={styles.promptBudgetGrid}>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Enabled</span>
-                    <strong>{aoiAutonomyPolicy?.enabled ? 'On' : 'Off'}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Level</span>
-                    <strong>{aoiAutonomyPolicy?.level ?? 'L1'}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Proactive</span>
-                    <strong>{aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Active</span>
-                    <strong>{aoiAutonomyProposalCounts.active}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
-                    <strong>
-                      {aoiAutonomyProposalCounts.dismissed} / {aoiAutonomyProposalCounts.snoozed}
-                    </strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Blocked</span>
-                    <strong>{aoiAutonomyBlockedCount}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Last check</span>
-                    <strong>{aoiAutonomyLastTickLabel}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Next check</span>
-                    <strong>{aoiAutonomyNextTickLabel}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Tick</span>
-                    <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Observed</span>
-                    <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Goals</span>
-                    <strong>{aoiAutonomyStatus?.activeGoalCount ?? 0}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Current goal</span>
-                    <strong>{aoiAutonomyCurrentGoalLabel}</strong>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Next goal step</span>
-                    <strong>{aoiAutonomyNextGoalStepLabel}</strong>
-                  </div>
-                </div>
-
-                <div className={styles.aoiAutonomyControls}>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Autonomy policy</span>
-                    <button
-                      type="button"
-                      className={aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn}
-                      onClick={() =>
-                        void onUpdateAoiAutonomyPolicy({
-                          enabled: !aoiAutonomyPolicy?.enabled,
-                        })
-                      }
-                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                    >
-                      {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
-                    </button>
-                  </div>
-                  <div className={styles.field}>
-                    <label className={styles.label}>Autonomy level</label>
-                    <select
-                      className={styles.select}
-                      value={aoiAutonomyPolicy?.level ?? 'L1'}
-                      onChange={(event) =>
-                        void onUpdateAoiAutonomyPolicy({
-                          level: event.target.value as AoiAutonomyLevel,
-                        })
-                      }
-                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                    >
-                      {AOI_AUTONOMY_UI_LEVELS.map((level) => (
-                        <option key={level} value={level}>
-                          {level}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className={styles.promptBudgetMetric}>
-                    <span className={styles.promptBudgetLabel}>Inline suggestions</span>
-                    <button
-                      type="button"
-                      className={
-                        aoiAutonomyPolicy?.proactiveSuggestionsEnabled
-                          ? styles.saveBtn
-                          : styles.cancelBtn
-                      }
-                      onClick={() =>
-                        void onUpdateAoiAutonomyPolicy({
-                          proactiveSuggestionsEnabled:
-                            !aoiAutonomyPolicy?.proactiveSuggestionsEnabled,
-                        })
-                      }
-                      disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
-                    >
-                      {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
-                    </button>
-                  </div>
-                </div>
-
-                {aoiAutonomyPendingFeedback && (
-                  <div className={styles.aoiAutonomyPendingFeedback}>
-                    <div className={styles.aoiAutonomyProposalMeta}>
-                      <span>{aoiAutonomyPendingFeedback.action}</span>
-                      <span>optional feedback</span>
+                    <div className={styles.promptBudgetGrid}>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Enabled</span>
+                        <strong>{aoiAutonomyPolicy?.enabled ? 'On' : 'Off'}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Level</span>
+                        <strong>{aoiAutonomyPolicy?.level ?? 'L1'}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Proactive</span>
+                        <strong>
+                          {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Active</span>
+                        <strong>{aoiAutonomyProposalCounts.active}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
+                        <strong>
+                          {aoiAutonomyProposalCounts.dismissed} /{' '}
+                          {aoiAutonomyProposalCounts.snoozed}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Blocked</span>
+                        <strong>{aoiAutonomyBlockedCount}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Last check</span>
+                        <strong>{aoiAutonomyLastTickLabel}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Next check</span>
+                        <strong>{aoiAutonomyNextTickLabel}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Tick</span>
+                        <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Observed</span>
+                        <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Goals</span>
+                        <strong>{aoiAutonomyStatus?.activeGoalCount ?? 0}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Current goal</span>
+                        <strong>{aoiAutonomyCurrentGoalLabel}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Next goal step</span>
+                        <strong>{aoiAutonomyNextGoalStepLabel}</strong>
+                      </div>
                     </div>
-                    <div className={styles.aoiAutonomyProposalTitle}>
-                      {sanitizeAoiProposalDisplayText(aoiAutonomyPendingFeedback.title, 120)}
-                    </div>
-                    <div className={styles.aoiAutonomyFeedbackActions}>
-                      {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+
+                    <div className={styles.aoiAutonomyControls}>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Autonomy policy</span>
                         <button
                           type="button"
-                          key={`pending-feedback-${item.category}`}
-                          className={styles.inlineActionBtn}
-                          onClick={() => void onRecordAoiProposalFeedback(item.category)}
-                          disabled={aoiAutonomyActionId !== null}
-                          title={item.title}
+                          className={aoiAutonomyPolicy?.enabled ? styles.saveBtn : styles.cancelBtn}
+                          onClick={() =>
+                            void onUpdateAoiAutonomyPolicy({
+                              enabled: !aoiAutonomyPolicy?.enabled,
+                            })
+                          }
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
                         >
-                          {item.label}
+                          {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
                         </button>
-                      ))}
+                      </div>
+                      <div className={styles.field}>
+                        <label className={styles.label}>Autonomy level</label>
+                        <select
+                          className={styles.select}
+                          value={aoiAutonomyPolicy?.level ?? 'L1'}
+                          onChange={(event) =>
+                            void onUpdateAoiAutonomyPolicy({
+                              level: event.target.value as AoiAutonomyLevel,
+                            })
+                          }
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                        >
+                          {AOI_AUTONOMY_UI_LEVELS.map((level) => (
+                            <option key={level} value={level}>
+                              {level}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Inline suggestions</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.proactiveSuggestionsEnabled
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() =>
+                            void onUpdateAoiAutonomyPolicy({
+                              proactiveSuggestionsEnabled:
+                                !aoiAutonomyPolicy?.proactiveSuggestionsEnabled,
+                            })
+                          }
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                        >
+                          {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Quiet mode</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPanelSettings.quietMode ? styles.cancelBtn : styles.saveBtn
+                          }
+                          onClick={() =>
+                            onUpdateAoiAutonomyPanelSettings({
+                              quietMode: !aoiAutonomyPanelSettings.quietMode,
+                            })
+                          }
+                          title="Pause proactive UI indicators while keeping observations"
+                        >
+                          {aoiAutonomyPanelSettings.quietMode ? 'Quiet' : 'Normal'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Desktop toast</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPanelSettings.notificationsEnabled
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() =>
+                            onUpdateAoiAutonomyPanelSettings({
+                              notificationsEnabled: !aoiAutonomyPanelSettings.notificationsEnabled,
+                            })
+                          }
+                          title="Desktop notifications stay opt-in and high-risk proposals are excluded"
+                        >
+                          {aoiAutonomyPanelSettings.notificationsEnabled ? 'Opt-in' : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.field}>
+                        <label className={styles.label}>Max suggestions</label>
+                        <select
+                          className={styles.select}
+                          value={String(aoiAutonomyPanelSettings.maxSuggestionsPerSession)}
+                          onChange={(event) =>
+                            onUpdateAoiAutonomyPanelSettings({
+                              maxSuggestionsPerSession: Number(event.target.value),
+                            })
+                          }
+                        >
+                          {[0, 1, 2, 3, 5].map((value) => (
+                            <option key={value} value={value}>
+                              {value}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
                     </div>
-                  </div>
-                )}
 
-                <div className={styles.aoiAutonomyProposalSection}>
-                  <div className={styles.promptBudgetSectionTitle}>Active proposals</div>
-                  {visibleAoiAutonomyProposals.length > 0 ? (
-                    <div className={styles.aoiAutonomyProposalList}>
-                      {visibleAoiAutonomyProposals.map((proposal) => {
-                        const primaryActionAllowed = canShowAoiProposalPrimaryAction(proposal);
-                        const proposalPending = Boolean(
-                          aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
-                        );
-                        const expanded = expandedAoiProposalId === proposal.id;
-                        const executableAction = canExecuteAoiProposalAtCurrentLevel(
-                          proposal,
-                          aoiAutonomyPolicy,
-                        );
-                        const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Recent feedback</div>
+                      <div className={styles.promptBudgetGrid}>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Decisions</span>
+                          <strong>{aoiAutonomyEvaluation?.metrics.totalDecisions ?? 0}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Acceptance</span>
+                          <strong>{aoiAutonomyAcceptanceLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Evidence</span>
+                          <strong>{aoiAutonomyEvidenceLabel}</strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>High-risk blocked</span>
+                          <strong>
+                            {aoiAutonomyEvaluation?.metrics.blockedHighRiskProposalCount ?? 0}
+                          </strong>
+                        </div>
+                        <div className={styles.promptBudgetMetric}>
+                          <span className={styles.promptBudgetLabel}>Noisy type</span>
+                          <strong>
+                            {sanitizeAoiProposalDisplayText(aoiAutonomyNoisyTypeLabel, 42)}
+                          </strong>
+                        </div>
+                      </div>
+                    </div>
 
-                        return (
-                          <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
-                            <div className={styles.aoiAutonomyProposalMeta}>
-                              <span>{proposal.status}</span>
-                              <span>conf {proposal.confidence.toFixed(2)}</span>
-                              <span>{proposal.risk} risk</span>
-                              <span>requires {proposal.requiredAutonomyLevel}</span>
-                              <span>evidence {proposal.evidenceRefs.length}</span>
-                            </div>
-                            <div className={styles.aoiAutonomyProposalTitle}>
-                              {sanitizeAoiProposalDisplayText(proposal.title, 140)}
-                            </div>
-                            <div className={styles.aoiAutonomyProposalBody}>
-                              {sanitizeAoiProposalDisplayText(proposal.body, 360)}
-                            </div>
-                            <div className={styles.aoiAutonomyProposalReason}>
-                              {sanitizeAoiProposalDisplayText(proposal.reason, 260)}
-                            </div>
-                            <div className={styles.aoiAutonomyProposalTools}>
-                              {proposal.suggestedTools.length > 0
-                                ? proposal.suggestedTools
-                                    .slice(0, 5)
-                                    .map((tool) => sanitizeAoiProposalDisplayText(tool, 64))
-                                    .join(', ')
-                                : 'No suggested tools'}
-                            </div>
-                            {proposal.blockedReason && (
-                              <div className={styles.aoiAutonomyBlockedReason}>
-                                Blocked:{' '}
-                                {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
-                              </div>
-                            )}
-                            {proposal.risk === 'high' && (
-                              <div className={styles.aoiAutonomyBlockedReason}>
-                                High risk: execution still requires fresh explicit acceptance.
-                              </div>
-                            )}
-                            {proposal.acceptAction?.kind === 'start_research' &&
-                              proposal.status === 'accepted' && (
-                                <div className={styles.aoiAutonomyBlockedReason}>
-                                  Continuing will start a new Aoi web research run.
+                    {aoiAutonomyPendingFeedback && (
+                      <div className={styles.aoiAutonomyPendingFeedback}>
+                        <div className={styles.aoiAutonomyProposalMeta}>
+                          <span>{aoiAutonomyPendingFeedback.action}</span>
+                          <span>optional feedback</span>
+                        </div>
+                        <div className={styles.aoiAutonomyProposalTitle}>
+                          {sanitizeAoiProposalDisplayText(aoiAutonomyPendingFeedback.title, 120)}
+                        </div>
+                        <div className={styles.aoiAutonomyFeedbackActions}>
+                          {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                            <button
+                              type="button"
+                              key={`pending-feedback-${item.category}`}
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onRecordAoiProposalFeedback(item.category)}
+                              disabled={aoiAutonomyActionId !== null}
+                              title={item.title}
+                            >
+                              {item.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Active goals</div>
+                      {visibleAoiAutonomyGoals.length > 0 ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {visibleAoiAutonomyGoals.map((goal) => {
+                            const nextStep =
+                              goal.plan.steps.find((step) => step.status === 'in_progress') ??
+                              goal.plan.steps.find((step) => step.status === 'pending') ??
+                              null;
+
+                            return (
+                              <div className={styles.aoiAutonomyProposalItem} key={goal.id}>
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>{goal.status}</span>
+                                  <span>{goal.owner}</span>
+                                  <span>{goal.risk} risk</span>
+                                  <span>conf {goal.confidence.toFixed(2)}</span>
+                                  <span>sources {goal.sourceRefs.length}</span>
                                 </div>
-                              )}
-                            {proposal.acceptAction?.kind === 'save_memory' &&
-                              proposal.status === 'accepted' && (
-                                <div className={styles.aoiAutonomyBlockedReason}>
-                                  Continuing will promote a user-approved procedure.
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(goal.title, 140)}
                                 </div>
-                              )}
-                            {executionMessage && (
-                              <div className={styles.aoiAutonomyExecutionResult}>
-                                {sanitizeAoiProposalDisplayText(executionMessage, 320)}
-                              </div>
-                            )}
-                            {expanded && (
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                <div>
-                                  Trigger: {sanitizeAoiProposalDisplayText(proposal.trigger, 220)}
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {sanitizeAoiProposalDisplayText(goal.userIntentSummary, 240)}
                                 </div>
-                                <div>
-                                  Cooldown key:{' '}
-                                  {sanitizeAoiProposalDisplayText(proposal.cooldownKey, 160)}
-                                </div>
-                                <div>Evidence refs: {proposal.evidenceRefs.length}</div>
-                                {proposal.evidenceRefs.slice(0, 5).map((ref, index) => (
-                                  <div key={`${proposal.id}-evidence-${index}`}>
-                                    {sanitizeAoiProposalDisplayText(ref, 220)}
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>
+                                    Next:{' '}
+                                    {nextStep
+                                      ? sanitizeAoiProposalDisplayText(nextStep.title, 160)
+                                      : 'No pending step'}
                                   </div>
-                                ))}
-                                {proposal.riskSignals.slice(0, 5).map((signal, index) => (
-                                  <div key={`${proposal.id}-risk-${index}`}>
-                                    Risk: {sanitizeAoiProposalDisplayText(signal, 220)}
-                                  </div>
-                                ))}
+                                  {nextStep && (
+                                    <div>
+                                      Gate: {nextStep.allowedActionKind} at{' '}
+                                      {nextStep.requiredAutonomyLevel}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
-                            )}
-                            <div className={styles.aoiAutonomyProposalActions}>
-                              {primaryActionAllowed && proposal.status === 'active' ? (
-                                <button
-                                  type="button"
-                                  className={styles.inlineActionBtn}
-                                  onClick={() => void onDecideAoiProposal(proposal.id, 'accept')}
-                                  disabled={proposalPending}
-                                  title="Record approval without executing tools"
-                                >
-                                  Accept proposal
-                                </button>
-                              ) : executableAction ? (
-                                <button
-                                  type="button"
-                                  className={styles.inlineActionBtn}
-                                  onClick={() => void onExecuteAoiProposal(proposal)}
-                                  disabled={proposalPending}
-                                  title={
-                                    proposal.acceptAction?.kind === 'start_research'
-                                      ? 'Start a new Aoi web research run'
-                                      : proposal.acceptAction?.kind === 'save_memory'
-                                        ? 'Promote this approved procedure candidate'
-                                        : 'Execute this approved read-only proposal action'
-                                  }
-                                >
-                                  {getAoiProposalExecutionLabel(proposal)}
-                                </button>
-                              ) : (
-                                <span className={styles.modelHint}>
-                                  {proposal.blockedReason
-                                    ? 'Blocked by policy.'
-                                    : `No primary action while status is ${proposal.status}.`}
-                                </span>
-                              )}
-                              <button
-                                type="button"
-                                className={styles.inlineActionBtn}
-                                onClick={() => void onDecideAoiProposal(proposal.id, 'snooze')}
-                                disabled={proposalPending || proposal.status !== 'active'}
-                                title="Snooze this proposal"
-                              >
-                                Snooze
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.inlineActionBtn}
-                                onClick={() => void onDecideAoiProposal(proposal.id, 'dismiss')}
-                                disabled={proposalPending || proposal.status !== 'active'}
-                                title="Dismiss this proposal"
-                              >
-                                Dismiss
-                              </button>
-                              <button
-                                type="button"
-                                className={styles.inlineActionBtn}
-                                onClick={() =>
-                                  setExpandedAoiProposalId((prev) =>
-                                    prev === proposal.id ? null : proposal.id,
-                                  )
-                                }
-                                title="Show proposal evidence and policy details"
-                              >
-                                {expanded ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                                Why
-                              </button>
-                            </div>
-                            {proposal.status === 'active' && (
-                              <div className={styles.aoiAutonomyFeedbackActions}>
-                                {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>
+                          No active autonomy goals are being tracked.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Active proposals</div>
+                      {visibleAoiAutonomyProposals.length > 0 ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {visibleAoiAutonomyProposals.map((proposal) => {
+                            const primaryActionAllowed = canShowAoiProposalPrimaryAction(proposal);
+                            const proposalPending = Boolean(
+                              aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
+                            );
+                            const expanded = expandedAoiProposalId === proposal.id;
+                            const executableAction = canExecuteAoiProposalAtCurrentLevel(
+                              proposal,
+                              aoiAutonomyPolicy,
+                            );
+                            const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
+                            const inspectorSummary = buildAoiProposalInspectorSummary({
+                              proposal,
+                              policy: aoiAutonomyPolicy,
+                              activeProposals: aoiAutonomyActiveProposals,
+                              includeEvidence: expanded,
+                            });
+
+                            return (
+                              <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>{proposal.status}</span>
+                                  <span>conf {proposal.confidence.toFixed(2)}</span>
+                                  <span>{proposal.risk} risk</span>
+                                  <span>requires {proposal.requiredAutonomyLevel}</span>
+                                  <span>evidence {proposal.evidenceRefs.length}</span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalBody}>
+                                  {sanitizeAoiProposalDisplayText(proposal.body, 360)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {sanitizeAoiProposalDisplayText(proposal.reason, 260)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTools}>
+                                  {proposal.suggestedTools.length > 0
+                                    ? proposal.suggestedTools
+                                        .slice(0, 5)
+                                        .map((tool) => sanitizeAoiProposalDisplayText(tool, 64))
+                                        .join(', ')
+                                    : 'No suggested tools'}
+                                </div>
+                                {proposal.blockedReason && (
+                                  <div className={styles.aoiAutonomyBlockedReason}>
+                                    Blocked:{' '}
+                                    {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
+                                  </div>
+                                )}
+                                {proposal.risk === 'high' && (
+                                  <div className={styles.aoiAutonomyBlockedReason}>
+                                    High risk: execution still requires fresh explicit acceptance.
+                                  </div>
+                                )}
+                                {proposal.acceptAction?.kind === 'start_research' &&
+                                  proposal.status === 'accepted' && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      Continuing will start a new Aoi web research run.
+                                    </div>
+                                  )}
+                                {proposal.acceptAction?.kind === 'save_memory' &&
+                                  proposal.status === 'accepted' && (
+                                    <div className={styles.aoiAutonomyBlockedReason}>
+                                      Continuing will promote a user-approved procedure.
+                                    </div>
+                                  )}
+                                {executionMessage && (
+                                  <div className={styles.aoiAutonomyExecutionResult}>
+                                    {sanitizeAoiProposalDisplayText(executionMessage, 320)}
+                                  </div>
+                                )}
+                                {expanded && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Title: {inspectorSummary.title}</div>
+                                    <div>Reason: {inspectorSummary.reason}</div>
+                                    <div>
+                                      Confidence: {inspectorSummary.confidence.toFixed(2)} / Risk:{' '}
+                                      {inspectorSummary.risk} / Required:{' '}
+                                      {inspectorSummary.requiredAutonomyLevel}
+                                    </div>
+                                    <div>Suggested action: {inspectorSummary.suggestedAction}</div>
+                                    <div>
+                                      Policy:{' '}
+                                      {inspectorSummary.policyAllowed ? 'allowed' : 'blocked'}{' '}
+                                      {inspectorSummary.policyReasons.length > 0
+                                        ? inspectorSummary.policyReasons
+                                            .map((reason) =>
+                                              sanitizeAoiProposalDisplayText(reason, 96),
+                                            )
+                                            .join(' / ')
+                                        : 'no blocking reason'}
+                                    </div>
+                                    <div>Safe alternative: {inspectorSummary.safeAlternative}</div>
+                                    <div>
+                                      Trigger:{' '}
+                                      {sanitizeAoiProposalDisplayText(proposal.trigger, 220)}
+                                    </div>
+                                    <div>
+                                      Cooldown key:{' '}
+                                      {sanitizeAoiProposalDisplayText(proposal.cooldownKey, 160)}
+                                    </div>
+                                    <div>
+                                      Evidence refs: {inspectorSummary.evidenceRefs.length} shown /{' '}
+                                      {proposal.evidenceRefs.length} total
+                                    </div>
+                                    {inspectorSummary.evidenceRefs.map((ref, index) => (
+                                      <div key={`${proposal.id}-evidence-${index}`}>
+                                        {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                    {proposal.riskSignals.slice(0, 5).map((signal, index) => (
+                                      <div key={`${proposal.id}-risk-${index}`}>
+                                        Risk: {sanitizeAoiProposalDisplayText(signal, 220)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                <div className={styles.aoiAutonomyProposalActions}>
+                                  {primaryActionAllowed && proposal.status === 'active' ? (
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(proposal.id, 'accept')
+                                      }
+                                      disabled={proposalPending}
+                                      title="Record approval without executing tools"
+                                    >
+                                      Accept proposal
+                                    </button>
+                                  ) : executableAction ? (
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() => void onExecuteAoiProposal(proposal)}
+                                      disabled={proposalPending}
+                                      title={
+                                        proposal.acceptAction?.kind === 'start_research'
+                                          ? 'Start a new Aoi web research run'
+                                          : proposal.acceptAction?.kind === 'save_memory'
+                                            ? 'Promote this approved procedure candidate'
+                                            : 'Execute this approved read-only proposal action'
+                                      }
+                                    >
+                                      {getAoiProposalExecutionLabel(proposal)}
+                                    </button>
+                                  ) : (
+                                    <span className={styles.modelHint}>
+                                      {proposal.blockedReason
+                                        ? 'Blocked by policy.'
+                                        : `No primary action while status is ${proposal.status}.`}
+                                    </span>
+                                  )}
                                   <button
                                     type="button"
-                                    key={`${proposal.id}-${item.category}`}
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => void onDecideAoiProposal(proposal.id, 'snooze')}
+                                    disabled={proposalPending || proposal.status !== 'active'}
+                                    title="Snooze this proposal"
+                                  >
+                                    Snooze
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => void onDecideAoiProposal(proposal.id, 'dismiss')}
+                                    disabled={proposalPending || proposal.status !== 'active'}
+                                    title="Dismiss this proposal"
+                                  >
+                                    Dismiss
+                                  </button>
+                                  <button
+                                    type="button"
                                     className={styles.inlineActionBtn}
                                     onClick={() =>
-                                      void onDecideAoiProposal(
-                                        proposal.id,
-                                        item.action,
-                                        item.category,
+                                      setExpandedAoiProposalId((prev) =>
+                                        prev === proposal.id ? null : proposal.id,
                                       )
                                     }
-                                    disabled={proposalPending}
-                                    title={item.title}
+                                    title="Show proposal evidence and policy details"
                                   >
-                                    {item.label}
+                                    {expanded ? (
+                                      <ChevronDown size={14} />
+                                    ) : (
+                                      <ChevronRight size={14} />
+                                    )}
+                                    Why
                                   </button>
-                                ))}
+                                </div>
+                                {proposal.status === 'active' && (
+                                  <div className={styles.aoiAutonomyFeedbackActions}>
+                                    {AOI_PROPOSAL_FEEDBACK_CONTROLS.map((item) => (
+                                      <button
+                                        type="button"
+                                        key={`${proposal.id}-${item.category}`}
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          void onDecideAoiProposal(
+                                            proposal.id,
+                                            item.action,
+                                            item.category,
+                                          )
+                                        }
+                                        disabled={proposalPending}
+                                        title={item.title}
+                                      >
+                                        {item.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
                               </div>
-                            )}
-                          </div>
-                        );
-                      })}
-                    </div>
-                  ) : (
-                    <p className={styles.modelHint}>
-                      No active autonomy proposals are available for this session.
-                    </p>
-                  )}
-                </div>
-
-                {aoiAutonomyBlockedProposals.length > 0 && (
-                  <div className={styles.aoiAutonomyProposalSection}>
-                    <div className={styles.promptBudgetSectionTitle}>Blocked in last check</div>
-                    <div className={styles.aoiAutonomyProposalList}>
-                      {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => (
-                        <div className={styles.aoiAutonomyProposalItem} key={proposal.proposalId}>
-                          <div className={styles.aoiAutonomyProposalTitle}>
-                            {sanitizeAoiProposalDisplayText(proposal.title, 140)}
-                          </div>
-                          <div className={styles.aoiAutonomyBlockedReason}>
-                            {proposal.reasons
-                              .map((reason) => sanitizeAoiProposalDisplayText(reason, 180))
-                              .join(' / ')}
-                          </div>
-                          <div className={styles.aoiAutonomyProposalMeta}>
-                            <span>evidence {proposal.evidenceRefs.length}</span>
-                            <span>No tool execution available</span>
-                          </div>
+                            );
+                          })}
                         </div>
-                      ))}
+                      ) : (
+                        <p className={styles.modelHint}>
+                          No active autonomy proposals are available for this session.
+                        </p>
+                      )}
                     </div>
-                  </div>
+
+                    {aoiAutonomyBlockedProposals.length > 0 && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Blocked in last check</div>
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => (
+                            <div
+                              className={styles.aoiAutonomyProposalItem}
+                              key={proposal.proposalId}
+                            >
+                              <div className={styles.aoiAutonomyProposalTitle}>
+                                {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                              </div>
+                              <div className={styles.aoiAutonomyBlockedReason}>
+                                {proposal.reasons
+                                  .map((reason) => sanitizeAoiProposalDisplayText(reason, 180))
+                                  .join(' / ')}
+                              </div>
+                              <div className={styles.aoiAutonomyProposalMeta}>
+                                <span>{proposal.actionKind ?? 'no action'}</span>
+                                <span>{proposal.risk ?? 'unknown'} risk</span>
+                                <span>requires {proposal.requiredAutonomyLevel ?? 'unknown'}</span>
+                                <span>
+                                  approval{' '}
+                                  {proposal.requiresUserApproval ? 'required' : 'not required'}
+                                </span>
+                                <span>evidence {proposal.evidenceRefs.length}</span>
+                                <span>No tool execution available</span>
+                              </div>
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                Safe alternative:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  proposal.safeAlternative ??
+                                    'Inspect the evidence and keep the action as a proposal.',
+                                  220,
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                  </>
                 )}
               </div>
 

@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
+  AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  buildAoiAutonomyNotificationBadge,
+  buildAoiProposalInspectorSummary,
   canShowAoiProposalPrimaryAction,
+  loadAoiAutonomyPanelSettings,
+  saveAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
@@ -97,6 +102,116 @@ describe('Aoi autonomy UI helpers', () => {
     expect(DEFAULT_AOI_AUTONOMY_POLICY.enabled).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveSuggestionsEnabled).toBe(false);
     expect(selectAoiInlineProposal([makeProposal()], DEFAULT_AOI_AUTONOMY_POLICY)).toBeNull();
+  });
+
+  it('suppresses proactive inline suggestions in quiet mode', () => {
+    expect(
+      selectAoiInlineProposal([makeProposal()], makePolicy(), {
+        now: 3000,
+        quietMode: true,
+      }),
+    ).toBeNull();
+  });
+
+  it('keeps dashboard badges quiet and ignores high-risk goal proposal nudges', () => {
+    const highRiskGoalProposal = makeProposal({
+      risk: 'high',
+      trigger: 'goal_continuation',
+      artifactRefs: ['goal:aoi-goal-ui-test'],
+    });
+    const lowRiskGoalProposal = makeProposal({
+      id: 'aoi-proposal-low-risk-goal',
+      trigger: 'goal_continuation',
+      artifactRefs: ['goal:aoi-goal-ui-test'],
+    });
+
+    expect(
+      buildAoiAutonomyNotificationBadge({
+        proposals: [highRiskGoalProposal],
+        settings: {
+          panelExpanded: true,
+          notificationsEnabled: false,
+          quietMode: false,
+          maxSuggestionsPerSession: 3,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiAutonomyNotificationBadge({
+        proposals: [lowRiskGoalProposal],
+        settings: {
+          panelExpanded: true,
+          notificationsEnabled: false,
+          quietMode: true,
+          maxSuggestionsPerSession: 3,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiAutonomyNotificationBadge({
+        proposals: [lowRiskGoalProposal],
+      })?.reason,
+    ).toBe('goal_proposal');
+  });
+
+  it('keeps proposal inspector evidence refs opt-in', () => {
+    const proposal = makeProposal({
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: { artifact: 'report' },
+      },
+      evidenceRefs: ['memory:aoi-memory-ui-test', 'research:aoi-research-ui-test/report'],
+      suggestedTools: ['read_research_artifact'],
+    });
+    const collapsed = buildAoiProposalInspectorSummary({
+      proposal,
+      policy: makePolicy(),
+      activeProposals: [makeProposal({ id: 'aoi-proposal-duplicate' })],
+      includeEvidence: false,
+      now: 4000,
+    });
+    const expanded = buildAoiProposalInspectorSummary({
+      proposal,
+      policy: makePolicy(),
+      activeProposals: [makeProposal({ id: 'aoi-proposal-duplicate' })],
+      includeEvidence: true,
+      now: 4000,
+    });
+
+    expect(collapsed.evidenceRefs).toEqual([]);
+    expect(expanded.evidenceRefs).toEqual(proposal.evidenceRefs);
+    expect(collapsed.suggestedAction).toBe('read_research_artifact');
+    expect(collapsed.policyAllowed).toBe(false);
+    expect(collapsed.policyReasons).toContain('duplicate_active_proposal');
+  });
+
+  it('persists conservative panel notification settings', () => {
+    const storage = new Map<string, string>();
+    const storageAdapter = {
+      getItem: (key: string) => storage.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        storage.set(key, value);
+      },
+    };
+
+    const saved = saveAoiAutonomyPanelSettings(
+      {
+        panelExpanded: false,
+        notificationsEnabled: true,
+        quietMode: true,
+        maxSuggestionsPerSession: 99,
+      },
+      storageAdapter,
+    );
+
+    expect(saved).toMatchObject({
+      panelExpanded: false,
+      notificationsEnabled: true,
+      quietMode: true,
+      maxSuggestionsPerSession: 12,
+    });
+    expect(storage.has(AOI_AUTONOMY_PANEL_SETTINGS_KEY)).toBe(true);
+    expect(loadAoiAutonomyPanelSettings(storageAdapter)).toEqual(saved);
   });
 
   it('redacts local private paths from proposal display text', () => {

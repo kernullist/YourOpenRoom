@@ -1285,6 +1285,25 @@ function makeBlockedReflection(params: {
   };
 }
 
+function makeBlockedProposalSafeAlternative(proposal: AoiProposal, reasons: string[]): string {
+  if (reasons.some((reason) => reason.includes('autonomy_level_too_low'))) {
+    return `Raise autonomy to ${proposal.requiredAutonomyLevel} or keep this as a proposal.`;
+  }
+  if (reasons.some((reason) => reason.includes('high_risk_requires_approval'))) {
+    return 'Require explicit approval before continuing.';
+  }
+  if (reasons.some((reason) => reason.includes('tool_level_too_low'))) {
+    return 'Use a lower-risk read-only proposal or raise the autonomy level.';
+  }
+  if (reasons.some((reason) => reason.includes('cooldown'))) {
+    return 'Wait for cooldown or run a manual check later.';
+  }
+  if (proposal.risk === 'high') {
+    return 'Review the evidence and keep execution manual.';
+  }
+  return 'Inspect evidence before continuing.';
+}
+
 function sortProposalPriority(
   a: AoiProposal,
   b: AoiProposal,
@@ -1553,6 +1572,11 @@ export async function runAoiAutonomyTick(
         title: proposal.title,
         reasons: [...new Set(reasons)],
         evidenceRefs: proposal.evidenceRefs,
+        actionKind: proposal.acceptAction?.kind,
+        requiredAutonomyLevel: proposal.requiredAutonomyLevel,
+        requiresUserApproval: proposal.requiresUserApproval,
+        risk: proposal.risk,
+        safeAlternative: makeBlockedProposalSafeAlternative(proposal, [...new Set(reasons)]),
       });
       appendAoiReflection(
         params.sessionsDir,

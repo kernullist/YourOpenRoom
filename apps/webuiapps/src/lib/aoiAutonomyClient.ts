@@ -44,6 +44,14 @@ export interface AoiAutonomyEvaluationResponse {
   evaluation: AoiAutonomyEvaluationResult;
 }
 
+export interface AoiAutonomyDashboardSnapshot {
+  sessionPath: string;
+  status: AoiAutonomyStatus;
+  proposals: AoiAutonomyProposalList;
+  goals: AoiAutonomyGoalList;
+  evaluation: AoiAutonomyEvaluationResult;
+}
+
 export interface AoiAutonomyProposalFeedbackResult {
   sessionPath: string;
   decision: AoiProposalDecision;
@@ -260,6 +268,25 @@ export async function fetchAoiAutonomyEvaluation(
   return {
     sessionPath: evaluation.sessionPath || sessionPath,
     evaluation,
+  };
+}
+
+export async function fetchAoiAutonomyDashboard(
+  sessionPath: string,
+): Promise<AoiAutonomyDashboardSnapshot> {
+  const [status, proposals, goals, evaluation] = await Promise.all([
+    fetchAoiAutonomyStatus(sessionPath),
+    fetchAoiAutonomyProposals(sessionPath, true),
+    fetchAoiAutonomyGoals(sessionPath),
+    fetchAoiAutonomyEvaluation(sessionPath),
+  ]);
+
+  return {
+    sessionPath,
+    status,
+    proposals,
+    goals,
+    evaluation: evaluation.evaluation,
   };
 }
 

@@ -336,6 +336,11 @@ export interface AoiAutonomyBlockedProposal {
   title: string;
   reasons: string[];
   evidenceRefs: string[];
+  actionKind?: AoiProposalAcceptActionKind;
+  requiredAutonomyLevel?: AoiAutonomyLevel;
+  requiresUserApproval?: boolean;
+  risk?: AoiAutonomyRisk;
+  safeAlternative?: string;
 }
 
 export interface AoiAutonomyTickResult {
