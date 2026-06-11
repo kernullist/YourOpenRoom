@@ -79,6 +79,11 @@ const AOI_AUTONOMY_TOOL_POLICIES: Record<string, AoiAutonomyToolPolicy> = {
     maxLevel: 'L4',
     requiresApproval: true,
   },
+  save_memory: {
+    toolName: 'save_memory',
+    maxLevel: 'L4',
+    requiresApproval: true,
+  },
   file_write: {
     toolName: 'file_write',
     maxLevel: 'L5',

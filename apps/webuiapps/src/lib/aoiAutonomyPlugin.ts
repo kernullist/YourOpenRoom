@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { resolve } from 'path';
 import type { Plugin } from 'vite';
+import { runAoiAutonomyTick } from './aoiAutonomyEngine';
 import {
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
@@ -10,6 +11,8 @@ import {
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
 } from './aoiAutonomyStore';
+import type { AoiAutonomyTickReason } from './aoiAutonomyTypes';
+import type { LLMConfig } from './llmModels';
 
 const API_PREFIX = '/api/aoi-autonomy';
 const MAX_BODY_BYTES = 128 * 1024;
@@ -65,6 +68,16 @@ export function getAoiAutonomyRoute(pathname: string): string | null {
 
 function getSessionPathFromUrl(url: URL): string | null {
   return normalizeAoiAutonomySessionPath(url.searchParams.get('sessionPath'));
+}
+
+function isAoiAutonomyTickReason(value: unknown): value is AoiAutonomyTickReason {
+  return (
+    value === 'manual' ||
+    value === 'turn' ||
+    value === 'periodic' ||
+    value === 'research_run' ||
+    value === 'kira'
+  );
 }
 
 async function handleAoiAutonomyRequest(
@@ -147,6 +160,39 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         policy,
       });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/tick') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (!isAoiAutonomyTickReason(body.reason)) {
+        writeJson(res, 400, {
+          error: 'reason must be one of manual, turn, periodic, research_run, kira',
+          code: 'invalid_tick_reason',
+        });
+        return true;
+      }
+      const llmConfig =
+        body.llmConfig && typeof body.llmConfig === 'object' && !Array.isArray(body.llmConfig)
+          ? (body.llmConfig as LLMConfig)
+          : undefined;
+      const result = await runAoiAutonomyTick({
+        sessionsDir,
+        sessionPath,
+        reason: body.reason,
+        latestUserMessage:
+          typeof body.latestUserMessage === 'string' ? body.latestUserMessage : undefined,
+        llmConfig,
+      });
+      writeJson(res, 200, result);
       return true;
     }
 

@@ -28,6 +28,8 @@ export type AoiReflectionKind =
 
 export type AoiProposalDecisionAction = 'accept' | 'dismiss' | 'snooze';
 
+export type AoiAutonomyTickReason = 'manual' | 'turn' | 'periodic' | 'research_run' | 'kira';
+
 export type AoiProposalAcceptActionKind =
   | 'open_research_artifact'
   | 'read_research_artifact'
@@ -167,4 +169,24 @@ export interface AoiProposalPolicyCheckInput {
 export interface AoiProposalPolicyCheckResult {
   allowed: boolean;
   reasons: string[];
+}
+
+export interface AoiAutonomyBlockedProposal {
+  proposalId: string;
+  title: string;
+  reasons: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiAutonomyTickResult {
+  ok: boolean;
+  sessionPath: string;
+  reason: AoiAutonomyTickReason;
+  status: AoiAutonomyStatus;
+  newObservationCount: number;
+  newReflectionCount: number;
+  newActiveProposalCount: number;
+  blockedProposalCount: number;
+  blockedProposals: AoiAutonomyBlockedProposal[];
+  warnings: string[];
 }

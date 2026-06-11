@@ -72,4 +72,6 @@ declare global {
     __logger__: typeof logger;
   }
 }
-window.__logger__ = logger;
+if (typeof window !== 'undefined') {
+  window.__logger__ = logger;
+}
