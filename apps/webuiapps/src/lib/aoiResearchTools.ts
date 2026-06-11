@@ -22,6 +22,7 @@ interface NormalizedStartResearchParams {
   language: AoiResearchLanguage;
   recency: AoiResearchRecency;
   maxSources: number;
+  allowDuplicate: boolean;
 }
 
 const MODE_DEFAULT_MAX_SOURCES: Record<AoiResearchMode, number> = {
@@ -82,6 +83,7 @@ export function normalizeStartResearchParams(
     language: normalizeAoiResearchLanguage(params.language),
     recency: normalizeAoiResearchRecency(params.recency),
     maxSources: normalizeAoiResearchMaxSources(params.max_sources, mode),
+    allowDuplicate: params.allow_duplicate === true,
   };
 }
 
@@ -118,6 +120,11 @@ export function getAoiResearchToolDefinitions(): ToolDef[] {
             max_sources: {
               type: 'number',
               description: 'Maximum source target for the run, between 1 and 40.',
+            },
+            allow_duplicate: {
+              type: 'boolean',
+              description:
+                'Set true only when the user explicitly wants a separate duplicate active run for the same request.',
             },
           },
           required: ['request'],
@@ -228,7 +235,10 @@ function buildErrorFromResponse(status: number, data: unknown): string {
   if (typeof data === 'object' && data !== null && 'error' in data) {
     const error = (data as { error?: unknown }).error;
     if (typeof error === 'string' && error.trim()) {
-      return `error: ${error}`;
+      const record = data as { code?: unknown; run?: { id?: unknown } };
+      const code = typeof record.code === 'string' ? ` code=${record.code}` : '';
+      const runId = typeof record.run?.id === 'string' ? ` runId=${record.run.id}` : '';
+      return `error: ${error}${code}${runId}`;
     }
   }
   return `error: Aoi research request failed (${status})`;
@@ -264,6 +274,7 @@ export async function executeAoiResearchTool(
           language: normalized.language,
           recency: normalized.recency,
           maxSources: normalized.maxSources,
+          allowDuplicate: normalized.allowDuplicate,
         }),
       });
       const data = await readJsonToolResponse(res);

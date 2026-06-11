@@ -284,6 +284,23 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#58a6ff',
     defaultSize: { width: 1180, height: 780 },
   },
+  {
+    appId: 24,
+    appName: 'aoiresearch',
+    route: '/aoi-research',
+    displayName: 'Aoi Research',
+    aliases: [
+      'research library',
+      'aoi research library',
+      'research reports',
+      '리서치',
+      '조사 문서',
+    ],
+    sourceDir: 'AoiResearch',
+    icon: 'FileText',
+    color: '#4cc3a5',
+    defaultSize: { width: 1240, height: 760 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml

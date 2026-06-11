@@ -4,6 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { LLMConfig } from '../llmModels';
 import {
+  AOI_RESEARCH_LIMITS,
   dedupeAoiResearchSearchCandidates,
   startAoiResearchRun,
   validateAoiResearchSourceUrl,
@@ -49,6 +50,23 @@ function makeHtml(title: string): string {
     '<h1>Research heading</h1>',
     '<p>This source provides concrete evidence about the requested topic and explains the operational impact in detail.</p>',
     '<p>The support text is specific enough for evidence extraction and source attribution.</p>',
+    '</article></body></html>',
+  ].join('');
+}
+
+function makeLargeHtml(title: string): string {
+  const paragraphs = Array.from(
+    { length: AOI_RESEARCH_LIMITS.maxSourceBlocksPerSource + 24 },
+    (_, index) =>
+      `<p>Large source paragraph ${index + 1} contains concrete evidence and operational detail ${'A'.repeat(640)}</p>`,
+  );
+  return [
+    '<!doctype html>',
+    '<html><head>',
+    `<title>${title}</title>`,
+    '</head><body><article>',
+    '<h1>Large research heading</h1>',
+    ...paragraphs,
     '</article></body></html>',
   ].join('');
 }
@@ -515,6 +533,141 @@ describe('Aoi research engine', () => {
     expect(manifest.status).toBe('cancelled');
     expect(manifest.phase).toBe('cancelled');
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('fails with a timeout checkpoint before starting the next phase', async () => {
+    const { root, paths } = makeTempPaths();
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 200 }));
+    const nowValues = [1_800_000_000_000, 1_800_000_000_000, 1_800_000_000_000, 1_800_000_000_010];
+    const callModel = vi.fn(async () =>
+      JSON.stringify({
+        title: 'Timeout research',
+        researchQuestions: ['question'],
+        searchQueries: ['timeout query'],
+        sourcePriorityRules: ['rule'],
+        exclusionRules: ['rule'],
+      }),
+    );
+
+    const manifest = await startAoiResearchRun({
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://localhost:3000',
+      sessionPath: 'aoi/default',
+      runId: 'run-test-001',
+      paths,
+      request: {
+        sessionPath: 'aoi/default',
+        request: 'Timeout this research',
+      },
+      dependencies: {
+        fetch: fetchImpl,
+        loadLlmConfig: () => LLM_CONFIG,
+        loadTavilyConfig: () => TAVILY_CONFIG,
+        callModel,
+        now: () => nowValues.shift() ?? 1_800_000_000_010,
+        runTimeoutMs: 5,
+      },
+    });
+
+    expect(manifest.status).toBe('failed');
+    expect(manifest.error?.code).toBe('research_run_timeout');
+    expect(manifest.error?.phase).toBe('searching');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(fs.readFileSync(paths.report, 'utf-8')).toContain('Research run timed out');
+  });
+
+  it('caps source artifact blocks and keeps artifact JSON bounded', async () => {
+    const { root, paths } = makeTempPaths();
+    const fetchImpl = vi.fn(async (url: string) => {
+      if (url === TAVILY_CONFIG.baseUrl) {
+        return new Response(
+          JSON.stringify({
+            results: [
+              {
+                title: 'Large accepted source',
+                url: 'https://source-large.example/article',
+                content: 'Large accepted source summary',
+                score: 0.9,
+              },
+            ],
+          }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(makeLargeHtml('Large accepted source'), {
+        status: 200,
+        headers: { 'content-type': 'text/html; charset=utf-8' },
+      });
+    });
+    const callModel = vi
+      .fn()
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          title: 'Large artifact cap',
+          researchQuestions: ['question'],
+          searchQueries: ['large source query'],
+          sourcePriorityRules: ['rule'],
+          exclusionRules: ['rule'],
+        }),
+      )
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          claims: [
+            {
+              sourceId: 'src-001',
+              claim: 'Large source supports artifact cap validation.',
+              supportText:
+                'Large source paragraph contains concrete evidence and operational detail.',
+              tags: ['artifact'],
+              confidence: 0.82,
+              caveats: [],
+            },
+          ],
+        }),
+      )
+      .mockResolvedValueOnce(makeValidSecurityReport('Large artifact cap', '대형 artifact 테스트'))
+      .mockResolvedValueOnce(
+        JSON.stringify({
+          needsRewrite: false,
+          findings: [],
+        }),
+      );
+
+    const manifest = await startAoiResearchRun({
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://localhost:3000',
+      sessionPath: 'aoi/default',
+      runId: 'run-test-001',
+      paths,
+      request: {
+        sessionPath: 'aoi/default',
+        request: 'Large artifact cap',
+        mode: 'quick',
+        maxSources: 1,
+      },
+      dependencies: {
+        fetch: fetchImpl,
+        loadLlmConfig: () => LLM_CONFIG,
+        loadTavilyConfig: () => TAVILY_CONFIG,
+        callModel,
+        resolveHost: async () => ['93.184.216.34'],
+        now: () => 1_800_000_000_000,
+      },
+    });
+
+    const rawSources = fs.readFileSync(paths.sources, 'utf-8');
+    const sourcesArtifact = JSON.parse(rawSources) as {
+      sources: Array<{ blocks: Array<{ text: string }> }>;
+    };
+
+    expect(manifest.status).toBe('completed');
+    expect(Buffer.byteLength(rawSources, 'utf-8')).toBeLessThanOrEqual(
+      AOI_RESEARCH_LIMITS.maxJsonArtifactBytes,
+    );
+    expect(sourcesArtifact.sources[0].blocks.length).toBeLessThanOrEqual(
+      AOI_RESEARCH_LIMITS.maxSourceBlocksPerSource,
+    );
+    expect(sourcesArtifact.sources[0].blocks[0].text.length).toBeLessThanOrEqual(360);
   });
 
   it('fails clearly when Tavily is not configured', async () => {

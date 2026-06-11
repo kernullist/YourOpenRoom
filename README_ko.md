@@ -79,6 +79,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 | `Room Shop`      | Aoi 방을 유지한 채 내장 wallpaper look 과 desk mood 를 미리보기, 적용, 초기화할 수 있는 가벼운 데스크톱 꾸미기 상점             |
 | `Dewdrop Canvas` | `F:/kernullist/dewdrop-canvas` 액체 마인드맵 보드를 인앱으로 열고, 정적 파일/API 브리지, 프로젝트 저장, Markdown export 를 제공 |
 | `Written By Me`  | `F:/kernullist/written-by-me` 문체 분석기를 인앱으로 열고, 업로드/URL/API 브리지와 AOI 메인 모델 기반 분석/번역을 제공          |
+| `Aoi Research`   | Aoi 가 생성한 리서치 보고서, source ledger, evidence claim, 실행 상태를 조밀하게 탐색하는 research-run library                 |
 | `Kira`           | 작업 보드, work item/comment, discovery 분석, 워커 배정 전 clarification 질문, 자동화 handoff                                   |
 | `Aoi's IDE`      | 새 파일/폴더 생성이 가능한 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령               |
 | `PE Analyst`     | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
@@ -126,6 +127,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - **웹/콘텐츠 툴**
   - `search_web`
   - `read_url`
+  - `start_research`, `get_research_status`, `read_research_artifact`, `cancel_research`
   - `generate_image`
 - **워크스페이스 / IDE 툴**
   - `workspace_search`
@@ -169,6 +171,14 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - 시맨틱 리네임은 preview 서명 없이 apply 할 수 없습니다
 - 워크스페이스 명령은 읽기 전용 `git` / `node` / `npm` / `pnpm` 안전 패턴만 허용됩니다
 - Kira 는 계획된 검증 명령을 직접 다시 돌리고, 실패하면 block 또는 retry 할 수 있습니다
+- Aoi research run 은 AOI main LLM 을 그대로 재사용하며, live web 수집에는 Tavily 설정이
+  필요합니다. 산출물은 `sessions/<character>/<mod>/aoi-research/runs/<runId>/` 아래
+  `manifest.json`, `report.md`, `sources.json`, `evidence.json` 으로 저장됩니다. 보고서는
+  수집된 source claim 에서 생성되고 citation coverage 검증을 거치며, 실패/timeout/cancel
+  시에도 가능한 partial artifact 를 남깁니다. Aoi Research 앱은 compact manifest summary 만
+  목록으로 받고, report/source/evidence 본문은 선택한 run 에 대해 따로 읽습니다. Tavily 미설정,
+  private/local URL 차단, source read 실패, malformed model JSON, artifact cap, duplicate active
+  request, max concurrency 제한은 run status 또는 API error 로 드러납니다.
 
 ## Kira 와 Aoi's IDE
 
@@ -351,7 +361,8 @@ pnpm dev
     "workspacePath": "C:\\Users\\your-name\\workspace\\your-project"
   },
   "tavily": {
-    "apiKey": "tvly-YOUR_API_KEY"
+    "apiKey": "tvly-YOUR_API_KEY",
+    "baseUrl": "https://api.tavily.com/search"
   },
   "gmail": {
     "clientId": "YOUR_GOOGLE_OAUTH_DESKTOP_CLIENT_ID",
@@ -369,6 +380,8 @@ pnpm dev
 
 Tavily 는 Aoi `Settings -> Advanced -> Tavily Web Search` 에서도 설정할 수 있습니다.
 설정이 저장되면 Aoi 는 최신 정보가 필요한 질문에서 `search_web` 툴을 먼저 사용할 수 있습니다.
+같은 Tavily 설정은 `start_research` 에도 필요하며, research planning, evidence extraction,
+report synthesis, verification 은 AOI main LLM 설정을 재사용합니다.
 
 메모:
 

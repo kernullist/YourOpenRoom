@@ -6,8 +6,8 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - the desktop shell and window manager, including persistent icon ordering and chat-aware maximize
 - the floating chat panel and tool runtime
-- built-in apps under `src/pages/`, including Notes, Room Shop, Written By Me, Kira, Aoi's IDE, and
-  PE Analyst
+- built-in apps under `src/pages/`, including Notes, Room Shop, Written By Me, Aoi Research, Kira,
+  Aoi's IDE, and PE Analyst
 - the local standalone implementation of `@gui/vibe-container`
 - the Vite middleware APIs that make Gmail, Kira, Browser Reader, YouTube search, OpenVSCode, PE
   Analyst, Written By Me, TTS lab synthesis, session persistence, and config storage work in local
@@ -67,6 +67,10 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - browser-safe Kira memory candidate helpers and server-side Kira automation memory writes
 - `src/lib/aoiTts.ts`
   - Aoi message playback, phrase prewarming, and TTS status tracking
+- `src/lib/aoiResearchEngine.ts`, `src/lib/aoiResearchPlugin.ts`, and `src/pages/AoiResearch/`
+  - Tavily-backed research-run collection, SSRF-safe source reading, evidence extraction, cited
+    report persistence, lifecycle hardening, list/status/artifact/cancel APIs, and the dense local
+    Research Library UI
 - `src/lib/llmClient.ts`
   - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
     API, and Anthropic-compatible model routes
@@ -91,6 +95,11 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 - `/api/cybernews/live`
 - `/api/youtube-search`
 - `/api/tavily-search`
+- `/api/aoi-research/start`
+- `/api/aoi-research/list`
+- `/api/aoi-research/status`
+- `/api/aoi-research/artifact`
+- `/api/aoi-research/cancel`
 - `/api/kira-*`
 - `/api/openvscode/*`
 - `/api/ida-pe/*`
@@ -167,9 +176,12 @@ This app reads and writes to `~/.openroom/` in standalone mode:
 - `config.json`
   - runtime settings such as LLM, remembered user profile, conversation language mode, Gmail, Aoi
     TTS preferences, Tavily, album, Kira, OpenVSCode, and `idaPe` config
-  - Tavily web search can be edited from Settings -> Advanced -> Tavily Web Search
+  - Tavily web search can be edited from Settings -> Advanced -> Tavily Web Search, and the same
+    server-side Tavily config is required for Aoi research runs
 - `sessions/...`
   - session-scoped app data, chat data, chat image attachments, and local Aoi memory v2 data
+  - Aoi research artifacts live under `sessions/<character>/<mod>/aoi-research/runs/<runId>/` as
+    `manifest.json`, `report.md`, `sources.json`, and `evidence.json`
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -184,6 +196,12 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - The chat panel includes both app-level tools and real workspace tools, so changes in `src/lib/`
   often affect the desktop, Kira, and Aoi's IDE together.
 - Aoi chat playback currently uses Google `Despina` by default when TTS is enabled in chat settings.
+- Aoi research uses the AOI main LLM route for planning, evidence extraction, report synthesis, and
+  verification. Tavily is required only for live web collection. The engine rejects local/private
+  source URLs, saves partial artifacts on failure/cancel/timeout, caps source/report artifact size,
+  and prevents duplicate active requests plus excessive concurrent runs. The list API returns only
+  compact manifest summaries; full report/source/evidence payloads are read through the artifact
+  endpoint for a selected run.
 - Aoi durable memory v2 stores raw turn episodes and selected memories under
   `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset. Background
   sync can use the configured LLM as a distiller, but invalid or timed-out distillation falls back

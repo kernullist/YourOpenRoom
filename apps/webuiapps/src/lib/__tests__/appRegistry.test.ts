@@ -14,6 +14,7 @@ describe('appRegistry app identity helpers', () => {
     expect(result).toContain('Use displayName or appName when speaking to the user');
     expect(result).toContain('Dewdrop Canvas (appName: dewdropcanvas, appId: 22');
     expect(result).toContain('Written By Me (appName: writtenbyme, appId: 23');
+    expect(result).toContain('Aoi Research (appName: aoiresearch, appId: 24');
   });
 
   it('resolves OS app_id params back to the target app identity', () => {

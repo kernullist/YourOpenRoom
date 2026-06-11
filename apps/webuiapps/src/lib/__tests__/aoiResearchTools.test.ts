@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import { join } from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   executeAoiResearchTool,
@@ -10,10 +13,14 @@ import {
   normalizeStartResearchParams,
 } from '../aoiResearchTools';
 import {
+  AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+  getActiveResearchStartConflict,
   getAoiResearchRoute,
   isValidAoiResearchRunId,
+  listAoiResearchRunSummaries,
   normalizeAoiResearchSessionPath,
 } from '../aoiResearchPlugin';
+import type { AoiResearchManifest } from '../aoiResearchTypes';
 
 function makeJsonResponse(status: number, body: unknown): Response {
   const text = JSON.stringify(body);
@@ -91,7 +98,13 @@ describe('Aoi research tool definitions', () => {
       language: 'ko',
       recency: 'week',
       maxSources: 40,
+      allowDuplicate: false,
     });
+    expect(normalizeStartResearchParams({ request: 'rerun', allow_duplicate: true })).toMatchObject(
+      {
+        allowDuplicate: true,
+      },
+    );
     expect(normalizeStartResearchParams({ request: '' })).toBe('error: request is required');
     expect(normalizeAoiResearchMode('invalid')).toBe('standard');
     expect(normalizeAoiResearchMaxSources('bad', 'quick')).toBe(5);
@@ -137,6 +150,7 @@ describe('Aoi research tool execution', () => {
         language: 'ko',
         recency: 'month',
         maxSources: 30,
+        allowDuplicate: false,
       }),
     });
     expect(JSON.parse(result)).toEqual({
@@ -219,6 +233,172 @@ describe('Aoi research tool execution', () => {
       ok: true,
       run: { id: 'aoi-research-test-1234', status: 'cancelled' },
     });
+  });
+});
+
+describe('Aoi research run listing and lifecycle gates', () => {
+  function makeManifest(params: {
+    id: string;
+    request: string;
+    status: AoiResearchManifest['status'];
+    updatedAt: number;
+  }): AoiResearchManifest {
+    return {
+      version: 1,
+      id: params.id,
+      sessionPath: 'aoi/default',
+      request: params.request,
+      mode: 'standard',
+      language: 'match-user',
+      recency: 'any',
+      maxSources: 12,
+      createdAt: params.updatedAt - 100,
+      updatedAt: params.updatedAt,
+      status: params.status,
+      phase: params.status === 'completed' ? 'completed' : 'searching',
+      statusMessage: `${params.status} run`,
+      sourceCounts: {
+        planned: 12,
+        candidates: 5,
+        accepted: 3,
+        failed: 1,
+      },
+      artifactPaths: {
+        manifest: `aoi-research/runs/${params.id}/manifest.json`,
+        report: `aoi-research/runs/${params.id}/report.md`,
+        sources: `aoi-research/runs/${params.id}/sources.json`,
+        evidence: `aoi-research/runs/${params.id}/evidence.json`,
+      },
+      artifactAvailability: {
+        manifest: true,
+        report: true,
+        sources: true,
+        evidence: true,
+      },
+      reportTitle: params.request,
+      completedAt: params.status === 'completed' ? params.updatedAt : undefined,
+    };
+  }
+
+  function writeManifest(root: string, manifest: AoiResearchManifest): void {
+    const runDir = join(root, manifest.sessionPath, 'aoi-research', 'runs', manifest.id);
+    fs.mkdirSync(runDir, { recursive: true });
+    fs.writeFileSync(join(runDir, 'manifest.json'), JSON.stringify(manifest, null, 2), 'utf-8');
+    fs.writeFileSync(join(runDir, 'report.md'), '# Report', 'utf-8');
+  }
+
+  it('lists compact manifest summaries without report content', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-list-'));
+    writeManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-old-001',
+        request: 'Old research',
+        status: 'completed',
+        updatedAt: 1_800_000_000_000,
+      }),
+    );
+    writeManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-new-001',
+        request: 'New research',
+        status: 'running',
+        updatedAt: 1_800_000_001_000,
+      }),
+    );
+
+    const summaries = listAoiResearchRunSummaries(root, 'aoi/default');
+
+    expect(summaries.map((run) => run.id)).toEqual([
+      'aoi-research-new-001',
+      'aoi-research-old-001',
+    ]);
+    expect(JSON.stringify(summaries)).not.toContain('# Report');
+    expect(summaries[0]).toMatchObject({
+      request: 'New research',
+      status: 'running',
+      warningCount: 0,
+      verificationWarningCount: 0,
+    });
+  });
+
+  it('blocks duplicate active runs unless explicitly allowed and enforces concurrency cap', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-conflict-'));
+    writeManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-active-001',
+        request: 'Investigate ETW telemetry',
+        status: 'running',
+        updatedAt: 1_800_000_001_000,
+      }),
+    );
+    writeManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-active-002',
+        request: 'Investigate TPM posture',
+        status: 'queued',
+        updatedAt: 1_800_000_002_000,
+      }),
+    );
+
+    expect(
+      getActiveResearchStartConflict({
+        sessionsDir: root,
+        sessionPath: 'aoi/default',
+        request: {
+          sessionPath: 'aoi/default',
+          request: '  Investigate ETW telemetry  ',
+        },
+        allowDuplicate: false,
+      })?.code,
+    ).toBe('duplicate_active_run');
+
+    const duplicateAllowedRoot = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-allow-'));
+    writeManifest(
+      duplicateAllowedRoot,
+      makeManifest({
+        id: 'aoi-research-active-003',
+        request: 'Investigate ETW telemetry',
+        status: 'running',
+        updatedAt: 1_800_000_003_000,
+      }),
+    );
+    expect(
+      getActiveResearchStartConflict({
+        sessionsDir: duplicateAllowedRoot,
+        sessionPath: 'aoi/default',
+        request: {
+          sessionPath: 'aoi/default',
+          request: 'Investigate ETW telemetry',
+        },
+        allowDuplicate: true,
+      }),
+    ).toBeNull();
+
+    expect(
+      getActiveResearchStartConflict({
+        sessionsDir: root,
+        sessionPath: 'aoi/default',
+        request: {
+          sessionPath: 'aoi/default',
+          request: 'Different topic',
+        },
+        allowDuplicate: false,
+      })?.code,
+    ).toBe('too_many_active_runs');
+    expect(AOI_RESEARCH_MAX_CONCURRENT_RUNS).toBe(2);
+  });
+});
+
+describe('Aoi research docs/config examples', () => {
+  it('keeps the checked-in config example valid JSON with Tavily config present', () => {
+    const raw = fs.readFileSync(join(process.cwd(), '../../docs/config.example.json'), 'utf-8');
+    const parsed = JSON.parse(raw) as { tavily?: { apiKey?: string; baseUrl?: string } };
+
+    expect(parsed.tavily?.apiKey).toBeTruthy();
   });
 });
 

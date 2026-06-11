@@ -6,6 +6,7 @@ import type { Plugin } from 'vite';
 import { getAoiLlmStatus } from './dewdropCanvasPlugin';
 import {
   cancelAoiResearchRun,
+  normalizeAoiResearchRequest,
   startAoiResearchRun,
   type AoiResearchRunPaths,
 } from './aoiResearchEngine';
@@ -13,12 +14,16 @@ import {
   isAoiResearchArtifactName,
   type AoiResearchArtifactName,
   type AoiResearchCancelResponse,
+  type AoiResearchListResponse,
   type AoiResearchManifest,
+  type AoiResearchRunSummary,
   type AoiResearchStartRequest,
 } from './aoiResearchTypes';
 
 const API_PREFIX = '/api/aoi-research';
 const MAX_BODY_BYTES = 256 * 1024;
+export const AOI_RESEARCH_MAX_CONCURRENT_RUNS = 2;
+const MAX_LISTED_RUNS = 80;
 
 export interface AoiResearchPluginOptions {
   configFile: string;
@@ -104,6 +109,15 @@ function resolveRunPaths(
   };
 }
 
+function resolveRunsDir(sessionsDir: string, sessionPath: string): string {
+  const sessionsRoot = resolve(sessionsDir);
+  const runsDir = resolve(sessionsRoot, sessionPath, 'aoi-research', 'runs');
+  if (!isPathInsideRoot(sessionsRoot, runsDir)) {
+    throw new Error('Resolved research runs path escaped the sessions directory.');
+  }
+  return runsDir;
+}
+
 function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
   return new Promise((resolveBody, reject) => {
     const chunks: Buffer[] = [];
@@ -135,14 +149,100 @@ function readJsonBody(req: IncomingMessage): Promise<Record<string, unknown>> {
 }
 
 function readManifest(filePath: string): AoiResearchManifest | null {
-  if (!fs.existsSync(filePath)) {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return null;
+    }
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<AoiResearchManifest>;
+    if (parsed.version !== 1 || typeof parsed.id !== 'string') {
+      return null;
+    }
+    return parsed as AoiResearchManifest;
+  } catch {
     return null;
   }
-  const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<AoiResearchManifest>;
-  if (parsed.version !== 1 || typeof parsed.id !== 'string') {
-    return null;
+}
+
+function isActiveResearchRun(manifest: AoiResearchManifest): boolean {
+  return manifest.status === 'queued' || manifest.status === 'running';
+}
+
+function normalizeRequestKey(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+export function toAoiResearchRunSummary(manifest: AoiResearchManifest): AoiResearchRunSummary {
+  return {
+    id: manifest.id,
+    sessionPath: manifest.sessionPath,
+    request: manifest.request,
+    title: manifest.reportTitle || manifest.plan?.title,
+    mode: manifest.mode,
+    language: manifest.language,
+    recency: manifest.recency,
+    maxSources: manifest.maxSources,
+    createdAt: manifest.createdAt,
+    updatedAt: manifest.updatedAt,
+    completedAt: manifest.completedAt,
+    status: manifest.status,
+    phase: manifest.phase,
+    statusMessage: manifest.statusMessage,
+    sourceCounts: manifest.sourceCounts,
+    artifactAvailability: manifest.artifactAvailability,
+    claimCount: manifest.claimCount,
+    warningCount: manifest.warnings?.length ?? 0,
+    verificationWarningCount: manifest.verificationWarnings?.length ?? 0,
+    error: manifest.error,
+  };
+}
+
+function listResearchRunManifests(sessionsDir: string, sessionPath: string): AoiResearchManifest[] {
+  const runsDir = resolveRunsDir(sessionsDir, sessionPath);
+  if (!fs.existsSync(runsDir)) {
+    return [];
   }
-  return parsed as AoiResearchManifest;
+
+  return fs
+    .readdirSync(runsDir, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory() && isValidAoiResearchRunId(entry.name))
+    .map((entry) => readManifest(resolveRunPaths(sessionsDir, sessionPath, entry.name).manifest))
+    .filter((manifest): manifest is AoiResearchManifest => Boolean(manifest))
+    .sort((a, b) => (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt));
+}
+
+export function listAoiResearchRunSummaries(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiResearchRunSummary[] {
+  return listResearchRunManifests(sessionsDir, sessionPath)
+    .slice(0, MAX_LISTED_RUNS)
+    .map(toAoiResearchRunSummary);
+}
+
+export function getActiveResearchStartConflict(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  request: AoiResearchStartRequest;
+  allowDuplicate: boolean;
+}): {
+  code: 'duplicate_active_run' | 'too_many_active_runs';
+  manifests: AoiResearchManifest[];
+} | null {
+  const activeRuns = listResearchRunManifests(params.sessionsDir, params.sessionPath).filter(
+    isActiveResearchRun,
+  );
+  if (!params.allowDuplicate) {
+    const normalized = normalizeAoiResearchRequest(params.request);
+    const requestKey = normalizeRequestKey(normalized.request);
+    const duplicate = activeRuns.find((run) => normalizeRequestKey(run.request) === requestKey);
+    if (duplicate) {
+      return { code: 'duplicate_active_run', manifests: [duplicate] };
+    }
+  }
+  if (activeRuns.length >= AOI_RESEARCH_MAX_CONCURRENT_RUNS) {
+    return { code: 'too_many_active_runs', manifests: activeRuns };
+  }
+  return null;
 }
 
 function readArtifactContent(
@@ -209,6 +309,40 @@ async function handleAoiResearchRequest(
       }
 
       const now = Date.now();
+      const startRequest: AoiResearchStartRequest = {
+        sessionPath,
+        request,
+        mode: body.mode as AoiResearchStartRequest['mode'],
+        language: body.language as AoiResearchStartRequest['language'],
+        recency: body.recency as AoiResearchStartRequest['recency'],
+        maxSources: body.maxSources as AoiResearchStartRequest['maxSources'],
+      };
+      const conflict = getActiveResearchStartConflict({
+        sessionsDir,
+        sessionPath,
+        request: startRequest,
+        allowDuplicate: body.allowDuplicate === true || body.allow_duplicate === true,
+      });
+      if (conflict?.code === 'duplicate_active_run') {
+        writeJson(res, 409, {
+          error:
+            'A matching research run is already queued or running for this session. Set allowDuplicate=true only when a separate run is intentional.',
+          code: conflict.code,
+          run: toAoiResearchRunSummary(conflict.manifests[0]),
+          maxConcurrentRuns: AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+        });
+        return true;
+      }
+      if (conflict?.code === 'too_many_active_runs') {
+        writeJson(res, 429, {
+          error: `Too many active Aoi research runs. Wait for one to finish or cancel a running run before starting another.`,
+          code: conflict.code,
+          activeRuns: conflict.manifests.map(toAoiResearchRunSummary),
+          maxConcurrentRuns: AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+        });
+        return true;
+      }
+
       const runId = generateRunId(now);
       const paths = resolveRunPaths(sessionsDir, sessionPath, runId);
       const runPromise = startAoiResearchRun({
@@ -217,14 +351,7 @@ async function handleAoiResearchRequest(
         sessionPath,
         runId,
         paths,
-        request: {
-          sessionPath,
-          request,
-          mode: body.mode as AoiResearchStartRequest['mode'],
-          language: body.language as AoiResearchStartRequest['language'],
-          recency: body.recency as AoiResearchStartRequest['recency'],
-          maxSources: body.maxSources as AoiResearchStartRequest['maxSources'],
-        },
+        request: startRequest,
       });
       const manifest = readManifest(paths.manifest) ?? (await runPromise);
       void runPromise.catch((error) => {
@@ -237,6 +364,22 @@ async function handleAoiResearchRequest(
         aoiMainLlm: getAoiLlmStatus(configFile),
         background: manifest.status === 'queued' || manifest.status === 'running',
       });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/list') {
+      const sessionPath = normalizeAoiResearchSessionPath(url.searchParams.get('sessionPath'));
+      if (!sessionPath) {
+        writeJson(res, 400, { error: 'Invalid or missing sessionPath.' });
+        return true;
+      }
+      const response: AoiResearchListResponse = {
+        ok: true,
+        sessionPath,
+        runs: listAoiResearchRunSummaries(sessionsDir, sessionPath),
+        maxConcurrentRuns: AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+      };
+      writeJson(res, 200, response);
       return true;
     }
 

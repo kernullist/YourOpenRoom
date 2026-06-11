@@ -132,6 +132,29 @@ export interface AoiResearchManifest extends AoiResearchRun {
   completedAt?: number;
 }
 
+export interface AoiResearchRunSummary {
+  id: string;
+  sessionPath: string;
+  request: string;
+  title?: string;
+  mode: AoiResearchMode;
+  language: AoiResearchLanguage;
+  recency: AoiResearchRecency;
+  maxSources: number;
+  createdAt: number;
+  updatedAt: number;
+  completedAt?: number;
+  status: AoiResearchStatus;
+  phase: AoiResearchProgressPhase;
+  statusMessage: string;
+  sourceCounts: AoiResearchSourceCounts;
+  artifactAvailability?: Record<AoiResearchArtifactName, boolean>;
+  claimCount?: number;
+  warningCount: number;
+  verificationWarningCount: number;
+  error?: AoiResearchErrorDetail;
+}
+
 export interface AoiResearchStartRequest {
   sessionPath: string;
   request: string;
@@ -149,6 +172,7 @@ export interface AoiResearchStatusResponse {
 export interface AoiResearchArtifactResponse {
   ok: boolean;
   runId: string;
+  run?: AoiResearchManifest;
   artifact: AoiResearchArtifactName;
   contentType: 'application/json' | 'text/markdown';
   content: unknown;
@@ -157,6 +181,13 @@ export interface AoiResearchArtifactResponse {
 export interface AoiResearchCancelResponse {
   ok: boolean;
   run: AoiResearchManifest;
+}
+
+export interface AoiResearchListResponse {
+  ok: boolean;
+  sessionPath: string;
+  runs: AoiResearchRunSummary[];
+  maxConcurrentRuns: number;
 }
 
 export function buildAoiResearchArtifactPaths(runId: string): AoiResearchArtifactPaths {

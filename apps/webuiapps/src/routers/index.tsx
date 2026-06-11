@@ -23,6 +23,7 @@ const PeAnalyzer = lazy(() => import('@/pages/PeAnalyzer'));
 const RoomShop = lazy(() => import('@/pages/RoomShop'));
 const DewdropCanvas = lazy(() => import('@/pages/DewdropCanvas'));
 const WrittenByMe = lazy(() => import('@/pages/WrittenByMe'));
+const AoiResearch = lazy(() => import('@/pages/AoiResearch'));
 
 // All sub-pages should use lazy loading
 const routerList: RouteObject[] = [
@@ -183,6 +184,14 @@ const routerList: RouteObject[] = [
     element: (
       <React.Suspense>
         <WrittenByMe />
+      </React.Suspense>
+    ),
+  },
+  {
+    path: '/aoi-research',
+    element: (
+      <React.Suspense>
+        <AoiResearch />
       </React.Suspense>
     ),
   },

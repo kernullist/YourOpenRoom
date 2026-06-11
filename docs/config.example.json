@@ -152,7 +152,8 @@
     "workspaceHistory": ["C:\\Users\\your-name\\workspace\\your-project"]
   },
   "tavily": {
-    "apiKey": "tvly-YOUR_API_KEY"
+    "apiKey": "tvly-YOUR_API_KEY",
+    "baseUrl": "https://api.tavily.com/search"
   },
   "gmail": {
     "clientId": "YOUR_GOOGLE_OAUTH_DESKTOP_CLIENT_ID",

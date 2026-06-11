@@ -30,12 +30,29 @@ const MAX_PLAN_QUERIES = 8;
 const MAX_FETCH_BYTES = 1_000_000;
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;
+const DEFAULT_RUN_TIMEOUT_MS = 8 * 60_000;
 const LLM_PLAN_TOKENS = 1600;
 const LLM_EVIDENCE_TOKENS = 1400;
 const LLM_REPORT_TOKENS = 4200;
 const LLM_VERIFIER_TOKENS = 1800;
 const MAX_REPORT_CHARS = 28_000;
+const MAX_REPORT_ARTIFACT_BYTES = 128 * 1024;
+const MAX_JSON_ARTIFACT_BYTES = 768 * 1024;
+const MAX_SOURCE_BLOCKS_PER_SOURCE = 20;
 const MAX_REPORT_EVIDENCE_CLAIMS = 30;
+
+export const AOI_RESEARCH_LIMITS = {
+  maxPlanQueries: MAX_PLAN_QUERIES,
+  maxFetchBytes: MAX_FETCH_BYTES,
+  maxRedirects: MAX_REDIRECTS,
+  fetchTimeoutMs: FETCH_TIMEOUT_MS,
+  defaultRunTimeoutMs: DEFAULT_RUN_TIMEOUT_MS,
+  maxReportChars: MAX_REPORT_CHARS,
+  maxReportArtifactBytes: MAX_REPORT_ARTIFACT_BYTES,
+  maxJsonArtifactBytes: MAX_JSON_ARTIFACT_BYTES,
+  maxSourceBlocksPerSource: MAX_SOURCE_BLOCKS_PER_SOURCE,
+  maxReportEvidenceClaims: MAX_REPORT_EVIDENCE_CLAIMS,
+} as const;
 
 const EMPTY_SOURCE_COUNTS: AoiResearchSourceCounts = {
   planned: 0,
@@ -100,6 +117,7 @@ export interface AoiResearchEngineDependencies {
   loadTavilyConfig?: (configFile: string) => AoiResearchTavilyConfig | null;
   fetch?: ResearchFetch;
   resolveHost?: HostResolver;
+  runTimeoutMs?: number;
   shouldCancel?: (runId: string, phase: AoiResearchProgressPhase) => boolean | Promise<boolean>;
   onPhase?: (
     phase: AoiResearchProgressPhase,
@@ -204,6 +222,28 @@ function truncateText(value: string, maxChars: number): string {
   return `${normalized.slice(0, Math.max(0, maxChars - 3)).trimEnd()}...`;
 }
 
+function clampTextByUtf8Bytes(value: string, maxBytes: number): string {
+  if (Buffer.byteLength(value, 'utf-8') <= maxBytes) {
+    return value;
+  }
+
+  const suffix = '\n\n[truncated: artifact size cap]\n';
+  const suffixBytes = Buffer.byteLength(suffix, 'utf-8');
+  const bodyBudget = Math.max(0, maxBytes - suffixBytes);
+  let low = 0;
+  let high = value.length;
+  while (low < high) {
+    const mid = Math.ceil((low + high) / 2);
+    if (Buffer.byteLength(value.slice(0, mid), 'utf-8') <= bodyBudget) {
+      low = mid;
+    } else {
+      high = mid - 1;
+    }
+  }
+  const body = value.slice(0, low).trimEnd();
+  return `${body}${suffix}`;
+}
+
 function getString(value: unknown): string {
   return typeof value === 'string' ? value.trim() : '';
 }
@@ -293,13 +333,22 @@ function createErrorDetail(
   };
 }
 
-function writeTextFile(filePath: string, content: string): void {
+function writeTextFile(filePath: string, content: string, maxBytes?: number): void {
   fs.mkdirSync(dirname(filePath), { recursive: true });
-  fs.writeFileSync(filePath, content, 'utf-8');
+  const nextContent = maxBytes ? clampTextByUtf8Bytes(content, maxBytes) : content;
+  fs.writeFileSync(filePath, nextContent, 'utf-8');
 }
 
-function writeJsonFile(filePath: string, content: unknown): void {
-  writeTextFile(filePath, JSON.stringify(content, null, 2));
+function writeJsonFile(
+  filePath: string,
+  content: unknown,
+  maxBytes = MAX_JSON_ARTIFACT_BYTES,
+): void {
+  const json = JSON.stringify(content, null, 2);
+  if (Buffer.byteLength(json, 'utf-8') > maxBytes) {
+    throw new Error(`JSON artifact exceeds ${maxBytes} bytes.`);
+  }
+  writeTextFile(filePath, json);
 }
 
 function getArtifactAvailability(
@@ -322,6 +371,68 @@ function countSources(
     candidates,
     accepted: sources.filter((source) => source.status === 'accepted').length,
     failed: sources.filter((source) => source.status === 'failed').length,
+  };
+}
+
+function limitSourceForArtifact(source: AoiResearchSource): AoiResearchSource {
+  return {
+    ...source,
+    title: truncateText(source.title, 240),
+    siteName: source.siteName ? truncateText(source.siteName, 120) : source.siteName,
+    excerpt: source.excerpt ? truncateText(source.excerpt, 320) : source.excerpt,
+    blocks: source.blocks.slice(0, MAX_SOURCE_BLOCKS_PER_SOURCE).map((block) => ({
+      ...block,
+      text: truncateText(block.text, 360),
+    })),
+  };
+}
+
+function buildSourcesArtifact(
+  runId: string,
+  sources: AoiResearchSource[],
+  now: number,
+): AoiResearchSourcesArtifact {
+  let nextSources = sources.map(limitSourceForArtifact);
+  let artifact: AoiResearchSourcesArtifact = {
+    version: 1,
+    runId,
+    savedAt: now,
+    sources: nextSources,
+  };
+
+  if (Buffer.byteLength(JSON.stringify(artifact), 'utf-8') <= MAX_JSON_ARTIFACT_BYTES) {
+    return artifact;
+  }
+
+  nextSources = nextSources.map((source) => ({
+    ...source,
+    blocks: source.blocks.slice(0, 4),
+  }));
+  artifact = {
+    ...artifact,
+    sources: nextSources,
+  };
+  if (Buffer.byteLength(JSON.stringify(artifact), 'utf-8') <= MAX_JSON_ARTIFACT_BYTES) {
+    return artifact;
+  }
+
+  return {
+    ...artifact,
+    sources: nextSources.map((source) => ({
+      ...source,
+      excerpt: source.excerpt ? truncateText(source.excerpt, 120) : source.excerpt,
+      blocks: [],
+    })),
+  };
+}
+
+function limitEvidenceClaimForArtifact(claim: AoiResearchEvidenceClaim): AoiResearchEvidenceClaim {
+  return {
+    ...claim,
+    claim: truncateText(claim.claim, 360),
+    supportText: truncateText(claim.supportText, 520),
+    topicTags: claim.topicTags.slice(0, 8).map((tag) => truncateText(tag, 80)),
+    caveats: claim.caveats.slice(0, 6).map((caveat) => truncateText(caveat, 160)),
   };
 }
 
@@ -357,12 +468,7 @@ function persistSources(
   sources: AoiResearchSource[],
   now: number,
 ): void {
-  const artifact: AoiResearchSourcesArtifact = {
-    version: 1,
-    runId,
-    savedAt: now,
-    sources,
-  };
+  const artifact = buildSourcesArtifact(runId, sources, now);
   writeJsonFile(paths.sources, artifact);
 }
 
@@ -376,7 +482,7 @@ function persistEvidence(
     version: 1,
     runId,
     savedAt: now,
-    claims,
+    claims: claims.map(limitEvidenceClaimForArtifact),
   };
   writeJsonFile(paths.evidence, artifact);
 }
@@ -420,7 +526,7 @@ function persistPlaceholderReport(params: {
       : ['- none']),
     '',
   ];
-  writeTextFile(params.paths.report, lines.join('\n'));
+  writeTextFile(params.paths.report, lines.join('\n'), MAX_REPORT_ARTIFACT_BYTES);
 }
 
 async function persistManifest(
@@ -1652,7 +1758,7 @@ export function parseAoiResearchReadableHtml(html: string, finalUrl: string): Pa
             ? 'heading'
             : 'paragraph';
     blocks.push({ type, text });
-    if (blocks.length >= 30) {
+    if (blocks.length >= MAX_SOURCE_BLOCKS_PER_SOURCE) {
       break;
     }
   }
@@ -1965,6 +2071,28 @@ async function ensureNotCancelled(params: {
   }
 }
 
+async function ensureRunCanContinue(params: {
+  runId: string;
+  phase: AoiResearchProgressPhase;
+  startedAt: number;
+  dependencies?: AoiResearchEngineDependencies;
+}): Promise<void> {
+  await ensureNotCancelled({
+    runId: params.runId,
+    phase: params.phase,
+    dependencies: params.dependencies,
+  });
+
+  const timeoutMs = params.dependencies?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+  if (timeoutMs > 0 && getNow(params.dependencies) - params.startedAt > timeoutMs) {
+    throw new AoiResearchFailure(
+      'research_run_timeout',
+      `Research run timed out after ${timeoutMs}ms.`,
+      params.phase,
+    );
+  }
+}
+
 function readManifest(filePath: string): AoiResearchManifest | null {
   try {
     if (!fs.existsSync(filePath)) {
@@ -2058,13 +2186,16 @@ export async function startAoiResearchRun(
     };
     manifest = await persistManifest(params.paths, manifest, dependencies);
   };
-
-  try {
-    await ensureNotCancelled({
+  const ensureActive = (phase: AoiResearchProgressPhase): Promise<void> =>
+    ensureRunCanContinue({
       runId: params.runId,
-      phase: 'queued',
+      phase,
+      startedAt: manifest.createdAt,
       dependencies,
     });
+
+  try {
+    await ensureActive('queued');
 
     await updateManifest({
       status: 'running',
@@ -2104,11 +2235,7 @@ export async function startAoiResearchRun(
       sourceCounts: { ...manifest.sourceCounts, planned: normalized.maxSources },
     });
 
-    await ensureNotCancelled({
-      runId: params.runId,
-      phase: 'searching',
-      dependencies,
-    });
+    await ensureActive('searching');
     await updateManifest({
       phase: 'searching',
       statusMessage: 'Searching the web with Tavily.',
@@ -2119,6 +2246,7 @@ export async function startAoiResearchRun(
       Math.ceil((normalized.maxSources * 2) / plan.searchQueries.length),
     );
     const searchGroups = await runBounded(plan.searchQueries, SEARCH_CONCURRENCY, async (query) => {
+      await ensureActive('searching');
       try {
         return await searchTavily({
           query,
@@ -2155,11 +2283,7 @@ export async function startAoiResearchRun(
       sourceCounts: countSources(normalized.maxSources, candidates.length, sources),
     });
 
-    await ensureNotCancelled({
-      runId: params.runId,
-      phase: 'reading_sources',
-      dependencies,
-    });
+    await ensureActive('reading_sources');
     await updateManifest({
       phase: 'reading_sources',
       statusMessage: 'Reading candidate sources with network safety checks.',
@@ -2173,6 +2297,7 @@ export async function startAoiResearchRun(
       attemptedCandidates,
       READER_CONCURRENCY,
       async (candidate, index) => {
+        await ensureActive('reading_sources');
         const id = `src-${String(index + 1).padStart(3, '0')}`;
         try {
           return await fetchReadableSource({
@@ -2217,11 +2342,7 @@ export async function startAoiResearchRun(
       );
     }
 
-    await ensureNotCancelled({
-      runId: params.runId,
-      phase: 'extracting_evidence',
-      dependencies,
-    });
+    await ensureActive('extracting_evidence');
     await updateManifest({
       phase: 'extracting_evidence',
       statusMessage: 'Extracting evidence claims from accepted sources.',
@@ -2229,14 +2350,16 @@ export async function startAoiResearchRun(
 
     const acceptedSources = sources.filter((source) => source.status === 'accepted');
     const evidenceGroups = await runBounded(acceptedSources, EVIDENCE_CONCURRENCY, async (source) =>
-      extractEvidenceForSource({
-        source,
-        normalized,
-        llmConfig,
-        serverOrigin: params.serverOrigin,
-        dependencies,
-        now: getNow(dependencies),
-      }),
+      ensureActive('extracting_evidence').then(() =>
+        extractEvidenceForSource({
+          source,
+          normalized,
+          llmConfig,
+          serverOrigin: params.serverOrigin,
+          dependencies,
+          now: getNow(dependencies),
+        }),
+      ),
     );
 
     const sourceById = new Map(sources.map((source) => [source.id, source]));
@@ -2272,11 +2395,7 @@ export async function startAoiResearchRun(
     persistSources(params.paths, params.runId, sources, getNow(dependencies));
     persistEvidence(params.paths, params.runId, claims, getNow(dependencies));
 
-    await ensureNotCancelled({
-      runId: params.runId,
-      phase: 'drafting_report',
-      dependencies,
-    });
+    await ensureActive('drafting_report');
     await updateManifest({
       phase: 'drafting_report',
       statusMessage: 'Synthesizing the final research report from evidence.',
@@ -2294,11 +2413,7 @@ export async function startAoiResearchRun(
       dependencies,
     });
 
-    await ensureNotCancelled({
-      runId: params.runId,
-      phase: 'verifying_report',
-      dependencies,
-    });
+    await ensureActive('verifying_report');
     await updateManifest({
       phase: 'verifying_report',
       statusMessage: 'Verifying citation coverage and support.',
@@ -2375,6 +2490,8 @@ export async function startAoiResearchRun(
       });
     }
 
+    await ensureActive('verifying_report');
+
     const acceptedSourceCount = sources.filter((source) => source.status === 'accepted').length;
     if (acceptedSourceCount < 2 && normalized.mode !== 'quick') {
       verificationWarnings.push({
@@ -2392,7 +2509,7 @@ export async function startAoiResearchRun(
       ),
     ]);
     report = appendVerificationWarningsSection(report, verificationWarnings);
-    writeTextFile(params.paths.report, report);
+    writeTextFile(params.paths.report, report, MAX_REPORT_ARTIFACT_BYTES);
 
     await updateManifest({
       status: 'completed',
