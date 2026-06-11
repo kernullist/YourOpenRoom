@@ -12,6 +12,7 @@ import {
   normalizeAoiAutonomySessionPath,
   saveAoiActiveProposals,
 } from './aoiAutonomyStore';
+import { recordAoiProposalCreatedRelations } from './aoiAutonomyRelations';
 import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyRisk,
@@ -24,7 +25,13 @@ import type {
   AoiReflection,
 } from './aoiAutonomyTypes';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
-import type { AoiMemoryEntry } from './aoiMemoryShared';
+import {
+  containsAoiSensitiveContent,
+  redactAoiSensitiveContent,
+  sanitizeAoiProcedureContent,
+  stripAoiSourceInstructions,
+  type AoiMemoryEntry,
+} from './aoiMemoryShared';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 
@@ -140,16 +147,11 @@ function looksRepeatedPatternRequest(value: string | undefined): boolean {
 }
 
 function looksSecretBearing(value: string): boolean {
-  return /\b(?:password|passwd|secret|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key|bearer\s+[a-z0-9._-]+)\b/i.test(
-    value,
-  );
+  return containsAoiSensitiveContent(value);
 }
 
 function sanitizePromptText(value: string, maxChars: number): string {
-  if (looksSecretBearing(value)) {
-    return '[redacted secret-like memory content]';
-  }
-  return truncateText(value, maxChars);
+  return truncateText(stripAoiSourceInstructions(redactAoiSensitiveContent(value)), maxChars);
 }
 
 function proposalClaimsExecution(value: string): boolean {
@@ -288,7 +290,9 @@ function collectAoiAutonomyObservations(params: {
 }): CandidateBundle {
   const researchRuns = listAoiResearchRunSummaries(params.sessionsDir, params.sessionPath);
   const memories = loadServerAoiMemories(params.sessionsDir).filter(
-    (memory) => !memory.sessionPath || memory.sessionPath === params.sessionPath,
+    (memory) =>
+      memory.status === 'active' &&
+      (!memory.sessionPath || memory.sessionPath === params.sessionPath),
   );
   const activeProposals = loadAoiActiveProposals(params.sessionsDir, params.sessionPath);
   const decisions = loadAoiProposalDecisions(params.sessionsDir, params.sessionPath);
@@ -436,6 +440,7 @@ function buildFailedResearchRetryProposal(params: {
     acceptAction: {
       kind: 'start_research',
       params: {
+        sessionPath: params.run.sessionPath,
         request: params.run.request,
         mode: 'standard',
         maxSources: Math.max(5, Math.min(12, Math.ceil(params.run.maxSources / 2))),
@@ -495,6 +500,7 @@ function buildStaleResearchMemoryProposal(params: {
     acceptAction: {
       kind: 'start_research',
       params: {
+        sessionPath: params.sessionPath,
         request: params.latestUserMessage,
         mode: 'standard',
         maxSources: 12,
@@ -545,7 +551,131 @@ function buildProcedureCandidateProposal(params: {
       kind: 'save_memory',
       params: {
         type: 'procedure',
-        content: truncateText(params.latestUserMessage, 240),
+        content: sanitizeAoiProcedureContent(params.latestUserMessage),
+      },
+    },
+  };
+}
+
+function buildRepeatedResearchProcedureProposal(params: {
+  memories: AoiMemoryEntry[];
+  latestUserMessage: string;
+  now: number;
+  sessionPath: string;
+}): AoiProposal | null {
+  if (!looksRepeatedPatternRequest(params.latestUserMessage)) {
+    return null;
+  }
+  const researchMemories = params.memories
+    .filter(
+      (memory) =>
+        memory.status === 'active' &&
+        memory.permanent &&
+        hasTag(memory, 'research') &&
+        hasTag(memory, 'completed'),
+    )
+    .slice(0, 4);
+  if (researchMemories.length < 2) {
+    return null;
+  }
+  const evidenceRefs = researchMemories.map((memory) => `memory:${memory.id}`);
+  return {
+    version: 1,
+    id: createAoiAutonomyId('aoi-proposal-procedure-research', params.now),
+    sessionPath: params.sessionPath,
+    status: 'active',
+    title: truncateText('Promote repeated research workflow procedure', TITLE_MAX_CHARS),
+    body: truncateText(
+      'Aoi has multiple successful research memories that can be promoted into an approval-gated reusable procedure.',
+      BODY_MAX_CHARS,
+    ),
+    reason: truncateText(
+      'Repeated successful research workflows should become durable only after explicit user approval.',
+      REASON_MAX_CHARS,
+    ),
+    trigger: 'procedure_candidate',
+    createdAt: params.now,
+    updatedAt: params.now,
+    cooldownKey: 'procedure:repeated-research-workflow',
+    confidence: 0.74,
+    risk: 'medium',
+    requiredAutonomyLevel: 'L4',
+    requiresUserApproval: true,
+    suggestedTools: ['save_memory'],
+    evidenceRefs,
+    memoryIds: researchMemories.map((memory) => memory.id),
+    artifactRefs: [],
+    riskSignals: ['procedure-candidate', 'repeated-research'],
+    acceptAction: {
+      kind: 'save_memory',
+      params: {
+        type: 'procedure',
+        content: sanitizeAoiProcedureContent(
+          'When Aoi repeats a successful research workflow, clarify the current request, run a bounded web research pass, prefer primary sources, compare source dates, persist report/evidence artifacts, and refresh stale research memory only after user-visible evidence exists.',
+        ),
+        triggerTerms: ['research', 'latest', '최신', '조사'],
+      },
+    },
+  };
+}
+
+function buildRepeatedKiraProcedureProposal(params: {
+  memories: AoiMemoryEntry[];
+  latestUserMessage: string;
+  now: number;
+  sessionPath: string;
+}): AoiProposal | null {
+  if (!looksRepeatedPatternRequest(params.latestUserMessage)) {
+    return null;
+  }
+  const kiraMemories = params.memories
+    .filter(
+      (memory) =>
+        memory.status === 'active' &&
+        hasTag(memory, 'kira') &&
+        hasTag(memory, 'completed') &&
+        hasTag(memory, 'reviewed'),
+    )
+    .slice(0, 4);
+  if (kiraMemories.length < 2) {
+    return null;
+  }
+  const evidenceRefs = kiraMemories.map((memory) => `memory:${memory.id}`);
+  return {
+    version: 1,
+    id: createAoiAutonomyId('aoi-proposal-procedure-kira', params.now),
+    sessionPath: params.sessionPath,
+    status: 'active',
+    title: truncateText('Promote repeated Kira review workflow procedure', TITLE_MAX_CHARS),
+    body: truncateText(
+      'Aoi has multiple reviewed Kira completion memories that can be promoted into a reusable procedure.',
+      BODY_MAX_CHARS,
+    ),
+    reason: truncateText(
+      'Repeated successful Kira outcomes should be saved as procedure memory only with explicit approval.',
+      REASON_MAX_CHARS,
+    ),
+    trigger: 'procedure_candidate',
+    createdAt: params.now,
+    updatedAt: params.now,
+    cooldownKey: 'procedure:repeated-kira-review-workflow',
+    confidence: 0.72,
+    risk: 'medium',
+    requiredAutonomyLevel: 'L4',
+    requiresUserApproval: true,
+    suggestedTools: ['save_memory'],
+    evidenceRefs,
+    memoryIds: kiraMemories.map((memory) => memory.id),
+    artifactRefs: [],
+    riskSignals: ['procedure-candidate', 'repeated-kira'],
+    acceptAction: {
+      kind: 'save_memory',
+      params: {
+        type: 'procedure',
+        content: sanitizeAoiProcedureContent(
+          'When Kira repeatedly completes reviewed work, preserve the worker plan, validation commands, review evidence, residual risks, and integration status before summarizing the reusable workflow.',
+        ),
+        triggerTerms: ['kira', 'review', 'validation', '자동화'],
       },
     },
   };
@@ -649,6 +779,24 @@ function buildDeterministicProposals(params: {
   });
   if (procedure) {
     proposals.push(procedure);
+  }
+  const repeatedResearch = buildRepeatedResearchProcedureProposal({
+    memories: params.bundle.memories,
+    latestUserMessage: params.latestUserMessage,
+    now: params.now,
+    sessionPath: params.sessionPath,
+  });
+  if (repeatedResearch) {
+    proposals.push(repeatedResearch);
+  }
+  const repeatedKira = buildRepeatedKiraProcedureProposal({
+    memories: params.bundle.memories,
+    latestUserMessage: params.latestUserMessage,
+    now: params.now,
+    sessionPath: params.sessionPath,
+  });
+  if (repeatedKira) {
+    proposals.push(repeatedKira);
   }
 
   return proposals;
@@ -888,7 +1036,10 @@ export function parseAoiAutonomyReflectionResponse(
       continue;
     }
     const reflection = item as Record<string, unknown>;
-    const claim = typeof reflection.claim === 'string' ? normalizeWhitespace(reflection.claim) : '';
+    const claim =
+      typeof reflection.claim === 'string'
+        ? sanitizePromptText(reflection.claim, CLAIM_MAX_CHARS)
+        : '';
     const evidenceRefs = normalizeStringArray(reflection.evidenceRefs, 8);
     const confidence = typeof reflection.confidence === 'number' ? reflection.confidence : NaN;
     if (!claim || claim.length > CLAIM_MAX_CHARS || !Number.isFinite(confidence)) {
@@ -932,9 +1083,14 @@ export function parseAoiAutonomyReflectionResponse(
       continue;
     }
     const proposal = item as Record<string, unknown>;
-    const title = typeof proposal.title === 'string' ? normalizeWhitespace(proposal.title) : '';
-    const body = typeof proposal.body === 'string' ? normalizeWhitespace(proposal.body) : '';
-    const reason = typeof proposal.reason === 'string' ? normalizeWhitespace(proposal.reason) : '';
+    const title =
+      typeof proposal.title === 'string' ? sanitizePromptText(proposal.title, TITLE_MAX_CHARS) : '';
+    const body =
+      typeof proposal.body === 'string' ? sanitizePromptText(proposal.body, BODY_MAX_CHARS) : '';
+    const reason =
+      typeof proposal.reason === 'string'
+        ? sanitizePromptText(proposal.reason, REASON_MAX_CHARS)
+        : '';
     const evidenceRefs = normalizeStringArray(proposal.evidenceRefs, 8);
     const confidence = typeof proposal.confidence === 'number' ? proposal.confidence : NaN;
     const risk = isRisk(proposal.risk) ? proposal.risk : 'low';
@@ -1177,6 +1333,7 @@ export async function runAoiAutonomyTick(
 
     activeProposals = [proposal, ...activeProposals];
     acceptedProposals.push(proposal);
+    recordAoiProposalCreatedRelations(params.sessionsDir, proposal, now);
     if (acceptedProposals.length >= policy.maxProposalsPerTick) {
       break;
     }

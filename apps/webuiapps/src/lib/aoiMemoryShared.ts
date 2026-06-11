@@ -1,4 +1,5 @@
 const MAX_MEMORY_CONTENT_CHARS = 360;
+const REDACTED_SECRET = '[redacted_secret]';
 
 export type AoiMemoryScope = 'user' | 'agent' | 'session' | 'project';
 export type AoiMemoryType =
@@ -98,10 +99,61 @@ function normalizeWhitespace(value: string): string {
   return value.replace(/\s+/g, ' ').trim();
 }
 
+export function containsAoiSensitiveContent(value: string): boolean {
+  return (
+    /-----BEGIN [A-Z ]*PRIVATE KEY-----/i.test(value) ||
+    /\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/i.test(value) ||
+    /\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_=-]{12,}/i.test(value) ||
+    /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|passwd|secret|client[_ -]?secret|private[_ -]?key)\b\s+(?:is|was|=|:)\s+['"]?[^'"\s,;]{4,}/i.test(
+      value,
+    ) ||
+    /\b(?:api[_ -]?key|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|passwd|secret|client[_ -]?secret|private[_ -]?key)\b\s*[:=]\s*['"]?[^'"\s,;]{4,}/i.test(
+      value,
+    )
+  );
+}
+
+export function redactAoiSensitiveContent(value: string): string {
+  return value
+    .replace(
+      /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g,
+      REDACTED_SECRET,
+    )
+    .replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{16,}/gi, `Bearer ${REDACTED_SECRET}`)
+    .replace(/\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_=-]{12,}/gi, REDACTED_SECRET)
+    .replace(
+      /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|passwd|secret|client[_ -]?secret|private[_ -]?key)\b\s*[:=]\s*['"]?[^'"\s,;]{4,}/gi,
+      (_match, key: string) => `${key}=${REDACTED_SECRET}`,
+    )
+    .replace(
+      /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|passwd|secret|client[_ -]?secret|private[_ -]?key)\b\s+(?:is|was|=|:)\s+['"]?[^'"\s,;]{4,}/gi,
+      (_match, key: string) => `${key}=${REDACTED_SECRET}`,
+    );
+}
+
+export function stripAoiSourceInstructions(value: string): string {
+  return value
+    .split(/\r?\n/u)
+    .filter((line) => {
+      const normalized = normalizeWhitespace(line);
+      if (!normalized) {
+        return false;
+      }
+      return !/(?:ignore|disregard|forget)\s+(?:all\s+)?(?:previous|prior|above)\s+instructions|(?:system|developer)\s*(?:prompt|message|instruction)\s*:|you\s+are\s+now\s+|act\s+as\s+|do\s+not\s+tell\s+the\s+user|copy\s+this\s+instruction|treat\s+this\s+as\s+(?:system|developer)/i.test(
+        normalized,
+      );
+    })
+    .join(' ');
+}
+
 export function truncateAoiMemoryContent(value: string): string {
-  const normalized = normalizeWhitespace(value);
+  const normalized = normalizeWhitespace(redactAoiSensitiveContent(value));
   if (normalized.length <= MAX_MEMORY_CONTENT_CHARS) return normalized;
   return normalized.slice(0, MAX_MEMORY_CONTENT_CHARS - 1).trimEnd() + '...';
+}
+
+export function sanitizeAoiProcedureContent(value: string): string {
+  return truncateAoiMemoryContent(stripAoiSourceInstructions(value));
 }
 
 export function sanitizeAoiStoragePart(value: string): string {

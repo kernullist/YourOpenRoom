@@ -208,10 +208,12 @@ import {
 } from '@/lib/aoiRunLedger';
 import {
   decideAoiProposal,
+  executeAoiProposalAction,
   fetchAoiAutonomyProposals,
   fetchAoiAutonomyStatus,
   runAoiAutonomyManualTick,
   updateAoiAutonomyPolicy,
+  type AoiAutonomyProposalExecutionResult,
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
@@ -220,6 +222,7 @@ import {
   selectAoiInlineProposal,
   summarizeAoiAutonomyProposalCounts,
 } from '@/lib/aoiAutonomyUi';
+import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyLevel,
@@ -444,6 +447,94 @@ function formatAttachmentSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function isAoiExecutableActionKind(kind: string | undefined): boolean {
+  return (
+    kind === 'open_research_artifact' ||
+    kind === 'read_research_artifact' ||
+    kind === 'get_research_status' ||
+    kind === 'start_research' ||
+    kind === 'save_memory'
+  );
+}
+
+function canExecuteAoiProposalAtCurrentLevel(
+  proposal: AoiProposal,
+  policy: AoiAutonomyPolicy | null,
+): boolean {
+  const actionKind = proposal.acceptAction?.kind;
+  if (
+    !policy ||
+    proposal.status !== 'accepted' ||
+    !isAoiExecutableActionKind(actionKind) ||
+    proposal.evidenceRefs.length === 0 ||
+    proposal.blockedReason ||
+    compareAoiAutonomyLevel(policy.level, proposal.requiredAutonomyLevel) < 0
+  ) {
+    return false;
+  }
+
+  const tools = new Set<string>(proposal.suggestedTools);
+  tools.add(actionKind);
+  return [...tools].every((tool) => isAoiToolAllowedAtLevel(tool, policy.level));
+}
+
+function getAoiProposalExecutionLabel(proposal: AoiProposal): string {
+  const kind = proposal.acceptAction?.kind;
+  if (kind === 'start_research') {
+    return 'Start research run';
+  }
+  if (kind === 'get_research_status') {
+    return 'Check status';
+  }
+  if (kind === 'open_research_artifact') {
+    return 'Open artifact';
+  }
+  if (kind === 'read_research_artifact') {
+    return 'Read artifact';
+  }
+  if (kind === 'save_memory') {
+    return 'Promote procedure';
+  }
+  return 'Continue';
+}
+
+function summarizeAoiExecutionResult(result: AoiAutonomyProposalExecutionResult): string {
+  if (result.executed) {
+    const kind =
+      result.result && typeof result.result.kind === 'string' ? result.result.kind : 'proposal';
+    if (kind === 'start_research') {
+      const run = result.result?.run as { id?: unknown; status?: unknown } | undefined;
+      const runId = typeof run?.id === 'string' ? run.id : 'new run';
+      const status = typeof run?.status === 'string' ? run.status : 'started';
+      return `Execution completed: started research ${runId} (${status}).`;
+    }
+    if (kind === 'read_research_artifact') {
+      const artifact =
+        result.result && typeof result.result.artifact === 'string'
+          ? result.result.artifact
+          : 'artifact';
+      const truncated = result.result?.truncated === true ? ' Preview was capped.' : '';
+      return `Execution completed: read ${artifact}.${truncated}`;
+    }
+    if (kind === 'get_research_status') {
+      return 'Execution completed: read research status.';
+    }
+    if (kind === 'open_research_artifact') {
+      return 'Execution completed: prepared artifact open payload.';
+    }
+    if (kind === 'save_memory') {
+      const target = typeof result.result?.target === 'string' ? result.result.target : 'memory';
+      if (target === 'skill') {
+        return 'Execution completed: promoted procedure as an untrusted user skill draft.';
+      }
+      return 'Execution completed: promoted procedure memory.';
+    }
+    return 'Execution completed.';
+  }
+  const reason = result.reasons.length > 0 ? result.reasons.join(', ') : result.outcome;
+  return `Execution ${result.outcome}: ${reason}`;
 }
 
 function makeImageAttachmentId(): string {
@@ -1741,6 +1832,9 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyError, setAoiAutonomyError] = useState('');
   const [aoiAutonomyActionId, setAoiAutonomyActionId] = useState<string | null>(null);
   const [aoiAutonomyLastTickAt, setAoiAutonomyLastTickAt] = useState<number | null>(null);
+  const [aoiAutonomyExecutionMessages, setAoiAutonomyExecutionMessages] = useState<
+    Record<string, string>
+  >({});
   const [aoiInlineDismissedProposalIds, setAoiInlineDismissedProposalIds] = useState<Set<string>>(
     () => new Set(),
   );
@@ -1882,6 +1976,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
     setAoiAutonomyActionId(null);
     setAoiAutonomyLastTickAt(null);
+    setAoiAutonomyExecutionMessages({});
     setAoiInlineDismissedProposalIds(new Set());
     setAoiInlineSnoozedProposalIds(new Set());
     setAoiInlineHiddenAt(null);
@@ -2233,6 +2328,48 @@ const ChatPanel: React.FC<{
     [],
   );
 
+  const recordAoiAutonomyLedgerEvent = useCallback(
+    (
+      proposal: AoiProposal,
+      eventType:
+        | 'proposal_accepted'
+        | 'proposal_execution_started'
+        | 'proposal_execution_completed'
+        | 'proposal_execution_failed'
+        | 'proposal_execution_blocked',
+      message: string,
+    ) => {
+      const now = Date.now();
+      const started = createAoiRunLedgerEntry({
+        goal: {
+          summary: `Aoi proposal: ${proposal.title}`,
+          sourceMessage: proposal.reason,
+          createdAt: now,
+        },
+        modelRoute: 'main',
+        includeAppTools: false,
+        exposedToolNames: proposal.suggestedTools,
+        createdAt: now,
+      });
+      const withProposalEvent = appendAoiRunLedgerEvent(started, {
+        type: eventType,
+        message,
+        toolNames: proposal.suggestedTools,
+        createdAt: now,
+      });
+      const finalStatus =
+        eventType === 'proposal_execution_failed' || eventType === 'proposal_execution_blocked'
+          ? 'failed'
+          : 'completed';
+      publishAoiRunLedgerEntry(
+        sessionPathRef.current,
+        finalizeAoiRunLedgerEntry(withProposalEvent, finalStatus, message),
+        true,
+      );
+    },
+    [publishAoiRunLedgerEntry],
+  );
+
   const refreshAoiAutonomy = useCallback(async (options: { silent?: boolean } = {}) => {
     if (aoiAutonomyRefreshInFlightRef.current) {
       return;
@@ -2337,7 +2474,19 @@ const ChatPanel: React.FC<{
         });
         setAoiAutonomyActiveProposals(result.active);
         setAoiAutonomyArchivedProposals(result.archived);
+        setAoiAutonomyExecutionMessages((prev) => {
+          const next = { ...prev };
+          delete next[proposalId];
+          return next;
+        });
         setAoiInlineHiddenAt(Date.now());
+        if (action === 'accept') {
+          recordAoiAutonomyLedgerEvent(
+            result.proposal,
+            'proposal_accepted',
+            'User accepted Aoi autonomy proposal. No tool executed yet.',
+          );
+        }
         if (action === 'dismiss') {
           setAoiInlineDismissedProposalIds((prev) => new Set(prev).add(proposalId));
         }
@@ -2351,7 +2500,91 @@ const ChatPanel: React.FC<{
         setAoiAutonomyActionId(null);
       }
     },
-    [refreshAoiAutonomy],
+    [recordAoiAutonomyLedgerEvent, refreshAoiAutonomy],
+  );
+
+  const executeAoiProposalFromPanel = useCallback(
+    async (proposal: AoiProposal) => {
+      const actionId = `proposal:${proposal.id}:execute`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      recordAoiAutonomyLedgerEvent(
+        proposal,
+        'proposal_execution_started',
+        `Started Aoi proposal execution: ${proposal.acceptAction?.kind ?? 'unknown action'}.`,
+      );
+
+      try {
+        const result = await executeAoiProposalAction({
+          sessionPath: sessionPathForAutonomy,
+          proposalId: proposal.id,
+        });
+        const skillDraft =
+          result.executed &&
+          result.result &&
+          typeof result.result.skillDraft === 'object' &&
+          result.result.skillDraft !== null
+            ? (result.result.skillDraft as {
+                name?: unknown;
+                description?: unknown;
+                triggerTerms?: unknown;
+                body?: unknown;
+              })
+            : null;
+        if (
+          skillDraft &&
+          typeof skillDraft.name === 'string' &&
+          typeof skillDraft.body === 'string'
+        ) {
+          const skill = createUserAoiWorkshopSkill({
+            name: skillDraft.name,
+            description:
+              typeof skillDraft.description === 'string' ? skillDraft.description : undefined,
+            triggerTerms: Array.isArray(skillDraft.triggerTerms)
+              ? skillDraft.triggerTerms.filter((term): term is string => typeof term === 'string')
+              : [],
+            body: skillDraft.body,
+          });
+          setAoiSkills((prev) => {
+            const next = upsertAoiWorkshopSkill(prev, skill);
+            aoiSkillsRef.current = next;
+            saveAoiSkillsWorkshop(next);
+            return next;
+          });
+        }
+        setAoiAutonomyStatus(result.status);
+        setAoiAutonomyExecutionMessages((prev) => ({
+          ...prev,
+          [proposal.id]: summarizeAoiExecutionResult(result),
+        }));
+        recordAoiAutonomyLedgerEvent(
+          result.proposal,
+          result.executed
+            ? 'proposal_execution_completed'
+            : result.outcome === 'failed'
+              ? 'proposal_execution_failed'
+              : 'proposal_execution_blocked',
+          summarizeAoiExecutionResult(result),
+        );
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setAoiAutonomyError(message);
+        setAoiAutonomyExecutionMessages((prev) => ({
+          ...prev,
+          [proposal.id]: `Execution failed: ${message}`,
+        }));
+        recordAoiAutonomyLedgerEvent(
+          proposal,
+          'proposal_execution_failed',
+          `Execution failed: ${message}`,
+        );
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [recordAoiAutonomyLedgerEvent, refreshAoiAutonomy],
   );
 
   useEffect(() => {
@@ -5260,6 +5493,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyError={aoiAutonomyError}
           aoiAutonomyActionId={aoiAutonomyActionId}
           aoiAutonomyLastTickAt={aoiAutonomyLastTickAt}
+          aoiAutonomyExecutionMessages={aoiAutonomyExecutionMessages}
           aoiSkills={aoiSkills}
           aoiMcpPlugins={aoiMcpPlugins}
           recentToolActivity={recentToolActivity}
@@ -5271,6 +5505,7 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
+          onExecuteAoiProposal={executeAoiProposalFromPanel}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
           onResetAll={handleResetSessionHistory}
@@ -5701,6 +5936,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyError: string;
   aoiAutonomyActionId: string | null;
   aoiAutonomyLastTickAt: number | null;
+  aoiAutonomyExecutionMessages: Record<string, string>;
   aoiSkills: AoiWorkshopSkill[];
   aoiMcpPlugins: AoiMcpPluginEntry[];
   recentToolActivity: string[];
@@ -5712,6 +5948,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
   onRunAoiAutonomyCheck: () => Promise<void>;
   onDecideAoiProposal: (proposalId: string, action: AoiProposalDecisionAction) => Promise<void>;
+  onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
   onResetAll: () => void;
@@ -5750,6 +5987,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyError,
   aoiAutonomyActionId,
   aoiAutonomyLastTickAt,
+  aoiAutonomyExecutionMessages,
   aoiSkills,
   aoiMcpPlugins,
   recentToolActivity,
@@ -5761,6 +5999,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onRunAoiAutonomyCheck,
   onDecideAoiProposal,
+  onExecuteAoiProposal,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
   onResetAll,
@@ -7525,6 +7764,11 @@ const SettingsModal: React.FC<{
                           aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
                         );
                         const expanded = expandedAoiProposalId === proposal.id;
+                        const executableAction = canExecuteAoiProposalAtCurrentLevel(
+                          proposal,
+                          aoiAutonomyPolicy,
+                        );
+                        const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
 
                         return (
                           <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
@@ -7560,7 +7804,24 @@ const SettingsModal: React.FC<{
                             )}
                             {proposal.risk === 'high' && (
                               <div className={styles.aoiAutonomyBlockedReason}>
-                                High risk: accepting records feedback only.
+                                High risk: execution still requires fresh explicit acceptance.
+                              </div>
+                            )}
+                            {proposal.acceptAction?.kind === 'start_research' &&
+                              proposal.status === 'accepted' && (
+                                <div className={styles.aoiAutonomyBlockedReason}>
+                                  Continuing will start a new Aoi web research run.
+                                </div>
+                              )}
+                            {proposal.acceptAction?.kind === 'save_memory' &&
+                              proposal.status === 'accepted' && (
+                                <div className={styles.aoiAutonomyBlockedReason}>
+                                  Continuing will promote a user-approved procedure.
+                                </div>
+                              )}
+                            {executionMessage && (
+                              <div className={styles.aoiAutonomyExecutionResult}>
+                                {sanitizeAoiProposalDisplayText(executionMessage, 320)}
                               </div>
                             )}
                             {expanded && (
@@ -7586,7 +7847,7 @@ const SettingsModal: React.FC<{
                               </div>
                             )}
                             <div className={styles.aoiAutonomyProposalActions}>
-                              {primaryActionAllowed ? (
+                              {primaryActionAllowed && proposal.status === 'active' ? (
                                 <button
                                   type="button"
                                   className={styles.inlineActionBtn}
@@ -7595,6 +7856,22 @@ const SettingsModal: React.FC<{
                                   title="Record approval without executing tools"
                                 >
                                   Accept proposal
+                                </button>
+                              ) : executableAction ? (
+                                <button
+                                  type="button"
+                                  className={styles.inlineActionBtn}
+                                  onClick={() => void onExecuteAoiProposal(proposal)}
+                                  disabled={proposalPending}
+                                  title={
+                                    proposal.acceptAction?.kind === 'start_research'
+                                      ? 'Start a new Aoi web research run'
+                                      : proposal.acceptAction?.kind === 'save_memory'
+                                        ? 'Promote this approved procedure candidate'
+                                        : 'Execute this approved read-only proposal action'
+                                  }
+                                >
+                                  {getAoiProposalExecutionLabel(proposal)}
                                 </button>
                               ) : (
                                 <span className={styles.modelHint}>

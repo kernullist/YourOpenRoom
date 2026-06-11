@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import {
   loadServerAoiMemories,
   saveServerAoiMemoryCandidates,
@@ -256,6 +257,29 @@ describe('Aoi server memory writer', () => {
     });
     expect(second[0].expiresAt).toBeUndefined();
     expect(second[0].tags).toContain('permanent');
+  });
+
+  it('redacts credentials and strips source instructions before storing procedure memory', () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    const memories = saveServerAoiMemoryCandidates(
+      sessionsDir,
+      'aoi/default',
+      [
+        {
+          type: 'procedure',
+          content: `${maliciousProcedureSourceFixture}\napi_key=sk-test12345678901234567890`,
+          confidence: 0.8,
+        },
+      ],
+      'episode-procedure-1',
+    );
+
+    expect(memories).toHaveLength(1);
+    expect(memories[0].content).not.toMatch(/ignore previous instructions/i);
+    expect(memories[0].content).not.toContain('sk-test12345678901234567890');
+    expect(memories[0].content).toContain('[redacted_secret]');
+    expect(memories[0].content).toContain('compare source dates');
   });
 
   it('stores completed research runs as reusable Aoi memories', () => {

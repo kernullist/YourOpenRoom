@@ -281,6 +281,113 @@ describe('runAoiAutonomyTick()', () => {
     expect(proposals[0].evidenceRefs).toEqual(['memory:memory-stale-001']);
   });
 
+  it('proposes approval-gated procedure promotion for repeated successful research memories', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-research-success-001',
+        tags: ['permanent', 'research', 'aoi-research', 'completed', 'windows'],
+        updatedAt: NOW - 10_000,
+      }),
+    );
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-research-success-002',
+        content: 'Aoi completed research "Windows kernel exploit mitigation trends".',
+        normalizedContent: 'aoi completed research "windows kernel exploit mitigation trends".',
+        tags: ['permanent', 'research', 'aoi-research', 'completed', 'kernel'],
+        updatedAt: NOW - 8_000,
+      }),
+    );
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: '이 반복 research workflow를 절차로 저장해줘',
+      now: NOW,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    const procedure = proposals.find(
+      (proposal) => proposal.cooldownKey === 'procedure:repeated-research-workflow',
+    );
+    expect(result.newActiveProposalCount).toBeGreaterThanOrEqual(1);
+    expect(procedure).toMatchObject({
+      trigger: 'procedure_candidate',
+      requiresUserApproval: true,
+      requiredAutonomyLevel: 'L4',
+      suggestedTools: ['save_memory'],
+    });
+    expect(procedure?.evidenceRefs).toEqual(
+      expect.arrayContaining([
+        'memory:memory-research-success-001',
+        'memory:memory-research-success-002',
+      ]),
+    );
+    expect(procedure?.acceptAction).toMatchObject({
+      kind: 'save_memory',
+      params: {
+        type: 'procedure',
+      },
+    });
+  });
+
+  it('proposes approval-gated procedure promotion for repeated reviewed Kira outcomes', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-success-001',
+        scope: 'project',
+        type: 'action',
+        content: 'Kira completed reviewed project work "Add autonomy controls".',
+        normalizedContent: 'kira completed reviewed project work "add autonomy controls".',
+        permanent: undefined,
+        tags: ['kira', 'automation', 'completed', 'reviewed'],
+        updatedAt: NOW - 10_000,
+      }),
+    );
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-success-002',
+        scope: 'project',
+        type: 'action',
+        content: 'Kira completed reviewed project work "Fix validation evidence".',
+        normalizedContent: 'kira completed reviewed project work "fix validation evidence".',
+        permanent: undefined,
+        tags: ['kira', 'automation', 'completed', 'reviewed'],
+        updatedAt: NOW - 8_000,
+      }),
+    );
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Kira 반복 review workflow를 절차로 저장해줘',
+      now: NOW,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    const procedure = proposals.find(
+      (proposal) => proposal.cooldownKey === 'procedure:repeated-kira-review-workflow',
+    );
+    expect(procedure).toMatchObject({
+      trigger: 'procedure_candidate',
+      requiresUserApproval: true,
+      suggestedTools: ['save_memory'],
+    });
+    expect(procedure?.evidenceRefs).toEqual(
+      expect.arrayContaining(['memory:memory-kira-success-001', 'memory:memory-kira-success-002']),
+    );
+  });
+
   it('suppresses duplicate proposals that share an active cooldown key', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');
@@ -410,7 +517,7 @@ describe('runAoiAutonomyTick()', () => {
     expect(result.newActiveProposalCount).toBe(0);
     expect(result.blockedProposalCount).toBe(1);
     expect(result.blockedProposals[0].reasons).toEqual(
-      expect.arrayContaining(['autonomy_level_too_low', 'tool_level_too_low:run_command']),
+      expect.arrayContaining(['autonomy_level_too_low', 'tool_blocked:run_command']),
     );
     expect(loadAoiActiveProposals(root, SESSION_PATH)).toEqual([]);
   });

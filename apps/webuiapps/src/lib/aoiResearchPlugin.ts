@@ -274,6 +274,124 @@ export function getActiveResearchStartConflict(params: {
   return null;
 }
 
+export interface AoiResearchServerArtifactResult {
+  runId: string;
+  run: AoiResearchManifest;
+  artifact: AoiResearchArtifactName;
+  contentType: 'text/markdown' | 'application/json';
+  content: unknown;
+}
+
+export interface AoiResearchServerStartResult {
+  ok: true;
+  run: AoiResearchManifest;
+  background: boolean;
+  maxConcurrentRuns: number;
+}
+
+export function readAoiResearchRunStatus(
+  sessionsDir: string,
+  sessionPathRaw: unknown,
+  runIdRaw: unknown,
+): AoiResearchManifest {
+  const resolved = getRunPathsFromRequest(sessionsDir, sessionPathRaw, runIdRaw);
+  if (typeof resolved === 'string') {
+    throw new Error(resolved);
+  }
+  const existing = readManifest(resolved.paths.manifest);
+  if (!existing) {
+    throw new Error('Research run not found.');
+  }
+  return existing;
+}
+
+export function readAoiResearchRunArtifact(
+  sessionsDir: string,
+  sessionPathRaw: unknown,
+  runIdRaw: unknown,
+  artifactRaw: unknown,
+): AoiResearchServerArtifactResult {
+  const resolved = getRunPathsFromRequest(sessionsDir, sessionPathRaw, runIdRaw);
+  if (typeof resolved === 'string') {
+    throw new Error(resolved);
+  }
+  if (!isAoiResearchArtifactName(artifactRaw)) {
+    throw new Error('artifact must be one of manifest, report, sources, evidence');
+  }
+  const existing = readManifest(resolved.paths.manifest);
+  if (!existing) {
+    throw new Error('Research run not found.');
+  }
+  return {
+    runId: resolved.runId,
+    run: existing,
+    artifact: artifactRaw,
+    contentType: artifactRaw === 'report' ? 'text/markdown' : 'application/json',
+    content: readArtifactContent(resolved.paths, artifactRaw),
+  };
+}
+
+export async function startAoiResearchRunFromServer(params: {
+  sessionsDir: string;
+  configFile: string;
+  serverOrigin: string;
+  request: AoiResearchStartRequest;
+  allowDuplicate?: boolean;
+  now?: number;
+}): Promise<AoiResearchServerStartResult> {
+  const sessionPath = normalizeAoiResearchSessionPath(params.request.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const request = typeof params.request.request === 'string' ? params.request.request.trim() : '';
+  if (!request) {
+    throw new Error('Missing research request.');
+  }
+  const startRequest: AoiResearchStartRequest = {
+    ...params.request,
+    sessionPath,
+    request,
+  };
+  const conflict = getActiveResearchStartConflict({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    request: startRequest,
+    allowDuplicate: params.allowDuplicate === true,
+  });
+  if (conflict?.code === 'duplicate_active_run') {
+    throw new Error('A matching research run is already queued or running for this session.');
+  }
+  if (conflict?.code === 'too_many_active_runs') {
+    throw new Error('Too many active Aoi research runs.');
+  }
+
+  const now = params.now ?? Date.now();
+  const runId = generateRunId(now);
+  const paths = resolveRunPaths(params.sessionsDir, sessionPath, runId);
+  const runPromise = startAoiResearchRun({
+    configFile: params.configFile,
+    serverOrigin: params.serverOrigin,
+    sessionPath,
+    runId,
+    paths,
+    request: startRequest,
+  });
+  const manifest = readManifest(paths.manifest) ?? (await runPromise);
+  void runPromise
+    .then((finalManifest) => {
+      persistResearchRunMemory(params.sessionsDir, finalManifest, paths);
+    })
+    .catch((error) => {
+      console.error('[aoi-research] background run failed', error);
+    });
+  return {
+    ok: true,
+    run: manifest,
+    background: manifest.status === 'queued' || manifest.status === 'running',
+    maxConcurrentRuns: AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+  };
+}
+
 function readArtifactContent(
   paths: AoiResearchRunPaths,
   artifact: AoiResearchArtifactName,

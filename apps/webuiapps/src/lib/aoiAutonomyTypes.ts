@@ -26,7 +26,7 @@ export type AoiReflectionKind =
   | 'opportunity'
   | 'procedure_candidate';
 
-export type AoiProposalDecisionAction = 'accept' | 'dismiss' | 'snooze';
+export type AoiProposalDecisionAction = 'accept' | 'dismiss' | 'snooze' | 'execute' | 'block';
 
 export type AoiAutonomyTickReason = 'manual' | 'turn' | 'periodic' | 'research_run' | 'kira';
 
@@ -189,4 +189,20 @@ export interface AoiAutonomyTickResult {
   blockedProposalCount: number;
   blockedProposals: AoiAutonomyBlockedProposal[];
   warnings: string[];
+}
+
+export interface AoiProposalExecutionPolicyContext {
+  now?: number;
+  decisions?: AoiProposalDecision[];
+  decisionId?: string;
+  freshAcceptanceMs?: number;
+}
+
+export interface AoiProposalExecutionPolicyResult {
+  allowed: boolean;
+  reasons: string[];
+  actionKind?: string;
+  toolName?: string;
+  requiresFreshAcceptance: boolean;
+  readOnly: boolean;
 }

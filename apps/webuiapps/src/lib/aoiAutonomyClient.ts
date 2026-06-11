@@ -43,6 +43,18 @@ export interface AoiAutonomyProposalDecisionInput {
   snoozeMs?: number;
 }
 
+export interface AoiAutonomyProposalExecutionResult {
+  ok: boolean;
+  sessionPath: string;
+  proposal: AoiProposal;
+  decision: AoiProposalDecision;
+  status: AoiAutonomyStatus;
+  executed: boolean;
+  outcome: 'executed' | 'blocked' | 'failed';
+  reasons: string[];
+  result?: Record<string, unknown>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -227,5 +239,50 @@ export async function decideAoiProposal(
     active: asArray<AoiProposal>(payload.active),
     archived: asArray<AoiProposal>(payload.archived),
     executed: false,
+  };
+}
+
+export async function executeAoiProposalAction(params: {
+  sessionPath: string;
+  proposalId: string;
+  decisionId?: string;
+}): Promise<AoiAutonomyProposalExecutionResult> {
+  const response = await fetch(`${API_PREFIX}/proposal/execute`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      proposalId: params.proposalId,
+      decisionId: params.decisionId,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to execute Aoi proposal.');
+
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : params.sessionPath,
+    proposal: requireRecordField<AoiProposal>(
+      payload,
+      'proposal',
+      'Aoi proposal execution response was malformed.',
+    ),
+    decision: requireRecordField<AoiProposalDecision>(
+      payload,
+      'decision',
+      'Aoi proposal execution response was malformed.',
+    ),
+    status: requireRecordField<AoiAutonomyStatus>(
+      payload,
+      'status',
+      'Aoi proposal execution response was malformed.',
+    ),
+    executed: payload.executed === true,
+    outcome:
+      payload.outcome === 'executed' || payload.outcome === 'failed' ? payload.outcome : 'blocked',
+    reasons: asArray<string>(payload.reasons),
+    result: isRecord(payload.result) ? payload.result : undefined,
   };
 }

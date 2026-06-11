@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
+import { highRiskProcedureProposalFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
   checkAoiProposalPolicy,
+  evaluateAoiProposalExecution,
   getAoiToolAutonomyPolicy,
   isAoiToolAllowedAtLevel,
   normalizeAoiAutonomyPolicy,
@@ -81,8 +83,10 @@ describe('Aoi autonomy tool policy', () => {
     });
     expect(isAoiToolAllowedAtLevel('get_research_status', 'L2')).toBe(false);
     expect(isAoiToolAllowedAtLevel('get_research_status', 'L3')).toBe(true);
-    expect(isAoiToolAllowedAtLevel('file_write', 'L4')).toBe(false);
-    expect(isAoiToolAllowedAtLevel('file_write', 'L5')).toBe(true);
+    for (const blockedTool of ['file_write', 'file_patch', 'file_delete', 'run_command']) {
+      expect(isAoiToolAllowedAtLevel(blockedTool, 'L4')).toBe(false);
+      expect(isAoiToolAllowedAtLevel(blockedTool, 'L5')).toBe(false);
+    }
   });
 
   it('blocks unknown tools by default', () => {
@@ -91,6 +95,177 @@ describe('Aoi autonomy tool policy', () => {
     expect(unknown.blocked).toBe(true);
     expect(isAoiToolAllowedAtLevel('remote_shell', 'L5')).toBe(false);
     expect(requiresAoiProposalApproval('remote_shell')).toBe(true);
+  });
+});
+
+describe('evaluateAoiProposalExecution()', () => {
+  const policy = normalizeAoiAutonomyPolicy(
+    {
+      enabled: true,
+      previewMode: true,
+      level: 'L4',
+    },
+    DEFAULT_AOI_AUTONOMY_POLICY,
+    2000,
+  );
+  const acceptDecision: AoiProposalDecision = {
+    version: 1,
+    id: 'decision-accept-001',
+    proposalId: 'proposal-test-001',
+    sessionPath: 'aoi/default',
+    cooldownKey: 'research:kernel-memory',
+    action: 'accept',
+    actor: 'user',
+    createdAt: 2500,
+    previousStatus: 'active',
+    nextStatus: 'accepted',
+  };
+
+  it('allows accepted read-only research artifact actions at L3', () => {
+    const result = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'accepted',
+        requiredAutonomyLevel: 'L3',
+        acceptAction: {
+          kind: 'read_research_artifact',
+          params: { runId: 'aoi-research-test-001', artifact: 'report' },
+        },
+      }),
+      normalizeAoiAutonomyPolicy({ enabled: true, previewMode: true, level: 'L3' }),
+    );
+
+    expect(result).toMatchObject({
+      allowed: true,
+      readOnly: true,
+      actionKind: 'read_research_artifact',
+    });
+  });
+
+  it('blocks start_research without fresh explicit acceptance', () => {
+    const result = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'active',
+        requiredAutonomyLevel: 'L4',
+        suggestedTools: ['start_research'],
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            sessionPath: 'aoi/default',
+            request: 'Investigate current ETW research',
+            mode: 'standard',
+          },
+        },
+      }),
+      policy,
+      { now: 3000, decisions: [] },
+    );
+
+    expect(result.allowed).toBe(false);
+    expect(result.reasons).toContain('missing_fresh_acceptance');
+  });
+
+  it('allows start_research after fresh acceptance at L4', () => {
+    const result = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'accepted',
+        requiredAutonomyLevel: 'L4',
+        suggestedTools: ['start_research'],
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            sessionPath: 'aoi/default',
+            request: 'Investigate current ETW research',
+            mode: 'standard',
+          },
+        },
+      }),
+      policy,
+      { now: 3000, decisions: [acceptDecision] },
+    );
+
+    expect(result.allowed).toBe(true);
+    expect(result.requiresFreshAcceptance).toBe(true);
+  });
+
+  it('requires fresh explicit acceptance for procedure memory promotion', () => {
+    const withoutFreshAcceptance = evaluateAoiProposalExecution(
+      highRiskProcedureProposalFixture,
+      policy,
+      { now: 3000, decisions: [] },
+    );
+    expect(withoutFreshAcceptance.allowed).toBe(false);
+    expect(withoutFreshAcceptance.reasons).toContain('missing_fresh_acceptance');
+
+    const withFreshAcceptance = evaluateAoiProposalExecution(
+      highRiskProcedureProposalFixture,
+      policy,
+      {
+        now: 3000,
+        decisions: [
+          {
+            ...acceptDecision,
+            proposalId: highRiskProcedureProposalFixture.id,
+            cooldownKey: highRiskProcedureProposalFixture.cooldownKey,
+          },
+        ],
+      },
+    );
+    expect(withFreshAcceptance).toMatchObject({
+      allowed: true,
+      actionKind: 'save_memory',
+      requiresFreshAcceptance: true,
+    });
+  });
+
+  it('blocks file writes, patches, deletes, commands, unknown actions, missing evidence, and filesystem path params', () => {
+    for (const blockedTool of ['file_write', 'file_patch', 'file_delete', 'run_command']) {
+      const result = evaluateAoiProposalExecution(
+        makeProposal({
+          status: 'accepted',
+          suggestedTools: [blockedTool],
+          acceptAction: {
+            kind: blockedTool as never,
+            params: { file_path: 'F:\\secret\\out.txt' },
+          },
+        }),
+        policy,
+        { now: 3000, decisions: [acceptDecision] },
+      );
+      expect(result.reasons).toEqual(
+        expect.arrayContaining([
+          `unknown_action_kind:${blockedTool}`,
+          `tool_blocked:${blockedTool}`,
+          'action_params_include_filesystem_path',
+        ]),
+      );
+    }
+
+    const unknown = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'accepted',
+        acceptAction: {
+          kind: 'remote_shell' as never,
+          params: {},
+        },
+      }),
+      policy,
+      { now: 3000, decisions: [acceptDecision] },
+    );
+    expect(unknown.reasons).toContain('unknown_action_kind:remote_shell');
+
+    const missingEvidence = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'accepted',
+        evidenceRefs: [],
+        acceptAction: {
+          kind: 'read_research_artifact',
+          params: { runId: 'aoi-research-test-001', artifact: 'report' },
+        },
+      }),
+      policy,
+      { now: 3000, decisions: [acceptDecision] },
+    );
+    expect(missingEvidence.reasons).toContain('missing_evidence_refs');
   });
 });
 

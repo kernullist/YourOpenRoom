@@ -5,6 +5,11 @@ export type AoiRunLedgerEventType =
   | 'model_response'
   | 'assistant_delivered'
   | 'plain_text_fallback'
+  | 'proposal_accepted'
+  | 'proposal_execution_started'
+  | 'proposal_execution_completed'
+  | 'proposal_execution_failed'
+  | 'proposal_execution_blocked'
   | 'run_completed'
   | 'run_failed';
 
@@ -244,7 +249,11 @@ function reduceAoiRunLedgerMetrics(events: AoiRunLedgerEvent[]): AoiRunLedgerMet
       deliveredToolCallCount = event.toolNames.length;
       lastToolNames = event.toolNames;
     }
-    if (event.type === 'run_failed') {
+    if (
+      event.type === 'run_failed' ||
+      event.type === 'proposal_execution_failed' ||
+      event.type === 'proposal_execution_blocked'
+    ) {
       errorCount += 1;
     }
   });

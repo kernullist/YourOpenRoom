@@ -123,7 +123,7 @@ Jarvis 같은 체감은 L2와 L3에서 대부분 나온다. L5를 빨리 열면 
 | Working memory | 이번 턴에 prompt로 들어가는 압축 context | `buildAoiMemoryPrompt` | proposal/research/project context assembler |
 | Episodic memory | 실제 있었던 대화, tool call, research, Kira event | `episodes/*` | app observation episode |
 | Semantic memory | 사용자 선호, 사실, 결정, 프로젝트 상태 | `memories/*.json` | contradiction graph, source confidence |
-| Procedural memory | 반복 가능한 방법, checklists, skill recipes | `procedure`, `aoiSkillsWorkshop` | promoted procedure review flow |
+| Procedural memory | 반복 가능한 방법, checklists, skill recipes | `procedure`, `aoiSkillsWorkshop`, approval-gated promotion | richer reuse/eval loop |
 | Reflection memory | 실패 원인, 좋은 판단 규칙, 다음에는 피할 것 | 일부 Kira review memory | `reflection_note` 타입 또는 tags |
 | Proposal memory | Aoi가 제안했지만 아직 결정되지 않은 것 | 없음 | suggestion queue |
 
@@ -147,6 +147,7 @@ sessions/<character>/<mod>/
       archived.json
     decisions/
       <decisionId>.json
+    relations.json
     eval/
       memory-golden.json
       proposal-feedback.json
@@ -393,9 +394,9 @@ Aoi의 proactive 기능은 조용해야 한다.
 초기 형태:
 
 ```text
-memory-relations.json
-  nodes: memory, episode, artifact, project, person, topic
-  edges: supports, supersedes, contradicts, caused_by, followed_by, used_tool, belongs_to
+aoi-autonomy/relations.json
+  nodes: memory, episode, research_run, artifact, proposal, reflection, procedure, project, topic
+  edges: supports, supersedes, contradicts, caused_by, followed_by, used_tool, belongs_to, suggested_by
 ```
 
 나중에 필요하면 SQLite relation table 또는 embedded graph로 이전한다. 외부 Zep/Graphiti류 서비스는
@@ -409,11 +410,10 @@ provider adapter로만 붙이고 local episode를 ground truth로 유지한다.
 
 1. `read_research_artifact`
 2. `get_research_status`
-3. `workspace_search`
-4. `preview_changes`
-5. `workspace_checkpoint`
-6. `start_research` after explicit accept
-7. Kira work item creation after explicit accept
+3. `open_research_artifact`
+4. `start_research` after explicit accept
+5. `save_memory` for user-approved procedure promotion
+6. Kira work item creation after explicit accept, only through a narrow safe API
 
 금지 또는 L5-only:
 
@@ -563,8 +563,10 @@ git diff --check
 1. `aoi-autonomy` 저장소와 type/policy만 추가한다.
 2. completed/failed research run과 memory v2를 읽어서 proposal 후보를 만든다.
 3. UI에 active proposal list와 dismiss/snooze만 붙인다.
-4. 실행 버튼은 `read_research_artifact` 같은 read-only만 허용한다.
+4. 실행 버튼은 먼저 `read_research_artifact` 같은 read-only를 허용하고, 다음 단계에서
+   approval-gated `start_research`와 procedure `save_memory`만 추가한다.
 5. reflection 결과가 틀렸을 때 바로 삭제/숨김할 수 있게 한다.
+6. relation index는 JSON으로 시작하고 edge dedupe/path-safe id를 유지한다.
 
 이렇게 하면 Aoi가 "스스로 기억을 확인하고 제안한다"는 체감은 만들면서, 위험한 자동 실행은 아직
 열지 않는다.
@@ -585,7 +587,7 @@ git diff --check
 3. memory relation index를 JSON으로 시작할지, 바로 SQLite로 갈지.
 4. proactive trigger에 Calendar/Email/Gmail을 어느 시점부터 포함할지.
 5. user feedback을 단순 accept/dismiss로 둘지, "틀린 기억", "시끄러움", "좋은 제안"처럼 분류할지.
-6. procedure memory를 memory v2에 둘지, Skills Workshop user skill로 승격할지.
+6. procedure memory를 memory v2 기본값으로 둘지, Skills Workshop user skill draft로 승격할지.
 
 ## Decision
 
@@ -598,4 +600,3 @@ git diff --check
 5. High-risk action은 Kira/capability registry의 기존 review and approval 패턴을 재사용한다.
 
 이 경로가 현재 코드베이스와 가장 잘 맞고, Jarvis 같은 체감과 운영 안전성을 동시에 얻을 가능성이 높다.
-

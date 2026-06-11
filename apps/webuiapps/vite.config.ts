@@ -3289,6 +3289,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
       sessionsDir: SESSIONS_DIR,
     }),
     aoiAutonomyPlugin({
+      configFile: LLM_CONFIG_FILE,
       sessionsDir: SESSIONS_DIR,
     }),
     youtubeSearchPlugin(),

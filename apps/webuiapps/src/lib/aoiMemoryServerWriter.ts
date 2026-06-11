@@ -6,6 +6,7 @@ import {
   makeAoiResearchRunEpisodeId,
   normalizeAoiProjectKey,
   normalizeAoiSessionPathForStorage,
+  sanitizeAoiProcedureContent,
   truncateAoiMemoryContent,
   type AoiKiraAutomationEvent,
   type AoiKiraAutomationMemoryContext,
@@ -183,7 +184,10 @@ export function buildAoiResearchMemoryCandidates(params: {
 }
 
 function normalizeAoiMemoryCandidate(candidate: AoiMemoryCandidate): AoiMemoryCandidate | null {
-  const content = truncateAoiMemoryContent(candidate.content);
+  const content =
+    candidate.type === 'procedure'
+      ? sanitizeAoiProcedureContent(candidate.content)
+      : truncateAoiMemoryContent(candidate.content);
   if (content.length < 8) return null;
   const permanent = Boolean(candidate.permanent);
   const tags = normalizeTags([...(permanent ? ['permanent'] : []), ...(candidate.tags ?? [])]);

@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { DEFAULT_AOI_AUTONOMY_POLICY, normalizeAoiAutonomyPolicy } from './aoiAutonomyPolicy';
+import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
@@ -29,10 +30,18 @@ export interface AoiAutonomyPaths {
 
 export interface AoiProposalDecisionInput {
   proposalId: string;
-  action: AoiProposalDecisionAction;
+  action: Extract<AoiProposalDecisionAction, 'accept' | 'dismiss' | 'snooze'>;
   actor?: 'user' | 'system';
   reason?: string;
   snoozeMs?: number;
+  now?: number;
+}
+
+export interface AoiProposalExecutionTransitionInput {
+  proposalId: string;
+  nextStatus: Extract<AoiProposal['status'], 'executed' | 'blocked'>;
+  actor?: 'user' | 'system';
+  reason?: string;
   now?: number;
 }
 
@@ -297,6 +306,9 @@ export function applyAoiProposalDecision(
   if (!isValidAoiAutonomyId(input.proposalId)) {
     throw new Error('Invalid or missing proposalId.');
   }
+  if (input.action !== 'accept' && input.action !== 'dismiss' && input.action !== 'snooze') {
+    throw new Error('Invalid proposal decision action.');
+  }
   const now = input.now ?? Date.now();
   const policy = loadAoiAutonomyPolicy(sessionsDir, normalizedSessionPath);
   const activeProposals = loadAoiActiveProposals(sessionsDir, normalizedSessionPath);
@@ -349,11 +361,86 @@ export function applyAoiProposalDecision(
   saveAoiActiveProposals(sessionsDir, normalizedSessionPath, nextActive);
   saveAoiArchivedProposals(sessionsDir, normalizedSessionPath, nextArchived);
   appendAoiProposalDecision(sessionsDir, decision);
+  recordAoiProposalDecisionRelations(
+    sessionsDir,
+    normalizedSessionPath,
+    nextProposal,
+    decision,
+    now,
+  );
   return {
     proposal: nextProposal,
     decision,
     activeProposals: nextActive,
     archivedProposals: nextArchived,
+  };
+}
+
+export function applyAoiProposalExecutionTransition(
+  sessionsDir: string,
+  sessionPath: string,
+  input: AoiProposalExecutionTransitionInput,
+): AoiProposalDecisionResult {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  if (!isValidAoiAutonomyId(input.proposalId)) {
+    throw new Error('Invalid or missing proposalId.');
+  }
+  if (input.nextStatus !== 'executed' && input.nextStatus !== 'blocked') {
+    throw new Error('Invalid proposal execution status.');
+  }
+
+  const now = input.now ?? Date.now();
+  const activeProposals = loadAoiActiveProposals(sessionsDir, normalizedSessionPath);
+  const archivedProposals = loadAoiArchivedProposals(sessionsDir, normalizedSessionPath);
+  const index = activeProposals.findIndex((proposal) => proposal.id === input.proposalId);
+  if (index < 0) {
+    throw new Error('Aoi proposal not found.');
+  }
+
+  const current = activeProposals[index];
+  const nextProposal: AoiProposal = {
+    ...current,
+    status: input.nextStatus,
+    updatedAt: now,
+    ...(input.nextStatus === 'blocked' && input.reason
+      ? { blockedReason: input.reason.trim().slice(0, 240) }
+      : {}),
+  };
+  const decision: AoiProposalDecision = {
+    version: 1,
+    id: createAoiAutonomyId('aoi-decision', now),
+    proposalId: current.id,
+    sessionPath: normalizedSessionPath,
+    cooldownKey: current.cooldownKey,
+    action: input.nextStatus === 'executed' ? 'execute' : 'block',
+    actor: input.actor ?? 'system',
+    createdAt: now,
+    previousStatus: current.status,
+    nextStatus: input.nextStatus,
+    ...(typeof input.reason === 'string' && input.reason.trim()
+      ? { reason: input.reason.trim().slice(0, 240) }
+      : {}),
+  };
+  const nextActive = [...activeProposals];
+  nextActive[index] = nextProposal;
+  saveAoiActiveProposals(sessionsDir, normalizedSessionPath, nextActive);
+  appendAoiProposalDecision(sessionsDir, decision);
+  recordAoiProposalDecisionRelations(
+    sessionsDir,
+    normalizedSessionPath,
+    nextProposal,
+    decision,
+    now,
+  );
+
+  return {
+    proposal: nextProposal,
+    decision,
+    activeProposals: nextActive,
+    archivedProposals,
   };
 }
 

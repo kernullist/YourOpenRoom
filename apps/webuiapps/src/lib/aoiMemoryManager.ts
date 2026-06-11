@@ -2,7 +2,10 @@ import type { LLMConfig } from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
 import {
   buildAoiKiraAutomationMemoryCandidates,
+  containsAoiSensitiveContent,
   makeAoiKiraAutomationEpisodeId,
+  redactAoiSensitiveContent,
+  sanitizeAoiProcedureContent,
   type AoiKiraAutomationEvent,
   type AoiKiraAutomationMemoryContext,
 } from './aoiMemoryShared';
@@ -119,7 +122,7 @@ function normalizeWhitespace(value: string): string {
 }
 
 function truncateContent(value: string): string {
-  const normalized = normalizeWhitespace(value);
+  const normalized = normalizeWhitespace(redactAoiSensitiveContent(value));
   if (normalized.length <= MAX_MEMORY_CONTENT_CHARS) return normalized;
   return normalized.slice(0, MAX_MEMORY_CONTENT_CHARS - 1).trimEnd() + '...';
 }
@@ -187,9 +190,7 @@ function isValidType(value: unknown): value is AoiMemoryType {
 }
 
 function looksSensitive(value: string): boolean {
-  return /\b(?:password|passwd|secret|api[_ -]?key|access[_ -]?token|refresh[_ -]?token|private[_ -]?key)\b/i.test(
-    value,
-  );
+  return containsAoiSensitiveContent(value);
 }
 
 function tokenize(value: string): Set<string> {
@@ -507,7 +508,10 @@ function normalizeEntities(values: unknown, maxItems = 10): string[] {
 export function normalizeAoiMemoryCandidate(
   candidate: AoiMemoryCandidate,
 ): AoiMemoryCandidate | null {
-  const content = truncateContent(candidate.content);
+  const content =
+    candidate.type === 'procedure'
+      ? sanitizeAoiProcedureContent(candidate.content)
+      : truncateContent(candidate.content);
   if (content.length < 8) return null;
   const permanent = Boolean(candidate.permanent);
   const tags = normalizeTags([...(permanent ? ['permanent'] : []), ...(candidate.tags ?? [])]);

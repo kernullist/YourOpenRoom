@@ -1,10 +1,15 @@
 import { describe, expect, it } from 'vitest';
 import {
+  maliciousProcedureSourceFixture,
+  updatedFactMemoryFixture,
+} from '../__fixtures__/aoiAutonomyEvaluationFixtures';
+import {
   buildAoiKiraAutomationMemoryCandidates,
   buildAoiMemoryPrompt,
   distillAoiMemoryCandidatesWithLlm,
   extractHeuristicAoiMemoryCandidates,
   mergeAoiMemoryCandidates,
+  normalizeAoiMemoryCandidate,
   parseAoiMemoryDistillerResponse,
   scoreAoiMemoryForQuery,
   selectAoiMemoriesForPrompt,
@@ -249,6 +254,35 @@ describe('mergeAoiMemoryCandidates()', () => {
         supersedes: ['old-permanent-name'],
       }),
     );
+  });
+
+  it('prefers updated active facts and excludes superseded facts from prompt recall', () => {
+    const memories = [
+      makeMemory({
+        id: 'memory-stale-fact',
+        status: 'superseded',
+        content: "The user's preferred commit identity is Old Name <old@example.com>.",
+        normalizedContent: "the user's preferred commit identity is old name <old@example.com>.",
+      }),
+      updatedFactMemoryFixture,
+    ];
+
+    const selected = selectAoiMemoriesForPrompt(memories, '커밋 identity 기억나?', 500);
+    const prompt = buildAoiMemoryPrompt(selected, '커밋 identity 기억나?');
+
+    expect(prompt).toContain('kernullist <gloryo@naver.com>');
+    expect(prompt).not.toContain('Old Name');
+  });
+
+  it('strips malicious source instructions from durable procedure candidates', () => {
+    const candidate = normalizeAoiMemoryCandidate({
+      type: 'procedure',
+      content: maliciousProcedureSourceFixture,
+      confidence: 0.8,
+    });
+
+    expect(candidate?.content).not.toMatch(/ignore previous instructions/i);
+    expect(candidate?.content).toContain('compare source dates');
   });
 });
 

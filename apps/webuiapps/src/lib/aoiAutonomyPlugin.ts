@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { resolve } from 'path';
 import type { Plugin } from 'vite';
+import { executeAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyTick } from './aoiAutonomyEngine';
 import {
   applyAoiProposalDecision,
@@ -19,6 +20,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 
 export interface AoiAutonomyPluginOptions {
   sessionsDir: string;
+  configFile: string;
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -80,11 +82,22 @@ function isAoiAutonomyTickReason(value: unknown): value is AoiAutonomyTickReason
   );
 }
 
+function getHeaderString(value: string | string[] | undefined): string {
+  return Array.isArray(value) ? value[0] || '' : value || '';
+}
+
+function getRequestOrigin(req: IncomingMessage): string {
+  const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
+  const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
+  return `${forwardedProto || 'http'}://${host}`;
+}
+
 async function handleAoiAutonomyRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
   sessionsDir: string,
+  configFile: string,
 ): Promise<boolean> {
   const route = getAoiAutonomyRoute(url.pathname);
   if (route === null) {
@@ -242,6 +255,38 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'POST' && route === '/proposal/execute') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      try {
+        const result = await executeAoiProposal({
+          sessionsDir,
+          configFile,
+          serverOrigin: getRequestOrigin(req),
+          sessionPath,
+          proposalId: String(body.proposalId ?? ''),
+          decisionId: typeof body.decisionId === 'string' ? body.decisionId : undefined,
+        });
+        writeJson(res, 200, result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.includes('not found') ? 404 : 400;
+        writeJson(res, statusCode, {
+          ok: false,
+          error: message,
+          code: statusCode === 404 ? 'proposal_not_found' : 'execution_failed',
+        });
+      }
+      return true;
+    }
+
     writeJson(res, 404, { error: 'Unknown Aoi autonomy route.', code: 'unknown_route' });
     return true;
   } catch (error) {
@@ -255,6 +300,7 @@ async function handleAoiAutonomyRequest(
 
 export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   const sessionsDir = resolve(options.sessionsDir);
+  const configFile = resolve(options.configFile);
 
   const mount = (middlewares: {
     use: (
@@ -263,7 +309,7 @@ export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   }): void => {
     middlewares.use((req, res, next) => {
       const url = new URL(req.url || '/', 'http://localhost');
-      void handleAoiAutonomyRequest(req, res, url, sessionsDir)
+      void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile)
         .then((handled) => {
           if (!handled) {
             next();

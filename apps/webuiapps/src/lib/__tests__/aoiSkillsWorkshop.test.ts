@@ -12,6 +12,21 @@ import {
 } from '../aoiSkillsWorkshop';
 
 describe('aoiSkillsWorkshop', () => {
+  it('creates user skills enabled but untrusted by default', () => {
+    const userSkill = createUserAoiWorkshopSkill({
+      name: 'Procedure Draft',
+      triggerTerms: ['procedure draft'],
+      body: 'Use this only after trust is granted.',
+      now: 90,
+    });
+
+    expect(userSkill).toMatchObject({
+      enabled: true,
+      trusted: false,
+      source: 'user',
+    });
+  });
+
   it('activates trusted skills by trigger terms', () => {
     const matches = resolveAoiActiveSkills(
       '단계별로 구현하고 리뷰모드로 다시 검토해줘',
