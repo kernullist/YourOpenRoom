@@ -14,7 +14,8 @@ export type AoiMemoryEpisodeSource =
   | 'chat_turn'
   | 'direct_action'
   | 'manual_memory'
-  | 'kira_automation';
+  | 'kira_automation'
+  | 'research_run';
 
 export interface AoiMemoryEntry {
   version: 2;
@@ -31,6 +32,7 @@ export interface AoiMemoryEntry {
   updatedAt: number;
   lastAccessedAt?: number;
   expiresAt?: number;
+  permanent?: boolean;
   sourceEpisodeIds: string[];
   supersedes?: string[];
   sessionPath?: string;
@@ -61,6 +63,7 @@ export interface AoiMemoryCandidate {
   tags?: string[];
   entities?: string[];
   expiresAt?: number;
+  permanent?: boolean;
 }
 
 export interface AoiKiraAutomationEvent {
@@ -125,6 +128,10 @@ export function normalizeAoiProjectKey(value: string | undefined): string | unde
 
 export function makeAoiKiraAutomationEpisodeId(eventId: string): string {
   return `aoi_kira_${sanitizeAoiStoragePart(eventId)}`;
+}
+
+export function makeAoiResearchRunEpisodeId(runId: string): string {
+  return `aoi_research_${sanitizeAoiStoragePart(runId)}`;
 }
 
 function formatAoiCount(label: string, value: number | undefined): string | null {

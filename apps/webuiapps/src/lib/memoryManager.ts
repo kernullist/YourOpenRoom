@@ -53,6 +53,11 @@ export function getMemoryToolDefinitions(): ToolDef[] {
               description:
                 'Category: "fact" (user facts), "preference" (likes/dislikes), "event" (what happened), "emotion" (emotional moments), "other"',
             },
+            permanent: {
+              type: 'boolean',
+              description:
+                'Set true only when the user explicitly asks you to remember this permanently, forever, or never forget it.',
+            },
           },
           required: ['content', 'category'],
         },

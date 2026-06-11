@@ -178,7 +178,14 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   시에도 가능한 partial artifact 를 남깁니다. Aoi Research 앱은 compact manifest summary 만
   목록으로 받고, report/source/evidence 본문은 선택한 run 에 대해 따로 읽습니다. Tavily 미설정,
   private/local URL 차단, source read 실패, malformed model JSON, artifact cap, duplicate active
-  request, max concurrency 제한은 run status 또는 API error 로 드러납니다.
+  request, max concurrency 제한은 run status 또는 API error 로 드러납니다. 완료된 research run 은
+  Aoi memory v2 에 날짜가 포함된 permanent `research_run` 요약도 저장하므로, 이후 채팅에서 관련
+  질문이 나오면 결과를 바로 떠올리고 필요할 때 report artifact 를 다시 열 수 있습니다.
+- Aoi memory v2 는 사용자가 명시적으로 "영구히 기억해줘", "절대 잊지 마"처럼 요청한 항목을
+  permanent memory 로 저장합니다. Permanent memory 는 만료되지 않고 retrieval 우선순위를 받으며,
+  비영구 자동 추출 후보가 같은 사실을 덮어쓰지 못합니다. 단, 사용자가 직접 archive/delete 하는 것은
+  가능합니다. 또한 Aoi 는 별도 요청이 없어도 일반 채팅에서 재사용 가치가 있는 관심사, 취향, 기술 질문
+  주제를 자동으로 장기 기억해 이후 답변에 활용합니다.
 
 ## Kira 와 Aoi's IDE
 

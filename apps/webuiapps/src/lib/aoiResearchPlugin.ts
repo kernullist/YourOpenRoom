@@ -10,6 +10,7 @@ import {
   startAoiResearchRun,
   type AoiResearchRunPaths,
 } from './aoiResearchEngine';
+import { syncAoiMemoryFromResearchRunServer } from './aoiMemoryServerWriter';
 import {
   isAoiResearchArtifactName,
   type AoiResearchArtifactName,
@@ -160,6 +161,34 @@ function readManifest(filePath: string): AoiResearchManifest | null {
     return parsed as AoiResearchManifest;
   } catch {
     return null;
+  }
+}
+
+function readTextFileIfPresent(filePath: string): string | undefined {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return undefined;
+    }
+    return fs.readFileSync(filePath, 'utf-8');
+  } catch {
+    return undefined;
+  }
+}
+
+function persistResearchRunMemory(
+  sessionsDir: string,
+  manifest: AoiResearchManifest,
+  paths: AoiResearchRunPaths,
+): void {
+  if (manifest.status !== 'completed') {
+    return;
+  }
+  try {
+    syncAoiMemoryFromResearchRunServer(sessionsDir, manifest, {
+      reportMarkdown: readTextFileIfPresent(paths.report),
+    });
+  } catch (error) {
+    console.warn('[aoi-research] failed to persist research memory', error);
   }
 }
 
@@ -354,9 +383,13 @@ async function handleAoiResearchRequest(
         request: startRequest,
       });
       const manifest = readManifest(paths.manifest) ?? (await runPromise);
-      void runPromise.catch((error) => {
-        console.error('[aoi-research] background run failed', error);
-      });
+      void runPromise
+        .then((finalManifest) => {
+          persistResearchRunMemory(sessionsDir, finalManifest, paths);
+        })
+        .catch((error) => {
+          console.error('[aoi-research] background run failed', error);
+        });
       writeJson(res, 200, {
         ok: true,
         run: manifest,

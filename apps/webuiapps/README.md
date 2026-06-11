@@ -182,6 +182,8 @@ This app reads and writes to `~/.openroom/` in standalone mode:
   - session-scoped app data, chat data, chat image attachments, and local Aoi memory v2 data
   - Aoi research artifacts live under `sessions/<character>/<mod>/aoi-research/runs/<runId>/` as
     `manifest.json`, `report.md`, `sources.json`, and `evidence.json`
+  - completed Aoi research runs also write a dated, permanent `research_run` memory summary into
+    `sessions/aoi/memory-v2/` so later chat turns can recall the result and reopen the artifact
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -205,10 +207,15 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - Aoi durable memory v2 stores raw turn episodes and selected memories under
   `sessions/aoi/memory-v2/`. The prompt only receives a ranked, confidence-gated subset. Background
   sync can use the configured LLM as a distiller, but invalid or timed-out distillation falls back
-  to deterministic extraction. The Advanced settings tab includes an Aoi Memory Inspector for
-  review, archive, delete, and refresh operations. Kira automation completion and attention events
-  are also bridged into project-scoped Aoi memories by a server-side writer, so they persist even
-  when the chat panel is not open.
+  to deterministic extraction. Aoi also auto-records reusable user interests, preferences, and
+  technical question topics from chat turns without requiring an explicit remember request. Explicit
+  "remember forever" or "never forget" requests become permanent Aoi memories: they ignore expiry,
+  receive retrieval priority, and are protected from automatic supersession by non-permanent
+  conflicting facts. Completed research summaries are also permanent and include the completion
+  date. The Advanced settings tab includes an Aoi Memory Inspector for review, archive, delete, and
+  refresh operations. Kira automation completion and attention events are also bridged into
+  project-scoped Aoi memories by a server-side writer, so they persist even when the chat panel is
+  not open.
 - Chat image input accepts pasted, dropped, or selected PNG, JPEG, WebP, and GIF files. Images stay
   on the main LLM route, bypass the dialog model, and are stored in session chat history as data
   URLs. Aoi memory sync records only attachment metadata instead of raw image payloads.

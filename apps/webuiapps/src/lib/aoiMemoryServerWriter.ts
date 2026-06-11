@@ -3,6 +3,7 @@ import { dirname, join } from 'path';
 import {
   buildAoiKiraAutomationMemoryCandidates,
   makeAoiKiraAutomationEpisodeId,
+  makeAoiResearchRunEpisodeId,
   normalizeAoiProjectKey,
   normalizeAoiSessionPathForStorage,
   truncateAoiMemoryContent,
@@ -12,6 +13,7 @@ import {
   type AoiMemoryEntry,
   type AoiMemoryEpisode,
 } from './aoiMemoryShared';
+import type { AoiResearchManifest } from './aoiResearchTypes';
 
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
 
@@ -34,6 +36,18 @@ function normalizeWhitespace(value: string): string {
 
 function normalizeMemoryContent(value: string): string {
   return truncateAoiMemoryContent(value).toLowerCase();
+}
+
+function formatAoiMemoryDate(timestamp: number | undefined): string {
+  const date =
+    typeof timestamp === 'number' && Number.isFinite(timestamp) ? new Date(timestamp) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeTags(values: unknown, maxItems = 8): string[] {
@@ -60,9 +74,119 @@ function normalizeEntities(values: unknown, maxItems = 10): string[] {
   return [...seen];
 }
 
+function extractMarkdownSection(markdown: string, heading: string): string {
+  const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const match = markdown.match(
+    new RegExp(`(?:^|\\n)##\\s+${escaped}\\s*\\n([\\s\\S]*?)(?=\\n##\\s+|\\s*$)`, 'i'),
+  );
+  return match?.[1]?.trim() || '';
+}
+
+function stripMarkdownLine(value: string): string {
+  return normalizeWhitespace(
+    value
+      .replace(/^\s*[-*]\s+/u, '')
+      .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+      .replace(/`([^`]+)`/g, '$1')
+      .replace(/\[(S\d{2,3})\]/g, '$1')
+      .replace(/[*_>#]/g, ''),
+  );
+}
+
+function extractResearchFindings(reportMarkdown: string): string[] {
+  const section = extractMarkdownSection(reportMarkdown, 'Key Findings');
+  const source = section || reportMarkdown;
+  const findings: string[] = [];
+  for (const line of source.split(/\r?\n/u)) {
+    const cleaned = stripMarkdownLine(line);
+    if (cleaned.length < 16) continue;
+    if (/^https?:\/\//i.test(cleaned)) continue;
+    findings.push(cleaned.slice(0, 150));
+    if (findings.length >= 2) break;
+  }
+  return findings;
+}
+
+function extractResearchTopicTags(manifest: AoiResearchManifest): string[] {
+  const text = `${manifest.request} ${manifest.reportTitle || ''}`.toLowerCase();
+  const tags = ['research', 'aoi-research', 'completed'];
+  const topicMap: Array<[RegExp, string]> = [
+    [/\bwindows\b|윈도우/u, 'windows'],
+    [/\bkernel\b|커널/u, 'kernel'],
+    [/\bdriver\b|드라이버/u, 'driver'],
+    [/\bsecurity\b|보안/u, 'security'],
+    [/\banti-?cheat\b|안티치트/u, 'anti-cheat'],
+    [/\bcve\b/u, 'cve'],
+    [/\bbyovd\b/u, 'byovd'],
+  ];
+  for (const [pattern, tag] of topicMap) {
+    if (pattern.test(text)) {
+      tags.push(tag);
+    }
+    if (tags.length >= 8) break;
+  }
+  return tags;
+}
+
+function buildAoiResearchMemoryContent(
+  manifest: AoiResearchManifest,
+  reportMarkdown: string | undefined,
+): string {
+  const title = manifest.reportTitle || manifest.plan?.title || manifest.request || manifest.id;
+  const completedDate = formatAoiMemoryDate(
+    manifest.completedAt ?? manifest.updatedAt ?? manifest.createdAt,
+  );
+  const findings = extractResearchFindings(reportMarkdown || '');
+  const details = [
+    findings.length ? `Findings: ${findings.join('; ')}` : null,
+    `accepted=${manifest.sourceCounts.accepted}`,
+    typeof manifest.claimCount === 'number' ? `claims=${manifest.claimCount}` : null,
+    `run=${manifest.id}`,
+  ].filter((item): item is string => Boolean(item));
+  return truncateAoiMemoryContent(
+    `Aoi completed research "${title}" on ${completedDate}. ${details.join('. ')}.`,
+  );
+}
+
+export function buildAoiResearchMemoryCandidates(params: {
+  manifest: AoiResearchManifest;
+  reportMarkdown?: string;
+}): AoiMemoryCandidate[] {
+  const { manifest, reportMarkdown } = params;
+  if (manifest.status !== 'completed') {
+    return [];
+  }
+
+  const title = manifest.reportTitle || manifest.plan?.title || manifest.request || manifest.id;
+  const blockingCount = (manifest.verificationWarnings || []).filter(
+    (warning) => warning.severity === 'blocking',
+  ).length;
+  const warningCount = manifest.warnings?.length ?? 0;
+  return [
+    {
+      scope: 'agent',
+      type: 'fact',
+      content: buildAoiResearchMemoryContent(manifest, reportMarkdown),
+      importance: 0.88,
+      confidence: blockingCount > 0 ? 0.66 : warningCount > 0 ? 0.76 : 0.84,
+      permanent: true,
+      tags: extractResearchTopicTags(manifest),
+      entities: [
+        title,
+        manifest.request,
+        manifest.id,
+        formatAoiMemoryDate(manifest.completedAt ?? manifest.updatedAt ?? manifest.createdAt),
+        ...(manifest.plan?.searchQueries || []).slice(0, 3),
+      ],
+    },
+  ];
+}
+
 function normalizeAoiMemoryCandidate(candidate: AoiMemoryCandidate): AoiMemoryCandidate | null {
   const content = truncateAoiMemoryContent(candidate.content);
   if (content.length < 8) return null;
+  const permanent = Boolean(candidate.permanent);
+  const tags = normalizeTags([...(permanent ? ['permanent'] : []), ...(candidate.tags ?? [])]);
   return {
     scope: candidate.scope ?? 'user',
     type: candidate.type,
@@ -70,9 +194,10 @@ function normalizeAoiMemoryCandidate(candidate: AoiMemoryCandidate): AoiMemoryCa
     importance: clampScore(candidate.importance ?? 0.65, 0.65),
     confidence: clampScore(candidate.confidence ?? 0.7, 0.7),
     projectKey: normalizeAoiProjectKey(candidate.projectKey),
-    tags: normalizeTags(candidate.tags),
+    tags,
     entities: normalizeEntities(candidate.entities),
-    ...(candidate.expiresAt && Number.isFinite(candidate.expiresAt)
+    ...(permanent ? { permanent: true } : {}),
+    ...(!permanent && candidate.expiresAt && Number.isFinite(candidate.expiresAt)
       ? { expiresAt: candidate.expiresAt }
       : {}),
   };
@@ -130,11 +255,15 @@ function mergeServerAoiMemoryCandidates(
         new Set([...duplicate.entities, ...(candidate.entities ?? [])]),
       ).slice(0, 10);
       const nextProjectKey = duplicate.projectKey ?? candidate.projectKey;
+      const nextPermanent = Boolean(duplicate.permanent || candidate.permanent);
+      const shouldClearExpiresAt = nextPermanent && duplicate.expiresAt !== undefined;
       const changed =
         !episodeAlreadySeen ||
         duplicate.importance !== nextImportance ||
         duplicate.confidence !== nextConfidence ||
         duplicate.projectKey !== nextProjectKey ||
+        Boolean(duplicate.permanent) !== nextPermanent ||
+        shouldClearExpiresAt ||
         !arraysEqual(duplicate.sourceEpisodeIds, nextSourceEpisodeIds) ||
         !arraysEqual(duplicate.tags, nextTags) ||
         !arraysEqual(duplicate.entities, nextEntities);
@@ -150,6 +279,10 @@ function mergeServerAoiMemoryCandidates(
         duplicate.tags = nextTags;
         duplicate.entities = nextEntities;
         duplicate.projectKey = nextProjectKey;
+        if (nextPermanent) {
+          duplicate.permanent = true;
+          delete duplicate.expiresAt;
+        }
         changedIds.add(duplicate.id);
       }
       continue;
@@ -158,6 +291,17 @@ function mergeServerAoiMemoryCandidates(
     const conflictKey = conflictKeyForContent(candidate.content);
     const supersedes: string[] = [];
     if (conflictKey) {
+      const hasProtectedPermanentConflict = next.some(
+        (memory) =>
+          memory.status === 'active' &&
+          memory.permanent &&
+          !candidate.permanent &&
+          conflictKeyForContent(memory.content) === conflictKey,
+      );
+      if (hasProtectedPermanentConflict) {
+        continue;
+      }
+
       for (const memory of next) {
         if (memory.status !== 'active') continue;
         if (conflictKeyForContent(memory.content) !== conflictKey) continue;
@@ -186,7 +330,8 @@ function mergeServerAoiMemoryCandidates(
       ...(candidate.projectKey ? { projectKey: candidate.projectKey } : {}),
       tags: candidate.tags ?? [],
       entities: candidate.entities ?? [],
-      ...(candidate.expiresAt ? { expiresAt: candidate.expiresAt } : {}),
+      ...(candidate.permanent ? { permanent: true } : {}),
+      ...(!candidate.permanent && candidate.expiresAt ? { expiresAt: candidate.expiresAt } : {}),
       ...(supersedes.length > 0 ? { supersedes } : {}),
     };
     next.push(entry);
@@ -301,4 +446,31 @@ export function syncAoiMemoryFromKiraAutomationEventServer(
 
   const episode = saveServerAoiMemoryEpisode(sessionsDir, sessionPath, episodeInput);
   return saveServerAoiMemoryCandidates(sessionsDir, sessionPath, candidates, episode.id);
+}
+
+export function syncAoiMemoryFromResearchRunServer(
+  sessionsDir: string,
+  manifest: AoiResearchManifest,
+  options?: { reportMarkdown?: string },
+): AoiMemoryEntry[] {
+  const candidates = buildAoiResearchMemoryCandidates({
+    manifest,
+    reportMarkdown: options?.reportMarkdown,
+  });
+  if (candidates.length === 0) {
+    return loadServerAoiMemories(sessionsDir);
+  }
+
+  const episode = saveServerAoiMemoryEpisode(sessionsDir, manifest.sessionPath, {
+    id: makeAoiResearchRunEpisodeId(manifest.id),
+    source: 'research_run',
+    userMessage: manifest.request,
+    assistantMessage: truncateAoiMemoryContent(
+      `Research completed: ${manifest.reportTitle || manifest.plan?.title || manifest.id}`,
+    ),
+    toolCalls: ['start_research'],
+    createdAt: manifest.completedAt ?? manifest.updatedAt,
+    outcome: 'completed',
+  });
+  return saveServerAoiMemoryCandidates(sessionsDir, manifest.sessionPath, candidates, episode.id);
 }

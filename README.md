@@ -175,6 +175,14 @@ These tools are guarded by the current implementation:
   source/evidence ledgers are fetched per selected run. Missing Tavily config, rejected private or
   local URLs, failed source reads, malformed model JSON, artifact caps, duplicate active requests,
   and max-concurrency limits are surfaced as run status or API errors instead of hidden retries.
+  Completed research runs also write dated, permanent `research_run` summaries into Aoi memory v2
+  so later chat turns can recall the result and reopen the report artifact when more detail is
+  needed.
+- Aoi memory v2 supports permanent memories for explicit "remember forever" / "never forget"
+  requests. Permanent memories do not expire, are prioritized during retrieval, and are protected
+  from non-permanent automatic replacement; they can still be archived or deleted manually. Aoi also
+  auto-records reusable interests, preferences, and technical question topics from normal chat turns
+  so later replies can adapt without an explicit memory request.
 
 ## Kira + Aoi's IDE
 

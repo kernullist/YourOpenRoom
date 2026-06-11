@@ -20,6 +20,7 @@ const MAX_DISTILLER_INPUT_CHARS = 1800;
 const MAX_DISTILLER_CANDIDATES = 5;
 const DISTILLER_TIMEOUT_MS = 25_000;
 const MAX_CONVERSATION_CONTEXT_PROMPT_BOOST = 0.1;
+const PERMANENT_MEMORY_SCORE_BOOST = 0.1;
 
 export type AoiMemoryScope = 'user' | 'agent' | 'session' | 'project';
 export type AoiMemoryType =
@@ -35,7 +36,8 @@ export type AoiMemoryEpisodeSource =
   | 'chat_turn'
   | 'direct_action'
   | 'manual_memory'
-  | 'kira_automation';
+  | 'kira_automation'
+  | 'research_run';
 
 export interface AoiMemoryEntry {
   version: 2;
@@ -52,6 +54,7 @@ export interface AoiMemoryEntry {
   updatedAt: number;
   lastAccessedAt?: number;
   expiresAt?: number;
+  permanent?: boolean;
   sourceEpisodeIds: string[];
   supersedes?: string[];
   sessionPath?: string;
@@ -82,6 +85,7 @@ export interface AoiMemoryCandidate {
   tags?: string[];
   entities?: string[];
   expiresAt?: number;
+  permanent?: boolean;
 }
 
 export type AoiMemoryDistillerChat = typeof chat;
@@ -122,6 +126,18 @@ function truncateContent(value: string): string {
 
 function normalizeMemoryContent(value: string): string {
   return truncateContent(value).toLowerCase();
+}
+
+function formatAoiMemoryDate(timestamp: number | undefined): string {
+  const date =
+    typeof timestamp === 'number' && Number.isFinite(timestamp) ? new Date(timestamp) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return new Date().toISOString().slice(0, 10);
+  }
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
 }
 
 function normalizeSessionPathForStorage(value: string): string {
@@ -204,6 +220,150 @@ function queryLooksForConversationContext(query: string): boolean {
       query,
     ) || /(?:기억|메모|선호|좋아|싫어|항상|절대|기본|이름|불러|맥락|결정|방식|지침)/u.test(query)
   );
+}
+
+export function shouldTreatAoiMemoryAsPermanent(value: string): boolean {
+  return (
+    /\b(?:permanent(?:ly)?|forever|never forget|always remember|keep forever|pin this memory)\b/i.test(
+      value,
+    ) ||
+    /(?:영구(?:히|적)?|평생|절대\s*잊|잊지\s*마|잊으면\s*안|항상\s*기억|고정\s*기억)/u.test(value)
+  );
+}
+
+const AUTO_INTEREST_TOPICS: Array<{
+  pattern: RegExp;
+  topic: string;
+  tags: string[];
+  entities: string[];
+}> = [
+  {
+    pattern: /\bwindows\b|윈도우|\bwin(?:10|11|32|64)?\b/i,
+    topic: 'Windows security engineering',
+    tags: ['windows', 'security'],
+    entities: ['Windows security'],
+  },
+  {
+    pattern:
+      /\bkernel\b|\bdriver\b|\bkmdf\b|\bwdm\b|\birql\b|\bpool\b|\bpdb\b|\bwindbg\b|커널|드라이버/i,
+    topic: 'kernel and driver engineering',
+    tags: ['kernel', 'driver'],
+    entities: ['kernel driver'],
+  },
+  {
+    pattern: /\banti-?cheat\b|안티치트|\bcheat\b|게임\s*보안/i,
+    topic: 'anti-cheat and game security',
+    tags: ['anti-cheat', 'game-security'],
+    entities: ['anti-cheat'],
+  },
+  {
+    pattern:
+      /process memory|memory inspection|memory scan|process protection|메모리\s*(검사|보호|스캔|탐지|덤프)|프로세스|telemetry|텔레메트리/i,
+    topic: 'memory inspection and process protection',
+    tags: ['memory', 'process-protection'],
+    entities: ['memory inspection'],
+  },
+  {
+    pattern: /\btpm\b|secure boot|attestation|하드웨어\s*검증|tpm\s*검증/i,
+    topic: 'TPM and hardware-backed verification',
+    tags: ['tpm', 'verification'],
+    entities: ['TPM'],
+  },
+  {
+    pattern: /\bunreal\b|\bue5\b|언리얼|블루프린트|blueprint/i,
+    topic: 'Unreal Engine security and tooling',
+    tags: ['unreal-engine', 'ue5'],
+    entities: ['Unreal Engine'],
+  },
+  {
+    pattern: /\bresearch\b|조사|연구|리서치|문서|보고서|자료/i,
+    topic: 'research and structured documentation workflows',
+    tags: ['research', 'documentation'],
+    entities: ['research workflow'],
+  },
+  {
+    pattern: /\baoi\b|\bjarvis\b|\bjavis\b|메모리|기억|비서|assistant/i,
+    topic: 'Aoi memory and personal assistant behavior',
+    tags: ['aoi', 'assistant-memory'],
+    entities: ['Aoi memory'],
+  },
+  {
+    pattern: /\bkira\b|자동화|워크플로|workflow|goal prompt|goal 프롬프트/i,
+    topic: 'automation and coding workflow',
+    tags: ['automation', 'workflow'],
+    entities: ['automation workflow'],
+  },
+  {
+    pattern: /테스트|검증|validation|test harness|리뷰|review|commit|커밋/i,
+    topic: 'testing, review, and commit hygiene',
+    tags: ['testing', 'review'],
+    entities: ['validation workflow'],
+  },
+];
+
+function looksLikeRememberableQuestionOrInterest(value: string): boolean {
+  return (
+    /[?？]/u.test(value) ||
+    /(?:어떻게|왜|무엇|뭐|설계|구현|조사|연구|분석|리뷰|테스트|검증|개선|비교|정리|가능해|필요해|좋겠어|좋을까|알려줘|설명해)/u.test(
+      value,
+    ) ||
+    /\b(?:how|why|what|design|implement|research|investigate|analyze|review|test|validate|improve|compare|explain|need|want|should|could|can)\b/i.test(
+      value,
+    )
+  );
+}
+
+function looksTransientAoiMemoryTurn(value: string): boolean {
+  return /^(?:고마워|감사|좋아|ㅇㅋ|오케이|네|넵|응|thanks|thank you|ok|okay|yes)[.!?\s]*$/i.test(
+    value,
+  );
+}
+
+function buildAutoInterestMemoryCandidate(
+  userMessage: string,
+  now: number | undefined,
+): AoiMemoryCandidate | null {
+  if (userMessage.length < 16 || userMessage.length > 700) {
+    return null;
+  }
+  if (looksSensitive(userMessage) || looksTransientAoiMemoryTurn(userMessage)) {
+    return null;
+  }
+  if (!looksLikeRememberableQuestionOrInterest(userMessage)) {
+    return null;
+  }
+
+  const matchedTopics: string[] = [];
+  const tags = ['interest', 'auto', 'question-topic'];
+  const entities: string[] = [];
+  for (const item of AUTO_INTEREST_TOPICS) {
+    if (!item.pattern.test(userMessage)) {
+      continue;
+    }
+    matchedTopics.push(item.topic);
+    tags.push(...item.tags);
+    entities.push(...item.entities);
+    if (matchedTopics.length >= 3) {
+      break;
+    }
+  }
+
+  if (matchedTopics.length === 0) {
+    return null;
+  }
+
+  const observedDate = formatAoiMemoryDate(now);
+  const asked = truncateContent(userMessage).slice(0, 180);
+  const topic = matchedTopics.join(', ');
+  return {
+    type: 'preference',
+    scope: 'user',
+    content: `On ${observedDate}, the user showed interest in ${topic}. Asked: "${asked}"`,
+    importance: 0.58,
+    confidence: 0.6,
+    tags,
+    entities: [topic, observedDate, ...entities],
+  };
 }
 
 function isExternalAutomationMemory(memory: AoiMemoryEntry): boolean {
@@ -349,6 +509,8 @@ export function normalizeAoiMemoryCandidate(
 ): AoiMemoryCandidate | null {
   const content = truncateContent(candidate.content);
   if (content.length < 8) return null;
+  const permanent = Boolean(candidate.permanent);
+  const tags = normalizeTags([...(permanent ? ['permanent'] : []), ...(candidate.tags ?? [])]);
   return {
     scope: candidate.scope ?? 'user',
     type: candidate.type,
@@ -356,9 +518,10 @@ export function normalizeAoiMemoryCandidate(
     importance: clampScore(candidate.importance ?? 0.65, 0.65),
     confidence: clampScore(candidate.confidence ?? 0.7, 0.7),
     projectKey: normalizeProjectKey(candidate.projectKey),
-    tags: normalizeTags(candidate.tags),
+    tags,
     entities: normalizeEntities(candidate.entities),
-    ...(candidate.expiresAt && Number.isFinite(candidate.expiresAt)
+    ...(permanent ? { permanent: true } : {}),
+    ...(!permanent && candidate.expiresAt && Number.isFinite(candidate.expiresAt)
       ? { expiresAt: candidate.expiresAt }
       : {}),
   };
@@ -407,11 +570,15 @@ export function mergeAoiMemoryCandidates(
         new Set([...duplicate.entities, ...(candidate.entities ?? [])]),
       ).slice(0, 10);
       const nextProjectKey = duplicate.projectKey ?? candidate.projectKey;
+      const nextPermanent = Boolean(duplicate.permanent || candidate.permanent);
+      const shouldClearExpiresAt = nextPermanent && duplicate.expiresAt !== undefined;
       const changed =
         !episodeAlreadySeen ||
         duplicate.importance !== nextImportance ||
         duplicate.confidence !== nextConfidence ||
         duplicate.projectKey !== nextProjectKey ||
+        Boolean(duplicate.permanent) !== nextPermanent ||
+        shouldClearExpiresAt ||
         !arraysEqual(duplicate.sourceEpisodeIds, nextSourceEpisodeIds) ||
         !arraysEqual(duplicate.tags, nextTags) ||
         !arraysEqual(duplicate.entities, nextEntities);
@@ -427,6 +594,10 @@ export function mergeAoiMemoryCandidates(
         duplicate.tags = nextTags;
         duplicate.entities = nextEntities;
         duplicate.projectKey = nextProjectKey;
+        if (nextPermanent) {
+          duplicate.permanent = true;
+          delete duplicate.expiresAt;
+        }
         changedIds.add(duplicate.id);
       }
       continue;
@@ -435,6 +606,17 @@ export function mergeAoiMemoryCandidates(
     const conflictKey = conflictKeyForContent(candidate.content);
     const supersedes: string[] = [];
     if (conflictKey) {
+      const hasProtectedPermanentConflict = next.some(
+        (memory) =>
+          memory.status === 'active' &&
+          memory.permanent &&
+          !candidate.permanent &&
+          conflictKeyForContent(memory.content) === conflictKey,
+      );
+      if (hasProtectedPermanentConflict) {
+        continue;
+      }
+
       for (const memory of next) {
         if (memory.status !== 'active') continue;
         if (conflictKeyForContent(memory.content) !== conflictKey) continue;
@@ -463,7 +645,8 @@ export function mergeAoiMemoryCandidates(
       ...(candidate.projectKey ? { projectKey: candidate.projectKey } : {}),
       tags: candidate.tags ?? [],
       entities: candidate.entities ?? [],
-      ...(candidate.expiresAt ? { expiresAt: candidate.expiresAt } : {}),
+      ...(candidate.permanent ? { permanent: true } : {}),
+      ...(!candidate.permanent && candidate.expiresAt ? { expiresAt: candidate.expiresAt } : {}),
       ...(supersedes.length > 0 ? { supersedes } : {}),
     };
     next.push(entry);
@@ -477,6 +660,7 @@ export function mergeAoiMemoryCandidates(
 export function extractHeuristicAoiMemoryCandidates(params: {
   userMessage: string;
   assistantMessage?: string;
+  now?: number;
 }): AoiMemoryCandidate[] {
   const user = normalizeWhitespace(params.userMessage);
   if (!user) return [];
@@ -525,19 +709,29 @@ export function extractHeuristicAoiMemoryCandidates(params: {
 
   const explicitRemember =
     /\b(?:remember|note that|keep in memory|save this)\b/i.test(user) ||
-    /(?:기억해|기억해줘|기억해 둬|기억해둬|메모해|저장해)/u.test(user);
+    /(?:기억해|기억해줘|기억해 둬|기억해둬|메모해|저장해|잊지\s*마|잊으면\s*안|영구\s*기억|영구히\s*저장)/u.test(
+      user,
+    );
   if (explicitRemember) {
+    const permanent = shouldTreatAoiMemoryAsPermanent(user);
     const cleaned = user
-      .replace(/\b(?:please\s+)?(?:remember|note that|keep in memory|save this)\b[:\s-]*/i, '')
-      .replace(/(?:기억해줘|기억해 둬|기억해둬|기억해|메모해|저장해)[:\s-]*/u, '')
+      .replace(
+        /\b(?:please\s+)?(?:remember|note that|keep in memory|save this|never forget|always remember|keep forever)\b[:\s-]*/i,
+        '',
+      )
+      .replace(
+        /(?:영구(?:히|적)?\s*)?(?:기억해줘|기억해 둬|기억해둬|기억해|메모해|저장해|(?:절대\s*)?잊지\s*마|잊으면\s*안\s*돼|영구\s*기억|영구히\s*저장)[:\s-]*/u,
+        '',
+      )
       .trim();
     if (cleaned.length >= 8) {
       candidates.push({
         type: 'fact',
         scope: 'user',
         content: cleaned,
-        importance: 0.85,
-        confidence: 0.82,
+        importance: permanent ? 0.93 : 0.85,
+        confidence: permanent ? 0.88 : 0.82,
+        permanent,
         tags: ['explicit'],
       });
     }
@@ -546,7 +740,11 @@ export function extractHeuristicAoiMemoryCandidates(params: {
   const durableInstruction =
     /\b(?:always|never|from now on|by default)\b/i.test(user) ||
     /(?:앞으로|기본적으로|항상|절대|가능하면)/u.test(user);
-  if (durableInstruction && !/(열어줘|실행해|틀어줘|검색해|open|launch|play|search)/i.test(user)) {
+  if (
+    durableInstruction &&
+    !explicitRemember &&
+    !/(열어줘|실행해|틀어줘|검색해|open|launch|play|search)/i.test(user)
+  ) {
     candidates.push({
       type: 'procedure',
       scope: 'user',
@@ -555,6 +753,11 @@ export function extractHeuristicAoiMemoryCandidates(params: {
       confidence: 0.68,
       tags: ['instruction'],
     });
+  }
+
+  const autoInterest = buildAutoInterestMemoryCandidate(user, params.now);
+  if (autoInterest && !explicitRemember) {
+    candidates.push(autoInterest);
   }
 
   const decisionLike =
@@ -619,6 +822,7 @@ export function parseAoiMemoryDistillerResponse(raw: string): AoiMemoryCandidate
       confidence: typeof record.confidence === 'number' ? record.confidence : 0.65,
       tags: [...normalizeTags(record.tags), 'llm-distilled'],
       entities: normalizeEntities(record.entities),
+      permanent: record.permanent === true,
     });
     if (candidate) candidates.push(candidate);
   }
@@ -673,11 +877,14 @@ function buildDistillerMessages(params: AoiMemorySyncParams): ChatMessage[] {
         'You are Aoi memory distiller.',
         'Extract only durable memories that will help future conversations.',
         'Return strict JSON only, with this shape:',
-        '{"memories":[{"scope":"user|agent|session|project","type":"fact|preference|decision|event|procedure|action|emotion","content":"short standalone memory","importance":0.0,"confidence":0.0,"tags":["short"],"entities":["name"]}]}',
+        '{"memories":[{"scope":"user|agent|session|project","type":"fact|preference|decision|event|procedure|action|emotion","content":"short standalone memory","importance":0.0,"confidence":0.0,"tags":["short"],"entities":["name"],"permanent":false}]}',
         'Rules:',
         '- Prefer no memories over weak memories.',
         '- Do not store trivial acknowledgements, one-off requests, temporary wording, passwords, API keys, tokens, or secrets.',
         '- Store stable user preferences, identity facts, project decisions, reusable procedures, and important completed actions.',
+        '- Also store reusable user interests, tastes, and technical topics the user asks about, even when the user did not explicitly say remember.',
+        '- For inferred interests, write a concise standalone memory and tag it with "interest" and "auto".',
+        '- Set permanent=true only when the user explicitly asks Aoi to remember something forever, permanently, or never forget it.',
         '- Keep content concise and source-grounded. Do not infer beyond the turn.',
         `- Return at most ${MAX_DISTILLER_CANDIDATES} memories.`,
       ].join('\n'),
@@ -850,14 +1057,14 @@ export async function deleteAoiMemory(memoryId: string): Promise<AoiMemoryEntry[
 
 function isPromptEligible(memory: AoiMemoryEntry, now: number): boolean {
   if (memory.status !== 'active') return false;
-  if (memory.confidence < MIN_PROMPT_CONFIDENCE) return false;
-  if (memory.expiresAt && memory.expiresAt <= now) return false;
+  if (!memory.permanent && memory.confidence < MIN_PROMPT_CONFIDENCE) return false;
+  if (!memory.permanent && memory.expiresAt && memory.expiresAt <= now) return false;
   return true;
 }
 
 export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, now = Date.now()) {
   const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
-  const recency = Math.max(0, 1 - ageDays / 90);
+  const recency = memory.permanent ? 0.85 : Math.max(0, 1 - ageDays / 90);
   const queryTokens = tokenize(query);
   const memoryTokens = tokenize(
     `${memory.content} ${memory.tags.join(' ')} ${memory.entities.join(' ')}`,
@@ -866,6 +1073,11 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
   const hitBoost = Math.min(0.12, memory.hits * 0.015);
   const scopeBoost = memory.scope === 'user' || memory.scope === 'agent' ? 0.06 : 0;
   const conversationContextBoost = scoreConversationContextPromptBoost(memory, query);
+  const permanentBoost = memory.permanent
+    ? queryLooksForConversationContext(query) || lexical > 0
+      ? PERMANENT_MEMORY_SCORE_BOOST
+      : PERMANENT_MEMORY_SCORE_BOOST * 0.45
+    : 0;
   return (
     memory.importance * 0.34 +
     memory.confidence * 0.28 +
@@ -873,7 +1085,8 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
     lexical * 0.22 +
     hitBoost +
     scopeBoost +
-    conversationContextBoost
+    conversationContextBoost +
+    permanentBoost
   );
 }
 
@@ -917,7 +1130,7 @@ export function buildAoiMemoryPrompt(memories: AoiMemoryEntry[], latestUserMessa
   ];
 
   for (const memory of selected) {
-    const label = `${memory.scope}/${memory.type}`;
+    const label = `${memory.permanent ? 'permanent ' : ''}${memory.scope}/${memory.type}`;
     lines.push(
       `- [${label}, confidence ${memory.confidence.toFixed(2)}] ${truncateContent(memory.content)}`,
     );

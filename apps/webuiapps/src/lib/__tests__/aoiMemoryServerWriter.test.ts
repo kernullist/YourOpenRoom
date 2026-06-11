@@ -4,9 +4,12 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   loadServerAoiMemories,
+  saveServerAoiMemoryCandidates,
   syncAoiMemoryFromKiraAutomationEventServer,
+  syncAoiMemoryFromResearchRunServer,
 } from '../aoiMemoryServerWriter';
 import type { AoiMemoryEpisode } from '../aoiMemoryShared';
+import type { AoiResearchManifest } from '../aoiResearchTypes';
 
 const tempRoots: string[] = [];
 
@@ -14,6 +17,49 @@ function makeTempSessionsDir(): string {
   const dir = fs.mkdtempSync(join(os.tmpdir(), 'aoi-memory-server-'));
   tempRoots.push(dir);
   return dir;
+}
+
+function makeCompletedResearchManifest(
+  partial: Partial<AoiResearchManifest> = {},
+): AoiResearchManifest {
+  const completedAt = new Date(2026, 5, 11).getTime();
+  return {
+    version: 1,
+    id: 'aoi-research-test-1234',
+    sessionPath: 'aoi/default',
+    request: 'Investigate Windows kernel driver BYOVD research trends',
+    mode: 'standard',
+    language: 'ko',
+    recency: 'year',
+    maxSources: 12,
+    createdAt: completedAt,
+    updatedAt: completedAt,
+    completedAt,
+    status: 'completed',
+    phase: 'completed',
+    statusMessage: 'Verified research report completed.',
+    sourceCounts: {
+      planned: 12,
+      candidates: 8,
+      accepted: 5,
+      failed: 1,
+    },
+    artifactPaths: {
+      manifest: 'aoi-research/runs/aoi-research-test-1234/manifest.json',
+      report: 'aoi-research/runs/aoi-research-test-1234/report.md',
+      sources: 'aoi-research/runs/aoi-research-test-1234/sources.json',
+      evidence: 'aoi-research/runs/aoi-research-test-1234/evidence.json',
+    },
+    artifactAvailability: {
+      manifest: true,
+      report: true,
+      sources: true,
+      evidence: true,
+    },
+    reportTitle: 'Windows kernel driver BYOVD research trends',
+    claimCount: 14,
+    ...partial,
+  };
 }
 
 afterEach(() => {
@@ -166,6 +212,130 @@ describe('Aoi server memory writer', () => {
       createdAt: 100,
       type: 'started',
     });
+
+    expect(memories).toEqual([]);
+    expect(loadServerAoiMemories(sessionsDir)).toEqual([]);
+  });
+
+  it('preserves permanent memories across server-side duplicate merges', () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    const first = saveServerAoiMemoryCandidates(
+      sessionsDir,
+      'aoi/default',
+      [
+        {
+          type: 'fact',
+          content: 'The user wants permanent Windows kernel debugging preferences.',
+          confidence: 0.7,
+          expiresAt: 150,
+        },
+      ],
+      'ep-1',
+    );
+    const second = saveServerAoiMemoryCandidates(
+      sessionsDir,
+      'aoi/default',
+      [
+        {
+          type: 'fact',
+          content: 'The user wants permanent Windows kernel debugging preferences.',
+          confidence: 0.8,
+          permanent: true,
+        },
+      ],
+      'ep-2',
+    );
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({
+      permanent: true,
+      hits: 2,
+      sourceEpisodeIds: ['ep-1', 'ep-2'],
+    });
+    expect(second[0].expiresAt).toBeUndefined();
+    expect(second[0].tags).toContain('permanent');
+  });
+
+  it('stores completed research runs as reusable Aoi memories', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const manifest = makeCompletedResearchManifest();
+    const reportMarkdown = [
+      '# Windows kernel driver BYOVD research trends',
+      '',
+      '## Key Findings',
+      '- BYOVD activity increasingly targets vulnerable signed drivers [S01].',
+      '- Driver blocklist coverage and HVCI enforcement remain deployment-dependent [S02].',
+      '',
+      '## Sources',
+      '- [S01] src-001 - Research source.',
+      '- [S02] src-002 - Microsoft source.',
+      '',
+    ].join('\n');
+
+    const first = syncAoiMemoryFromResearchRunServer(sessionsDir, manifest, { reportMarkdown });
+    const second = syncAoiMemoryFromResearchRunServer(sessionsDir, manifest, { reportMarkdown });
+
+    expect(first).toHaveLength(1);
+    expect(second).toHaveLength(1);
+    expect(second[0]).toMatchObject({
+      scope: 'agent',
+      type: 'fact',
+      permanent: true,
+      hits: 1,
+      sourceEpisodeIds: ['aoi_research_aoi-research-test-1234'],
+    });
+    expect(second[0].content).toContain('Aoi completed research');
+    expect(second[0].content).toContain('on 2026-06-11');
+    expect(second[0].content).toContain('BYOVD');
+    expect(second[0].content).toContain('run=aoi-research-test-1234');
+    expect(second[0].tags).toEqual(
+      expect.arrayContaining([
+        'permanent',
+        'research',
+        'aoi-research',
+        'completed',
+        'windows',
+        'kernel',
+      ]),
+    );
+    expect(second[0].entities).toEqual(
+      expect.arrayContaining([
+        'Windows kernel driver BYOVD research trends',
+        'aoi-research-test-1234',
+        '2026-06-11',
+      ]),
+    );
+
+    const episodePath = join(
+      sessionsDir,
+      'aoi',
+      'memory-v2',
+      'episodes',
+      'aoi',
+      'default',
+      'aoi_research_aoi-research-test-1234.json',
+    );
+    const episode = JSON.parse(fs.readFileSync(episodePath, 'utf-8')) as AoiMemoryEpisode;
+    expect(episode).toMatchObject({
+      source: 'research_run',
+      toolCalls: ['start_research'],
+      outcome: 'completed',
+    });
+  });
+
+  it('ignores unfinished research runs', () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    const memories = syncAoiMemoryFromResearchRunServer(
+      sessionsDir,
+      makeCompletedResearchManifest({
+        status: 'failed',
+        phase: 'failed',
+        statusMessage: 'Research failed.',
+      }),
+    );
 
     expect(memories).toEqual([]);
     expect(loadServerAoiMemories(sessionsDir)).toEqual([]);

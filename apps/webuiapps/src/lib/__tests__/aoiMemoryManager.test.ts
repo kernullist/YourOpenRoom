@@ -39,6 +39,7 @@ function makeMemory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
     tags: partial.tags ?? [],
     entities: partial.entities ?? [],
     ...(partial.expiresAt ? { expiresAt: partial.expiresAt } : {}),
+    ...(partial.permanent ? { permanent: partial.permanent } : {}),
     ...(partial.supersedes ? { supersedes: partial.supersedes } : {}),
   };
 }
@@ -72,6 +73,42 @@ describe('extractHeuristicAoiMemoryCandidates()', () => {
 
     expect(candidates).toHaveLength(1);
     expect(candidates[0].tags).toContain('explicit');
+  });
+
+  it('marks explicit never-forget requests as permanent', () => {
+    const candidates = extractHeuristicAoiMemoryCandidates({
+      userMessage: '절대 잊지 마 나는 커밋할 때 kernullist 이름을 사용해.',
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].permanent).toBe(true);
+    expect(candidates[0].tags).toEqual(expect.arrayContaining(['explicit', 'permanent']));
+  });
+
+  it('auto-records technical interests from questions without explicit remember requests', () => {
+    const candidates = extractHeuristicAoiMemoryCandidates({
+      userMessage: 'Windows 커널 드라이버 보안 연구는 어떤 테스트 하네스를 설계하면 좋을까?',
+      now: new Date(2026, 5, 11).getTime(),
+    });
+
+    const interest = candidates.find((candidate) => candidate.tags?.includes('interest'));
+    expect(interest).toMatchObject({
+      scope: 'user',
+      type: 'preference',
+    });
+    expect(interest?.permanent).toBeUndefined();
+    expect(interest?.content).toContain('On 2026-06-11');
+    expect(interest?.content).toContain('Windows security engineering');
+    expect(interest?.tags).toEqual(expect.arrayContaining(['interest', 'auto', 'question-topic']));
+  });
+
+  it('does not auto-record broad transient non-technical questions', () => {
+    const candidates = extractHeuristicAoiMemoryCandidates({
+      userMessage: '오늘 저녁 뭐 먹지?',
+      now: new Date(2026, 5, 11).getTime(),
+    });
+
+    expect(candidates).toEqual([]);
   });
 });
 
@@ -152,6 +189,66 @@ describe('mergeAoiMemoryCandidates()', () => {
     expect(
       merged.memories.find((memory) => memory.content.includes('NewName'))?.supersedes,
     ).toEqual(['old-name']);
+  });
+
+  it('protects permanent memories from non-permanent conflict replacement', () => {
+    const existing = [
+      makeMemory({
+        id: 'permanent-name',
+        content: "The user's name is PermanentName.",
+        normalizedContent: "the user's name is permanentname.",
+        permanent: true,
+      }),
+    ];
+
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [{ type: 'fact', content: "The user's name is TransientName.", confidence: 0.9 }],
+      { sessionPath: 'aoi/default', episodeId: 'ep-2', now: 100 },
+    );
+
+    expect(merged.changedIds).toEqual([]);
+    expect(merged.memories).toHaveLength(1);
+    expect(merged.memories[0]).toMatchObject({
+      id: 'permanent-name',
+      status: 'active',
+      permanent: true,
+    });
+  });
+
+  it('allows explicit permanent memories to replace protected conflicts', () => {
+    const existing = [
+      makeMemory({
+        id: 'old-permanent-name',
+        content: "The user's name is OldPermanentName.",
+        normalizedContent: "the user's name is oldpermanentname.",
+        permanent: true,
+      }),
+    ];
+
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [
+        {
+          type: 'fact',
+          content: "The user's name is NewPermanentName.",
+          confidence: 0.92,
+          permanent: true,
+        },
+      ],
+      { sessionPath: 'aoi/default', episodeId: 'ep-2', now: 100 },
+    );
+
+    expect(merged.memories.find((memory) => memory.id === 'old-permanent-name')?.status).toBe(
+      'superseded',
+    );
+    expect(merged.memories.find((memory) => memory.content.includes('NewPermanentName'))).toEqual(
+      expect.objectContaining({
+        status: 'active',
+        permanent: true,
+        supersedes: ['old-permanent-name'],
+      }),
+    );
   });
 });
 
@@ -259,6 +356,27 @@ describe('Aoi prompt memory selection', () => {
 
     expect(preferenceScore).toBeGreaterThan(eventScore + 0.08);
     expect(selected.map((memory) => memory.id)).toEqual(['conversation-preference']);
+  });
+
+  it('keeps relevant permanent memories eligible despite expiry and low confidence', () => {
+    const now = 1_000;
+    const permanentMemory = makeMemory({
+      id: 'permanent-low-confidence',
+      content: 'The user always wants Windows kernel debugging answers in Korean.',
+      confidence: 0.2,
+      expiresAt: 900,
+      permanent: true,
+      updatedAt: 100,
+      tags: ['permanent', 'kernel'],
+    });
+
+    const selected = selectAoiMemoriesForPrompt([permanentMemory], '커널 디버깅 답변 언어 기억', {
+      now,
+    });
+    const prompt = buildAoiMemoryPrompt([permanentMemory], '커널 디버깅 답변 언어 기억');
+
+    expect(selected.map((memory) => memory.id)).toEqual(['permanent-low-confidence']);
+    expect(prompt).toContain('permanent user/fact');
   });
 });
 

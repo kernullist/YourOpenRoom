@@ -83,6 +83,7 @@ import {
   deleteAoiMemory,
   loadAoiMemories,
   saveAoiManualMemory,
+  shouldTreatAoiMemoryAsPermanent,
   syncAoiMemoryFromTurn,
   type AoiMemoryEntry,
   type AoiMemoryEpisodeSource,
@@ -1035,6 +1036,7 @@ Research run rule:
 - If the run is completed and the report artifact is available, you may call read_research_artifact with artifact="report" before summarizing the document.
 - If the run is queued or running, tell the user the run id and current phase/status, then stop instead of polling forever.
 - If the run failed or was cancelled, give the precise failure reason and mention any partial artifact availability. Do not fabricate citations or claim the document is complete unless status is completed.
+- If Durable Aoi memory mentions a completed research run that matches the user's question, answer from that memory first; use read_research_artifact when the user needs details, citations, or the full report.
 - Use get_research_status when the user asks about an active run or provides a run id. Use cancel_research only when the user asks to stop that run.`;
   }
 
@@ -3066,7 +3068,15 @@ const ChatPanel: React.FC<{
     });
 
     const currentMemories = memoriesRef.current;
-    const currentAoiMemoryPrompt = buildAoiMemoryPrompt(aoiMemoriesRef.current, latestUserMessage);
+    let latestAoiMemories = aoiMemoriesRef.current;
+    try {
+      latestAoiMemories = await loadAoiMemories();
+      aoiMemoriesRef.current = latestAoiMemories;
+      setAoiMemories(latestAoiMemories);
+    } catch (error) {
+      console.warn('[ChatPanel] Failed to refresh Aoi memories before prompt build', error);
+    }
+    const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage);
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -4326,12 +4336,20 @@ const ChatPanel: React.FC<{
             const memoryContent = typeof params.content === 'string' ? params.content : '';
             const memoryCategory = typeof params.category === 'string' ? params.category : 'other';
             if (memoryContent.trim()) {
+              const permanentParam = (params as Record<string, unknown>).permanent;
+              const permanent =
+                permanentParam === true ||
+                (typeof permanentParam === 'string' &&
+                  /^(?:true|yes|1)$/i.test(permanentParam.trim())) ||
+                shouldTreatAoiMemoryAsPermanent(latestUserMessage) ||
+                shouldTreatAoiMemoryAsPermanent(memoryContent);
               await saveAoiManualMemory(sessionPathRef.current, {
                 type: mapMemoryCategoryToAoiType(memoryCategory),
                 scope: 'user',
                 content: memoryContent,
-                importance: 0.85,
-                confidence: 0.82,
+                importance: permanent ? 0.93 : 0.85,
+                confidence: permanent ? 0.88 : 0.82,
+                permanent,
                 tags: ['manual', memoryCategory],
               });
             }
@@ -5426,13 +5444,17 @@ const SettingsModal: React.FC<{
     const activeCount = aoiMemories.filter((memory) => memory.status === 'active').length;
     const archivedCount = aoiMemories.filter((memory) => memory.status === 'archived').length;
     const supersededCount = aoiMemories.filter((memory) => memory.status === 'superseded').length;
+    const permanentCount = aoiMemories.filter(
+      (memory) => memory.status === 'active' && memory.permanent,
+    ).length;
     const promptEligibleCount = aoiMemories.filter(
-      (memory) => memory.status === 'active' && memory.confidence >= 0.45,
+      (memory) => memory.status === 'active' && (memory.permanent || memory.confidence >= 0.45),
     ).length;
     return {
       activeCount,
       archivedCount,
       supersededCount,
+      permanentCount,
       promptEligibleCount,
     };
   }, [aoiMemories]);
@@ -6815,6 +6837,10 @@ const SettingsModal: React.FC<{
                     <strong>{aoiMemoryOverview.promptEligibleCount}</strong>
                   </div>
                   <div className={styles.promptBudgetMetric}>
+                    <span className={styles.promptBudgetLabel}>Permanent</span>
+                    <strong>{aoiMemoryOverview.permanentCount}</strong>
+                  </div>
+                  <div className={styles.promptBudgetMetric}>
                     <span className={styles.promptBudgetLabel}>Archived</span>
                     <strong>{aoiMemoryOverview.archivedCount}</strong>
                   </div>
@@ -6833,6 +6859,7 @@ const SettingsModal: React.FC<{
                             <span>{memory.scope}</span>
                             <span>{memory.type}</span>
                             <span>{memory.status}</span>
+                            {memory.permanent ? <span>permanent</span> : null}
                             <span>conf {memory.confidence.toFixed(2)}</span>
                             <span>hits {memory.hits}</span>
                           </div>
