@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   condenseConversationHistory,
+  resolveAoiActionConfirmationRequest,
+  resolveAoiResearchConfirmationRequest,
   shouldEnableAppTools,
   shouldUseAoiResearchRun,
   shouldUseDialogModel,
@@ -262,6 +264,69 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('Find the ChatPanel component in the codebase')).toBe(false);
     expect(shouldUseDialogModel('현재 파일에 TODO 내용을 추가해줘')).toBe(false);
     expect(shouldUseDialogModel('방금 말한 내용을 현재 파일어 써줘')).toBe(false);
+  });
+
+  it('keeps affirmative research confirmations on the main model', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content:
+          '꿀보, 아까 네가 "최신 Windows 커널 드라이버 보안 연구 동향 조사" 얘기했잖아? 웹에서 조사해볼까? 그 결과를 바로 이 Aoi Research 앱에 Run으로 기록해줄게. 어때, 한번 해볼까?',
+      },
+      { role: 'user' as const, content: '응' },
+    ];
+
+    expect(resolveAoiResearchConfirmationRequest('응', history)).toBe(
+      '최신 Windows 커널 드라이버 보안 연구 동향 조사',
+    );
+    expect(resolveAoiActionConfirmationRequest('응', history)).toContain(
+      'Aoi Research 앱에 Run으로 기록해줄게',
+    );
+    expect(shouldUseAoiResearchRun('응', history)).toBe(true);
+    expect(shouldUseDialogModel('응', history)).toBe(false);
+  });
+
+  it('keeps affirmative app-action confirmations on the main model with app tools', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: "꿀보, Aoi's IDE를 열어줄까?",
+      },
+      { role: 'user' as const, content: '응' },
+    ];
+
+    expect(resolveAoiActionConfirmationRequest('응', history)).toBe("꿀보, Aoi's IDE를 열어줄까?");
+    expect(shouldUseAoiResearchRun('응', history)).toBe(false);
+    expect(shouldEnableAppTools('응', history)).toBe(true);
+    expect(shouldUseDialogModel('응', history)).toBe(false);
+  });
+
+  it('supports concise English action proposals as confirmation context', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: 'Open Dewdrop Canvas?',
+      },
+      { role: 'user' as const, content: 'ok' },
+    ];
+
+    expect(resolveAoiActionConfirmationRequest('ok', history)).toBe('Open Dewdrop Canvas?');
+    expect(shouldEnableAppTools('ok', history)).toBe(true);
+    expect(shouldUseDialogModel('ok', history)).toBe(false);
+  });
+
+  it('does not promote affirmative replies to non-actionable assistant context', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: '꿀보, 오늘은 천천히 해도 괜찮아.',
+      },
+      { role: 'user' as const, content: '응' },
+    ];
+
+    expect(resolveAoiActionConfirmationRequest('응', history)).toBeNull();
+    expect(resolveAoiResearchConfirmationRequest('응', history)).toBeNull();
+    expect(shouldUseDialogModel('응', history)).toBe(true);
   });
 });
 

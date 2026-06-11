@@ -92,6 +92,8 @@ import {
 import { logger } from '@/lib/logger';
 import {
   condenseConversationHistory,
+  resolveAoiActionConfirmationRequest,
+  resolveAoiResearchConfirmationRequest,
   shouldEnableAppTools,
   shouldUseAoiResearchRun,
   shouldUseDialogModel,
@@ -3004,9 +3006,15 @@ const ChatPanel: React.FC<{
       throw new Error('No usable LLM config was found for this conversation turn.');
     }
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
+    const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
     const includeAppTools = !useDialogModel && shouldEnableAppTools(latestUserMessage, history);
     const hasResearchTools = !useDialogModel && hasTavily;
-    const shouldPreferResearchRun = hasResearchTools && shouldUseAoiResearchRun(latestUserMessage);
+    const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
+      latestUserMessage,
+      history,
+    );
+    const shouldPreferResearchRun =
+      hasResearchTools && shouldUseAoiResearchRun(latestUserMessage, history);
     const shouldPreSearchWeb =
       hasTavily &&
       !includeAppTools &&
@@ -3059,6 +3067,8 @@ const ChatPanel: React.FC<{
       includeAppTools,
       hasResearchTools,
       shouldPreferResearchRun,
+      confirmedActionRequest,
+      confirmedResearchRequest,
       shouldPreSearchWeb,
       toolNames: selectedToolNames,
       activeSkills: activeSkillMatches.map((match) => match.skill.id),
@@ -3097,6 +3107,38 @@ const ChatPanel: React.FC<{
         role: 'system',
         content: systemPrompt,
       },
+      ...(confirmedResearchRequest
+        ? [
+            {
+              role: 'system' as const,
+              content: hasResearchTools
+                ? [
+                    "The latest user message is a short affirmative reply confirming Aoi's previous research-run proposal.",
+                    `Confirmed research request: ${confirmedResearchRequest}`,
+                    'Treat this as an instruction to start that research run now. Call start_research before responding to the user.',
+                  ].join('\n')
+                : [
+                    "The latest user message is a short affirmative reply confirming Aoi's previous research-run proposal.",
+                    `Confirmed research request: ${confirmedResearchRequest}`,
+                    'Research tools are not currently available, so explain that Tavily/Aoi research must be configured before starting the run.',
+                  ].join('\n'),
+            },
+          ]
+        : []),
+      ...(confirmedActionRequest && !confirmedResearchRequest
+        ? [
+            {
+              role: 'system' as const,
+              content: [
+                "The latest user message is a short affirmative reply confirming Aoi's previous actionable proposal.",
+                `Previous Aoi proposal: ${confirmedActionRequest}`,
+                'Treat the latest user message as an instruction to carry out that previous proposal now.',
+                'Use the available tools when the proposal requires app, file, workspace, browser, URL, command, memory, image, or web capabilities.',
+                'If the required tool or configuration is unavailable, say what is missing instead of silently doing nothing.',
+              ].join('\n'),
+            },
+          ]
+        : []),
       ...(condensedHistory.summaryMessage ? [condensedHistory.summaryMessage] : []),
       ...condensedHistory.recentHistory,
     ];
@@ -3568,6 +3610,25 @@ const ChatPanel: React.FC<{
             emotion,
             replies,
           });
+          if (!content.trim()) {
+            console.warn('[ChatPanel] respond_to_user returned empty content; requesting retry');
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content:
+                  'respond_to_user error: character_expression.content was empty. Send a non-empty user-visible message.',
+                tool_call_id: tc.id,
+              },
+            ];
+            recordRunLedgerEvent({
+              type: 'model_response',
+              iteration: iterations,
+              message: 'respond_to_user returned empty content',
+              toolNames: ['respond_to_user'],
+            });
+            continue;
+          }
           const deliveredPendingToolCalls =
             pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
 

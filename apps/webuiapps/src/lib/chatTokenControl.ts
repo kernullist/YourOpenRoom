@@ -680,6 +680,13 @@ function hasPlaybackIntent(text: string): boolean {
   );
 }
 
+function hasCommandIntent(text: string): boolean {
+  return [
+    /\b(commit|push|pull|merge|rebase|test|build|lint|typecheck|install|deploy|terminal|shell|command|execute|run command)\b/i,
+    /(커밋|푸시|풀|머지|리베이스|테스트|빌드|린트|타입\s*체크|설치|배포|터미널|셸|쉘|명령|실행)/,
+  ].some((pattern) => pattern.test(text));
+}
+
 function isShortFollowUpAction(text: string): boolean {
   return [
     /\b(open|show|save|delete|remove|play|refresh|close)\b.*\b(it|that|this|there)\b/i,
@@ -689,11 +696,41 @@ function isShortFollowUpAction(text: string): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
+function isShortAffirmativeFollowUp(text: string): boolean {
+  const normalized = normalizeWhitespace(text).toLowerCase();
+  if (!normalized || normalized.length > 32) return false;
+  return [
+    /^(yes|yep|yeah|sure|ok|okay|go ahead|do it|please do|sounds good|let'?s do it)$/i,
+    /^(응|어|엉|ㅇㅇ|그래|좋아|해줘|해보자|진행해|진행하자|응 해줘|좋아 해줘|그렇게 해줘|한번 해봐|시작해|시작하자)[.!?\s]*$/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function hasDirectOperationalIntent(text: string): boolean {
   return [
-    /\b(open|launch|run|start|show|close|reload|refresh|search|play|listen|save|delete|remove|create|update|edit|bookmark|visit|read|summarize|extract|analyze|inspect|check)\b/i,
-    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|틀어줘|재생해|저장해|삭제해|만들어줘|수정해|편집해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해)/,
+    /\b(open|launch|run|start|show|close|reload|refresh|search|look up|play|listen|save|delete|remove|create|update|edit|bookmark|visit|read|summarize|extract|analyze|inspect|check|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute)\b/i,
+    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|조사해|틀어줘|재생해|저장해|삭제해|만들어줘|생성해|수정해|편집해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해|기억해|기록해|커밋|푸시|테스트|빌드|설치|배포|실행)/,
   ].some((pattern) => pattern.test(text));
+}
+
+function hasWebOnlyActionIntent(text: string): boolean {
+  return [
+    /\b(web|internet|online)\b.*\b(search|look up|verify|check|research|investigate)\b/i,
+    /\b(search|look up|verify|check|research|investigate)\b.*\b(web|internet|online)\b/i,
+    /(웹|인터넷|온라인).*(검색|찾아|조사|확인|검증)/,
+    /(검색|찾아|조사|확인|검증).*(웹|인터넷|온라인)/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function actionContextNeedsAppTools(text: string): boolean {
+  if (hasExplicitAppMention(text)) return true;
+  if (hasBrowserIntent(text)) return true;
+  if (hasAppStateIntent(text)) return true;
+  if (hasCodebaseIntent(text)) return true;
+  if (hasCommandIntent(text)) return true;
+  if (hasPlaybackIntent(text)) return true;
+  if (hasWebOnlyActionIntent(text)) return false;
+  if (assistantMessageOffersResearchRun(text)) return false;
+  return hasDirectOperationalIntent(text);
 }
 
 export function shouldEnableAppTools(
@@ -712,10 +749,14 @@ export function shouldEnableAppTools(
   ).toLowerCase();
   if (recentContext.includes('[user performed action in')) return true;
 
+  const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
+  if (confirmedActionRequest && actionContextNeedsAppTools(confirmedActionRequest)) return true;
+
   if (hasExplicitAppMention(latestUserMessage)) return true;
   if (hasBrowserIntent(latestUserMessage)) return true;
   if (hasAppStateIntent(latestUserMessage)) return true;
   if (hasCodebaseIntent(latestUserMessage)) return true;
+  if (hasCommandIntent(latestUserMessage)) return true;
   if (
     hasPlaybackIntent(latestUserMessage) &&
     /(youtube|song|music|track|artist|유튜브|노래|음악)/i.test(latestUserMessage)
@@ -743,7 +784,8 @@ export function shouldUseDialogModel(
   if (!latest) return false;
   if (latest.length > 240) return false;
   if (/\bhttps?:\/\//i.test(latest)) return false;
-  if (shouldUseAoiResearchRun(latestUserMessage)) return false;
+  if (shouldUseAoiResearchRun(latestUserMessage, history)) return false;
+  if (resolveAoiActionConfirmationRequest(latestUserMessage, history)) return false;
   if (shouldUseWebSearch(latestUserMessage)) return false;
 
   const heavyIntentPatterns = [
@@ -772,6 +814,7 @@ export function shouldUseDialogModel(
       hasBrowserIntent(latestUserMessage) ||
       hasAppStateIntent(latestUserMessage) ||
       hasCodebaseIntent(latestUserMessage) ||
+      hasCommandIntent(latestUserMessage) ||
       hasPlaybackIntent(latestUserMessage) ||
       isShortFollowUpAction(latestUserMessage) ||
       shouldEnableAppTools(latestUserMessage, history));
@@ -784,6 +827,7 @@ export function shouldUseDialogModel(
       hasBrowserIntent(recentContext) ||
       hasAppStateIntent(recentContext) ||
       hasCodebaseIntent(recentContext) ||
+      hasCommandIntent(recentContext) ||
       hasPlaybackIntent(recentContext))
   ) {
     return false;
@@ -827,10 +871,102 @@ const AOI_RESEARCH_RUN_INTENT_PATTERNS = [
   /(문서|보고서).*(조사|연구|리서치).*(작성|생성|만들어|정리)/,
 ];
 
-export function shouldUseAoiResearchRun(latestUserMessage: string): boolean {
+function getPreviousAssistantMessage(history: ChatMessage[]): string {
+  return (
+    [...history]
+      .reverse()
+      .find((message) => message.role === 'assistant')
+      ?.content.trim() ?? ''
+  );
+}
+
+function extractQuotedResearchTopic(value: string): string | null {
+  const quoted = value.match(/[“"'‘]([^“"'‘’]{8,180})[”"'’]/u);
+  if (quoted?.[1]?.trim()) {
+    return quoted[1].trim();
+  }
+
+  const koreanQuoted = value.match(/[「『](.{8,180})[」』]/u);
+  if (koreanQuoted?.[1]?.trim()) {
+    return koreanQuoted[1].trim();
+  }
+
+  return null;
+}
+
+function assistantMessageOffersResearchRun(value: string): boolean {
+  return [
+    /\b(?:Aoi Research|research run|start_research)\b/i,
+    /\b(?:research|investigate|survey)\b.*\b(?:report|document|run|sources?|citations?)\b/i,
+    /(?:웹|인터넷|자료|출처|근거).*(?:조사|연구|리서치).*(?:해볼까|할까|진행|문서|보고서|Run|기록)/u,
+    /(?:조사|연구|리서치).*(?:해볼까|할까|진행|Run으로|기록해줄게|보고서|문서)/u,
+  ].some((pattern) => pattern.test(value));
+}
+
+function assistantMessageOffersAction(value: string): boolean {
+  const normalized = normalizeWhitespace(value);
+  if (!normalized) return false;
+  if (assistantMessageOffersResearchRun(normalized)) return true;
+
+  const hasProposalCue = [
+    /\b(?:should i|shall i|want me to|do you want me to|would you like me to|can i|may i|i can|let me)\b/i,
+    /\b(?:open|launch|run|start|show|close|reload|refresh|search|look up|read|summarize|extract|analyze|inspect|check|save|delete|remove|create|update|edit|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute|upload|download|configure|enable|disable|use)\b.*[?？]/i,
+    /(?:해줄까|해볼까|해볼까요|할까|할까요|해도\s*될까|해도\s*될까요|진행할까|진행할까요|진행해도\s*될까|시작할까|시작할까요|시작해도\s*될까|열어줄까|열어볼까|열까|켜줄까|켜볼까|보여줄까|닫을까|새로고침할까|저장할까|저장해둘까|기록할까|기록해둘까|기억해둘까|만들까|생성할까|수정할까|편집할까|작성할까|찾아볼까|검색해볼까|조사해볼까|읽어볼까|요약해줄까|실행할까|테스트할까|빌드할까|커밋할까|푸시할까|틀어줄까|재생할까|삭제할까|추가할까|반영할까|설정할까)/u,
+  ].some((pattern) => pattern.test(normalized));
+
+  if (!hasProposalCue) {
+    return false;
+  }
+
+  return [
+    /\b(?:open|launch|run|start|show|close|reload|refresh|search|look up|read|summarize|extract|analyze|inspect|check|save|delete|remove|create|update|edit|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute|upload|download|configure|enable|disable|use)\b/i,
+    /(?:열어|띄워|켜|보여|닫아|새로고침|검색|찾아|조사|연구|읽어|요약|추출|분석|확인|검증|저장|삭제|만들|생성|수정|편집|작성|기억|기록|커밋|푸시|테스트|빌드|실행|설치|배포|추가|붙여|반영|업로드|다운로드|설정|사용)/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+export function resolveAoiActionConfirmationRequest(
+  latestUserMessage: string,
+  history: ChatMessage[] = [],
+): string | null {
+  if (!isShortAffirmativeFollowUp(latestUserMessage)) {
+    return null;
+  }
+
+  const previousAssistantMessage = getPreviousAssistantMessage(history);
+  if (!previousAssistantMessage || !assistantMessageOffersAction(previousAssistantMessage)) {
+    return null;
+  }
+
+  return truncateForTokenBudget(normalizeWhitespace(previousAssistantMessage), 320, '...');
+}
+
+export function resolveAoiResearchConfirmationRequest(
+  latestUserMessage: string,
+  history: ChatMessage[] = [],
+): string | null {
+  if (!resolveAoiActionConfirmationRequest(latestUserMessage, history)) {
+    return null;
+  }
+
+  const previousAssistantMessage = getPreviousAssistantMessage(history);
+  if (!assistantMessageOffersResearchRun(previousAssistantMessage)) {
+    return null;
+  }
+
+  return (
+    extractQuotedResearchTopic(previousAssistantMessage) ??
+    truncateForTokenBudget(normalizeWhitespace(previousAssistantMessage), 220, '...')
+  );
+}
+
+export function shouldUseAoiResearchRun(
+  latestUserMessage: string,
+  history: ChatMessage[] = [],
+): boolean {
   const latest = normalizeWhitespace(latestUserMessage);
   if (!latest) return false;
   if (/\bhttps?:\/\//i.test(latest)) return false;
+  if (resolveAoiResearchConfirmationRequest(latestUserMessage, history)) return true;
   return AOI_RESEARCH_RUN_INTENT_PATTERNS.some((pattern) => pattern.test(latest));
 }
 
