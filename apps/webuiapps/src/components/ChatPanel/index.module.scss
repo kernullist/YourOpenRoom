@@ -694,6 +694,51 @@
   white-space: nowrap;
 }
 
+.connectionCheckBox {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: -4px;
+  margin-bottom: 12px;
+}
+
+.connectionCheckRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.connectionCheckMuted,
+.connectionCheckOk,
+.connectionCheckError {
+  font-size: 12px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.connectionCheckMuted {
+  color: rgba(255, 255, 255, 0.52);
+}
+
+.connectionCheckOk {
+  color: #7dd3fc;
+}
+
+.connectionCheckError {
+  color: #fca5a5;
+}
+
+.connectionCheckDetails {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: rgba(255, 255, 255, 0.5);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
 .iconActionBtn {
   width: 32px;
   height: 32px;

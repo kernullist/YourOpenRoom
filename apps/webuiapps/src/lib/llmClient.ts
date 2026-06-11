@@ -31,6 +31,27 @@ const LLM_MAX_OUTPUT_TOKENS = 8192;
 const KIMI_TOOL_CALL_REASONING_FALLBACK =
   'Continuing a tool-call turn where the provider did not return reasoning_content.';
 
+export interface ClaudeCliAuthCheck {
+  loggedIn?: boolean;
+  authMethod?: string;
+  apiProvider?: string;
+  subscriptionType?: string;
+  summary: string;
+}
+
+export interface ClaudeCliConnectionCheckResult {
+  ok: boolean;
+  provider: 'claude-cli';
+  command?: string;
+  model?: string;
+  safeMode?: boolean;
+  version?: string;
+  auth?: ClaudeCliAuthCheck;
+  smokeTest?: string;
+  durationMs?: number;
+  error?: string;
+}
+
 export async function loadConfig(): Promise<LLMConfig | null> {
   try {
     const persisted = await loadPersistedConfig();
@@ -635,6 +656,29 @@ async function chatClaudeCli(
     content: data.content?.trim() || '',
     toolCalls: [],
   };
+}
+
+export async function checkClaudeCliConnection(
+  config: Pick<LLMConfig, 'provider' | 'model' | 'command' | 'reasoningEffort'>,
+): Promise<ClaudeCliConnectionCheckResult> {
+  if (config.provider !== 'claude-cli') {
+    throw new Error('Claude CLI connection check only supports the claude-cli provider.');
+  }
+
+  const res = await fetch('/api/claude-cli-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      model: config.model,
+      command: config.command?.trim() || 'claude',
+      reasoningEffort: config.reasoningEffort,
+    }),
+  });
+  const data = (await res.json()) as ClaudeCliConnectionCheckResult;
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `Claude CLI connection check failed with ${res.status}`);
+  }
+  return data;
 }
 
 async function chatCodexCli(

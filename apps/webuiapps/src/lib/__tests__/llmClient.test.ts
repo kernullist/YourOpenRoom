@@ -13,6 +13,7 @@ import {
   loadConfigSync,
   saveConfig,
   chat,
+  checkClaudeCliConnection,
   type ChatImageAttachment,
   type ChatMessage,
   type ToolDef,
@@ -1488,6 +1489,62 @@ respond_to_user
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
       expect(body.reasoningEffort).toBe('xhigh');
+    });
+
+    it('checks the local Claude CLI connection through the health endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            provider: 'claude-cli',
+            version: '2.1.173 (Claude Code)',
+            safeMode: true,
+            smokeTest: 'OPENROOM_CLAUDE_OK',
+          }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await checkClaudeCliConnection({
+        provider: 'claude-cli',
+        model: 'claude-sonnet-4-6',
+        command: 'claude',
+        reasoningEffort: 'high',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.safeMode).toBe(true);
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/claude-cli-check',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.model).toBe('claude-sonnet-4-6');
+      expect(body.command).toBe('claude');
+      expect(body.reasoningEffort).toBe('high');
+    });
+
+    it('surfaces Claude CLI connection check errors', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: false,
+        status: 500,
+        json: () =>
+          Promise.resolve({
+            ok: false,
+            provider: 'claude-cli',
+            error: 'Claude CLI smoke test timed out.',
+          }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      await expect(
+        checkClaudeCliConnection({
+          provider: 'claude-cli',
+          model: 'claude-sonnet-4-6',
+          command: 'claude',
+        }),
+      ).rejects.toThrow('Claude CLI smoke test timed out.');
     });
   });
 

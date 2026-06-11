@@ -18,12 +18,14 @@ import {
 } from 'lucide-react';
 import {
   chat,
+  checkClaudeCliConnection,
   loadConfig,
   loadConfigSync,
   resolveLlmOverride,
   saveConfig,
   SUPPORTED_CHAT_IMAGE_MIME_TYPES,
   supportsChatImageAttachments,
+  type ClaudeCliConnectionCheckResult,
   type ChatImageAttachment,
   type ChatMessage,
 } from '@/lib/llmClient';
@@ -839,6 +841,29 @@ function buildTavilyPreSearchParams(query: string): Record<string, unknown> {
     max_results: 5,
     ...(isNewsQuery ? { time_range: 'month' } : {}),
   };
+}
+
+function isPlaceholderAssistantResponse(content: string, replies: string[]): boolean {
+  const normalizedContent = content.trim().toLowerCase();
+  const normalizedReplies = replies.map((reply) => reply.trim().toLowerCase()).filter(Boolean);
+  const placeholderContent = /^(?:test|테스트|placeholder|sample)$/i.test(normalizedContent);
+  if (!placeholderContent) {
+    return false;
+  }
+
+  if (normalizedReplies.length === 0) {
+    return true;
+  }
+
+  const abcReplies =
+    normalizedReplies.length >= 3 &&
+    normalizedReplies[0] === 'a' &&
+    normalizedReplies[1] === 'b' &&
+    normalizedReplies[2] === 'c';
+  const singleLetterReplies =
+    normalizedReplies.length >= 2 && normalizedReplies.every((reply) => /^[a-z]$/.test(reply));
+
+  return abcReplies || singleLetterReplies;
 }
 
 // ---------------------------------------------------------------------------
@@ -3629,6 +3654,27 @@ const ChatPanel: React.FC<{
             });
             continue;
           }
+          if (isPlaceholderAssistantResponse(content, replies)) {
+            console.warn(
+              '[ChatPanel] respond_to_user returned placeholder content; requesting retry',
+            );
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content:
+                  'respond_to_user error: The reply looked like a placeholder/test response. Send a substantive answer to the user and natural suggested replies.',
+                tool_call_id: tc.id,
+              },
+            ];
+            recordRunLedgerEvent({
+              type: 'model_response',
+              iteration: iterations,
+              message: 'respond_to_user returned placeholder content',
+              toolNames: ['respond_to_user'],
+            });
+            continue;
+          }
           const deliveredPendingToolCalls =
             pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
 
@@ -5039,6 +5085,32 @@ interface RuntimeModelOption {
 }
 
 type RuntimeModelStatus = 'idle' | 'loading' | 'loaded' | 'error';
+type ClaudeCliConnectionCheckState = 'idle' | 'checking' | 'ok' | 'error';
+
+interface ClaudeCliConnectionCheckStatus {
+  state: ClaudeCliConnectionCheckState;
+  message: string;
+  details: string[];
+}
+
+function formatClaudeCliCheckSuccess(result: ClaudeCliConnectionCheckResult): {
+  message: string;
+  details: string[];
+} {
+  const version = result.version?.trim() || 'Claude CLI';
+  const duration =
+    typeof result.durationMs === 'number' ? ` in ${(result.durationMs / 1000).toFixed(1)}s` : '';
+  const details = [
+    result.auth?.summary ? `Auth: ${result.auth.summary}` : null,
+    result.safeMode ? 'Mode: safe-mode smoke test' : null,
+    result.smokeTest ? `Smoke: ${result.smokeTest}` : null,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  return {
+    message: `${version} connected${duration}.`,
+    details,
+  };
+}
 
 const MODEL_PROVIDER_OPTIONS: Array<{ value: LLMProvider; label: string }> = [
   'openai',
@@ -5401,6 +5473,11 @@ const SettingsModal: React.FC<{
   const [openRouterModels, setOpenRouterModels] = useState<RuntimeModelOption[]>([]);
   const [openRouterModelsStatus, setOpenRouterModelsStatus] = useState<RuntimeModelStatus>('idle');
   const [openRouterModelsError, setOpenRouterModelsError] = useState('');
+  const [claudeCliCheckStatus, setClaudeCliCheckStatus] = useState<ClaudeCliConnectionCheckStatus>({
+    state: 'idle',
+    message: '',
+    details: [],
+  });
 
   useEffect(() => {
     setActiveTab(initialTab);
@@ -5682,10 +5759,57 @@ const SettingsModal: React.FC<{
   }, []);
 
   useEffect(() => {
+    setClaudeCliCheckStatus({
+      state: 'idle',
+      message: '',
+      details: [],
+    });
+  }, [provider, command, model, reasoningEffort]);
+
+  useEffect(() => {
     if (usesOpenRouterModels && openRouterModelsStatus === 'idle') {
       void refreshOpenRouterModels();
     }
   }, [openRouterModelsStatus, refreshOpenRouterModels, usesOpenRouterModels]);
+
+  const handleClaudeCliConnectionCheck = useCallback(async () => {
+    if (!isClaudeCliProvider(provider)) {
+      return;
+    }
+
+    setClaudeCliCheckStatus({
+      state: 'checking',
+      message: 'Checking Claude CLI...',
+      details: [],
+    });
+    try {
+      const result = await checkClaudeCliConnection({
+        provider,
+        model,
+        command,
+        reasoningEffort: reasoningEffort || undefined,
+      });
+      const formatted = formatClaudeCliCheckSuccess(result);
+      setClaudeCliCheckStatus({
+        state: 'ok',
+        message: formatted.message,
+        details: formatted.details,
+      });
+    } catch (error) {
+      setClaudeCliCheckStatus({
+        state: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        details: [],
+      });
+    }
+  }, [command, model, provider, reasoningEffort]);
+
+  const claudeCliCheckClassName =
+    claudeCliCheckStatus.state === 'ok'
+      ? styles.connectionCheckOk
+      : claudeCliCheckStatus.state === 'error'
+        ? styles.connectionCheckError
+        : styles.connectionCheckMuted;
 
   const handleAoiMemoryAction = useCallback(
     async (memoryId: string, action: (id: string) => Promise<void>) => {
@@ -6308,16 +6432,47 @@ const SettingsModal: React.FC<{
                 </div>
 
                 {isLoginCliProvider(provider) ? (
-                  <div className={styles.field}>
-                    <label className={styles.label}>Command</label>
-                    <input
-                      className={styles.fieldInput}
-                      value={command}
-                      onChange={(e) => setCommand(e.target.value)}
-                      placeholder={getDefaultCliCommand(provider)}
-                    />
-                    <span className={styles.modelHint}>{getLoginCliHint(provider)}</span>
-                  </div>
+                  <>
+                    <div className={styles.field}>
+                      <label className={styles.label}>Command</label>
+                      <input
+                        className={styles.fieldInput}
+                        value={command}
+                        onChange={(e) => setCommand(e.target.value)}
+                        placeholder={getDefaultCliCommand(provider)}
+                      />
+                      <span className={styles.modelHint}>{getLoginCliHint(provider)}</span>
+                    </div>
+
+                    {isClaudeCliProvider(provider) ? (
+                      <div className={styles.connectionCheckBox}>
+                        <div className={styles.connectionCheckRow}>
+                          <button
+                            type="button"
+                            className={styles.inlineActionBtn}
+                            onClick={() => void handleClaudeCliConnectionCheck()}
+                            disabled={claudeCliCheckStatus.state === 'checking'}
+                          >
+                            {claudeCliCheckStatus.state === 'checking'
+                              ? 'Checking...'
+                              : 'Check connection'}
+                          </button>
+                          {claudeCliCheckStatus.message ? (
+                            <span className={claudeCliCheckClassName}>
+                              {claudeCliCheckStatus.message}
+                            </span>
+                          ) : null}
+                        </div>
+                        {claudeCliCheckStatus.details.length > 0 ? (
+                          <div className={styles.connectionCheckDetails}>
+                            {claudeCliCheckStatus.details.map((detail) => (
+                              <span key={detail}>{detail}</span>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </>
                 ) : (
                   <>
                     <div className={styles.field}>

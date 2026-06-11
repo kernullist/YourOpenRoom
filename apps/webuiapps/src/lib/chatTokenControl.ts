@@ -839,11 +839,15 @@ export function shouldUseDialogModel(
 const WEB_SEARCH_DIRECT_PATTERNS = [
   /\b(search|look up|web search|internet search|latest|recent|news|breaking)\b/i,
   /\bcurrent\b.*\b(info|information|news|price|pricing|status|version|availability|available)\b/i,
+  /\b(?:api|sdk|platform|service)\b.*\b(?:price|pricing|cost|fee|billing|quota|rate[- ]?limit|plan|tier)\b/i,
+  /\b(?:price|pricing|cost|fee|billing|quota|rate[- ]?limit|plan|tier)\b.*\b(?:api|sdk|platform|service)\b/i,
   /\b(still|currently)\b.*\b(available|supported|works|usable|accessible)\b/i,
   /\b(on the web|from the web|online)\b/i,
   /\b(check|verify|confirm|fact[- ]?check)\b.*\b(web|internet|online|fact|claim|rumor|latest|current|recent)\b/i,
   /\b(web|internet|online)\b.*\b(check|verify|confirm|fact[- ]?check)\b/i,
   /(웹\s*검색|인터넷\s*검색|구글링|검색해|검색해줘|검색해서|조사해|조사해줘|최신|최근|뉴스|속보)/,
+  /(?:API|api|SDK|sdk|플랫폼|서비스|요금제|플랜|과금|쿼터|레이트\s*리밋).*(?:비용|가격|요금|과금|얼마|쿼터|제한|플랜)/u,
+  /(?:비용|가격|요금|과금|얼마|쿼터|제한|플랜).*(?:API|api|SDK|sdk|플랫폼|서비스|요금제|플랜|과금|쿼터|레이트\s*리밋|트위터|Twitter|\bX\b)/u,
 ];
 
 const WEB_SEARCH_TRUTH_CHECK_PATTERNS = [
@@ -857,7 +861,7 @@ const WEB_SEARCH_VOLATILE_FACT_PATTERNS = [
   /\d{1,2}\s*월\s*\d{1,2}\s*일/,
   /\b(api only|model|pricing|release|availability|available|deprecated|sunset|after|since|until|only|policy|announcement|launch|access|subscription|beta)\b/i,
   /\b(openai|anthropic|claude|chatgpt|google|gemini|microsoft|github|apple|meta|tavily|fable)\b/i,
-  /(api로만|모델|가격|요금|출시|릴리스|배포|사용\s*가능|사용가능|지원|종료|중단|폐지|변경|정책|발표|공지|이후|이후로|부터|까지만|만\s*사용|만\s*가능|구독|베타|접근|제공)/i,
+  /(api로만|모델|가격|비용|요금|과금|요금제|플랜|쿼터|레이트\s*리밋|출시|릴리스|배포|사용\s*가능|사용가능|지원|종료|중단|폐지|변경|정책|발표|공지|이후|이후로|부터|까지만|만\s*사용|만\s*가능|구독|베타|접근|제공)/i,
   /(오픈ai|오픈AI|앤트로픽|클로드|챗gpt|챗GPT|구글|제미나이|마이크로소프트|깃허브|애플|메타|타빌리|페이블)/i,
 ];
 

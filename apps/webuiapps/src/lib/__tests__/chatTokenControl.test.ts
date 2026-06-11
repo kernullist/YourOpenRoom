@@ -357,6 +357,15 @@ describe('shouldUseWebSearch()', () => {
     expect(shouldUseWebSearch('Can you verify this fact on the web?')).toBe(true);
     expect(shouldUseWebSearch('최신 Tavily API 변경점 검색해줘')).toBe(true);
   });
+
+  it('routes Korean API pricing questions away from the dialog model', () => {
+    const message =
+      'X API로 내가 팔로잉 중인 사람들의 게시글을 주기적으로 확인하려면 비용이 얼마나 들어?';
+
+    expect(shouldUseWebSearch(message)).toBe(true);
+    expect(shouldUseAoiResearchRun(message)).toBe(false);
+    expect(shouldUseDialogModel(message)).toBe(false);
+  });
 });
 
 describe('memory prompt limits', () => {

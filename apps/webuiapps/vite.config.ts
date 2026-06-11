@@ -50,6 +50,9 @@ const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
 const OPENROOM_ROOT = resolve(__dirname, '../..');
 const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
 const DEFAULT_TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
+const CLI_CHAT_TIMEOUT_MS = 180_000;
+const CLI_HEALTH_TIMEOUT_MS = 15_000;
+const CLAUDE_CLI_SMOKE_TIMEOUT_MS = 60_000;
 
 function readPersistedConfigFile(): Record<string, unknown> {
   try {
@@ -2192,15 +2195,38 @@ function buildClaudeCliChatPrompt(payload: Record<string, unknown>): string {
     .join('\n');
 }
 
-function runCodexCliChatProcess(
+function terminateCliProcessTree(child: ReturnType<typeof spawn>): void {
+  if (process.platform === 'win32' && child.pid) {
+    const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], {
+      windowsHide: true,
+      stdio: 'ignore',
+    });
+    killer.on('error', () => {
+      child.kill();
+    });
+    killer.on('exit', (code) => {
+      if (code !== 0) {
+        child.kill();
+      }
+    });
+    return;
+  }
+  child.kill();
+}
+
+function runCliProcess(
   command: string,
   args: string[],
   input: string,
-  outputFile: string,
+  label: string,
+  timeoutMs = CLI_CHAT_TIMEOUT_MS,
+  options: { useStderrWhenStdoutEmpty?: boolean } = {},
 ): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
     let stdout = '';
     let stderr = '';
+    let settled = false;
+    let timeout: ReturnType<typeof setTimeout> | null = null;
     const child = spawn(command, args, {
       cwd: OPENROOM_ROOT,
       shell: process.platform === 'win32',
@@ -2208,10 +2234,33 @@ function runCodexCliChatProcess(
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    const timeout = setTimeout(() => {
-      child.kill();
-      rejectPromise(new Error('Codex CLI timed out.'));
-    }, 180_000);
+    const clearProcessTimeout = () => {
+      if (timeout) {
+        clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const fail = (error: Error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearProcessTimeout();
+      rejectPromise(error);
+    };
+    const succeed = (output: string) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      clearProcessTimeout();
+      resolvePromise(output.trim());
+    };
+
+    timeout = setTimeout(() => {
+      terminateCliProcessTree(child);
+      fail(new Error(`${label} timed out.`));
+    }, timeoutMs);
 
     child.stdout?.on('data', (chunk: Buffer) => {
       stdout += chunk.toString();
@@ -2220,61 +2269,34 @@ function runCodexCliChatProcess(
       stderr += chunk.toString();
     });
     child.on('error', (error) => {
-      clearTimeout(timeout);
-      rejectPromise(error);
+      fail(error);
     });
     child.on('close', (code) => {
-      clearTimeout(timeout);
       if (code !== 0) {
-        rejectPromise(new Error(stderr.trim() || `Codex CLI exited with code ${code}`));
+        fail(new Error(stderr.trim() || `${label} exited with code ${code}`));
         return;
       }
-      if (fs.existsSync(outputFile)) {
-        resolvePromise(fs.readFileSync(outputFile, 'utf-8').trim());
-        return;
-      }
-      resolvePromise(stdout.trim());
+      succeed(options.useStderrWhenStdoutEmpty && !stdout.trim() ? stderr : stdout);
     });
     child.stdin?.end(input);
   });
 }
 
+async function runCodexCliChatProcess(
+  command: string,
+  args: string[],
+  input: string,
+  outputFile: string,
+): Promise<string> {
+  const stdout = await runCliProcess(command, args, input, 'Codex CLI');
+  if (fs.existsSync(outputFile)) {
+    return fs.readFileSync(outputFile, 'utf-8').trim();
+  }
+  return stdout;
+}
+
 function runClaudeCliChatProcess(command: string, args: string[], input: string): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    let stdout = '';
-    let stderr = '';
-    const child = spawn(command, args, {
-      cwd: OPENROOM_ROOT,
-      shell: process.platform === 'win32',
-      windowsHide: true,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    const timeout = setTimeout(() => {
-      child.kill();
-      rejectPromise(new Error('Claude CLI timed out.'));
-    }, 180_000);
-
-    child.stdout?.on('data', (chunk: Buffer) => {
-      stdout += chunk.toString();
-    });
-    child.stderr?.on('data', (chunk: Buffer) => {
-      stderr += chunk.toString();
-    });
-    child.on('error', (error) => {
-      clearTimeout(timeout);
-      rejectPromise(error);
-    });
-    child.on('close', (code) => {
-      clearTimeout(timeout);
-      if (code !== 0) {
-        rejectPromise(new Error(stderr.trim() || `Claude CLI exited with code ${code}`));
-        return;
-      }
-      resolvePromise(stdout.trim());
-    });
-    child.stdin?.end(input);
-  });
+  return runCliProcess(command, args, input, 'Claude CLI');
 }
 
 function isCodexCliModelUpgradeError(error: unknown): boolean {
@@ -2323,6 +2345,169 @@ function appendClaudeCliRuntimeArgs(args: string[], payload: Record<string, unkn
   }
 }
 
+function buildClaudeCliChatArgs(model: string, payload: Record<string, unknown>): string[] {
+  const args = [
+    '--print',
+    '--safe-mode',
+    '--input-format',
+    'text',
+    '--output-format',
+    'text',
+    '--no-session-persistence',
+    '--permission-mode',
+    'plan',
+    '--tools',
+    '',
+  ];
+  if (model) {
+    args.push('--model', model);
+  }
+  appendClaudeCliRuntimeArgs(args, payload);
+  return args;
+}
+
+interface ClaudeCliAuthStatus {
+  loggedIn?: boolean;
+  authMethod?: string;
+  apiProvider?: string;
+  subscriptionType?: string;
+  summary: string;
+}
+
+function parseClaudeCliAuthStatus(output: string): ClaudeCliAuthStatus {
+  const entries = new Map<string, string>();
+  const ansiEscapePattern = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g');
+  const cleanOutput = output.replace(ansiEscapePattern, '');
+  try {
+    const parsed = JSON.parse(cleanOutput) as Record<string, unknown>;
+    const loggedIn = typeof parsed.loggedIn === 'boolean' ? parsed.loggedIn : undefined;
+    const authMethod = typeof parsed.authMethod === 'string' ? parsed.authMethod : undefined;
+    const apiProvider = typeof parsed.apiProvider === 'string' ? parsed.apiProvider : undefined;
+    const subscriptionType =
+      typeof parsed.subscriptionType === 'string' ? parsed.subscriptionType : undefined;
+    const summaryParts = [
+      loggedIn === undefined ? null : `loggedIn=${loggedIn ? 'true' : 'false'}`,
+      authMethod ? `auth=${authMethod}` : null,
+      apiProvider ? `provider=${apiProvider}` : null,
+      subscriptionType ? `plan=${subscriptionType}` : null,
+    ].filter((part): part is string => Boolean(part));
+    return {
+      ...(loggedIn === undefined ? {} : { loggedIn }),
+      ...(authMethod ? { authMethod } : {}),
+      ...(apiProvider ? { apiProvider } : {}),
+      ...(subscriptionType ? { subscriptionType } : {}),
+      summary: summaryParts.join(', ') || 'Claude auth status returned no structured fields.',
+    };
+  } catch {
+    // Older Claude CLI builds used line-oriented output.
+  }
+
+  for (const line of cleanOutput.split(/\r?\n/)) {
+    const match = line.match(/^([A-Za-z][A-Za-z0-9_-]*):\s*(.*)$/);
+    if (match) {
+      entries.set(match[1], match[2].trim());
+    }
+  }
+
+  const loggedInText = entries.get('loggedIn');
+  const loggedIn = loggedInText === undefined ? undefined : loggedInText.toLowerCase() === 'true';
+  const authMethod = entries.get('authMethod');
+  const apiProvider = entries.get('apiProvider');
+  const subscriptionType = entries.get('subscriptionType');
+  const summaryParts = [
+    loggedIn === undefined ? null : `loggedIn=${loggedIn ? 'true' : 'false'}`,
+    authMethod ? `auth=${authMethod}` : null,
+    apiProvider ? `provider=${apiProvider}` : null,
+    subscriptionType ? `plan=${subscriptionType}` : null,
+  ].filter((part): part is string => Boolean(part));
+
+  return {
+    ...(loggedIn === undefined ? {} : { loggedIn }),
+    ...(authMethod ? { authMethod } : {}),
+    ...(apiProvider ? { apiProvider } : {}),
+    ...(subscriptionType ? { subscriptionType } : {}),
+    summary: summaryParts.join(', ') || 'Claude auth status returned no structured fields.',
+  };
+}
+
+function claudeCliConnectionCheckPlugin(): Plugin {
+  return {
+    name: 'claude-cli-connection-check',
+    configureServer(server) {
+      server.middlewares.use('/api/claude-cli-check', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const startedAt = Date.now();
+        try {
+          const payload = await readJsonBody(req);
+          const command =
+            typeof payload.command === 'string' && payload.command.trim()
+              ? payload.command.trim()
+              : 'claude';
+          const model = typeof payload.model === 'string' ? payload.model.trim() : '';
+
+          const version = await runCliProcess(
+            command,
+            ['--version'],
+            '',
+            'Claude CLI version check',
+            CLI_HEALTH_TIMEOUT_MS,
+          );
+          const authOutput = await runCliProcess(
+            command,
+            ['auth', 'status'],
+            '',
+            'Claude CLI auth check',
+            CLI_HEALTH_TIMEOUT_MS,
+            { useStderrWhenStdoutEmpty: true },
+          );
+          const auth = parseClaudeCliAuthStatus(authOutput);
+          if (auth.loggedIn === false) {
+            throw new Error('Claude CLI is installed but not logged in. Run `claude auth` first.');
+          }
+
+          const smokePrompt = 'Reply exactly: OPENROOM_CLAUDE_OK';
+          const smokeOutput = await runCliProcess(
+            command,
+            buildClaudeCliChatArgs(model, payload),
+            smokePrompt,
+            'Claude CLI smoke test',
+            CLAUDE_CLI_SMOKE_TIMEOUT_MS,
+          );
+          if (smokeOutput.trim() !== 'OPENROOM_CLAUDE_OK') {
+            throw new Error(
+              `Claude CLI smoke test returned unexpected output: ${smokeOutput.slice(0, 160)}`,
+            );
+          }
+
+          writeJsonResponse(res, 200, {
+            ok: true,
+            provider: 'claude-cli',
+            command,
+            model,
+            safeMode: true,
+            version,
+            auth,
+            smokeTest: smokeOutput.trim(),
+            durationMs: Date.now() - startedAt,
+          });
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            ok: false,
+            provider: 'claude-cli',
+            safeMode: true,
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - startedAt,
+          });
+        }
+      });
+    },
+  };
+}
+
 function claudeCliChatPlugin(): Plugin {
   return {
     name: 'claude-cli-chat',
@@ -2340,20 +2525,7 @@ function claudeCliChatPlugin(): Plugin {
               ? payload.command.trim()
               : 'claude';
           const model = typeof payload.model === 'string' ? payload.model.trim() : '';
-          const args = [
-            '--print',
-            '--input-format',
-            'text',
-            '--output-format',
-            'text',
-            '--no-session-persistence',
-            '--permission-mode',
-            'plan',
-            '--tools',
-            '',
-          ];
-          if (model) args.push('--model', model);
-          appendClaudeCliRuntimeArgs(args, payload);
+          const args = buildClaudeCliChatArgs(model, payload);
 
           const prompt = buildClaudeCliChatPrompt(payload);
           const content = await runClaudeCliChatProcess(command, args, prompt);
@@ -3120,6 +3292,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     openVscodeManagerPlugin(),
     openroomResetPlugin(),
     logServerPlugin(),
+    claudeCliConnectionCheckPlugin(),
     claudeCliChatPlugin(),
     codexCliChatPlugin(),
     openRouterModelsPlugin(),
