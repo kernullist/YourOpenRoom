@@ -29,9 +29,15 @@ import {
   type AoiKiraHandoffCreateResult,
   type AoiKiraHandoffPreview,
 } from './aoiKiraHandoff';
+import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
-import type { AoiAutonomyStatus, AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
+import type {
+  AoiAutonomyStatus,
+  AoiPreparedActionPlan,
+  AoiProposal,
+  AoiProposalDecision,
+} from './aoiAutonomyTypes';
 import type { AoiResearchArtifactName, AoiResearchManifest } from './aoiResearchTypes';
 
 const MAX_EXECUTION_TEXT_CHARS = 4000;
@@ -91,6 +97,7 @@ export interface AoiProposalPreviewResult {
   previewed: boolean;
   outcome: 'previewed' | 'blocked';
   reasons: string[];
+  preparedActionPlan?: AoiPreparedActionPlan;
   result?: Record<string, unknown>;
 }
 
@@ -503,18 +510,23 @@ export function previewAoiProposal(params: {
   });
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  const preparedActionPlan = buildAoiPreparedActionPlan(proposal, { now });
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
     executionMode: 'preview',
   });
-  if (!evaluation.allowed) {
+  if (!evaluation.allowed || preparedActionPlan.status === 'blocked') {
+    const reasons = [
+      ...evaluation.reasons,
+      ...preparedActionPlan.blockers.map((blocker) => `prepared_plan_blocked:${blocker}`),
+    ];
     if (proposal.acceptAction?.kind === 'create_kira_work') {
       recordServerAoiRunLedgerEvent({
         sessionsDir: params.sessionsDir,
         sessionPath,
         type: 'kira_handoff_policy_blocked',
-        message: `Kira handoff preview blocked: ${evaluation.reasons.join(', ')}.`,
+        message: `Kira handoff preview blocked: ${reasons.join(', ')}.`,
         goalSummary: `Aoi Kira handoff: ${proposal.title}`,
         toolNames: ['create_kira_work'],
         status: 'failed',
@@ -528,8 +540,10 @@ export function previewAoiProposal(params: {
       status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
       previewed: false,
       outcome: 'blocked',
-      reasons: evaluation.reasons,
+      reasons: [...new Set(reasons)],
+      preparedActionPlan,
       result: {
+        preparedActionPlan,
         safeAlternative:
           evaluation.safeAlternative ??
           (proposal.acceptAction?.kind === 'create_kira_work'
@@ -544,9 +558,13 @@ export function previewAoiProposal(params: {
       sessionPath,
       proposal,
       status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
-      previewed: false,
-      outcome: 'blocked',
-      reasons: ['preview_not_supported_for_action'],
+      previewed: true,
+      outcome: 'previewed',
+      reasons: [],
+      preparedActionPlan,
+      result: {
+        preparedActionPlan,
+      },
     };
   }
 
@@ -568,8 +586,10 @@ export function previewAoiProposal(params: {
     previewed: true,
     outcome: 'previewed',
     reasons: [],
+    preparedActionPlan,
     result: {
       preview: preview as unknown as Record<string, unknown>,
+      preparedActionPlan,
     },
   };
 }

@@ -232,6 +232,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiPreparedActionPlanPanelSummary,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
   buildAoiProactiveExplanation,
@@ -257,11 +258,13 @@ import type {
   AoiGoal,
   AoiMissionDecisionAction,
   AoiMissionState,
+  AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
+import { buildAoiPreparedActionPlan } from '@/lib/aoiSafeActionPlan';
 import type { AoiAutonomyEvaluationResult } from '@/lib/aoiAutonomyEvaluation';
 import {
   buildAoiSkillsPrompt,
@@ -607,6 +610,17 @@ function getAoiKiraHandoffPreview(
   return preview && typeof preview === 'object' && !Array.isArray(preview)
     ? (preview as Record<string, unknown>)
     : null;
+}
+
+function getAoiPreparedActionPlan(
+  proposal: AoiProposal,
+  previewResult: AoiAutonomyProposalPreviewResult | undefined,
+): AoiPreparedActionPlan {
+  return (
+    previewResult?.preparedActionPlan ??
+    previewResult?.result?.preparedActionPlan ??
+    buildAoiPreparedActionPlan(proposal)
+  );
 }
 
 function getPreviewText(preview: Record<string, unknown>, key: string): string {
@@ -8908,6 +8922,14 @@ const SettingsModal: React.FC<{
                             const kiraHandoffPreviewResult = aoiKiraHandoffPreviews[proposal.id];
                             const kiraHandoffPreview =
                               getAoiKiraHandoffPreview(kiraHandoffPreviewResult);
+                            const preparedActionPlan = getAoiPreparedActionPlan(
+                              proposal,
+                              kiraHandoffPreviewResult,
+                            );
+                            const actionPlanSummary = buildAoiPreparedActionPlanPanelSummary(
+                              preparedActionPlan,
+                              expanded,
+                            );
                             const isKiraHandoff =
                               proposal.acceptAction?.kind === 'create_kira_work';
                             const recoverySummary = buildAoiRecoveryPreviewSummary(
@@ -8950,6 +8972,7 @@ const SettingsModal: React.FC<{
                                   </span>
                                   <span>{proactiveExplanation.confidenceLabel}</span>
                                   <span>{proactiveExplanation.risk} risk</span>
+                                  <span>plan {actionPlanSummary.statusLabel}</span>
                                   <span>requires {proposal.requiredAutonomyLevel}</span>
                                   <span>evidence {proactiveExplanation.evidenceCount}</span>
                                 </div>
@@ -9009,6 +9032,28 @@ const SettingsModal: React.FC<{
                                       actionPresentation.mutationBoundary,
                                       240,
                                     )}
+                                  </div>
+                                )}
+                                {actionPlanSummary.visible && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Plan: {actionPlanSummary.objective}</div>
+                                    <div>
+                                      Plan risk: {actionPlanSummary.riskLabel} /{' '}
+                                      {actionPlanSummary.approvalLabel}
+                                    </div>
+                                    <div>Checkpoint: {actionPlanSummary.checkpointLabel}</div>
+                                    <div>Validation: {actionPlanSummary.validationLabel}</div>
+                                    <div>Rollback: {actionPlanSummary.rollbackLabel}</div>
+                                    {actionPlanSummary.blockers.map((blocker, index) => (
+                                      <div key={`${proposal.id}-plan-blocker-${index}`}>
+                                        Plan blocked: {blocker}
+                                      </div>
+                                    ))}
+                                    {actionPlanSummary.expectedChanges.map((item, index) => (
+                                      <div key={`${proposal.id}-plan-change-${index}`}>
+                                        Expected change: {item}
+                                      </div>
+                                    ))}
                                   </div>
                                 )}
                                 {proposal.risk === 'high' && (
@@ -9115,6 +9160,28 @@ const SettingsModal: React.FC<{
                                       {inspectorSummary.requiredAutonomyLevel}
                                     </div>
                                     <div>Suggested action: {inspectorSummary.suggestedAction}</div>
+                                    {actionPlanSummary.affectedSurfaces.map((surface, index) => (
+                                      <div key={`${proposal.id}-plan-surface-${index}`}>
+                                        Affected surface: {surface}
+                                      </div>
+                                    ))}
+                                    {actionPlanSummary.validationCommands.map((command, index) => (
+                                      <div key={`${proposal.id}-plan-validation-${index}`}>
+                                        Validation command: {command}
+                                      </div>
+                                    ))}
+                                    {actionPlanSummary.rollbackInstructions.map(
+                                      (instruction, index) => (
+                                        <div key={`${proposal.id}-plan-rollback-${index}`}>
+                                          Rollback: {instruction}
+                                        </div>
+                                      ),
+                                    )}
+                                    {actionPlanSummary.nonGoals.map((item, index) => (
+                                      <div key={`${proposal.id}-plan-nongoal-${index}`}>
+                                        Non-goal: {item}
+                                      </div>
+                                    ))}
                                     <div>
                                       Policy:{' '}
                                       {inspectorSummary.policyAllowed ? 'allowed' : 'blocked'}{' '}

@@ -21,6 +21,10 @@ import {
   normalizeAoiAutonomyPolicy,
   requiresAoiProposalApproval,
 } from '../aoiAutonomyPolicy';
+import {
+  buildAoiPreviewOnlyFileWorkPreparedActionPlan,
+  buildAoiValidationCommandPreparedActionPlan,
+} from '../aoiSafeActionPlan';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
@@ -203,6 +207,46 @@ describe('Aoi environment source policy', () => {
         operation: 'diff',
       }).reasons,
     ).toContain('operation_not_allowed:diff');
+  });
+});
+
+describe('Aoi prepared action plan safety policy', () => {
+  it('blocks high-risk file work when checkpoint evidence is missing', () => {
+    const plan = buildAoiPreviewOnlyFileWorkPreparedActionPlan({
+      objective: 'Preview direct file patch for Aoi autonomy',
+      risk: 'high',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiAutonomyExecution.ts'],
+      evidenceRefs: ['proposal:file-work-001'],
+    });
+
+    expect(plan.status).toBe('blocked');
+    expect(plan.blockers).toContain('missing_checkpoint_for_risky_mutation');
+    expect(plan.checkpoint).toMatchObject({
+      kind: 'manual_checkpoint_required',
+      available: false,
+      required: true,
+    });
+  });
+
+  it('allows validation-only plans while requiring approval before command execution', () => {
+    const plan = buildAoiValidationCommandPreparedActionPlan({
+      objective: 'Run Aoi autonomy validation',
+      command:
+        'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyPolicy.test.ts',
+      evidenceRefs: ['proposal:validation-001'],
+    });
+
+    expect(plan.status).toBe('ready');
+    expect(plan.risk.commandCapable).toBe(true);
+    expect(plan.approval).toMatchObject({
+      required: true,
+      freshAcceptanceRequired: true,
+    });
+    expect(plan.validation).toMatchObject({
+      required: true,
+      approvalRequiredBeforeRun: true,
+    });
+    expect(plan.checkpoint.kind).toBe('not_applicable');
   });
 });
 

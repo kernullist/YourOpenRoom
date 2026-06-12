@@ -213,6 +213,82 @@ export interface AoiProposalAcceptAction {
   params: Record<string, unknown>;
 }
 
+export type AoiPreparedActionPlanStatus = 'ready' | 'blocked';
+
+export type AoiCheckpointPlanKind =
+  | 'existing_git_state'
+  | 'kira_isolated_worktree'
+  | 'manual_checkpoint_required'
+  | 'not_applicable';
+
+export type AoiRollbackPlanKind =
+  | 'kira_review_reject_or_revert'
+  | 'research_cancel_or_ignore'
+  | 'validation_only_no_mutation'
+  | 'manual_revert_required'
+  | 'not_applicable';
+
+export type AoiRollbackGuarantee = 'none' | 'best_effort' | 'mechanism_backed';
+
+export interface AoiActionRisk {
+  level: AoiAutonomyRisk;
+  mutationCapable: boolean;
+  commandCapable: boolean;
+  reasons: string[];
+}
+
+export interface AoiCheckpointPlan {
+  kind: AoiCheckpointPlanKind;
+  required: boolean;
+  available: boolean;
+  summary: string;
+  instructions: string[];
+  evidenceRefs: string[];
+  missingReason?: string;
+}
+
+export interface AoiRollbackPlan {
+  kind: AoiRollbackPlanKind;
+  available: boolean;
+  guarantee: AoiRollbackGuarantee;
+  summary: string;
+  instructions: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiValidationPlan {
+  required: boolean;
+  approvalRequiredBeforeRun: boolean;
+  summary: string;
+  commands: string[];
+  expectedEvidenceRefs: string[];
+}
+
+export interface AoiApprovalRequirement {
+  required: boolean;
+  requiredLevel: AoiAutonomyLevel;
+  freshAcceptanceRequired: boolean;
+  approver: 'user' | 'kira_reviewer' | 'none';
+  reason: string;
+}
+
+export interface AoiPreparedActionPlan {
+  version: 1;
+  status: AoiPreparedActionPlanStatus;
+  actionKind: string;
+  objective: string;
+  expectedChanges: string[];
+  affectedSurfaces: string[];
+  evidenceRefs: string[];
+  risk: AoiActionRisk;
+  approval: AoiApprovalRequirement;
+  checkpoint: AoiCheckpointPlan;
+  rollback: AoiRollbackPlan;
+  validation: AoiValidationPlan;
+  blockers: string[];
+  nonGoals: string[];
+}
+
 export interface AoiRecoveryPreviewAction {
   kind: AoiRecoveryActionKind;
   label: string;

@@ -11,6 +11,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiPreparedActionPlanPanelSummary,
   buildAoiWorkspaceSignalPanelSummary,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
@@ -23,6 +24,10 @@ import {
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
+import {
+  buildAoiKiraHandoffPreparedActionPlan,
+  buildAoiPreviewOnlyFileWorkPreparedActionPlan,
+} from '../aoiSafeActionPlan';
 import type {
   AoiAutonomyPolicy,
   AoiContextRouterResult,
@@ -847,6 +852,62 @@ describe('Aoi autonomy UI helpers', () => {
     expect(research.mutationBoundary).toContain('research run');
     expect(memory.primaryLabel).toBe('Approve and promote memory');
     expect(memory.mutationBoundary).toContain('untrusted skill draft');
+  });
+
+  it('summarizes prepared action plans without hiding risk, checkpoint, validation, or rollback', () => {
+    const plan = buildAoiKiraHandoffPreparedActionPlan(
+      makeProposal({
+        status: 'accepted',
+        risk: 'medium',
+        requiredAutonomyLevel: 'L4',
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'YourOpenRoom',
+            title: 'Implement reviewed action plan UI',
+            objective: 'Implement one reviewed action plan UI change.',
+            scope: ['Aoi autonomy UI'],
+            modules: ['ChatPanel', 'aoiAutonomyUi'],
+            validationCommands: [
+              'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+            ],
+          },
+        },
+        suggestedTools: ['create_kira_work'],
+        evidenceRefs: ['goal:aoi-goal-ui-test', 'proposal:aoi-proposal-ui-test-001'],
+      }),
+      { now: 2000 },
+    );
+    const collapsed = buildAoiPreparedActionPlanPanelSummary(plan);
+    const expanded = buildAoiPreparedActionPlanPanelSummary(plan, true);
+
+    expect(collapsed).toMatchObject({
+      visible: true,
+      statusLabel: 'ready',
+      actionKindLabel: 'create kira work',
+    });
+    expect(collapsed.riskLabel).toContain('mutation capable');
+    expect(collapsed.checkpointLabel).toContain('kira isolated worktree');
+    expect(collapsed.validationLabel).toContain('approval before run');
+    expect(collapsed.rollbackLabel).toContain('best_effort');
+    expect(expanded.validationCommands.length).toBeGreaterThan(0);
+    expect(expanded.rollbackInstructions.join(' ')).not.toMatch(/\bguaranteed\b/i);
+  });
+
+  it('shows blocked checkpoint state for high-risk preview-only file work', () => {
+    const summary = buildAoiPreparedActionPlanPanelSummary(
+      buildAoiPreviewOnlyFileWorkPreparedActionPlan({
+        objective: 'Preview risky source edit',
+        risk: 'high',
+        affectedSurfaces: ['apps/webuiapps/src/lib/aoiAutonomyExecution.ts'],
+        evidenceRefs: ['proposal:file-preview-ui-test'],
+      }),
+    );
+
+    expect(summary.statusLabel).toBe('blocked');
+    expect(summary.checkpointLabel).toContain('missing');
+    expect(summary.blockers).toContain('missing_checkpoint_for_risky_mutation');
+    expect(summary.rollbackLabel).toContain('none');
   });
 
   it('does not expose generic Continue labels for risky final actions', () => {

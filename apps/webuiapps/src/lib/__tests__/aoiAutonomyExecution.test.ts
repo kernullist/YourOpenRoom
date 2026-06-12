@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
 import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
+import { buildAoiKiraHandoffPreparedActionPlan } from '../aoiSafeActionPlan';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import {
@@ -229,6 +230,36 @@ describe('Aoi failure recovery classification', () => {
 });
 
 describe('executeAoiProposal()', () => {
+  it('prepares Kira handoff plans with review, validation, checkpoint, and rollback boundaries', () => {
+    const plan = buildAoiKiraHandoffPreparedActionPlan(makeKiraProposal(), {
+      now: 3000,
+    });
+
+    expect(plan).toMatchObject({
+      status: 'ready',
+      actionKind: 'create_kira_work',
+      approval: {
+        required: true,
+        freshAcceptanceRequired: true,
+      },
+      checkpoint: {
+        kind: 'kira_isolated_worktree',
+        available: true,
+      },
+      validation: {
+        required: true,
+        approvalRequiredBeforeRun: true,
+      },
+      rollback: {
+        kind: 'kira_review_reject_or_revert',
+        guarantee: 'best_effort',
+      },
+    });
+    expect(plan.validation.commands.length).toBeGreaterThan(0);
+    expect(plan.rollback.instructions.join(' ')).toMatch(/review|reject/i);
+    expect(plan.rollback.instructions.join(' ')).not.toMatch(/\bguaranteed\b/i);
+  });
+
   it('executes accepted read-only artifact proposals at L3 with capped output', async () => {
     const root = makeTempRoot();
     saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L3' });
@@ -547,6 +578,50 @@ describe('executeAoiProposal()', () => {
         entry.events.some((event) => event.type === 'kira_handoff_preview_created'),
       ),
     ).toBe(true);
+  });
+
+  it('previews research start plans without creating a research run', () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L4' });
+    saveAoiActiveProposals(root, 'aoi/default', [
+      makeProposal({
+        status: 'accepted',
+        requiredAutonomyLevel: 'L4',
+        risk: 'medium',
+        suggestedTools: ['start_research'],
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            sessionPath: 'aoi/default',
+            request: 'Investigate current ETW telemetry changes',
+            mode: 'standard',
+          },
+        },
+      }),
+    ]);
+
+    const result = previewAoiProposal({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 3000,
+    });
+
+    expect(result).toMatchObject({
+      previewed: true,
+      outcome: 'previewed',
+      preparedActionPlan: {
+        actionKind: 'start_research',
+        status: 'ready',
+      },
+    });
+    expect(result.result?.preparedActionPlan).toMatchObject({
+      validation: {
+        approvalRequiredBeforeRun: true,
+      },
+    });
+    expect(fs.existsSync(join(root, 'aoi/default', 'aoi-research', 'runs'))).toBe(false);
+    expect(loadAoiActiveProposals(root, 'aoi/default')[0].status).toBe('accepted');
   });
 
   it('blocks Kira handoff without acceptance, evidence, safe params, or narrow scope', async () => {

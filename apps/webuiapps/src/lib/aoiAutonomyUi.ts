@@ -17,6 +17,7 @@ import type {
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
+  AoiPreparedActionPlan,
   AoiProposal,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
@@ -199,6 +200,25 @@ export interface AoiProposalActionPresentation {
   mutationBoundary: string;
   requiresPreviewBeforeFinal: boolean;
   finalActionAvailable: boolean;
+}
+
+export interface AoiPreparedActionPlanPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  actionKindLabel: string;
+  objective: string;
+  riskLabel: string;
+  approvalLabel: string;
+  checkpointLabel: string;
+  validationLabel: string;
+  rollbackLabel: string;
+  expectedChanges: string[];
+  affectedSurfaces: string[];
+  validationCommands: string[];
+  rollbackInstructions: string[];
+  blockers: string[];
+  nonGoals: string[];
+  evidenceRefs: string[];
 }
 
 export interface AoiBlockedStateSummary {
@@ -989,6 +1009,92 @@ export function buildAoiProposalActionPresentation(
     mutationBoundary: 'No direct mutation is available for this proposal action.',
     requiresPreviewBeforeFinal: false,
     finalActionAvailable: false,
+  };
+}
+
+function formatPreparedActionLabel(value: string): string {
+  return value.replace(/_/g, ' ');
+}
+
+export function buildAoiPreparedActionPlanPanelSummary(
+  plan: AoiPreparedActionPlan | null | undefined,
+  includeDetails = false,
+): AoiPreparedActionPlanPanelSummary {
+  if (!plan) {
+    return {
+      visible: false,
+      statusLabel: 'No prepared action plan',
+      actionKindLabel: 'none',
+      objective: '',
+      riskLabel: '',
+      approvalLabel: '',
+      checkpointLabel: '',
+      validationLabel: '',
+      rollbackLabel: '',
+      expectedChanges: [],
+      affectedSurfaces: [],
+      validationCommands: [],
+      rollbackInstructions: [],
+      blockers: [],
+      nonGoals: [],
+      evidenceRefs: [],
+    };
+  }
+
+  const approvalLabel = plan.approval.required
+    ? `approval required at ${plan.approval.requiredLevel}${plan.approval.freshAcceptanceRequired ? ', fresh acceptance' : ''}`
+    : 'no approval required';
+  const checkpointLabel = `${formatPreparedActionLabel(plan.checkpoint.kind)}: ${
+    plan.checkpoint.available ? 'available' : 'missing'
+  }`;
+  const validationLabel = plan.validation.required
+    ? `${plan.validation.commands.length} command(s), ${
+        plan.validation.approvalRequiredBeforeRun ? 'approval before run' : 'read-only'
+      }`
+    : 'no validation command required';
+  const rollbackLabel = `${formatPreparedActionLabel(plan.rollback.kind)}; guarantee=${
+    plan.rollback.guarantee
+  }`;
+
+  return {
+    visible: true,
+    statusLabel: plan.status,
+    actionKindLabel: sanitizeAoiProposalDisplayText(formatPreparedActionLabel(plan.actionKind), 80),
+    objective: sanitizeAoiProposalDisplayText(plan.objective, 220),
+    riskLabel: `${plan.risk.level} risk${
+      plan.risk.mutationCapable ? ', mutation capable' : ''
+    }${plan.risk.commandCapable ? ', command capable' : ''}`,
+    approvalLabel: sanitizeAoiProposalDisplayText(approvalLabel, 160),
+    checkpointLabel: sanitizeAoiProposalDisplayText(checkpointLabel, 180),
+    validationLabel: sanitizeAoiProposalDisplayText(validationLabel, 180),
+    rollbackLabel: sanitizeAoiProposalDisplayText(rollbackLabel, 180),
+    expectedChanges: includeDetails
+      ? plan.expectedChanges.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
+      : plan.expectedChanges.slice(0, 2).map((item) => sanitizeAoiProposalDisplayText(item, 140)),
+    affectedSurfaces: includeDetails
+      ? plan.affectedSurfaces.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 120))
+      : plan.affectedSurfaces.slice(0, 3).map((item) => sanitizeAoiProposalDisplayText(item, 96)),
+    validationCommands: includeDetails
+      ? plan.validation.commands
+          .slice(0, 6)
+          .map((item) => sanitizeAoiProposalDisplayText(item, 180))
+      : plan.validation.commands
+          .slice(0, 2)
+          .map((item) => sanitizeAoiProposalDisplayText(item, 140)),
+    rollbackInstructions: includeDetails
+      ? plan.rollback.instructions
+          .slice(0, 6)
+          .map((item) => sanitizeAoiProposalDisplayText(item, 180))
+      : plan.rollback.instructions
+          .slice(0, 2)
+          .map((item) => sanitizeAoiProposalDisplayText(item, 140)),
+    blockers: plan.blockers.slice(0, 6).map((item) => sanitizeAoiProposalDisplayText(item, 140)),
+    nonGoals: includeDetails
+      ? plan.nonGoals.slice(0, 6).map((item) => sanitizeAoiProposalDisplayText(item, 160))
+      : [],
+    evidenceRefs: includeDetails
+      ? plan.evidenceRefs.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
+      : [],
   };
 }
 

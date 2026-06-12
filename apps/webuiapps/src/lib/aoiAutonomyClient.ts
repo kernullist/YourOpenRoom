@@ -13,6 +13,7 @@ import type {
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiObservation,
+  AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
@@ -211,7 +212,11 @@ export interface AoiAutonomyProposalPreviewResult {
   previewed: boolean;
   outcome: 'previewed' | 'blocked';
   reasons: string[];
-  result?: Record<string, unknown>;
+  preparedActionPlan?: AoiPreparedActionPlan;
+  result?: Record<string, unknown> & {
+    preparedActionPlan?: AoiPreparedActionPlan;
+    preview?: Record<string, unknown>;
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
