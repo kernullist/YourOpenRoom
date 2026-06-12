@@ -42,8 +42,8 @@ The main runtime that ships today lives in `apps/webuiapps`.
   - long-term memory saving
   - image generation
   - live web search through Tavily
-  - prompt budget, run ledger, skills workshop, MCP/plugin admin, capability registry, and tool
-    inspector panels
+  - prompt budget, run ledger, skills workshop, MCP/plugin admin, capability registry, tool
+    inspector, and Aoi autonomy dashboard panels
 - Session-scoped app storage persisted under `~/.openroom/sessions/...`.
 - A local mock of `@gui/vibe-container`, so the open-source standalone build works without the
   original iframe runtime.
@@ -73,7 +73,7 @@ The main runtime that ships today lives in `apps/webuiapps`.
 | `Room Shop`      | Cheerful desktop decoration shop for previewing, applying, and resetting built-in Aoi room wallpaper looks and desk mood themes                                                      |
 | `Dewdrop Canvas` | Embedded `F:/kernullist/dewdrop-canvas` liquid mind-map board with in-app static/API bridging, persistent projects, markdown export, and offline synthesis fallback                  |
 | `Written By Me`  | Embedded `F:/kernullist/written-by-me` writing-style analyzer with in-app upload/URL/API bridging and AOI main-model analysis/translation                                            |
-| `Aoi Research`   | Dense research-run library for browsing Aoi-generated reports, source ledgers, evidence claims, and run lifecycle state                                                            |
+| `Aoi Research`   | Dense research-run library for browsing Aoi-generated reports, source ledgers, evidence claims, and run lifecycle state                                                              |
 | `Kira`           | Project work board with work items, comments, discovery analysis, pre-worker clarification questions, and automation handoff                                                         |
 | `Aoi's IDE`      | Local workspace tree/editor with file and folder creation on top of OpenVSCode-style APIs for search, symbols, references, rename preview/apply, and safe commands                   |
 | `PE Analyst`     | PE static triage workspace with current-IDB mode for `ida_pro_mcp`, sample upload mode for pre-scan/headless flows, and tabs for findings, imports, sections, strings, and functions |
@@ -122,9 +122,8 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
 - **Web/content tools**
   - `search_web` via Tavily
   - `read_url` for article-style extraction
-  - `start_research`, `get_research_status`, `read_research_artifact`, and `cancel_research`
-    for Tavily-backed, AOI-main-LLM research runs that persist cited reports and evidence
-    artifacts
+  - `start_research`, `get_research_status`, `read_research_artifact`, and `cancel_research` for
+    Tavily-backed, AOI-main-LLM research runs that persist cited reports and evidence artifacts
   - `generate_image`
 - **Workspace and IDE tools**
   - `workspace_search` for session app storage
@@ -140,16 +139,28 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - `autofix_diagnostics`
   - `background_watch`
 - **Capability registry**
-  - each exposed chat tool is classified by risk, capability surface, access type, cacheability,
-    and parallel-safety
-  - the active tool list is injected into the system prompt so the model sees only the tools
-    exposed for that turn
-  - Advanced -> Tool Inspector shows registered capability counts, high-risk tools, and unknown
-    tool warnings
+  - each exposed chat tool is classified by risk, capability surface, access type, cacheability, and
+    parallel-safety
+  - the active tool list is injected into the system prompt so the model sees only the tools exposed
+    for that turn
+  - Advanced -> Tool Inspector shows registered capability counts, high-risk tools, and unknown tool
+    warnings
 - **Run ledger and goal tracking**
   - each model run gets a compact goal derived from the latest user message
   - recent runs persist under the session's `aoi-run-ledger/runs.json`
   - Advanced -> Aoi Run Ledger shows run status, model route, iteration counts, and tool-call totals
+- **Aoi autonomy runtime**
+  - chat, research, Kira, workspace, and browser-context events are recorded as evidence-linked
+    observations
+  - mission state, active goals, context routing, background attention brokering, and operator
+    digest lanes keep proactive suggestions quiet and reviewable
+  - proposals support accept, dismiss, snooze, categorized feedback, source feedback, cooldowns, and
+    quiet-mode suppression
+  - read-only research artifact/status actions can run after policy checks; research start,
+    procedure saving, Kira handoff, and command execution use preview and approval boundaries
+  - `aoiOperatorReplay` replays representative operator scenarios to regression-test source
+    selection, approval boundaries, evidence refs, non-interruption, blocked reasons, and preference
+    conflicts without shell, network, or workspace mutation
 - **Skills workshop**
   - built-in and user-authored skills are matched by trigger terms before a chat turn
   - only enabled and trusted skills are injected into the system prompt
@@ -167,17 +178,19 @@ These tools are guarded by the current implementation:
 - semantic rename requires a preview signature before apply
 - safe command execution is allowlisted to read-only `git`, `node`, `npm`, and `pnpm` patterns
 - Kira reruns planned validation commands itself and can block or retry work before approval
-- Aoi research runs reuse the main AOI LLM and require Tavily for live web collection. Artifacts
-  are stored under `sessions/<character>/<mod>/aoi-research/runs/<runId>/` as `manifest.json`,
+- Aoi autonomy does not run high-risk mutations without an explicit accepted proposal. Approved
+  command execution still rechecks cwd boundaries, destructive command patterns, approval
+  fingerprints, timeouts, and redacted audit records before spawning a process.
+- Aoi research runs reuse the main AOI LLM and require Tavily for live web collection. Artifacts are
+  stored under `sessions/<character>/<mod>/aoi-research/runs/<runId>/` as `manifest.json`,
   `report.md`, `sources.json`, and `evidence.json`. Reports are generated from collected source
   claims, verified for citation coverage, and still save partial artifacts on failure, timeout, or
   cancellation. The Research Library app lists compact manifest summaries only; full reports and
   source/evidence ledgers are fetched per selected run. Missing Tavily config, rejected private or
   local URLs, failed source reads, malformed model JSON, artifact caps, duplicate active requests,
   and max-concurrency limits are surfaced as run status or API errors instead of hidden retries.
-  Completed research runs also write dated, permanent `research_run` summaries into Aoi memory v2
-  so later chat turns can recall the result and reopen the report artifact when more detail is
-  needed.
+  Completed research runs also write dated, permanent `research_run` summaries into Aoi memory v2 so
+  later chat turns can recall the result and reopen the report artifact when more detail is needed.
 - Aoi memory v2 supports permanent memories for explicit "remember forever" / "never forget"
   requests. Permanent memories do not expire, are prioritized during retrieval, and are protected
   from non-permanent automatic replacement; they can still be archived or deleted manually. Aoi also
@@ -396,10 +409,10 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
 }
 ```
 
-Tavily can also be configured from Aoi's Settings -> Advanced -> Tavily Web Search. When
-configured, Aoi exposes `search_web` and will use it before answering current-information requests.
-The same Tavily config is required for `start_research`; AOI main LLM settings are reused for
-research planning, evidence extraction, report synthesis, and verification.
+Tavily can also be configured from Aoi's Settings -> Advanced -> Tavily Web Search. When configured,
+Aoi exposes `search_web` and will use it before answering current-information requests. The same
+Tavily config is required for `start_research`; AOI main LLM settings are reused for research
+planning, evidence extraction, report synthesis, and verification.
 
 Notes:
 
@@ -467,6 +480,14 @@ The standalone build persists data under `~/.openroom/`.
         │   ├── kira/data/
         │   ├── peanalyzer/data/
         │   └── ...
+        ├── aoi-autonomy/
+        │   ├── observations/
+        │   ├── proposals/
+        │   ├── decisions/
+        │   ├── goals/
+        │   └── command-audit/
+        ├── aoi-research/
+        │   └── runs/
         ├── chat/
         └── memory/
 ```

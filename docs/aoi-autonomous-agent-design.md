@@ -4,10 +4,10 @@
 
 ## 목표
 
-Aoi를 영화 속 Jarvis처럼 보이게 만드는 핵심은 "모델이 알아서 생각한다"가 아니라,
-기억, 관찰, 계획, 반성, 검증, 제안을 분리한 런타임을 만드는 것이다. 이 문서의 목표는
-현재 YourOpenRoom의 Aoi memory v2, Aoi Research, capability registry, run ledger, Kira
-automation을 기반으로 Aoi가 다음을 할 수 있게 만드는 설계를 정리하는 것이다.
+Aoi를 영화 속 Jarvis처럼 보이게 만드는 핵심은 "모델이 알아서 생각한다"가 아니라, 기억, 관찰, 계획,
+반성, 검증, 제안을 분리한 런타임을 만드는 것이다. 이 문서의 목표는 현재 YourOpenRoom의 Aoi memory
+v2, Aoi Research, capability registry, run ledger, Kira automation을 기반으로 Aoi가 다음을 할 수
+있게 만드는 설계를 정리하는 것이다.
 
 1. 과거 대화, 리서치, 자동화 결과, 사용자 선호를 스스로 조회한다.
 2. 현재 요청과 환경 상태에 맞는 관련 기억을 조립한다.
@@ -16,29 +16,28 @@ automation을 기반으로 Aoi가 다음을 할 수 있게 만드는 설계를 �
 5. 실행 결과를 검증하고, 실패와 성공을 다음 판단에 재사용한다.
 6. 고위험 행동은 승인과 감사 로그 없이는 실행하지 않는다.
 
-이 설계의 권장 방향은 "자율 실행"보다 "governed autonomy"이다. Aoi는 먼저 좋은
-제안을 하는 조력자가 되고, 그 다음 낮은 위험의 read-only 작업부터 점진적으로 실행권을
-얻어야 한다.
+이 설계의 권장 방향은 "자율 실행"보다 "governed autonomy"이다. Aoi는 먼저 좋은 제안을 하는 조력자가
+되고, 그 다음 낮은 위험의 read-only 작업부터 점진적으로 실행권을 얻어야 한다.
 
 ## 최신 연구 동향 요약
 
 조사 기준일은 2026-06-11이다. 아래는 Aoi 설계에 직접 반영할 만한 흐름이다.
 
-| 흐름 | 대표 연구/문서 | Aoi 설계에 주는 의미 |
-| --- | --- | --- |
-| Agent memory는 단순 RAG가 아니라 write-manage-read loop | [Memory for Autonomous LLM Agents, 2026](https://arxiv.org/html/2603.07670v1) | Aoi memory v2에 write filter, consolidation, contradiction, forgetting, governance를 명시적으로 넣어야 한다. |
-| 인지 아키텍처는 working, episodic, semantic, procedural memory를 나눈다 | [CoALA, 2023](https://arxiv.org/abs/2309.02427) | 현재 memory schema를 유지하되 episode, fact, decision, procedure, skill memory의 역할을 분리해야 한다. |
-| observation-reflection-planning loop가 believable behavior를 만든다 | [Generative Agents, 2023](https://arxiv.org/abs/2304.03442) | Aoi도 chat response와 별개로 background reflection tick을 가져야 한다. |
-| verbal reflection은 weight update 없이 실패 학습을 만든다 | [Reflexion, 2023](https://arxiv.org/abs/2303.11366) | Kira/research/tool 실패는 reflection note로 남기되, 실행 정책에 바로 반영하기 전에 검증해야 한다. |
-| 긴 대화는 OS식 memory tiering이 필요하다 | [MemGPT, 2023](https://arxiv.org/abs/2310.08560) | prompt에는 작은 working context만 넣고, 나머지는 searchable archive로 둔다. |
-| Memory는 스스로 태그/링크/갱신되는 네트워크가 되어야 한다 | [A-MEM, 2025](https://arxiv.org/abs/2502.12110), [MemInsight, 2025](https://arxiv.org/abs/2503.21760) | memory write 이후 관련 memory를 링크하고, 오래된 memory의 context/tags를 진화시킨다. |
-| 시간성 있는 관계는 graph memory가 강하다 | [Zep/Graphiti, 2025](https://arxiv.org/abs/2501.13956) | 당장 외부 서비스 의존은 피하되, local temporal relation index를 추가할 여지를 남긴다. |
-| personal assistant는 capability, efficiency, security가 함께 설계되어야 한다 | [Personal LLM Agents Survey, 2024](https://arxiv.org/abs/2401.05459) | Aoi의 "스스로 한다"는 개인 데이터와 로컬 도구 접근 정책을 포함해야 한다. |
-| proactive agent는 임의 개입이 아니라 이벤트, 예측, accept/reject feedback 문제다 | [Proactive Agent, 2024](https://arxiv.org/abs/2410.12361), [ProAgentBench, 2026](https://arxiv.org/html/2602.04482v1) | Aoi 제안은 trigger, confidence, cooldown, user feedback으로 통제해야 한다. |
-| memory 평가는 static recall보다 incremental multi-turn이 중요하다 | [LoCoMo, 2024](https://arxiv.org/abs/2402.17753), [LongMemEval, 2024](https://arxiv.org/abs/2410.10813), [MemoryAgentBench, 2025/ICLR 2026](https://arxiv.org/abs/2507.05257) | Aoi 평가는 recall, temporal reasoning, update, abstention, forgetting을 따로 측정해야 한다. |
-| 자기 검증과 LLM judge는 과신할 수 있다 | [Self-Verification Dilemma, 2026](https://arxiv.org/html/2602.03485v1), [Overconfidence in LLM-as-a-Judge, 2025](https://arxiv.org/html/2508.06225v1) | reflection/judge를 믿고 바로 행동하면 안 된다. deterministic check와 사용자 feedback을 같이 써야 한다. |
-| evolving memory는 corruption, poisoning, privacy risk를 만든다 | [SSGM, 2026](https://arxiv.org/html/2603.11768v1) | memory consolidation은 실행 루프와 분리하고, provenance, access control, decay, conflict check를 둔다. |
-| tool 표준화는 capability와 schema를 주지만 권한 정책은 별도 문제다 | [MCP Tools spec, 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), [MCP Authorization spec, 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | Aoi capability registry를 MCP/plugin까지 확장하되 token passthrough, confused deputy, tool poisoning을 막아야 한다. |
+| 흐름                                                                             | 대표 연구/문서                                                                                                                                                                                                          | Aoi 설계에 주는 의미                                                                                                |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------- |
+| Agent memory는 단순 RAG가 아니라 write-manage-read loop                          | [Memory for Autonomous LLM Agents, 2026](https://arxiv.org/html/2603.07670v1)                                                                                                                                           | Aoi memory v2에 write filter, consolidation, contradiction, forgetting, governance를 명시적으로 넣어야 한다.        |
+| 인지 아키텍처는 working, episodic, semantic, procedural memory를 나눈다          | [CoALA, 2023](https://arxiv.org/abs/2309.02427)                                                                                                                                                                         | 현재 memory schema를 유지하되 episode, fact, decision, procedure, skill memory의 역할을 분리해야 한다.              |
+| observation-reflection-planning loop가 believable behavior를 만든다              | [Generative Agents, 2023](https://arxiv.org/abs/2304.03442)                                                                                                                                                             | Aoi도 chat response와 별개로 background reflection tick을 가져야 한다.                                              |
+| verbal reflection은 weight update 없이 실패 학습을 만든다                        | [Reflexion, 2023](https://arxiv.org/abs/2303.11366)                                                                                                                                                                     | Kira/research/tool 실패는 reflection note로 남기되, 실행 정책에 바로 반영하기 전에 검증해야 한다.                   |
+| 긴 대화는 OS식 memory tiering이 필요하다                                         | [MemGPT, 2023](https://arxiv.org/abs/2310.08560)                                                                                                                                                                        | prompt에는 작은 working context만 넣고, 나머지는 searchable archive로 둔다.                                         |
+| Memory는 스스로 태그/링크/갱신되는 네트워크가 되어야 한다                        | [A-MEM, 2025](https://arxiv.org/abs/2502.12110), [MemInsight, 2025](https://arxiv.org/abs/2503.21760)                                                                                                                   | memory write 이후 관련 memory를 링크하고, 오래된 memory의 context/tags를 진화시킨다.                                |
+| 시간성 있는 관계는 graph memory가 강하다                                         | [Zep/Graphiti, 2025](https://arxiv.org/abs/2501.13956)                                                                                                                                                                  | 당장 외부 서비스 의존은 피하되, local temporal relation index를 추가할 여지를 남긴다.                               |
+| personal assistant는 capability, efficiency, security가 함께 설계되어야 한다     | [Personal LLM Agents Survey, 2024](https://arxiv.org/abs/2401.05459)                                                                                                                                                    | Aoi의 "스스로 한다"는 개인 데이터와 로컬 도구 접근 정책을 포함해야 한다.                                            |
+| proactive agent는 임의 개입이 아니라 이벤트, 예측, accept/reject feedback 문제다 | [Proactive Agent, 2024](https://arxiv.org/abs/2410.12361), [ProAgentBench, 2026](https://arxiv.org/html/2602.04482v1)                                                                                                   | Aoi 제안은 trigger, confidence, cooldown, user feedback으로 통제해야 한다.                                          |
+| memory 평가는 static recall보다 incremental multi-turn이 중요하다                | [LoCoMo, 2024](https://arxiv.org/abs/2402.17753), [LongMemEval, 2024](https://arxiv.org/abs/2410.10813), [MemoryAgentBench, 2025/ICLR 2026](https://arxiv.org/abs/2507.05257)                                           | Aoi 평가는 recall, temporal reasoning, update, abstention, forgetting을 따로 측정해야 한다.                         |
+| 자기 검증과 LLM judge는 과신할 수 있다                                           | [Self-Verification Dilemma, 2026](https://arxiv.org/html/2602.03485v1), [Overconfidence in LLM-as-a-Judge, 2025](https://arxiv.org/html/2508.06225v1)                                                                   | reflection/judge를 믿고 바로 행동하면 안 된다. deterministic check와 사용자 feedback을 같이 써야 한다.              |
+| evolving memory는 corruption, poisoning, privacy risk를 만든다                   | [SSGM, 2026](https://arxiv.org/html/2603.11768v1)                                                                                                                                                                       | memory consolidation은 실행 루프와 분리하고, provenance, access control, decay, conflict check를 둔다.              |
+| tool 표준화는 capability와 schema를 주지만 권한 정책은 별도 문제다               | [MCP Tools spec, 2025-06-18](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), [MCP Authorization spec, 2025-11-25](https://modelcontextprotocol.io/specification/2025-11-25/basic/authorization) | Aoi capability registry를 MCP/plugin까지 확장하되 token passthrough, confused deputy, tool poisoning을 막아야 한다. |
 
 ## 현재 Aoi 베이스라인
 
@@ -51,7 +50,8 @@ automation을 기반으로 Aoi가 다음을 할 수 있게 만드는 설계를 �
 2. `apps/webuiapps/src/lib/aoiMemoryServerWriter.ts`
    - Kira automation과 research run 결과를 server-side memory로 저장
 3. `apps/webuiapps/src/lib/aoiResearchEngine.ts`
-   - Tavily search, browser reader, evidence extraction, cited report, partial artifact, timeout/cancel
+   - Tavily search, browser reader, evidence extraction, cited report, partial artifact,
+     timeout/cancel
 4. `apps/webuiapps/src/lib/aoiCapabilityRegistry.ts`
    - tool별 risk, surface, access, approval, cacheability, parallel-safety
 5. `apps/webuiapps/src/lib/aoiRunLedger.ts`
@@ -61,8 +61,41 @@ automation을 기반으로 Aoi가 다음을 할 수 있게 만드는 설계를 �
 7. Kira automation
    - 계획, context scan, worker/reviewer/integrator, validation rerun, risk policy
 
-따라서 새 설계는 완전히 새 agent framework를 만들기보다, 위 구성 위에 `Aoi Autonomy
-Runtime`을 추가하는 형태가 가장 안전하다.
+따라서 새 설계는 완전히 새 agent framework를 만들기보다, 위 구성 위에 `Aoi Autonomy Runtime`을
+추가하는 형태가 가장 안전하다.
+
+## 구현 현황 - 2026-06-13
+
+이 문서의 초기 설계는 현재 `apps/webuiapps/src/lib/` 아래의 Aoi autonomy control plane으로 상당 부분
+구현되었다. 현 상태의 핵심은 "완전 자동 실행"이 아니라, 관찰, 기억 확인, 맥락 조립, 조용한 주의
+분배, 제안, 승인 경계, replay 평가를 갖춘 governed autonomy이다.
+
+| 영역                                | 현재 구현                                                                                                                            | 운영상 의미                                                                                                                                                                                                                  |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Storage / policy / API              | `aoiAutonomyTypes.ts`, `aoiAutonomyStore.ts`, `aoiAutonomyPolicy.ts`, `aoiAutonomyPlugin.ts`, `aoiAutonomyClient.ts`                 | 세션별 `aoi-autonomy/` 저장소, policy, proposal decision, status/evaluation API가 생겼다.                                                                                                                                    |
+| Observation / reflection / proposal | `aoiAutonomyObserver.ts`, `aoiAutonomyEngine.ts`, `aoiAutonomyRecovery.ts`                                                           | chat/research/Kira/workspace 이벤트를 observation으로 만들고, completed/failed research, stale memory, reviewed Kira outcome, failure recovery를 evidence 기반 proposal로 바꾼다.                                            |
+| Mission / goal / relation graph     | `aoiAutonomyMission.ts`, `aoiAutonomyGoals.ts`, `aoiAutonomyRelations.ts`                                                            | active goal, mission state, proposal/observation/research/Kira evidence 관계를 추적해 "지금 무엇을 계속해야 하는지"를 재구성한다.                                                                                            |
+| Context routing                     | `aoiContextRouter.ts`, `aoiWorkspaceSignals.ts`                                                                                      | memory, research, browser context, workspace snapshot, validation signal, disabled source feedback을 점수화해 prompt-ready context로 조립한다.                                                                               |
+| Attention and digest                | `aoiAttentionBroker.ts`, `aoiOperatorDigest.ts`, `aoiPreferenceMemory.ts`                                                            | background event를 바로 방해하지 않고 critical/approval/FYI/hidden lane으로 분류하며, quiet mode와 "too much" feedback을 반영한다.                                                                                           |
+| UI decision helpers                 | `aoiAutonomyUi.ts`                                                                                                                   | inline proposal, dashboard badge, evidence panel, proactive explanation, approval boundary, blocked-state summary를 같은 결정 모델에서 만든다.                                                                               |
+| Supervised execution                | `aoiAutonomyExecution.ts`, `aoiSafeActionPlan.ts`, `aoiKiraHandoff.ts`, `aoiApprovedCommandPolicy.ts`, `aoiApprovedCommandRunner.ts` | read-only research artifact/status, approval-gated research start, procedure promotion, Kira handoff, approved command runner를 분리했다. high-risk 실행은 승인 fingerprint, cwd guard, audit record 없이는 진행하지 않는다. |
+| Evaluation / replay                 | `aoiAutonomyEvaluation.ts`, `aoiOperatorReplay.ts`                                                                                   | acceptance/dismissal/feedback metrics와 8개 built-in operator replay scenario로 wrong source, unsafe approval boundary, noisy interruption, disabled source leakage를 회귀 테스트한다.                                       |
+
+현재 구현된 built-in replay scenario는 다음 운영 상황을 고정 fixture로 검증한다.
+
+1. 사용자가 branch drift 이후 돌아온 경우.
+2. Kira가 validation 통과 및 reviewer note와 함께 완료된 경우.
+3. research가 source 부족으로 실패한 경우.
+4. 사용자가 제안을 "too much"로 거부한 경우.
+5. high-risk command proposal이 차단되어야 하는 경우.
+6. 사용자 preference가 project instruction과 충돌하는 경우.
+7. disabled source가 context에 영향을 주면 안 되는 경우.
+8. quiet mode가 low-value digest item을 숨겨야 하는 경우.
+
+따라서 현 단계의 Aoi는 기억과 현재 상태를 능동적으로 확인해 제안할 수 있는 기반을 갖췄지만, 사용자
+승인 없이 고위험 파일 변경이나 명령 실행을 맡기는 단계는 아니다. Jarvis-like 체감은 L2-L4의 근거
+있는 제안, resume brief, approval inbox, 안전한 preview에서 먼저 확보하고, L5는 계속 좁은 승인 경계
+안에 둔다.
 
 ## 권장 아키텍처
 
@@ -102,14 +135,14 @@ Proposal Judge + Policy Gate
 
 ### 2. Autonomy Level
 
-| Level | 이름 | 허용 행동 | 기본값 |
-| --- | --- | --- | --- |
-| L0 | Reactive Chat | 답변만 생성 | 항상 허용 |
-| L1 | Memory Aware | 관련 기억 조회, 답변에 반영 | 허용 |
-| L2 | Suggestive | 다음 행동 제안, reminder, research 제안 | 허용하되 cooldown 적용 |
-| L3 | Assisted Read | read-only tool 실행, research status 확인, completed artifact 읽기 | 사용자 설정 필요 |
-| L4 | Supervised Action | research 시작, preview-first Kira work item 생성, 파일 preview, low-risk local action | 명시 승인 필요 |
-| L5 | Delegated Automation | file write, command, irreversible app mutation | high-risk policy와 사용자 승인 필요 |
+| Level | 이름                 | 허용 행동                                                                             | 기본값                              |
+| ----- | -------------------- | ------------------------------------------------------------------------------------- | ----------------------------------- |
+| L0    | Reactive Chat        | 답변만 생성                                                                           | 항상 허용                           |
+| L1    | Memory Aware         | 관련 기억 조회, 답변에 반영                                                           | 허용                                |
+| L2    | Suggestive           | 다음 행동 제안, reminder, research 제안                                               | 허용하되 cooldown 적용              |
+| L3    | Assisted Read        | read-only tool 실행, research status 확인, completed artifact 읽기                    | 사용자 설정 필요                    |
+| L4    | Supervised Action    | research 시작, preview-first Kira work item 생성, 파일 preview, low-risk local action | 명시 승인 필요                      |
+| L5    | Delegated Automation | file write, command, irreversible app mutation                                        | high-risk policy와 사용자 승인 필요 |
 
 Jarvis 같은 체감은 L2와 L3에서 대부분 나온다. L5를 빨리 열면 편해지는 것보다 사고 가능성이 먼저
 커진다.
@@ -118,17 +151,17 @@ Jarvis 같은 체감은 L2와 L3에서 대부분 나온다. L5를 빨리 열면 
 
 현재 memory v2를 유지하되, 의미상 다음 계층을 명확히 한다.
 
-| 계층 | 저장 대상 | 현재 대응 | 추가 필요 |
-| --- | --- | --- | --- |
-| Working memory | 이번 턴에 prompt로 들어가는 압축 context | `buildAoiMemoryPrompt` | proposal/research/project context assembler |
-| Episodic memory | 실제 있었던 대화, tool call, research, Kira event | `episodes/*` | app observation episode |
-| Semantic memory | 사용자 선호, 사실, 결정, 프로젝트 상태 | `memories/*.json` | contradiction graph, source confidence |
-| Procedural memory | 반복 가능한 방법, checklists, skill recipes | `procedure`, `aoiSkillsWorkshop`, approval-gated promotion | richer reuse/eval loop |
-| Reflection memory | 실패 원인, 좋은 판단 규칙, 다음에는 피할 것 | 일부 Kira review memory | `reflection_note` 타입 또는 tags |
-| Proposal memory | Aoi가 제안했지만 아직 결정되지 않은 것 | 없음 | suggestion queue |
+| 계층              | 저장 대상                                         | 현재 대응                                                  | 추가 필요                                   |
+| ----------------- | ------------------------------------------------- | ---------------------------------------------------------- | ------------------------------------------- |
+| Working memory    | 이번 턴에 prompt로 들어가는 압축 context          | `buildAoiMemoryPrompt`                                     | proposal/research/project context assembler |
+| Episodic memory   | 실제 있었던 대화, tool call, research, Kira event | `episodes/*`                                               | app observation episode                     |
+| Semantic memory   | 사용자 선호, 사실, 결정, 프로젝트 상태            | `memories/*.json`                                          | contradiction graph, source confidence      |
+| Procedural memory | 반복 가능한 방법, checklists, skill recipes       | `procedure`, `aoiSkillsWorkshop`, approval-gated promotion | richer reuse/eval loop                      |
+| Reflection memory | 실패 원인, 좋은 판단 규칙, 다음에는 피할 것       | 일부 Kira review memory                                    | `reflection_note` 타입 또는 tags            |
+| Proposal memory   | Aoi가 제안했지만 아직 결정되지 않은 것            | 없음                                                       | suggestion queue                            |
 
-초기 구현은 기존 JSON 파일 구조와 맞춘다. 단, 검색 성능과 consistency가 필요해지면 SQLite
-FTS5 + vector sidecar + relation table로 옮길 수 있게 type boundary를 둔다.
+초기 구현은 기존 JSON 파일 구조와 맞춘다. 단, 검색 성능과 consistency가 필요해지면 SQLite FTS5 +
+vector sidecar + relation table로 옮길 수 있게 type boundary를 둔다.
 
 ### 4. Storage Layout
 
@@ -259,22 +292,22 @@ Reflection prompt는 다음 제약을 가져야 한다.
    - 근거가 충분한지
    - 제안 문구가 과장되지 않았는지
 
-LLM judge 결과는 단독 승인 근거로 쓰지 않는다. 2025-2026 연구는 self-check와 LLM judge가
-과신할 수 있음을 반복해서 보여준다. 따라서 judge score는 deterministic policy를 통과한 뒤
-ranking과 wording에만 사용한다.
+LLM judge 결과는 단독 승인 근거로 쓰지 않는다. 2025-2026 연구는 self-check와 LLM judge가 과신할 수
+있음을 반복해서 보여준다. 따라서 judge score는 deterministic policy를 통과한 뒤 ranking과
+wording에만 사용한다.
 
 ### 8. Proactive Trigger
 
 초기 trigger는 작고 실용적인 것만 둔다.
 
-| Trigger | 예시 | 제안 |
-| --- | --- | --- |
-| Research follow-up | completed research run이 있고 사용자가 같은 주제를 다시 언급 | "이전 report를 다시 열어볼까?" |
-| Stale research | 오래된 research memory가 최신성이 필요한 주제와 매칭 | "최신 자료로 refresh run을 돌려볼까?" |
-| Failed run | research/Kira가 timeout 또는 failed | "실패 원인을 정리하고 작은 재시도 plan을 만들까?" |
-| Repeated user pattern | 사용자가 비슷한 요청을 여러 번 함 | "이걸 procedure memory로 저장할까?" |
-| Project automation | Kira work item이 clarification 대기 | "이 질문에 답하면 자동화를 계속할 수 있어." |
-| Safety reminder | high-risk file/write/command 요청 직전 | "preview/checkpoint를 먼저 만들까?" |
+| Trigger               | 예시                                                         | 제안                                              |
+| --------------------- | ------------------------------------------------------------ | ------------------------------------------------- |
+| Research follow-up    | completed research run이 있고 사용자가 같은 주제를 다시 언급 | "이전 report를 다시 열어볼까?"                    |
+| Stale research        | 오래된 research memory가 최신성이 필요한 주제와 매칭         | "최신 자료로 refresh run을 돌려볼까?"             |
+| Failed run            | research/Kira가 timeout 또는 failed                          | "실패 원인을 정리하고 작은 재시도 plan을 만들까?" |
+| Repeated user pattern | 사용자가 비슷한 요청을 여러 번 함                            | "이걸 procedure memory로 저장할까?"               |
+| Project automation    | Kira work item이 clarification 대기                          | "이 질문에 답하면 자동화를 계속할 수 있어."       |
+| Safety reminder       | high-risk file/write/command 요청 직전                       | "preview/checkpoint를 먼저 만들까?"               |
 
 금지할 trigger:
 
@@ -426,20 +459,51 @@ provider adapter로만 붙이고 local episode를 ground truth로 유지한다.
 
 ## API 설계
 
-Vite plugin API 후보:
+현재 Vite plugin API는 `/api/aoi-autonomy` prefix 아래에 구현되어 있다.
 
 ```text
 GET  /api/aoi-autonomy/status?sessionPath=...
 GET  /api/aoi-autonomy/proposals?sessionPath=...
+GET  /api/aoi-autonomy/reflections?sessionPath=...
+GET  /api/aoi-autonomy/observations?sessionPath=...
+GET  /api/aoi-autonomy/goals?sessionPath=...
+GET  /api/aoi-autonomy/evaluation?sessionPath=...
+GET  /api/aoi-autonomy/mission?sessionPath=...
+GET  /api/aoi-autonomy/sources?sessionPath=...
+GET  /api/aoi-autonomy/workspace?sessionPath=...
+GET  /api/aoi-autonomy/context?sessionPath=...
+POST /api/aoi-autonomy/policy
+POST /api/aoi-autonomy/sources
+POST /api/aoi-autonomy/context/browser
+POST /api/aoi-autonomy/context/feedback
+POST /api/aoi-autonomy/workspace/validation
+POST /api/aoi-autonomy/mission/decision
 POST /api/aoi-autonomy/tick
+POST /api/aoi-autonomy/goal/check
+POST /api/aoi-autonomy/goal/decision
 POST /api/aoi-autonomy/proposal/decision
+POST /api/aoi-autonomy/proposal/feedback
 POST /api/aoi-autonomy/proposal/preview
 POST /api/aoi-autonomy/proposal/execute
-GET  /api/aoi-autonomy/reflections?sessionPath=...
-POST /api/aoi-autonomy/policy
 ```
 
-Tool 후보:
+현재 실행 가능한 proposal action은 다음으로 제한된다.
+
+```text
+get_research_status
+open_research_artifact
+read_research_artifact
+start_research
+save_memory
+create_kira_work
+run_command
+```
+
+`run_command`는 일반 command tool이 아니라 approved command request로 다시 정규화된다. policy는
+workspace 안의 cwd, destructive command pattern, approval fingerprint, timeout, evidenceRefs를
+확인하고, stdout/stderr는 redaction 및 길이 제한을 거쳐 audit record에 남긴다.
+
+모델에 직접 노출할 수 있는 tool 후보는 여전히 별도 단계로 남긴다.
 
 ```text
 list_aoi_proposals
@@ -450,8 +514,9 @@ snooze_aoi_proposal
 run_aoi_reflection
 ```
 
-초기에는 이 tool들을 모델에 직접 노출하지 않고 UI/API로만 검증하는 편이 안전하다. tool 노출은 Phase
-2 이후 capability registry 등록과 함께 진행한다.
+현재는 이 tool들을 모델에 직접 노출하지 않고 UI/API와 테스트로 먼저 검증하는 편이 안전하다. tool
+노출은 capability registry 등록, permission surface, prompt-injection 방어가 모두 맞은 뒤에
+진행한다.
 
 ## Prompt Contract
 
@@ -531,46 +596,62 @@ Autonomy runtime의 system prompt는 Aoi chat prompt와 분리한다.
 
 ### Local Regression Tests
 
-초기 test target:
+현재 core regression target:
 
 ```text
-pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyPolicy.test.ts
-pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyEngine.test.ts
-pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiMemoryManager.test.ts
-pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiResearchTools.test.ts src/lib/__tests__/aoiResearchEngine.test.ts
+pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyStore.test.ts src/lib/__tests__/aoiAutonomyPolicy.test.ts src/lib/__tests__/aoiAutonomyEngine.test.ts src/lib/__tests__/aoiAutonomyExecution.test.ts src/lib/__tests__/aoiAutonomyUi.test.ts src/lib/__tests__/aoiAutonomyEvaluation.test.ts
+pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyClient.test.ts src/lib/__tests__/aoiAutonomyObserver.test.ts src/lib/__tests__/aoiAutonomyMission.test.ts src/lib/__tests__/aoiAutonomyGoals.test.ts src/lib/__tests__/aoiAutonomyRelations.test.ts src/lib/__tests__/aoiAutonomyPlugin.test.ts
 pnpm --filter @openroom/webuiapps build:test
 git diff --check
 ```
 
+Operator replay는 `aoiAutonomyEvaluation.test.ts`에서 `runBuiltInAoiOperatorReplayFixtures()`로
+실행한다. 이 replay path는 실제 shell, network, file mutation을 호출하지 않고 injected fixture
+state만 사용한다.
+
 ## Security and Failure Modes
 
-| Risk | Failure Mode | Mitigation |
-| --- | --- | --- |
-| Memory poisoning | 웹/문서 내용이 "앞으로 이렇게 행동해" 같은 지시를 memory로 승격 | source trust, instruction stripping, evidence type, user confirmation for durable instruction |
-| Prompt injection | read_url/research source가 tool policy를 우회하도록 지시 | source text는 data로만 취급, autonomy prompt에 tool policy 분리 |
-| Stale memory | 예전 사실을 최신 사실처럼 제안 | timestamp, staleness score, current-info trigger는 research refresh 제안 |
-| Reflection hallucination | 없는 파일/실행/기억을 근거로 제안 | evidenceRefs existence check |
-| LLM judge overconfidence | judge가 틀린 제안을 high confidence로 승인 | deterministic gate first, human feedback calibration |
-| Excessive interruption | 매 턴 proactive message | cooldown, max suggestions per day/session, user dismiss learning |
-| Data exposure | private path/content를 제안 카드에 노출 | redaction, path display policy, proposal detail gating |
-| Tool abuse | proposal accept가 high-risk tool 실행으로 이어짐 | capability registry, autonomy level, explicit confirmation |
-| Confused deputy | MCP/plugin token 또는 권한이 다른 upstream에 전달 | MCP authorization separation, per-server trust, no token passthrough |
-| Irreversible mutation | file_delete/run_command가 자동 실행 | L5-only, checkpoint/preview, explicit user confirmation |
+| Risk                     | Failure Mode                                                    | Mitigation                                                                                    |
+| ------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Memory poisoning         | 웹/문서 내용이 "앞으로 이렇게 행동해" 같은 지시를 memory로 승격 | source trust, instruction stripping, evidence type, user confirmation for durable instruction |
+| Prompt injection         | read_url/research source가 tool policy를 우회하도록 지시        | source text는 data로만 취급, autonomy prompt에 tool policy 분리                               |
+| Stale memory             | 예전 사실을 최신 사실처럼 제안                                  | timestamp, staleness score, current-info trigger는 research refresh 제안                      |
+| Reflection hallucination | 없는 파일/실행/기억을 근거로 제안                               | evidenceRefs existence check                                                                  |
+| LLM judge overconfidence | judge가 틀린 제안을 high confidence로 승인                      | deterministic gate first, human feedback calibration                                          |
+| Excessive interruption   | 매 턴 proactive message                                         | cooldown, max suggestions per day/session, user dismiss learning                              |
+| Data exposure            | private path/content를 제안 카드에 노출                         | redaction, path display policy, proposal detail gating                                        |
+| Tool abuse               | proposal accept가 high-risk tool 실행으로 이어짐                | capability registry, autonomy level, explicit confirmation                                    |
+| Confused deputy          | MCP/plugin token 또는 권한이 다른 upstream에 전달               | MCP authorization separation, per-server trust, no token passthrough                          |
+| Irreversible mutation    | file_delete/run_command가 자동 실행                             | L5-only, checkpoint/preview, explicit user confirmation                                       |
 
-## Recommended First Milestone
+## Current Milestone Status
 
-첫 구현은 작게 가야 한다.
+초기 milestone은 완료된 상태로 본다.
 
-1. `aoi-autonomy` 저장소와 type/policy만 추가한다.
-2. completed/failed research run과 memory v2를 읽어서 proposal 후보를 만든다.
-3. UI에 active proposal list와 dismiss/snooze만 붙인다.
-4. 실행 버튼은 먼저 `read_research_artifact` 같은 read-only를 허용하고, 다음 단계에서
-   approval-gated `start_research`와 procedure `save_memory`만 추가한다.
-5. reflection 결과가 틀렸을 때 바로 삭제/숨김할 수 있게 한다.
-6. relation index는 JSON으로 시작하고 edge dedupe/path-safe id를 유지한다.
+1. `aoi-autonomy` 저장소와 type/policy/API가 추가되었다.
+2. completed/failed research run, memory v2, Kira outcome, workspace signal을 읽어 proposal 후보를
+   만든다.
+3. UI helper는 active proposal, dismiss/snooze, feedback, mission, goal, prepared action, blocked
+   state, proactive explanation, operator digest를 같은 decision surface로 요약한다.
+4. read-only artifact/status는 실행 가능하고, `start_research`, `save_memory`, `create_kira_work`,
+   `run_command`는 각자 별도의 preview/approval/policy path를 탄다.
+5. source feedback과 quiet-mode feedback을 통해 틀리거나 시끄러운 제안을 억제한다.
+6. relation index는 JSON 기반으로 시작했고 observation, proposal, goal, research, Kira work/review,
+   validation evidence를 연결한다.
+7. operator replay harness가 대표 운영 상황을 deterministic fixture로 고정한다.
 
-이렇게 하면 Aoi가 "스스로 기억을 확인하고 제안한다"는 체감은 만들면서, 위험한 자동 실행은 아직
-열지 않는다.
+다음 milestone은 더 많은 실행권을 여는 것이 아니라, 운영자가 신뢰할 수 있는 관측성과 회귀 방어를
+강화하는 쪽이 맞다.
+
+1. Autonomy dashboard에서 replay/evaluation summary를 더 직접적으로 볼 수 있게 한다.
+2. 실제 세션 이벤트를 privacy-safe fixture로 승격하는 capture/export path를 추가한다.
+3. proposal feedback category와 user preference conflict를 장기 calibration 지표로 묶는다.
+4. approved command runner는 allowlist와 rollback/checkpoint 연계를 더 좁게 검증한다.
+5. Calendar/Gmail 같은 외부 개인 데이터 source는 explicit enable, source scope, redaction이 준비된
+   뒤 추가한다.
+
+이렇게 하면 Aoi가 "스스로 기억을 확인하고 제안한다"는 체감은 유지하면서, 위험한 자동 실행은 아직
+좁은 승인 경계 안에 둔다.
 
 ## Non-goals
 
@@ -583,11 +664,11 @@ git diff --check
 
 ## Open Questions
 
-1. Aoi Autonomy UI를 ChatPanel Advanced 안에 둘지, 별도 `Aoi Autonomy` 앱으로 둘지.
+1. Aoi Autonomy UI를 계속 ChatPanel Advanced 중심으로 둘지, 별도 `Aoi Autonomy` 앱으로 승격할지.
 2. proposal notification을 desktop toast로 띄울지, chat panel 내부에만 둘지.
-3. memory relation index를 JSON으로 시작할지, 바로 SQLite로 갈지.
+3. relation index를 언제 JSON에서 SQLite relation table로 옮길지.
 4. proactive trigger에 Calendar/Email/Gmail을 어느 시점부터 포함할지.
-5. user feedback을 단순 accept/dismiss로 둘지, "틀린 기억", "시끄러움", "좋은 제안"처럼 분류할지.
+5. feedback category를 어느 정도까지 사용자에게 노출하고, 어느 정도까지 자동 calibration으로만 쓸지.
 6. procedure memory를 memory v2 기본값으로 둘지, Skills Workshop user skill draft로 승격할지.
 
 ## Decision
@@ -600,4 +681,5 @@ git diff --check
 4. Proactive trigger는 research/memory/Kira처럼 이미 provenance가 있는 이벤트에서만 시작한다.
 5. High-risk action은 Kira/capability registry의 기존 review and approval 패턴을 재사용한다.
 
-이 경로가 현재 코드베이스와 가장 잘 맞고, Jarvis 같은 체감과 운영 안전성을 동시에 얻을 가능성이 높다.
+이 경로가 현재 코드베이스와 가장 잘 맞고, Jarvis 같은 체감과 운영 안전성을 동시에 얻을 가능성이
+높다.

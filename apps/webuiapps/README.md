@@ -71,6 +71,12 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - Tavily-backed research-run collection, SSRF-safe source reading, evidence extraction, cited
     report persistence, lifecycle hardening, list/status/artifact/cancel APIs, and the dense local
     Research Library UI
+- `src/lib/aoiAutonomy*.ts`, `src/lib/aoiAttentionBroker.ts`, `src/lib/aoiContextRouter.ts`,
+  `src/lib/aoiOperatorDigest.ts`, and `src/lib/aoiOperatorReplay.ts`
+  - Aoi's governed-autonomy control plane: observations, reflections, proposal policy, mission and
+    goal state, workspace/context signals, attention routing, approval-aware action previews,
+    approved-command audit paths, operator digest, evaluation metrics, and deterministic replay
+    fixtures
 - `src/lib/llmClient.ts`
   - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
     API, and Anthropic-compatible model routes
@@ -100,6 +106,7 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 - `/api/aoi-research/status`
 - `/api/aoi-research/artifact`
 - `/api/aoi-research/cancel`
+- `/api/aoi-autonomy/*`
 - `/api/kira-*`
 - `/api/openvscode/*`
 - `/api/ida-pe/*`
@@ -184,6 +191,9 @@ This app reads and writes to `~/.openroom/` in standalone mode:
     `manifest.json`, `report.md`, `sources.json`, and `evidence.json`
   - completed Aoi research runs also write a dated, permanent `research_run` memory summary into
     `sessions/aoi/memory-v2/` so later chat turns can recall the result and reopen the artifact
+  - Aoi autonomy state lives under `sessions/<character>/<mod>/aoi-autonomy/`, including policy,
+    observations, reflections, proposals, decisions, goals, relation data, workspace snapshots,
+    context feedback, and command audit records
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -216,6 +226,15 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   refresh operations. Kira automation completion and attention events are also bridged into
   project-scoped Aoi memories by a server-side writer, so they persist even when the chat panel is
   not open.
+- Aoi autonomy is implemented as a governed control plane rather than unconstrained background
+  execution. It observes chat/research/Kira/workspace signals, routes relevant context, creates
+  evidence-backed proposals, learns from accept/dismiss/too-much feedback, and summarizes operator
+  attention through digest lanes. Read-only research actions can be executed after policy checks;
+  research start, procedure promotion, Kira handoff, and command execution require explicit proposal
+  decisions and narrower preview/approval paths. Approved commands are rechecked for cwd,
+  destructive patterns, approval fingerprint freshness, timeout, and audit logging before spawn.
+  `aoiOperatorReplay.ts` keeps representative operator scenarios deterministic without invoking
+  shell, network, or workspace mutations.
 - Chat image input accepts pasted, dropped, or selected PNG, JPEG, WebP, and GIF files. Images stay
   on the main LLM route, bypass the dialog model, and are stored in session chat history as data
   URLs. Aoi memory sync records only attachment metadata instead of raw image payloads.

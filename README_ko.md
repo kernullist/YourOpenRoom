@@ -40,8 +40,8 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - 장기 메모리 저장
   - 이미지 생성
   - Tavily 실시간 웹 검색
-  - prompt budget / run ledger / skills workshop / MCP/plugin admin / capability registry /
-    tool inspector
+  - prompt budget / run ledger / skills workshop / MCP/plugin admin / capability registry / tool
+    inspector / Aoi autonomy dashboard
 - 세션 단위 앱 데이터 저장: `~/.openroom/sessions/...`
 - 원래 iframe 런타임 대신 로컬 `@gui/vibe-container` mock 사용
 - Vite middleware 기반 로컬 API:
@@ -79,7 +79,7 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 | `Room Shop`      | Aoi 방을 유지한 채 내장 wallpaper look 과 desk mood 를 미리보기, 적용, 초기화할 수 있는 가벼운 데스크톱 꾸미기 상점             |
 | `Dewdrop Canvas` | `F:/kernullist/dewdrop-canvas` 액체 마인드맵 보드를 인앱으로 열고, 정적 파일/API 브리지, 프로젝트 저장, Markdown export 를 제공 |
 | `Written By Me`  | `F:/kernullist/written-by-me` 문체 분석기를 인앱으로 열고, 업로드/URL/API 브리지와 AOI 메인 모델 기반 분석/번역을 제공          |
-| `Aoi Research`   | Aoi 가 생성한 리서치 보고서, source ledger, evidence claim, 실행 상태를 조밀하게 탐색하는 research-run library                 |
+| `Aoi Research`   | Aoi 가 생성한 리서치 보고서, source ledger, evidence claim, 실행 상태를 조밀하게 탐색하는 research-run library                  |
 | `Kira`           | 작업 보드, work item/comment, discovery 분석, 워커 배정 전 clarification 질문, 자동화 handoff                                   |
 | `Aoi's IDE`      | 새 파일/폴더 생성이 가능한 로컬 워크스페이스 파일 트리/에디터와 검색, 심볼, 참조, rename preview/apply, 안전 명령               |
 | `PE Analyst`     | `ida_pro_mcp` 기반 현재 IDB 분석, 업로드 기반 PE pre-scan, findings/imports/sections/strings/functions 탭을 제공하는 PE 분석 앱 |
@@ -146,14 +146,25 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   - `autofix_diagnostics`
   - `background_watch`
 - **Capability Registry**
-  - 채팅에 노출되는 각 tool 을 risk, capability surface, access type, cacheability,
-    parallel-safety 기준으로 분류합니다
+  - 채팅에 노출되는 각 tool 을 risk, capability surface, access type, cacheability, parallel-safety
+    기준으로 분류합니다
   - 현재 턴에 실제 노출된 tool 목록만 system prompt 에 주입합니다
   - Advanced -> Tool Inspector 에 등록 수, high-risk tool, unknown tool 경고를 표시합니다
 - **Run Ledger 와 goal 추적**
   - 최신 사용자 메시지에서 현재 run goal 을 압축해 기록합니다
   - 최근 실행은 세션의 `aoi-run-ledger/runs.json` 에 저장됩니다
   - Advanced -> Aoi Run Ledger 에 run 상태, model route, iteration 수, tool-call 총량을 표시합니다
+- **Aoi Autonomy Runtime**
+  - chat, research, Kira, workspace, browser context 를 observation 으로 모으고 evidence ref 를
+    유지합니다
+  - mission, active goal, context routing, background attention broker, operator digest 를 통해
+    사용자를 방해하지 않는 제안을 만듭니다
+  - proposal 은 accept/dismiss/snooze/feedback 과 cooldown, source feedback, quiet mode 를
+    반영합니다
+  - read-only research artifact/status 는 policy check 후 실행할 수 있고, research start, procedure
+    저장, Kira handoff, command 실행은 preview/approval boundary 를 따릅니다
+  - `aoiOperatorReplay` 는 대표 운영 시나리오를 fixture 로 재현해 source 선택, 승인 경계, evidence
+    ref, non-interruption, blocked reason 을 회귀 테스트합니다
 - **Skills Workshop**
   - built-in skill 과 사용자가 만든 skill 을 trigger term 으로 매칭합니다
   - enabled 이면서 trusted 인 skill 만 system prompt 에 주입합니다
@@ -171,21 +182,24 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - 시맨틱 리네임은 preview 서명 없이 apply 할 수 없습니다
 - 워크스페이스 명령은 읽기 전용 `git` / `node` / `npm` / `pnpm` 안전 패턴만 허용됩니다
 - Kira 는 계획된 검증 명령을 직접 다시 돌리고, 실패하면 block 또는 retry 할 수 있습니다
-- Aoi research run 은 AOI main LLM 을 그대로 재사용하며, live web 수집에는 Tavily 설정이
-  필요합니다. 산출물은 `sessions/<character>/<mod>/aoi-research/runs/<runId>/` 아래
-  `manifest.json`, `report.md`, `sources.json`, `evidence.json` 으로 저장됩니다. 보고서는
-  수집된 source claim 에서 생성되고 citation coverage 검증을 거치며, 실패/timeout/cancel
-  시에도 가능한 partial artifact 를 남깁니다. Aoi Research 앱은 compact manifest summary 만
-  목록으로 받고, report/source/evidence 본문은 선택한 run 에 대해 따로 읽습니다. Tavily 미설정,
-  private/local URL 차단, source read 실패, malformed model JSON, artifact cap, duplicate active
-  request, max concurrency 제한은 run status 또는 API error 로 드러납니다. 완료된 research run 은
-  Aoi memory v2 에 날짜가 포함된 permanent `research_run` 요약도 저장하므로, 이후 채팅에서 관련
-  질문이 나오면 결과를 바로 떠올리고 필요할 때 report artifact 를 다시 열 수 있습니다.
-- Aoi memory v2 는 사용자가 명시적으로 "영구히 기억해줘", "절대 잊지 마"처럼 요청한 항목을
-  permanent memory 로 저장합니다. Permanent memory 는 만료되지 않고 retrieval 우선순위를 받으며,
-  비영구 자동 추출 후보가 같은 사실을 덮어쓰지 못합니다. 단, 사용자가 직접 archive/delete 하는 것은
-  가능합니다. 또한 Aoi 는 별도 요청이 없어도 일반 채팅에서 재사용 가치가 있는 관심사, 취향, 기술 질문
-  주제를 자동으로 장기 기억해 이후 답변에 활용합니다.
+- Aoi autonomy 는 사용자 승인 없이 고위험 mutation 을 실행하지 않습니다. Approved command 경로도 cwd
+  guard, destructive pattern 차단, approval fingerprint, timeout, redacted audit record 를 다시
+  확인합니다
+- Aoi research run 은 AOI main LLM 을 그대로 재사용하며, live web 수집에는 Tavily 설정이 필요합니다.
+  산출물은 `sessions/<character>/<mod>/aoi-research/runs/<runId>/` 아래 `manifest.json`,
+  `report.md`, `sources.json`, `evidence.json` 으로 저장됩니다. 보고서는 수집된 source claim 에서
+  생성되고 citation coverage 검증을 거치며, 실패/timeout/cancel 시에도 가능한 partial artifact 를
+  남깁니다. Aoi Research 앱은 compact manifest summary 만 목록으로 받고, report/source/evidence
+  본문은 선택한 run 에 대해 따로 읽습니다. Tavily 미설정, private/local URL 차단, source read 실패,
+  malformed model JSON, artifact cap, duplicate active request, max concurrency 제한은 run status
+  또는 API error 로 드러납니다. 완료된 research run 은 Aoi memory v2 에 날짜가 포함된 permanent
+  `research_run` 요약도 저장하므로, 이후 채팅에서 관련 질문이 나오면 결과를 바로 떠올리고 필요할 때
+  report artifact 를 다시 열 수 있습니다.
+- Aoi memory v2 는 사용자가 명시적으로 "영구히 기억해줘", "절대 잊지 마"처럼 요청한 항목을 permanent
+  memory 로 저장합니다. Permanent memory 는 만료되지 않고 retrieval 우선순위를 받으며, 비영구 자동
+  추출 후보가 같은 사실을 덮어쓰지 못합니다. 단, 사용자가 직접 archive/delete 하는 것은 가능합니다.
+  또한 Aoi 는 별도 요청이 없어도 일반 채팅에서 재사용 가치가 있는 관심사, 취향, 기술 질문 주제를
+  자동으로 장기 기억해 이후 답변에 활용합니다.
 
 ## Kira 와 Aoi's IDE
 
@@ -385,10 +399,10 @@ pnpm dev
 }
 ```
 
-Tavily 는 Aoi `Settings -> Advanced -> Tavily Web Search` 에서도 설정할 수 있습니다.
-설정이 저장되면 Aoi 는 최신 정보가 필요한 질문에서 `search_web` 툴을 먼저 사용할 수 있습니다.
-같은 Tavily 설정은 `start_research` 에도 필요하며, research planning, evidence extraction,
-report synthesis, verification 은 AOI main LLM 설정을 재사용합니다.
+Tavily 는 Aoi `Settings -> Advanced -> Tavily Web Search` 에서도 설정할 수 있습니다. 설정이 저장되면
+Aoi 는 최신 정보가 필요한 질문에서 `search_web` 툴을 먼저 사용할 수 있습니다. 같은 Tavily 설정은
+`start_research` 에도 필요하며, research planning, evidence extraction, report synthesis,
+verification 은 AOI main LLM 설정을 재사용합니다.
 
 메모:
 
@@ -451,6 +465,14 @@ report synthesis, verification 은 AOI main LLM 설정을 재사용합니다.
         │   ├── kira/data/
         │   ├── peanalyzer/data/
         │   └── ...
+        ├── aoi-autonomy/
+        │   ├── observations/
+        │   ├── proposals/
+        │   ├── decisions/
+        │   ├── goals/
+        │   └── command-audit/
+        ├── aoi-research/
+        │   └── runs/
         ├── chat/
         └── memory/
 ```
