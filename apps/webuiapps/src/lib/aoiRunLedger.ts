@@ -14,6 +14,13 @@ export type AoiRunLedgerEventType =
   | 'kira_handoff_execution_approved'
   | 'kira_work_item_created'
   | 'kira_handoff_policy_blocked'
+  | 'mission_activated'
+  | 'mission_waiting_state_changed'
+  | 'mission_resumed'
+  | 'mission_paused'
+  | 'mission_completed'
+  | 'mission_blocked'
+  | 'mission_cleared'
   | 'run_completed'
   | 'run_failed';
 

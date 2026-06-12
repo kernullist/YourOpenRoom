@@ -1,7 +1,12 @@
 import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { dirname, isAbsolute, relative, resolve } from 'path';
-import type { AoiObservation, AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
+import type {
+  AoiMissionState,
+  AoiObservation,
+  AoiProposal,
+  AoiProposalDecision,
+} from './aoiAutonomyTypes';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 
 export type AoiRelationNodeKind =
@@ -13,6 +18,7 @@ export type AoiRelationNodeKind =
   | 'reflection'
   | 'procedure'
   | 'goal'
+  | 'mission'
   | 'plan_step'
   | 'project'
   | 'kira_work'
@@ -191,6 +197,9 @@ export function inferAoiRelationNodeKind(ref: string): AoiRelationNodeKind {
   }
   if (ref.startsWith('goal:')) {
     return 'goal';
+  }
+  if (ref.startsWith('mission:')) {
+    return 'mission';
   }
   if (ref.startsWith('plan-step:')) {
     return 'plan_step';
@@ -674,6 +683,64 @@ export function recordAoiKiraHandoffRelations(params: {
   return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
 }
 
+export function recordAoiMissionStateRelations(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  mission: AoiMissionState;
+  now?: number;
+}): AoiRelationIndex {
+  const now = params.now ?? Date.now();
+  const missionRef = `mission:${params.sessionPath}`;
+  const missionNode = makeAoiRelationNode({
+    ref: missionRef,
+    kind: 'mission',
+    label: params.mission.focusSummary || 'Aoi mission focus',
+    status:
+      params.mission.status === 'completed' ||
+      params.mission.status === 'blocked' ||
+      params.mission.status === 'none'
+        ? 'archived'
+        : 'active',
+    now,
+  });
+  const nodes = [missionNode];
+  const edges: AoiRelationEdge[] = [];
+  const sourceRefs = [
+    params.mission.sourceRefs.goalRef,
+    params.mission.sourceRefs.planStepRef,
+    params.mission.sourceRefs.proposalRef,
+    params.mission.sourceRefs.decisionRef,
+    params.mission.sourceRefs.observationRef,
+    params.mission.sourceRefs.researchRunRef,
+    params.mission.sourceRefs.kiraWorkRef,
+    params.mission.lastMeaningfulEventRef,
+    ...params.mission.evidenceRefs,
+  ].filter((ref): ref is string => Boolean(ref));
+
+  for (const ref of [...new Set(sourceRefs)]) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: missionNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref, missionRef],
+        now,
+      }),
+      makeAoiRelationEdge({
+        from: missionNode.id,
+        to: node.id,
+        kind: 'belongs_to',
+        evidenceRefs: [missionRef, ref],
+        now,
+      }),
+    );
+  }
+
+  return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
+}
+
 export function getActiveAoiRelationMemoryIds(
   index: AoiRelationIndex,
   memories: AoiMemoryEntry[],
@@ -727,6 +794,7 @@ function isAoiRelationNodeKind(value: unknown): value is AoiRelationNodeKind {
     value === 'reflection' ||
     value === 'procedure' ||
     value === 'goal' ||
+    value === 'mission' ||
     value === 'plan_step' ||
     value === 'project' ||
     value === 'kira_work' ||

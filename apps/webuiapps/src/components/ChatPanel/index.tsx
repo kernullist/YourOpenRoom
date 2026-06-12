@@ -207,9 +207,11 @@ import {
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
 import {
+  decideAoiMission,
   decideAoiProposal,
   executeAoiProposalAction,
   fetchAoiAutonomyDashboard,
+  fetchAoiMissionState,
   previewAoiProposalAction,
   recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
@@ -220,6 +222,8 @@ import {
 import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiAutonomyNotificationBadge,
+  buildAoiMissionPanelSummary,
+  buildAoiMissionResumePrompt,
   buildAoiProposalInspectorSummary,
   canShowAoiProposalPrimaryAction,
   loadAoiAutonomyPanelSettings,
@@ -236,6 +240,8 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
   AoiGoal,
+  AoiMissionDecisionAction,
+  AoiMissionState,
   AoiProposal,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
@@ -1140,6 +1146,7 @@ function buildSystemPrompt(
   hasTavily = false,
   hasResearchTools = false,
   aoiMemoryPrompt = '',
+  missionPrompt = '',
   capabilityPrompt = '',
   runGoalPrompt = '',
   skillsPrompt = '',
@@ -1280,6 +1287,7 @@ Tool rule:
 - Never call save_memory by itself and stop there.`;
 
   prompt += runGoalPrompt;
+  prompt += missionPrompt;
   prompt += skillsPrompt;
   prompt += mcpPluginPrompt;
   prompt += capabilityPrompt;
@@ -1905,6 +1913,7 @@ const ChatPanel: React.FC<{
     [],
   );
   const [aoiAutonomyActiveGoals, setAoiAutonomyActiveGoals] = useState<AoiGoal[]>([]);
+  const [aoiMissionState, setAoiMissionState] = useState<AoiMissionState | null>(null);
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
@@ -2071,6 +2080,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyActiveProposals([]);
     setAoiAutonomyArchivedProposals([]);
     setAoiAutonomyActiveGoals([]);
+    setAoiMissionState(null);
     setAoiAutonomyEvaluation(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
@@ -2490,6 +2500,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyActiveProposals(snapshot.proposals.active);
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
+      setAoiMissionState(snapshot.mission);
       setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2604,6 +2615,33 @@ const ChatPanel: React.FC<{
       setAoiAutonomyActionId(null);
     }
   }, [refreshAoiAutonomy]);
+
+  const decideAoiMissionFromPanel = useCallback(
+    async (action: AoiMissionDecisionAction) => {
+      const actionId = `mission:${action}`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+
+      try {
+        const result = await decideAoiMission(sessionPathForAutonomy, {
+          action,
+          reason: `User selected ${action} in Aoi Autonomy mission panel.`,
+          evidenceRefs: aoiMissionState?.evidenceRefs,
+        });
+        setAoiMissionState(result.mission);
+        if (result.status) {
+          setAoiAutonomyStatus(result.status);
+        }
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [aoiMissionState?.evidenceRefs, refreshAoiAutonomy],
+  );
 
   const decideAoiProposalFromPanel = useCallback(
     async (
@@ -3800,6 +3838,14 @@ const ChatPanel: React.FC<{
       console.warn('[ChatPanel] Failed to refresh Aoi memories before prompt build', error);
     }
     const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage);
+    let currentAoiMissionPrompt = '';
+    try {
+      const missionResponse = await fetchAoiMissionState(sessionPathRef.current);
+      setAoiMissionState(missionResponse.mission);
+      currentAoiMissionPrompt = buildAoiMissionResumePrompt(missionResponse.mission);
+    } catch (error) {
+      console.warn('[ChatPanel] Failed to refresh Aoi mission state before prompt build', error);
+    }
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -3810,6 +3856,7 @@ const ChatPanel: React.FC<{
       hasTavily,
       hasResearchTools,
       currentAoiMemoryPrompt,
+      currentAoiMissionPrompt,
       capabilityPrompt,
       runGoalPrompt,
       skillsPrompt,
@@ -5749,6 +5796,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
+          aoiMissionState={aoiMissionState}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
@@ -5770,6 +5818,7 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
+          onDecideAoiMission={decideAoiMissionFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
           onPrepareAoiKiraHandoff={prepareAoiKiraHandoffFromPanel}
@@ -6200,6 +6249,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveProposals: AoiProposal[];
   aoiAutonomyArchivedProposals: AoiProposal[];
   aoiAutonomyActiveGoals: AoiGoal[];
+  aoiMissionState: AoiMissionState | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
@@ -6226,6 +6276,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
+  onDecideAoiMission: (action: AoiMissionDecisionAction) => Promise<void>;
   onDecideAoiProposal: (
     proposalId: string,
     action: AoiProposalDecisionAction,
@@ -6268,6 +6319,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveProposals,
   aoiAutonomyArchivedProposals,
   aoiAutonomyActiveGoals,
+  aoiMissionState,
   aoiAutonomyEvaluation,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
@@ -6289,6 +6341,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
+  onDecideAoiMission,
   onDecideAoiProposal,
   onRecordAoiProposalFeedback,
   onPrepareAoiKiraHandoff,
@@ -6515,6 +6568,11 @@ const SettingsModal: React.FC<{
   );
   const [pendingAoiMemoryActionId, setPendingAoiMemoryActionId] = useState<string | null>(null);
   const [expandedAoiProposalId, setExpandedAoiProposalId] = useState<string | null>(null);
+  const [expandedAoiMissionEvidence, setExpandedAoiMissionEvidence] = useState(false);
+  const aoiMissionPanelSummary = useMemo(
+    () => buildAoiMissionPanelSummary(aoiMissionState, expandedAoiMissionEvidence),
+    [aoiMissionState, expandedAoiMissionEvidence],
+  );
   const [autoVerifyFixes, setAutoVerifyFixes] = useState(toolSafetyPolicy.autoVerifyFixes);
   const [allowWorkspaceCommands, setAllowWorkspaceCommands] = useState(
     toolSafetyPolicy.allowWorkspaceCommands,
@@ -8202,6 +8260,121 @@ const SettingsModal: React.FC<{
                           ))}
                         </select>
                       </div>
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Current mission</div>
+                      {aoiMissionPanelSummary.visible ? (
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiMissionPanelSummary.statusLabel}</span>
+                            <span>waiting {aoiMissionPanelSummary.waitingOnLabel}</span>
+                            <span>evidence {aoiMissionPanelSummary.evidenceCount}</span>
+                            {aoiMissionState?.sourceRefs.goalRef && (
+                              <span>
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiMissionState.sourceRefs.goalRef,
+                                  80,
+                                )}
+                              </span>
+                            )}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiMissionPanelSummary.focusSummary}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {aoiMissionPanelSummary.nextActionLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>{aoiMissionPanelSummary.nextActionReason}</div>
+                            {aoiMissionState?.sourceRefs.proposalRef && (
+                              <div>
+                                Proposal:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiMissionState.sourceRefs.proposalRef,
+                                  120,
+                                )}
+                              </div>
+                            )}
+                            {aoiMissionState?.sourceRefs.kiraWorkRef && (
+                              <div>
+                                Kira:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiMissionState.sourceRefs.kiraWorkRef,
+                                  120,
+                                )}
+                              </div>
+                            )}
+                            {aoiMissionState?.sourceRefs.researchRunRef && (
+                              <div>
+                                Research:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiMissionState.sourceRefs.researchRunRef,
+                                  120,
+                                )}
+                              </div>
+                            )}
+                            {aoiMissionPanelSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`mission-evidence-${index}`}>
+                                {sanitizeAoiProposalDisplayText(ref, 220)}
+                              </div>
+                            ))}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalActions}>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onDecideAoiMission('pause')}
+                              disabled={
+                                !aoiMissionPanelSummary.canPause ||
+                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                              }
+                              title="Pause current mission focus"
+                            >
+                              Pause
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onDecideAoiMission('resume')}
+                              disabled={
+                                !aoiMissionPanelSummary.canResume ||
+                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                              }
+                              title="Resume current mission focus"
+                            >
+                              Resume
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => void onDecideAoiMission('clear')}
+                              disabled={
+                                !aoiMissionPanelSummary.canClear ||
+                                Boolean(aoiAutonomyActionId?.startsWith('mission:'))
+                              }
+                              title="Clear current mission focus"
+                            >
+                              Clear
+                            </button>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() => setExpandedAoiMissionEvidence((prev) => !prev)}
+                              title="Show mission evidence"
+                            >
+                              {expandedAoiMissionEvidence ? (
+                                <ChevronDown size={14} />
+                              ) : (
+                                <ChevronRight size={14} />
+                              )}
+                              Evidence
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No active mission focus.</p>
+                      )}
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>

@@ -224,6 +224,74 @@ export interface AoiGoalProgressEvent {
   toStatus?: AoiGoalStatus;
 }
 
+export type AoiMissionStatus =
+  | 'none'
+  | 'active'
+  | 'waiting_on_user'
+  | 'waiting_on_kira'
+  | 'waiting_on_research'
+  | 'paused'
+  | 'completed'
+  | 'blocked';
+
+export type AoiMissionWaitingOn = 'none' | 'aoi' | 'user' | 'kira' | 'research';
+
+export type AoiMissionRecommendedActionKind =
+  | 'none'
+  | 'review_goal'
+  | 'answer_user'
+  | 'wait_for_user'
+  | 'inspect_kira'
+  | 'inspect_research'
+  | 'prepare_research'
+  | 'prepare_kira'
+  | 'resume_mission';
+
+export interface AoiMissionRecommendedAction {
+  kind: AoiMissionRecommendedActionKind;
+  label: string;
+  reason: string;
+  ref?: string;
+}
+
+export interface AoiMissionSourceRefs {
+  goalRef?: string;
+  planStepRef?: string;
+  proposalRef?: string;
+  decisionRef?: string;
+  observationRef?: string;
+  researchRunRef?: string;
+  kiraWorkRef?: string;
+}
+
+export interface AoiMissionTransitionRef {
+  from: AoiMissionStatus;
+  to: AoiMissionStatus;
+  createdAt: number;
+  reason: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiMissionState {
+  version: 1;
+  sessionPath: string;
+  status: AoiMissionStatus;
+  activeGoalId?: string;
+  focusSummary: string;
+  waitingOn: AoiMissionWaitingOn;
+  lastMeaningfulEventRef?: string;
+  nextRecommendedAction: AoiMissionRecommendedAction;
+  evidenceRefs: string[];
+  sourceRefs: AoiMissionSourceRefs;
+  transitions: AoiMissionTransitionRef[];
+  createdAt: number;
+  updatedAt: number;
+  pausedAt?: number;
+  blockedReason?: string;
+}
+
+export type AoiMissionDecisionAction = 'pause' | 'resume' | 'clear' | 'complete' | 'block';
+
 export interface AoiProposalDecision {
   version: 1;
   id: string;

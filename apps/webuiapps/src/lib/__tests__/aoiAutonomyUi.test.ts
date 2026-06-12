@@ -3,6 +3,8 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiAutonomyNotificationBadge,
+  buildAoiMissionPanelSummary,
+  buildAoiMissionResumePrompt,
   buildAoiProposalInspectorSummary,
   canShowAoiProposalPrimaryAction,
   getAoiSafeAlternativeForReasons,
@@ -11,7 +13,7 @@ import {
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
-import type { AoiAutonomyPolicy, AoiProposal } from '../aoiAutonomyTypes';
+import type { AoiAutonomyPolicy, AoiMissionState, AoiProposal } from '../aoiAutonomyTypes';
 
 function makePolicy(partial: Partial<AoiAutonomyPolicy> = {}): AoiAutonomyPolicy {
   return {
@@ -46,6 +48,38 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     memoryIds: ['aoi-memory-ui-test'],
     artifactRefs: ['research:aoi-research-ui-test/report'],
     riskSignals: [],
+    ...partial,
+  };
+}
+
+function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    status: 'waiting_on_research',
+    activeGoalId: 'aoi-goal-ui-test',
+    focusSummary: 'Refresh Windows kernel security research',
+    waitingOn: 'research',
+    lastMeaningfulEventRef: 'goal-progress:ui-test',
+    nextRecommendedAction: {
+      kind: 'inspect_research',
+      label: 'Inspect research run status.',
+      reason: 'A research run is linked to the mission.',
+      ref: 'research:aoi-research-ui-test',
+    },
+    evidenceRefs: [
+      'goal:aoi-goal-ui-test',
+      'research:aoi-research-ui-test',
+      'proposal:aoi-proposal-ui-test-001',
+    ],
+    sourceRefs: {
+      goalRef: 'goal:aoi-goal-ui-test',
+      proposalRef: 'proposal:aoi-proposal-ui-test-001',
+      researchRunRef: 'research:aoi-research-ui-test',
+    },
+    transitions: [],
+    createdAt: 1000,
+    updatedAt: 2000,
     ...partial,
   };
 }
@@ -227,5 +261,25 @@ describe('Aoi autonomy UI helpers', () => {
         'kira_handoff_scope_too_broad',
       ]),
     ).toContain('Narrow');
+  });
+
+  it('builds compact mission panel and prompt context', () => {
+    const mission = makeMission();
+    const collapsed = buildAoiMissionPanelSummary(mission);
+    const expanded = buildAoiMissionPanelSummary(mission, true);
+    const prompt = buildAoiMissionResumePrompt(mission);
+
+    expect(collapsed).toMatchObject({
+      visible: true,
+      waitingOnLabel: 'research',
+      evidenceRefs: [],
+      canPause: true,
+      canResume: false,
+    });
+    expect(expanded.evidenceRefs).toEqual(mission.evidenceRefs);
+    expect(prompt).toContain('Aoi Mission Context');
+    expect(prompt).toContain('research:aoi-research-ui-test');
+    expect(prompt.length).toBeLessThan(900);
+    expect(buildAoiMissionResumePrompt(makeMission({ status: 'completed' }))).toBe('');
   });
 });

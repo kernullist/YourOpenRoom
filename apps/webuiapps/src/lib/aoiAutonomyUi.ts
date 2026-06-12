@@ -9,6 +9,7 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
   AoiAutonomyStatus,
+  AoiMissionState,
   AoiProposal,
 } from './aoiAutonomyTypes';
 
@@ -70,6 +71,20 @@ export interface AoiProposalInspectorSummary {
   policyReasons: string[];
   evidenceRefs: string[];
   safeAlternative: string;
+}
+
+export interface AoiMissionPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  waitingOnLabel: string;
+  focusSummary: string;
+  nextActionLabel: string;
+  nextActionReason: string;
+  evidenceCount: number;
+  evidenceRefs: string[];
+  canPause: boolean;
+  canResume: boolean;
+  canClear: boolean;
 }
 
 export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
@@ -378,6 +393,73 @@ export function buildAoiProposalInspectorSummary(params: {
     evidenceRefs: params.includeEvidence ? params.proposal.evidenceRefs.slice(0, 8) : [],
     safeAlternative: getAoiSafeAlternativeForReasons(params.proposal, policyResult.reasons),
   };
+}
+
+export function buildAoiMissionPanelSummary(
+  mission: AoiMissionState | null | undefined,
+  includeEvidence = false,
+): AoiMissionPanelSummary {
+  if (!mission || mission.status === 'none') {
+    return {
+      visible: false,
+      statusLabel: 'None',
+      waitingOnLabel: 'None',
+      focusSummary: 'No active mission.',
+      nextActionLabel: 'No immediate action.',
+      nextActionReason: 'No active mission focus.',
+      evidenceCount: 0,
+      evidenceRefs: [],
+      canPause: false,
+      canResume: false,
+      canClear: false,
+    };
+  }
+
+  const canPause =
+    mission.status === 'active' ||
+    mission.status === 'waiting_on_user' ||
+    mission.status === 'waiting_on_kira' ||
+    mission.status === 'waiting_on_research';
+  return {
+    visible: true,
+    statusLabel: mission.status.replace(/_/g, ' '),
+    waitingOnLabel: mission.waitingOn.replace(/_/g, ' '),
+    focusSummary: sanitizeAoiProposalDisplayText(mission.focusSummary, 160),
+    nextActionLabel: sanitizeAoiProposalDisplayText(mission.nextRecommendedAction.label, 160),
+    nextActionReason: sanitizeAoiProposalDisplayText(mission.nextRecommendedAction.reason, 220),
+    evidenceCount: mission.evidenceRefs.length,
+    evidenceRefs: includeEvidence ? mission.evidenceRefs.slice(0, 8) : [],
+    canPause,
+    canResume: mission.status === 'paused',
+    canClear: mission.status !== 'none',
+  };
+}
+
+export function buildAoiMissionResumePrompt(mission: AoiMissionState | null | undefined): string {
+  if (!mission || mission.status === 'none' || mission.status === 'completed') {
+    return '';
+  }
+  const refs = [
+    mission.sourceRefs.goalRef,
+    mission.sourceRefs.proposalRef,
+    mission.sourceRefs.kiraWorkRef,
+    mission.sourceRefs.researchRunRef,
+    mission.lastMeaningfulEventRef,
+  ].filter((ref): ref is string => Boolean(ref));
+  const refLine = refs.length > 0 ? `- Evidence refs: ${refs.slice(0, 5).join(', ')}.` : '';
+  return [
+    '',
+    '',
+    'Aoi Mission Context:',
+    `- Where we left off: ${JSON.stringify(sanitizeAoiProposalDisplayText(mission.focusSummary, 160))}.`,
+    `- Status: ${mission.status}; waiting on: ${mission.waitingOn}.`,
+    `- Next safe action: ${JSON.stringify(sanitizeAoiProposalDisplayText(mission.nextRecommendedAction.label, 160))}.`,
+    `- Reason: ${JSON.stringify(sanitizeAoiProposalDisplayText(mission.nextRecommendedAction.reason, 180))}.`,
+    refLine,
+    '- Treat this as compact context only. Do not execute tools or mutate state from this context without the current user request and normal approval gates.',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }
 
 export function summarizeAoiAutonomyProposalCounts(

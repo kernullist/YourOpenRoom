@@ -23,6 +23,7 @@ import {
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
 } from './aoiAutonomyStore';
+import { applyAoiMissionDecision, deriveAoiMissionState } from './aoiAutonomyMission';
 import type { AoiAutonomyTickReason } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
 
@@ -227,6 +228,23 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/mission') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        mission: deriveAoiMissionState({ sessionsDir, sessionPath }),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -243,6 +261,53 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         policy,
       });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/mission/decision') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const action = body.action;
+      if (
+        action !== 'pause' &&
+        action !== 'resume' &&
+        action !== 'clear' &&
+        action !== 'complete' &&
+        action !== 'block'
+      ) {
+        writeJson(res, 400, {
+          error: 'action must be one of pause, resume, clear, complete, block',
+          code: 'invalid_mission_decision_action',
+        });
+        return true;
+      }
+      try {
+        const mission = applyAoiMissionDecision(sessionsDir, sessionPath, {
+          action,
+          reason: typeof body.reason === 'string' ? body.reason : undefined,
+          evidenceRefs: Array.isArray(body.evidenceRefs)
+            ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
+            : undefined,
+        });
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          mission,
+          status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'blocked_mission_transition',
+        });
+      }
       return true;
     }
 

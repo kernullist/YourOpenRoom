@@ -5,6 +5,8 @@ import type {
   AoiAutonomyTickResult,
   AoiGoal,
   AoiGoalProgressEvent,
+  AoiMissionDecisionAction,
+  AoiMissionState,
   AoiObservation,
   AoiProposal,
   AoiProposalDecision,
@@ -49,6 +51,7 @@ export interface AoiAutonomyDashboardSnapshot {
   status: AoiAutonomyStatus;
   proposals: AoiAutonomyProposalList;
   goals: AoiAutonomyGoalList;
+  mission: AoiMissionState | null;
   evaluation: AoiAutonomyEvaluationResult;
 }
 
@@ -90,6 +93,18 @@ export interface AoiAutonomyGoalDecisionInput {
   reason?: string;
   evidenceRefs?: string[];
   userConfirmed?: boolean;
+}
+
+export interface AoiAutonomyMissionResponse {
+  sessionPath: string;
+  mission: AoiMissionState | null;
+  status?: AoiAutonomyStatus;
+}
+
+export interface AoiAutonomyMissionDecisionInput {
+  action: AoiMissionDecisionAction;
+  reason?: string;
+  evidenceRefs?: string[];
 }
 
 export interface AoiAutonomyProposalDecisionInput {
@@ -282,13 +297,31 @@ export async function fetchAoiAutonomyEvaluation(
   };
 }
 
+export async function fetchAoiMissionState(
+  sessionPath: string,
+): Promise<AoiAutonomyMissionResponse> {
+  const response = await fetch(`${API_PREFIX}/mission?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi mission state.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    mission: isRecord(payload.mission) ? (payload.mission as AoiMissionState) : null,
+    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+  };
+}
+
 export async function fetchAoiAutonomyDashboard(
   sessionPath: string,
 ): Promise<AoiAutonomyDashboardSnapshot> {
-  const [status, proposals, goals, evaluation] = await Promise.all([
+  const [status, proposals, goals, mission, evaluation] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
     fetchAoiAutonomyGoals(sessionPath),
+    fetchAoiMissionState(sessionPath),
     fetchAoiAutonomyEvaluation(sessionPath),
   ]);
 
@@ -297,6 +330,7 @@ export async function fetchAoiAutonomyDashboard(
     status,
     proposals,
     goals,
+    mission: mission.mission,
     evaluation: evaluation.evaluation,
   };
 }
@@ -455,6 +489,33 @@ export async function decideAoiGoal(
     archived: asArray<AoiGoal>(payload.archived),
     proposal: isRecord(payload.proposal) ? (payload.proposal as AoiProposal) : undefined,
     decision: isRecord(payload.decision) ? (payload.decision as AoiProposalDecision) : undefined,
+    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+  };
+}
+
+export async function decideAoiMission(
+  sessionPath: string,
+  input: AoiAutonomyMissionDecisionInput,
+): Promise<AoiAutonomyMissionResponse> {
+  const response = await fetch(`${API_PREFIX}/mission/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      action: input.action,
+      reason: input.reason,
+      evidenceRefs: input.evidenceRefs,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to update Aoi mission.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    mission: isRecord(payload.mission) ? (payload.mission as AoiMissionState) : null,
     status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
   };
 }

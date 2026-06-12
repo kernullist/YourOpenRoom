@@ -7,10 +7,11 @@ import {
   loadAoiRelationIndex,
   makeAoiRelationEdge,
   makeAoiRelationNode,
+  recordAoiMissionStateRelations,
   recordAoiProposalCreatedRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
-import type { AoiProposal } from '../aoiAutonomyTypes';
+import type { AoiMissionState, AoiProposal } from '../aoiAutonomyTypes';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 const tempRoots: string[] = [];
@@ -64,6 +65,34 @@ function makeMemory(id: string, status: AoiMemoryEntry['status']): AoiMemoryEntr
     sourceEpisodeIds: ['episode-1'],
     tags: [],
     entities: [],
+  };
+}
+
+function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    status: 'waiting_on_kira',
+    activeGoalId: 'aoi-goal-relation-001',
+    focusSummary: 'Continue supervised Kira handoff',
+    waitingOn: 'kira',
+    lastMeaningfulEventRef: 'observation:kira-created',
+    nextRecommendedAction: {
+      kind: 'inspect_kira',
+      label: 'Inspect Kira work status.',
+      reason: 'A Kira work item is linked to the mission.',
+      ref: 'kira-work:kira-001',
+    },
+    evidenceRefs: ['goal:aoi-goal-relation-001', 'proposal:proposal-relation-001'],
+    sourceRefs: {
+      goalRef: 'goal:aoi-goal-relation-001',
+      proposalRef: 'proposal:proposal-relation-001',
+      kiraWorkRef: 'kira-work:kira-001',
+    },
+    transitions: [],
+    createdAt: 1000,
+    updatedAt: 2000,
+    ...partial,
   };
 }
 
@@ -135,5 +164,26 @@ describe('Aoi autonomy relation index', () => {
     ]);
 
     expect(activeIds).toEqual([]);
+  });
+
+  it('records mission links to goal, proposal, and worker refs', () => {
+    const root = makeTempRoot();
+    const index = recordAoiMissionStateRelations({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      mission: makeMission(),
+      now: 3000,
+    });
+
+    const missionNode = index.nodes.find((node) => node.kind === 'mission');
+    expect(missionNode).toBeTruthy();
+    expect(index.nodes.some((node) => node.ref === 'goal:aoi-goal-relation-001')).toBe(true);
+    expect(index.nodes.some((node) => node.ref === 'proposal:proposal-relation-001')).toBe(true);
+    expect(index.nodes.some((node) => node.ref === 'kira-work:kira-001')).toBe(true);
+    expect(
+      index.edges.some(
+        (edge) => edge.to === missionNode?.id && edge.evidenceRefs.includes('kira-work:kira-001'),
+      ),
+    ).toBe(true);
   });
 });
