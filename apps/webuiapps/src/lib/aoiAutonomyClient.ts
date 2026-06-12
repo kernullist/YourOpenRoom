@@ -3,6 +3,9 @@ import type {
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
+  AoiBrowserContextMetadata,
+  AoiContextRouterResult,
+  AoiContextSourceFeedback,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiGoal,
@@ -57,6 +60,7 @@ export interface AoiAutonomyDashboardSnapshot {
   mission: AoiMissionState | null;
   environmentSources: AoiEnvironmentSourceRegistry;
   workspaceSnapshot: AoiWorkspaceSnapshot | null;
+  contextRouter: AoiContextRouterResult | null;
   evaluation: AoiAutonomyEvaluationResult;
 }
 
@@ -91,6 +95,44 @@ export interface AoiWorkspaceSignalResponse {
   ok: boolean;
   sessionPath: string;
   snapshot: AoiWorkspaceSnapshot | null;
+}
+
+export interface AoiContextRouterResponse {
+  ok: boolean;
+  sessionPath: string;
+  context: AoiContextRouterResult | null;
+}
+
+export interface AoiBrowserContextInput {
+  pageTitle: string;
+  url: string;
+  purpose?: string;
+  capturedAt?: number;
+}
+
+export interface AoiBrowserContextResponse {
+  ok: boolean;
+  sessionPath: string;
+  browserContext: AoiBrowserContextMetadata;
+  context: AoiContextRouterResult | null;
+}
+
+export interface AoiContextSourceFeedbackInput {
+  sourceId: string;
+  contextSummaryId?: string;
+  feedbackCategory: Extract<
+    AoiProposalFeedbackCategory,
+    'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+  >;
+  feedbackNote?: string;
+  evidenceRefs?: string[];
+}
+
+export interface AoiContextSourceFeedbackResponse {
+  ok: boolean;
+  sessionPath: string;
+  feedback: AoiContextSourceFeedback;
+  context: AoiContextRouterResult | null;
 }
 
 export interface AoiAutonomyProposalDecisionResult {
@@ -383,19 +425,113 @@ export async function fetchAoiWorkspaceSnapshot(
   };
 }
 
+export async function fetchAoiContextRouter(
+  sessionPath: string,
+  options: { latestUserMessage?: string } = {},
+): Promise<AoiContextRouterResponse> {
+  const messageQuery =
+    typeof options.latestUserMessage === 'string'
+      ? `&latestUserMessage=${encodeURIComponent(options.latestUserMessage)}`
+      : '';
+  const response = await fetch(`${API_PREFIX}/context?${sessionQuery(sessionPath)}${messageQuery}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi context router.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+  };
+}
+
+export async function recordAoiBrowserContext(
+  sessionPath: string,
+  input: AoiBrowserContextInput,
+): Promise<AoiBrowserContextResponse> {
+  const response = await fetch(`${API_PREFIX}/context/browser`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      pageTitle: input.pageTitle,
+      url: input.url,
+      purpose: input.purpose,
+      capturedAt: input.capturedAt,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi browser context.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    browserContext: requireRecordField<AoiBrowserContextMetadata>(
+      payload,
+      'browserContext',
+      'Aoi browser context response was malformed.',
+    ),
+    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+  };
+}
+
+export async function recordAoiContextSourceFeedback(
+  sessionPath: string,
+  input: AoiContextSourceFeedbackInput,
+): Promise<AoiContextSourceFeedbackResponse> {
+  const response = await fetch(`${API_PREFIX}/context/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      sourceId: input.sourceId,
+      contextSummaryId: input.contextSummaryId,
+      feedbackCategory: input.feedbackCategory,
+      feedbackNote: input.feedbackNote,
+      evidenceRefs: input.evidenceRefs,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi context feedback.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    feedback: requireRecordField<AoiContextSourceFeedback>(
+      payload,
+      'feedback',
+      'Aoi context feedback response was malformed.',
+    ),
+    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+  };
+}
+
 export async function fetchAoiAutonomyDashboard(
   sessionPath: string,
 ): Promise<AoiAutonomyDashboardSnapshot> {
-  const [status, proposals, goals, mission, environmentSources, workspace, evaluation] =
-    await Promise.all([
-      fetchAoiAutonomyStatus(sessionPath),
-      fetchAoiAutonomyProposals(sessionPath, true),
-      fetchAoiAutonomyGoals(sessionPath),
-      fetchAoiMissionState(sessionPath),
-      fetchAoiEnvironmentSources(sessionPath),
-      fetchAoiWorkspaceSnapshot(sessionPath),
-      fetchAoiAutonomyEvaluation(sessionPath),
-    ]);
+  const [
+    status,
+    proposals,
+    goals,
+    mission,
+    environmentSources,
+    workspace,
+    contextRouter,
+    evaluation,
+  ] = await Promise.all([
+    fetchAoiAutonomyStatus(sessionPath),
+    fetchAoiAutonomyProposals(sessionPath, true),
+    fetchAoiAutonomyGoals(sessionPath),
+    fetchAoiMissionState(sessionPath),
+    fetchAoiEnvironmentSources(sessionPath),
+    fetchAoiWorkspaceSnapshot(sessionPath),
+    fetchAoiContextRouter(sessionPath),
+    fetchAoiAutonomyEvaluation(sessionPath),
+  ]);
 
   return {
     sessionPath,
@@ -405,6 +541,7 @@ export async function fetchAoiAutonomyDashboard(
     mission: mission.mission,
     environmentSources: environmentSources.registry,
     workspaceSnapshot: workspace.snapshot,
+    contextRouter: contextRouter.context,
     evaluation: evaluation.evaluation,
   };
 }

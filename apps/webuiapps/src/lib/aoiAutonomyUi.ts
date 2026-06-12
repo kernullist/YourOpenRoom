@@ -11,6 +11,8 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
   AoiAutonomyStatus,
+  AoiContextRouterResult,
+  AoiContextSourceSummary,
   AoiEnvironmentSource,
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
@@ -170,6 +172,23 @@ export interface AoiWorkspaceSignalPanelSummary {
   changedFileLabels: string[];
   evidenceRefs: string[];
   warningCount: number;
+}
+
+export interface AoiContextSourcePanelSummary {
+  id: string;
+  sourceId: string;
+  label: string;
+  kindLabel: string;
+  displayNameLabel: string;
+  scoreLabel: string;
+  freshnessLabel: string;
+  confidenceLabel: string;
+  redactionLabel: string;
+  summary: string;
+  evidenceRefs: string[];
+  scoreReasons: string[];
+  wrongEvidenceTitle: string;
+  wrongTimingTitle: string;
 }
 
 export interface AoiProposalActionPresentation {
@@ -1288,6 +1307,50 @@ export function buildAoiWorkspaceSignalPanelSummary(
       .map((ref) => sanitizeAoiProposalDisplayText(ref, 160)),
     warningCount: snapshot.warnings.length,
   };
+}
+
+function formatAoiContextSourceKind(kind: string): string {
+  return kind.replace(/_/g, ' ');
+}
+
+function buildAoiContextSourcePanelSummary(
+  source: AoiContextSourceSummary,
+): AoiContextSourcePanelSummary {
+  const displayNameLabel = source.displayName || source.label;
+  return {
+    id: source.id,
+    sourceId: source.sourceId,
+    label: sanitizeAoiProposalDisplayText(source.label, 120),
+    kindLabel: sanitizeAoiProposalDisplayText(formatAoiContextSourceKind(source.kind), 80),
+    displayNameLabel: sanitizeAoiProposalDisplayText(displayNameLabel, 96),
+    scoreLabel: `${Math.round(source.relevanceScore * 100)}%`,
+    freshnessLabel: sanitizeAoiProposalDisplayText(source.freshness, 40),
+    confidenceLabel: `${Math.round(source.confidence * 100)}%`,
+    redactionLabel:
+      source.redactionState === 'redacted'
+        ? 'redacted'
+        : source.redactionState === 'withheld'
+          ? 'withheld'
+          : 'clean',
+    summary: sanitizeAoiProposalDisplayText(source.summary, 260),
+    evidenceRefs: source.evidenceRefs
+      .slice(0, 6)
+      .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),
+    scoreReasons: source.scoreReasons
+      .slice(0, 5)
+      .map((reason) => sanitizeAoiProposalDisplayText(reason, 160)),
+    wrongEvidenceTitle: `Mark ${displayNameLabel} as wrong evidence for future routing.`,
+    wrongTimingTitle: `Mark ${displayNameLabel} as wrong timing for future routing.`,
+  };
+}
+
+export function buildAoiContextSourcePanelSummaries(
+  result: AoiContextRouterResult | null | undefined,
+): AoiContextSourcePanelSummary[] {
+  if (!result) {
+    return [];
+  }
+  return result.selectedSources.map(buildAoiContextSourcePanelSummary);
 }
 
 export function buildAoiMissionResumePrompt(mission: AoiMissionState | null | undefined): string {

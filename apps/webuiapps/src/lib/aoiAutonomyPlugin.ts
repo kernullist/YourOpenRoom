@@ -31,7 +31,12 @@ import {
   loadAoiWorkspaceSnapshot,
   recordAoiValidationSignal,
 } from './aoiWorkspaceSignals';
-import type { AoiAutonomyTickReason } from './aoiAutonomyTypes';
+import {
+  buildAoiContextRouterResult,
+  recordAoiBrowserContextMetadata,
+  recordAoiContextSourceFeedback,
+} from './aoiContextRouter';
+import type { AoiAutonomyTickReason, AoiProposalFeedbackCategory } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
 
 const API_PREFIX = '/api/aoi-autonomy';
@@ -296,6 +301,28 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/context') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const latestUserMessage = url.searchParams.get('latestUserMessage') || '';
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        context: buildAoiContextRouterResult({
+          sessionsDir,
+          sessionPath,
+          latestUserMessage,
+        }),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -346,6 +373,85 @@ async function handleAoiAutonomyRequest(
         writeJson(res, statusCode, {
           error: message,
           code: statusCode === 404 ? 'source_not_found' : 'invalid_source_update',
+        });
+      }
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/context/browser') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const urlValue = typeof body.url === 'string' ? body.url : '';
+      if (!urlValue.trim()) {
+        writeJson(res, 400, {
+          error: 'url is required.',
+          code: 'invalid_browser_context',
+        });
+        return true;
+      }
+      const context = recordAoiBrowserContextMetadata({
+        sessionsDir,
+        sessionPath,
+        pageTitle: typeof body.pageTitle === 'string' ? body.pageTitle : 'Untitled page',
+        url: urlValue,
+        purpose: typeof body.purpose === 'string' ? body.purpose : undefined,
+        capturedAt: typeof body.capturedAt === 'number' ? body.capturedAt : undefined,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        browserContext: context,
+        context: buildAoiContextRouterResult({
+          sessionsDir,
+          sessionPath,
+        }),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/context/feedback') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      try {
+        const feedback = recordAoiContextSourceFeedback({
+          sessionsDir,
+          sessionPath,
+          sourceId: typeof body.sourceId === 'string' ? body.sourceId : '',
+          contextSummaryId:
+            typeof body.contextSummaryId === 'string' ? body.contextSummaryId : undefined,
+          feedbackCategory: body.feedbackCategory as AoiProposalFeedbackCategory,
+          feedbackNote: typeof body.feedbackNote === 'string' ? body.feedbackNote : undefined,
+          evidenceRefs: Array.isArray(body.evidenceRefs)
+            ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
+            : undefined,
+        });
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          feedback,
+          context: buildAoiContextRouterResult({
+            sessionsDir,
+            sessionPath,
+          }),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'invalid_context_feedback',
         });
       }
       return true;

@@ -1,11 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import { decideAoiMission } from '../aoiAutonomyClient';
+import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContextRouter';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
+  buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
@@ -23,6 +25,8 @@ import {
 } from '../aoiAutonomyUi';
 import type {
   AoiAutonomyPolicy,
+  AoiContextRouterResult,
+  AoiContextSourceSummary,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
@@ -184,6 +188,39 @@ function makeWorkspaceSnapshot(partial: Partial<AoiWorkspaceSnapshot> = {}): Aoi
     evidenceRefs: ['workspace:snapshot:ui-test', 'workspace:validation:stale'],
     warnings: [],
     ...partial,
+  };
+}
+
+function makeContextSource(
+  partial: Partial<AoiContextSourceSummary> = {},
+): AoiContextSourceSummary {
+  return {
+    version: 1,
+    id: 'ctx-ui-test-001',
+    sourceId: 'browser-context',
+    kind: 'browser_context',
+    label: 'Example page',
+    displayName: 'Browser',
+    relevanceScore: 0.91,
+    confidence: 0.84,
+    freshness: 'fresh',
+    redactionState: 'redacted',
+    summary: 'Example page at https://example.com/report is available as explicit metadata only.',
+    evidenceRefs: ['browser:ctx-ui-test-001'],
+    scoreReasons: ['explicit browser context intent detected'],
+    updatedAt: 2000,
+    ...partial,
+  };
+}
+
+function makeContextRouterResult(sources: AoiContextSourceSummary[]): AoiContextRouterResult {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 3000,
+    selectedSources: sources,
+    candidateSources: sources,
+    promptBlock: buildAoiContextPromptBlock(sources),
   };
 }
 
@@ -472,6 +509,54 @@ describe('Aoi autonomy UI helpers', () => {
     expect(browser?.consentSummary).not.toContain('secret-value');
     expect(browser?.gateReason).toContain('source disabled');
     expect(browser?.toggleTitle).toContain('explicit target');
+  });
+
+  it('redacts explicit browser context URLs before UI or prompt display', () => {
+    const sanitized = sanitizeAoiContextUrl(
+      'https://example.com/report?api_key=secret-value&token=abc#private-fragment',
+    );
+
+    expect(sanitized.urlHost).toBe('example.com');
+    expect(sanitized.redactedUrl).toBe('https://example.com/report');
+    expect(sanitized.redactedUrl).not.toContain('api_key');
+    expect(sanitized.redactedUrl).not.toContain('secret-value');
+    expect(sanitized.redactionState).toBe('redacted');
+  });
+
+  it('keeps routed context prompt blocks compact and evidence-backed', () => {
+    const sources = Array.from({ length: 8 }, (_item, index) =>
+      makeContextSource({
+        id: `ctx-ui-test-${index}`,
+        label: `Example page ${index}`,
+        summary:
+          'Metadata only. The router should not inject scraped content or private URL query strings.',
+        evidenceRefs: [`browser:ctx-ui-test-${index}`],
+      }),
+    );
+    const block = buildAoiContextPromptBlock(sources, {
+      maxSources: 3,
+      maxChars: 900,
+    });
+
+    expect(block.length).toBeLessThanOrEqual(900);
+    expect(block.match(/Example page/g)?.length).toBe(3);
+    expect(block).toContain('read-only context');
+    expect(block).toContain('browser:ctx-ui-test-0');
+  });
+
+  it('summarizes selected context sources with feedback affordances', () => {
+    const summaries = buildAoiContextSourcePanelSummaries(
+      makeContextRouterResult([makeContextSource()]),
+    );
+
+    expect(summaries[0]).toMatchObject({
+      sourceId: 'browser-context',
+      displayNameLabel: 'Browser',
+      scoreLabel: '91%',
+      redactionLabel: 'redacted',
+    });
+    expect(summaries[0].wrongEvidenceTitle).toContain('wrong evidence');
+    expect(summaries[0].wrongTimingTitle).toContain('wrong timing');
   });
 
   it('summarizes stale workspace validation as a recommendation without leaking local paths', () => {

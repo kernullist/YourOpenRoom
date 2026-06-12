@@ -19,6 +19,7 @@ import {
 } from '../aoiAutonomyStore';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
+import { buildAoiContextRouterResult } from '../aoiContextRouter';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
@@ -1022,6 +1023,29 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     ).toBe(true);
   });
 
+  it('routes completed research as top context for research continuation', () => {
+    const root = makeTempRoot();
+    writeResearchManifest(root, makeManifest());
+    saveAoiMissionState(root, SESSION_PATH, makeMission());
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'Windows kernel driver security research 보고서 이어서 요약해줘',
+      now: NOW,
+    });
+
+    expect(result.selectedSources[0]).toMatchObject({
+      sourceId: 'research-runs',
+      kind: 'research_runs',
+    });
+    expect(result.selectedSources[0].evidenceRefs).toContain(
+      'research:aoi-research-done-001/report',
+    );
+    expect(result.promptBlock).toContain('Aoi Context Router');
+    expect(result.promptBlock).not.toContain('Aoi Mission Context');
+  });
+
   it('suppresses user-facing attention in quiet mode while keeping observations and ledger', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');
@@ -1087,6 +1111,39 @@ describe('runAoiAutonomyBackgroundTick()', () => {
         },
       },
     });
+  });
+
+  it('routes reviewed Kira work as top context for implementation follow-up', () => {
+    const root = makeTempRoot();
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-reviewed-context-001',
+        scope: 'project',
+        type: 'action',
+        content: 'Kira completed reviewed work "Clarify autonomy approval states".',
+        normalizedContent: 'kira completed reviewed work clarify autonomy approval states',
+        permanent: undefined,
+        tags: ['kira', 'automation', 'completed', 'reviewed'],
+        updatedAt: NOW - 2_000,
+        confidence: 0.82,
+      }),
+    );
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'Kira reviewed work 구현 결과 이어서 확인하자',
+      now: NOW,
+    });
+
+    expect(result.selectedSources[0]).toMatchObject({
+      sourceId: 'kira-board',
+      displayName: 'Kira',
+    });
+    expect(result.selectedSources[0].evidenceRefs).toContain(
+      'memory:memory-kira-reviewed-context-001',
+    );
   });
 
   it('updates mission state silently for stale active-goal waiting events', async () => {

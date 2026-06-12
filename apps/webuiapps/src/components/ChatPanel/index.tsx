@@ -212,8 +212,10 @@ import {
   decideAoiProposal,
   executeAoiProposalAction,
   fetchAoiAutonomyDashboard,
+  fetchAoiContextRouter,
   fetchAoiMissionState,
   previewAoiProposalAction,
+  recordAoiContextSourceFeedback,
   recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
   updateAoiEnvironmentSource,
@@ -226,6 +228,7 @@ import {
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
+  buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
@@ -248,6 +251,7 @@ import type {
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
+  AoiContextRouterResult,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiGoal,
@@ -1142,6 +1146,7 @@ function buildSystemPrompt(
   hasResearchTools = false,
   aoiMemoryPrompt = '',
   missionPrompt = '',
+  contextPrompt = '',
   capabilityPrompt = '',
   runGoalPrompt = '',
   skillsPrompt = '',
@@ -1283,6 +1288,7 @@ Tool rule:
 
   prompt += runGoalPrompt;
   prompt += missionPrompt;
+  prompt += contextPrompt;
   prompt += skillsPrompt;
   prompt += mcpPluginPrompt;
   prompt += capabilityPrompt;
@@ -1914,6 +1920,7 @@ const ChatPanel: React.FC<{
   const [aoiWorkspaceSnapshot, setAoiWorkspaceSnapshot] = useState<AoiWorkspaceSnapshot | null>(
     null,
   );
+  const [aoiContextRouter, setAoiContextRouter] = useState<AoiContextRouterResult | null>(null);
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
@@ -2083,6 +2090,7 @@ const ChatPanel: React.FC<{
     setAoiMissionState(null);
     setAoiEnvironmentSources(null);
     setAoiWorkspaceSnapshot(null);
+    setAoiContextRouter(null);
     setAoiAutonomyEvaluation(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
@@ -2505,6 +2513,7 @@ const ChatPanel: React.FC<{
       setAoiMissionState(snapshot.mission);
       setAoiEnvironmentSources(snapshot.environmentSources);
       setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
+      setAoiContextRouter(snapshot.contextRouter);
       setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2600,6 +2609,41 @@ const ChatPanel: React.FC<{
         if (result.status) {
           setAoiAutonomyStatus(result.status);
         }
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  const recordAoiContextSourceFeedbackFromPanel = useCallback(
+    async (
+      sourceId: string,
+      contextSummaryId: string,
+      feedbackCategory: Extract<
+        AoiProposalFeedbackCategory,
+        'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+      >,
+      evidenceRefs: string[],
+    ) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy) {
+        return;
+      }
+      const actionId = `context:${contextSummaryId}:${feedbackCategory}`;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      try {
+        const result = await recordAoiContextSourceFeedback(sessionPathForAutonomy, {
+          sourceId,
+          contextSummaryId,
+          feedbackCategory,
+          evidenceRefs,
+        });
+        setAoiContextRouter(result.context);
         await refreshAoiAutonomy({ silent: true });
       } catch (error) {
         setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -3912,6 +3956,16 @@ const ChatPanel: React.FC<{
     } catch (error) {
       console.warn('[ChatPanel] Failed to refresh Aoi mission state before prompt build', error);
     }
+    let currentAoiContextPrompt = '';
+    try {
+      const contextResponse = await fetchAoiContextRouter(sessionPathRef.current, {
+        latestUserMessage,
+      });
+      setAoiContextRouter(contextResponse.context);
+      currentAoiContextPrompt = contextResponse.context?.promptBlock ?? '';
+    } catch (error) {
+      console.warn('[ChatPanel] Failed to refresh Aoi context router before prompt build', error);
+    }
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -3923,6 +3977,7 @@ const ChatPanel: React.FC<{
       hasResearchTools,
       currentAoiMemoryPrompt,
       currentAoiMissionPrompt,
+      currentAoiContextPrompt,
       capabilityPrompt,
       runGoalPrompt,
       skillsPrompt,
@@ -5906,6 +5961,7 @@ const ChatPanel: React.FC<{
           aoiMissionState={aoiMissionState}
           aoiEnvironmentSources={aoiEnvironmentSources}
           aoiWorkspaceSnapshot={aoiWorkspaceSnapshot}
+          aoiContextRouter={aoiContextRouter}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
@@ -5926,6 +5982,7 @@ const ChatPanel: React.FC<{
           onAdvancedTabVisible={handleAoiAutonomyAdvancedVisible}
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onUpdateAoiEnvironmentSource={updateAoiEnvironmentSourceFromPanel}
+          onRecordAoiContextSourceFeedback={recordAoiContextSourceFeedbackFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiMission={decideAoiMissionFromPanel}
@@ -6363,6 +6420,7 @@ const SettingsModal: React.FC<{
   aoiMissionState: AoiMissionState | null;
   aoiEnvironmentSources: AoiEnvironmentSourceRegistry | null;
   aoiWorkspaceSnapshot: AoiWorkspaceSnapshot | null;
+  aoiContextRouter: AoiContextRouterResult | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
@@ -6390,6 +6448,15 @@ const SettingsModal: React.FC<{
   onUpdateAoiEnvironmentSource: (
     sourceId: string,
     patch: Partial<AoiEnvironmentSource>,
+  ) => Promise<void>;
+  onRecordAoiContextSourceFeedback: (
+    sourceId: string,
+    contextSummaryId: string,
+    feedbackCategory: Extract<
+      AoiProposalFeedbackCategory,
+      'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+    >,
+    evidenceRefs: string[],
   ) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
@@ -6440,6 +6507,7 @@ const SettingsModal: React.FC<{
   aoiMissionState,
   aoiEnvironmentSources,
   aoiWorkspaceSnapshot,
+  aoiContextRouter,
   aoiAutonomyEvaluation,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
@@ -6460,6 +6528,7 @@ const SettingsModal: React.FC<{
   onAdvancedTabVisible,
   onUpdateAoiAutonomyPolicy,
   onUpdateAoiEnvironmentSource,
+  onRecordAoiContextSourceFeedback,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
   onDecideAoiMission,
@@ -6698,6 +6767,10 @@ const SettingsModal: React.FC<{
   const aoiWorkspaceSignalSummary = useMemo(
     () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
     [aoiWorkspaceSnapshot],
+  );
+  const aoiContextSourceSummaries = useMemo(
+    () => buildAoiContextSourcePanelSummaries(aoiContextRouter),
+    [aoiContextRouter],
   );
   const aoiEnvironmentSourceSummaries = useMemo(
     () => buildAoiEnvironmentSourcePanelSummaries(aoiEnvironmentSources),
@@ -8298,6 +8371,10 @@ const SettingsModal: React.FC<{
                         </strong>
                       </div>
                       <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Context</span>
+                        <strong>{aoiContextSourceSummaries.length}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
                         <span className={styles.promptBudgetLabel}>Workspace</span>
                         <strong>
                           {aoiWorkspaceSignalSummary.visible ? 'Observed' : 'No signal'}
@@ -8422,6 +8499,80 @@ const SettingsModal: React.FC<{
                           ))}
                         </select>
                       </div>
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Context router</div>
+                      {aoiContextSourceSummaries.length > 0 ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {aoiContextSourceSummaries.map((source) => {
+                            const wrongEvidenceActionId = `context:${source.id}:wrong_evidence`;
+                            const wrongTimingActionId = `context:${source.id}:wrong_timing`;
+                            return (
+                              <div className={styles.aoiAutonomyProposalItem} key={source.id}>
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>{source.displayNameLabel}</span>
+                                  <span>{source.kindLabel}</span>
+                                  <span>score {source.scoreLabel}</span>
+                                  <span>fresh {source.freshnessLabel}</span>
+                                  <span>confidence {source.confidenceLabel}</span>
+                                  <span>{source.redactionLabel}</span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {source.label}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {source.summary}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {source.scoreReasons.map((reason, index) => (
+                                    <div key={`${source.id}-reason-${index}`}>{reason}</div>
+                                  ))}
+                                  {source.evidenceRefs.map((ref, index) => (
+                                    <div key={`${source.id}-evidence-${index}`}>{ref}</div>
+                                  ))}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onRecordAoiContextSourceFeedback(
+                                        source.sourceId,
+                                        source.id,
+                                        'wrong_evidence',
+                                        source.evidenceRefs,
+                                      )
+                                    }
+                                    disabled={aoiAutonomyActionId === wrongEvidenceActionId}
+                                    title={source.wrongEvidenceTitle}
+                                  >
+                                    Wrong evidence
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onRecordAoiContextSourceFeedback(
+                                        source.sourceId,
+                                        source.id,
+                                        'wrong_timing',
+                                        source.evidenceRefs,
+                                      )
+                                    }
+                                    disabled={aoiAutonomyActionId === wrongTimingActionId}
+                                    title={source.wrongTimingTitle}
+                                  >
+                                    Wrong timing
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No context source selected.</p>
+                      )}
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>

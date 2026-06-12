@@ -14,6 +14,8 @@ import {
   recordAoiRecoveryProposalRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
+import { buildAoiContextRouterResult } from '../aoiContextRouter';
+import { updateAoiEnvironmentSource } from '../aoiAutonomyStore';
 import type {
   AoiAttentionEvent,
   AoiGoal,
@@ -232,6 +234,44 @@ afterEach(() => {
 });
 
 describe('Aoi autonomy relation index', () => {
+  it('preserves app registry display names when routing app context', () => {
+    const root = makeTempRoot();
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      latestUserMessage: "Aoi's IDE에서 지금 구현하던 작업 이어가자",
+      now: 2000,
+    });
+
+    const appSource = result.selectedSources.find((source) => source.sourceId === 'app-state');
+    expect(appSource).toMatchObject({
+      displayName: "Aoi's IDE",
+      label: "Aoi's IDE app context",
+    });
+    expect(appSource?.summary).toContain('appName=openvscode');
+    expect(appSource?.summary).not.toContain('appId');
+  });
+
+  it('excludes disabled context sources from route candidates', () => {
+    const root = makeTempRoot();
+    updateAoiEnvironmentSource(root, 'aoi/default', {
+      sourceId: 'app-state',
+      patch: {
+        enabled: false,
+      },
+      now: 2000,
+    });
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      latestUserMessage: 'Kira 앱 열어서 reviewed work를 확인하자',
+      now: 2000,
+    });
+
+    expect(result.candidateSources.some((source) => source.sourceId === 'app-state')).toBe(false);
+  });
+
   it('records proposal evidence edges and deduplicates repeated writes', () => {
     const root = makeTempRoot();
     const proposal = makeProposal();

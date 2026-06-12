@@ -508,6 +508,62 @@ export interface AoiWorkspaceSnapshot {
   warnings: string[];
 }
 
+export type AoiContextSourceKind = AoiEnvironmentSourceKind | 'mission_state';
+
+export type AoiContextRedactionState = 'none' | 'redacted' | 'withheld';
+
+export interface AoiContextSourceSummary {
+  version: 1;
+  id: string;
+  sourceId: string;
+  kind: AoiContextSourceKind;
+  label: string;
+  displayName?: string;
+  relevanceScore: number;
+  confidence: number;
+  freshness: AoiSignalFreshness;
+  redactionState: AoiContextRedactionState;
+  summary: string;
+  evidenceRefs: string[];
+  scoreReasons: string[];
+  updatedAt: number;
+  staleReason?: string;
+}
+
+export interface AoiBrowserContextMetadata {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  pageTitle: string;
+  urlHost: string;
+  redactedUrl: string;
+  purpose: string;
+  capturedAt: number;
+  evidenceRefs: string[];
+  redactionState: AoiContextRedactionState;
+}
+
+export interface AoiContextSourceFeedback {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  sourceId: string;
+  contextSummaryId?: string;
+  feedbackCategory: AoiProposalFeedbackCategory;
+  feedbackNote?: string;
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiContextRouterResult {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  selectedSources: AoiContextSourceSummary[];
+  candidateSources: AoiContextSourceSummary[];
+  promptBlock: string;
+}
+
 export interface AoiMissionTransitionRef {
   from: AoiMissionStatus;
   to: AoiMissionStatus;
