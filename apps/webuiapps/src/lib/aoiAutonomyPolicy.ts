@@ -11,6 +11,10 @@ import type {
   AoiProposalPolicyCheckInput,
   AoiProposalPolicyCheckResult,
 } from './aoiAutonomyTypes';
+import {
+  collectAoiKiraHandoffScopeReasons,
+  getAoiKiraSafeNarrowingSuggestion,
+} from './aoiKiraHandoff';
 
 export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
   L0: 0,
@@ -93,6 +97,11 @@ const AOI_AUTONOMY_TOOL_POLICIES: Record<string, AoiAutonomyToolPolicy> = {
     maxLevel: 'L4',
     requiresApproval: true,
   },
+  create_kira_work: {
+    toolName: 'create_kira_work',
+    maxLevel: 'L4',
+    requiresApproval: true,
+  },
   file_write: {
     toolName: 'file_write',
     maxLevel: 'L5',
@@ -125,6 +134,7 @@ const EXECUTABLE_PROPOSAL_ACTIONS = new Set([
   'get_research_status',
   'start_research',
   'save_memory',
+  'create_kira_work',
 ]);
 
 const READ_ONLY_PROPOSAL_ACTIONS = new Set([
@@ -352,10 +362,15 @@ export function evaluateAoiProposalExecution(
   const actionKind = getExecutionActionKind(proposal);
   const toolName = actionKind ? actionKindToToolName(actionKind) : undefined;
   const readOnly = actionKind ? READ_ONLY_PROPOSAL_ACTIONS.has(actionKind) : false;
+  const kiraHandoff = actionKind === 'create_kira_work';
   const requiresFreshAcceptance =
-    proposal.risk === 'high' || actionKind === 'start_research' || !readOnly;
+    context.executionMode === 'preview'
+      ? false
+      : proposal.risk === 'high' || actionKind === 'start_research' || kiraHandoff || !readOnly;
 
-  if (proposal.status !== 'active' && proposal.status !== 'accepted') {
+  if (kiraHandoff && proposal.status !== 'accepted') {
+    reasons.push('kira_handoff_requires_accepted_proposal');
+  } else if (proposal.status !== 'active' && proposal.status !== 'accepted') {
     reasons.push('proposal_status_not_executable');
   }
   if (!actionKind || !EXECUTABLE_PROPOSAL_ACTIONS.has(actionKind)) {
@@ -366,6 +381,9 @@ export function evaluateAoiProposalExecution(
   }
   if (compareAoiAutonomyLevel(policy.level, proposal.requiredAutonomyLevel) < 0) {
     reasons.push('autonomy_level_too_low');
+  }
+  if (kiraHandoff && compareAoiAutonomyLevel(policy.level, 'L4') < 0) {
+    reasons.push('kira_handoff_requires_l4');
   }
   if (
     !hasExplicitAcceptDecision({
@@ -383,6 +401,9 @@ export function evaluateAoiProposalExecution(
   }
   if (valueContainsFilesystemPath(proposal.acceptAction?.params ?? {})) {
     reasons.push('action_params_include_filesystem_path');
+  }
+  if (kiraHandoff) {
+    reasons.push(...collectAoiKiraHandoffScopeReasons(proposal));
   }
 
   const toolsToCheck = new Set<string>(proposal.suggestedTools);
@@ -402,11 +423,14 @@ export function evaluateAoiProposalExecution(
 
   return {
     allowed: reasons.length === 0,
-    reasons,
+    reasons: [...new Set(reasons)],
     actionKind: actionKind || undefined,
     toolName,
     requiresFreshAcceptance,
     readOnly,
+    ...(kiraHandoff && reasons.length > 0
+      ? { safeAlternative: getAoiKiraSafeNarrowingSuggestion() }
+      : {}),
   };
 }
 

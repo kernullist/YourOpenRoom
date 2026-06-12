@@ -210,9 +210,11 @@ import {
   decideAoiProposal,
   executeAoiProposalAction,
   fetchAoiAutonomyDashboard,
+  previewAoiProposalAction,
   recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
   updateAoiAutonomyPolicy,
+  type AoiAutonomyProposalPreviewResult,
   type AoiAutonomyProposalExecutionResult,
 } from '@/lib/aoiAutonomyClient';
 import {
@@ -463,6 +465,7 @@ function isAoiExecutableActionKind(kind: string | undefined): boolean {
     kind === 'read_research_artifact' ||
     kind === 'get_research_status' ||
     kind === 'start_research' ||
+    kind === 'create_kira_work' ||
     kind === 'save_memory'
   );
 }
@@ -504,6 +507,9 @@ function getAoiProposalExecutionLabel(proposal: AoiProposal): string {
   }
   if (kind === 'save_memory') {
     return 'Promote procedure';
+  }
+  if (kind === 'create_kira_work') {
+    return 'Create Kira work item';
   }
   return 'Continue';
 }
@@ -577,10 +583,37 @@ function summarizeAoiExecutionResult(result: AoiAutonomyProposalExecutionResult)
       }
       return 'Execution completed: promoted procedure memory.';
     }
+    if (kind === 'create_kira_work') {
+      const work = result.result?.work as { id?: unknown; title?: unknown } | undefined;
+      const workId = typeof work?.id === 'string' ? work.id : 'new work item';
+      const title = typeof work?.title === 'string' ? `: ${work.title}` : '';
+      return `Execution completed: created Kira work item ${workId}${title}.`;
+    }
     return 'Execution completed.';
   }
   const reason = result.reasons.length > 0 ? result.reasons.join(', ') : result.outcome;
   return `Execution ${result.outcome}: ${reason}`;
+}
+
+function getAoiKiraHandoffPreview(
+  previewResult: AoiAutonomyProposalPreviewResult | undefined,
+): Record<string, unknown> | null {
+  const preview = previewResult?.result?.preview;
+  return preview && typeof preview === 'object' && !Array.isArray(preview)
+    ? (preview as Record<string, unknown>)
+    : null;
+}
+
+function getPreviewText(preview: Record<string, unknown>, key: string): string {
+  const value = preview[key];
+  return typeof value === 'string' ? value : '';
+}
+
+function getPreviewList(preview: Record<string, unknown>, key: string): string[] {
+  const value = preview[key];
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string')
+    : [];
 }
 
 function makeImageAttachmentId(): string {
@@ -1886,6 +1919,9 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyExecutionMessages, setAoiAutonomyExecutionMessages] = useState<
     Record<string, string>
   >({});
+  const [aoiKiraHandoffPreviews, setAoiKiraHandoffPreviews] = useState<
+    Record<string, AoiAutonomyProposalPreviewResult>
+  >({});
   const [aoiAutonomyPendingFeedback, setAoiAutonomyPendingFeedback] = useState<{
     decisionId: string;
     proposalId: string;
@@ -2041,6 +2077,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyActionId(null);
     setAoiAutonomyLastTickAt(null);
     setAoiAutonomyExecutionMessages({});
+    setAoiKiraHandoffPreviews({});
     setAoiAutonomyPendingFeedback(null);
     setAoiInlineDismissedProposalIds(new Set());
     setAoiInlineSnoozedProposalIds(new Set());
@@ -2595,6 +2632,11 @@ const ChatPanel: React.FC<{
           delete next[proposalId];
           return next;
         });
+        setAoiKiraHandoffPreviews((prev) => {
+          const next = { ...prev };
+          delete next[proposalId];
+          return next;
+        });
         setAoiInlineHiddenAt(Date.now());
         if (action === 'accept') {
           setAoiAutonomyPendingFeedback(null);
@@ -2657,8 +2699,57 @@ const ChatPanel: React.FC<{
     [aoiAutonomyPendingFeedback, refreshAoiAutonomy],
   );
 
+  const prepareAoiKiraHandoffFromPanel = useCallback(
+    async (proposal: AoiProposal) => {
+      const actionId = `proposal:${proposal.id}:preview`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+
+      try {
+        const result = await previewAoiProposalAction({
+          sessionPath: sessionPathForAutonomy,
+          proposalId: proposal.id,
+        });
+        setAoiKiraHandoffPreviews((prev) => ({
+          ...prev,
+          [proposal.id]: result,
+        }));
+        const safeAlternative =
+          typeof result.result?.safeAlternative === 'string' ? result.result.safeAlternative : '';
+        setAoiAutonomyExecutionMessages((prev) => ({
+          ...prev,
+          [proposal.id]: result.previewed
+            ? 'Kira handoff preview is ready. Review it before creating the work item.'
+            : `Kira handoff blocked: ${
+                result.reasons.join(', ') || result.outcome
+              }${safeAlternative ? ` Safe narrowing: ${safeAlternative}` : ''}`,
+        }));
+        setAoiAutonomyStatus(result.status);
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setAoiAutonomyError(message);
+        setAoiAutonomyExecutionMessages((prev) => ({
+          ...prev,
+          [proposal.id]: `Kira handoff preview failed: ${message}`,
+        }));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
   const executeAoiProposalFromPanel = useCallback(
     async (proposal: AoiProposal) => {
+      if (
+        proposal.acceptAction?.kind === 'create_kira_work' &&
+        !getAoiKiraHandoffPreview(aoiKiraHandoffPreviews[proposal.id])
+      ) {
+        await prepareAoiKiraHandoffFromPanel(proposal);
+        return;
+      }
       const actionId = `proposal:${proposal.id}:execute`;
       const sessionPathForAutonomy = sessionPathRef.current;
       setAoiAutonomyActionId(actionId);
@@ -2712,6 +2803,11 @@ const ChatPanel: React.FC<{
           ...prev,
           [proposal.id]: summarizeAoiExecutionResult(result),
         }));
+        setAoiKiraHandoffPreviews((prev) => {
+          const next = { ...prev };
+          delete next[proposal.id];
+          return next;
+        });
         recordAoiAutonomyLedgerEvent(
           result.proposal,
           result.executed
@@ -2738,7 +2834,12 @@ const ChatPanel: React.FC<{
         setAoiAutonomyActionId(null);
       }
     },
-    [recordAoiAutonomyLedgerEvent, refreshAoiAutonomy],
+    [
+      aoiKiraHandoffPreviews,
+      prepareAoiKiraHandoffFromPanel,
+      recordAoiAutonomyLedgerEvent,
+      refreshAoiAutonomy,
+    ],
   );
 
   useEffect(() => {
@@ -5656,6 +5757,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyActionId={aoiAutonomyActionId}
           aoiAutonomyLastTickAt={aoiAutonomyLastTickAt}
           aoiAutonomyExecutionMessages={aoiAutonomyExecutionMessages}
+          aoiKiraHandoffPreviews={aoiKiraHandoffPreviews}
           aoiAutonomyPendingFeedback={aoiAutonomyPendingFeedback}
           aoiSkills={aoiSkills}
           aoiMcpPlugins={aoiMcpPlugins}
@@ -5670,6 +5772,7 @@ const ChatPanel: React.FC<{
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
+          onPrepareAoiKiraHandoff={prepareAoiKiraHandoffFromPanel}
           onExecuteAoiProposal={executeAoiProposalFromPanel}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
@@ -6105,6 +6208,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActionId: string | null;
   aoiAutonomyLastTickAt: number | null;
   aoiAutonomyExecutionMessages: Record<string, string>;
+  aoiKiraHandoffPreviews: Record<string, AoiAutonomyProposalPreviewResult>;
   aoiAutonomyPendingFeedback: {
     decisionId: string;
     proposalId: string;
@@ -6128,6 +6232,7 @@ const SettingsModal: React.FC<{
     feedbackCategory?: AoiProposalFeedbackCategory,
   ) => Promise<void>;
   onRecordAoiProposalFeedback: (feedbackCategory: AoiProposalFeedbackCategory) => Promise<void>;
+  onPrepareAoiKiraHandoff: (proposal: AoiProposal) => Promise<void>;
   onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
@@ -6171,6 +6276,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActionId,
   aoiAutonomyLastTickAt,
   aoiAutonomyExecutionMessages,
+  aoiKiraHandoffPreviews,
   aoiAutonomyPendingFeedback,
   aoiSkills,
   aoiMcpPlugins,
@@ -6185,6 +6291,7 @@ const SettingsModal: React.FC<{
   onRunAoiAutonomyCheck,
   onDecideAoiProposal,
   onRecordAoiProposalFeedback,
+  onPrepareAoiKiraHandoff,
   onExecuteAoiProposal,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
@@ -8218,6 +8325,11 @@ const SettingsModal: React.FC<{
                               aoiAutonomyPolicy,
                             );
                             const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
+                            const kiraHandoffPreviewResult = aoiKiraHandoffPreviews[proposal.id];
+                            const kiraHandoffPreview =
+                              getAoiKiraHandoffPreview(kiraHandoffPreviewResult);
+                            const isKiraHandoff =
+                              proposal.acceptAction?.kind === 'create_kira_work';
                             const inspectorSummary = buildAoiProposalInspectorSummary({
                               proposal,
                               policy: aoiAutonomyPolicy,
@@ -8274,9 +8386,56 @@ const SettingsModal: React.FC<{
                                       Continuing will promote a user-approved procedure.
                                     </div>
                                   )}
+                                {isKiraHandoff && proposal.status === 'accepted' && (
+                                  <div className={styles.aoiAutonomyBlockedReason}>
+                                    Kira handoff must be previewed before creating a reviewed work
+                                    item.
+                                  </div>
+                                )}
                                 {executionMessage && (
                                   <div className={styles.aoiAutonomyExecutionResult}>
                                     {sanitizeAoiProposalDisplayText(executionMessage, 320)}
+                                  </div>
+                                )}
+                                {kiraHandoffPreview && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      Kira handoff preview:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        getPreviewText(kiraHandoffPreview, 'title'),
+                                        160,
+                                      )}
+                                    </div>
+                                    <div>
+                                      Objective:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        getPreviewText(kiraHandoffPreview, 'objective'),
+                                        220,
+                                      )}
+                                    </div>
+                                    <div>
+                                      Scope:{' '}
+                                      {getPreviewList(kiraHandoffPreview, 'scope')
+                                        .map((item) => sanitizeAoiProposalDisplayText(item, 80))
+                                        .join(' / ') || 'none'}
+                                    </div>
+                                    <div>
+                                      Likely modules:{' '}
+                                      {getPreviewList(kiraHandoffPreview, 'likelyFilesOrModules')
+                                        .map((item) => sanitizeAoiProposalDisplayText(item, 80))
+                                        .join(' / ') || 'none'}
+                                    </div>
+                                    <div>
+                                      Validation:{' '}
+                                      {getPreviewList(kiraHandoffPreview, 'validationCommands')
+                                        .slice(0, 3)
+                                        .map((item) => sanitizeAoiProposalDisplayText(item, 120))
+                                        .join(' / ') || 'none'}
+                                    </div>
+                                    <div>
+                                      Evidence refs:{' '}
+                                      {getPreviewList(kiraHandoffPreview, 'evidenceRefs').length}
+                                    </div>
                                   </div>
                                 )}
                                 {expanded && (
@@ -8342,17 +8501,27 @@ const SettingsModal: React.FC<{
                                     <button
                                       type="button"
                                       className={styles.inlineActionBtn}
-                                      onClick={() => void onExecuteAoiProposal(proposal)}
+                                      onClick={() =>
+                                        isKiraHandoff && !kiraHandoffPreview
+                                          ? void onPrepareAoiKiraHandoff(proposal)
+                                          : void onExecuteAoiProposal(proposal)
+                                      }
                                       disabled={proposalPending}
                                       title={
                                         proposal.acceptAction?.kind === 'start_research'
                                           ? 'Start a new Aoi web research run'
                                           : proposal.acceptAction?.kind === 'save_memory'
                                             ? 'Promote this approved procedure candidate'
-                                            : 'Execute this approved read-only proposal action'
+                                            : isKiraHandoff && !kiraHandoffPreview
+                                              ? 'Prepare a side-effect-free Kira handoff preview'
+                                              : isKiraHandoff
+                                                ? 'Create a reviewed Kira work item'
+                                                : 'Execute this approved read-only proposal action'
                                       }
                                     >
-                                      {getAoiProposalExecutionLabel(proposal)}
+                                      {isKiraHandoff && !kiraHandoffPreview
+                                        ? 'Prepare Kira handoff'
+                                        : getAoiProposalExecutionLabel(proposal)}
                                     </button>
                                   ) : (
                                     <span className={styles.modelHint}>

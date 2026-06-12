@@ -10,6 +10,10 @@ export type AoiRunLedgerEventType =
   | 'proposal_execution_completed'
   | 'proposal_execution_failed'
   | 'proposal_execution_blocked'
+  | 'kira_handoff_preview_created'
+  | 'kira_handoff_execution_approved'
+  | 'kira_work_item_created'
+  | 'kira_handoff_policy_blocked'
   | 'run_completed'
   | 'run_failed';
 
@@ -252,7 +256,8 @@ function reduceAoiRunLedgerMetrics(events: AoiRunLedgerEvent[]): AoiRunLedgerMet
     if (
       event.type === 'run_failed' ||
       event.type === 'proposal_execution_failed' ||
-      event.type === 'proposal_execution_blocked'
+      event.type === 'proposal_execution_blocked' ||
+      event.type === 'kira_handoff_policy_blocked'
     ) {
       errorCount += 1;
     }

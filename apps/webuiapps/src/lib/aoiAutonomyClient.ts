@@ -119,6 +119,17 @@ export interface AoiAutonomyProposalExecutionResult {
   result?: Record<string, unknown>;
 }
 
+export interface AoiAutonomyProposalPreviewResult {
+  ok: boolean;
+  sessionPath: string;
+  proposal: AoiProposal;
+  status: AoiAutonomyStatus;
+  previewed: boolean;
+  outcome: 'previewed' | 'blocked';
+  reasons: string[];
+  result?: Record<string, unknown>;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
@@ -488,6 +499,43 @@ export async function executeAoiProposalAction(params: {
     executed: payload.executed === true,
     outcome:
       payload.outcome === 'executed' || payload.outcome === 'failed' ? payload.outcome : 'blocked',
+    reasons: asArray<string>(payload.reasons),
+    result: isRecord(payload.result) ? payload.result : undefined,
+  };
+}
+
+export async function previewAoiProposalAction(params: {
+  sessionPath: string;
+  proposalId: string;
+}): Promise<AoiAutonomyProposalPreviewResult> {
+  const response = await fetch(`${API_PREFIX}/proposal/preview`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      proposalId: params.proposalId,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to preview Aoi proposal.');
+
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : params.sessionPath,
+    proposal: requireRecordField<AoiProposal>(
+      payload,
+      'proposal',
+      'Aoi proposal preview response was malformed.',
+    ),
+    status: requireRecordField<AoiAutonomyStatus>(
+      payload,
+      'status',
+      'Aoi proposal preview response was malformed.',
+    ),
+    previewed: payload.previewed === true,
+    outcome: payload.outcome === 'previewed' ? 'previewed' : 'blocked',
     reasons: asArray<string>(payload.reasons),
     result: isRecord(payload.result) ? payload.result : undefined,
   };

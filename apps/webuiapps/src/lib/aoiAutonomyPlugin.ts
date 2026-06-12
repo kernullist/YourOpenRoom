@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'http';
 import { resolve } from 'path';
 import type { Plugin } from 'vite';
-import { executeAoiProposal } from './aoiAutonomyExecution';
+import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import {
@@ -469,6 +469,35 @@ async function handleAoiAutonomyRequest(
         writeJson(res, statusCode, {
           error: message,
           code: statusCode === 404 ? 'decision_not_found' : 'invalid_feedback',
+        });
+      }
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/proposal/preview') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      try {
+        const result = previewAoiProposal({
+          sessionsDir,
+          sessionPath,
+          proposalId: String(body.proposalId ?? ''),
+        });
+        writeJson(res, 200, result);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.includes('not found') ? 404 : 400;
+        writeJson(res, statusCode, {
+          ok: false,
+          error: message,
+          code: statusCode === 404 ? 'proposal_not_found' : 'preview_failed',
         });
       }
       return true;

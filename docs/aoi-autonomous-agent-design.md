@@ -108,8 +108,8 @@ Proposal Judge + Policy Gate
 | L1 | Memory Aware | 관련 기억 조회, 답변에 반영 | 허용 |
 | L2 | Suggestive | 다음 행동 제안, reminder, research 제안 | 허용하되 cooldown 적용 |
 | L3 | Assisted Read | read-only tool 실행, research status 확인, completed artifact 읽기 | 사용자 설정 필요 |
-| L4 | Supervised Action | research 시작, Kira 작업 준비, 파일 preview, low-risk local action | 명시 승인 필요 |
-| L5 | Delegated Automation | Kira handoff, file write, command, app mutation | high-risk policy와 사용자 승인 필요 |
+| L4 | Supervised Action | research 시작, preview-first Kira work item 생성, 파일 preview, low-risk local action | 명시 승인 필요 |
+| L5 | Delegated Automation | file write, command, irreversible app mutation | high-risk policy와 사용자 승인 필요 |
 
 Jarvis 같은 체감은 L2와 L3에서 대부분 나온다. L5를 빨리 열면 편해지는 것보다 사고 가능성이 먼저
 커진다.
@@ -413,7 +413,7 @@ provider adapter로만 붙이고 local episode를 ground truth로 유지한다.
 3. `open_research_artifact`
 4. `start_research` after explicit accept
 5. `save_memory` for user-approved procedure promotion
-6. Kira work item creation after explicit accept, only through a narrow safe API
+6. Kira work item creation after explicit accept and preview, only through a narrow safe API
 
 금지 또는 L5-only:
 
@@ -433,6 +433,7 @@ GET  /api/aoi-autonomy/status?sessionPath=...
 GET  /api/aoi-autonomy/proposals?sessionPath=...
 POST /api/aoi-autonomy/tick
 POST /api/aoi-autonomy/proposal/decision
+POST /api/aoi-autonomy/proposal/preview
 POST /api/aoi-autonomy/proposal/execute
 GET  /api/aoi-autonomy/reflections?sessionPath=...
 POST /api/aoi-autonomy/policy

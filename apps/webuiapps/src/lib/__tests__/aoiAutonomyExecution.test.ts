@@ -3,8 +3,9 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
-import { executeAoiProposal } from '../aoiAutonomyExecution';
+import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
+import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import {
   applyAoiProposalDecision,
   loadAoiActiveProposals,
@@ -96,6 +97,49 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     },
     ...partial,
   };
+}
+
+function makeKiraProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+  return makeProposal({
+    status: 'accepted',
+    title: 'Create reviewed Kira handoff',
+    body: 'Aoi should create a narrow Kira work item for the accepted task.',
+    reason: 'The user accepted a supervised implementation proposal.',
+    trigger: 'goal_continuation',
+    cooldownKey: 'kira-handoff:aoi-autonomy',
+    risk: 'medium',
+    requiredAutonomyLevel: 'L4',
+    requiresUserApproval: true,
+    suggestedTools: ['create_kira_work'],
+    evidenceRefs: ['goal:aoi-goal-001', 'observation:latest-user-message'],
+    artifactRefs: ['plan-step:aoi-plan-001-step-003'],
+    acceptAction: {
+      kind: 'create_kira_work',
+      params: {
+        projectName: 'YourOpenRoom',
+        title: 'Implement supervised Aoi Kira handoff',
+        objective: 'Implement one reviewed Aoi-to-Kira handoff task.',
+        scope: ['Aoi autonomy execution', 'Aoi autonomy UI'],
+        modules: ['aoiAutonomyExecution', 'ChatPanel'],
+        validationProfile: 'aoi-autonomy',
+      },
+    },
+    ...partial,
+  });
+}
+
+function loadKiraWorkFiles(
+  root: string,
+  sessionPath = 'aoi/default',
+): Array<Record<string, unknown>> {
+  const worksDir = join(root, sessionPath, 'apps', 'kira', 'data', 'works');
+  if (!fs.existsSync(worksDir)) {
+    return [];
+  }
+  return fs
+    .readdirSync(worksDir)
+    .filter((fileName) => fileName.endsWith('.json'))
+    .map((fileName) => JSON.parse(fs.readFileSync(join(worksDir, fileName), 'utf-8')));
 }
 
 afterEach(() => {
@@ -392,6 +436,216 @@ describe('executeAoiProposal()', () => {
       },
     });
     expect(loadServerAoiMemories(root)).toEqual([]);
+  });
+
+  it('previews Kira handoff without creating work or transitioning the proposal', () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L4' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeKiraProposal()]);
+
+    const result = previewAoiProposal({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 3000,
+    });
+
+    expect(result).toMatchObject({
+      previewed: true,
+      outcome: 'previewed',
+      reasons: [],
+    });
+    expect(result.result?.preview).toMatchObject({
+      kind: 'create_kira_work',
+      objective: 'Implement one reviewed Aoi-to-Kira handoff task.',
+      requiresReview: true,
+      noSideEffects: true,
+    });
+    expect(loadKiraWorkFiles(root)).toEqual([]);
+    expect(loadAoiActiveProposals(root, 'aoi/default')[0].status).toBe('accepted');
+    expect(
+      loadServerAoiRunLedger(root, 'aoi/default').some((entry) =>
+        entry.events.some((event) => event.type === 'kira_handoff_preview_created'),
+      ),
+    ).toBe(true);
+  });
+
+  it('blocks Kira handoff without acceptance, evidence, safe params, or narrow scope', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L4' });
+
+    saveAoiActiveProposals(root, 'aoi/default', [makeKiraProposal({ status: 'active' })]);
+    const withoutAcceptance = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 3000,
+    });
+    expect(withoutAcceptance.executed).toBe(false);
+    expect(withoutAcceptance.reasons.join(',')).toContain(
+      'kira_handoff_requires_accepted_proposal',
+    );
+
+    saveAoiActiveProposals(root, 'aoi/default', [
+      makeKiraProposal({
+        status: 'accepted',
+        evidenceRefs: [],
+      }),
+    ]);
+    const missingEvidence = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 4000,
+    });
+    expect(missingEvidence.reasons.join(',')).toContain('missing_evidence_refs');
+
+    saveAoiActiveProposals(root, 'aoi/default', [
+      makeKiraProposal({
+        status: 'accepted',
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'F:\\secret\\repo',
+            objective: 'Implement one reviewed Aoi-to-Kira handoff task.',
+            scope: ['Aoi autonomy execution'],
+          },
+        },
+      }),
+    ]);
+    const pathParam = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 5000,
+    });
+    expect(pathParam.reasons.join(',')).toContain('action_params_include_filesystem_path');
+
+    saveAoiActiveProposals(root, 'aoi/default', [
+      makeKiraProposal({
+        status: 'accepted',
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'YourOpenRoom',
+            objective: 'Rewrite the entire repository.',
+            scope: ['entire repo'],
+          },
+        },
+      }),
+    ]);
+    const broadScope = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      now: 6000,
+    });
+    expect(broadScope.reasons.join(',')).toContain('kira_handoff_scope_too_broad');
+    expect(broadScope.result?.safeAlternative).toEqual(expect.stringContaining('Narrow'));
+    expect(loadKiraWorkFiles(root)).toEqual([]);
+    expect(
+      loadServerAoiRunLedger(root, 'aoi/default').some((entry) =>
+        entry.events.some((event) => event.type === 'kira_handoff_policy_blocked'),
+      ),
+    ).toBe(true);
+  });
+
+  it('creates reviewed Kira work after fresh approval and records relations plus ledger events', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L4' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeKiraProposal({ status: 'active' })]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      decisionId: accepted.decision.id,
+      now: 3000,
+    });
+
+    const workFiles = loadKiraWorkFiles(root);
+    const relationIndex = loadAoiRelationIndex(root, 'aoi/default');
+    const ledger = loadServerAoiRunLedger(root, 'aoi/default');
+    expect(result).toMatchObject({
+      executed: true,
+      outcome: 'executed',
+      result: {
+        kind: 'create_kira_work',
+        reviewRequired: true,
+      },
+    });
+    expect(workFiles).toHaveLength(1);
+    expect(workFiles[0]).toMatchObject({
+      type: 'work',
+      projectName: 'YourOpenRoom',
+      status: 'todo',
+    });
+    expect(String(workFiles[0].description)).toContain('Requires Kira reviewer approval');
+    expect(relationIndex.nodes.some((node) => node.kind === 'kira_work')).toBe(true);
+    expect(
+      relationIndex.edges.some(
+        (edge) => edge.kind === 'supports' && edge.evidenceRefs.includes('goal:aoi-goal-001'),
+      ),
+    ).toBe(true);
+    expect(
+      ledger.some((entry) =>
+        entry.events.some((event) => event.type === 'kira_handoff_execution_approved'),
+      ),
+    ).toBe(true);
+    expect(
+      ledger.some((entry) => entry.events.some((event) => event.type === 'kira_work_item_created')),
+    ).toBe(true);
+  });
+
+  it('does not route Kira handoff through direct file or command tools', async () => {
+    const root = makeTempRoot();
+    const createKiraWork = vi.fn();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L4' });
+    saveAoiActiveProposals(root, 'aoi/default', [
+      makeKiraProposal({
+        status: 'active',
+        suggestedTools: ['create_kira_work', 'file_write', 'run_command'],
+      }),
+    ]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      decisionId: accepted.decision.id,
+      now: 3000,
+      dependencies: {
+        createKiraWork,
+      },
+    });
+
+    expect(result.executed).toBe(false);
+    expect(result.reasons.join(',')).toContain('tool_blocked:file_write');
+    expect(result.reasons.join(',')).toContain('tool_blocked:run_command');
+    expect(createKiraWork).not.toHaveBeenCalled();
+    expect(loadKiraWorkFiles(root)).toEqual([]);
   });
 
   it('blocks execution failures without losing the proposal', async () => {

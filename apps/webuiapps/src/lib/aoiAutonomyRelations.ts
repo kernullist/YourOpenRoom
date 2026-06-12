@@ -13,7 +13,9 @@ export type AoiRelationNodeKind =
   | 'reflection'
   | 'procedure'
   | 'goal'
+  | 'plan_step'
   | 'project'
+  | 'kira_work'
   | 'topic';
 
 export type AoiRelationEdgeKind =
@@ -190,8 +192,14 @@ export function inferAoiRelationNodeKind(ref: string): AoiRelationNodeKind {
   if (ref.startsWith('goal:')) {
     return 'goal';
   }
+  if (ref.startsWith('plan-step:')) {
+    return 'plan_step';
+  }
   if (ref.startsWith('project:')) {
     return 'project';
+  }
+  if (ref.startsWith('kira-work:')) {
+    return 'kira_work';
   }
   if (ref.startsWith('topic:')) {
     return 'topic';
@@ -574,6 +582,98 @@ export function recordAoiProcedurePromotionRelations(params: {
   return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
 }
 
+export function recordAoiKiraHandoffRelations(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  workRef: string;
+  workTitle: string;
+  decisionId?: string;
+  evidenceRefs?: string[];
+  goalRefs?: string[];
+  now?: number;
+}): AoiRelationIndex {
+  const now = params.now ?? Date.now();
+  const proposalRef = `proposal:${params.proposal.id}`;
+  const proposalNode = makeAoiRelationNode({
+    ref: proposalRef,
+    kind: 'proposal',
+    label: params.proposal.title,
+    status: 'active',
+    now,
+  });
+  const workNode = makeAoiRelationNode({
+    ref: params.workRef,
+    kind: 'kira_work',
+    label: params.workTitle,
+    status: 'active',
+    now,
+  });
+  const nodes = [proposalNode, workNode];
+  const edges: AoiRelationEdge[] = [
+    makeAoiRelationEdge({
+      from: proposalNode.id,
+      to: workNode.id,
+      kind: 'followed_by',
+      evidenceRefs: [proposalRef],
+      now,
+    }),
+    makeAoiRelationEdge({
+      from: workNode.id,
+      to: proposalNode.id,
+      kind: 'caused_by',
+      evidenceRefs: [params.workRef],
+      now,
+    }),
+  ];
+
+  const refs = [...new Set(params.evidenceRefs ?? [])];
+  for (const ref of refs) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: workNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref],
+        now,
+      }),
+    );
+  }
+
+  for (const ref of [...new Set(params.goalRefs ?? [])]) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: workNode.id,
+        kind: 'suggested_by',
+        evidenceRefs: [ref, proposalRef],
+        now,
+      }),
+    );
+  }
+
+  if (params.decisionId) {
+    const decisionRef = `decision:${params.decisionId}`;
+    const decisionNode = makeAoiRelationNode({ ref: decisionRef, now });
+    nodes.push(decisionNode);
+    edges.push(
+      makeAoiRelationEdge({
+        from: decisionNode.id,
+        to: workNode.id,
+        kind: 'caused_by',
+        evidenceRefs: [decisionRef],
+        now,
+      }),
+    );
+  }
+
+  return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
+}
+
 export function getActiveAoiRelationMemoryIds(
   index: AoiRelationIndex,
   memories: AoiMemoryEntry[],
@@ -627,7 +727,9 @@ function isAoiRelationNodeKind(value: unknown): value is AoiRelationNodeKind {
     value === 'reflection' ||
     value === 'procedure' ||
     value === 'goal' ||
+    value === 'plan_step' ||
     value === 'project' ||
+    value === 'kira_work' ||
     value === 'topic'
   );
 }

@@ -43,7 +43,7 @@ type LLMProvider =
 
 type LLMApiStyle = 'openai-chat' | 'openai-responses' | 'anthropic-messages';
 
-type KiraTaskStatus = 'todo' | 'in_progress' | 'in_review' | 'blocked' | 'done';
+export type KiraTaskStatus = 'todo' | 'in_progress' | 'in_review' | 'blocked' | 'done';
 type WorkClarificationStatus = 'pending' | 'answered' | 'cleared';
 
 interface LLMConfig {
@@ -73,7 +73,7 @@ interface KiraSettings {
   projectDefaults?: KiraProjectSettings;
 }
 
-interface WorkTask {
+export interface WorkTask {
   id: string;
   type: 'work';
   projectName: string;
@@ -17096,6 +17096,141 @@ function loadProjectWorks(
   return listJsonFiles(worksDir)
     .map((filePath) => readJsonFile<WorkTask>(filePath))
     .filter((work): work is WorkTask => work !== null && work.projectName === projectName);
+}
+
+export interface KiraSupervisedWorkInput {
+  sessionPath: string;
+  projectName: string;
+  title: string;
+  objective: string;
+  scope: string[];
+  likelyFilesOrModules: string[];
+  nonGoals: string[];
+  validationCommands: string[];
+  riskLevel: string;
+  rollbackExpectations: string[];
+  reviewExpectations: string[];
+  evidenceRefs: string[];
+  constraints: string[];
+  sourceProposalId: string;
+  now?: number;
+}
+
+export interface KiraSupervisedWorkResult {
+  work: WorkTask;
+  workRef: string;
+  workPath: string;
+}
+
+function normalizeSupervisedWorkProjectName(value: string): string {
+  const normalized = normalizeWhitespace(value).slice(0, 80) || 'default';
+  if (
+    !/^[A-Za-z0-9._ -]{1,80}$/.test(normalized) ||
+    normalized.includes('/') ||
+    normalized.includes('\\') ||
+    normalized.includes(':') ||
+    normalized.includes('..')
+  ) {
+    throw new Error('Invalid Kira projectName for supervised handoff.');
+  }
+  return normalized;
+}
+
+function formatSupervisedWorkList(values: string[], fallback: string): string {
+  const normalized = uniqueStrings(
+    values.map((value) => normalizeWhitespace(String(value || ''))).filter(Boolean),
+  ).slice(0, 12);
+  return normalized.length > 0
+    ? normalized.map((value) => `- ${value}`).join('\n')
+    : `- ${fallback}`;
+}
+
+function buildSupervisedKiraWorkDescription(input: KiraSupervisedWorkInput): string {
+  return [
+    '# Aoi supervised handoff',
+    '',
+    '## Objective',
+    normalizeWhitespace(input.objective),
+    '',
+    '## Scope',
+    formatSupervisedWorkList(input.scope, 'No explicit scope provided. Stop for clarification.'),
+    '',
+    '## Likely files or modules',
+    formatSupervisedWorkList(
+      input.likelyFilesOrModules,
+      'Infer from evidence before implementation.',
+    ),
+    '',
+    '## Non-goals',
+    formatSupervisedWorkList(input.nonGoals, 'Do not expand beyond the approved handoff.'),
+    '',
+    '## Constraints',
+    formatSupervisedWorkList(input.constraints, 'Keep repository mutations inside Kira workflow.'),
+    '',
+    '## Evidence refs',
+    formatSupervisedWorkList(input.evidenceRefs, 'No evidence refs were supplied.'),
+    '',
+    '## Validation expectations',
+    formatSupervisedWorkList(input.validationCommands, 'Run targeted tests and build validation.'),
+    '',
+    '## Review and rollback expectations',
+    formatSupervisedWorkList(
+      [...input.reviewExpectations, ...input.rollbackExpectations],
+      'Reviewer approval is required before integration.',
+    ),
+    '',
+    '## Aoi audit',
+    `- Source proposal: ${input.sourceProposalId}`,
+    `- Risk level: ${input.riskLevel}`,
+    '- Requires Kira reviewer approval before integration.',
+    '- Aoi created this work item only; it did not edit files, run commands, or apply patches.',
+  ].join('\n');
+}
+
+export function createSupervisedKiraWorkItem(params: {
+  sessionsDir: string;
+  input: KiraSupervisedWorkInput;
+}): KiraSupervisedWorkResult {
+  const now = params.input.now ?? Date.now();
+  const projectName = normalizeSupervisedWorkProjectName(params.input.projectName);
+  const worksDir = join(
+    getKiraDataDir(params.sessionsDir, params.input.sessionPath),
+    WORKS_DIR_NAME,
+  );
+  fs.mkdirSync(worksDir, { recursive: true });
+
+  const existingTitles = new Set(
+    loadProjectWorks(params.sessionsDir, params.input.sessionPath, projectName).map((work) =>
+      work.title.trim().toLowerCase(),
+    ),
+  );
+  const baseTitle = normalizeWhitespace(params.input.title).slice(0, 180) || 'Aoi handoff work';
+  const title = existingTitles.has(baseTitle.toLowerCase())
+    ? `${baseTitle} (${new Date(now).toISOString()})`.slice(0, 180)
+    : baseTitle;
+  const work: WorkTask = {
+    id: makeId('work'),
+    type: 'work',
+    projectName,
+    title,
+    description: buildSupervisedKiraWorkDescription({
+      ...params.input,
+      projectName,
+      title,
+      now,
+    }),
+    status: 'todo',
+    assignee: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  const workPath = join(worksDir, `${work.id}.json`);
+  writeJsonFile(workPath, work);
+  return {
+    work,
+    workRef: `kira-work:${work.id}`,
+    workPath,
+  };
 }
 
 async function analyzeProjectForDiscovery(

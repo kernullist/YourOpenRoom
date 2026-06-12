@@ -5,6 +5,7 @@ import {
   buildAoiAutonomyNotificationBadge,
   buildAoiProposalInspectorSummary,
   canShowAoiProposalPrimaryAction,
+  getAoiSafeAlternativeForReasons,
   loadAoiAutonomyPanelSettings,
   saveAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
@@ -218,5 +219,13 @@ describe('Aoi autonomy UI helpers', () => {
     expect(
       sanitizeAoiProposalDisplayText('Read F:\\kernullist\\YourOpenRoom\\private\\report.md now'),
     ).toBe('Read [local path] now');
+  });
+
+  it('shows a narrowing alternative for broad Kira handoff policy blocks', () => {
+    expect(
+      getAoiSafeAlternativeForReasons(makeProposal({ requiredAutonomyLevel: 'L4' }), [
+        'kira_handoff_scope_too_broad',
+      ]),
+    ).toContain('Narrow');
   });
 });

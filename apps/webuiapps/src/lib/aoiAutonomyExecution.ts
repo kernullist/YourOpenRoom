@@ -17,11 +17,20 @@ import {
   type AoiResearchServerStartResult,
 } from './aoiResearchPlugin';
 import {
+  recordAoiKiraHandoffRelations,
   recordAoiProcedurePromotionRelations,
   recordAoiResearchFollowupExecutionRelations,
 } from './aoiAutonomyRelations';
 import { saveServerAoiMemoryCandidates, saveServerAoiMemoryEpisode } from './aoiMemoryServerWriter';
 import { sanitizeAoiProcedureContent, type AoiMemoryEntry } from './aoiMemoryShared';
+import {
+  buildAoiKiraHandoffPreview,
+  getAoiKiraSafeNarrowingSuggestion,
+  type AoiKiraHandoffCreateResult,
+  type AoiKiraHandoffPreview,
+} from './aoiKiraHandoff';
+import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
+import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import type { AoiAutonomyStatus, AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
 import type { AoiResearchArtifactName, AoiResearchManifest } from './aoiResearchTypes';
 
@@ -53,6 +62,13 @@ export interface AoiProposalExecutionDependencies {
     };
     allowDuplicate?: boolean;
   }) => Promise<AoiResearchServerStartResult>;
+  createKiraWork?: (params: {
+    sessionsDir: string;
+    sessionPath: string;
+    proposal: AoiProposal;
+    preview: AoiKiraHandoffPreview;
+    now: number;
+  }) => AoiKiraHandoffCreateResult;
 }
 
 export interface AoiProposalExecutionResult {
@@ -63,6 +79,17 @@ export interface AoiProposalExecutionResult {
   status: AoiAutonomyStatus;
   executed: boolean;
   outcome: 'executed' | 'blocked' | 'failed';
+  reasons: string[];
+  result?: Record<string, unknown>;
+}
+
+export interface AoiProposalPreviewResult {
+  ok: boolean;
+  sessionPath: string;
+  proposal: AoiProposal;
+  status: AoiAutonomyStatus;
+  previewed: boolean;
+  outcome: 'previewed' | 'blocked';
   reasons: string[];
   result?: Record<string, unknown>;
 }
@@ -183,6 +210,52 @@ function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown
   };
 }
 
+function createDefaultKiraWorkFromPreview(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  preview: AoiKiraHandoffPreview;
+  now: number;
+}): AoiKiraHandoffCreateResult {
+  const created = createSupervisedKiraWorkItem({
+    sessionsDir: params.sessionsDir,
+    input: {
+      sessionPath: params.sessionPath,
+      projectName: params.preview.projectName,
+      title: params.preview.title,
+      objective: params.preview.objective,
+      scope: params.preview.scope,
+      likelyFilesOrModules: params.preview.likelyFilesOrModules,
+      nonGoals: params.preview.nonGoals,
+      validationCommands: params.preview.validationCommands,
+      riskLevel: params.preview.riskLevel,
+      rollbackExpectations: params.preview.rollbackExpectations,
+      reviewExpectations: params.preview.reviewExpectations,
+      evidenceRefs: params.preview.evidenceRefs,
+      constraints: params.preview.constraints,
+      sourceProposalId: params.proposal.id,
+      now: params.now,
+    },
+  });
+  return {
+    kind: 'create_kira_work',
+    preview: params.preview,
+    work: {
+      id: created.work.id,
+      ref: created.workRef,
+      title: created.work.title,
+      projectName: created.work.projectName,
+      status: created.work.status,
+    },
+    reviewRequired: true,
+    route: '/kira',
+    openPayload: {
+      workId: created.work.id,
+      focusType: 'work',
+    },
+  };
+}
+
 function blockProposal(params: {
   sessionsDir: string;
   sessionPath: string;
@@ -190,6 +263,7 @@ function blockProposal(params: {
   reason: string;
   now?: number;
   outcome?: 'blocked' | 'failed';
+  result?: Record<string, unknown>;
 }): AoiProposalExecutionResult {
   const transition = applyAoiProposalExecutionTransition(params.sessionsDir, params.sessionPath, {
     proposalId: params.proposalId,
@@ -207,6 +281,7 @@ function blockProposal(params: {
     executed: false,
     outcome: params.outcome ?? 'blocked',
     reasons: [params.reason],
+    ...(params.result ? { result: params.result } : {}),
   };
 }
 
@@ -217,6 +292,7 @@ async function executeAllowedProposalAction(params: {
   sessionPath: string;
   proposal: AoiProposal;
   dependencies: AoiProposalExecutionDependencies;
+  now: number;
 }): Promise<Record<string, unknown>> {
   const action = params.proposal.acceptAction;
   if (!action) {
@@ -381,7 +457,121 @@ async function executeAllowedProposalAction(params: {
     };
   }
 
+  if (action.kind === 'create_kira_work') {
+    const preview = buildAoiKiraHandoffPreview(params.proposal, { now: params.now });
+    const createKiraWork = params.dependencies.createKiraWork ?? createDefaultKiraWorkFromPreview;
+    return createKiraWork({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      proposal: params.proposal,
+      preview,
+      now: params.now,
+    }) as unknown as Record<string, unknown>;
+  }
+
   throw new Error(`Unsupported proposal action kind: ${action.kind}`);
+}
+
+function findActiveProposalOrThrow(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposalId: string;
+}): AoiProposal {
+  const proposals = loadAoiActiveProposals(params.sessionsDir, params.sessionPath);
+  const proposal = proposals.find((item) => item.id === params.proposalId);
+  if (!proposal) {
+    throw new Error('Aoi proposal not found.');
+  }
+  return proposal;
+}
+
+export function previewAoiProposal(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposalId: string;
+  now?: number;
+}): AoiProposalPreviewResult {
+  const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const proposal = findActiveProposalOrThrow({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    proposalId: params.proposalId,
+  });
+  const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
+  const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  const evaluation = evaluateAoiProposalExecution(proposal, policy, {
+    now,
+    decisions,
+    executionMode: 'preview',
+  });
+  if (!evaluation.allowed) {
+    if (proposal.acceptAction?.kind === 'create_kira_work') {
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'kira_handoff_policy_blocked',
+        message: `Kira handoff preview blocked: ${evaluation.reasons.join(', ')}.`,
+        goalSummary: `Aoi Kira handoff: ${proposal.title}`,
+        toolNames: ['create_kira_work'],
+        status: 'failed',
+        now,
+      });
+    }
+    return {
+      ok: true,
+      sessionPath,
+      proposal,
+      status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
+      previewed: false,
+      outcome: 'blocked',
+      reasons: evaluation.reasons,
+      result: {
+        safeAlternative:
+          evaluation.safeAlternative ??
+          (proposal.acceptAction?.kind === 'create_kira_work'
+            ? getAoiKiraSafeNarrowingSuggestion()
+            : undefined),
+      },
+    };
+  }
+  if (proposal.acceptAction?.kind !== 'create_kira_work') {
+    return {
+      ok: true,
+      sessionPath,
+      proposal,
+      status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
+      previewed: false,
+      outcome: 'blocked',
+      reasons: ['preview_not_supported_for_action'],
+    };
+  }
+
+  const preview = buildAoiKiraHandoffPreview(proposal, { now });
+  recordServerAoiRunLedgerEvent({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    type: 'kira_handoff_preview_created',
+    message: `Kira handoff preview created for proposal ${proposal.id}.`,
+    goalSummary: `Aoi Kira handoff: ${proposal.title}`,
+    toolNames: ['create_kira_work'],
+    now,
+  });
+  return {
+    ok: true,
+    sessionPath,
+    proposal,
+    status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
+    previewed: true,
+    outcome: 'previewed',
+    reasons: [],
+    result: {
+      preview: preview as unknown as Record<string, unknown>,
+    },
+  };
 }
 
 export async function executeAoiProposal(params: {
@@ -399,11 +589,11 @@ export async function executeAoiProposal(params: {
     throw new Error('Invalid or missing sessionPath.');
   }
   const now = params.now ?? Date.now();
-  const proposals = loadAoiActiveProposals(params.sessionsDir, sessionPath);
-  const proposal = proposals.find((item) => item.id === params.proposalId);
-  if (!proposal) {
-    throw new Error('Aoi proposal not found.');
-  }
+  const proposal = findActiveProposalOrThrow({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    proposalId: params.proposalId,
+  });
 
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
@@ -413,6 +603,18 @@ export async function executeAoiProposal(params: {
     decisionId: params.decisionId,
   });
   if (!evaluation.allowed) {
+    if (proposal.acceptAction?.kind === 'create_kira_work') {
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'kira_handoff_policy_blocked',
+        message: `Kira handoff execution blocked: ${evaluation.reasons.join(', ')}.`,
+        goalSummary: `Aoi Kira handoff: ${proposal.title}`,
+        toolNames: ['create_kira_work'],
+        status: 'failed',
+        now,
+      });
+    }
     return blockProposal({
       sessionsDir: params.sessionsDir,
       sessionPath,
@@ -420,10 +622,28 @@ export async function executeAoiProposal(params: {
       reason: evaluation.reasons.join(', '),
       now,
       outcome: 'blocked',
+      ...(evaluation.safeAlternative
+        ? {
+            result: {
+              safeAlternative: evaluation.safeAlternative,
+            },
+          }
+        : {}),
     });
   }
 
   try {
+    if (proposal.acceptAction?.kind === 'create_kira_work') {
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'kira_handoff_execution_approved',
+        message: `Kira handoff execution approved for proposal ${proposal.id}.`,
+        goalSummary: `Aoi Kira handoff: ${proposal.title}`,
+        toolNames: ['create_kira_work'],
+        now,
+      });
+    }
     const result = await executeAllowedProposalAction({
       sessionsDir: params.sessionsDir,
       configFile: params.configFile,
@@ -431,6 +651,7 @@ export async function executeAoiProposal(params: {
       sessionPath,
       proposal,
       dependencies: params.dependencies ?? {},
+      now,
     });
     const transition = applyAoiProposalExecutionTransition(params.sessionsDir, sessionPath, {
       proposalId: proposal.id,
@@ -500,6 +721,61 @@ export async function executeAoiProposal(params: {
           '[AoiAutonomyExecution] Failed to ingest procedure promotion observation',
           error,
         );
+      }
+    }
+    if (proposal.acceptAction?.kind === 'create_kira_work') {
+      const work = result.work as
+        | { id?: unknown; ref?: unknown; title?: unknown; projectName?: unknown; status?: unknown }
+        | undefined;
+      const preview = result.preview as { evidenceRefs?: unknown } | undefined;
+      const workRef = typeof work?.ref === 'string' ? work.ref : undefined;
+      const workTitle = typeof work?.title === 'string' ? work.title : proposal.title;
+      const evidenceRefs = Array.isArray(preview?.evidenceRefs)
+        ? preview.evidenceRefs.filter((ref): ref is string => typeof ref === 'string')
+        : [...proposal.evidenceRefs, ...proposal.artifactRefs];
+      if (workRef) {
+        recordAoiKiraHandoffRelations({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          proposal,
+          workRef,
+          workTitle,
+          decisionId: transition.decision.id,
+          evidenceRefs,
+          goalRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs].filter(
+            (ref) => ref.startsWith('goal:') || ref.startsWith('plan-step:'),
+          ),
+          now,
+        });
+        recordServerAoiRunLedgerEvent({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          type: 'kira_work_item_created',
+          message: `Kira work item ${workRef} created from proposal ${proposal.id}.`,
+          goalSummary: `Aoi Kira handoff: ${proposal.title}`,
+          toolNames: ['create_kira_work'],
+          now,
+        });
+        try {
+          ingestAoiObservation(
+            params.sessionsDir,
+            {
+              source: 'proposal',
+              sessionPath,
+              stableKey: `kira-handoff:${proposal.id}:${workRef}`,
+              createdAt: now,
+              summary: `Kira work item created from Aoi proposal "${proposal.title}".`,
+              payloadRef: workRef,
+              memoryIds: [],
+              artifactRefs: [workRef, `decision:${transition.decision.id}`, ...evidenceRefs],
+              proposalIds: [proposal.id],
+              riskSignals: [...proposal.riskSignals, 'kira-handoff-created'],
+            },
+            { now },
+          );
+        } catch (error) {
+          console.warn('[AoiAutonomyExecution] Failed to ingest Kira handoff observation', error);
+        }
       }
     }
     return {

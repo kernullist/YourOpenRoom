@@ -323,6 +323,12 @@ export function getAoiSafeAlternativeForReasons(
   proposal: Pick<AoiProposal, 'requiredAutonomyLevel' | 'requiresUserApproval' | 'risk'>,
   reasons: string[],
 ): string {
+  if (reasons.some((reason) => reason.includes('kira_handoff_scope_too_broad'))) {
+    return 'Narrow the Kira handoff to one accepted task with 1-3 modules and explicit non-goals.';
+  }
+  if (reasons.some((reason) => reason.includes('kira_handoff_requires_accepted_proposal'))) {
+    return 'Accept the proposal before preparing a Kira handoff.';
+  }
   if (reasons.some((reason) => reason.includes('autonomy_level_too_low'))) {
     return `Raise autonomy to ${proposal.requiredAutonomyLevel} or keep this as a proposal.`;
   }

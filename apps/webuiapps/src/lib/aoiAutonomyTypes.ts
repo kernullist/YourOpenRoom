@@ -363,6 +363,7 @@ export interface AoiProposalExecutionPolicyContext {
   decisions?: AoiProposalDecision[];
   decisionId?: string;
   freshAcceptanceMs?: number;
+  executionMode?: 'preview' | 'execute';
 }
 
 export interface AoiProposalExecutionPolicyResult {
@@ -372,4 +373,5 @@ export interface AoiProposalExecutionPolicyResult {
   toolName?: string;
   requiresFreshAcceptance: boolean;
   readOnly: boolean;
+  safeAlternative?: string;
 }

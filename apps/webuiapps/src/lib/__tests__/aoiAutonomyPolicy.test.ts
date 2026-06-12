@@ -90,6 +90,10 @@ describe('Aoi autonomy tool policy', () => {
       maxLevel: 'L3',
       requiresApproval: false,
     });
+    expect(getAoiToolAutonomyPolicy('create_kira_work')).toMatchObject({
+      maxLevel: 'L4',
+      requiresApproval: true,
+    });
     expect(isAoiToolAllowedAtLevel('get_research_status', 'L2')).toBe(false);
     expect(isAoiToolAllowedAtLevel('get_research_status', 'L3')).toBe(true);
     for (const blockedTool of ['file_write', 'file_patch', 'file_delete', 'run_command']) {
@@ -224,6 +228,110 @@ describe('evaluateAoiProposalExecution()', () => {
       actionKind: 'save_memory',
       requiresFreshAcceptance: true,
     });
+  });
+
+  it('requires accepted scoped proposals for supervised Kira handoff', () => {
+    const kiraProposal = makeProposal({
+      status: 'active',
+      requiredAutonomyLevel: 'L4',
+      suggestedTools: ['create_kira_work'],
+      acceptAction: {
+        kind: 'create_kira_work',
+        params: {
+          projectName: 'YourOpenRoom',
+          objective: 'Implement one reviewed Aoi autonomy UI improvement.',
+          scope: ['Aoi autonomy UI'],
+          modules: ['ChatPanel', 'aoiAutonomyExecution'],
+          validationProfile: 'aoi-autonomy',
+        },
+      },
+    });
+
+    const withoutAcceptance = evaluateAoiProposalExecution(kiraProposal, policy, {
+      now: 3000,
+      decisions: [],
+    });
+    expect(withoutAcceptance.allowed).toBe(false);
+    expect(withoutAcceptance.reasons).toContain('kira_handoff_requires_accepted_proposal');
+    expect(withoutAcceptance.reasons).toContain('missing_fresh_acceptance');
+
+    const preview = evaluateAoiProposalExecution({ ...kiraProposal, status: 'accepted' }, policy, {
+      now: 3000,
+      decisions: [acceptDecision],
+      executionMode: 'preview',
+    });
+    expect(preview).toMatchObject({
+      allowed: true,
+      actionKind: 'create_kira_work',
+      requiresFreshAcceptance: false,
+    });
+
+    const execute = evaluateAoiProposalExecution({ ...kiraProposal, status: 'accepted' }, policy, {
+      now: 3000,
+      decisions: [acceptDecision],
+    });
+    expect(execute).toMatchObject({
+      allowed: true,
+      requiresFreshAcceptance: true,
+    });
+  });
+
+  it('blocks Kira handoff with missing evidence, arbitrary paths, or broad scope', () => {
+    const base = makeProposal({
+      status: 'accepted',
+      requiredAutonomyLevel: 'L4',
+      suggestedTools: ['create_kira_work'],
+      acceptAction: {
+        kind: 'create_kira_work',
+        params: {
+          projectName: 'YourOpenRoom',
+          objective: 'Rewrite the entire repository.',
+          scope: ['entire repo'],
+          modules: ['Aoi autonomy'],
+        },
+      },
+    });
+    const broad = evaluateAoiProposalExecution(base, policy, {
+      now: 3000,
+      decisions: [acceptDecision],
+    });
+    expect(broad.reasons).toContain('kira_handoff_scope_too_broad');
+    expect(broad.safeAlternative).toContain('Narrow');
+
+    const pathParam = evaluateAoiProposalExecution(
+      {
+        ...base,
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'F:\\secret\\repo',
+            objective: 'Implement one reviewed Aoi autonomy UI improvement.',
+            scope: ['Aoi autonomy UI'],
+          },
+        },
+      },
+      policy,
+      { now: 3000, decisions: [acceptDecision] },
+    );
+    expect(pathParam.reasons).toContain('action_params_include_filesystem_path');
+
+    const missingEvidence = evaluateAoiProposalExecution(
+      {
+        ...base,
+        evidenceRefs: [],
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'YourOpenRoom',
+            objective: 'Implement one reviewed Aoi autonomy UI improvement.',
+            scope: ['Aoi autonomy UI'],
+          },
+        },
+      },
+      policy,
+      { now: 3000, decisions: [acceptDecision] },
+    );
+    expect(missingEvidence.reasons).toContain('missing_evidence_refs');
   });
 
   it('blocks file writes, patches, deletes, commands, unknown actions, missing evidence, and filesystem path params', () => {
