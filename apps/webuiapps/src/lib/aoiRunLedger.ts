@@ -21,6 +21,10 @@ export type AoiRunLedgerEventType =
   | 'mission_completed'
   | 'mission_blocked'
   | 'mission_cleared'
+  | 'failure_classified'
+  | 'recovery_proposal_created'
+  | 'recovery_suppressed_by_loop_guard'
+  | 'recovery_blocked_by_policy'
   | 'run_completed'
   | 'run_failed';
 

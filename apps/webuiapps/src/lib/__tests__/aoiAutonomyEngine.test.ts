@@ -218,7 +218,7 @@ describe('runAoiAutonomyTick()', () => {
     });
   });
 
-  it('proposes an approval-gated retry for failed or timed-out research', async () => {
+  it('creates a bounded recovery proposal for failed or timed-out research', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');
     writeResearchManifest(
@@ -253,15 +253,71 @@ describe('runAoiAutonomyTick()', () => {
     const proposals = loadAoiActiveProposals(root, SESSION_PATH);
     expect(result.newActiveProposalCount).toBe(1);
     expect(proposals[0]).toMatchObject({
-      trigger: 'research_retry',
+      trigger: 'failure_recovery',
       risk: 'medium',
       requiredAutonomyLevel: 'L4',
       requiresUserApproval: true,
       suggestedTools: ['start_research'],
     });
-    expect(proposals[0].riskSignals).toEqual(
-      expect.arrayContaining(['research-failed', 'timeout']),
+    expect(proposals[0].recoveryPreview).toMatchObject({
+      failureKind: 'research_failed',
+      sourceRef: 'research:aoi-research-fail-001',
+      retryCount: 0,
+      maxRetryCount: 1,
+      cooldownActive: false,
+    });
+    expect(proposals[0].recoveryPreview?.nonGoals).toEqual(
+      expect.arrayContaining(['Do not execute file writes, patches, deletes, or shell commands.']),
     );
+    expect(proposals[0].riskSignals).toEqual(
+      expect.arrayContaining(['failure-recovery', 'research_failed']),
+    );
+  });
+
+  it('suppresses repeated recovery proposals for the same failure source', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-fail-guard-001',
+        status: 'failed',
+        phase: 'failed',
+        completedAt: undefined,
+        artifactAvailability: {
+          manifest: true,
+          report: false,
+          sources: false,
+          evidence: false,
+        },
+        error: {
+          code: 'research_run_timeout',
+          message: 'Timed out while reading sources.',
+          phase: 'reading_sources',
+          createdAt: NOW - 4_000,
+        },
+      }),
+    );
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      now: NOW,
+    });
+    const second = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      now: NOW + 1_000,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH).filter(
+      (proposal) => proposal.trigger === 'failure_recovery',
+    );
+    expect(proposals).toHaveLength(1);
+    expect(second.newActiveProposalCount).toBe(0);
+    expect(second.warnings).not.toContain('proposal_rejected_evidence');
   });
 
   it('proposes fresh research when current-info asks match stale permanent research memory', async () => {

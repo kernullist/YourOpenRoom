@@ -207,6 +207,7 @@ import {
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
 import {
+  decideAoiGoal,
   decideAoiMission,
   decideAoiProposal,
   executeAoiProposalAction,
@@ -225,6 +226,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalInspectorSummary,
+  buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
   loadAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
@@ -518,6 +520,12 @@ function getAoiProposalExecutionLabel(proposal: AoiProposal): string {
     return 'Create Kira work item';
   }
   return 'Continue';
+}
+
+function getAoiProposalGoalId(proposal: AoiProposal): string | null {
+  const refs = [...proposal.evidenceRefs, ...proposal.artifactRefs];
+  const goalRef = refs.find((ref) => /^goal:[^/]+$/.test(ref));
+  return goalRef ? goalRef.slice('goal:'.length) : null;
 }
 
 const AOI_PROPOSAL_FEEDBACK_CONTROLS: Array<{
@@ -2708,6 +2716,38 @@ const ChatPanel: React.FC<{
       }
     },
     [recordAoiAutonomyLedgerEvent, refreshAoiAutonomy],
+  );
+
+  const pauseAoiGoalForRecoveryFromPanel = useCallback(
+    async (proposal: AoiProposal) => {
+      const goalId = getAoiProposalGoalId(proposal);
+      if (!goalId) {
+        return;
+      }
+      const actionId = `goal:${goalId}:pause`;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+
+      try {
+        const result = await decideAoiGoal(sessionPathForAutonomy, {
+          goalId,
+          action: 'pause',
+          reason: `User paused goal from recovery proposal ${proposal.id}.`,
+          evidenceRefs: proposal.evidenceRefs,
+        });
+        setAoiAutonomyActiveGoals(result.active);
+        if (result.status) {
+          setAoiAutonomyStatus(result.status);
+        }
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
   );
 
   const recordAoiProposalFeedbackFromPanel = useCallback(
@@ -5820,6 +5860,7 @@ const ChatPanel: React.FC<{
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiMission={decideAoiMissionFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
+          onPauseAoiGoalForRecovery={pauseAoiGoalForRecoveryFromPanel}
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
           onPrepareAoiKiraHandoff={prepareAoiKiraHandoffFromPanel}
           onExecuteAoiProposal={executeAoiProposalFromPanel}
@@ -6282,6 +6323,7 @@ const SettingsModal: React.FC<{
     action: AoiProposalDecisionAction,
     feedbackCategory?: AoiProposalFeedbackCategory,
   ) => Promise<void>;
+  onPauseAoiGoalForRecovery: (proposal: AoiProposal) => Promise<void>;
   onRecordAoiProposalFeedback: (feedbackCategory: AoiProposalFeedbackCategory) => Promise<void>;
   onPrepareAoiKiraHandoff: (proposal: AoiProposal) => Promise<void>;
   onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
@@ -6343,6 +6385,7 @@ const SettingsModal: React.FC<{
   onRunAoiAutonomyCheck,
   onDecideAoiMission,
   onDecideAoiProposal,
+  onPauseAoiGoalForRecovery,
   onRecordAoiProposalFeedback,
   onPrepareAoiKiraHandoff,
   onExecuteAoiProposal,
@@ -8503,6 +8546,11 @@ const SettingsModal: React.FC<{
                               getAoiKiraHandoffPreview(kiraHandoffPreviewResult);
                             const isKiraHandoff =
                               proposal.acceptAction?.kind === 'create_kira_work';
+                            const recoverySummary = buildAoiRecoveryPreviewSummary(
+                              proposal,
+                              expanded,
+                            );
+                            const recoveryGoalId = getAoiProposalGoalId(proposal);
                             const inspectorSummary = buildAoiProposalInspectorSummary({
                               proposal,
                               policy: aoiAutonomyPolicy,
@@ -8528,6 +8576,28 @@ const SettingsModal: React.FC<{
                                 <div className={styles.aoiAutonomyProposalReason}>
                                   {sanitizeAoiProposalDisplayText(proposal.reason, 260)}
                                 </div>
+                                {recoverySummary.visible && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Failure: {recoverySummary.failureKind}</div>
+                                    <div>Cause: {recoverySummary.rootCauseSummary}</div>
+                                    <div>Action: {recoverySummary.proposedActionLabel}</div>
+                                    <div>Safety: {recoverySummary.whyNarrowerOrSafer}</div>
+                                    <div>
+                                      Retry: {recoverySummary.retryLabel} /{' '}
+                                      {recoverySummary.cooldownLabel}
+                                    </div>
+                                    {recoverySummary.nonGoals.map((item, index) => (
+                                      <div key={`${proposal.id}-non-goal-${index}`}>
+                                        Non-goal: {item}
+                                      </div>
+                                    ))}
+                                    {recoverySummary.evidenceRefs.map((ref, index) => (
+                                      <div key={`${proposal.id}-recovery-evidence-${index}`}>
+                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
                                 <div className={styles.aoiAutonomyProposalTools}>
                                   {proposal.suggestedTools.length > 0
                                     ? proposal.suggestedTools
@@ -8668,7 +8738,9 @@ const SettingsModal: React.FC<{
                                       disabled={proposalPending}
                                       title="Record approval without executing tools"
                                     >
-                                      Accept proposal
+                                      {recoverySummary.visible
+                                        ? 'Accept recovery'
+                                        : 'Accept proposal'}
                                     </button>
                                   ) : executableAction ? (
                                     <button
@@ -8721,6 +8793,36 @@ const SettingsModal: React.FC<{
                                   >
                                     Dismiss
                                   </button>
+                                  {recoverySummary.visible && proposal.status === 'active' && (
+                                    <button
+                                      type="button"
+                                      className={styles.inlineActionBtn}
+                                      onClick={() =>
+                                        void onDecideAoiProposal(
+                                          proposal.id,
+                                          'snooze',
+                                          'needs_more_detail',
+                                        )
+                                      }
+                                      disabled={proposalPending}
+                                      title="Ask Aoi for more recovery detail before continuing"
+                                    >
+                                      More detail
+                                    </button>
+                                  )}
+                                  {recoverySummary.visible &&
+                                    recoveryGoalId &&
+                                    proposal.status === 'active' && (
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() => void onPauseAoiGoalForRecovery(proposal)}
+                                        disabled={proposalPending}
+                                        title="Pause the linked Aoi goal"
+                                      >
+                                        Pause goal
+                                      </button>
+                                    )}
                                   <button
                                     type="button"
                                     className={styles.inlineActionBtn}

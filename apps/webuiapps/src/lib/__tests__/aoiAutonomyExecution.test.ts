@@ -4,6 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
+import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import {
@@ -147,6 +148,84 @@ afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+describe('Aoi failure recovery classification', () => {
+  it('classifies policy, research, Kira, and execution failures deterministically', () => {
+    expect(
+      classifyAoiFailure({
+        source: 'policy',
+        sessionPath: 'aoi/default',
+        sourceRef: 'proposal:policy-001',
+        reasons: ['tool_blocked:run_command'],
+        suggestedTools: ['run_command'],
+      }).kind,
+    ).toBe('policy_blocked');
+
+    expect(
+      classifyAoiFailure({
+        source: 'research',
+        sessionPath: 'aoi/default',
+        sourceRef: 'research:failed-001',
+        reasons: ['accepted_sources:0'],
+        researchRun: makeManifest({
+          id: 'failed-001',
+          status: 'failed',
+          sourceCounts: {
+            planned: 12,
+            candidates: 5,
+            accepted: 0,
+            failed: 5,
+          },
+        }),
+      }).kind,
+    ).toBe('research_insufficient_sources');
+
+    expect(
+      classifyAoiFailure({
+        source: 'kira',
+        sessionPath: 'aoi/default',
+        sourceRef: 'memory:kira-001',
+        riskSignals: ['validation-failed'],
+        summary: 'Kira validation failed for the scoped work.',
+      }).kind,
+    ).toBe('kira_validation_failed');
+
+    expect(
+      classifyAoiFailure({
+        source: 'execution',
+        sessionPath: 'aoi/default',
+        sourceRef: 'proposal:exec-001',
+        reasons: ['unexpected runtime exception'],
+      }).kind,
+    ).toBe('execution_exception');
+  });
+
+  it('does not create direct mutation recovery actions', () => {
+    const failure = classifyAoiFailure({
+      source: 'policy',
+      sessionPath: 'aoi/default',
+      sourceRef: 'proposal:mutation-001',
+      reasons: ['tool_blocked:file_patch'],
+      suggestedTools: ['file_patch'],
+      acceptActionKind: 'file_patch',
+    });
+
+    const result = buildAoiFailureRecoveryProposal({
+      failure,
+      context: {
+        activeProposals: [],
+        recentDecisions: [],
+        now: 3000,
+      },
+    });
+
+    expect(result.proposal).toBeNull();
+    expect(result.suppression?.reason).toBe('mutation_action_not_retriable');
+    expect(result.suppression?.preview.nonGoals).toEqual(
+      expect.arrayContaining(['Do not execute file writes, patches, deletes, or shell commands.']),
+    );
+  });
 });
 
 describe('executeAoiProposal()', () => {

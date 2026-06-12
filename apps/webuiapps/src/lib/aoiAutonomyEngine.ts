@@ -10,9 +10,15 @@ import {
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
   recordAoiGoalContinuationProposed,
+  recordAoiGoalRecoverySignal,
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
 import { ingestAoiObservations } from './aoiAutonomyObserver';
+import {
+  buildAoiFailureRecoveryProposals,
+  type AoiFailureClassificationInput,
+  type AoiRecoveryProposalBuildResult,
+} from './aoiAutonomyRecovery';
 import {
   appendAoiReflection,
   beginAoiAutonomyTick,
@@ -28,7 +34,11 @@ import {
   normalizeAoiAutonomySessionPath,
   saveAoiActiveProposals,
 } from './aoiAutonomyStore';
-import { recordAoiProposalCreatedRelations } from './aoiAutonomyRelations';
+import {
+  recordAoiProposalCreatedRelations,
+  recordAoiRecoveryProposalRelations,
+} from './aoiAutonomyRelations';
+import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyRisk,
@@ -102,6 +112,7 @@ interface CandidateBundle {
   memories: AoiMemoryEntry[];
   researchRuns: AoiResearchRunSummary[];
   activeProposals: AoiProposal[];
+  decisions: AoiProposalDecision[];
 }
 
 function normalizeWhitespace(value: string): string {
@@ -385,7 +396,160 @@ function collectAoiAutonomyObservations(params: {
     memories,
     researchRuns,
     activeProposals,
+    decisions,
   };
+}
+
+function memoryHasAnyTag(memory: AoiMemoryEntry, tags: string[]): boolean {
+  return tags.some((tag) => hasTag(memory, tag));
+}
+
+function buildFailureRecoveryInputs(
+  bundle: CandidateBundle,
+  sessionPath: string,
+): AoiFailureClassificationInput[] {
+  const failures: AoiFailureClassificationInput[] = [];
+
+  for (const run of bundle.researchRuns) {
+    if (run.status !== 'failed') {
+      continue;
+    }
+    failures.push({
+      source: 'research',
+      sessionPath: run.sessionPath,
+      sourceRef: `research:${run.id}`,
+      summary: `Research "${run.title || run.request}" failed in phase ${run.phase}.`,
+      evidenceRefs: [`research:${run.id}`],
+      reasons: [
+        run.error?.code,
+        run.error?.message,
+        run.error?.phase,
+        `accepted_sources:${run.sourceCounts.accepted}`,
+      ].filter((item): item is string => Boolean(item)),
+      riskSignals: ['research-failed', ...(run.warningCount > 0 ? ['research-warnings'] : [])],
+      suggestedTools: ['start_research'],
+      acceptActionKind: 'start_research',
+      researchRun: run,
+    });
+  }
+
+  for (const memory of bundle.memories) {
+    if (
+      !hasTag(memory, 'kira') ||
+      !memoryHasAnyTag(memory, [
+        'needs-attention',
+        'interrupted',
+        'validation-failed',
+        'integration-failed',
+        'review-blocked',
+        'needs-clarification',
+      ])
+    ) {
+      continue;
+    }
+    failures.push({
+      source: 'kira',
+      sessionPath: memory.sessionPath || sessionPath,
+      sourceRef: `memory:${memory.id}`,
+      summary: memory.content,
+      evidenceRefs: [`memory:${memory.id}`],
+      reasons: memory.tags,
+      riskSignals: memory.tags,
+      suggestedTools: ['create_kira_work'],
+      acceptActionKind: 'create_kira_work',
+      memory,
+    });
+  }
+
+  for (const proposal of bundle.activeProposals) {
+    if (proposal.status !== 'blocked' && !proposal.blockedReason) {
+      continue;
+    }
+    failures.push({
+      source: proposal.blockedReason?.includes('policy') ? 'policy' : 'execution',
+      sessionPath: proposal.sessionPath,
+      sourceRef: `proposal:${proposal.id}`,
+      summary: proposal.blockedReason || `Proposal "${proposal.title}" is blocked.`,
+      evidenceRefs: [
+        `proposal:${proposal.id}`,
+        ...proposal.evidenceRefs,
+        ...proposal.artifactRefs.filter((ref) => ref.startsWith('goal:')),
+      ],
+      reasons: [
+        proposal.blockedReason,
+        `status:${proposal.status}`,
+        proposal.acceptAction?.kind ? `action:${proposal.acceptAction.kind}` : undefined,
+      ].filter((item): item is string => Boolean(item)),
+      riskSignals: proposal.riskSignals,
+      suggestedTools: proposal.suggestedTools,
+      acceptActionKind: proposal.acceptAction?.kind,
+      proposal,
+    });
+  }
+
+  return failures;
+}
+
+function recordAoiRecoveryLedgerEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  type:
+    | 'failure_classified'
+    | 'recovery_proposal_created'
+    | 'recovery_suppressed_by_loop_guard'
+    | 'recovery_blocked_by_policy';
+  message: string;
+  toolNames?: string[];
+  now: number;
+}): void {
+  try {
+    recordServerAoiRunLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: params.type,
+      message: truncateText(params.message, 240),
+      goalSummary: 'Aoi failure recovery',
+      toolNames: params.toolNames,
+      now: params.now,
+    });
+  } catch {
+    // Recovery ledger writes are audit-only.
+  }
+}
+
+function recordFailureRecoveryBuildEvents(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  result: AoiRecoveryProposalBuildResult;
+  now: number;
+}): void {
+  for (const failure of params.result.classifiedFailures) {
+    recordAoiRecoveryLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'failure_classified',
+      message: `Classified ${failure.sourceRef} as ${failure.kind}.`,
+      toolNames: failure.suggestedTools,
+      now: params.now,
+    });
+  }
+  for (const suppression of params.result.suppressed) {
+    recordAoiRecoveryLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'recovery_suppressed_by_loop_guard',
+      message: `Suppressed ${suppression.failure.sourceRef}: ${suppression.reason}.`,
+      toolNames: suppression.failure.suggestedTools,
+      now: params.now,
+    });
+    recordAoiGoalRecoverySignal({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      evidenceRefs: suppression.failure.evidenceRefs,
+      summary: `Recovery for ${suppression.failure.sourceRef} is blocked: ${suppression.reason}.`,
+      now: params.now,
+    });
+  }
 }
 
 function buildResearchFollowupProposal(params: {
@@ -430,62 +594,6 @@ function buildResearchFollowupProposal(params: {
       params: {
         runId: params.run.id,
         artifact: 'report',
-      },
-    },
-  };
-}
-
-function buildFailedResearchRetryProposal(params: {
-  run: AoiResearchRunSummary;
-  now: number;
-}): AoiProposal | null {
-  if (params.run.status !== 'failed') {
-    return null;
-  }
-  const isTimeout =
-    params.run.error?.code === 'research_run_timeout' ||
-    /timeout/i.test(params.run.error?.message || '');
-  const evidenceRefs = [`research:${params.run.id}`];
-  return {
-    version: 1,
-    id: createAoiAutonomyId('aoi-proposal-research-retry', params.now),
-    sessionPath: params.run.sessionPath,
-    status: 'active',
-    title: truncateText(
-      isTimeout
-        ? 'Retry the timed-out research with a smaller scope'
-        : 'Review and retry failed research',
-      TITLE_MAX_CHARS,
-    ),
-    body: truncateText(
-      `The research run "${params.run.title || params.run.request}" failed in phase ${params.run.phase}.`,
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      'A failed research run can be retried with a narrower source budget after approval.',
-      REASON_MAX_CHARS,
-    ),
-    trigger: 'research_retry',
-    createdAt: params.now,
-    updatedAt: params.now,
-    cooldownKey: `research-retry:${params.run.id}`,
-    confidence: isTimeout ? 0.78 : 0.72,
-    risk: 'medium',
-    requiredAutonomyLevel: 'L4',
-    requiresUserApproval: true,
-    suggestedTools: ['start_research'],
-    evidenceRefs,
-    memoryIds: [],
-    artifactRefs: evidenceRefs,
-    riskSignals: ['research-failed', ...(isTimeout ? ['timeout'] : [])],
-    acceptAction: {
-      kind: 'start_research',
-      params: {
-        sessionPath: params.run.sessionPath,
-        request: params.run.request,
-        mode: 'standard',
-        maxSources: Math.max(5, Math.min(12, Math.ceil(params.run.maxSources / 2))),
-        allowDuplicate: true,
       },
     },
   };
@@ -794,11 +902,23 @@ function buildDeterministicProposals(params: {
         proposals.push(proposal);
       }
     }
-    const retry = buildFailedResearchRetryProposal({ run, now: params.now });
-    if (retry) {
-      proposals.push(retry);
-    }
   }
+
+  const recoveryResult = buildAoiFailureRecoveryProposals({
+    failures: buildFailureRecoveryInputs(params.bundle, params.sessionPath),
+    context: {
+      activeProposals: [...params.bundle.activeProposals],
+      recentDecisions: params.bundle.decisions,
+      now: params.now,
+    },
+  });
+  recordFailureRecoveryBuildEvents({
+    sessionsDir: params.sessionsDir,
+    sessionPath: params.sessionPath,
+    result: recoveryResult,
+    now: params.now,
+  });
+  proposals.push(...recoveryResult.proposals);
 
   for (const memory of params.bundle.memories) {
     if (memory.permanent && (hasTag(memory, 'research') || hasTag(memory, 'aoi-research'))) {
@@ -1578,6 +1698,24 @@ export async function runAoiAutonomyTick(
         risk: proposal.risk,
         safeAlternative: makeBlockedProposalSafeAlternative(proposal, [...new Set(reasons)]),
       });
+      if (proposal.recoveryPreview) {
+        recordAoiRecoveryLedgerEvent({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          type: 'recovery_blocked_by_policy',
+          message: `Recovery proposal ${proposal.id} was blocked: ${[...new Set(reasons)].join(', ')}.`,
+          toolNames: proposal.suggestedTools,
+          now,
+        });
+        recordAoiGoalRecoverySignal({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          proposal,
+          evidenceRefs: proposal.evidenceRefs,
+          summary: `Recovery proposal "${proposal.title}" was blocked by policy.`,
+          now,
+        });
+      }
       appendAoiReflection(
         params.sessionsDir,
         makeBlockedReflection({
@@ -1594,6 +1732,25 @@ export async function runAoiAutonomyTick(
     activeProposals = [proposal, ...activeProposals];
     acceptedProposals.push(proposal);
     recordAoiProposalCreatedRelations(params.sessionsDir, proposal, now);
+    if (proposal.recoveryPreview) {
+      recordAoiRecoveryProposalRelations(params.sessionsDir, proposal, now);
+      recordAoiRecoveryLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'recovery_proposal_created',
+        message: `Created recovery proposal ${proposal.id} for ${proposal.recoveryPreview.sourceRef}.`,
+        toolNames: proposal.suggestedTools,
+        now,
+      });
+      recordAoiGoalRecoverySignal({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        proposal,
+        evidenceRefs: proposal.evidenceRefs,
+        summary: `Proposed recovery for ${proposal.recoveryPreview.sourceRef}.`,
+        now,
+      });
+    }
     recordAoiGoalContinuationProposed({
       sessionsDir: params.sessionsDir,
       sessionPath,

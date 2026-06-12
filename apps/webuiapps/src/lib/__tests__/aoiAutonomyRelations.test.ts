@@ -9,6 +9,7 @@ import {
   makeAoiRelationNode,
   recordAoiMissionStateRelations,
   recordAoiProposalCreatedRelations,
+  recordAoiRecoveryProposalRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
 import type { AoiMissionState, AoiProposal } from '../aoiAutonomyTypes';
@@ -122,6 +123,63 @@ describe('Aoi autonomy relation index', () => {
 
     const reloaded = loadAoiRelationIndex(root, 'aoi/default');
     expect(reloaded.edges).toHaveLength(second.edges.length);
+  });
+
+  it('records recovery proposal links from failure source to goal step', () => {
+    const root = makeTempRoot();
+    const proposal = makeProposal({
+      id: 'proposal-recovery-001',
+      trigger: 'failure_recovery',
+      evidenceRefs: [
+        'research:aoi-research-failed-001',
+        'goal:aoi-goal-relation-001',
+        'goal:aoi-goal-relation-001/step:step-research',
+      ],
+      artifactRefs: [
+        'research:aoi-research-failed-001',
+        'goal:aoi-goal-relation-001',
+        'goal:aoi-goal-relation-001/step:step-research',
+      ],
+      recoveryPreview: {
+        version: 1,
+        failureKind: 'research_failed',
+        rootCauseSummary: 'Observed research failed signal.',
+        evidenceRefs: ['research:aoi-research-failed-001', 'goal:aoi-goal-relation-001'],
+        proposedAction: {
+          kind: 'refresh_research',
+          label: 'Refresh research narrowly',
+          reason: 'Retry with smaller source budget.',
+        },
+        whyNarrowerOrSafer: 'Bounded to the failed research run.',
+        retryCount: 0,
+        maxRetryCount: 1,
+        cooldownActive: false,
+        sourceRef: 'research:aoi-research-failed-001',
+        failureSignature: 'failure:research_failed:test',
+        nonGoals: ['Do not execute file writes, patches, deletes, or shell commands.'],
+      },
+    });
+
+    const index = recordAoiRecoveryProposalRelations(root, proposal, 4000);
+    const proposalNode = index.nodes.find((node) => node.ref === 'proposal:proposal-recovery-001');
+    const sourceNode = index.nodes.find((node) => node.ref === 'research:aoi-research-failed-001');
+    const goalNode = index.nodes.find((node) => node.ref === 'goal:aoi-goal-relation-001');
+
+    expect(proposalNode).toBeTruthy();
+    expect(sourceNode).toBeTruthy();
+    expect(goalNode).toBeTruthy();
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === sourceNode?.id && edge.to === proposalNode?.id && edge.kind === 'supports',
+      ),
+    ).toBe(true);
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === proposalNode?.id && edge.to === goalNode?.id && edge.kind === 'followed_by',
+      ),
+    ).toBe(true);
   });
 
   it('deduplicates raw edge upserts by from kind and to', () => {

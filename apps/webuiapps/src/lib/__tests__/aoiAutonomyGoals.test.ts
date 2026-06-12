@@ -12,6 +12,7 @@ import {
   loadAoiActiveGoals,
   loadAoiArchivedGoals,
   loadAoiGoalProgressEvents,
+  recordAoiGoalRecoverySignal,
   saveAoiActiveGoals,
   updateAoiGoalProgressFromObservations,
 } from '../aoiAutonomyGoals';
@@ -328,6 +329,31 @@ describe('Aoi autonomy goals', () => {
     });
 
     expect(second).toEqual([]);
+  });
+
+  it('marks the current goal step blocked when recovery is proposed', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+    const proposal = makeWaitingProposal(goal);
+
+    const event = recordAoiGoalRecoverySignal({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      proposal,
+      evidenceRefs: [
+        `goal:${goal.id}`,
+        `goal:${goal.id}/step:${goal.plan.steps[0].id}`,
+        'research:aoi-research-failed-001',
+      ],
+      summary: 'Proposed recovery for failed research.',
+      now: NOW + 3000,
+    });
+
+    const updated = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    expect(event?.kind).toBe('blocked');
+    expect(updated.status).toBe('blocked');
+    expect(updated.plan.steps[0].status).toBe('blocked');
+    expect(updated.plan.steps[0].evidenceRefs).toContain('research:aoi-research-failed-001');
   });
 
   it('persists one compact mission snapshot and records audit refs', () => {

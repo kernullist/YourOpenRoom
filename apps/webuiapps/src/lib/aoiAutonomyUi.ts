@@ -73,6 +73,18 @@ export interface AoiProposalInspectorSummary {
   safeAlternative: string;
 }
 
+export interface AoiRecoveryPreviewSummary {
+  visible: boolean;
+  failureKind: string;
+  rootCauseSummary: string;
+  proposedActionLabel: string;
+  whyNarrowerOrSafer: string;
+  retryLabel: string;
+  cooldownLabel: string;
+  evidenceRefs: string[];
+  nonGoals: string[];
+}
+
 export interface AoiMissionPanelSummary {
   visible: boolean;
   statusLabel: string;
@@ -392,6 +404,41 @@ export function buildAoiProposalInspectorSummary(params: {
     policyReasons: policyResult.reasons,
     evidenceRefs: params.includeEvidence ? params.proposal.evidenceRefs.slice(0, 8) : [],
     safeAlternative: getAoiSafeAlternativeForReasons(params.proposal, policyResult.reasons),
+  };
+}
+
+export function buildAoiRecoveryPreviewSummary(
+  proposal: AoiProposal,
+  includeEvidence = false,
+): AoiRecoveryPreviewSummary {
+  const preview = proposal.recoveryPreview;
+  if (!preview) {
+    return {
+      visible: false,
+      failureKind: '',
+      rootCauseSummary: '',
+      proposedActionLabel: '',
+      whyNarrowerOrSafer: '',
+      retryLabel: '',
+      cooldownLabel: '',
+      evidenceRefs: [],
+      nonGoals: [],
+    };
+  }
+
+  const cooldownLabel = preview.cooldownActive
+    ? `cooldown active${preview.cooldownUntil ? ` until ${new Date(preview.cooldownUntil).toISOString()}` : ''}`
+    : 'cooldown clear';
+  return {
+    visible: true,
+    failureKind: sanitizeAoiProposalDisplayText(preview.failureKind.replace(/_/g, ' '), 80),
+    rootCauseSummary: sanitizeAoiProposalDisplayText(preview.rootCauseSummary, 260),
+    proposedActionLabel: sanitizeAoiProposalDisplayText(preview.proposedAction.label, 140),
+    whyNarrowerOrSafer: sanitizeAoiProposalDisplayText(preview.whyNarrowerOrSafer, 220),
+    retryLabel: `${preview.retryCount}/${preview.maxRetryCount} retries used`,
+    cooldownLabel: sanitizeAoiProposalDisplayText(cooldownLabel, 120),
+    evidenceRefs: includeEvidence ? preview.evidenceRefs.slice(0, 8) : [],
+    nonGoals: preview.nonGoals.slice(0, 4).map((item) => sanitizeAoiProposalDisplayText(item, 180)),
   };
 }
 

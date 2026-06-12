@@ -39,6 +39,26 @@ export type AoiProposalFeedbackCategory =
   | 'already_done'
   | 'needs_more_detail';
 
+export type AoiFailureKind =
+  | 'policy_blocked'
+  | 'missing_evidence'
+  | 'scope_too_broad'
+  | 'stale_confirmation'
+  | 'research_failed'
+  | 'research_insufficient_sources'
+  | 'kira_needs_clarification'
+  | 'kira_validation_failed'
+  | 'kira_review_blocked'
+  | 'execution_exception';
+
+export type AoiRecoveryActionKind =
+  | 'ask_clarification'
+  | 'narrow_scope'
+  | 'refresh_research'
+  | 'prepare_kira_followup'
+  | 'pause_mission'
+  | 'mark_blocked';
+
 export type AoiAutonomyTickReason =
   | 'manual'
   | 'turn'
@@ -62,6 +82,29 @@ export type AoiProposalAcceptActionKind =
 export interface AoiProposalAcceptAction {
   kind: AoiProposalAcceptActionKind;
   params: Record<string, unknown>;
+}
+
+export interface AoiRecoveryPreviewAction {
+  kind: AoiRecoveryActionKind;
+  label: string;
+  reason: string;
+}
+
+export interface AoiRecoveryPreview {
+  version: 1;
+  failureKind: AoiFailureKind;
+  rootCauseSummary: string;
+  evidenceRefs: string[];
+  proposedAction: AoiRecoveryPreviewAction;
+  whyNarrowerOrSafer: string;
+  retryCount: number;
+  maxRetryCount: number;
+  cooldownActive: boolean;
+  sourceRef: string;
+  failureSignature: string;
+  nonGoals: string[];
+  cooldownUntil?: number;
+  blockedReason?: string;
 }
 
 export interface AoiObservation {
@@ -133,6 +176,7 @@ export interface AoiProposal {
   artifactRefs: string[];
   riskSignals: string[];
   acceptAction?: AoiProposalAcceptAction;
+  recoveryPreview?: AoiRecoveryPreview;
   blockedReason?: string;
 }
 

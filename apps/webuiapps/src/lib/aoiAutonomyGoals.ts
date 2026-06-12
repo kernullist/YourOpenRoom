@@ -1331,6 +1331,88 @@ export function recordAoiGoalContinuationProposed(params: {
   });
 }
 
+export function recordAoiGoalRecoverySignal(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal?: AoiProposal;
+  evidenceRefs: string[];
+  summary: string;
+  now?: number;
+}): AoiGoalProgressEvent | null {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const evidenceRefs = normalizeStringArray(params.evidenceRefs, 16);
+  const goalRef = evidenceRefs.find((ref) => /^goal:[^/]+$/.test(ref));
+  const goalId = goalRef?.slice('goal:'.length);
+  if (!goalId) {
+    return null;
+  }
+  const now = params.now ?? Date.now();
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath);
+  const index = activeGoals.findIndex((goal) => goal.id === goalId);
+  if (index < 0) {
+    return null;
+  }
+  const current = activeGoals[index];
+  const stepRef = evidenceRefs.find((ref) => ref.startsWith(`${goalRef}/step:`));
+  const stepId = stepRef?.slice(`${goalRef}/step:`.length);
+  const openStep =
+    (stepId ? current.plan.steps.find((step) => step.id === stepId) : null) ??
+    firstOpenStep(current);
+  const nextStatus: AoiGoalStatus = current.status === 'active' ? 'blocked' : current.status;
+  const nextGoal: AoiGoal = {
+    ...current,
+    status: nextStatus,
+    updatedAt: now,
+    lastCheckedAt: now,
+    sourceRefs: [...new Set([...current.sourceRefs, ...evidenceRefs])].slice(0, 16),
+    plan: {
+      ...current.plan,
+      updatedAt: now,
+      steps: current.plan.steps.map((step) =>
+        openStep && step.id === openStep.id
+          ? {
+              ...step,
+              status: 'blocked' as const,
+              evidenceRefs: [...new Set([...step.evidenceRefs, ...evidenceRefs])].slice(0, 12),
+            }
+          : step,
+      ),
+    },
+  };
+  const nextActive = [...activeGoals];
+  nextActive[index] = nextGoal;
+  saveAoiActiveGoals(params.sessionsDir, sessionPath, nextActive);
+
+  const event = appendAoiGoalProgressEvent(
+    params.sessionsDir,
+    makeProgressEvent({
+      goal: nextGoal,
+      kind: 'blocked',
+      summary: params.summary,
+      now,
+      evidenceRefs: [
+        ...(params.proposal ? [`proposal:${params.proposal.id}`] : []),
+        ...evidenceRefs,
+      ],
+      proposalIds: params.proposal ? [params.proposal.id] : [],
+      planStepId: openStep?.id,
+      fromStatus: current.status,
+      toStatus: nextStatus,
+    }),
+  );
+  recordGoalRelations({
+    sessionsDir: params.sessionsDir,
+    goal: nextGoal,
+    evidenceRefs: event.evidenceRefs,
+    proposalIds: params.proposal ? [params.proposal.id] : [],
+    now,
+  });
+  return event;
+}
+
 export function applyAoiGoalDecision(
   sessionsDir: string,
   sessionPath: string,

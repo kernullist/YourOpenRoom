@@ -391,6 +391,91 @@ export function recordAoiProposalCreatedRelations(
   return upsertAoiRelations(sessionsDir, proposal.sessionPath, { nodes, edges, now });
 }
 
+export function recordAoiRecoveryProposalRelations(
+  sessionsDir: string,
+  proposal: AoiProposal,
+  now = Date.now(),
+): AoiRelationIndex {
+  const preview = proposal.recoveryPreview;
+  if (!preview) {
+    return recordAoiProposalCreatedRelations(sessionsDir, proposal, now);
+  }
+
+  const proposalRef = `proposal:${proposal.id}`;
+  const proposalNode = makeAoiRelationNode({
+    ref: proposalRef,
+    kind: 'proposal',
+    label: proposal.title,
+    status: proposal.status === 'active' || proposal.status === 'accepted' ? 'active' : 'unknown',
+    now,
+  });
+  const recoveryRef = `recovery:${preview.failureSignature}`;
+  const recoveryNode = makeAoiRelationNode({
+    ref: recoveryRef,
+    kind: 'artifact',
+    label: `${preview.failureKind}:${preview.proposedAction.kind}`,
+    status: 'active',
+    now,
+  });
+  const sourceNode = makeAoiRelationNode({
+    ref: preview.sourceRef,
+    label: preview.failureKind,
+    now,
+  });
+  const nodes = [proposalNode, recoveryNode, sourceNode];
+  const edges: AoiRelationEdge[] = [
+    makeAoiRelationEdge({
+      from: sourceNode.id,
+      to: proposalNode.id,
+      kind: 'caused_by',
+      evidenceRefs: [preview.sourceRef, recoveryRef],
+      now,
+    }),
+    makeAoiRelationEdge({
+      from: sourceNode.id,
+      to: proposalNode.id,
+      kind: 'supports',
+      evidenceRefs: preview.evidenceRefs,
+      now,
+    }),
+    makeAoiRelationEdge({
+      from: proposalNode.id,
+      to: recoveryNode.id,
+      kind: 'followed_by',
+      evidenceRefs: [proposalRef, preview.sourceRef],
+      now,
+    }),
+  ];
+
+  const refs = [...new Set([...preview.evidenceRefs, ...proposal.artifactRefs])];
+  for (const ref of refs) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: proposalNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref],
+        now,
+      }),
+    );
+    if (ref.startsWith('goal:')) {
+      edges.push(
+        makeAoiRelationEdge({
+          from: proposalNode.id,
+          to: node.id,
+          kind: 'followed_by',
+          evidenceRefs: [proposalRef, ref],
+          now,
+        }),
+      );
+    }
+  }
+
+  return upsertAoiRelations(sessionsDir, proposal.sessionPath, { nodes, edges, now });
+}
+
 export function recordAoiObservationRelations(
   sessionsDir: string,
   observation: AoiObservation,

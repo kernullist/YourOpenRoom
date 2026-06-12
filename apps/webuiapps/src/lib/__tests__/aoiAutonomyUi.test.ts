@@ -6,6 +6,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalInspectorSummary,
+  buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
   getAoiSafeAlternativeForReasons,
   loadAoiAutonomyPanelSettings,
@@ -218,6 +219,43 @@ describe('Aoi autonomy UI helpers', () => {
     expect(collapsed.suggestedAction).toBe('read_research_artifact');
     expect(collapsed.policyAllowed).toBe(false);
     expect(collapsed.policyReasons).toContain('duplicate_active_proposal');
+  });
+
+  it('builds recovery preview summaries with retry and non-goal details', () => {
+    const proposal = makeProposal({
+      trigger: 'failure_recovery',
+      recoveryPreview: {
+        version: 1,
+        failureKind: 'kira_validation_failed',
+        rootCauseSummary: 'Observed validation failed signal from Kira.',
+        evidenceRefs: ['memory:kira-failed-001'],
+        proposedAction: {
+          kind: 'prepare_kira_followup',
+          label: 'Prepare Kira follow-up',
+          reason: 'Target validation evidence only.',
+        },
+        whyNarrowerOrSafer: 'Bounded to one failed Kira work item.',
+        retryCount: 1,
+        maxRetryCount: 2,
+        cooldownActive: true,
+        cooldownUntil: 2000,
+        sourceRef: 'memory:kira-failed-001',
+        failureSignature: 'failure:kira_validation_failed:test',
+        nonGoals: ['Do not create broad Kira work that fixes everything at once.'],
+      },
+    });
+
+    const summary = buildAoiRecoveryPreviewSummary(proposal, true);
+
+    expect(summary).toMatchObject({
+      visible: true,
+      failureKind: 'kira validation failed',
+      proposedActionLabel: 'Prepare Kira follow-up',
+      retryLabel: '1/2 retries used',
+    });
+    expect(summary.cooldownLabel).toContain('cooldown active');
+    expect(summary.evidenceRefs).toEqual(['memory:kira-failed-001']);
+    expect(summary.nonGoals[0]).toContain('Do not create broad Kira work');
   });
 
   it('persists conservative panel notification settings', () => {
