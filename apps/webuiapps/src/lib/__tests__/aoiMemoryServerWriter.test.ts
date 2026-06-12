@@ -70,18 +70,27 @@ afterEach(() => {
 });
 
 describe('Aoi server memory writer', () => {
-  it('stores completed Kira events without a browser session-data round trip', () => {
+  it('stores reviewed completed Kira events without a browser session-data round trip', () => {
     const sessionsDir = makeTempSessionsDir();
 
-    const memories = syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, 'aoi/default', {
-      id: 'event-1',
-      workId: 'work-1',
-      title: 'Add review controls',
-      projectName: 'YourOpenRoom',
-      message: 'Kira completed the work.',
-      createdAt: 100,
-      type: 'completed',
-    });
+    const memories = syncAoiMemoryFromKiraAutomationEventServer(
+      sessionsDir,
+      'aoi/default',
+      {
+        id: 'event-1',
+        workId: 'work-1',
+        title: 'Add review controls',
+        projectName: 'YourOpenRoom',
+        message: 'Kira completed the work.',
+        createdAt: 100,
+        type: 'completed',
+      },
+      {
+        reviewApproved: true,
+        validationPassedCount: 1,
+        validationFailedCount: 0,
+      },
+    );
 
     expect(memories).toHaveLength(1);
     expect(memories[0]).toMatchObject({
@@ -113,6 +122,23 @@ describe('Aoi server memory writer', () => {
     });
   });
 
+  it('does not store unreviewed completed Kira events as durable memory', () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    const memories = syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, 'aoi/default', {
+      id: 'event-unreviewed',
+      workId: 'work-unreviewed',
+      title: 'Unreviewed work',
+      projectName: 'YourOpenRoom',
+      message: 'Kira completed the work without reviewer evidence.',
+      createdAt: 100,
+      type: 'completed',
+    });
+
+    expect(memories).toEqual([]);
+    expect(loadServerAoiMemories(sessionsDir)).toEqual([]);
+  });
+
   it('does not inflate hits when the same Kira event is replayed', () => {
     const sessionsDir = makeTempSessionsDir();
     const event = {
@@ -124,9 +150,19 @@ describe('Aoi server memory writer', () => {
       createdAt: 100,
       type: 'completed' as const,
     };
+    const context = {
+      reviewApproved: true,
+      validationPassedCount: 1,
+      validationFailedCount: 0,
+    };
 
-    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, 'aoi/default', event);
-    const second = syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, 'aoi/default', event);
+    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, 'aoi/default', event, context);
+    const second = syncAoiMemoryFromKiraAutomationEventServer(
+      sessionsDir,
+      'aoi/default',
+      event,
+      context,
+    );
 
     expect(second).toHaveLength(1);
     expect(second[0].hits).toBe(1);

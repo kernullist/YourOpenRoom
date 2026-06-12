@@ -10,11 +10,17 @@ import {
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
   loadAoiActiveGoals,
+  loadAoiArchivedGoals,
   recordAoiGoalContinuationProposed,
   recordAoiGoalRecoverySignal,
+  updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
+import {
+  runAoiKiraOutcomeLearning,
+  type AoiKiraOutcomeLearningResult,
+} from './aoiKiraOutcomeLearning';
 import { ingestAoiObservations } from './aoiAutonomyObserver';
 import {
   buildAoiFailureRecoveryProposals,
@@ -29,6 +35,7 @@ import {
   createAoiAutonomyId,
   loadAoiAutonomyTickState,
   loadAoiActiveProposals,
+  loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
   loadAoiObservations,
   loadAoiProposalDecisions,
@@ -37,7 +44,9 @@ import {
   saveAoiActiveProposals,
 } from './aoiAutonomyStore';
 import {
+  loadAoiRelationIndex,
   recordAoiAttentionEventRelations,
+  recordAoiKiraOutcomeRelations,
   recordAoiProposalCreatedRelations,
   recordAoiRecoveryProposalRelations,
 } from './aoiAutonomyRelations';
@@ -49,6 +58,7 @@ import type {
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
   AoiAutonomyTickState,
+  AoiGoal,
   AoiObservation,
   AoiProposal,
   AoiProposalAcceptAction,
@@ -593,6 +603,87 @@ function recordAoiAttentionBrokerLedgerEvents(params: {
   }
 }
 
+function recordAoiKiraOutcomeLedgerEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  type:
+    | 'kira_outcome_ingested'
+    | 'kira_goal_progress_updated'
+    | 'kira_reviewed_memory_candidate_created'
+    | 'kira_followup_proposed'
+    | 'kira_outcome_duplicate_ignored';
+  message: string;
+  now: number;
+}): void {
+  try {
+    recordServerAoiRunLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: params.type,
+      message: truncateText(params.message, 240),
+      goalSummary: 'Aoi Kira outcome learning',
+      toolNames: [],
+      now: params.now,
+    });
+  } catch {
+    // Outcome ledger writes are audit-only.
+  }
+}
+
+function recordAoiKiraOutcomeLedgerEvents(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  result: AoiKiraOutcomeLearningResult;
+  goalUpdatedOutcomeIds: string[];
+  now: number;
+}): void {
+  for (const outcome of params.result.freshOutcomes) {
+    recordAoiKiraOutcomeLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'kira_outcome_ingested',
+      message: `${outcome.kind}: ${outcome.workTitle}`,
+      now: params.now,
+    });
+  }
+  for (const outcome of params.result.duplicateOutcomes) {
+    recordAoiKiraOutcomeLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'kira_outcome_duplicate_ignored',
+      message: `Duplicate Kira outcome ignored: ${outcome.kind} ${outcome.workRef}.`,
+      now: params.now,
+    });
+  }
+  for (const write of params.result.memoryWrites) {
+    recordAoiKiraOutcomeLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'kira_reviewed_memory_candidate_created',
+      message: `Reviewed Kira memory candidate ${write.episodeId} created for ${write.outcomeId}.`,
+      now: params.now,
+    });
+  }
+  for (const proposal of params.result.proposals) {
+    recordAoiKiraOutcomeLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'kira_followup_proposed',
+      message: `Kira follow-up proposal created: ${proposal.title}.`,
+      now: params.now,
+    });
+  }
+  for (const outcomeId of params.goalUpdatedOutcomeIds) {
+    recordAoiKiraOutcomeLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'kira_goal_progress_updated',
+      message: `Goal progress updated from Kira outcome ${outcomeId}.`,
+      now: params.now,
+    });
+  }
+}
+
 function recordFailureRecoveryBuildEvents(params: {
   sessionsDir: string;
   sessionPath: string;
@@ -955,6 +1046,7 @@ function buildDeterministicProposals(params: {
   sessionPath: string;
   latestUserMessage: string;
   now: number;
+  extraFailures?: AoiFailureClassificationInput[];
 }): AoiProposal[] {
   const proposals: AoiProposal[] = [];
   const goalCandidate = buildAoiGoalProposalFromUserMessage({
@@ -981,7 +1073,10 @@ function buildDeterministicProposals(params: {
   }
 
   const recoveryResult = buildAoiFailureRecoveryProposals({
-    failures: buildFailureRecoveryInputs(params.bundle, params.sessionPath),
+    failures: [
+      ...buildFailureRecoveryInputs(params.bundle, params.sessionPath),
+      ...(params.extraFailures ?? []),
+    ],
     context: {
       activeProposals: [...params.bundle.activeProposals],
       recentDecisions: params.bundle.decisions,
@@ -1115,6 +1210,59 @@ function recordAoiAttentionRelations(params: {
       });
     } catch {
       // Attention relation writes are audit-only.
+    }
+  }
+}
+
+function findAoiProposalById(
+  proposals: AoiProposal[],
+  proposalId?: string,
+): AoiProposal | undefined {
+  if (!proposalId) {
+    return undefined;
+  }
+  return proposals.find((proposal) => proposal.id === proposalId);
+}
+
+function findAoiGoalById(goals: AoiGoal[], goalId?: string): AoiGoal | undefined {
+  if (!goalId) {
+    return undefined;
+  }
+  return goals.find((goal) => goal.id === goalId);
+}
+
+function recordAoiKiraOutcomeRelationsForResult(params: {
+  sessionsDir: string;
+  result: AoiKiraOutcomeLearningResult;
+  storedObservations: AoiObservation[];
+  proposals: AoiProposal[];
+  goals: AoiGoal[];
+  now: number;
+}): void {
+  const observationsByOutcomeId = new Map(
+    params.storedObservations
+      .filter((observation) => observation.payloadRef?.startsWith('event:'))
+      .map((observation) => [observation.payloadRef?.slice('event:'.length), observation]),
+  );
+  const memoryIdsByOutcomeId = new Map(
+    params.result.memoryWrites.map((write) => [write.outcomeId, write.memoryIds]),
+  );
+  for (const outcome of params.result.freshOutcomes) {
+    const goal = findAoiGoalById(params.goals, outcome.sourceGoalId);
+    const planStep = goal?.plan.steps.find((step) => step.id === outcome.sourcePlanStepId);
+    try {
+      recordAoiKiraOutcomeRelations({
+        sessionsDir: params.sessionsDir,
+        outcome,
+        observation: observationsByOutcomeId.get(outcome.id),
+        proposal: findAoiProposalById(params.proposals, outcome.sourceProposalId),
+        goal,
+        planStep,
+        memoryIds: memoryIdsByOutcomeId.get(outcome.id) ?? [],
+        now: params.now,
+      });
+    } catch {
+      // Outcome relation writes are audit-only.
     }
   }
 }
@@ -1717,6 +1865,7 @@ export async function runAoiAutonomyTick(
     now,
     maxObservations: params.maxObservations,
   });
+  const activeGoalsForTick = loadAoiActiveGoals(params.sessionsDir, sessionPath);
   const missionForAttention =
     loadAoiMissionState(params.sessionsDir, sessionPath) ??
     deriveAoiMissionState({
@@ -1733,11 +1882,22 @@ export async function runAoiAutonomyTick(
     memories: bundle.memories,
     activeProposals: bundle.activeProposals,
     recentDecisions: bundle.decisions,
-    activeGoals: loadAoiActiveGoals(params.sessionsDir, sessionPath),
+    activeGoals: activeGoalsForTick,
     mission: missionForAttention,
     quietMode: params.quietMode,
     userIdleMs: params.userIdleMs,
     maxActionableEvents: latestUserMessage ? 0 : 1,
+  });
+  const kiraOutcomeResult = runAoiKiraOutcomeLearning({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    now,
+    existingObservations: loadAoiObservations(params.sessionsDir, sessionPath),
+    activeProposals: bundle.activeProposals,
+    archivedProposals: loadAoiArchivedProposals(params.sessionsDir, sessionPath),
+    activeGoals: activeGoalsForTick,
+    archivedGoals: loadAoiArchivedGoals(params.sessionsDir, sessionPath),
+    relationIndex: loadAoiRelationIndex(params.sessionsDir, sessionPath),
   });
   if (latestUserMessage) {
     bundle.observations.unshift({
@@ -1756,31 +1916,66 @@ export async function runAoiAutonomyTick(
     });
   }
   bundle.observations.push(...attentionResult.observations);
+  bundle.observations.push(...kiraOutcomeResult.observations);
 
   const observationIngestResults = ingestAoiObservations(params.sessionsDir, bundle.observations, {
     now,
   });
   bundle.observations = observationIngestResults.map((result) => result.observation);
   const observationWarnings = observationIngestResults.flatMap((result) => result.warnings);
-  const attentionMission = attentionResult.updateMission
-    ? deriveAoiMissionState({
-        sessionsDir: params.sessionsDir,
-        sessionPath,
-        now,
-        persist: true,
-      })
-    : missionForAttention;
   recordAoiAttentionBrokerLedgerEvents({
     sessionsDir: params.sessionsDir,
     sessionPath,
     result: attentionResult,
     now,
   });
+  const nonKiraOutcomeObservations = bundle.observations.filter(
+    (observation) => !observation.riskSignals.some((signal) => signal.startsWith('kira-outcome:')),
+  );
   updateAoiGoalProgressFromObservations({
     sessionsDir: params.sessionsDir,
     sessionPath,
-    observations: bundle.observations,
+    observations: nonKiraOutcomeObservations,
     activeProposals: bundle.activeProposals,
+    now,
+  });
+  const kiraGoalProgress = updateAoiGoalProgressFromKiraOutcomes({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    outcomes: kiraOutcomeResult.freshOutcomes,
+    observations: bundle.observations,
+    now,
+  });
+  const attentionMission =
+    attentionResult.updateMission ||
+    kiraOutcomeResult.shouldRefreshMission ||
+    kiraGoalProgress.events.length > 0
+      ? deriveAoiMissionState({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          now,
+          persist: true,
+        })
+      : missionForAttention;
+  recordAoiKiraOutcomeLedgerEvents({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    result: kiraOutcomeResult,
+    goalUpdatedOutcomeIds: kiraGoalProgress.updatedOutcomeIds,
+    now,
+  });
+  recordAoiKiraOutcomeRelationsForResult({
+    sessionsDir: params.sessionsDir,
+    result: kiraOutcomeResult,
+    storedObservations: bundle.observations,
+    proposals: [
+      ...bundle.activeProposals,
+      ...loadAoiArchivedProposals(params.sessionsDir, sessionPath),
+    ],
+    goals: [
+      ...kiraGoalProgress.activeGoals,
+      ...loadAoiArchivedGoals(params.sessionsDir, sessionPath),
+    ],
     now,
   });
 
@@ -1794,6 +1989,7 @@ export async function runAoiAutonomyTick(
     sessionPath,
     latestUserMessage,
     now,
+    extraFailures: kiraOutcomeResult.failureInputs,
   });
   const llmResult = await runLlmReflection({
     bundle,
@@ -1813,6 +2009,7 @@ export async function runAoiAutonomyTick(
   const recentDecisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
   const candidates = [
     ...attentionResult.proposals,
+    ...kiraOutcomeResult.proposals,
     ...deterministicProposals,
     ...llmResult.proposals,
   ]

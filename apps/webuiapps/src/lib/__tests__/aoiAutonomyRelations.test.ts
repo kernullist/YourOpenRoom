@@ -9,14 +9,18 @@ import {
   makeAoiRelationNode,
   recordAoiMissionStateRelations,
   recordAoiAttentionEventRelations,
+  recordAoiKiraOutcomeRelations,
   recordAoiProposalCreatedRelations,
   recordAoiRecoveryProposalRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
 import type {
   AoiAttentionEvent,
+  AoiGoal,
+  AoiKiraOutcomeEvent,
   AoiMissionState,
   AoiObservation,
+  AoiPlanStep,
   AoiProposal,
 } from '../aoiAutonomyTypes';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
@@ -135,6 +139,88 @@ function makeObservation(partial: Partial<AoiObservation> = {}): AoiObservation 
     proposalIds: [],
     riskSignals: ['attention:research_completed'],
     dedupeKey: 'attention:research_completed:aoi-research-relation-001',
+    ...partial,
+  };
+}
+
+function makeGoal(partial: Partial<AoiGoal> = {}): AoiGoal {
+  return {
+    version: 1,
+    id: 'aoi-goal-relation-001',
+    sessionPath: 'aoi/default',
+    title: 'Complete reviewed Kira handoff',
+    userIntentSummary: 'Use Kira to complete a reviewed implementation step.',
+    sourceRefs: ['proposal:proposal-relation-001'],
+    status: 'active',
+    createdAt: 1000,
+    updatedAt: 1000,
+    lastCheckedAt: 1000,
+    confidence: 0.82,
+    risk: 'medium',
+    owner: 'shared',
+    plan: {
+      version: 1,
+      id: 'aoi-plan-relation-001',
+      goalId: 'aoi-goal-relation-001',
+      sessionPath: 'aoi/default',
+      createdAt: 1000,
+      updatedAt: 1000,
+      sourceRefs: ['proposal:proposal-relation-001'],
+      steps: [makePlanStep()],
+    },
+    ...partial,
+  };
+}
+
+function makePlanStep(partial: Partial<AoiPlanStep> = {}): AoiPlanStep {
+  return {
+    version: 1,
+    id: 'step-relation-001',
+    kind: 'handoff_kira',
+    title: 'Delegate reviewed implementation to Kira',
+    status: 'done',
+    expectedEvidence: ['kira-work:kira-001'],
+    allowedActionKind: 'create_kira_work',
+    requiredAutonomyLevel: 'L4',
+    doneCriteria: ['Kira reviewer approved the validated outcome.'],
+    evidenceRefs: ['kira-work:kira-001'],
+    risk: 'medium',
+    ...partial,
+  };
+}
+
+function makeKiraOutcome(partial: Partial<AoiKiraOutcomeEvent> = {}): AoiKiraOutcomeEvent {
+  return {
+    version: 1,
+    id: 'aoi-kira-outcome-relation-001',
+    sessionPath: 'aoi/default',
+    kind: 'kira_integrated',
+    workId: 'kira-001',
+    workRef: 'kira-work:kira-001',
+    workTitle: 'Implement reviewed Aoi handoff',
+    projectName: 'YourOpenRoom',
+    attemptId: 'kira-001-1',
+    attemptNo: 1,
+    reviewId: 'review-kira-001-1',
+    sourceProposalId: 'proposal-relation-001',
+    sourceGoalId: 'aoi-goal-relation-001',
+    sourcePlanStepId: 'step-relation-001',
+    validationSummary: 'passed=2 failed=0',
+    changedFilesSummary: 'src/lib/aoiAutonomyEngine.ts',
+    evidenceRefs: [
+      'kira-work:kira-001',
+      'kira-attempt:kira-001-1',
+      'kira-review:review-kira-001-1',
+      'proposal:proposal-relation-001',
+      'goal:aoi-goal-relation-001',
+      'goal:aoi-goal-relation-001/step:step-relation-001',
+    ],
+    reviewApproved: true,
+    validationPassed: true,
+    integrated: true,
+    reviewerNotes: ['Follow up with one small UI note.'],
+    createdAt: 2000,
+    dedupeKey: 'kira-outcome:kira-001:1',
     ...partial,
   };
 }
@@ -328,6 +414,63 @@ describe('Aoi autonomy relation index', () => {
           edge.from === observationNode?.id &&
           edge.to === proposalNode?.id &&
           edge.kind === 'suggested_by',
+      ),
+    ).toBe(true);
+  });
+
+  it('records Kira outcome links across proposal, goal, work, attempt, review, and evidence', () => {
+    const root = makeTempRoot();
+    const proposal = makeProposal({ id: 'proposal-relation-001' });
+    const goal = makeGoal();
+    const planStep = goal.plan.steps[0];
+    const observation = makeObservation({
+      id: 'aoi-obs-kira-outcome-relation-001',
+      source: 'kira',
+      payloadRef: 'event:aoi-kira-outcome-relation-001',
+      artifactRefs: ['kira-work:kira-001'],
+      proposalIds: ['proposal-relation-001'],
+      riskSignals: ['kira-outcome:kira_integrated'],
+      dedupeKey: 'kira-outcome:kira-001:1',
+    });
+
+    const index = recordAoiKiraOutcomeRelations({
+      sessionsDir: root,
+      outcome: makeKiraOutcome(),
+      observation,
+      proposal,
+      goal,
+      planStep,
+      memoryIds: ['memory-kira-outcome-001'],
+      now: 4000,
+    });
+
+    expect(index.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'kira_work', ref: 'kira-work:kira-001' }),
+        expect.objectContaining({ kind: 'kira_attempt', ref: 'kira-attempt:kira-001-1' }),
+        expect.objectContaining({ kind: 'kira_review', ref: 'kira-review:review-kira-001-1' }),
+        expect.objectContaining({ kind: 'proposal', ref: 'proposal:proposal-relation-001' }),
+        expect.objectContaining({ kind: 'goal', ref: 'goal:aoi-goal-relation-001' }),
+        expect.objectContaining({
+          kind: 'plan_step',
+          ref: 'goal:aoi-goal-relation-001/step:step-relation-001',
+        }),
+        expect.objectContaining({ kind: 'memory', ref: 'memory:memory-kira-outcome-001' }),
+      ]),
+    );
+    const workNode = index.nodes.find((node) => node.ref === 'kira-work:kira-001');
+    const attemptNode = index.nodes.find((node) => node.ref === 'kira-attempt:kira-001-1');
+    const reviewNode = index.nodes.find((node) => node.ref === 'kira-review:review-kira-001-1');
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === attemptNode?.id && edge.to === workNode?.id && edge.kind === 'belongs_to',
+      ),
+    ).toBe(true);
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === reviewNode?.id && edge.to === workNode?.id && edge.kind === 'belongs_to',
       ),
     ).toBe(true);
   });

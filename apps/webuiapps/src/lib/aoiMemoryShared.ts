@@ -295,13 +295,12 @@ export function buildAoiKiraAutomationMemoryCandidates(
   ].filter((item) => item.trim());
 
   if (event.type === 'completed') {
-    const tags = [...baseTags, 'completed'];
-    if (typeof context?.reviewApproved === 'boolean') {
-      tags.push('reviewed');
-      if (context.reviewApproved) {
-        tags.push('review-approved');
-      }
+    if (context?.reviewApproved !== true) {
+      return [];
     }
+    const validationFailed = (context.validationFailedCount ?? 0) > 0;
+    const tags = [...baseTags, 'completed'];
+    tags.push('reviewed', 'review-approved');
     if (
       typeof context?.validationPassedCount === 'number' ||
       typeof context?.validationFailedCount === 'number'
@@ -330,10 +329,10 @@ export function buildAoiKiraAutomationMemoryCandidates(
     return [
       {
         scope: 'project',
-        type: 'action',
+        type: validationFailed ? 'event' : 'action',
         content: buildCompletedKiraMemoryContent(title, projectName, context),
-        importance: 0.76,
-        confidence: 0.82,
+        importance: validationFailed ? 0.68 : 0.76,
+        confidence: validationFailed ? 0.72 : 0.82,
         projectKey,
         tags,
         entities,

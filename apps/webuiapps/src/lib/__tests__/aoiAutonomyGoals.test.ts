@@ -14,6 +14,7 @@ import {
   loadAoiGoalProgressEvents,
   recordAoiGoalRecoverySignal,
   saveAoiActiveGoals,
+  updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
 } from '../aoiAutonomyGoals';
 import {
@@ -29,7 +30,12 @@ import {
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
-import type { AoiGoal, AoiObservation, AoiProposal } from '../aoiAutonomyTypes';
+import type {
+  AoiGoal,
+  AoiKiraOutcomeEvent,
+  AoiObservation,
+  AoiProposal,
+} from '../aoiAutonomyTypes';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -136,6 +142,100 @@ function makeWaitingProposal(goal: AoiGoal): AoiProposal {
   };
 }
 
+function makeKiraHandoffGoal(root: string): AoiGoal {
+  const goal: AoiGoal = {
+    version: 1,
+    id: 'aoi-goal-kira-outcome-001',
+    sessionPath: SESSION_PATH,
+    title: 'Implement reviewed Kira outcome learning',
+    userIntentSummary:
+      'Delegate a reviewed implementation step to Kira and learn from the outcome.',
+    sourceRefs: ['proposal:proposal-kira-outcome-001'],
+    status: 'active',
+    createdAt: NOW,
+    updatedAt: NOW,
+    lastCheckedAt: NOW,
+    confidence: 0.84,
+    risk: 'medium',
+    owner: 'shared',
+    plan: {
+      version: 1,
+      id: 'aoi-plan-kira-outcome-001',
+      goalId: 'aoi-goal-kira-outcome-001',
+      sessionPath: SESSION_PATH,
+      createdAt: NOW,
+      updatedAt: NOW,
+      sourceRefs: ['proposal:proposal-kira-outcome-001'],
+      steps: [
+        {
+          version: 1,
+          id: 'step-readiness-001',
+          kind: 'read',
+          title: 'Confirm current context',
+          status: 'done',
+          expectedEvidence: ['observation:context-ready'],
+          allowedActionKind: 'none',
+          requiredAutonomyLevel: 'L2',
+          doneCriteria: ['Context is ready.'],
+          evidenceRefs: ['observation:context-ready'],
+          risk: 'low',
+        },
+        {
+          version: 1,
+          id: 'step-kira-handoff-001',
+          kind: 'handoff_kira',
+          title: 'Delegate reviewed implementation to Kira',
+          status: 'in_progress',
+          expectedEvidence: ['kira-work:work-kira-outcome-001'],
+          allowedActionKind: 'create_kira_work',
+          requiredAutonomyLevel: 'L4',
+          doneCriteria: ['Kira reviewer approved the validated result.'],
+          evidenceRefs: ['proposal:proposal-kira-outcome-001'],
+          risk: 'medium',
+        },
+      ],
+    },
+  };
+  saveAoiActiveGoals(root, SESSION_PATH, [goal]);
+  return goal;
+}
+
+function makeKiraOutcome(partial: Partial<AoiKiraOutcomeEvent> = {}): AoiKiraOutcomeEvent {
+  return {
+    version: 1,
+    id: 'aoi-kira-outcome-goal-001',
+    sessionPath: SESSION_PATH,
+    kind: 'kira_integrated',
+    workId: 'work-kira-outcome-001',
+    workRef: 'kira-work:work-kira-outcome-001',
+    workTitle: 'Implement reviewed Kira outcome learning',
+    projectName: 'YourOpenRoom',
+    attemptId: 'work-kira-outcome-001-1',
+    attemptNo: 1,
+    reviewId: 'review-work-kira-outcome-001-1',
+    sourceProposalId: 'proposal-kira-outcome-001',
+    sourceGoalId: 'aoi-goal-kira-outcome-001',
+    sourcePlanStepId: 'step-kira-handoff-001',
+    validationSummary: 'passed=2 failed=0',
+    changedFilesSummary: 'src/lib/aoiKiraOutcomeLearning.ts',
+    evidenceRefs: [
+      'kira-work:work-kira-outcome-001',
+      'kira-attempt:work-kira-outcome-001-1',
+      'kira-review:review-work-kira-outcome-001-1',
+      'proposal:proposal-kira-outcome-001',
+      'goal:aoi-goal-kira-outcome-001',
+      'goal:aoi-goal-kira-outcome-001/step:step-kira-handoff-001',
+    ],
+    reviewApproved: true,
+    validationPassed: true,
+    integrated: true,
+    reviewerNotes: [],
+    createdAt: NOW + 1000,
+    dedupeKey: 'kira-outcome:work-kira-outcome-001:1',
+    ...partial,
+  };
+}
+
 describe('Aoi autonomy goals', () => {
   it('creates an explicit goal candidate proposal but not from ambiguous text', async () => {
     const root = makeTempRoot();
@@ -235,6 +335,107 @@ describe('Aoi autonomy goals', () => {
 
     expect(result.events.some((event) => event.kind === 'progress')).toBe(true);
     expect(loadAoiActiveGoals(root, SESSION_PATH)[0].plan.steps[0].status).toBe('done');
+  });
+
+  it('marks the right Kira handoff plan step done only for reviewed validated outcomes', () => {
+    const root = makeTempRoot();
+    const goal = makeKiraHandoffGoal(root);
+
+    const result = updateAoiGoalProgressFromKiraOutcomes({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [makeKiraOutcome()],
+      observations: [
+        makeObservation({
+          id: 'observation-kira-outcome-001',
+          source: 'kira',
+          payloadRef: 'event:aoi-kira-outcome-goal-001',
+          artifactRefs: ['kira-work:work-kira-outcome-001'],
+          riskSignals: ['kira-outcome:kira_integrated'],
+        }),
+      ],
+      now: NOW + 2000,
+    });
+
+    const updated = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    expect(result.updatedOutcomeIds).toEqual(['aoi-kira-outcome-goal-001']);
+    expect(updated.status).toBe('active');
+    expect(updated.plan.steps.find((step) => step.id === 'step-readiness-001')?.status).toBe(
+      'done',
+    );
+    expect(updated.plan.steps.find((step) => step.id === goal.plan.steps[1].id)?.status).toBe(
+      'done',
+    );
+    expect(loadAoiGoalProgressEvents(root, SESSION_PATH)[0]).toMatchObject({
+      kind: 'progress',
+      planStepId: 'step-kira-handoff-001',
+    });
+  });
+
+  it('does not mark Kira validation failure as completed progress', () => {
+    const root = makeTempRoot();
+    makeKiraHandoffGoal(root);
+
+    updateAoiGoalProgressFromKiraOutcomes({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [
+        makeKiraOutcome({
+          id: 'aoi-kira-outcome-goal-validation-failed',
+          kind: 'kira_validation_failed',
+          reviewApproved: undefined,
+          validationPassed: false,
+          integrated: false,
+          validationSummary: 'passed=1 failed=1',
+          reviewerNotes: ['Validation failed.'],
+        }),
+      ],
+      now: NOW + 2000,
+    });
+
+    const updated = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    expect(updated.status).toBe('blocked');
+    expect(updated.plan.steps.find((step) => step.id === 'step-kira-handoff-001')?.status).toBe(
+      'blocked',
+    );
+    expect(loadAoiGoalProgressEvents(root, SESSION_PATH)[0].kind).toBe('blocked');
+  });
+
+  it('turns Kira clarification into a waiting-on-user mission step', () => {
+    const root = makeTempRoot();
+    makeKiraHandoffGoal(root);
+
+    updateAoiGoalProgressFromKiraOutcomes({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [
+        makeKiraOutcome({
+          id: 'aoi-kira-outcome-goal-clarification',
+          kind: 'kira_needs_clarification',
+          attemptId: undefined,
+          attemptNo: undefined,
+          reviewId: undefined,
+          reviewApproved: undefined,
+          validationPassed: false,
+          integrated: false,
+          validationSummary: 'passed=0 failed=0',
+          reviewerNotes: ['Which UI state should Kira update first?'],
+        }),
+      ],
+      now: NOW + 2000,
+    });
+
+    const updated = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    const mission = deriveAoiMissionState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW + 3000,
+    });
+    const step = updated.plan.steps.find((item) => item.id === 'step-kira-handoff-001');
+    expect(updated.status).toBe('active');
+    expect(step?.kind).toBe('ask_user');
+    expect(step?.status).toBe('pending');
+    expect(mission.status).toBe('waiting_on_user');
   });
 
   it('blocks goals only with clear blocking evidence', () => {

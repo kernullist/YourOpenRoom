@@ -13,6 +13,7 @@ import type {
   AoiGoalOwner,
   AoiGoalProgressEvent,
   AoiGoalStatus,
+  AoiKiraOutcomeEvent,
   AoiObservation,
   AoiPlan,
   AoiPlanStep,
@@ -54,6 +55,10 @@ export interface AoiGoalProgressUpdateResult {
   activeGoals: AoiGoal[];
   archivedGoals: AoiGoal[];
   events: AoiGoalProgressEvent[];
+}
+
+export interface AoiKiraOutcomeGoalProgressResult extends AoiGoalProgressUpdateResult {
+  updatedOutcomeIds: string[];
 }
 
 function normalizeWhitespace(value: string): string {
@@ -1190,6 +1195,214 @@ export function updateAoiGoalProgressFromObservations(params: {
     activeGoals: nextActive,
     archivedGoals: nextArchived.slice(0, MAX_ARCHIVED_GOALS),
     events,
+  };
+}
+
+function outcomeRefs(outcome: AoiKiraOutcomeEvent): string[] {
+  return [
+    `event:${outcome.id}`,
+    outcome.workRef,
+    outcome.attemptId ? `kira-attempt:${outcome.attemptId}` : undefined,
+    outcome.reviewId ? `kira-review:${outcome.reviewId}` : undefined,
+    outcome.sourceProposalId ? `proposal:${outcome.sourceProposalId}` : undefined,
+    outcome.sourceGoalId ? `goal:${outcome.sourceGoalId}` : undefined,
+    outcome.sourceGoalId && outcome.sourcePlanStepId
+      ? `goal:${outcome.sourceGoalId}/step:${outcome.sourcePlanStepId}`
+      : undefined,
+    ...outcome.evidenceRefs,
+  ].filter((ref): ref is string => Boolean(ref));
+}
+
+function outcomeMatchesGoal(outcome: AoiKiraOutcomeEvent, goal: AoiGoal): boolean {
+  if (outcome.sourceGoalId === goal.id) {
+    return true;
+  }
+  const refs = new Set(outcomeRefs(outcome));
+  if (refs.has(`goal:${goal.id}`)) {
+    return true;
+  }
+  return goal.sourceRefs.some((ref) => refs.has(ref));
+}
+
+function findKiraOutcomeStep(goal: AoiGoal, outcome: AoiKiraOutcomeEvent): AoiPlanStep | null {
+  if (outcome.sourcePlanStepId) {
+    const direct = goal.plan.steps.find((step) => step.id === outcome.sourcePlanStepId);
+    if (direct) {
+      return direct;
+    }
+  }
+  const refs = new Set(outcomeRefs(outcome));
+  const evidenceMatch = goal.plan.steps.find((step) =>
+    [...step.expectedEvidence, ...step.evidenceRefs].some((ref) => refs.has(ref)),
+  );
+  if (evidenceMatch) {
+    return evidenceMatch;
+  }
+  return (
+    goal.plan.steps.find(
+      (step) =>
+        step.kind === 'handoff_kira' &&
+        (step.status === 'pending' || step.status === 'in_progress' || step.status === 'blocked'),
+    ) ??
+    goal.plan.steps.find(
+      (step) =>
+        step.status === 'pending' || step.status === 'in_progress' || step.status === 'blocked',
+    ) ??
+    null
+  );
+}
+
+function kiraOutcomeIsReviewedCompletion(outcome: AoiKiraOutcomeEvent): boolean {
+  return (
+    (outcome.kind === 'kira_work_completed' || outcome.kind === 'kira_integrated') &&
+    outcome.reviewApproved === true &&
+    outcome.validationPassed
+  );
+}
+
+function updateStepForKiraOutcome(params: {
+  step: AoiPlanStep;
+  outcome: AoiKiraOutcomeEvent;
+  evidenceRefs: string[];
+}): AoiPlanStep {
+  if (kiraOutcomeIsReviewedCompletion(params.outcome)) {
+    return {
+      ...params.step,
+      status: 'done',
+      evidenceRefs: [...new Set([...params.step.evidenceRefs, ...params.evidenceRefs])].slice(
+        0,
+        12,
+      ),
+    };
+  }
+  if (params.outcome.kind === 'kira_needs_clarification') {
+    return {
+      ...params.step,
+      kind: 'ask_user',
+      title: truncateText(`Answer Kira clarification: ${params.outcome.workTitle}`, 120),
+      status: 'pending',
+      allowedActionKind: 'none',
+      doneCriteria: ['User answers the Kira clarification request.'],
+      evidenceRefs: [...new Set([...params.step.evidenceRefs, ...params.evidenceRefs])].slice(
+        0,
+        12,
+      ),
+    };
+  }
+  return {
+    ...params.step,
+    status: 'blocked',
+    evidenceRefs: [...new Set([...params.step.evidenceRefs, ...params.evidenceRefs])].slice(0, 12),
+  };
+}
+
+export function updateAoiGoalProgressFromKiraOutcomes(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  outcomes: AoiKiraOutcomeEvent[];
+  observations?: AoiObservation[];
+  now?: number;
+}): AoiKiraOutcomeGoalProgressResult {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath);
+  const archivedGoals = loadAoiArchivedGoals(params.sessionsDir, sessionPath);
+  const nextActive: AoiGoal[] = [];
+  const events: AoiGoalProgressEvent[] = [];
+  const updatedOutcomeIds: string[] = [];
+  const observationsByOutcomeId = new Map(
+    (params.observations ?? [])
+      .filter((observation) => observation.payloadRef?.startsWith('event:'))
+      .map((observation) => [observation.payloadRef?.slice('event:'.length), observation]),
+  );
+
+  for (const goal of activeGoals) {
+    let nextGoal = goal;
+    for (const outcome of params.outcomes) {
+      if (!outcomeMatchesGoal(outcome, nextGoal)) {
+        continue;
+      }
+      const step = findKiraOutcomeStep(nextGoal, outcome);
+      if (!step) {
+        continue;
+      }
+      const evidenceRefs = [...new Set(outcomeRefs(outcome))].slice(0, 16);
+      const nextStep = updateStepForKiraOutcome({ step, outcome, evidenceRefs });
+      if (
+        nextStep.status === step.status &&
+        nextStep.kind === step.kind &&
+        nextStep.evidenceRefs.join('\n') === step.evidenceRefs.join('\n')
+      ) {
+        continue;
+      }
+      const fromStatus = nextGoal.status;
+      const nextStatus: AoiGoalStatus =
+        nextStep.status === 'blocked'
+          ? 'blocked'
+          : nextGoal.status === 'blocked'
+            ? 'active'
+            : nextGoal.status;
+      nextGoal = {
+        ...nextGoal,
+        status: nextStatus,
+        updatedAt: now,
+        lastCheckedAt: now,
+        sourceRefs: [...new Set([...nextGoal.sourceRefs, ...evidenceRefs])].slice(0, 16),
+        plan: {
+          ...nextGoal.plan,
+          updatedAt: now,
+          steps: nextGoal.plan.steps.map((item) => (item.id === step.id ? nextStep : item)),
+        },
+      };
+      const observation = observationsByOutcomeId.get(outcome.id);
+      const event = makeProgressEvent({
+        goal: nextGoal,
+        kind: nextStep.status === 'blocked' ? 'blocked' : 'progress',
+        summary:
+          nextStep.status === 'done'
+            ? `Kira reviewed outcome completed plan step "${step.title}".`
+            : outcome.kind === 'kira_needs_clarification'
+              ? `Kira needs clarification for plan step "${step.title}".`
+              : `Kira outcome blocked plan step "${step.title}".`,
+        now,
+        evidenceRefs,
+        observationIds: observation ? [observation.id] : [],
+        proposalIds: outcome.sourceProposalId ? [outcome.sourceProposalId] : [],
+        planStepId: step.id,
+        fromStatus,
+        toStatus: nextStatus,
+      });
+      events.push(event);
+      updatedOutcomeIds.push(outcome.id);
+    }
+    nextActive.push(nextGoal);
+  }
+
+  const savedActive = saveAoiActiveGoals(params.sessionsDir, sessionPath, nextActive);
+  const savedArchived = saveAoiArchivedGoals(params.sessionsDir, sessionPath, archivedGoals);
+  for (const event of events) {
+    appendAoiGoalProgressEvent(params.sessionsDir, event);
+    const goal = savedActive.find((item) => item.id === event.goalId);
+    if (goal) {
+      recordGoalRelations({
+        sessionsDir: params.sessionsDir,
+        goal,
+        evidenceRefs: event.evidenceRefs,
+        observationIds: event.observationIds,
+        proposalIds: event.proposalIds,
+        now,
+      });
+    }
+  }
+
+  return {
+    activeGoals: savedActive,
+    archivedGoals: savedArchived,
+    events,
+    updatedOutcomeIds,
   };
 }
 

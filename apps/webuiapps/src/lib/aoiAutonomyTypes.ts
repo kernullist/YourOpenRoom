@@ -115,6 +115,40 @@ export interface AoiAttentionBrokerDecision {
   proposalId?: string;
 }
 
+export type AoiKiraOutcomeKind =
+  | 'kira_work_completed'
+  | 'kira_work_blocked'
+  | 'kira_needs_clarification'
+  | 'kira_validation_failed'
+  | 'kira_review_rejected'
+  | 'kira_integrated';
+
+export interface AoiKiraOutcomeEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  kind: AoiKiraOutcomeKind;
+  workId: string;
+  workRef: string;
+  workTitle: string;
+  projectName: string;
+  attemptId?: string;
+  attemptNo?: number;
+  reviewId?: string;
+  sourceProposalId?: string;
+  sourceGoalId?: string;
+  sourcePlanStepId?: string;
+  validationSummary: string;
+  changedFilesSummary: string;
+  evidenceRefs: string[];
+  reviewApproved?: boolean;
+  validationPassed: boolean;
+  integrated: boolean;
+  reviewerNotes: string[];
+  createdAt: number;
+  dedupeKey: string;
+}
+
 export type AoiProposalAcceptActionKind =
   | 'open_research_artifact'
   | 'read_research_artifact'

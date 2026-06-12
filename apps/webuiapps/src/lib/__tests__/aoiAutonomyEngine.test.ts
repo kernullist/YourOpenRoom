@@ -21,6 +21,7 @@ import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
+import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
 import type {
   AoiGoal,
@@ -243,6 +244,190 @@ function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
     updatedAt: NOW - 120_000,
     ...partial,
   };
+}
+
+function makeKiraOutcomeGoal(partial: Partial<AoiGoal> = {}): AoiGoal {
+  return makeGoal({
+    id: 'aoi-goal-kira-outcome-001',
+    title: 'Learn from reviewed Kira work',
+    userIntentSummary:
+      'Delegate one implementation step to Kira and learn from the reviewed result.',
+    sourceRefs: ['proposal:proposal-kira-origin-001'],
+    plan: {
+      version: 1,
+      id: 'aoi-plan-kira-outcome-001',
+      goalId: 'aoi-goal-kira-outcome-001',
+      sessionPath: SESSION_PATH,
+      createdAt: NOW - 120_000,
+      updatedAt: NOW - 120_000,
+      sourceRefs: ['proposal:proposal-kira-origin-001'],
+      steps: [
+        {
+          version: 1,
+          id: 'step-context-kira-outcome-001',
+          kind: 'read',
+          title: 'Confirm implementation context',
+          status: 'done',
+          expectedEvidence: ['observation:context-ready'],
+          allowedActionKind: 'none',
+          requiredAutonomyLevel: 'L2',
+          doneCriteria: ['Context was reviewed.'],
+          evidenceRefs: ['observation:context-ready'],
+          risk: 'low',
+        },
+        {
+          version: 1,
+          id: 'step-kira-outcome-001',
+          kind: 'handoff_kira',
+          title: 'Delegate reviewed implementation to Kira',
+          status: 'in_progress',
+          expectedEvidence: ['kira-work:work-kira-outcome-001'],
+          allowedActionKind: 'create_kira_work',
+          requiredAutonomyLevel: 'L4',
+          doneCriteria: ['Kira reviewer approved the validated result.'],
+          evidenceRefs: ['proposal:proposal-kira-origin-001'],
+          risk: 'medium',
+        },
+      ],
+    },
+    ...partial,
+  });
+}
+
+function makeKiraOriginProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+  return makeProposal({
+    id: 'proposal-kira-origin-001',
+    status: 'executed',
+    title: 'Create Kira outcome work',
+    body: 'Create one supervised Kira implementation work item.',
+    reason: 'The user approved a Kira handoff.',
+    trigger: 'goal_continuation',
+    cooldownKey: 'goal-continuation:kira-outcome',
+    risk: 'medium',
+    requiredAutonomyLevel: 'L4',
+    requiresUserApproval: true,
+    suggestedTools: ['create_kira_work'],
+    evidenceRefs: ['goal:aoi-goal-kira-outcome-001'],
+    artifactRefs: [
+      'goal:aoi-goal-kira-outcome-001',
+      'goal:aoi-goal-kira-outcome-001/step:step-kira-outcome-001',
+    ],
+    riskSignals: ['goal-continuation'],
+    acceptAction: {
+      kind: 'create_kira_work',
+      params: {
+        projectName: 'YourOpenRoom',
+        title: 'Implement Kira outcome learning fixture',
+        objective: 'Implement one reviewed fixture.',
+        scope: ['Aoi Kira outcome learning'],
+      },
+    },
+    ...partial,
+  });
+}
+
+function writeKiraOutcomeRecords(
+  root: string,
+  options: {
+    workStatus?: string;
+    attemptStatus?: string;
+    reviewApproved?: boolean;
+    validationFailed?: boolean;
+    clarification?: boolean;
+    reviewerNotes?: string[];
+    integrationStatus?: string;
+  } = {},
+): void {
+  const dataDir = join(root, SESSION_PATH, 'apps', 'kira', 'data');
+  const work = {
+    id: 'work-kira-outcome-001',
+    type: 'work',
+    projectName: 'YourOpenRoom',
+    title: 'Implement Kira outcome learning fixture',
+    description: [
+      '# Aoi supervised handoff',
+      '',
+      '## Aoi audit',
+      '- Source proposal: proposal-kira-origin-001',
+      '- Requires Kira reviewer approval before integration.',
+    ].join('\n'),
+    status: options.workStatus ?? 'done',
+    assignee: '',
+    createdAt: NOW - 10_000,
+    updatedAt: NOW - 1_000,
+    ...(options.clarification
+      ? {
+          clarification: {
+            status: 'pending',
+            summary: 'Kira needs one user clarification.',
+            questions: [{ question: 'Which follow-up should Kira do first?' }],
+          },
+        }
+      : {}),
+  };
+  const attempt = {
+    id: 'attempt-kira-outcome-001',
+    workId: work.id,
+    attemptNo: 1,
+    status: options.attemptStatus ?? 'approved',
+    startedAt: NOW - 9_000,
+    finishedAt: NOW - 2_000,
+    changedFiles: ['apps/webuiapps/src/lib/aoiKiraOutcomeLearning.ts'],
+    patchedFiles: ['apps/webuiapps/src/lib/aoiKiraOutcomeLearning.ts'],
+    commandsRun: ['pnpm test -- aoiKiraOutcomeLearning'],
+    validationReruns: {
+      passed: options.validationFailed ? [] : ['pnpm test -- aoiKiraOutcomeLearning'],
+      failed: options.validationFailed ? ['pnpm test -- aoiKiraOutcomeLearning'] : [],
+    },
+    toolCommandEvents: [
+      {
+        id: 'cmd-kira-outcome-001',
+        command: 'pnpm test -- aoiKiraOutcomeLearning',
+        status: options.validationFailed ? 'failed' : 'completed',
+        exitCode: options.validationFailed ? 1 : 0,
+      },
+    ],
+    integration: {
+      status: options.integrationStatus ?? 'committed',
+      message: 'Integrated reviewed fixture.',
+      commitHash: 'abcdef1234567890',
+    },
+  };
+  writeJson(join(dataDir, 'works', `${work.id}.json`), work);
+  writeJson(join(dataDir, 'attempts', `${work.id}-1.json`), attempt);
+  if (typeof options.reviewApproved === 'boolean') {
+    writeJson(join(dataDir, 'reviews', `${work.id}-1.json`), {
+      id: 'review-kira-outcome-001',
+      workId: work.id,
+      attemptNo: 1,
+      approved: options.reviewApproved,
+      createdAt: NOW - 1_000,
+      summary: options.reviewApproved
+        ? 'Reviewer approved the validated fixture.'
+        : 'Reviewer rejected the fixture.',
+      findings: options.reviewApproved
+        ? []
+        : [
+            {
+              severity: 'medium',
+              message: 'Reviewer found a missing edge case.',
+              file: 'apps/webuiapps/src/lib/aoiKiraOutcomeLearning.ts',
+              line: 42,
+            },
+          ],
+      missingValidation: options.validationFailed ? ['Failed targeted validation.'] : [],
+      nextWorkerInstructions: options.reviewerNotes ?? [],
+      residualRisk: options.reviewerNotes ?? [],
+      filesChecked: ['apps/webuiapps/src/lib/aoiKiraOutcomeLearning.ts'],
+      evidenceChecked: [
+        {
+          file: 'apps/webuiapps/src/lib/aoiKiraOutcomeLearning.ts',
+          reason: 'Primary changed file.',
+          method: 'review',
+        },
+      ],
+    });
+  }
 }
 
 const TEST_LLM_CONFIG: LLMConfig = {
@@ -666,6 +851,133 @@ describe('runAoiAutonomyTick()', () => {
 });
 
 describe('runAoiAutonomyBackgroundTick()', () => {
+  it('learns from reviewed Kira completion by updating goal progress, memory, relations, and follow-up', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    saveAoiActiveGoals(root, SESSION_PATH, [makeKiraOutcomeGoal()]);
+    saveAoiActiveProposals(root, SESSION_PATH, [makeKiraOriginProposal()]);
+    writeKiraOutcomeRecords(root, {
+      reviewApproved: true,
+      reviewerNotes: ['Check whether the next UI badge copy should be tightened.'],
+    });
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'kira',
+      now: NOW,
+    });
+
+    const goal = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    const memories = loadServerAoiMemories(root);
+    const relations = loadAoiRelationIndex(root, SESSION_PATH);
+    const ledger = loadServerAoiRunLedger(root, SESSION_PATH);
+
+    expect(result.ok).toBe(true);
+    expect(goal.status).toBe('active');
+    expect(goal.plan.steps.find((step) => step.id === 'step-kira-outcome-001')?.status).toBe(
+      'done',
+    );
+    expect(memories).toHaveLength(1);
+    expect(memories[0]).toMatchObject({
+      scope: 'project',
+      type: 'action',
+      projectKey: 'youropenroom',
+    });
+    expect(memories[0].tags).toEqual(
+      expect.arrayContaining(['kira-outcome', 'reviewed', 'review-approved', 'validation-passed']),
+    );
+    expect(proposals.some((proposal) => proposal.trigger === 'kira_outcome_followup')).toBe(true);
+    expect(relations.nodes).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'kira_work', ref: 'kira-work:work-kira-outcome-001' }),
+        expect.objectContaining({
+          kind: 'kira_attempt',
+          ref: 'kira-attempt:attempt-kira-outcome-001',
+        }),
+        expect.objectContaining({
+          kind: 'kira_review',
+          ref: 'kira-review:review-kira-outcome-001',
+        }),
+        expect.objectContaining({ kind: 'proposal', ref: 'proposal:proposal-kira-origin-001' }),
+        expect.objectContaining({ kind: 'goal', ref: 'goal:aoi-goal-kira-outcome-001' }),
+      ]),
+    );
+    expect(
+      ledger.some((entry) =>
+        entry.events.some((event) => event.type === 'kira_goal_progress_updated'),
+      ),
+    ).toBe(true);
+  });
+
+  it('does not duplicate Kira outcome memory or proposals when the same outcome is replayed', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    saveAoiActiveGoals(root, SESSION_PATH, [makeKiraOutcomeGoal()]);
+    saveAoiActiveProposals(root, SESSION_PATH, [makeKiraOriginProposal()]);
+    writeKiraOutcomeRecords(root, {
+      reviewApproved: true,
+      reviewerNotes: ['Check whether the next UI badge copy should be tightened.'],
+    });
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'kira',
+      now: NOW,
+    });
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'kira',
+      now: NOW + 1_000,
+    });
+
+    const memories = loadServerAoiMemories(root);
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH).filter(
+      (proposal) => proposal.trigger === 'kira_outcome_followup',
+    );
+    const ledger = loadServerAoiRunLedger(root, SESSION_PATH);
+
+    expect(memories).toHaveLength(1);
+    expect(proposals).toHaveLength(1);
+    expect(
+      ledger.some((entry) =>
+        entry.events.some((event) => event.type === 'kira_outcome_duplicate_ignored'),
+      ),
+    ).toBe(true);
+  });
+
+  it('routes Kira validation failure to recovery without completing the goal or memory', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    saveAoiActiveGoals(root, SESSION_PATH, [makeKiraOutcomeGoal()]);
+    saveAoiActiveProposals(root, SESSION_PATH, [makeKiraOriginProposal()]);
+    writeKiraOutcomeRecords(root, {
+      workStatus: 'blocked',
+      attemptStatus: 'validation_failed',
+      validationFailed: true,
+    });
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'kira',
+      now: NOW,
+    });
+
+    const goal = loadAoiActiveGoals(root, SESSION_PATH)[0];
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+
+    expect(goal.status).toBe('blocked');
+    expect(goal.plan.steps.find((step) => step.id === 'step-kira-outcome-001')?.status).toBe(
+      'blocked',
+    );
+    expect(loadServerAoiMemories(root)).toEqual([]);
+    expect(proposals.some((proposal) => proposal.trigger === 'failure_recovery')).toBe(true);
+  });
+
   it('brokers background research completion into one deduplicated attention proposal', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

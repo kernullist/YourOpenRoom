@@ -29,6 +29,11 @@ export type AoiRunLedgerEventType =
   | 'attention_broker_decision'
   | 'notification_suppressed'
   | 'direct_clarification_requested'
+  | 'kira_outcome_ingested'
+  | 'kira_goal_progress_updated'
+  | 'kira_reviewed_memory_candidate_created'
+  | 'kira_followup_proposed'
+  | 'kira_outcome_duplicate_ignored'
   | 'run_completed'
   | 'run_failed';
 

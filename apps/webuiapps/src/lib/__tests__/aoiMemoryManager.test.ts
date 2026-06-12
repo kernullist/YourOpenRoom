@@ -288,6 +288,34 @@ describe('mergeAoiMemoryCandidates()', () => {
 
 describe('Aoi Kira memory bridge', () => {
   it('turns completed Kira events into project action memories', () => {
+    const candidates = buildAoiKiraAutomationMemoryCandidates(
+      {
+        id: 'event-1',
+        workId: 'work-1',
+        title: 'Add review controls',
+        projectName: 'YourOpenRoom',
+        message: 'Kira 완료: "Add review controls" 작업이 끝났어요.',
+        createdAt: 100,
+        type: 'completed',
+      },
+      {
+        reviewApproved: true,
+        validationPassedCount: 1,
+        validationFailedCount: 0,
+      },
+    );
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      scope: 'project',
+      type: 'action',
+      projectKey: 'youropenroom',
+    });
+    expect(candidates[0].content).toContain('Kira completed project work');
+    expect(candidates[0].tags).toContain('completed');
+  });
+
+  it('does not turn unreviewed completed Kira events into durable memories', () => {
     const candidates = buildAoiKiraAutomationMemoryCandidates({
       id: 'event-1',
       workId: 'work-1',
@@ -298,14 +326,7 @@ describe('Aoi Kira memory bridge', () => {
       type: 'completed',
     });
 
-    expect(candidates).toHaveLength(1);
-    expect(candidates[0]).toMatchObject({
-      scope: 'project',
-      type: 'action',
-      projectKey: 'youropenroom',
-    });
-    expect(candidates[0].content).toContain('Kira completed project work');
-    expect(candidates[0].tags).toContain('completed');
+    expect(candidates).toEqual([]);
   });
 
   it('ignores transient Kira progress events', () => {
