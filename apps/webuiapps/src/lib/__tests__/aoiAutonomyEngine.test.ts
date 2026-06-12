@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { loadAoiActiveGoals, saveAoiActiveGoals } from '../aoiAutonomyGoals';
 import {
   runAoiAutonomyBackgroundTick,
   runAoiAutonomyTick,
@@ -16,9 +17,17 @@ import {
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
+import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
+import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
+import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
-import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
+import type {
+  AoiGoal,
+  AoiMissionState,
+  AoiProposal,
+  AoiProposalDecision,
+} from '../aoiAutonomyTypes';
 import type { LLMConfig } from '../llmModels';
 
 const SESSION_PATH = 'aoi/default';
@@ -162,6 +171,76 @@ function makeDecision(partial: Partial<AoiProposalDecision> = {}): AoiProposalDe
     createdAt: NOW - 1_000,
     previousStatus: 'active',
     nextStatus: 'dismissed',
+    ...partial,
+  };
+}
+
+function makeGoal(partial: Partial<AoiGoal> = {}): AoiGoal {
+  return {
+    version: 1,
+    id: 'aoi-goal-attention-001',
+    sessionPath: SESSION_PATH,
+    title: 'Track background Aoi attention',
+    userIntentSummary: 'Keep relevant Aoi background events visible without noisy interruption.',
+    sourceRefs: ['research:aoi-research-done-001'],
+    status: 'active',
+    createdAt: NOW - 120_000,
+    updatedAt: NOW - 120_000,
+    lastCheckedAt: NOW - 120_000,
+    confidence: 0.84,
+    risk: 'low',
+    owner: 'aoi',
+    plan: {
+      version: 1,
+      id: 'aoi-plan-attention-001',
+      goalId: 'aoi-goal-attention-001',
+      sessionPath: SESSION_PATH,
+      createdAt: NOW - 120_000,
+      updatedAt: NOW - 120_000,
+      sourceRefs: ['research:aoi-research-done-001'],
+      steps: [
+        {
+          version: 1,
+          id: 'step-attention-001',
+          kind: 'research',
+          title: 'Inspect completed research signal',
+          status: 'in_progress',
+          expectedEvidence: ['research:aoi-research-done-001/report'],
+          allowedActionKind: 'read_research_artifact',
+          requiredAutonomyLevel: 'L3',
+          doneCriteria: ['Research report has been reviewed.'],
+          evidenceRefs: ['research:aoi-research-done-001'],
+          risk: 'low',
+        },
+      ],
+    },
+    ...partial,
+  };
+}
+
+function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
+  return {
+    version: 1,
+    sessionPath: SESSION_PATH,
+    status: 'waiting_on_research',
+    activeGoalId: 'aoi-goal-attention-001',
+    focusSummary: 'Track background Aoi attention',
+    waitingOn: 'research',
+    lastMeaningfulEventRef: 'research:aoi-research-done-001',
+    nextRecommendedAction: {
+      kind: 'inspect_research',
+      label: 'Inspect research run status.',
+      reason: 'A research run is linked to the mission.',
+      ref: 'research:aoi-research-done-001',
+    },
+    evidenceRefs: ['goal:aoi-goal-attention-001', 'research:aoi-research-done-001'],
+    sourceRefs: {
+      goalRef: 'goal:aoi-goal-attention-001',
+      researchRunRef: 'research:aoi-research-done-001',
+    },
+    transitions: [],
+    createdAt: NOW - 120_000,
+    updatedAt: NOW - 120_000,
     ...partial,
   };
 }
@@ -587,6 +666,153 @@ describe('runAoiAutonomyTick()', () => {
 });
 
 describe('runAoiAutonomyBackgroundTick()', () => {
+  it('brokers background research completion into one deduplicated attention proposal', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const first = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      now: NOW,
+    });
+    const second = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      now: NOW + 1_000,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH).filter(
+      (proposal) => proposal.trigger === 'attention_broker',
+    );
+    const observations = loadAoiObservations(root, SESSION_PATH);
+    const relationIndex = loadAoiRelationIndex(root, SESSION_PATH);
+    const ledger = loadServerAoiRunLedger(root, SESSION_PATH);
+
+    expect(first.newActiveProposalCount).toBe(1);
+    expect(second.newActiveProposalCount).toBe(0);
+    expect(proposals).toHaveLength(1);
+    expect(proposals[0]).toMatchObject({
+      title: 'Review completed Aoi research',
+      cooldownKey: 'attention:research_completed:research:aoi-research-done-001',
+      suggestedTools: ['read_research_artifact'],
+    });
+    expect(
+      observations.some((observation) => observation.dedupeKey.includes('research_completed')),
+    ).toBe(true);
+    expect(relationIndex.nodes.some((node) => node.kind === 'event')).toBe(true);
+    expect(
+      ledger.some((entry) =>
+        entry.events.some((event) => event.type === 'attention_broker_decision'),
+      ),
+    ).toBe(true);
+  });
+
+  it('suppresses user-facing attention in quiet mode while keeping observations and ledger', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      quietMode: true,
+      now: NOW,
+    });
+
+    const observations = loadAoiObservations(root, SESSION_PATH);
+    const ledger = loadServerAoiRunLedger(root, SESSION_PATH);
+
+    expect(result.newActiveProposalCount).toBe(0);
+    expect(loadAoiActiveProposals(root, SESSION_PATH)).toEqual([]);
+    expect(
+      observations.some((observation) => observation.dedupeKey.includes('research_completed')),
+    ).toBe(true);
+    expect(
+      ledger.some((entry) =>
+        entry.events.some((event) => event.type === 'notification_suppressed'),
+      ),
+    ).toBe(true);
+  });
+
+  it('creates one proposal for reviewed Kira completion without creating mutation actions', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-reviewed-attention-001',
+        scope: 'project',
+        type: 'action',
+        content: 'Kira completed reviewed work "Clarify autonomy approval states".',
+        normalizedContent: 'kira completed reviewed work clarify autonomy approval states',
+        permanent: undefined,
+        tags: ['kira', 'automation', 'completed', 'reviewed'],
+        updatedAt: NOW - 2_000,
+      }),
+    );
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'kira',
+      now: NOW,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    expect(result.newActiveProposalCount).toBe(1);
+    expect(proposals[0]).toMatchObject({
+      trigger: 'attention_broker',
+      title: 'Review completed Kira work',
+      suggestedTools: [],
+      acceptAction: {
+        kind: 'open_app',
+        params: {
+          appName: 'kira',
+        },
+      },
+    });
+  });
+
+  it('updates mission state silently for stale active-goal waiting events', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const goal = makeGoal();
+    saveAoiActiveGoals(root, SESSION_PATH, [goal]);
+    saveAoiMissionState(
+      root,
+      SESSION_PATH,
+      makeMission({
+        updatedAt: NOW - 60 * 60 * 1000,
+      }),
+    );
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW,
+    });
+
+    const mission = loadAoiMissionState(root, SESSION_PATH);
+    const ledger = loadServerAoiRunLedger(root, SESSION_PATH);
+
+    expect(loadAoiActiveGoals(root, SESSION_PATH)[0].id).toBe(goal.id);
+    expect(mission?.updatedAt).toBe(NOW);
+    expect(
+      ledger.some((entry) =>
+        entry.events.some(
+          (event) =>
+            event.type === 'attention_broker_decision' &&
+            event.message?.includes('update_mission_state'),
+        ),
+      ),
+    ).toBe(true);
+  });
+
   it('runs a bounded event-triggered tick and persists tick state', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

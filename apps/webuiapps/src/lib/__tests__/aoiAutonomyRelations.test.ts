@@ -8,11 +8,17 @@ import {
   makeAoiRelationEdge,
   makeAoiRelationNode,
   recordAoiMissionStateRelations,
+  recordAoiAttentionEventRelations,
   recordAoiProposalCreatedRelations,
   recordAoiRecoveryProposalRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
-import type { AoiMissionState, AoiProposal } from '../aoiAutonomyTypes';
+import type {
+  AoiAttentionEvent,
+  AoiMissionState,
+  AoiObservation,
+  AoiProposal,
+} from '../aoiAutonomyTypes';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 const tempRoots: string[] = [];
@@ -93,6 +99,42 @@ function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
     transitions: [],
     createdAt: 1000,
     updatedAt: 2000,
+    ...partial,
+  };
+}
+
+function makeAttentionEvent(partial: Partial<AoiAttentionEvent> = {}): AoiAttentionEvent {
+  return {
+    version: 1,
+    id: 'aoi-attn-event-relation-001',
+    sessionPath: 'aoi/default',
+    kind: 'research_completed',
+    sourceRef: 'research:aoi-research-relation-001',
+    sourceSignature: 'research_completed:aoi-research-relation-001',
+    summary: 'Research completed while the user was away.',
+    risk: 'low',
+    evidenceRefs: ['research:aoi-research-relation-001/report'],
+    suggestedAttentionLevel: 'inline',
+    createdAt: 1000,
+    dedupeKey: 'attention:research_completed:aoi-research-relation-001',
+    ...partial,
+  };
+}
+
+function makeObservation(partial: Partial<AoiObservation> = {}): AoiObservation {
+  return {
+    version: 1,
+    id: 'aoi-obs-attention-relation-001',
+    source: 'research_run',
+    sessionPath: 'aoi/default',
+    createdAt: 1000,
+    summary: 'Research completed while the user was away.',
+    payloadRef: 'event:aoi-attn-event-relation-001',
+    memoryIds: [],
+    artifactRefs: ['research:aoi-research-relation-001/report'],
+    proposalIds: [],
+    riskSignals: ['attention:research_completed'],
+    dedupeKey: 'attention:research_completed:aoi-research-relation-001',
     ...partial,
   };
 }
@@ -241,6 +283,51 @@ describe('Aoi autonomy relation index', () => {
     expect(
       index.edges.some(
         (edge) => edge.to === missionNode?.id && edge.evidenceRefs.includes('kira-work:kira-001'),
+      ),
+    ).toBe(true);
+  });
+
+  it('records attention event links to observation and proposal refs', () => {
+    const root = makeTempRoot();
+    const proposal = makeProposal({
+      id: 'proposal-attention-relation-001',
+      trigger: 'attention_broker',
+      evidenceRefs: ['observation:aoi-obs-attention-relation-001'],
+    });
+    const index = recordAoiAttentionEventRelations({
+      sessionsDir: root,
+      event: makeAttentionEvent(),
+      observation: makeObservation(),
+      proposal,
+      mission: makeMission(),
+      now: 3000,
+    });
+
+    const eventNode = index.nodes.find((node) => node.kind === 'event');
+    const observationNode = index.nodes.find(
+      (node) => node.ref === 'observation:aoi-obs-attention-relation-001',
+    );
+    const proposalNode = index.nodes.find(
+      (node) => node.ref === 'proposal:proposal-attention-relation-001',
+    );
+
+    expect(eventNode).toBeTruthy();
+    expect(observationNode).toBeTruthy();
+    expect(proposalNode).toBeTruthy();
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === eventNode?.id &&
+          edge.to === observationNode?.id &&
+          edge.kind === 'caused_by',
+      ),
+    ).toBe(true);
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === observationNode?.id &&
+          edge.to === proposalNode?.id &&
+          edge.kind === 'suggested_by',
       ),
     ).toBe(true);
   });

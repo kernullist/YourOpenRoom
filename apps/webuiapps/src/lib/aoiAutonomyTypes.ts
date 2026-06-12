@@ -69,6 +69,52 @@ export type AoiAutonomyTickReason =
   | 'memory'
   | 'app';
 
+export type AoiAttentionEventKind =
+  | 'kira_work_status_changed'
+  | 'kira_needs_clarification'
+  | 'kira_completed_reviewed_work'
+  | 'research_completed'
+  | 'research_failed_or_insufficient'
+  | 'active_goal_waiting_too_long'
+  | 'user_returned_after_idle'
+  | 'proposal_feedback_trust_changed';
+
+export type AoiAttentionLevel = 'silent' | 'badge' | 'inline' | 'direct';
+
+export type AoiAttentionBrokerDecisionKind =
+  | 'ignore'
+  | 'record_observation_only'
+  | 'update_mission_state'
+  | 'show_dashboard_badge'
+  | 'create_proposal'
+  | 'ask_direct_clarification';
+
+export interface AoiAttentionEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  kind: AoiAttentionEventKind;
+  sourceRef: string;
+  sourceSignature: string;
+  summary: string;
+  risk: AoiAutonomyRisk;
+  evidenceRefs: string[];
+  suggestedAttentionLevel: AoiAttentionLevel;
+  createdAt: number;
+  dedupeKey: string;
+}
+
+export interface AoiAttentionBrokerDecision {
+  version: 1;
+  eventId: string;
+  kind: AoiAttentionBrokerDecisionKind;
+  reason: string;
+  score: number;
+  createdAt: number;
+  observationId?: string;
+  proposalId?: string;
+}
+
 export type AoiProposalAcceptActionKind =
   | 'open_research_artifact'
   | 'read_research_artifact'

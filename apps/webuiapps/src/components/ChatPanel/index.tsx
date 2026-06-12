@@ -2524,6 +2524,7 @@ const ChatPanel: React.FC<{
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
         maxRuntimeMs: 15000,
+        quietMode: aoiAutonomyPanelSettings.quietMode,
       });
       if (sessionPathRef.current !== sessionPathForAutonomy) {
         return;
@@ -2590,6 +2591,7 @@ const ChatPanel: React.FC<{
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
         maxRuntimeMs: 15000,
+        quietMode: aoiAutonomyPanelSettings.quietMode,
       });
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
@@ -2601,7 +2603,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyLoading(false);
       setAoiAutonomyActionId(null);
     }
-  }, [refreshAoiAutonomy]);
+  }, [aoiAutonomyPanelSettings.quietMode, refreshAoiAutonomy]);
 
   const decideAoiMissionFromPanel = useCallback(
     async (action: AoiMissionDecisionAction) => {
@@ -8057,7 +8059,10 @@ const SettingsModal: React.FC<{
                     <div className={styles.settingsSectionTitle}>
                       Aoi Autonomy
                       {aoiAutonomyNotificationBadge?.visible && (
-                        <span className={styles.aoiAutonomyBadge}>
+                        <span
+                          className={styles.aoiAutonomyBadge}
+                          title={aoiAutonomyNotificationBadge.why}
+                        >
                           {aoiAutonomyNotificationBadge.label}
                         </span>
                       )}

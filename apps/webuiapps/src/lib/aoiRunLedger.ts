@@ -25,6 +25,10 @@ export type AoiRunLedgerEventType =
   | 'recovery_proposal_created'
   | 'recovery_suppressed_by_loop_guard'
   | 'recovery_blocked_by_policy'
+  | 'background_event_observed'
+  | 'attention_broker_decision'
+  | 'notification_suppressed'
+  | 'direct_clarification_requested'
   | 'run_completed'
   | 'run_failed';
 

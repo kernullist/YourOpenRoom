@@ -195,6 +195,40 @@ describe('Aoi autonomy UI helpers', () => {
         proposals: [lowRiskGoalProposal],
       })?.reason,
     ).toBe('goal_proposal');
+    expect(
+      buildAoiAutonomyNotificationBadge({
+        status: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          policy: makePolicy(),
+          activeProposalCount: 1,
+          archivedProposalCount: 0,
+          acceptedProposalCount: 0,
+          snoozedProposalCount: 0,
+          blockedProposalCount: 0,
+          observationCount: 2,
+          reflectionCount: 0,
+          decisionCount: 0,
+          activeTick: false,
+          recentObservationCount: 2,
+          proposalsCreatedInLastTick: 1,
+          activeGoalCount: 0,
+          updatedAt: 4000,
+        },
+        proposals: [
+          makeProposal({
+            id: 'aoi-proposal-attention',
+            trigger: 'attention_broker',
+            title: 'Review completed Aoi research',
+            reason: 'Background research finished while you were away.',
+          }),
+        ],
+      }),
+    ).toMatchObject({
+      label: '1 attention update',
+      why: 'Background research finished while you were away.',
+      reason: 'background_event',
+    });
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {

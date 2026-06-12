@@ -366,6 +366,8 @@ export async function runAoiAutonomyManualTick(params: {
   llmConfig?: unknown;
   reason?: AoiAutonomyTickReason;
   maxRuntimeMs?: number;
+  quietMode?: boolean;
+  userIdleMs?: number;
 }): Promise<AoiAutonomyTickResult> {
   const response = await fetch(`${API_PREFIX}/tick`, {
     method: 'POST',
@@ -376,6 +378,8 @@ export async function runAoiAutonomyManualTick(params: {
       latestUserMessage: params.latestUserMessage,
       llmConfig: params.llmConfig,
       maxRuntimeMs: params.maxRuntimeMs,
+      quietMode: params.quietMode,
+      userIdleMs: params.userIdleMs,
     }),
   });
   const payload = await readJsonRecord(response, 'Failed to run Aoi autonomy check.');

@@ -9,10 +9,12 @@ import {
 import {
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
+  loadAoiActiveGoals,
   recordAoiGoalContinuationProposed,
   recordAoiGoalRecoverySignal,
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
+import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
 import { ingestAoiObservations } from './aoiAutonomyObserver';
 import {
   buildAoiFailureRecoveryProposals,
@@ -35,9 +37,11 @@ import {
   saveAoiActiveProposals,
 } from './aoiAutonomyStore';
 import {
+  recordAoiAttentionEventRelations,
   recordAoiProposalCreatedRelations,
   recordAoiRecoveryProposalRelations,
 } from './aoiAutonomyRelations';
+import { deriveAoiMissionState, loadAoiMissionState } from './aoiAutonomyMission';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import type {
   AoiAutonomyBlockedProposal,
@@ -99,6 +103,8 @@ export interface AoiAutonomyTickParams {
   reflectionChat?: AoiAutonomyReflectionChat;
   now?: number;
   maxObservations?: number;
+  quietMode?: boolean;
+  userIdleMs?: number;
 }
 
 export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
@@ -514,6 +520,76 @@ function recordAoiRecoveryLedgerEvent(params: {
     });
   } catch {
     // Recovery ledger writes are audit-only.
+  }
+}
+
+function recordAoiAttentionLedgerEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  type:
+    | 'background_event_observed'
+    | 'attention_broker_decision'
+    | 'notification_suppressed'
+    | 'direct_clarification_requested';
+  message: string;
+  now: number;
+}): void {
+  try {
+    recordServerAoiRunLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: params.type,
+      message: truncateText(params.message, 240),
+      goalSummary: 'Aoi attention broker',
+      toolNames: [],
+      now: params.now,
+    });
+  } catch {
+    // Attention ledger writes are audit-only.
+  }
+}
+
+function recordAoiAttentionBrokerLedgerEvents(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  result: AoiAttentionBrokerResult;
+  now: number;
+}): void {
+  for (const event of params.result.events) {
+    recordAoiAttentionLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'background_event_observed',
+      message: `${event.kind}: ${event.summary}`,
+      now: params.now,
+    });
+  }
+  for (const decision of params.result.decisions) {
+    recordAoiAttentionLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'attention_broker_decision',
+      message: `${decision.kind} for ${decision.eventId}: ${decision.reason}`,
+      now: params.now,
+    });
+  }
+  if (params.result.suppressedNotifications > 0) {
+    recordAoiAttentionLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'notification_suppressed',
+      message: `Suppressed ${params.result.suppressedNotifications} background notification(s).`,
+      now: params.now,
+    });
+  }
+  if (params.result.directClarificationRequested) {
+    recordAoiAttentionLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      type: 'direct_clarification_requested',
+      message: 'A background event is user-blocking and needs direct clarification.',
+      now: params.now,
+    });
   }
 }
 
@@ -1002,6 +1078,45 @@ function buildEvidenceRefSet(params: {
     }
   }
   return refs;
+}
+
+function recordAoiAttentionRelations(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  result: AoiAttentionBrokerResult;
+  storedObservations: AoiObservation[];
+  proposals: AoiProposal[];
+  mission?: ReturnType<typeof deriveAoiMissionState> | null;
+  now: number;
+}): void {
+  const observationsById = new Map(
+    params.storedObservations.map((observation) => [observation.id, observation]),
+  );
+  const proposalsById = new Map(params.proposals.map((proposal) => [proposal.id, proposal]));
+  const eventsById = new Map(params.result.events.map((event) => [event.id, event]));
+
+  for (const decision of params.result.decisions) {
+    if (decision.kind === 'ignore' || !decision.observationId) {
+      continue;
+    }
+    const event = eventsById.get(decision.eventId);
+    const observation = observationsById.get(decision.observationId);
+    if (!event || !observation) {
+      continue;
+    }
+    try {
+      recordAoiAttentionEventRelations({
+        sessionsDir: params.sessionsDir,
+        event,
+        observation,
+        proposal: decision.proposalId ? proposalsById.get(decision.proposalId) : undefined,
+        mission: params.mission,
+        now: params.now,
+      });
+    } catch {
+      // Attention relation writes are audit-only.
+    }
+  }
 }
 
 export function buildAoiAutonomyReflectionMessages(params: {
@@ -1602,6 +1717,28 @@ export async function runAoiAutonomyTick(
     now,
     maxObservations: params.maxObservations,
   });
+  const missionForAttention =
+    loadAoiMissionState(params.sessionsDir, sessionPath) ??
+    deriveAoiMissionState({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      now,
+      persist: false,
+    });
+  const attentionResult = runAoiAttentionBroker({
+    sessionPath,
+    now,
+    policy,
+    researchRuns: bundle.researchRuns,
+    memories: bundle.memories,
+    activeProposals: bundle.activeProposals,
+    recentDecisions: bundle.decisions,
+    activeGoals: loadAoiActiveGoals(params.sessionsDir, sessionPath),
+    mission: missionForAttention,
+    quietMode: params.quietMode,
+    userIdleMs: params.userIdleMs,
+    maxActionableEvents: latestUserMessage ? 0 : 1,
+  });
   if (latestUserMessage) {
     bundle.observations.unshift({
       version: 1,
@@ -1618,12 +1755,27 @@ export async function runAoiAutonomyTick(
       dedupeKey: `chat:latest-user-message:${sanitizeIdPart(latestUserMessage).slice(0, 64)}`,
     });
   }
+  bundle.observations.push(...attentionResult.observations);
 
   const observationIngestResults = ingestAoiObservations(params.sessionsDir, bundle.observations, {
     now,
   });
   bundle.observations = observationIngestResults.map((result) => result.observation);
   const observationWarnings = observationIngestResults.flatMap((result) => result.warnings);
+  const attentionMission = attentionResult.updateMission
+    ? deriveAoiMissionState({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        now,
+        persist: true,
+      })
+    : missionForAttention;
+  recordAoiAttentionBrokerLedgerEvents({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    result: attentionResult,
+    now,
+  });
   updateAoiGoalProgressFromObservations({
     sessionsDir: params.sessionsDir,
     sessionPath,
@@ -1659,7 +1811,11 @@ export async function runAoiAutonomyTick(
 
   let activeProposals = loadAoiActiveProposals(params.sessionsDir, sessionPath);
   const recentDecisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
-  const candidates = [...deterministicProposals, ...llmResult.proposals]
+  const candidates = [
+    ...attentionResult.proposals,
+    ...deterministicProposals,
+    ...llmResult.proposals,
+  ]
     .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
     .sort((left, right) => sortProposalPriority(left, right, recentDecisions));
   const blockedProposals: AoiAutonomyBlockedProposal[] = [];
@@ -1765,6 +1921,15 @@ export async function runAoiAutonomyTick(
   if (acceptedProposals.length > 0) {
     saveAoiActiveProposals(params.sessionsDir, sessionPath, activeProposals);
   }
+  recordAoiAttentionRelations({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    result: attentionResult,
+    storedObservations: bundle.observations,
+    proposals: acceptedProposals,
+    mission: attentionMission,
+    now,
+  });
 
   return {
     ok: true,

@@ -58,6 +58,7 @@ export interface AoiAutonomyPanelSettings {
 export interface AoiAutonomyNotificationBadge {
   visible: boolean;
   label: string;
+  why: string;
   reason: 'goal_proposal' | 'background_event' | 'blocked_action';
 }
 
@@ -347,9 +348,19 @@ export function buildAoiAutonomyNotificationBadge(params: {
       proposalTiedToGoal(proposal),
   ).length;
   if (goalProposalCount > 0) {
+    const topGoalProposal = params.proposals.find(
+      (proposal) =>
+        proposal.status === 'active' &&
+        proposal.risk !== 'high' &&
+        canShowAoiProposalPrimaryAction(proposal) &&
+        proposalTiedToGoal(proposal),
+    );
     return {
       visible: true,
       label: `${goalProposalCount} goal proposal${goalProposalCount === 1 ? '' : 's'}`,
+      why: topGoalProposal
+        ? sanitizeAoiProposalDisplayText(topGoalProposal.reason, 180)
+        : 'A goal-linked proposal has a safe next step.',
       reason: 'goal_proposal',
     };
   }
@@ -357,13 +368,37 @@ export function buildAoiAutonomyNotificationBadge(params: {
     return {
       visible: true,
       label: `${params.blockedProposals?.length ?? 0} blocked`,
+      why: sanitizeAoiProposalDisplayText(
+        params.blockedProposals?.[0]?.safeAlternative ||
+          params.blockedProposals?.[0]?.reasons.join(' / ') ||
+          'A background action was blocked by policy.',
+        180,
+      ),
       reason: 'blocked_action',
     };
   }
   if ((params.status?.proposalsCreatedInLastTick ?? 0) > 0) {
+    const attentionProposal = params.proposals.find(
+      (proposal) => proposal.trigger === 'attention_broker',
+    );
     return {
       visible: true,
-      label: `${params.status?.proposalsCreatedInLastTick ?? 0} new`,
+      label: attentionProposal
+        ? `${params.status?.proposalsCreatedInLastTick ?? 0} attention update`
+        : `${params.status?.proposalsCreatedInLastTick ?? 0} new`,
+      why: attentionProposal
+        ? sanitizeAoiProposalDisplayText(attentionProposal.reason, 180)
+        : 'A background check created a new proposal.',
+      reason: 'background_event',
+    };
+  }
+  if ((params.status?.recentObservationCount ?? 0) > 0) {
+    return {
+      visible: true,
+      label: `${params.status?.recentObservationCount ?? 0} event${
+        params.status?.recentObservationCount === 1 ? '' : 's'
+      }`,
+      why: 'Background events were recorded silently; open details for evidence.',
       reason: 'background_event',
     };
   }

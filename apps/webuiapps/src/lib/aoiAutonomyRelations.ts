@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import type {
+  AoiAttentionEvent,
   AoiMissionState,
   AoiObservation,
   AoiProposal,
@@ -22,6 +23,7 @@ export type AoiRelationNodeKind =
   | 'plan_step'
   | 'project'
   | 'kira_work'
+  | 'event'
   | 'topic';
 
 export type AoiRelationEdgeKind =
@@ -209,6 +211,9 @@ export function inferAoiRelationNodeKind(ref: string): AoiRelationNodeKind {
   }
   if (ref.startsWith('kira-work:')) {
     return 'kira_work';
+  }
+  if (ref.startsWith('event:')) {
+    return 'event';
   }
   if (ref.startsWith('topic:')) {
     return 'topic';
@@ -519,6 +524,119 @@ export function recordAoiObservationRelations(
   }
 
   return upsertAoiRelations(sessionsDir, observation.sessionPath, { nodes, edges, now });
+}
+
+export function recordAoiAttentionEventRelations(params: {
+  sessionsDir: string;
+  event: AoiAttentionEvent;
+  observation: AoiObservation;
+  proposal?: AoiProposal;
+  mission?: AoiMissionState | null;
+  now?: number;
+}): AoiRelationIndex {
+  const now = params.now ?? Date.now();
+  const eventRef = `event:${params.event.id}`;
+  const observationRef = `observation:${params.observation.id}`;
+  const eventNode = makeAoiRelationNode({
+    ref: eventRef,
+    kind: 'event',
+    label: params.event.summary,
+    status: 'active',
+    now,
+  });
+  const observationNode = makeAoiRelationNode({
+    ref: observationRef,
+    kind: 'episode',
+    label: params.observation.summary,
+    status: 'active',
+    now,
+  });
+  const nodes = [eventNode, observationNode];
+  const edges: AoiRelationEdge[] = [
+    makeAoiRelationEdge({
+      from: eventNode.id,
+      to: observationNode.id,
+      kind: 'caused_by',
+      evidenceRefs: [eventRef, params.event.sourceRef],
+      now,
+    }),
+    makeAoiRelationEdge({
+      from: observationNode.id,
+      to: eventNode.id,
+      kind: 'supports',
+      evidenceRefs: [observationRef],
+      now,
+    }),
+  ];
+
+  const refs = [
+    params.event.sourceRef,
+    ...params.event.evidenceRefs,
+    ...(params.proposal ? [`proposal:${params.proposal.id}`] : []),
+    ...(params.mission?.sourceRefs.goalRef ? [params.mission.sourceRefs.goalRef] : []),
+    ...(params.mission?.sourceRefs.proposalRef ? [params.mission.sourceRefs.proposalRef] : []),
+    ...(params.mission?.sourceRefs.researchRunRef
+      ? [params.mission.sourceRefs.researchRunRef]
+      : []),
+    ...(params.mission?.sourceRefs.kiraWorkRef ? [params.mission.sourceRefs.kiraWorkRef] : []),
+  ];
+
+  for (const ref of [...new Set(refs)].filter(Boolean)) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: eventNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref, eventRef],
+        now,
+      }),
+    );
+  }
+
+  if (params.proposal) {
+    const proposalNode = makeAoiRelationNode({
+      ref: `proposal:${params.proposal.id}`,
+      kind: 'proposal',
+      label: params.proposal.title,
+      status: 'active',
+      now,
+    });
+    nodes.push(proposalNode);
+    edges.push(
+      makeAoiRelationEdge({
+        from: observationNode.id,
+        to: proposalNode.id,
+        kind: 'suggested_by',
+        evidenceRefs: [observationRef, eventRef],
+        now,
+      }),
+    );
+  }
+
+  if (params.mission && params.mission.status !== 'none') {
+    const missionRef = `mission:${params.event.sessionPath}`;
+    const missionNode = makeAoiRelationNode({
+      ref: missionRef,
+      kind: 'mission',
+      label: params.mission.focusSummary,
+      status: params.mission.status === 'completed' ? 'archived' : 'active',
+      now,
+    });
+    nodes.push(missionNode);
+    edges.push(
+      makeAoiRelationEdge({
+        from: observationNode.id,
+        to: missionNode.id,
+        kind: 'supports',
+        evidenceRefs: [observationRef, eventRef],
+        now,
+      }),
+    );
+  }
+
+  return upsertAoiRelations(params.sessionsDir, params.event.sessionPath, { nodes, edges, now });
 }
 
 export function recordAoiProposalDecisionRelations(
@@ -883,6 +1001,7 @@ function isAoiRelationNodeKind(value: unknown): value is AoiRelationNodeKind {
     value === 'plan_step' ||
     value === 'project' ||
     value === 'kira_work' ||
+    value === 'event' ||
     value === 'topic'
   );
 }

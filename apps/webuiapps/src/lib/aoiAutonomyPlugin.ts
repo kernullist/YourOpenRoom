@@ -341,6 +341,8 @@ async function handleAoiAutonomyRequest(
           typeof body.latestUserMessage === 'string' ? body.latestUserMessage : undefined,
         llmConfig,
         maxRuntimeMs: typeof body.maxRuntimeMs === 'number' ? body.maxRuntimeMs : undefined,
+        quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
+        userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
       });
       writeJson(res, 200, result);
       return true;

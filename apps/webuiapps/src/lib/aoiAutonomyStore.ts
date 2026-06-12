@@ -1133,7 +1133,7 @@ export function buildAoiAutonomyStatus(
     nextAllowedTickAt: tickState.nextAllowedTickAt,
     lastTickReason: tickState.lastTickReason,
     activeTick: tickState.activeTick,
-    recentObservationCount: tickState.recentObservationCount || observations.length,
+    recentObservationCount: tickState.recentObservationCount,
     proposalsCreatedInLastTick: tickState.proposalsCreatedInLastTick,
     activeGoalCount: activeGoals.length,
     currentGoalTitle: currentGoal?.title,
