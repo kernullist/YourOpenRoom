@@ -8,6 +8,11 @@ import {
   normalizeAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomyPolicy,
 } from './aoiAutonomyPolicy';
+import {
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+  normalizeAoiApprovedCommandPolicy,
+} from './aoiApprovedCommandPolicy';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import type {
@@ -15,6 +20,7 @@ import type {
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickState,
+  AoiCommandAuditRecord,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiObservation,
@@ -44,6 +50,7 @@ export interface AoiAutonomyPaths {
   activeProposals: string;
   archivedProposals: string;
   decisionsDir: string;
+  commandAuditDir: string;
   tickState: string;
   evalDir: string;
   environmentSources: string;
@@ -330,6 +337,7 @@ export function resolveAoiAutonomyPaths(
     activeProposals: join(proposalsDir, 'active.json'),
     archivedProposals: join(proposalsDir, 'archived.json'),
     decisionsDir: join(root, 'decisions'),
+    commandAuditDir: join(root, 'command-audit'),
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
@@ -482,6 +490,23 @@ function makeAoiProposalDecisionRecord(params: {
   const reason = normalizeOptionalText(params.reason, 240);
   const feedbackCategory = normalizeAoiProposalFeedbackCategory(params.feedbackCategory);
   const feedbackNote = normalizeOptionalText(params.feedbackNote, 240);
+  const actionParams = params.proposal.acceptAction?.params ?? {};
+  const approvedCommand =
+    params.action === 'accept' && params.proposal.acceptAction?.kind === 'run_command'
+      ? evaluateAoiApprovedCommandPolicy(
+          createAoiApprovedCommandRequest({
+            sessionPath: params.sessionPath,
+            proposalId: params.proposal.id,
+            command: actionParams.command,
+            cwd: actionParams.cwd ?? actionParams.directory,
+            purpose: actionParams.purpose ?? params.proposal.title,
+            risk: params.proposal.risk,
+            timeoutMs: actionParams.timeoutMs ?? actionParams.timeout_ms,
+            requestedAt: params.now,
+            evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+          }),
+        )
+      : undefined;
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-decision', params.now),
@@ -503,6 +528,7 @@ function makeAoiProposalDecisionRecord(params: {
     suggestedTools: normalizeStringList(params.proposal.suggestedTools, 12),
     evidenceRefs: normalizeStringList(params.proposal.evidenceRefs, 24),
     memoryIds: normalizeStringList(params.proposal.memoryIds, 24),
+    ...(approvedCommand ? { approvedCommand } : {}),
   };
 }
 
@@ -891,6 +917,71 @@ export function appendAoiProposalDecision(
   return item;
 }
 
+function isAoiCommandAuditRecord(value: unknown): value is AoiCommandAuditRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiCommandAuditRecord>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    typeof record.command === 'string' &&
+    typeof record.cwdLabel === 'string' &&
+    typeof record.cwdHash === 'string' &&
+    typeof record.purpose === 'string' &&
+    (record.risk === 'low' || record.risk === 'medium' || record.risk === 'high') &&
+    typeof record.allowed === 'boolean' &&
+    Array.isArray(record.blockReasons) &&
+    typeof record.startedAt === 'number' &&
+    typeof record.completedAt === 'number' &&
+    typeof record.durationMs === 'number' &&
+    (typeof record.exitCode === 'number' || record.exitCode === null) &&
+    typeof record.timedOut === 'boolean' &&
+    typeof record.stdoutExcerpt === 'string' &&
+    typeof record.stderrExcerpt === 'string' &&
+    typeof record.stdoutTruncated === 'boolean' &&
+    typeof record.stderrTruncated === 'boolean' &&
+    Array.isArray(record.evidenceRefs) &&
+    typeof record.approvalFingerprint === 'string'
+  );
+}
+
+export function appendAoiCommandAuditRecord(
+  sessionsDir: string,
+  record: AoiCommandAuditRecord,
+): AoiCommandAuditRecord {
+  if (!isAoiCommandAuditRecord(record)) {
+    throw new Error('Invalid Aoi command audit record.');
+  }
+  const sessionPath = normalizeAoiAutonomySessionPath(record.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const item: AoiCommandAuditRecord = {
+    ...record,
+    sessionPath,
+    evidenceRefs: normalizeStringList(record.evidenceRefs, 24),
+    blockReasons: normalizeStringList(
+      record.blockReasons,
+      24,
+    ) as AoiCommandAuditRecord['blockReasons'],
+  };
+  writeJsonAtomic(join(paths.commandAuditDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiCommandAuditRecords(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiCommandAuditRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.commandAuditDir)
+    .filter(isAoiCommandAuditRecord)
+    .sort((a, b) => b.completedAt - a.completedAt);
+}
+
 function isAoiProposalDecisionAction(value: unknown): value is AoiProposalDecisionAction {
   return (
     value === 'accept' ||
@@ -920,6 +1011,7 @@ function isAoiProposalAcceptActionKind(value: unknown): value is AoiProposalAcce
     value === 'get_research_status' ||
     value === 'start_research' ||
     value === 'create_kira_work' ||
+    value === 'run_command' ||
     value === 'open_app' ||
     value === 'save_memory' ||
     value === 'activate_goal'
@@ -946,6 +1038,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     return null;
   }
   const feedbackCategory = normalizeAoiProposalFeedbackCategory(item.feedbackCategory);
+  const approvedCommand = normalizeAoiApprovedCommandPolicy(item.approvedCommand);
   return {
     version: 1,
     id: item.id,
@@ -977,6 +1070,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     suggestedTools: normalizeStringList(item.suggestedTools, 12),
     evidenceRefs: normalizeStringList(item.evidenceRefs, 24),
     memoryIds: normalizeStringList(item.memoryIds, 24),
+    ...(approvedCommand ? { approvedCommand } : {}),
   };
 }
 

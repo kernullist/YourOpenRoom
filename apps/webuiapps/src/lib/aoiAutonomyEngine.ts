@@ -1394,6 +1394,7 @@ function isAcceptActionKind(value: unknown): value is AoiProposalAcceptActionKin
     value === 'get_research_status' ||
     value === 'start_research' ||
     value === 'create_kira_work' ||
+    value === 'run_command' ||
     value === 'open_app' ||
     value === 'save_memory' ||
     value === 'activate_goal'

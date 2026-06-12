@@ -17,6 +17,8 @@ import type {
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
+  AoiApprovedCommandPolicy,
+  AoiApprovedCommandResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiWorkspaceSnapshot,
@@ -218,6 +220,20 @@ export interface AoiPreparedActionPlanPanelSummary {
   rollbackInstructions: string[];
   blockers: string[];
   nonGoals: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiApprovedCommandPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  commandLabel: string;
+  cwdLabel: string;
+  riskLabel: string;
+  reasonLabels: string[];
+  resultLabel: string;
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  outputTruncated: boolean;
   evidenceRefs: string[];
 }
 
@@ -941,6 +957,20 @@ export function buildAoiProposalActionPresentation(
     };
   }
 
+  if (kind === 'run_command') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Approve and run validation command',
+      primaryTitle:
+        'Approve this exact validation command, cwd, purpose, and risk for one execution.',
+      primaryRole: 'execute',
+      mutationBoundary:
+        'Runs one allowlisted validation or inspection command. It is not a general terminal.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
   if (kind === 'get_research_status') {
     return {
       visibleState: 'waiting_for_approval',
@@ -1094,6 +1124,83 @@ export function buildAoiPreparedActionPlanPanelSummary(
       : [],
     evidenceRefs: includeDetails
       ? plan.evidenceRefs.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
+      : [],
+  };
+}
+
+export function buildAoiApprovedCommandPanelSummary(params: {
+  policy?: AoiApprovedCommandPolicy | null;
+  result?: AoiApprovedCommandResult | null;
+  includeDetails?: boolean;
+}): AoiApprovedCommandPanelSummary {
+  const policy = params.policy ?? undefined;
+  const result = params.result ?? undefined;
+  if (!policy && !result) {
+    return {
+      visible: false,
+      statusLabel: 'No approved command',
+      commandLabel: '',
+      cwdLabel: '',
+      riskLabel: '',
+      reasonLabels: [],
+      resultLabel: '',
+      stdoutExcerpt: '',
+      stderrExcerpt: '',
+      outputTruncated: false,
+      evidenceRefs: [],
+    };
+  }
+
+  const command = result?.command ?? policy?.displayCommand ?? '';
+  const cwdLabel = result?.cwdLabel ?? policy?.cwdLabel ?? 'workspace root';
+  const resultLabel = result
+    ? `exit ${result.exitCode ?? 'unknown'} in ${result.durationMs}ms${
+        result.timedOut ? ', timed out' : ''
+      }`
+    : policy?.allowed
+      ? 'ready for exact approval'
+      : 'blocked before approval';
+  const reasonLabels = policy
+    ? policy.allowed
+      ? policy.rationale
+      : policy.blockReasons.map((reason) => `blocked:${formatPreparedActionLabel(reason)}`)
+    : [];
+  const evidenceRefs = [
+    ...new Set([
+      ...(policy ? [`command-approval:${policy.approvalFingerprint}`] : []),
+      ...(result?.evidenceRefs ?? []),
+    ]),
+  ];
+
+  return {
+    visible: true,
+    statusLabel: result
+      ? result.ok
+        ? 'passed'
+        : result.timedOut
+          ? 'timed out'
+          : 'failed'
+      : policy?.allowed
+        ? 'approval required'
+        : 'blocked',
+    commandLabel: sanitizeAoiProposalDisplayText(command, 220),
+    cwdLabel: sanitizeAoiProposalDisplayText(cwdLabel, 160),
+    riskLabel: `${policy?.risk ?? result?.auditRecord.risk ?? 'high'} risk, L5 approval`,
+    reasonLabels: (params.includeDetails ? reasonLabels.slice(0, 8) : reasonLabels.slice(0, 3)).map(
+      (item) => sanitizeAoiProposalDisplayText(item, 180),
+    ),
+    resultLabel: sanitizeAoiProposalDisplayText(resultLabel, 180),
+    stdoutExcerpt:
+      params.includeDetails && result
+        ? sanitizeAoiProposalDisplayText(result.stdoutExcerpt, 600)
+        : '',
+    stderrExcerpt:
+      params.includeDetails && result
+        ? sanitizeAoiProposalDisplayText(result.stderrExcerpt, 600)
+        : '',
+    outputTruncated: result?.stdoutTruncated === true || result?.stderrTruncated === true,
+    evidenceRefs: params.includeDetails
+      ? evidenceRefs.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
       : [],
   };
 }

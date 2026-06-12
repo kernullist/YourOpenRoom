@@ -4,13 +4,26 @@ import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ingestAoiObservation } from '../aoiAutonomyObserver';
 import { runAoiAttentionBroker } from '../aoiAttentionBroker';
+import { runAoiAutonomyBackgroundTick } from '../aoiAutonomyEngine';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
   getDefaultAoiEnvironmentSourceRegistry,
 } from '../aoiAutonomyPolicy';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
-import { loadAoiObservationIndex, loadAoiObservations } from '../aoiAutonomyStore';
-import type { AoiEnvironmentSourceRegistry, AoiMissionState } from '../aoiAutonomyTypes';
+import {
+  applyAoiProposalDecision,
+  loadAoiActiveProposals,
+  loadAoiCommandAuditRecords,
+  loadAoiObservationIndex,
+  loadAoiObservations,
+  saveAoiActiveProposals,
+  saveAoiAutonomyPolicy,
+} from '../aoiAutonomyStore';
+import type {
+  AoiEnvironmentSourceRegistry,
+  AoiMissionState,
+  AoiProposal,
+} from '../aoiAutonomyTypes';
 import {
   collectAoiWorkspaceSnapshot,
   createAoiWorkspaceObservations,
@@ -66,6 +79,40 @@ function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
     createdAt: NOW,
     updatedAt: NOW,
     ...partial,
+  };
+}
+
+function makeAcceptedCommandProposal(): AoiProposal {
+  return {
+    version: 1,
+    id: 'proposal-command-background-test',
+    sessionPath: SESSION_PATH,
+    status: 'active',
+    title: 'Run background validation command',
+    body: 'A safe validation command is available for explicit approval only.',
+    reason: 'Validation is stale.',
+    trigger: 'workspace_validation_stale',
+    createdAt: NOW - 1000,
+    updatedAt: NOW - 1000,
+    cooldownKey: 'approved-command:background-test',
+    confidence: 0.85,
+    risk: 'high',
+    requiredAutonomyLevel: 'L5',
+    requiresUserApproval: true,
+    suggestedTools: ['run_command'],
+    evidenceRefs: ['workspace:validation:stale'],
+    memoryIds: [],
+    artifactRefs: ['workspace:snapshot:background-test'],
+    riskSignals: ['workspace-validation:stale'],
+    acceptAction: {
+      kind: 'run_command',
+      params: {
+        command:
+          'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyObserver.test.ts',
+        cwd: '.',
+        purpose: 'Validate observer behavior.',
+      },
+    },
   };
 }
 
@@ -304,6 +351,41 @@ describe('Aoi autonomy observer', () => {
     expect(JSON.stringify(paths)).not.toContain('C:\\');
     expect(observations.some((observation) => observation.source === 'workspace')).toBe(true);
     expect(JSON.stringify(observations)).not.toContain('F:\\');
+  });
+
+  it('does not execute approved command proposals from a background tick', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, SESSION_PATH, {
+      ...DEFAULT_AOI_AUTONOMY_POLICY,
+      enabled: true,
+      previewMode: true,
+      level: 'L5',
+      proactiveSuggestionsEnabled: true,
+    });
+    saveAoiActiveProposals(root, SESSION_PATH, [makeAcceptedCommandProposal()]);
+    applyAoiProposalDecision(root, SESSION_PATH, {
+      proposalId: 'proposal-command-background-test',
+      action: 'accept',
+      now: NOW - 500,
+    });
+
+    const result = await runAoiAutonomyBackgroundTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW,
+      minIntervalMs: 0,
+      maxRuntimeMs: 5000,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    expect(result.ok).toBe(true);
+    expect(loadAoiCommandAuditRecords(root, SESSION_PATH)).toEqual([]);
+    expect(
+      proposals.find((proposal) => proposal.id === 'proposal-command-background-test'),
+    ).toMatchObject({
+      status: 'accepted',
+    });
   });
 
   it('detects stale validation only when relevant files changed after the recorded result', () => {

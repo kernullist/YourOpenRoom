@@ -25,6 +25,12 @@ import {
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
   buildAoiValidationCommandPreparedActionPlan,
 } from '../aoiSafeActionPlan';
+import {
+  AOI_COMMAND_APPROVAL_TTL_MS,
+  compareAoiApprovedCommandApproval,
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+} from '../aoiApprovedCommandPolicy';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
@@ -247,6 +253,130 @@ describe('Aoi prepared action plan safety policy', () => {
       approvalRequiredBeforeRun: true,
     });
     expect(plan.checkpoint.kind).toBe('not_applicable');
+  });
+});
+
+describe('Aoi approved command policy', () => {
+  it('allows targeted pnpm tests, filtered build:test, and read-only git checks only', () => {
+    expect(
+      evaluateAoiApprovedCommandPolicy(
+        createAoiApprovedCommandRequest({
+          sessionPath: 'aoi/default',
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyPolicy.test.ts',
+          cwd: '.',
+          purpose: 'Validate Aoi policy changes.',
+          risk: 'high',
+          requestedAt: 1000,
+        }),
+      ),
+    ).toMatchObject({
+      allowed: true,
+      program: 'pnpm',
+      requiredAutonomyLevel: 'L5',
+      cwdLabel: 'workspace root',
+    });
+    expect(
+      evaluateAoiApprovedCommandPolicy(
+        createAoiApprovedCommandRequest({
+          sessionPath: 'aoi/default',
+          command: 'pnpm --filter @openroom/webuiapps build:test',
+          requestedAt: 1000,
+        }),
+      ).allowed,
+    ).toBe(true);
+    expect(
+      evaluateAoiApprovedCommandPolicy(
+        createAoiApprovedCommandRequest({
+          sessionPath: 'aoi/default',
+          command: 'git diff --check',
+          requestedAt: 1000,
+        }),
+      ).allowed,
+    ).toBe(true);
+  });
+
+  it('blocks destructive, chained, package mutation, secret, network, and background commands', () => {
+    const cases = [
+      ['Remove-Item src/lib/a.ts', 'destructive_file_operation'],
+      ['git status && git diff --check', 'shell_metacharacters'],
+      ['pnpm install', 'package_install_or_update'],
+      ['git config user.password secret', 'credential_or_secret_command'],
+      ['curl -X POST https://example.com', 'network_mutation_command'],
+      ['Start-Process pnpm', 'background_process_launch'],
+      ['powershell', 'interactive_shell'],
+    ] as const;
+
+    for (const [command, reason] of cases) {
+      const policy = evaluateAoiApprovedCommandPolicy(
+        createAoiApprovedCommandRequest({
+          sessionPath: 'aoi/default',
+          command,
+          requestedAt: 1000,
+        }),
+      );
+      expect(policy.allowed).toBe(false);
+      expect(policy.blockReasons).toContain(reason);
+    }
+  });
+
+  it('blocks command injection through test target arguments', () => {
+    const policy = evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: 'aoi/default',
+        command:
+          'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyPolicy.test.ts --watch',
+        requestedAt: 1000,
+      }),
+    );
+
+    expect(policy.allowed).toBe(false);
+    expect(policy.blockReasons).toContain('unsafe_test_target');
+  });
+
+  it('expires exact command approval and invalidates command, cwd, risk, or purpose changes', () => {
+    const approved = evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: 'aoi/default',
+        command: 'git diff --check',
+        cwd: '.',
+        purpose: 'Check current diff.',
+        risk: 'high',
+        requestedAt: 1000,
+      }),
+    );
+    const changed = evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: 'aoi/default',
+        command: 'git status --short',
+        cwd: 'apps/webuiapps',
+        purpose: 'Inspect status.',
+        risk: 'medium',
+        requestedAt: 2000,
+      }),
+    );
+
+    expect(
+      compareAoiApprovedCommandApproval({
+        approved,
+        current: approved,
+        now: 1000 + AOI_COMMAND_APPROVAL_TTL_MS + 1,
+      }),
+    ).toContain('approval_expired');
+    expect(
+      compareAoiApprovedCommandApproval({
+        approved,
+        current: changed,
+        now: 2000,
+      }),
+    ).toEqual(
+      expect.arrayContaining([
+        'approval_command_changed',
+        'approval_cwd_changed',
+        'approval_risk_changed',
+        'approval_purpose_changed',
+      ]),
+    );
   });
 });
 
@@ -473,8 +603,8 @@ describe('evaluateAoiProposalExecution()', () => {
     expect(missingEvidence.reasons).toContain('missing_evidence_refs');
   });
 
-  it('blocks file writes, patches, deletes, commands, unknown actions, missing evidence, and filesystem path params', () => {
-    for (const blockedTool of ['file_write', 'file_patch', 'file_delete', 'run_command']) {
+  it('blocks file writes, patches, deletes, unsafe commands, unknown actions, missing evidence, and filesystem path params', () => {
+    for (const blockedTool of ['file_write', 'file_patch', 'file_delete']) {
       const result = evaluateAoiProposalExecution(
         makeProposal({
           status: 'accepted',
@@ -495,6 +625,28 @@ describe('evaluateAoiProposalExecution()', () => {
         ]),
       );
     }
+
+    const unsafeCommand = evaluateAoiProposalExecution(
+      makeProposal({
+        status: 'accepted',
+        risk: 'high',
+        requiredAutonomyLevel: 'L5',
+        requiresUserApproval: true,
+        suggestedTools: ['run_command'],
+        acceptAction: {
+          kind: 'run_command',
+          params: { command: 'Remove-Item src/lib/a.ts', cwd: '.' },
+        },
+      }),
+      { ...policy, level: 'L5' },
+      { now: 3000, decisions: [acceptDecision] },
+    );
+    expect(unsafeCommand.reasons).toEqual(
+      expect.arrayContaining([
+        'approved_command_blocked:destructive_file_operation',
+        'tool_blocked:run_command',
+      ]),
+    );
 
     const unknown = evaluateAoiProposalExecution(
       makeProposal({

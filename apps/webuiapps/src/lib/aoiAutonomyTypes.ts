@@ -204,6 +204,7 @@ export type AoiProposalAcceptActionKind =
   | 'get_research_status'
   | 'start_research'
   | 'create_kira_work'
+  | 'run_command'
   | 'open_app'
   | 'save_memory'
   | 'activate_goal';
@@ -287,6 +288,111 @@ export interface AoiPreparedActionPlan {
   validation: AoiValidationPlan;
   blockers: string[];
   nonGoals: string[];
+}
+
+export type AoiCommandBlockReason =
+  | 'missing_command'
+  | 'command_too_long'
+  | 'cwd_not_relative'
+  | 'cwd_escapes_workspace'
+  | 'shell_metacharacters'
+  | 'unsupported_program'
+  | 'unsupported_pnpm_shape'
+  | 'untargeted_test_command'
+  | 'unsafe_test_target'
+  | 'unsupported_git_shape'
+  | 'unsafe_git_argument'
+  | 'destructive_file_operation'
+  | 'package_install_or_update'
+  | 'credential_or_secret_command'
+  | 'network_mutation_command'
+  | 'background_process_launch'
+  | 'interactive_shell'
+  | 'approval_missing'
+  | 'approval_expired'
+  | 'approval_command_changed'
+  | 'approval_cwd_changed'
+  | 'approval_risk_changed'
+  | 'approval_purpose_changed'
+  | 'workspace_cwd_missing'
+  | 'execution_failed'
+  | 'execution_timeout';
+
+export interface AoiApprovedCommandRequest {
+  version: 1;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  command: string;
+  cwd: string;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  timeoutMs: number;
+  requestedAt: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiApprovedCommandPolicy {
+  version: 1;
+  allowed: boolean;
+  blockReasons: AoiCommandBlockReason[];
+  command: string;
+  displayCommand: string;
+  program?: 'git' | 'pnpm';
+  args: string[];
+  cwd: string;
+  cwdLabel: string;
+  cwdHash: string;
+  purpose: string;
+  purposeHash: string;
+  risk: AoiAutonomyRisk;
+  requiredAutonomyLevel: 'L5';
+  timeoutMs: number;
+  approvalFingerprint: string;
+  expiresAt: number;
+  rationale: string[];
+}
+
+export interface AoiCommandAuditRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  command: string;
+  cwdLabel: string;
+  cwdHash: string;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  allowed: boolean;
+  blockReasons: AoiCommandBlockReason[];
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  exitCode: number | null;
+  timedOut: boolean;
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  evidenceRefs: string[];
+  approvalFingerprint: string;
+}
+
+export interface AoiApprovedCommandResult {
+  version: 1;
+  ok: boolean;
+  command: string;
+  cwdLabel: string;
+  exitCode: number | null;
+  timedOut: boolean;
+  durationMs: number;
+  stdoutExcerpt: string;
+  stderrExcerpt: string;
+  stdoutTruncated: boolean;
+  stderrTruncated: boolean;
+  auditRecord: AoiCommandAuditRecord;
+  evidenceRefs: string[];
 }
 
 export interface AoiRecoveryPreviewAction {
@@ -689,6 +795,7 @@ export interface AoiProposalDecision {
   suggestedTools?: string[];
   evidenceRefs?: string[];
   memoryIds?: string[];
+  approvedCommand?: AoiApprovedCommandPolicy;
 }
 
 export interface AoiAutonomyToolPolicy {

@@ -628,7 +628,7 @@ export function buildAoiPreparedActionPlan(
         ['affectedSurfaces', 'surfaces'],
         ['Workspace validation state'],
       ),
-      requiredAutonomyLevel: proposal.requiredAutonomyLevel,
+      requiredAutonomyLevel: 'L5',
       risk: proposal.risk,
     });
   }

@@ -11,6 +11,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiApprovedCommandPanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
   buildAoiWorkspaceSignalPanelSummary,
   buildAoiProposalActionPresentation,
@@ -28,6 +29,10 @@ import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
 } from '../aoiSafeActionPlan';
+import {
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+} from '../aoiApprovedCommandPolicy';
 import type {
   AoiAutonomyPolicy,
   AoiContextRouterResult,
@@ -908,6 +913,87 @@ describe('Aoi autonomy UI helpers', () => {
     expect(summary.checkpointLabel).toContain('missing');
     expect(summary.blockers).toContain('missing_checkpoint_for_risky_mutation');
     expect(summary.rollbackLabel).toContain('none');
+  });
+
+  it('summarizes approved command preview and result details with cwd, risk, and output boundaries', () => {
+    const blockedPolicy = evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: 'aoi/default',
+        command: 'Remove-Item src/lib/a.ts',
+        cwd: '.',
+        purpose: 'Validate Aoi changes.',
+        risk: 'high',
+        requestedAt: 2000,
+      }),
+    );
+    const blocked = buildAoiApprovedCommandPanelSummary({ policy: blockedPolicy });
+
+    expect(blocked).toMatchObject({
+      visible: true,
+      statusLabel: 'blocked',
+      cwdLabel: 'workspace root',
+    });
+    expect(blocked.commandLabel).toContain('Remove-Item');
+    expect(blocked.riskLabel).toContain('L5 approval');
+    expect(blocked.reasonLabels.join(' ')).toContain('destructive file operation');
+
+    const allowedPolicy = evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: 'aoi/default',
+        command:
+          'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+        cwd: '.',
+        purpose: 'Validate UI helpers.',
+        risk: 'high',
+        requestedAt: 2000,
+      }),
+    );
+    const passed = buildAoiApprovedCommandPanelSummary({
+      policy: allowedPolicy,
+      result: {
+        version: 1,
+        ok: true,
+        command: allowedPolicy.command,
+        cwdLabel: allowedPolicy.cwdLabel,
+        exitCode: 0,
+        timedOut: false,
+        durationMs: 140,
+        stdoutExcerpt: 'all tests passed',
+        stderrExcerpt: '',
+        stdoutTruncated: false,
+        stderrTruncated: false,
+        auditRecord: {
+          version: 1,
+          id: 'aoi-command-ui-test',
+          sessionPath: 'aoi/default',
+          command: allowedPolicy.command,
+          cwdLabel: allowedPolicy.cwdLabel,
+          cwdHash: allowedPolicy.cwdHash,
+          purpose: allowedPolicy.purpose,
+          risk: allowedPolicy.risk,
+          allowed: true,
+          blockReasons: [],
+          startedAt: 2000,
+          completedAt: 2140,
+          durationMs: 140,
+          exitCode: 0,
+          timedOut: false,
+          stdoutExcerpt: 'all tests passed',
+          stderrExcerpt: '',
+          stdoutTruncated: false,
+          stderrTruncated: false,
+          evidenceRefs: ['aoi-command-audit:aoi-command-ui-test'],
+          approvalFingerprint: allowedPolicy.approvalFingerprint,
+        },
+        evidenceRefs: ['aoi-command-audit:aoi-command-ui-test'],
+      },
+      includeDetails: true,
+    });
+
+    expect(passed.statusLabel).toBe('passed');
+    expect(passed.resultLabel).toContain('exit 0');
+    expect(passed.stdoutExcerpt).toContain('all tests passed');
+    expect(passed.evidenceRefs).toContain('aoi-command-audit:aoi-command-ui-test');
   });
 
   it('does not expose generic Continue labels for risky final actions', () => {

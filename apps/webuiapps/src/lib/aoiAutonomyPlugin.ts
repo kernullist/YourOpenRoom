@@ -818,6 +818,7 @@ async function handleAoiAutonomyRequest(
           sessionsDir,
           configFile,
           serverOrigin: getRequestOrigin(req),
+          workspaceRoot,
           sessionPath,
           proposalId: String(body.proposalId ?? ''),
           decisionId: typeof body.decisionId === 'string' ? body.decisionId : undefined,

@@ -2,6 +2,7 @@ import { evaluateAoiProposalExecution } from './aoiAutonomyPolicy';
 import {
   applyAoiProposalExecutionTransition,
   buildAoiAutonomyStatus,
+  appendAoiCommandAuditRecord,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
@@ -30,10 +31,19 @@ import {
   type AoiKiraHandoffPreview,
 } from './aoiKiraHandoff';
 import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
+import {
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+} from './aoiApprovedCommandPolicy';
+import { runAoiApprovedCommand } from './aoiApprovedCommandRunner';
+import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import type {
   AoiAutonomyStatus,
+  AoiApprovedCommandPolicy,
+  AoiApprovedCommandRequest,
+  AoiApprovedCommandResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
@@ -75,6 +85,11 @@ export interface AoiProposalExecutionDependencies {
     preview: AoiKiraHandoffPreview;
     now: number;
   }) => AoiKiraHandoffCreateResult;
+  runApprovedCommand?: (params: {
+    request: AoiApprovedCommandRequest;
+    workspaceRoot: string;
+    now: number;
+  }) => Promise<AoiApprovedCommandResult>;
 }
 
 export interface AoiProposalExecutionResult {
@@ -98,6 +113,7 @@ export interface AoiProposalPreviewResult {
   outcome: 'previewed' | 'blocked';
   reasons: string[];
   preparedActionPlan?: AoiPreparedActionPlan;
+  approvedCommandPolicy?: AoiApprovedCommandPolicy;
   result?: Record<string, unknown>;
 }
 
@@ -206,6 +222,27 @@ function normalizeStringListParam(...values: unknown[]): string[] {
   return [...new Set(terms)];
 }
 
+function buildApprovedCommandRequestFromProposal(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  decisionId?: string;
+  now: number;
+}): AoiApprovedCommandRequest {
+  const actionParams = params.proposal.acceptAction?.params ?? {};
+  return createAoiApprovedCommandRequest({
+    sessionPath: params.sessionPath,
+    proposalId: params.proposal.id,
+    decisionId: params.decisionId,
+    command: actionParams.command,
+    cwd: actionParams.cwd ?? actionParams.directory,
+    purpose: actionParams.purpose ?? params.proposal.title,
+    risk: params.proposal.risk,
+    timeoutMs: actionParams.timeoutMs ?? actionParams.timeout_ms,
+    requestedAt: params.now,
+    evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+  });
+}
+
 function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown> {
   return {
     id: memory.id,
@@ -263,6 +300,66 @@ function createDefaultKiraWorkFromPreview(params: {
   };
 }
 
+function isAoiApprovedCommandResult(value: unknown): value is AoiApprovedCommandResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Partial<AoiApprovedCommandResult>;
+  return (
+    result.version === 1 &&
+    typeof result.ok === 'boolean' &&
+    typeof result.command === 'string' &&
+    typeof result.cwdLabel === 'string' &&
+    (typeof result.exitCode === 'number' || result.exitCode === null) &&
+    typeof result.timedOut === 'boolean' &&
+    typeof result.durationMs === 'number' &&
+    typeof result.stdoutExcerpt === 'string' &&
+    typeof result.stderrExcerpt === 'string' &&
+    typeof result.stdoutTruncated === 'boolean' &&
+    typeof result.stderrTruncated === 'boolean' &&
+    Boolean(result.auditRecord) &&
+    Array.isArray(result.evidenceRefs)
+  );
+}
+
+function normalizeValidationScopes(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return [
+    ...new Set(
+      value
+        .filter((item): item is string => typeof item === 'string' && item.trim())
+        .map((item) => item.replace(/\\/g, '/').trim().slice(0, 160)),
+    ),
+  ].slice(0, 12);
+}
+
+function inferCommandValidationScopes(
+  proposal: AoiProposal,
+  result: Record<string, unknown>,
+): string[] {
+  const actionParams = proposal.acceptAction?.params ?? {};
+  const explicit = normalizeValidationScopes(
+    actionParams.touchedFileScopes ?? actionParams.touched_file_scopes,
+  );
+  if (explicit.length > 0) {
+    return explicit;
+  }
+  const policy = result.policy as { program?: unknown; args?: unknown } | undefined;
+  const args = Array.isArray(policy?.args)
+    ? policy.args.filter((item): item is string => typeof item === 'string')
+    : [];
+  if (policy?.program === 'pnpm') {
+    const separatorIndex = args.indexOf('--');
+    if (separatorIndex >= 0) {
+      return args.slice(separatorIndex + 1).map((item) => item.replace(/\\/g, '/'));
+    }
+    return ['apps/webuiapps/src'];
+  }
+  return ['*'];
+}
+
 function blockProposal(params: {
   sessionsDir: string;
   sessionPath: string;
@@ -296,8 +393,10 @@ async function executeAllowedProposalAction(params: {
   sessionsDir: string;
   configFile: string;
   serverOrigin: string;
+  workspaceRoot: string;
   sessionPath: string;
   proposal: AoiProposal;
+  decisionId?: string;
   dependencies: AoiProposalExecutionDependencies;
   now: number;
 }): Promise<Record<string, unknown>> {
@@ -476,6 +575,37 @@ async function executeAllowedProposalAction(params: {
     }) as unknown as Record<string, unknown>;
   }
 
+  if (action.kind === 'run_command') {
+    const request = buildApprovedCommandRequestFromProposal({
+      proposal: params.proposal,
+      sessionPath: params.sessionPath,
+      decisionId: params.decisionId,
+      now: params.now,
+    });
+    const policy = evaluateAoiApprovedCommandPolicy(request);
+    if (!policy.allowed) {
+      throw new Error(`approved_command_blocked:${policy.blockReasons.join(',')}`);
+    }
+    const result = await (
+      params.dependencies.runApprovedCommand ??
+      ((runnerParams: { request: AoiApprovedCommandRequest; workspaceRoot: string; now: number }) =>
+        runAoiApprovedCommand(runnerParams.request, {
+          workspaceRoot: runnerParams.workspaceRoot,
+          now: runnerParams.now,
+        }))
+    )({
+      request,
+      workspaceRoot: params.workspaceRoot,
+      now: params.now,
+    });
+    return {
+      kind: action.kind,
+      policy,
+      commandResult: result,
+      auditRecord: result.auditRecord,
+    } as unknown as Record<string, unknown>;
+  }
+
   throw new Error(`Unsupported proposal action kind: ${action.kind}`);
 }
 
@@ -511,6 +641,16 @@ export function previewAoiProposal(params: {
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
   const preparedActionPlan = buildAoiPreparedActionPlan(proposal, { now });
+  const approvedCommandPolicy =
+    proposal.acceptAction?.kind === 'run_command'
+      ? evaluateAoiApprovedCommandPolicy(
+          buildApprovedCommandRequestFromProposal({
+            proposal,
+            sessionPath,
+            now,
+          }),
+        )
+      : undefined;
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -542,8 +682,10 @@ export function previewAoiProposal(params: {
       outcome: 'blocked',
       reasons: [...new Set(reasons)],
       preparedActionPlan,
+      ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
       result: {
         preparedActionPlan,
+        ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
         safeAlternative:
           evaluation.safeAlternative ??
           (proposal.acceptAction?.kind === 'create_kira_work'
@@ -562,8 +704,10 @@ export function previewAoiProposal(params: {
       outcome: 'previewed',
       reasons: [],
       preparedActionPlan,
+      ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
       result: {
         preparedActionPlan,
+        ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
       },
     };
   }
@@ -598,6 +742,7 @@ export async function executeAoiProposal(params: {
   sessionsDir: string;
   configFile: string;
   serverOrigin: string;
+  workspaceRoot?: string;
   sessionPath: string;
   proposalId: string;
   decisionId?: string;
@@ -668,8 +813,10 @@ export async function executeAoiProposal(params: {
       sessionsDir: params.sessionsDir,
       configFile: params.configFile,
       serverOrigin: params.serverOrigin,
+      workspaceRoot: params.workspaceRoot ?? process.cwd(),
       sessionPath,
       proposal,
+      decisionId: params.decisionId,
       dependencies: params.dependencies ?? {},
       now,
     });
@@ -741,6 +888,78 @@ export async function executeAoiProposal(params: {
           '[AoiAutonomyExecution] Failed to ingest procedure promotion observation',
           error,
         );
+      }
+    }
+    if (proposal.acceptAction?.kind === 'run_command') {
+      const commandResult = result.commandResult;
+      if (!isAoiApprovedCommandResult(commandResult)) {
+        throw new Error('Approved command result was missing from execution output.');
+      }
+      const audit = appendAoiCommandAuditRecord(params.sessionsDir, {
+        ...commandResult.auditRecord,
+        evidenceRefs: [
+          ...new Set([
+            ...commandResult.auditRecord.evidenceRefs,
+            `decision:${transition.decision.id}`,
+            ...proposal.evidenceRefs,
+            ...proposal.artifactRefs,
+          ]),
+        ].slice(0, 24),
+      });
+      const validationSnapshot = recordAoiValidationSignal({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        signal: {
+          command: commandResult.command,
+          result: commandResult.ok ? 'passed' : 'failed',
+          completedAt: audit.completedAt,
+          touchedFileScopes: inferCommandValidationScopes(proposal, result),
+          evidenceRefs: audit.evidenceRefs,
+        },
+        now,
+      });
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'approved_command_executed',
+        message: `Approved command ${commandResult.ok ? 'passed' : 'failed'}: ${
+          commandResult.command
+        }`,
+        goalSummary: `Aoi approved command: ${proposal.title}`,
+        toolNames: ['run_command'],
+        status: commandResult.ok ? 'completed' : 'failed',
+        now,
+      });
+      try {
+        ingestAoiObservation(
+          params.sessionsDir,
+          {
+            source: 'tool',
+            sessionPath,
+            stableKey: `approved-command:${audit.id}`,
+            createdAt: audit.completedAt,
+            summary: `Approved command ${commandResult.ok ? 'passed' : 'failed'}: ${
+              commandResult.command
+            }`,
+            payloadRef: `aoi-command-audit:${audit.id}`,
+            memoryIds: [],
+            artifactRefs: [
+              `aoi-command-audit:${audit.id}`,
+              `decision:${transition.decision.id}`,
+              `workspace:validation:${validationSnapshot.validation.freshness}`,
+              ...audit.evidenceRefs,
+            ],
+            proposalIds: [proposal.id],
+            riskSignals: [
+              'approved-command',
+              commandResult.ok ? 'workspace-validation:passed' : 'workspace-validation:failed',
+              ...(commandResult.timedOut ? ['workspace-validation:timeout'] : []),
+            ],
+          },
+          { now: audit.completedAt },
+        );
+      } catch (error) {
+        console.warn('[AoiAutonomyExecution] Failed to ingest approved command observation', error);
       }
     }
     if (proposal.acceptAction?.kind === 'create_kira_work') {

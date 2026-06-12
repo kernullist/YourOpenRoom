@@ -22,6 +22,12 @@ import {
   collectAoiKiraHandoffScopeReasons,
   getAoiKiraSafeNarrowingSuggestion,
 } from './aoiKiraHandoff';
+import {
+  compareAoiApprovedCommandApproval,
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+  normalizeAoiApprovedCommandPolicy,
+} from './aoiApprovedCommandPolicy';
 
 export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
   L0: 0,
@@ -252,6 +258,7 @@ const EXECUTABLE_PROPOSAL_ACTIONS = new Set([
   'start_research',
   'save_memory',
   'create_kira_work',
+  'run_command',
 ]);
 
 const READ_ONLY_PROPOSAL_ACTIONS = new Set([
@@ -634,6 +641,39 @@ function actionKindToToolName(actionKind: string): string {
   return actionKind;
 }
 
+function getAoiApprovedCommandPolicyForProposal(proposal: AoiProposal, now: number) {
+  const params = proposal.acceptAction?.params ?? {};
+  return evaluateAoiApprovedCommandPolicy(
+    createAoiApprovedCommandRequest({
+      sessionPath: proposal.sessionPath,
+      proposalId: proposal.id,
+      command: params.command,
+      cwd: params.cwd ?? params.directory,
+      purpose: params.purpose ?? proposal.title,
+      risk: proposal.risk,
+      timeoutMs: params.timeoutMs ?? params.timeout_ms,
+      requestedAt: now,
+      evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+    }),
+  );
+}
+
+function findCommandApprovalDecision(params: {
+  proposal: AoiProposal;
+  decisions: AoiProposalDecision[] | undefined;
+  decisionId?: string;
+}): AoiProposalDecision | undefined {
+  return params.decisions?.find((decision) => {
+    if (decision.proposalId !== params.proposal.id || decision.action !== 'accept') {
+      return false;
+    }
+    if (params.decisionId && decision.id !== params.decisionId) {
+      return false;
+    }
+    return Boolean(normalizeAoiApprovedCommandPolicy(decision.approvedCommand));
+  });
+}
+
 function hasExplicitAcceptDecision(params: {
   proposal: AoiProposal;
   decisions: AoiProposalDecision[] | undefined;
@@ -692,6 +732,8 @@ export function evaluateAoiProposalExecution(
   const toolName = actionKind ? actionKindToToolName(actionKind) : undefined;
   const readOnly = actionKind ? READ_ONLY_PROPOSAL_ACTIONS.has(actionKind) : false;
   const kiraHandoff = actionKind === 'create_kira_work';
+  const approvedCommandPolicy =
+    actionKind === 'run_command' ? getAoiApprovedCommandPolicyForProposal(proposal, now) : null;
   const requiresFreshAcceptance =
     context.executionMode === 'preview'
       ? false
@@ -711,6 +753,19 @@ export function evaluateAoiProposalExecution(
   if (compareAoiAutonomyLevel(policy.level, proposal.requiredAutonomyLevel) < 0) {
     reasons.push('autonomy_level_too_low');
   }
+  if (actionKind === 'run_command') {
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('approved_command_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('approved_command_proposal_must_require_l5');
+    }
+    if (approvedCommandPolicy && !approvedCommandPolicy.allowed) {
+      for (const reason of approvedCommandPolicy.blockReasons) {
+        reasons.push(`approved_command_blocked:${reason}`);
+      }
+    }
+  }
   if (kiraHandoff && compareAoiAutonomyLevel(policy.level, 'L4') < 0) {
     reasons.push('kira_handoff_requires_l4');
   }
@@ -728,7 +783,29 @@ export function evaluateAoiProposalExecution(
       requiresFreshAcceptance ? 'missing_fresh_acceptance' : 'missing_explicit_acceptance',
     );
   }
-  if (valueContainsFilesystemPath(proposal.acceptAction?.params ?? {})) {
+  if (
+    actionKind === 'run_command' &&
+    context.executionMode !== 'preview' &&
+    approvedCommandPolicy
+  ) {
+    const approvalDecision = findCommandApprovalDecision({
+      proposal,
+      decisions: context.decisions,
+      decisionId: context.decisionId,
+    });
+    const approvalReasons = compareAoiApprovedCommandApproval({
+      approved: normalizeAoiApprovedCommandPolicy(approvalDecision?.approvedCommand),
+      current: approvedCommandPolicy,
+      now,
+    });
+    for (const reason of approvalReasons) {
+      reasons.push(`approved_command_${reason}`);
+    }
+  }
+  if (
+    actionKind !== 'run_command' &&
+    valueContainsFilesystemPath(proposal.acceptAction?.params ?? {})
+  ) {
     reasons.push('action_params_include_filesystem_path');
   }
   if (kiraHandoff) {
@@ -740,6 +817,12 @@ export function evaluateAoiProposalExecution(
     toolsToCheck.add(toolName);
   }
   toolsToCheck.forEach((name) => {
+    if (name === 'run_command' && actionKind === 'run_command') {
+      if (!approvedCommandPolicy?.allowed) {
+        reasons.push('tool_blocked:run_command');
+      }
+      return;
+    }
     const toolPolicy = getAoiToolAutonomyPolicy(name);
     if (toolPolicy.blocked) {
       reasons.push(`tool_blocked:${name}`);
@@ -1009,8 +1092,29 @@ export function checkAoiProposalPolicy(
   if (compareAoiAutonomyLevel(policy.level, proposal.requiredAutonomyLevel) < 0) {
     reasons.push('autonomy_level_too_low');
   }
+  if (proposal.acceptAction?.kind === 'run_command') {
+    const approvedCommandPolicy = getAoiApprovedCommandPolicyForProposal(proposal, now);
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('approved_command_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('approved_command_proposal_must_require_l5');
+    }
+    if (!approvedCommandPolicy.allowed) {
+      for (const reason of approvedCommandPolicy.blockReasons) {
+        reasons.push(`approved_command_blocked:${reason}`);
+      }
+    }
+  }
 
   for (const toolName of proposal.suggestedTools) {
+    if (toolName === 'run_command' && proposal.acceptAction?.kind === 'run_command') {
+      const approvedCommandPolicy = getAoiApprovedCommandPolicyForProposal(proposal, now);
+      if (!approvedCommandPolicy.allowed) {
+        reasons.push('tool_blocked:run_command');
+      }
+      continue;
+    }
     const toolPolicy = getAoiToolAutonomyPolicy(toolName);
     if (toolPolicy.blocked) {
       reasons.push(`tool_blocked:${toolName}`);

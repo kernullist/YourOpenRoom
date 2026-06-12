@@ -232,6 +232,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiApprovedCommandPanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
@@ -258,6 +259,8 @@ import type {
   AoiGoal,
   AoiMissionDecisionAction,
   AoiMissionState,
+  AoiApprovedCommandPolicy,
+  AoiApprovedCommandResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecisionAction,
@@ -265,6 +268,10 @@ import type {
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
 import { buildAoiPreparedActionPlan } from '@/lib/aoiSafeActionPlan';
+import {
+  createAoiApprovedCommandRequest,
+  evaluateAoiApprovedCommandPolicy,
+} from '@/lib/aoiApprovedCommandPolicy';
 import type { AoiAutonomyEvaluationResult } from '@/lib/aoiAutonomyEvaluation';
 import {
   buildAoiSkillsPrompt,
@@ -491,6 +498,7 @@ function isAoiExecutableActionKind(kind: string | undefined): boolean {
     kind === 'get_research_status' ||
     kind === 'start_research' ||
     kind === 'create_kira_work' ||
+    kind === 'run_command' ||
     kind === 'save_memory'
   );
 }
@@ -509,6 +517,26 @@ function canExecuteAoiProposalAtCurrentLevel(
     compareAoiAutonomyLevel(policy.level, proposal.requiredAutonomyLevel) < 0
   ) {
     return false;
+  }
+
+  if (actionKind === 'run_command') {
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      return false;
+    }
+    return evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: proposal.sessionPath,
+        proposalId: proposal.id,
+        command: proposal.acceptAction?.params.command,
+        cwd: proposal.acceptAction?.params.cwd ?? proposal.acceptAction?.params.directory,
+        purpose: proposal.acceptAction?.params.purpose ?? proposal.title,
+        risk: proposal.risk,
+        timeoutMs:
+          proposal.acceptAction?.params.timeoutMs ?? proposal.acceptAction?.params.timeout_ms,
+        requestedAt: Date.now(),
+        evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+      }),
+    ).allowed;
   }
 
   const tools = new Set<string>(proposal.suggestedTools);
@@ -597,6 +625,18 @@ function summarizeAoiExecutionResult(result: AoiAutonomyProposalExecutionResult)
       const title = typeof work?.title === 'string' ? `: ${work.title}` : '';
       return `Execution completed: created Kira work item ${workId}${title}.`;
     }
+    if (kind === 'run_command') {
+      const commandResult = result.result?.commandResult as
+        | { ok?: unknown; exitCode?: unknown; durationMs?: unknown; timedOut?: unknown }
+        | undefined;
+      const exitCode =
+        typeof commandResult?.exitCode === 'number' ? commandResult.exitCode : 'unknown';
+      const duration =
+        typeof commandResult?.durationMs === 'number' ? ` in ${commandResult.durationMs}ms` : '';
+      const status = commandResult?.ok === true ? 'passed' : 'finished';
+      const timeout = commandResult?.timedOut === true ? ' (timed out)' : '';
+      return `Execution completed: approved command ${status} with exit ${exitCode}${duration}${timeout}.`;
+    }
     return 'Execution completed.';
   }
   const reason = result.reasons.length > 0 ? result.reasons.join(', ') : result.outcome;
@@ -621,6 +661,46 @@ function getAoiPreparedActionPlan(
     previewResult?.result?.preparedActionPlan ??
     buildAoiPreparedActionPlan(proposal)
   );
+}
+
+function getAoiApprovedCommandPolicy(
+  proposal: AoiProposal,
+  previewResult: AoiAutonomyProposalPreviewResult | undefined,
+): AoiApprovedCommandPolicy | undefined {
+  if (proposal.acceptAction?.kind !== 'run_command') {
+    return undefined;
+  }
+  return (
+    previewResult?.approvedCommandPolicy ??
+    previewResult?.result?.approvedCommandPolicy ??
+    evaluateAoiApprovedCommandPolicy(
+      createAoiApprovedCommandRequest({
+        sessionPath: proposal.sessionPath,
+        proposalId: proposal.id,
+        command: proposal.acceptAction.params.command,
+        cwd: proposal.acceptAction.params.cwd ?? proposal.acceptAction.params.directory,
+        purpose: proposal.acceptAction.params.purpose ?? proposal.title,
+        risk: proposal.risk,
+        timeoutMs:
+          proposal.acceptAction.params.timeoutMs ?? proposal.acceptAction.params.timeout_ms,
+        requestedAt: Date.now(),
+        evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+      }),
+    )
+  );
+}
+
+function getAoiApprovedCommandResult(
+  previewResult: AoiAutonomyProposalPreviewResult | undefined,
+): AoiApprovedCommandResult | undefined {
+  const result = previewResult?.result?.commandResult;
+  if (!result || typeof result !== 'object' || Array.isArray(result)) {
+    return undefined;
+  }
+  const commandResult = result as Partial<AoiApprovedCommandResult>;
+  return commandResult.version === 1 && typeof commandResult.command === 'string'
+    ? (commandResult as AoiApprovedCommandResult)
+    : undefined;
 }
 
 function getPreviewText(preview: Record<string, unknown>, key: string): string {
@@ -2966,6 +3046,36 @@ const ChatPanel: React.FC<{
           [proposal.id]: summarizeAoiExecutionResult(result),
         }));
         setAoiKiraHandoffPreviews((prev) => {
+          const commandResult = result.result?.commandResult;
+          const approvedCommandPolicy = result.result?.policy;
+          if (
+            proposal.acceptAction?.kind === 'run_command' &&
+            commandResult &&
+            typeof commandResult === 'object'
+          ) {
+            return {
+              ...prev,
+              [proposal.id]: {
+                ok: true,
+                sessionPath: result.sessionPath,
+                proposal: result.proposal,
+                status: result.status,
+                previewed: true,
+                outcome: 'previewed',
+                reasons: result.reasons,
+                ...(approvedCommandPolicy && typeof approvedCommandPolicy === 'object'
+                  ? { approvedCommandPolicy: approvedCommandPolicy as AoiApprovedCommandPolicy }
+                  : {}),
+                result: {
+                  commandResult,
+                  ...(approvedCommandPolicy && typeof approvedCommandPolicy === 'object'
+                    ? { approvedCommandPolicy: approvedCommandPolicy as AoiApprovedCommandPolicy }
+                    : {}),
+                  preparedActionPlan: buildAoiPreparedActionPlan(result.proposal),
+                },
+              },
+            };
+          }
           const next = { ...prev };
           delete next[proposal.id];
           return next;
@@ -8930,6 +9040,14 @@ const SettingsModal: React.FC<{
                               preparedActionPlan,
                               expanded,
                             );
+                            const approvedCommandSummary = buildAoiApprovedCommandPanelSummary({
+                              policy: getAoiApprovedCommandPolicy(
+                                proposal,
+                                kiraHandoffPreviewResult,
+                              ),
+                              result: getAoiApprovedCommandResult(kiraHandoffPreviewResult),
+                              includeDetails: expanded,
+                            });
                             const isKiraHandoff =
                               proposal.acceptAction?.kind === 'create_kira_work';
                             const recoverySummary = buildAoiRecoveryPreviewSummary(
@@ -8973,6 +9091,9 @@ const SettingsModal: React.FC<{
                                   <span>{proactiveExplanation.confidenceLabel}</span>
                                   <span>{proactiveExplanation.risk} risk</span>
                                   <span>plan {actionPlanSummary.statusLabel}</span>
+                                  {approvedCommandSummary.visible && (
+                                    <span>command {approvedCommandSummary.statusLabel}</span>
+                                  )}
                                   <span>requires {proposal.requiredAutonomyLevel}</span>
                                   <span>evidence {proactiveExplanation.evidenceCount}</span>
                                 </div>
@@ -9052,6 +9173,19 @@ const SettingsModal: React.FC<{
                                     {actionPlanSummary.expectedChanges.map((item, index) => (
                                       <div key={`${proposal.id}-plan-change-${index}`}>
                                         Expected change: {item}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {approvedCommandSummary.visible && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>Command: {approvedCommandSummary.commandLabel}</div>
+                                    <div>Cwd: {approvedCommandSummary.cwdLabel}</div>
+                                    <div>Command risk: {approvedCommandSummary.riskLabel}</div>
+                                    <div>Command result: {approvedCommandSummary.resultLabel}</div>
+                                    {approvedCommandSummary.reasonLabels.map((reason, index) => (
+                                      <div key={`${proposal.id}-command-reason-${index}`}>
+                                        Command reason: {reason}
                                       </div>
                                     ))}
                                   </div>
@@ -9180,6 +9314,20 @@ const SettingsModal: React.FC<{
                                     {actionPlanSummary.nonGoals.map((item, index) => (
                                       <div key={`${proposal.id}-plan-nongoal-${index}`}>
                                         Non-goal: {item}
+                                      </div>
+                                    ))}
+                                    {approvedCommandSummary.stdoutExcerpt && (
+                                      <div>Stdout: {approvedCommandSummary.stdoutExcerpt}</div>
+                                    )}
+                                    {approvedCommandSummary.stderrExcerpt && (
+                                      <div>Stderr: {approvedCommandSummary.stderrExcerpt}</div>
+                                    )}
+                                    {approvedCommandSummary.outputTruncated && (
+                                      <div>Output: truncated</div>
+                                    )}
+                                    {approvedCommandSummary.evidenceRefs.map((ref, index) => (
+                                      <div key={`${proposal.id}-command-evidence-${index}`}>
+                                        Command evidence: {ref}
                                       </div>
                                     ))}
                                     <div>

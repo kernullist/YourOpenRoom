@@ -13,6 +13,7 @@ import type {
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiObservation,
+  AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
@@ -213,8 +214,11 @@ export interface AoiAutonomyProposalPreviewResult {
   outcome: 'previewed' | 'blocked';
   reasons: string[];
   preparedActionPlan?: AoiPreparedActionPlan;
+  approvedCommandPolicy?: AoiApprovedCommandPolicy;
   result?: Record<string, unknown> & {
     preparedActionPlan?: AoiPreparedActionPlan;
+    approvedCommandPolicy?: AoiApprovedCommandPolicy;
+    commandResult?: unknown;
     preview?: Record<string, unknown>;
   };
 }

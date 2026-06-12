@@ -1,6 +1,8 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { EventEmitter } from 'events';
 import { join } from 'path';
+import { PassThrough } from 'stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
@@ -10,14 +12,22 @@ import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import {
   applyAoiProposalDecision,
+  loadAoiCommandAuditRecords,
   loadAoiActiveProposals,
   loadAoiObservations,
   loadAoiProposalDecisions,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
+import { loadAoiWorkspaceSnapshot } from '../aoiWorkspaceSignals';
+import { AOI_COMMAND_APPROVAL_TTL_MS } from '../aoiApprovedCommandPolicy';
+import { runAoiApprovedCommand } from '../aoiApprovedCommandRunner';
 import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
-import type { AoiProposal } from '../aoiAutonomyTypes';
+import type {
+  AoiApprovedCommandRequest,
+  AoiApprovedCommandResult,
+  AoiProposal,
+} from '../aoiAutonomyTypes';
 import type { AoiResearchManifest } from '../aoiResearchTypes';
 
 const tempRoots: string[] = [];
@@ -130,6 +140,83 @@ function makeKiraProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
   });
 }
 
+function makeCommandProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+  return makeProposal({
+    status: 'active',
+    title: 'Run targeted Aoi validation',
+    body: 'Aoi can run one approved targeted validation command.',
+    reason: 'The active goal needs fresh validation evidence.',
+    trigger: 'workspace_validation_stale',
+    cooldownKey: 'approved-command:aoi-validation',
+    risk: 'high',
+    requiredAutonomyLevel: 'L5',
+    requiresUserApproval: true,
+    suggestedTools: ['run_command'],
+    evidenceRefs: ['workspace:validation:stale', 'goal:aoi-goal-command-001'],
+    artifactRefs: ['workspace:snapshot:command-test'],
+    riskSignals: ['workspace-validation:stale'],
+    acceptAction: {
+      kind: 'run_command',
+      params: {
+        command:
+          'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+        cwd: '.',
+        purpose: 'Validate Aoi autonomy execution changes.',
+        timeoutMs: 15_000,
+      },
+    },
+    ...partial,
+  });
+}
+
+function makeApprovedCommandResult(
+  request: AoiApprovedCommandRequest,
+  partial: Partial<AoiApprovedCommandResult> = {},
+): AoiApprovedCommandResult {
+  const completedAt = request.requestedAt + 120;
+  const auditRecord = {
+    version: 1 as const,
+    id: 'aoi-command-audit-test-001',
+    sessionPath: request.sessionPath,
+    ...(request.proposalId ? { proposalId: request.proposalId } : {}),
+    ...(request.decisionId ? { decisionId: request.decisionId } : {}),
+    command: request.command,
+    cwdLabel: 'workspace root',
+    cwdHash: 'cwdhash',
+    purpose: request.purpose,
+    risk: request.risk,
+    allowed: true,
+    blockReasons: [],
+    startedAt: request.requestedAt,
+    completedAt,
+    durationMs: 120,
+    exitCode: 0,
+    timedOut: false,
+    stdoutExcerpt: '3 tests passed',
+    stderrExcerpt: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    evidenceRefs: ['aoi-command-audit:aoi-command-audit-test-001'],
+    approvalFingerprint: 'approval-fingerprint-test',
+  };
+  return {
+    version: 1,
+    ok: true,
+    command: request.command,
+    cwdLabel: 'workspace root',
+    exitCode: 0,
+    timedOut: false,
+    durationMs: 120,
+    stdoutExcerpt: '3 tests passed',
+    stderrExcerpt: '',
+    stdoutTruncated: false,
+    stderrTruncated: false,
+    auditRecord,
+    evidenceRefs: auditRecord.evidenceRefs,
+    ...partial,
+  };
+}
+
 function loadKiraWorkFiles(
   root: string,
   sessionPath = 'aoi/default',
@@ -226,6 +313,74 @@ describe('Aoi failure recovery classification', () => {
     expect(result.suppression?.preview.nonGoals).toEqual(
       expect.arrayContaining(['Do not execute file writes, patches, deletes, or shell commands.']),
     );
+  });
+});
+
+describe('runAoiApprovedCommand()', () => {
+  it('redacts sensitive output and preserves truncation flags in audit records', async () => {
+    const root = makeTempRoot();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const child = new EventEmitter() as EventEmitter & {
+      stdout: PassThrough;
+      stderr: PassThrough;
+      kill: () => boolean;
+    };
+    child.stdout = stdout;
+    child.stderr = stderr;
+    child.kill = vi.fn(() => true);
+    const spawnImpl = vi.fn(() => child) as unknown as NonNullable<
+      Parameters<typeof runAoiApprovedCommand>[1]['spawnImpl']
+    >;
+
+    const resultPromise = runAoiApprovedCommand(
+      {
+        version: 1,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-command-output-001',
+        decisionId: 'decision-command-output-001',
+        command: 'git diff --check',
+        cwd: '.',
+        purpose: 'Validate current diff whitespace.',
+        risk: 'high',
+        timeoutMs: 15_000,
+        requestedAt: 3000,
+        evidenceRefs: ['goal:aoi-command-output'],
+      },
+      {
+        workspaceRoot: root,
+        now: 3000,
+        spawnImpl,
+      },
+    );
+
+    stdout.emit('data', `api_key=super-secret-value\n${'a'.repeat(6100)}`);
+    stderr.emit('data', 'password=another-secret-value\n');
+    child.emit('close', 0);
+
+    const result = await resultPromise;
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      'git',
+      ['diff', '--check'],
+      expect.objectContaining({
+        cwd: root,
+        shell: false,
+        windowsHide: true,
+      }),
+    );
+    expect(result).toMatchObject({
+      ok: true,
+      exitCode: 0,
+      stdoutTruncated: true,
+      stderrTruncated: false,
+    });
+    expect(result.stdoutExcerpt.length).toBeLessThanOrEqual(6000);
+    expect(result.stdoutExcerpt).toContain('api_key=[redacted_secret]');
+    expect(result.stdoutExcerpt).not.toContain('super-secret-value');
+    expect(result.stderrExcerpt).toContain('password=[redacted_secret]');
+    expect(result.stderrExcerpt).not.toContain('another-secret-value');
+    expect(result.auditRecord.stdoutTruncated).toBe(true);
   });
 });
 
@@ -622,6 +777,154 @@ describe('executeAoiProposal()', () => {
     });
     expect(fs.existsSync(join(root, 'aoi/default', 'aoi-research', 'runs'))).toBe(false);
     expect(loadAoiActiveProposals(root, 'aoi/default')[0].status).toBe('accepted');
+  });
+
+  it('executes one exactly approved command and records audit, relations, and validation freshness', async () => {
+    const root = makeTempRoot();
+    const runApprovedCommand = vi.fn(async ({ request }: { request: AoiApprovedCommandRequest }) =>
+      makeApprovedCommandResult(request),
+    );
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeCommandProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      decisionId: accepted.decision.id,
+      now: 3000,
+      dependencies: {
+        runApprovedCommand,
+      },
+    });
+
+    const audits = loadAoiCommandAuditRecords(root, 'aoi/default');
+    const snapshot = loadAoiWorkspaceSnapshot(root, 'aoi/default', 4000);
+    const observations = loadAoiObservations(root, 'aoi/default');
+    const relations = loadAoiRelationIndex(root, 'aoi/default');
+
+    expect(result).toMatchObject({
+      executed: true,
+      outcome: 'executed',
+      result: {
+        kind: 'run_command',
+        commandResult: {
+          ok: true,
+          exitCode: 0,
+        },
+      },
+    });
+    expect(runApprovedCommand).toHaveBeenCalledTimes(1);
+    expect(runApprovedCommand.mock.calls[0][0]).toMatchObject({
+      workspaceRoot: root,
+      request: {
+        command:
+          'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+        cwd: '.',
+        purpose: 'Validate Aoi autonomy execution changes.',
+      },
+    });
+    expect(audits).toHaveLength(1);
+    expect(audits[0].evidenceRefs.some((ref) => ref.startsWith('decision:'))).toBe(true);
+    expect(snapshot?.validation).toMatchObject({
+      command:
+        'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+      result: 'passed',
+      freshness: 'fresh',
+    });
+    expect(snapshot?.validation.evidenceRefs).toContain(
+      'aoi-command-audit:aoi-command-audit-test-001',
+    );
+    expect(
+      observations.some((observation) =>
+        observation.riskSignals.includes('workspace-validation:passed'),
+      ),
+    ).toBe(true);
+    expect(
+      relations.nodes.some((node) => node.ref === 'aoi-command-audit:aoi-command-audit-test-001'),
+    ).toBe(true);
+  });
+
+  it('blocks expired approved command acceptance before runner execution', async () => {
+    const root = makeTempRoot();
+    const runApprovedCommand = vi.fn();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeCommandProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 1000,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      decisionId: accepted.decision.id,
+      now: 1000 + AOI_COMMAND_APPROVAL_TTL_MS + 1,
+      dependencies: {
+        runApprovedCommand,
+      },
+    });
+
+    expect(result.executed).toBe(false);
+    expect(result.reasons.join(',')).toContain('approved_command_approval_expired');
+    expect(runApprovedCommand).not.toHaveBeenCalled();
+    expect(loadAoiCommandAuditRecords(root, 'aoi/default')).toEqual([]);
+  });
+
+  it('invalidates approved command acceptance when the command changes', async () => {
+    const root = makeTempRoot();
+    const runApprovedCommand = vi.fn();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeCommandProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 2500,
+    });
+    const stored = loadAoiActiveProposals(root, 'aoi/default');
+    saveAoiActiveProposals(root, 'aoi/default', [
+      {
+        ...stored[0],
+        acceptAction: {
+          kind: 'run_command',
+          params: {
+            ...stored[0].acceptAction?.params,
+            command: 'git diff --check',
+          },
+        },
+      },
+    ]);
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-test-001',
+      decisionId: accepted.decision.id,
+      now: 3000,
+      dependencies: {
+        runApprovedCommand,
+      },
+    });
+
+    expect(result.executed).toBe(false);
+    expect(result.reasons.join(',')).toContain('approved_command_approval_command_changed');
+    expect(runApprovedCommand).not.toHaveBeenCalled();
   });
 
   it('blocks Kira handoff without acceptance, evidence, safe params, or narrow scope', async () => {
