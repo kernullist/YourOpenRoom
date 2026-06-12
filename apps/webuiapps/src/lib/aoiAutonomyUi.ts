@@ -4,6 +4,7 @@ import {
   checkAoiProposalPolicy,
 } from './aoiAutonomyPolicy';
 import type {
+  AoiAutonomyVisibleState,
   AoiAutonomyLevel,
   AoiAutonomyBlockedProposal,
   AoiAutonomyPolicy,
@@ -87,6 +88,7 @@ export interface AoiRecoveryPreviewSummary {
 
 export interface AoiMissionPanelSummary {
   visible: boolean;
+  visibleState: AoiAutonomyVisibleState | null;
   statusLabel: string;
   waitingOnLabel: string;
   focusSummary: string;
@@ -97,6 +99,28 @@ export interface AoiMissionPanelSummary {
   canPause: boolean;
   canResume: boolean;
   canClear: boolean;
+  pauseLabel: string;
+  pauseTitle: string;
+  resumeLabel: string;
+  resumeTitle: string;
+  showEvidenceLabel: string;
+  showEvidenceTitle: string;
+}
+
+export interface AoiProposalActionPresentation {
+  visibleState: AoiAutonomyVisibleState;
+  primaryLabel: string;
+  primaryTitle: string;
+  primaryRole: 'approve' | 'preview' | 'execute' | 'none';
+  mutationBoundary: string;
+  requiresPreviewBeforeFinal: boolean;
+  finalActionAvailable: boolean;
+}
+
+export interface AoiBlockedStateSummary {
+  policyReasons: string[];
+  missingEvidence: string[];
+  safeAlternative: string;
 }
 
 export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
@@ -377,6 +401,272 @@ export function getAoiSafeAlternativeForReasons(
   return 'Inspect the evidence and keep the action as a proposal.';
 }
 
+function getAoiMissingEvidenceLabels(reasons: string[], evidenceCount?: number): string[] {
+  const labels: string[] = [];
+  const add = (label: string) => {
+    if (!labels.includes(label)) {
+      labels.push(label);
+    }
+  };
+
+  if (reasons.some((reason) => reason.includes('missing_evidence_refs'))) {
+    add('Evidence refs are missing.');
+  }
+  if (reasons.some((reason) => reason.includes('missing_fresh_acceptance'))) {
+    add('Fresh explicit acceptance is missing.');
+  }
+  if (reasons.some((reason) => reason.includes('kira_handoff_requires_accepted_proposal'))) {
+    add('An accepted proposal is required before Kira handoff.');
+  }
+  if (typeof evidenceCount === 'number' && evidenceCount === 0 && reasons.length > 0) {
+    add('No evidence refs are attached to this blocked action.');
+  }
+
+  return labels;
+}
+
+export function buildAoiBlockedStateSummary(params: {
+  proposal?: Pick<
+    AoiProposal,
+    'requiredAutonomyLevel' | 'requiresUserApproval' | 'risk' | 'evidenceRefs' | 'blockedReason'
+  > | null;
+  blockedProposal?: Pick<
+    AoiAutonomyBlockedProposal,
+    | 'reasons'
+    | 'evidenceRefs'
+    | 'safeAlternative'
+    | 'requiredAutonomyLevel'
+    | 'requiresUserApproval'
+    | 'risk'
+  > | null;
+  reasons?: string[];
+}): AoiBlockedStateSummary {
+  const rawReasons =
+    params.reasons ??
+    params.blockedProposal?.reasons ??
+    (params.proposal?.blockedReason ? [params.proposal.blockedReason] : []);
+  const policyReasons = rawReasons.map((reason) => sanitizeAoiProposalDisplayText(reason, 180));
+  const proposalForAlternative = params.proposal ?? {
+    requiredAutonomyLevel: params.blockedProposal?.requiredAutonomyLevel ?? 'L1',
+    requiresUserApproval: params.blockedProposal?.requiresUserApproval ?? true,
+    risk: params.blockedProposal?.risk ?? 'medium',
+  };
+  const evidenceCount =
+    params.proposal?.evidenceRefs.length ?? params.blockedProposal?.evidenceRefs.length;
+
+  return {
+    policyReasons,
+    missingEvidence: getAoiMissingEvidenceLabels(rawReasons, evidenceCount),
+    safeAlternative: sanitizeAoiProposalDisplayText(
+      params.blockedProposal?.safeAlternative ??
+        getAoiSafeAlternativeForReasons(proposalForAlternative, rawReasons),
+      220,
+    ),
+  };
+}
+
+function getAoiMissionVisibleState(
+  mission: AoiMissionState | null | undefined,
+): AoiAutonomyVisibleState | null {
+  if (!mission || mission.status === 'none') {
+    return null;
+  }
+  if (mission.status === 'paused') {
+    return 'paused';
+  }
+  if (mission.status === 'blocked') {
+    return 'blocked';
+  }
+  if (mission.status === 'completed') {
+    return 'completed';
+  }
+  if (mission.status === 'waiting_on_kira' || mission.sourceRefs.kiraWorkRef) {
+    return 'delegated_to_kira';
+  }
+  if (mission.status === 'waiting_on_research') {
+    return 'waiting_on_research';
+  }
+  if (mission.status === 'waiting_on_user') {
+    return 'waiting_on_user';
+  }
+  return 'waiting_for_approval';
+}
+
+export function buildAoiProposalActionPresentation(
+  proposal: AoiProposal,
+  options: { hasKiraPreview?: boolean } = {},
+): AoiProposalActionPresentation {
+  const kind = proposal.acceptAction?.kind;
+  if (proposal.status === 'blocked' || proposal.blockedReason) {
+    return {
+      visibleState: 'blocked',
+      primaryLabel: 'Show evidence',
+      primaryTitle: 'Show policy reasons, missing evidence, and a safe alternative.',
+      primaryRole: 'none',
+      mutationBoundary: 'No mutation is available while this proposal is blocked.',
+      requiresPreviewBeforeFinal: kind === 'create_kira_work',
+      finalActionAvailable: false,
+    };
+  }
+
+  if (proposal.status === 'executed') {
+    return {
+      visibleState: kind === 'create_kira_work' ? 'delegated_to_kira' : 'completed',
+      primaryLabel: 'Show evidence',
+      primaryTitle: 'Show evidence for the completed action.',
+      primaryRole: 'none',
+      mutationBoundary: 'No additional mutation is available from this completed proposal.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: false,
+    };
+  }
+
+  if (proposal.status === 'active') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Approve exact action',
+      primaryTitle:
+        'Record approval for this exact proposal. No tools run and no files are edited.',
+      primaryRole: 'approve',
+      mutationBoundary: 'Records approval only. It does not run tools or edit files.',
+      requiresPreviewBeforeFinal: kind === 'create_kira_work',
+      finalActionAvailable: false,
+    };
+  }
+
+  if (proposal.status !== 'accepted') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Show evidence',
+      primaryTitle: `No primary action is available while status is ${proposal.status}.`,
+      primaryRole: 'none',
+      mutationBoundary: 'No mutation is available for this proposal state.',
+      requiresPreviewBeforeFinal: kind === 'create_kira_work',
+      finalActionAvailable: false,
+    };
+  }
+
+  if (kind === 'create_kira_work') {
+    if (!options.hasKiraPreview) {
+      return {
+        visibleState: 'preview_ready',
+        primaryLabel: 'Preview plan',
+        primaryTitle:
+          'Preview the Kira work item plan. This does not create work items or edit files.',
+        primaryRole: 'preview',
+        mutationBoundary: 'No mutation. It only previews the Kira work item plan.',
+        requiresPreviewBeforeFinal: true,
+        finalActionAvailable: false,
+      };
+    }
+
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Approve and create Kira work item',
+      primaryTitle: 'Approve and create a reviewed Kira work item. This does not edit files.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Creates one reviewed Kira work item only. It does not edit files.',
+      requiresPreviewBeforeFinal: true,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'start_research') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Approve and start research run',
+      primaryTitle: 'Approve and start a new Aoi research run.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Starts one Aoi research run.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'save_memory') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Approve and promote memory',
+      primaryTitle:
+        'Approve memory promotion. This may promote memory or create an untrusted skill draft.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Promotes memory or creates an untrusted skill draft.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'get_research_status') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Check research status',
+      primaryTitle: 'Check linked research status without editing files.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Reads research status only.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'open_research_artifact') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Open research artifact',
+      primaryTitle: 'Open the approved research artifact without editing files.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Opens an existing research artifact only.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'read_research_artifact') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Read research artifact',
+      primaryTitle: 'Read the approved research artifact without editing files.',
+      primaryRole: 'execute',
+      mutationBoundary: 'Reads an existing research artifact only.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: true,
+    };
+  }
+
+  if (kind === 'open_app') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Review app handoff',
+      primaryTitle: 'Review the approved app handoff. No direct app launch is available here.',
+      primaryRole: 'none',
+      mutationBoundary: 'No app is opened from this proposal card.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: false,
+    };
+  }
+
+  if (kind === 'activate_goal') {
+    return {
+      visibleState: 'waiting_for_approval',
+      primaryLabel: 'Review goal activation',
+      primaryTitle: 'Review the approved goal activation. Use goal controls to mutate goal state.',
+      primaryRole: 'none',
+      mutationBoundary: 'No goal state changes from this proposal card.',
+      requiresPreviewBeforeFinal: false,
+      finalActionAvailable: false,
+    };
+  }
+
+  return {
+    visibleState: 'waiting_for_approval',
+    primaryLabel: 'Review action',
+    primaryTitle: 'Review the proposal details before any further action.',
+    primaryRole: 'none',
+    mutationBoundary: 'No direct mutation is available for this proposal action.',
+    requiresPreviewBeforeFinal: false,
+    finalActionAvailable: false,
+  };
+}
+
 export function buildAoiProposalInspectorSummary(params: {
   proposal: AoiProposal;
   policy?: AoiAutonomyPolicy | null;
@@ -449,6 +739,7 @@ export function buildAoiMissionPanelSummary(
   if (!mission || mission.status === 'none') {
     return {
       visible: false,
+      visibleState: null,
       statusLabel: 'None',
       waitingOnLabel: 'None',
       focusSummary: 'No active mission.',
@@ -459,6 +750,12 @@ export function buildAoiMissionPanelSummary(
       canPause: false,
       canResume: false,
       canClear: false,
+      pauseLabel: 'Pause this goal',
+      pauseTitle: 'Pause this goal without deleting evidence.',
+      resumeLabel: 'Resume',
+      resumeTitle: 'Resume this goal from its saved mission state.',
+      showEvidenceLabel: 'Show evidence',
+      showEvidenceTitle: 'Show mission evidence and source references.',
     };
   }
 
@@ -469,6 +766,7 @@ export function buildAoiMissionPanelSummary(
     mission.status === 'waiting_on_research';
   return {
     visible: true,
+    visibleState: getAoiMissionVisibleState(mission),
     statusLabel: mission.status.replace(/_/g, ' '),
     waitingOnLabel: mission.waitingOn.replace(/_/g, ' '),
     focusSummary: sanitizeAoiProposalDisplayText(mission.focusSummary, 160),
@@ -479,6 +777,12 @@ export function buildAoiMissionPanelSummary(
     canPause,
     canResume: mission.status === 'paused',
     canClear: mission.status !== 'none',
+    pauseLabel: 'Pause this goal',
+    pauseTitle: 'Pause this goal while keeping evidence and source references.',
+    resumeLabel: 'Resume',
+    resumeTitle: 'Resume this goal from its saved mission state.',
+    showEvidenceLabel: 'Show evidence',
+    showEvidenceTitle: 'Show mission evidence and source references.',
   };
 }
 

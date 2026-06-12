@@ -222,9 +222,11 @@ import {
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
+  buildAoiBlockedStateSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
   buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
@@ -497,29 +499,6 @@ function canExecuteAoiProposalAtCurrentLevel(
   const tools = new Set<string>(proposal.suggestedTools);
   tools.add(actionKind);
   return [...tools].every((tool) => isAoiToolAllowedAtLevel(tool, policy.level));
-}
-
-function getAoiProposalExecutionLabel(proposal: AoiProposal): string {
-  const kind = proposal.acceptAction?.kind;
-  if (kind === 'start_research') {
-    return 'Start research run';
-  }
-  if (kind === 'get_research_status') {
-    return 'Check status';
-  }
-  if (kind === 'open_research_artifact') {
-    return 'Open artifact';
-  }
-  if (kind === 'read_research_artifact') {
-    return 'Read artifact';
-  }
-  if (kind === 'save_memory') {
-    return 'Promote procedure';
-  }
-  if (kind === 'create_kira_work') {
-    return 'Create Kira work item';
-  }
-  return 'Continue';
 }
 
 function getAoiProposalGoalId(proposal: AoiProposal): string | null {
@@ -5482,6 +5461,10 @@ const ChatPanel: React.FC<{
       aoiInlineSnoozedProposalIds,
     ],
   );
+  const inlineAoiProposalActionPresentation = useMemo(
+    () => (inlineAoiProposal ? buildAoiProposalActionPresentation(inlineAoiProposal) : null),
+    [inlineAoiProposal],
+  );
 
   useEffect(() => {
     if (!inlineAoiProposal) {
@@ -5663,27 +5646,33 @@ const ChatPanel: React.FC<{
                   className={styles.inlineActionBtn}
                   onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'accept')}
                   disabled={aoiAutonomyActionId !== null}
-                  title="Record approval without executing tools"
+                  title={
+                    inlineAoiProposalActionPresentation?.primaryTitle ??
+                    'Record approval without executing tools'
+                  }
                 >
-                  Accept proposal
+                  {inlineAoiProposalActionPresentation?.primaryLabel ?? 'Approve exact action'}
                 </button>
                 <button
                   type="button"
                   className={styles.inlineActionBtn}
                   onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'snooze')}
                   disabled={aoiAutonomyActionId !== null}
-                  title="Snooze this proposal"
+                  title={`Pause this proposal family by cooldown key: ${sanitizeAoiProposalDisplayText(
+                    inlineAoiProposal.cooldownKey,
+                    120,
+                  )}`}
                 >
-                  Snooze
+                  Pause suggestion family
                 </button>
                 <button
                   type="button"
                   className={styles.inlineActionBtn}
                   onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'dismiss')}
                   disabled={aoiAutonomyActionId !== null}
-                  title="Dismiss this proposal"
+                  title="Dismiss this suggestion and remember why for future calibration"
                 >
-                  Dismiss
+                  Dismiss and remember why
                 </button>
                 <button
                   type="button"
@@ -8311,6 +8300,11 @@ const SettingsModal: React.FC<{
                         <div className={styles.aoiAutonomyProposalItem}>
                           <div className={styles.aoiAutonomyProposalMeta}>
                             <span>{aoiMissionPanelSummary.statusLabel}</span>
+                            {aoiMissionPanelSummary.visibleState && (
+                              <span>
+                                state {aoiMissionPanelSummary.visibleState.replace(/_/g, ' ')}
+                              </span>
+                            )}
                             <span>waiting {aoiMissionPanelSummary.waitingOnLabel}</span>
                             <span>evidence {aoiMissionPanelSummary.evidenceCount}</span>
                             {aoiMissionState?.sourceRefs.goalRef && (
@@ -8372,9 +8366,9 @@ const SettingsModal: React.FC<{
                                 !aoiMissionPanelSummary.canPause ||
                                 Boolean(aoiAutonomyActionId?.startsWith('mission:'))
                               }
-                              title="Pause current mission focus"
+                              title={aoiMissionPanelSummary.pauseTitle}
                             >
-                              Pause
+                              {aoiMissionPanelSummary.pauseLabel}
                             </button>
                             <button
                               type="button"
@@ -8384,9 +8378,9 @@ const SettingsModal: React.FC<{
                                 !aoiMissionPanelSummary.canResume ||
                                 Boolean(aoiAutonomyActionId?.startsWith('mission:'))
                               }
-                              title="Resume current mission focus"
+                              title={aoiMissionPanelSummary.resumeTitle}
                             >
-                              Resume
+                              {aoiMissionPanelSummary.resumeLabel}
                             </button>
                             <button
                               type="button"
@@ -8404,14 +8398,14 @@ const SettingsModal: React.FC<{
                               type="button"
                               className={styles.inlineActionBtn}
                               onClick={() => setExpandedAoiMissionEvidence((prev) => !prev)}
-                              title="Show mission evidence"
+                              title={aoiMissionPanelSummary.showEvidenceTitle}
                             >
                               {expandedAoiMissionEvidence ? (
                                 <ChevronDown size={14} />
                               ) : (
                                 <ChevronRight size={14} />
                               )}
-                              Evidence
+                              {aoiMissionPanelSummary.showEvidenceLabel}
                             </button>
                           </div>
                         </div>
@@ -8557,11 +8551,26 @@ const SettingsModal: React.FC<{
                               activeProposals: aoiAutonomyActiveProposals,
                               includeEvidence: expanded,
                             });
+                            const actionPresentation = buildAoiProposalActionPresentation(
+                              proposal,
+                              {
+                                hasKiraPreview: Boolean(kiraHandoffPreview),
+                              },
+                            );
+                            const blockedSummary = buildAoiBlockedStateSummary({
+                              proposal,
+                              reasons: proposal.blockedReason
+                                ? [proposal.blockedReason, ...inspectorSummary.policyReasons]
+                                : inspectorSummary.policyReasons,
+                            });
 
                             return (
                               <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
                                 <div className={styles.aoiAutonomyProposalMeta}>
                                   <span>{proposal.status}</span>
+                                  <span>
+                                    state {actionPresentation.visibleState.replace(/_/g, ' ')}
+                                  </span>
                                   <span>conf {proposal.confidence.toFixed(2)}</span>
                                   <span>{proposal.risk} risk</span>
                                   <span>requires {proposal.requiredAutonomyLevel}</span>
@@ -8612,6 +8621,15 @@ const SettingsModal: React.FC<{
                                     {sanitizeAoiProposalDisplayText(proposal.blockedReason, 220)}
                                   </div>
                                 )}
+                                {actionPresentation.primaryRole !== 'none' && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    Action boundary:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      actionPresentation.mutationBoundary,
+                                      240,
+                                    )}
+                                  </div>
+                                )}
                                 {proposal.risk === 'high' && (
                                   <div className={styles.aoiAutonomyBlockedReason}>
                                     High risk: execution still requires fresh explicit acceptance.
@@ -8620,19 +8638,36 @@ const SettingsModal: React.FC<{
                                 {proposal.acceptAction?.kind === 'start_research' &&
                                   proposal.status === 'accepted' && (
                                     <div className={styles.aoiAutonomyBlockedReason}>
-                                      Continuing will start a new Aoi web research run.
+                                      Approval will start a new Aoi web research run.
                                     </div>
                                   )}
                                 {proposal.acceptAction?.kind === 'save_memory' &&
                                   proposal.status === 'accepted' && (
                                     <div className={styles.aoiAutonomyBlockedReason}>
-                                      Continuing will promote a user-approved procedure.
+                                      Approval will promote memory or create an untrusted skill
+                                      draft.
                                     </div>
                                   )}
                                 {isKiraHandoff && proposal.status === 'accepted' && (
                                   <div className={styles.aoiAutonomyBlockedReason}>
-                                    Kira handoff must be previewed before creating a reviewed work
-                                    item.
+                                    {kiraHandoffPreview
+                                      ? 'Preview is ready. Approval creates one reviewed Kira work item and does not edit files.'
+                                      : 'Preview plan first. Preview does not create Kira work items or edit files.'}
+                                  </div>
+                                )}
+                                {actionPresentation.visibleState === 'blocked' && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    {blockedSummary.policyReasons.length > 0 && (
+                                      <div>
+                                        Policy reason: {blockedSummary.policyReasons.join(' / ')}
+                                      </div>
+                                    )}
+                                    {blockedSummary.missingEvidence.map((item, index) => (
+                                      <div key={`${proposal.id}-blocked-missing-${index}`}>
+                                        Missing evidence: {item}
+                                      </div>
+                                    ))}
+                                    <div>Safe alternative: {blockedSummary.safeAlternative}</div>
                                   </div>
                                 )}
                                 {executionMessage && (
@@ -8736,11 +8771,11 @@ const SettingsModal: React.FC<{
                                         void onDecideAoiProposal(proposal.id, 'accept')
                                       }
                                       disabled={proposalPending}
-                                      title="Record approval without executing tools"
+                                      title={actionPresentation.primaryTitle}
                                     >
                                       {recoverySummary.visible
-                                        ? 'Accept recovery'
-                                        : 'Accept proposal'}
+                                        ? 'Approve exact recovery'
+                                        : actionPresentation.primaryLabel}
                                     </button>
                                   ) : executableAction ? (
                                     <button
@@ -8752,21 +8787,9 @@ const SettingsModal: React.FC<{
                                           : void onExecuteAoiProposal(proposal)
                                       }
                                       disabled={proposalPending}
-                                      title={
-                                        proposal.acceptAction?.kind === 'start_research'
-                                          ? 'Start a new Aoi web research run'
-                                          : proposal.acceptAction?.kind === 'save_memory'
-                                            ? 'Promote this approved procedure candidate'
-                                            : isKiraHandoff && !kiraHandoffPreview
-                                              ? 'Prepare a side-effect-free Kira handoff preview'
-                                              : isKiraHandoff
-                                                ? 'Create a reviewed Kira work item'
-                                                : 'Execute this approved read-only proposal action'
-                                      }
+                                      title={actionPresentation.primaryTitle}
                                     >
-                                      {isKiraHandoff && !kiraHandoffPreview
-                                        ? 'Prepare Kira handoff'
-                                        : getAoiProposalExecutionLabel(proposal)}
+                                      {actionPresentation.primaryLabel}
                                     </button>
                                   ) : (
                                     <span className={styles.modelHint}>
@@ -8780,34 +8803,50 @@ const SettingsModal: React.FC<{
                                     className={styles.inlineActionBtn}
                                     onClick={() => void onDecideAoiProposal(proposal.id, 'snooze')}
                                     disabled={proposalPending || proposal.status !== 'active'}
-                                    title="Snooze this proposal"
+                                    title={`Pause this proposal family by cooldown key: ${sanitizeAoiProposalDisplayText(
+                                      proposal.cooldownKey,
+                                      120,
+                                    )}`}
                                   >
-                                    Snooze
+                                    Pause suggestion family
                                   </button>
                                   <button
                                     type="button"
                                     className={styles.inlineActionBtn}
                                     onClick={() => void onDecideAoiProposal(proposal.id, 'dismiss')}
                                     disabled={proposalPending || proposal.status !== 'active'}
-                                    title="Dismiss this proposal"
+                                    title="Dismiss this suggestion and remember why for future calibration"
                                   >
-                                    Dismiss
+                                    Dismiss and remember why
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onDecideAoiProposal(
+                                        proposal.id,
+                                        'snooze',
+                                        'too_frequent',
+                                      )
+                                    }
+                                    disabled={proposalPending || proposal.status !== 'active'}
+                                    title="Stop showing this suggestion type for this session window"
+                                  >
+                                    Stop showing this type
                                   </button>
                                   {recoverySummary.visible && proposal.status === 'active' && (
                                     <button
                                       type="button"
                                       className={styles.inlineActionBtn}
                                       onClick={() =>
-                                        void onDecideAoiProposal(
-                                          proposal.id,
-                                          'snooze',
-                                          'needs_more_detail',
+                                        setExpandedAoiProposalId((prev) =>
+                                          prev === proposal.id ? prev : proposal.id,
                                         )
                                       }
                                       disabled={proposalPending}
-                                      title="Ask Aoi for more recovery detail before continuing"
+                                      title="Ask Aoi to explain evidence before approval"
                                     >
-                                      More detail
+                                      Explain evidence
                                     </button>
                                   )}
                                   {recoverySummary.visible &&
@@ -8818,9 +8857,9 @@ const SettingsModal: React.FC<{
                                         className={styles.inlineActionBtn}
                                         onClick={() => void onPauseAoiGoalForRecovery(proposal)}
                                         disabled={proposalPending}
-                                        title="Pause the linked Aoi goal"
+                                        title="Pause this goal while keeping evidence and source references"
                                       >
-                                        Pause goal
+                                        Pause this goal
                                       </button>
                                     )}
                                   <button
@@ -8838,7 +8877,7 @@ const SettingsModal: React.FC<{
                                     ) : (
                                       <ChevronRight size={14} />
                                     )}
-                                    Why
+                                    Show evidence
                                   </button>
                                 </div>
                                 {proposal.status === 'active' && (
@@ -8878,40 +8917,47 @@ const SettingsModal: React.FC<{
                       <div className={styles.aoiAutonomyProposalSection}>
                         <div className={styles.promptBudgetSectionTitle}>Blocked in last check</div>
                         <div className={styles.aoiAutonomyProposalList}>
-                          {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => (
-                            <div
-                              className={styles.aoiAutonomyProposalItem}
-                              key={proposal.proposalId}
-                            >
-                              <div className={styles.aoiAutonomyProposalTitle}>
-                                {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                          {aoiAutonomyBlockedProposals.slice(0, 4).map((proposal) => {
+                            const blockedSummary = buildAoiBlockedStateSummary({
+                              blockedProposal: proposal,
+                            });
+
+                            return (
+                              <div
+                                className={styles.aoiAutonomyProposalItem}
+                                key={proposal.proposalId}
+                              >
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(proposal.title, 140)}
+                                </div>
+                                <div className={styles.aoiAutonomyBlockedReason}>
+                                  {blockedSummary.policyReasons.join(' / ')}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>state blocked</span>
+                                  <span>{proposal.actionKind ?? 'no action'}</span>
+                                  <span>{proposal.risk ?? 'unknown'} risk</span>
+                                  <span>
+                                    requires {proposal.requiredAutonomyLevel ?? 'unknown'}
+                                  </span>
+                                  <span>
+                                    approval{' '}
+                                    {proposal.requiresUserApproval ? 'required' : 'not required'}
+                                  </span>
+                                  <span>evidence {proposal.evidenceRefs.length}</span>
+                                  <span>No tool execution available</span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  {blockedSummary.missingEvidence.map((item, index) => (
+                                    <div key={`${proposal.proposalId}-missing-${index}`}>
+                                      Missing evidence: {item}
+                                    </div>
+                                  ))}
+                                  <div>Safe alternative: {blockedSummary.safeAlternative}</div>
+                                </div>
                               </div>
-                              <div className={styles.aoiAutonomyBlockedReason}>
-                                {proposal.reasons
-                                  .map((reason) => sanitizeAoiProposalDisplayText(reason, 180))
-                                  .join(' / ')}
-                              </div>
-                              <div className={styles.aoiAutonomyProposalMeta}>
-                                <span>{proposal.actionKind ?? 'no action'}</span>
-                                <span>{proposal.risk ?? 'unknown'} risk</span>
-                                <span>requires {proposal.requiredAutonomyLevel ?? 'unknown'}</span>
-                                <span>
-                                  approval{' '}
-                                  {proposal.requiresUserApproval ? 'required' : 'not required'}
-                                </span>
-                                <span>evidence {proposal.evidenceRefs.length}</span>
-                                <span>No tool execution available</span>
-                              </div>
-                              <div className={styles.aoiAutonomyProposalDetails}>
-                                Safe alternative:{' '}
-                                {sanitizeAoiProposalDisplayText(
-                                  proposal.safeAlternative ??
-                                    'Inspect the evidence and keep the action as a proposal.',
-                                  220,
-                                )}
-                              </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       </div>
                     )}

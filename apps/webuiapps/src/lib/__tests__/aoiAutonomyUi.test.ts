@@ -1,10 +1,13 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
+import { decideAoiMission } from '../aoiAutonomyClient';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  buildAoiBlockedStateSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
   buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
@@ -86,6 +89,10 @@ function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
 }
 
 describe('Aoi autonomy UI helpers', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
   it('selects the highest-value active inline proposal', () => {
     const lowValue = makeProposal({
       id: 'aoi-proposal-low',
@@ -319,5 +326,166 @@ describe('Aoi autonomy UI helpers', () => {
     expect(prompt).toContain('research:aoi-research-ui-test');
     expect(prompt.length).toBeLessThan(900);
     expect(buildAoiMissionResumePrompt(makeMission({ status: 'completed' }))).toBe('');
+  });
+
+  it('maps proposal states to precise approval labels and mutation boundaries', () => {
+    const acceptedKira = makeProposal({
+      status: 'accepted',
+      acceptAction: {
+        kind: 'create_kira_work',
+        params: {
+          title: 'Implement one reviewed follow-up',
+        },
+      },
+      suggestedTools: ['create_kira_work'],
+      evidenceRefs: ['goal:aoi-goal-ui-test', 'proposal:aoi-proposal-ui-test-001'],
+    });
+    const previewOnly = buildAoiProposalActionPresentation(acceptedKira, {
+      hasKiraPreview: false,
+    });
+    const finalKira = buildAoiProposalActionPresentation(acceptedKira, {
+      hasKiraPreview: true,
+    });
+    const research = buildAoiProposalActionPresentation(
+      makeProposal({
+        status: 'accepted',
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            query: 'Windows kernel protection research',
+          },
+        },
+      }),
+    );
+    const memory = buildAoiProposalActionPresentation(
+      makeProposal({
+        status: 'accepted',
+        acceptAction: {
+          kind: 'save_memory',
+          params: {
+            candidateId: 'memory-candidate-ui-test',
+          },
+        },
+      }),
+    );
+
+    expect(previewOnly).toMatchObject({
+      visibleState: 'preview_ready',
+      primaryLabel: 'Preview plan',
+      primaryRole: 'preview',
+      requiresPreviewBeforeFinal: true,
+      finalActionAvailable: false,
+    });
+    expect(finalKira.primaryLabel).toBe('Approve and create Kira work item');
+    expect(finalKira.visibleState).toBe('waiting_for_approval');
+    expect(finalKira.finalActionAvailable).toBe(true);
+    expect(finalKira.mutationBoundary).toContain('Kira work item');
+    expect(finalKira.mutationBoundary).toContain('does not edit files');
+    expect(research.primaryLabel).toBe('Approve and start research run');
+    expect(research.mutationBoundary).toContain('research run');
+    expect(memory.primaryLabel).toBe('Approve and promote memory');
+    expect(memory.mutationBoundary).toContain('untrusted skill draft');
+  });
+
+  it('does not expose generic Continue labels for risky final actions', () => {
+    const riskyKinds = ['create_kira_work', 'start_research', 'save_memory'] as const;
+
+    for (const kind of riskyKinds) {
+      const presentation = buildAoiProposalActionPresentation(
+        makeProposal({
+          status: 'accepted',
+          acceptAction: {
+            kind,
+            params: {},
+          },
+        }),
+        {
+          hasKiraPreview: kind === 'create_kira_work',
+        },
+      );
+
+      expect(presentation.primaryLabel).not.toMatch(/\bcontinue\b/i);
+      expect(presentation.primaryTitle).not.toMatch(/\bcontinue\b/i);
+      expect(presentation.mutationBoundary).not.toMatch(/\bcontinue\b/i);
+    }
+  });
+
+  it('exposes blocked policy reason, missing evidence, and safe alternative', () => {
+    const summary = buildAoiBlockedStateSummary({
+      proposal: makeProposal({
+        status: 'blocked',
+        blockedReason: 'missing_evidence_refs',
+        evidenceRefs: [],
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {},
+        },
+      }),
+      reasons: ['missing_evidence_refs', 'kira_handoff_requires_accepted_proposal'],
+    });
+
+    expect(summary.policyReasons).toContain('missing_evidence_refs');
+    expect(summary.missingEvidence).toContain('Evidence refs are missing.');
+    expect(summary.missingEvidence).toContain(
+      'An accepted proposal is required before Kira handoff.',
+    );
+    expect(summary.safeAlternative).toContain('Accept');
+  });
+
+  it('uses explicit mission interrupt labels and visible states', () => {
+    const delegated = buildAoiMissionPanelSummary(
+      makeMission({
+        status: 'waiting_on_kira',
+        waitingOn: 'kira',
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-test',
+          kiraWorkRef: 'kira:aoi-kira-work-ui-test',
+        },
+      }),
+    );
+    const paused = buildAoiMissionPanelSummary(makeMission({ status: 'paused' }));
+
+    expect(delegated.visibleState).toBe('delegated_to_kira');
+    expect(delegated.pauseLabel).toBe('Pause this goal');
+    expect(delegated.resumeLabel).toBe('Resume');
+    expect(delegated.showEvidenceLabel).toBe('Show evidence');
+    expect(paused.visibleState).toBe('paused');
+    expect(paused.canResume).toBe(true);
+  });
+
+  it('sends pause and resume mission client calls without dropping evidence refs', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        sessionPath: 'aoi/default',
+        mission: null,
+      }),
+    } as Response);
+
+    await decideAoiMission('aoi/default', {
+      action: 'pause',
+      reason: 'User interrupted the goal.',
+      evidenceRefs: ['goal:aoi-goal-ui-test'],
+    });
+    await decideAoiMission('aoi/default', {
+      action: 'resume',
+      reason: 'User resumed the goal.',
+      evidenceRefs: ['goal:aoi-goal-ui-test', 'proposal:aoi-proposal-ui-test-001'],
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    const pauseBody = JSON.parse(String((fetchMock.mock.calls[0]?.[1] as RequestInit).body));
+    const resumeBody = JSON.parse(String((fetchMock.mock.calls[1]?.[1] as RequestInit).body));
+
+    expect(pauseBody).toMatchObject({
+      sessionPath: 'aoi/default',
+      action: 'pause',
+      evidenceRefs: ['goal:aoi-goal-ui-test'],
+    });
+    expect(resumeBody).toMatchObject({
+      sessionPath: 'aoi/default',
+      action: 'resume',
+      evidenceRefs: ['goal:aoi-goal-ui-test', 'proposal:aoi-proposal-ui-test-001'],
+    });
   });
 });

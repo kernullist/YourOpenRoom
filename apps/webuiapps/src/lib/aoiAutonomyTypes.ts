@@ -278,6 +278,16 @@ export type AoiMissionStatus =
   | 'completed'
   | 'blocked';
 
+export type AoiAutonomyVisibleState =
+  | 'preview_ready'
+  | 'waiting_for_approval'
+  | 'delegated_to_kira'
+  | 'waiting_on_user'
+  | 'waiting_on_research'
+  | 'paused'
+  | 'blocked'
+  | 'completed';
+
 export type AoiMissionWaitingOn = 'none' | 'aoi' | 'user' | 'kira' | 'research';
 
 export type AoiMissionRecommendedActionKind =
