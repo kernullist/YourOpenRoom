@@ -5,6 +5,13 @@ import {
   makeFeedbackDecisionFixture,
 } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { evaluateAoiAutonomyRecords } from '../aoiAutonomyEvaluation';
+import {
+  AOI_OPERATOR_REPLAY_FIXTURES,
+  cloneAoiOperatorReplayFixture,
+  formatAoiReplayReport,
+  runAoiOperatorReplayFixture,
+  runBuiltInAoiOperatorReplayFixtures,
+} from '../aoiOperatorReplay';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
@@ -152,5 +159,71 @@ describe('Aoi autonomy evaluation', () => {
       count: 1,
     });
     expect(JSON.stringify(result)).not.toContain(feedbackMemoryProposalFixture.body);
+  });
+
+  it('passes all built-in Aoi operator replay scenarios without command execution', () => {
+    const reports = runBuiltInAoiOperatorReplayFixtures();
+
+    expect(reports.map((report) => report.fixtureId)).toEqual([
+      'user-return-branch-drift',
+      'kira-completed-reviewed',
+      'research-insufficient-sources',
+      'too-much-feedback-suppression',
+      'high-risk-command-blocked',
+      'preference-project-conflict',
+      'disabled-source-excluded',
+      'quiet-mode-low-value-digest',
+    ]);
+    expect(
+      reports.filter((report) => !report.passed).map((report) => formatAoiReplayReport(report)),
+    ).toEqual([]);
+    expect(reports.every((report) => report.commandExecutionCount === 0)).toBe(true);
+    expect(reports.every((report) => report.mutationAttemptCount === 0)).toBe(true);
+
+    const commandReport = reports.find(
+      (report) => report.fixtureId === 'high-risk-command-blocked',
+    );
+    expect(commandReport?.blockedReasonLabels.join(' ')).toContain(
+      'approved_command_blocked:destructive_file_operation',
+    );
+
+    const quietReport = reports.find(
+      (report) => report.fixtureId === 'quiet-mode-low-value-digest',
+    );
+    expect(quietReport?.digestSummary).toContain('No meaningful ambient updates');
+  });
+
+  it('prints understandable failed replay expectations', () => {
+    const fixture = AOI_OPERATOR_REPLAY_FIXTURES[0];
+    const broken = cloneAoiOperatorReplayFixture(fixture, {
+      id: 'broken-source-expectation',
+      expectedDecisions: [
+        {
+          id: 'missing-source',
+          metric: 'source_selected',
+          label: 'This intentionally expects a missing source.',
+          sourceId: 'missing-source',
+        },
+      ],
+    });
+
+    const report = runAoiOperatorReplayFixture(broken);
+    const text = formatAoiReplayReport(report);
+
+    expect(report.passed).toBe(false);
+    expect(report.summary).toContain('missing-source');
+    expect(text).toContain('FAIL missing-source');
+    expect(text).toContain('sources:');
+  });
+
+  it('keeps replay snapshots concise and reviewable', () => {
+    const report = runAoiOperatorReplayFixture(AOI_OPERATOR_REPLAY_FIXTURES[1]);
+    const text = formatAoiReplayReport(report);
+
+    expect(report.passed).toBe(true);
+    expect(text).toContain('kira-completed-reviewed');
+    expect(text).toContain('sources:');
+    expect(text).toContain('attention:');
+    expect(text.length).toBeLessThan(1400);
   });
 });

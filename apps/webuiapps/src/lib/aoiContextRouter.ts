@@ -80,6 +80,10 @@ export interface AoiContextRouterInput {
   mission?: AoiMissionState | null;
   memories?: AoiMemoryEntry[];
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
+  decisions?: AoiProposalDecision[];
+  researchRuns?: AoiResearchRunSummary[];
+  browserContexts?: AoiBrowserContextMetadata[];
+  contextFeedback?: AoiContextSourceFeedback[];
   now?: number;
   maxPromptSources?: number;
   maxPromptChars?: number;
@@ -971,10 +975,12 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
     params.workspaceSnapshot === undefined
       ? loadAoiWorkspaceSnapshot(params.sessionsDir, sessionPath)
       : params.workspaceSnapshot;
-  const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
-  const contextFeedback = loadAoiContextSourceFeedback(params.sessionsDir, sessionPath);
-  const runs = listAoiResearchRunSummaries(params.sessionsDir, sessionPath);
-  const browserContexts = loadAoiBrowserContextMetadata(params.sessionsDir, sessionPath);
+  const decisions = params.decisions ?? loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  const contextFeedback =
+    params.contextFeedback ?? loadAoiContextSourceFeedback(params.sessionsDir, sessionPath);
+  const runs = params.researchRuns ?? listAoiResearchRunSummaries(params.sessionsDir, sessionPath);
+  const browserContexts =
+    params.browserContexts ?? loadAoiBrowserContextMetadata(params.sessionsDir, sessionPath);
 
   const rawCandidates = [
     ...buildMissionCandidates(mission, now),
