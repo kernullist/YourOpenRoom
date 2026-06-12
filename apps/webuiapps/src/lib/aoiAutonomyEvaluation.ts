@@ -5,6 +5,8 @@ import {
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
 } from './aoiAutonomyStore';
+import { getAoiPreferenceDemotions } from './aoiPreferenceMemory';
+import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiGoalProgressEvent,
   AoiProposal,
@@ -44,6 +46,8 @@ export interface AoiAutonomyEvaluationMetrics {
   blockedHighRiskProposalCount: number;
   acceptedExecutionSuccessRate: number;
   goalContinuationUsefulness: number | null;
+  preferenceDemotionCandidateCount: number;
+  oneOffPreferenceFeedbackCount: number;
 }
 
 export interface AoiCalibrationBucket {
@@ -63,6 +67,7 @@ export interface AoiAutonomyCalibrationReport {
   wrongMemoryRefs: AoiCalibrationBucket[];
   blockedActionKinds: AoiCalibrationBucket[];
   staleMemoryRefs: AoiCalibrationBucket[];
+  preferenceDemotionRefs: AoiCalibrationBucket[];
   highRiskProposalCount: number;
   highRiskProposalRate: number;
   highRiskBlockedCount: number;
@@ -81,6 +86,7 @@ export interface AoiAutonomyEvaluationRecords {
   proposals: AoiProposal[];
   decisions: AoiProposalDecision[];
   goalProgress?: AoiGoalProgressEvent[];
+  memories?: AoiMemoryEntry[];
   now?: number;
 }
 
@@ -161,6 +167,18 @@ function decisionMemoryRefs(decision: AoiProposalDecision): string[] {
     }
   }
   return [...refs];
+}
+
+function countOneOffPreferenceFeedback(decisions: AoiProposalDecision[]): number {
+  return decisions.filter(
+    (decision) =>
+      isNegativeDecision(decision) &&
+      decisionMemoryRefs(decision).length === 0 &&
+      (decision.feedbackCategory === 'not_useful' ||
+        decision.feedbackCategory === 'wrong_timing' ||
+        decision.feedbackCategory === 'too_much' ||
+        decision.feedbackCategory === 'too_frequent'),
+  ).length;
 }
 
 function countDuplicateCooldownViolations(proposals: AoiProposal[]): number {
@@ -326,6 +344,11 @@ export function evaluateAoiAutonomyRecords(
       .filter((decision) => decision.action === 'block' && decision.proposalRisk === 'high')
       .map((decision) => decision.proposalId),
   );
+  const preferenceDemotions = getAoiPreferenceDemotions({
+    memories: records.memories ?? [],
+    decisions,
+    now: records.now,
+  });
 
   const calibration: AoiAutonomyCalibrationReport = {
     noisyProposalTypes: buildNoisyProposalTypes(decisions),
@@ -342,6 +365,7 @@ export function evaluateAoiAutonomyRecords(
         .filter((decision) => decision.feedbackCategory === 'stale')
         .flatMap(decisionMemoryRefs),
     ),
+    preferenceDemotionRefs: countBy(preferenceDemotions.map((demotion) => demotion.memoryId)),
     highRiskProposalCount: highRiskProposalIds.size,
     highRiskProposalRate: ratio(highRiskProposalIds.size, proposalUniverseCount),
     highRiskBlockedCount: highRiskBlockedIds.size,
@@ -366,6 +390,8 @@ export function evaluateAoiAutonomyRecords(
       blockedHighRiskProposalCount: highRiskBlockedIds.size,
       acceptedExecutionSuccessRate: computeExecutionSuccessRate(decisions),
       goalContinuationUsefulness: computeGoalContinuationUsefulness(decisions),
+      preferenceDemotionCandidateCount: preferenceDemotions.length,
+      oneOffPreferenceFeedbackCount: countOneOffPreferenceFeedback(decisions),
     },
     calibration,
   };

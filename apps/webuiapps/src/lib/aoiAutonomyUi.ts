@@ -4,6 +4,8 @@ import {
   checkAoiEnvironmentSourceOperation,
   checkAoiProposalPolicy,
 } from './aoiAutonomyPolicy';
+import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
+import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
@@ -235,6 +237,16 @@ export interface AoiApprovedCommandPanelSummary {
   stderrExcerpt: string;
   outputTruncated: boolean;
   evidenceRefs: string[];
+}
+
+export interface AoiPreferenceInfluencePanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  preferenceLabels: string[];
+  conflictLabels: string[];
+  demotionLabels: string[];
+  sourceRefs: string[];
+  availableActions: Array<'save' | 'demote' | 'archive' | 'mark_temporary'>;
 }
 
 export interface AoiBlockedStateSummary {
@@ -1202,6 +1214,106 @@ export function buildAoiApprovedCommandPanelSummary(params: {
     evidenceRefs: params.includeDetails
       ? evidenceRefs.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
       : [],
+  };
+}
+
+export function buildAoiPreferenceInfluencePanelSummary(params: {
+  proposal?: AoiProposal | null;
+  memories?: AoiMemoryEntry[] | null;
+  projectKey?: string;
+  includeDetails?: boolean;
+  now?: number;
+}): AoiPreferenceInfluencePanelSummary {
+  const memories = params.memories ?? [];
+  if (memories.length === 0) {
+    return {
+      visible: false,
+      statusLabel: 'No preferences',
+      preferenceLabels: [],
+      conflictLabels: [],
+      demotionLabels: [],
+      sourceRefs: [],
+      availableActions: ['save', 'demote', 'archive', 'mark_temporary'],
+    };
+  }
+  const resolution = resolveAoiPreferenceContext({
+    memories,
+    projectKey: params.projectKey,
+    now: params.now,
+  });
+  const proposalRefs = new Set([
+    ...(params.proposal?.memoryIds.map((id) => `memory:${id}`) ?? []),
+    ...(params.proposal?.evidenceRefs ?? []),
+    ...(params.proposal?.artifactRefs ?? []),
+  ]);
+  const influenced =
+    proposalRefs.size > 0
+      ? resolution.active.filter(
+          (item) =>
+            proposalRefs.has(item.ref) || item.sourceRefs.some((ref) => proposalRefs.has(ref)),
+        )
+      : resolution.active;
+  const active = influenced.length > 0 ? influenced : resolution.active.slice(0, 3);
+  if (
+    active.length === 0 &&
+    resolution.conflicts.length === 0 &&
+    resolution.demotions.length === 0
+  ) {
+    return {
+      visible: false,
+      statusLabel: 'No preferences',
+      preferenceLabels: [],
+      conflictLabels: [],
+      demotionLabels: [],
+      sourceRefs: [],
+      availableActions: ['save', 'demote', 'archive', 'mark_temporary'],
+    };
+  }
+  const includeDetails = params.includeDetails === true;
+  const preferenceLabels = active
+    .slice(0, includeDetails ? 6 : 2)
+    .map((item) =>
+      sanitizeAoiProposalDisplayText(
+        `${item.kind.replace(/_/g, ' ')} conf ${item.confidence.toFixed(2)}: ${item.text}`,
+        includeDetails ? 220 : 140,
+      ),
+    );
+  const conflictLabels = resolution.conflicts
+    .slice(0, includeDetails ? 5 : 2)
+    .map((conflict) => sanitizeAoiProposalDisplayText(conflict.explanation, 180));
+  const demotionLabels = resolution.demotions
+    .slice(0, includeDetails ? 5 : 1)
+    .map((demotion) =>
+      sanitizeAoiProposalDisplayText(
+        `${demotion.memoryId} demoted: ${demotion.reason.replace(/_/g, ' ')}`,
+        160,
+      ),
+    );
+  const sourceRefs = includeDetails
+    ? [
+        ...new Set([
+          ...active.flatMap((item) => item.sourceRefs),
+          ...resolution.conflicts.flatMap((conflict) => conflict.evidenceRefs),
+          ...resolution.demotions.flatMap((demotion) => demotion.evidenceRefs),
+        ]),
+      ]
+        .slice(0, 8)
+        .map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
+    : [];
+
+  return {
+    visible: true,
+    statusLabel:
+      resolution.conflicts.length > 0
+        ? 'conflict resolved'
+        : active.length > 0
+          ? `${active.length} active`
+          : 'demoted',
+    preferenceLabels,
+    conflictLabels,
+    demotionLabels,
+    sourceRefs,
+    availableActions: ['save', 'demote', 'archive', 'mark_temporary'],
   };
 }
 

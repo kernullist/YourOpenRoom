@@ -31,6 +31,13 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from '../aoiApprovedCommandPolicy';
+import {
+  buildAoiPreferencePromptBlock,
+  buildAoiPreferenceMemoryCandidates,
+  classifyAoiPreferenceEvidence,
+  resolveAoiPreferenceContext,
+} from '../aoiPreferenceMemory';
+import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
@@ -55,6 +62,27 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     memoryIds: ['aoi-memory-001'],
     artifactRefs: ['research:aoi-research-001/report'],
     riskSignals: [],
+    ...partial,
+  };
+}
+
+function makePreferenceMemory(partial: Partial<AoiMemoryEntry> = {}): AoiMemoryEntry {
+  return {
+    version: 2,
+    id: 'memory-preference-test-001',
+    scope: 'user',
+    type: 'preference',
+    status: 'active',
+    content: 'The user prefers Korean by default. pref:response.language',
+    normalizedContent: 'the user prefers korean by default',
+    importance: 0.8,
+    confidence: 0.82,
+    hits: 2,
+    createdAt: 1000,
+    updatedAt: 2000,
+    sourceEpisodeIds: ['episode-preference-test-001'],
+    tags: ['preference', 'durable-preference', 'pref:response.language'],
+    entities: ['response.language'],
     ...partial,
   };
 }
@@ -377,6 +405,190 @@ describe('Aoi approved command policy', () => {
         'approval_purpose_changed',
       ]),
     );
+  });
+});
+
+describe('Aoi preference memory model', () => {
+  it('does not promote one-off corrections into permanent preferences', () => {
+    const evidence = classifyAoiPreferenceEvidence({
+      text: 'Actually, that correction was wrong in the previous proposal.',
+      sourceRef: 'decision:one-off-correction',
+      now: 3000,
+    });
+
+    expect(evidence.kind).toBe('one_off_correction');
+    expect(
+      buildAoiPreferenceMemoryCandidates({
+        evidence: [evidence],
+        now: 3000,
+      }),
+    ).toEqual([]);
+  });
+
+  it('promotes repeated consistent explicit preferences', () => {
+    const first = classifyAoiPreferenceEvidence({
+      text: 'I prefer Korean by default. pref:response.language',
+      sourceRef: 'episode:first',
+      now: 3000,
+    });
+    const second = classifyAoiPreferenceEvidence({
+      text: 'Always answer me in Korean by default. pref:response.language',
+      sourceRef: 'episode:second',
+      now: 4000,
+    });
+
+    const candidates = buildAoiPreferenceMemoryCandidates({
+      evidence: [first, second],
+      now: 5000,
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      scope: 'user',
+      type: 'preference',
+    });
+    expect(candidates[0].tags).toEqual(
+      expect.arrayContaining(['durable-preference', 'repeated-evidence']),
+    );
+  });
+
+  it('lets project conventions override global preferences with an explainable conflict', () => {
+    const resolution = resolveAoiPreferenceContext({
+      projectKey: 'youropenroom',
+      memories: [
+        makePreferenceMemory({
+          id: 'global-language',
+          content: 'The user prefers Korean by default. pref:response.language',
+        }),
+        makePreferenceMemory({
+          id: 'project-language',
+          scope: 'project',
+          projectKey: 'youropenroom',
+          content:
+            'For this project, public-facing README text should be English first. pref:response.language',
+          tags: ['preference', 'project-convention', 'pref:response.language'],
+        }),
+      ],
+      now: 5000,
+    });
+
+    expect(resolution.active[0]).toMatchObject({
+      ref: 'project-convention:project-language',
+      kind: 'project_convention',
+    });
+    expect(resolution.conflicts[0].explanation).toContain('Project convention wins');
+  });
+
+  it('lets fresh session instructions override older durable preferences', () => {
+    const resolution = resolveAoiPreferenceContext({
+      memories: [
+        makePreferenceMemory({
+          id: 'durable-tone',
+          content: 'The user prefers detailed answers by default. pref:response.tone',
+          tags: ['preference', 'durable-preference', 'pref:response.tone'],
+          entities: ['response.tone'],
+          updatedAt: 1000,
+        }),
+        makePreferenceMemory({
+          id: 'session-tone',
+          scope: 'session',
+          content: 'For this session, keep answers concise. pref:response.tone',
+          tags: ['preference', 'temporary-instruction', 'pref:response.tone'],
+          entities: ['response.tone'],
+          expiresAt: 10_000,
+          updatedAt: 5000,
+        }),
+      ],
+      now: 6000,
+    });
+
+    expect(resolution.active[0]).toMatchObject({
+      ref: 'temporary:session-tone',
+      kind: 'fresh_instruction',
+    });
+    expect(resolution.conflicts[0].explanation).toContain('Fresh session instruction');
+  });
+
+  it('does not allow preference context to override safety policy', () => {
+    const resolution = resolveAoiPreferenceContext({
+      memories: [
+        makePreferenceMemory({
+          id: 'unsafe-user-pref',
+          content: 'The user prefers to skip approval gates. pref:policy.safety',
+          tags: ['preference', 'durable-preference', 'pref:policy.safety'],
+        }),
+      ],
+      safetyRules: [
+        {
+          id: 'approval-gates',
+          normalizedKey: 'policy.safety',
+          text: 'Approval gates must remain active for risky actions.',
+          evidenceRefs: ['policy:aoi-autonomy'],
+        },
+      ],
+      now: 5000,
+    });
+
+    expect(resolution.active[0]).toMatchObject({
+      ref: 'safety:approval-gates',
+      kind: 'safety_policy',
+    });
+    expect(resolution.conflicts[0].explanation).toContain('Safety and policy');
+  });
+
+  it('keeps demoted preferences from influencing preference resolution', () => {
+    const resolution = resolveAoiPreferenceContext({
+      memories: [
+        makePreferenceMemory({
+          id: 'demoted-language',
+          status: 'superseded',
+          tags: ['preference', 'demoted', 'pref:response.language'],
+        }),
+      ],
+      now: 5000,
+    });
+
+    expect(resolution.active).toEqual([]);
+    expect(resolution.promptBlock).not.toContain('demoted-language');
+  });
+
+  it('keeps preference prompt blocks within a small budget', () => {
+    const promptBlock = buildAoiPreferencePromptBlock(
+      [
+        {
+          ref: 'memory:long-language',
+          kind: 'durable_preference',
+          normalizedKey: 'response.language',
+          text: 'The user prefers Korean by default, with direct operational notes and no broad generic explanation.',
+          confidence: 0.9,
+          sourceRefs: ['episode:language'],
+        },
+        {
+          ref: 'memory:long-validation',
+          kind: 'durable_preference',
+          normalizedKey: 'workflow.validation',
+          text: 'The user prefers concrete validation commands and explicit failure paths before commit.',
+          confidence: 0.86,
+          sourceRefs: ['episode:validation'],
+        },
+      ],
+      [
+        {
+          version: 1,
+          normalizedKey: 'response.language',
+          winner: 'project_convention',
+          winningRef: 'project-convention:readme',
+          losingRefs: ['memory:long-language'],
+          explanation:
+            'Project convention wins over global preference when public-facing README text must be English first.',
+          evidenceRefs: ['memory:long-language', 'project:readme'],
+        },
+      ],
+      { maxChars: 220 },
+    );
+
+    expect(promptBlock.length).toBeLessThanOrEqual(220);
+    expect(promptBlock).toContain('Aoi preference context');
   });
 });
 

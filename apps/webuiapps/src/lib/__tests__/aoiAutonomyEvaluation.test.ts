@@ -5,10 +5,28 @@ import {
   makeFeedbackDecisionFixture,
 } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { evaluateAoiAutonomyRecords } from '../aoiAutonomyEvaluation';
+import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 describe('Aoi autonomy evaluation', () => {
   it('computes compact feedback and execution metrics from local records', () => {
+    const preferenceMemory: AoiMemoryEntry = {
+      version: 2,
+      id: 'memory-preference-wrong',
+      scope: 'user',
+      type: 'preference',
+      status: 'active',
+      content: 'The user prefers concise answers. pref:response.tone',
+      normalizedContent: 'the user prefers concise answers',
+      importance: 0.72,
+      confidence: 0.7,
+      hits: 1,
+      createdAt: 1000,
+      updatedAt: 2000,
+      sourceEpisodeIds: ['episode-preference-wrong'],
+      tags: ['preference', 'pref:response.tone'],
+      entities: ['response.tone'],
+    };
     const acceptedProposal: AoiProposal = {
       ...feedbackRefreshProposalFixture,
       id: 'proposal-executed-001',
@@ -58,6 +76,8 @@ describe('Aoi autonomy evaluation', () => {
       makeFeedbackDecisionFixture({
         id: 'decision-wrong-memory-001',
         feedbackCategory: 'wrong_memory',
+        memoryIds: ['memory-preference-wrong'],
+        evidenceRefs: ['memory:memory-preference-wrong'],
       }),
       makeFeedbackDecisionFixture({
         id: 'decision-stale-001',
@@ -68,6 +88,8 @@ describe('Aoi autonomy evaluation', () => {
         feedbackCategory: 'too_frequent',
         action: 'snooze',
         nextStatus: 'snoozed',
+        memoryIds: [],
+        evidenceRefs: [],
       }),
       makeFeedbackDecisionFixture({
         id: 'decision-block-high-risk-001',
@@ -101,6 +123,7 @@ describe('Aoi autonomy evaluation', () => {
         highRiskProposal,
       ],
       decisions,
+      memories: [preferenceMemory],
       now: 5000,
     });
 
@@ -114,12 +137,18 @@ describe('Aoi autonomy evaluation', () => {
     expect(result.metrics.blockedHighRiskProposalCount).toBe(1);
     expect(result.metrics.acceptedExecutionSuccessRate).toBe(1);
     expect(result.metrics.goalContinuationUsefulness).toBe(1);
+    expect(result.metrics.preferenceDemotionCandidateCount).toBe(1);
+    expect(result.metrics.oneOffPreferenceFeedbackCount).toBe(1);
     expect(result.calibration.wrongMemoryRefs[0]).toMatchObject({
-      key: 'memory-stale-research',
+      key: 'memory-preference-wrong',
       count: 1,
     });
     expect(result.calibration.blockedActionKinds[0]).toMatchObject({
       key: 'start_research',
+      count: 1,
+    });
+    expect(result.calibration.preferenceDemotionRefs[0]).toMatchObject({
+      key: 'memory-preference-wrong',
       count: 1,
     });
     expect(JSON.stringify(result)).not.toContain(feedbackMemoryProposalFixture.body);

@@ -83,8 +83,11 @@ import {
   archiveAoiMemory,
   buildAoiMemoryPrompt,
   deleteAoiMemory,
+  demoteAoiPreferenceMemory,
   loadAoiMemories,
+  markAoiMemoryTemporary,
   saveAoiManualMemory,
+  saveAoiPreferenceMemory,
   shouldTreatAoiMemoryAsPermanent,
   syncAoiMemoryFromTurn,
   type AoiMemoryEntry,
@@ -233,6 +236,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiApprovedCommandPanelSummary,
+  buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
@@ -2496,6 +2500,21 @@ const ChatPanel: React.FC<{
 
   const archiveAoiMemoryEntry = useCallback(async (memoryId: string) => {
     const nextMemories = await archiveAoiMemory(memoryId);
+    setAoiMemories(nextMemories);
+  }, []);
+
+  const saveAoiPreferenceEntry = useCallback(async (memoryId: string) => {
+    const nextMemories = await saveAoiPreferenceMemory(memoryId);
+    setAoiMemories(nextMemories);
+  }, []);
+
+  const demoteAoiMemoryEntry = useCallback(async (memoryId: string) => {
+    const nextMemories = await demoteAoiPreferenceMemory(memoryId);
+    setAoiMemories(nextMemories);
+  }, []);
+
+  const markAoiMemoryTemporaryEntry = useCallback(async (memoryId: string) => {
+    const nextMemories = await markAoiMemoryTemporary(memoryId);
     setAoiMemories(nextMemories);
   }, []);
 
@@ -6115,6 +6134,9 @@ const ChatPanel: React.FC<{
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
           onPrepareAoiKiraHandoff={prepareAoiKiraHandoffFromPanel}
           onExecuteAoiProposal={executeAoiProposalFromPanel}
+          onSaveAoiPreference={saveAoiPreferenceEntry}
+          onDemoteAoiMemory={demoteAoiMemoryEntry}
+          onMarkAoiMemoryTemporary={markAoiMemoryTemporaryEntry}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
           onResetAll={handleResetSessionHistory}
@@ -6594,6 +6616,9 @@ const SettingsModal: React.FC<{
   onRecordAoiProposalFeedback: (feedbackCategory: AoiProposalFeedbackCategory) => Promise<void>;
   onPrepareAoiKiraHandoff: (proposal: AoiProposal) => Promise<void>;
   onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
+  onSaveAoiPreference: (memoryId: string) => Promise<void>;
+  onDemoteAoiMemory: (memoryId: string) => Promise<void>;
+  onMarkAoiMemoryTemporary: (memoryId: string) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
   onResetAll: () => void;
@@ -6661,6 +6686,9 @@ const SettingsModal: React.FC<{
   onRecordAoiProposalFeedback,
   onPrepareAoiKiraHandoff,
   onExecuteAoiProposal,
+  onSaveAoiPreference,
+  onDemoteAoiMemory,
+  onMarkAoiMemoryTemporary,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
   onResetAll,
@@ -9048,6 +9076,12 @@ const SettingsModal: React.FC<{
                               result: getAoiApprovedCommandResult(kiraHandoffPreviewResult),
                               includeDetails: expanded,
                             });
+                            const preferenceSummary = buildAoiPreferenceInfluencePanelSummary({
+                              proposal,
+                              memories: aoiMemories,
+                              projectKey: aoiWorkspaceSnapshot?.workspaceLabel,
+                              includeDetails: expanded,
+                            });
                             const isKiraHandoff =
                               proposal.acceptAction?.kind === 'create_kira_work';
                             const recoverySummary = buildAoiRecoveryPreviewSummary(
@@ -9093,6 +9127,9 @@ const SettingsModal: React.FC<{
                                   <span>plan {actionPlanSummary.statusLabel}</span>
                                   {approvedCommandSummary.visible && (
                                     <span>command {approvedCommandSummary.statusLabel}</span>
+                                  )}
+                                  {preferenceSummary.visible && (
+                                    <span>preferences {preferenceSummary.statusLabel}</span>
                                   )}
                                   <span>requires {proposal.requiredAutonomyLevel}</span>
                                   <span>evidence {proactiveExplanation.evidenceCount}</span>
@@ -9186,6 +9223,25 @@ const SettingsModal: React.FC<{
                                     {approvedCommandSummary.reasonLabels.map((reason, index) => (
                                       <div key={`${proposal.id}-command-reason-${index}`}>
                                         Command reason: {reason}
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {preferenceSummary.visible && (
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    {preferenceSummary.preferenceLabels.map((item, index) => (
+                                      <div key={`${proposal.id}-preference-${index}`}>
+                                        Preference: {item}
+                                      </div>
+                                    ))}
+                                    {preferenceSummary.conflictLabels.map((item, index) => (
+                                      <div key={`${proposal.id}-preference-conflict-${index}`}>
+                                        Preference conflict: {item}
+                                      </div>
+                                    ))}
+                                    {preferenceSummary.demotionLabels.map((item, index) => (
+                                      <div key={`${proposal.id}-preference-demotion-${index}`}>
+                                        Preference demotion: {item}
                                       </div>
                                     ))}
                                   </div>
@@ -9328,6 +9384,11 @@ const SettingsModal: React.FC<{
                                     {approvedCommandSummary.evidenceRefs.map((ref, index) => (
                                       <div key={`${proposal.id}-command-evidence-${index}`}>
                                         Command evidence: {ref}
+                                      </div>
+                                    ))}
+                                    {preferenceSummary.sourceRefs.map((ref, index) => (
+                                      <div key={`${proposal.id}-preference-evidence-${index}`}>
+                                        Preference evidence: {ref}
                                       </div>
                                     ))}
                                     <div>
@@ -9635,7 +9696,9 @@ const SettingsModal: React.FC<{
                             <span>conf {memory.confidence.toFixed(2)}</span>
                             <span>hits {memory.hits}</span>
                           </div>
-                          <div className={styles.aoiMemoryContent}>{memory.content}</div>
+                          <div className={styles.aoiMemoryContent}>
+                            {sanitizeAoiProposalDisplayText(memory.content, 260)}
+                          </div>
                           <div className={styles.aoiMemoryFooter}>
                             <span>{new Date(memory.updatedAt).toLocaleString()}</span>
                             {memory.tags.length > 0 ? (
@@ -9644,6 +9707,45 @@ const SettingsModal: React.FC<{
                           </div>
                         </div>
                         <div className={styles.aoiMemoryActions}>
+                          <button
+                            type="button"
+                            className={styles.iconActionBtn}
+                            onClick={() =>
+                              void handleAoiMemoryAction(memory.id, onSaveAoiPreference)
+                            }
+                            disabled={
+                              memory.permanent ||
+                              memory.status === 'archived' ||
+                              pendingAoiMemoryActionId === memory.id
+                            }
+                            title="Save as durable preference"
+                          >
+                            <Plus size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.iconActionBtn}
+                            onClick={() =>
+                              void handleAoiMemoryAction(memory.id, onMarkAoiMemoryTemporary)
+                            }
+                            disabled={
+                              memory.status === 'archived' || pendingAoiMemoryActionId === memory.id
+                            }
+                            title="Mark temporary for this session"
+                          >
+                            <RotateCcw size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            className={styles.iconActionBtn}
+                            onClick={() => void handleAoiMemoryAction(memory.id, onDemoteAoiMemory)}
+                            disabled={
+                              memory.status !== 'active' || pendingAoiMemoryActionId === memory.id
+                            }
+                            title="Demote preference"
+                          >
+                            <Minus size={14} />
+                          </button>
                           <button
                             type="button"
                             className={styles.iconActionBtn}

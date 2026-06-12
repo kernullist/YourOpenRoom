@@ -12,6 +12,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiApprovedCommandPanelSummary,
+  buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
   buildAoiWorkspaceSignalPanelSummary,
   buildAoiProposalActionPresentation,
@@ -33,6 +34,7 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from '../aoiApprovedCommandPolicy';
+import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiAutonomyPolicy,
   AoiContextRouterResult,
@@ -76,6 +78,27 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     memoryIds: ['aoi-memory-ui-test'],
     artifactRefs: ['research:aoi-research-ui-test/report'],
     riskSignals: [],
+    ...partial,
+  };
+}
+
+function makePreferenceMemory(partial: Partial<AoiMemoryEntry> = {}): AoiMemoryEntry {
+  return {
+    version: 2,
+    id: 'aoi-memory-ui-test',
+    scope: 'user',
+    type: 'preference',
+    status: 'active',
+    content: 'The user prefers Korean by default. pref:response.language',
+    normalizedContent: 'the user prefers korean by default',
+    importance: 0.8,
+    confidence: 0.82,
+    hits: 2,
+    createdAt: 1000,
+    updatedAt: 2000,
+    sourceEpisodeIds: ['episode-ui-preference'],
+    tags: ['preference', 'durable-preference', 'pref:response.language'],
+    entities: ['response.language'],
     ...partial,
   };
 }
@@ -994,6 +1017,44 @@ describe('Aoi autonomy UI helpers', () => {
     expect(passed.resultLabel).toContain('exit 0');
     expect(passed.stdoutExcerpt).toContain('all tests passed');
     expect(passed.evidenceRefs).toContain('aoi-command-audit:aoi-command-ui-test');
+  });
+
+  it('summarizes preference influence and conflict explanations without exposing private content', () => {
+    const summary = buildAoiPreferenceInfluencePanelSummary({
+      proposal: makeProposal({
+        memoryIds: ['aoi-memory-ui-test'],
+        evidenceRefs: ['memory:aoi-memory-ui-test'],
+      }),
+      memories: [
+        makePreferenceMemory({
+          content:
+            'The user prefers Korean by default and keeps api_key=secret-value in F:\\kernullist\\YourOpenRoom\\private.txt. pref:response.language',
+        }),
+        makePreferenceMemory({
+          id: 'aoi-memory-project-language',
+          scope: 'project',
+          projectKey: 'youropenroom',
+          content:
+            'For this project, public docs should be English first with api_key=secret-value from F:\\kernullist\\YourOpenRoom\\private.txt. pref:response.language',
+          tags: ['preference', 'project-convention', 'pref:response.language'],
+        }),
+      ],
+      projectKey: 'youropenroom',
+      includeDetails: true,
+      now: 3000,
+    });
+
+    expect(summary).toMatchObject({
+      visible: true,
+      statusLabel: 'conflict resolved',
+    });
+    expect(summary.preferenceLabels.join(' ')).toContain('project convention');
+    expect(summary.conflictLabels.join(' ')).toContain('Project convention wins');
+    expect(JSON.stringify(summary)).toContain('api_key=[private secret]');
+    expect(JSON.stringify(summary)).toContain('[local path]');
+    expect(JSON.stringify(summary)).not.toContain('secret-value');
+    expect(JSON.stringify(summary)).not.toContain('F:\\');
+    expect(summary.conflictLabels.join(' ').length).toBeLessThan(260);
   });
 
   it('does not expose generic Continue labels for risky final actions', () => {
