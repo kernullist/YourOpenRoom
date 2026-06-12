@@ -164,6 +164,91 @@ export interface AoiAttentionBrokerDecision {
   proposalId?: string;
 }
 
+export type AoiNotificationLane =
+  | 'critical_user_blocking'
+  | 'needs_approval'
+  | 'mission_update'
+  | 'fyi'
+  | 'hidden_by_quiet_mode';
+
+export interface AoiQuietWindow {
+  version: 1;
+  enabled: boolean;
+  reason: string;
+  startedAt?: number;
+  endsAt?: number;
+  hiddenLane: AoiNotificationLane;
+}
+
+export type AoiDigestItemKind =
+  | 'mission_status'
+  | 'source_change'
+  | 'kira_outcome'
+  | 'research_outcome'
+  | 'stale_validation'
+  | 'pending_approval'
+  | 'blocked_item';
+
+export interface AoiDigestItem {
+  version: 1;
+  id: string;
+  kind: AoiDigestItemKind;
+  lane: AoiNotificationLane;
+  title: string;
+  summary: string;
+  nextSafeAction: string;
+  risk: AoiAutonomyRisk;
+  relevance: number;
+  createdAt: number;
+  dedupeKey: string;
+  sourceRefs: string[];
+  evidenceRefs: string[];
+  hidden: boolean;
+}
+
+export interface AoiApprovalInboxItem {
+  version: 1;
+  proposalId: string;
+  title: string;
+  exactNextAction: string;
+  boundary: string;
+  risk: AoiAutonomyRisk;
+  status: AoiProposalStatus;
+  actionKind?: AoiProposalAcceptActionKind;
+  requiredAutonomyLevel: AoiAutonomyLevel;
+  evidenceCount: number;
+  evidenceRefs: string[];
+  dedupeKey: string;
+  createdAt: number;
+  availableActions: Array<'approve' | 'dismiss' | 'snooze' | 'details'>;
+}
+
+export interface AoiResumeBrief {
+  version: 1;
+  id: string;
+  visible: boolean;
+  title: string;
+  whatChanged: string;
+  nextSafeAction: string;
+  safetyBoundary: string;
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiOperatorDigest {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  summary: string;
+  quietWindow?: AoiQuietWindow;
+  items: AoiDigestItem[];
+  approvalInbox: AoiApprovalInboxItem[];
+  resumeBrief?: AoiResumeBrief;
+  laneCounts: Record<AoiNotificationLane, number>;
+  hiddenItemCount: number;
+  evidenceRefs: string[];
+}
+
 export type AoiKiraOutcomeKind =
   | 'kira_work_completed'
   | 'kira_work_blocked'
@@ -911,6 +996,7 @@ export interface AoiAutonomyTickResult {
   newActiveProposalCount: number;
   blockedProposalCount: number;
   blockedProposals: AoiAutonomyBlockedProposal[];
+  operatorDigest?: AoiOperatorDigest;
   warnings: string[];
 }
 

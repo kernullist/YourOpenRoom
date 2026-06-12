@@ -21,6 +21,7 @@ import type {
   AoiMissionState,
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
+  AoiOperatorDigest,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiWorkspaceSnapshot,
@@ -247,6 +248,17 @@ export interface AoiPreferenceInfluencePanelSummary {
   demotionLabels: string[];
   sourceRefs: string[];
   availableActions: Array<'save' | 'demote' | 'archive' | 'mark_temporary'>;
+}
+
+export interface AoiOperatorDigestPanelSummary {
+  visible: boolean;
+  summaryLabel: string;
+  laneLabels: string[];
+  itemLabels: string[];
+  approvalLabels: string[];
+  resumeBriefLabel: string;
+  hiddenLabel: string;
+  evidenceRefs: string[];
 }
 
 export interface AoiBlockedStateSummary {
@@ -1314,6 +1326,77 @@ export function buildAoiPreferenceInfluencePanelSummary(params: {
     demotionLabels,
     sourceRefs,
     availableActions: ['save', 'demote', 'archive', 'mark_temporary'],
+  };
+}
+
+export function buildAoiOperatorDigestPanelSummary(
+  digest: AoiOperatorDigest | null | undefined,
+  includeDetails = false,
+): AoiOperatorDigestPanelSummary {
+  if (!digest || (digest.items.length === 0 && digest.approvalInbox.length === 0)) {
+    return {
+      visible: false,
+      summaryLabel: 'No ambient updates',
+      laneLabels: [],
+      itemLabels: [],
+      approvalLabels: [],
+      resumeBriefLabel: '',
+      hiddenLabel: '',
+      evidenceRefs: [],
+    };
+  }
+  const laneLabels = (
+    [
+      ['critical_user_blocking', 'critical'],
+      ['needs_approval', 'approval'],
+      ['mission_update', 'mission'],
+      ['fyi', 'fyi'],
+      ['hidden_by_quiet_mode', 'hidden'],
+    ] as const
+  )
+    .map(([lane, label]) => `${label} ${digest.laneCounts[lane]}`)
+    .filter((label) => !label.endsWith(' 0'));
+  const itemLabels = digest.items
+    .filter((item) => includeDetails || !item.hidden)
+    .slice(0, includeDetails ? 6 : 3)
+    .map((item) =>
+      sanitizeAoiProposalDisplayText(
+        `${item.lane.replace(/_/g, ' ')}: ${item.title} - ${item.summary}`,
+        includeDetails ? 260 : 160,
+      ),
+    );
+  const approvalLabels = digest.approvalInbox
+    .slice(0, includeDetails ? 5 : 2)
+    .map((item) =>
+      sanitizeAoiProposalDisplayText(
+        `${item.title}: ${item.exactNextAction} (${item.risk}, evidence ${item.evidenceCount})`,
+        includeDetails ? 240 : 150,
+      ),
+    );
+  const resumeBriefLabel = digest.resumeBrief?.visible
+    ? sanitizeAoiProposalDisplayText(
+        `${digest.resumeBrief.whatChanged} Next: ${digest.resumeBrief.nextSafeAction} Boundary: ${digest.resumeBrief.safetyBoundary}`,
+        260,
+      )
+    : '';
+  const hiddenLabel =
+    digest.hiddenItemCount > 0
+      ? `${digest.hiddenItemCount} quiet update${digest.hiddenItemCount === 1 ? '' : 's'} hidden`
+      : digest.quietWindow?.enabled
+        ? 'Quiet mode active'
+        : '';
+
+  return {
+    visible: true,
+    summaryLabel: sanitizeAoiProposalDisplayText(digest.summary, 180),
+    laneLabels,
+    itemLabels,
+    approvalLabels,
+    resumeBriefLabel,
+    hiddenLabel,
+    evidenceRefs: includeDetails
+      ? digest.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
+      : [],
   };
 }
 

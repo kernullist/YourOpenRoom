@@ -17,6 +17,7 @@ import {
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
+import { buildAoiOperatorDigest } from './aoiOperatorDigest';
 import {
   runAoiKiraOutcomeLearning,
   type AoiKiraOutcomeLearningResult,
@@ -2150,6 +2151,20 @@ export async function runAoiAutonomyTick(
     mission: attentionMission,
     now,
   });
+  const operatorDigest = buildAoiOperatorDigest({
+    sessionPath,
+    now,
+    mission: attentionMission,
+    activeProposals,
+    blockedProposals,
+    attentionEvents: attentionResult.events,
+    attentionDecisions: attentionResult.decisions,
+    recentDecisions,
+    workspaceSnapshot,
+    memories: bundle.memories,
+    quietMode: params.quietMode,
+    userIdleMs: params.userIdleMs,
+  });
 
   return {
     ok: true,
@@ -2163,6 +2178,7 @@ export async function runAoiAutonomyTick(
     newActiveProposalCount: acceptedProposals.length,
     blockedProposalCount: blockedProposals.length,
     blockedProposals,
+    operatorDigest,
     warnings: [...observationWarnings, ...llmResult.warnings],
   };
 }

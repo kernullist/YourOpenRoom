@@ -11,6 +11,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiOperatorDigestPanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -26,6 +27,7 @@ import {
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
+import { buildAoiOperatorDigest } from '../aoiOperatorDigest';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -37,11 +39,13 @@ import {
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiAutonomyPolicy,
+  AoiAttentionEvent,
   AoiContextRouterResult,
   AoiContextSourceSummary,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
+  AoiProposalDecision,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 
@@ -254,6 +258,42 @@ function makeContextRouterResult(sources: AoiContextSourceSummary[]): AoiContext
     selectedSources: sources,
     candidateSources: sources,
     promptBlock: buildAoiContextPromptBlock(sources),
+  };
+}
+
+function makeAttentionEvent(partial: Partial<AoiAttentionEvent> = {}): AoiAttentionEvent {
+  return {
+    version: 1,
+    id: 'attention-ui-test-001',
+    sessionPath: 'aoi/default',
+    kind: 'research_completed',
+    sourceRef: 'research:aoi-research-ui-test',
+    sourceSignature: 'research:aoi-research-ui-test',
+    summary: 'Aoi research completed for the active mission.',
+    risk: 'low',
+    evidenceRefs: ['research:aoi-research-ui-test'],
+    suggestedAttentionLevel: 'inline',
+    createdAt: 3000,
+    dedupeKey: 'attention:research_completed:research:aoi-research-ui-test',
+    ...partial,
+  };
+}
+
+function makeProposalDecision(partial: Partial<AoiProposalDecision> = {}): AoiProposalDecision {
+  return {
+    version: 1,
+    id: 'decision-ui-test-001',
+    proposalId: 'aoi-proposal-ui-test-001',
+    sessionPath: 'aoi/default',
+    cooldownKey: 'attention:research_completed:research:too-noisy',
+    action: 'snooze',
+    actor: 'user',
+    createdAt: 3500,
+    previousStatus: 'active',
+    nextStatus: 'snoozed',
+    feedbackCategory: 'too_frequent',
+    evidenceRefs: ['research:too-noisy'],
+    ...partial,
   };
 }
 
@@ -1143,6 +1183,171 @@ describe('Aoi autonomy UI helpers', () => {
     expect(delegated.showEvidenceLabel).toBe('Show evidence');
     expect(paused.visibleState).toBe('paused');
     expect(paused.canResume).toBe(true);
+  });
+
+  it('dedupes related mission, Kira, and research digest items', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission({
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-test',
+          proposalRef: 'proposal:aoi-proposal-ui-test-001',
+          researchRunRef: 'research:aoi-research-ui-test',
+          kiraWorkRef: 'memory:kira-related',
+        },
+        evidenceRefs: [
+          'goal:aoi-goal-ui-test',
+          'research:aoi-research-ui-test',
+          'memory:kira-related',
+        ],
+      }),
+      attentionEvents: [
+        makeAttentionEvent({
+          id: 'attention-research-ui-test',
+          kind: 'research_completed',
+          sourceRef: 'research:aoi-research-ui-test',
+          evidenceRefs: ['research:aoi-research-ui-test'],
+          summary: 'Research finished for the active mission.',
+        }),
+        makeAttentionEvent({
+          id: 'attention-kira-ui-test',
+          kind: 'kira_completed_reviewed_work',
+          sourceRef: 'memory:kira-related',
+          sourceSignature: 'memory:kira-related',
+          evidenceRefs: ['memory:kira-related'],
+          summary: 'Kira completed reviewed work for the active mission.',
+        }),
+      ],
+    });
+
+    const relatedItems = digest.items.filter(
+      (item) =>
+        item.evidenceRefs.includes('research:aoi-research-ui-test') ||
+        item.evidenceRefs.includes('memory:kira-related'),
+    );
+
+    expect(relatedItems).toHaveLength(1);
+    expect(relatedItems[0].evidenceRefs).toEqual(
+      expect.arrayContaining(['research:aoi-research-ui-test', 'memory:kira-related']),
+    );
+  });
+
+  it('suppresses low-value digest items in quiet mode while keeping blockers visible', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      quietMode: true,
+      blockedProposals: [
+        {
+          proposalId: 'aoi-proposal-blocked-ui-test',
+          title: 'Create broad Kira work',
+          reasons: ['kira_handoff_scope_too_broad'],
+          evidenceRefs: ['proposal:aoi-proposal-blocked-ui-test'],
+          actionKind: 'create_kira_work',
+          requiredAutonomyLevel: 'L4',
+          requiresUserApproval: true,
+          risk: 'high',
+          safeAlternative: 'Narrow the handoff scope before approval.',
+        },
+      ],
+    });
+
+    expect(digest.hiddenItemCount).toBeGreaterThan(0);
+    expect(digest.items.some((item) => item.lane === 'hidden_by_quiet_mode')).toBe(true);
+    expect(digest.items.some((item) => item.lane === 'critical_user_blocking')).toBe(true);
+  });
+
+  it('keeps approval inbox actions on the existing decision path', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      activeProposals: [
+        makeProposal({
+          risk: 'medium',
+          suggestedTools: ['run_command'],
+          evidenceRefs: ['proposal:aoi-proposal-ui-test-001', 'workspace:validation:stale'],
+          acceptAction: {
+            kind: 'run_command',
+            params: {
+              command: 'pnpm --filter @openroom/webuiapps test',
+              cwd: 'F:\\kernullist\\YourOpenRoom',
+              purpose: 'Validate Aoi autonomy UI changes.',
+            },
+          },
+        }),
+      ],
+    });
+
+    expect(digest.approvalInbox).toHaveLength(1);
+    expect(digest.approvalInbox[0].availableActions).toEqual([
+      'approve',
+      'dismiss',
+      'snooze',
+      'details',
+    ]);
+    expect(digest.approvalInbox[0].boundary).toContain('execution path');
+    expect(JSON.stringify(digest.approvalInbox[0].availableActions)).not.toContain('execute');
+  });
+
+  it('builds a resume brief with an explicit safety boundary', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission(),
+      userIdleMs: 20 * 60 * 1000,
+    });
+    const panelSummary = buildAoiOperatorDigestPanelSummary(digest, true);
+
+    expect(digest.resumeBrief?.visible).toBe(true);
+    expect(digest.resumeBrief?.safetyBoundary).toContain('without explicit approval');
+    expect(panelSummary.resumeBriefLabel).toContain('Boundary:');
+  });
+
+  it('does not build a resume brief for low-value FYI-only changes', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      userIdleMs: 20 * 60 * 1000,
+    });
+
+    expect(digest.items.some((item) => item.lane === 'fyi')).toBe(true);
+    expect(digest.resumeBrief).toBeUndefined();
+  });
+
+  it('reduces and hides similar digest items after negative feedback', () => {
+    const event = makeAttentionEvent({
+      id: 'attention-noisy-ui-test',
+      sourceRef: 'research:too-noisy',
+      sourceSignature: 'research:too-noisy',
+      evidenceRefs: ['research:too-noisy'],
+      dedupeKey: 'attention:research_completed:research:too-noisy',
+    });
+    const baseDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      attentionEvents: [event],
+      quietMode: true,
+    });
+    const reducedDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      attentionEvents: [event],
+      quietMode: true,
+      recentDecisions: [makeProposalDecision()],
+    });
+    const baseItem = baseDigest.items.find((item) =>
+      item.sourceRefs.includes('research:too-noisy'),
+    );
+    const reducedItem = reducedDigest.items.find((item) =>
+      item.sourceRefs.includes('research:too-noisy'),
+    );
+
+    expect(baseItem?.hidden).toBe(false);
+    expect(reducedItem?.relevance).toBeLessThan(baseItem?.relevance ?? 0);
+    expect(reducedItem?.lane).toBe('hidden_by_quiet_mode');
   });
 
   it('sends pause and resume mission client calls without dropping evidence refs', async () => {

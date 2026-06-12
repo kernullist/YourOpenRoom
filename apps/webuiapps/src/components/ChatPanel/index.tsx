@@ -235,6 +235,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiOperatorDigestPanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -251,6 +252,7 @@ import {
   summarizeAoiAutonomyProposalCounts,
   type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
+import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
   AoiAutonomyBlockedProposal,
@@ -263,6 +265,7 @@ import type {
   AoiGoal,
   AoiMissionDecisionAction,
   AoiMissionState,
+  AoiOperatorDigest,
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
   AoiPreparedActionPlan,
@@ -389,6 +392,7 @@ type ChatDockSide = 'left' | 'right';
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
 const CHAT_FONT_SIZE_KEY = 'openroom-chat-font-size';
+const AOI_OPERATOR_LAST_SEEN_STORAGE_PREFIX = 'openroom-aoi-operator-last-seen:';
 const CHAT_FONT_SIZE_DEFAULT = 13;
 const CHAT_FONT_SIZE_MIN = 11;
 const CHAT_FONT_SIZE_MAX = 22;
@@ -2030,6 +2034,8 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyError, setAoiAutonomyError] = useState('');
   const [aoiAutonomyActionId, setAoiAutonomyActionId] = useState<string | null>(null);
   const [aoiAutonomyLastTickAt, setAoiAutonomyLastTickAt] = useState<number | null>(null);
+  const [aoiAutonomyLastSeenAt, setAoiAutonomyLastSeenAt] = useState<number | null>(null);
+  const [dismissedAoiResumeBriefId, setDismissedAoiResumeBriefId] = useState<string | null>(null);
   const [aoiAutonomyExecutionMessages, setAoiAutonomyExecutionMessages] = useState<
     Record<string, string>
   >({});
@@ -2194,6 +2200,8 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
     setAoiAutonomyActionId(null);
     setAoiAutonomyLastTickAt(null);
+    setAoiAutonomyLastSeenAt(null);
+    setDismissedAoiResumeBriefId(null);
     setAoiAutonomyExecutionMessages({});
     setAoiKiraHandoffPreviews({});
     setAoiAutonomyPendingFeedback(null);
@@ -2655,6 +2663,23 @@ const ChatPanel: React.FC<{
     const latestUserMessage = [...chatHistoryRef.current]
       .reverse()
       .find((message) => message.role === 'user')?.content;
+    const now = Date.now();
+    const lastSeenStorageKey = `${AOI_OPERATOR_LAST_SEEN_STORAGE_PREFIX}${encodeURIComponent(
+      sessionPathForAutonomy,
+    )}`;
+    let lastSeenAt: number | null = null;
+    try {
+      const rawLastSeenAt = localStorage.getItem(lastSeenStorageKey);
+      const parsedLastSeenAt = rawLastSeenAt ? Number(rawLastSeenAt) : 0;
+      lastSeenAt =
+        Number.isFinite(parsedLastSeenAt) && parsedLastSeenAt > 0 ? parsedLastSeenAt : null;
+      localStorage.setItem(lastSeenStorageKey, String(now));
+    } catch {
+      lastSeenAt = null;
+    }
+    setAoiAutonomyLastSeenAt(lastSeenAt);
+    setDismissedAoiResumeBriefId(null);
+    const userIdleMs = lastSeenAt ? Math.max(0, now - lastSeenAt) : undefined;
 
     try {
       const result = await runAoiAutonomyManualTick({
@@ -2664,6 +2689,7 @@ const ChatPanel: React.FC<{
         llmConfig: configRef.current ?? undefined,
         maxRuntimeMs: 15000,
         quietMode: aoiAutonomyPanelSettings.quietMode,
+        ...(typeof userIdleMs === 'number' ? { userIdleMs } : {}),
       });
       if (sessionPathRef.current !== sessionPathForAutonomy) {
         return;
@@ -2675,7 +2701,7 @@ const ChatPanel: React.FC<{
     } catch (error) {
       console.warn('[ChatPanel] Aoi autonomy session-open tick failed', error);
     }
-  }, [refreshAoiAutonomy]);
+  }, [aoiAutonomyPanelSettings.quietMode, refreshAoiAutonomy]);
 
   const updateAoiAutonomyPolicyFromPanel = useCallback(
     async (patch: Partial<AoiAutonomyPolicy>) => {
@@ -5685,6 +5711,33 @@ const ChatPanel: React.FC<{
     void refreshAoiAutonomy({ silent: true });
   }, [refreshAoiAutonomy]);
 
+  const aoiOperatorDigest = useMemo(
+    () =>
+      buildAoiOperatorDigest({
+        sessionPath,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+        mission: aoiMissionState,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        workspaceSnapshot: aoiWorkspaceSnapshot,
+        memories: aoiMemories,
+        quietMode: aoiAutonomyPanelSettings.quietMode,
+        lastSeenAt: aoiAutonomyLastSeenAt,
+      }),
+    [
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastSeenAt,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings.quietMode,
+      aoiAutonomyStatus?.updatedAt,
+      aoiMemories,
+      aoiMissionState,
+      aoiWorkspaceSnapshot,
+      sessionPath,
+    ],
+  );
+
   const inlineAoiProposal = useMemo(
     () =>
       selectAoiInlineProposal(aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, {
@@ -5720,6 +5773,12 @@ const ChatPanel: React.FC<{
           })
         : null,
     [aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, inlineAoiProposal],
+  );
+  const aoiResumeBrief = aoiOperatorDigest.resumeBrief ?? null;
+  const showAoiResumeBrief = Boolean(
+    aoiResumeBrief?.visible &&
+    aoiResumeBrief.id !== dismissedAoiResumeBriefId &&
+    !inlineAoiProposal,
   );
 
   useEffect(() => {
@@ -5877,6 +5936,48 @@ const ChatPanel: React.FC<{
             {loading && <div className={styles.loading}>Thinking...</div>}
             <div ref={messagesEndRef} />
           </div>
+
+          {showAoiResumeBrief && aoiResumeBrief && !loading && (
+            <div className={styles.aoiInlineSuggestion} data-testid="aoi-resume-brief">
+              <div className={styles.aoiInlineSuggestionMain}>
+                <div className={styles.aoiInlineSuggestionMeta}>
+                  <span>Aoi resume brief</span>
+                  <span>{aoiOperatorDigest.summary}</span>
+                  <span>evidence {aoiResumeBrief.evidenceRefs.length}</span>
+                  {aoiOperatorDigest.approvalInbox.length > 0 && (
+                    <span>approvals {aoiOperatorDigest.approvalInbox.length}</span>
+                  )}
+                </div>
+                <div className={styles.aoiInlineSuggestionTitle}>
+                  {sanitizeAoiProposalDisplayText(aoiResumeBrief.whatChanged, 140)}
+                </div>
+                <div className={styles.aoiInlineSuggestionBody}>
+                  {sanitizeAoiProposalDisplayText(aoiResumeBrief.nextSafeAction, 320)}
+                </div>
+                <div className={styles.aoiInlineSuggestionHint}>
+                  {sanitizeAoiProposalDisplayText(aoiResumeBrief.safetyBoundary, 360)}
+                </div>
+              </div>
+              <div className={styles.aoiInlineSuggestionActions}>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={openAoiAutonomySettings}
+                  title="Open Aoi Autonomy digest details"
+                >
+                  Details
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => setDismissedAoiResumeBriefId(aoiResumeBrief.id)}
+                  title="Hide this resume brief"
+                >
+                  Dismiss
+                </button>
+              </div>
+            </div>
+          )}
 
           {inlineAoiProposal && !loading && (
             <div className={styles.aoiInlineSuggestion} data-testid="aoi-inline-suggestion">
@@ -6106,6 +6207,7 @@ const ChatPanel: React.FC<{
           aoiWorkspaceSnapshot={aoiWorkspaceSnapshot}
           aoiContextRouter={aoiContextRouter}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
+          aoiOperatorDigest={aoiOperatorDigest}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
           aoiAutonomyLoading={aoiAutonomyLoading}
@@ -6568,6 +6670,7 @@ const SettingsModal: React.FC<{
   aoiWorkspaceSnapshot: AoiWorkspaceSnapshot | null;
   aoiContextRouter: AoiContextRouterResult | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
+  aoiOperatorDigest: AoiOperatorDigest | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
   aoiAutonomyLoading: boolean;
@@ -6658,6 +6761,7 @@ const SettingsModal: React.FC<{
   aoiWorkspaceSnapshot,
   aoiContextRouter,
   aoiAutonomyEvaluation,
+  aoiOperatorDigest,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
   aoiAutonomyLoading,
@@ -6878,13 +6982,18 @@ const SettingsModal: React.FC<{
       ),
     [aoiAutonomyActiveProposals, aoiAutonomyArchivedProposals, aoiAutonomyStatus],
   );
+  const aoiApprovalInboxProposalIds = useMemo(
+    () => new Set((aoiOperatorDigest?.approvalInbox ?? []).map((item) => item.proposalId)),
+    [aoiOperatorDigest],
+  );
   const visibleAoiAutonomyProposals = useMemo(
     () =>
       aoiAutonomyActiveProposals
+        .filter((proposal) => !aoiApprovalInboxProposalIds.has(proposal.id))
         .slice()
         .sort((left, right) => right.updatedAt - left.updatedAt)
         .slice(0, 8),
-    [aoiAutonomyActiveProposals],
+    [aoiApprovalInboxProposalIds, aoiAutonomyActiveProposals],
   );
   const visibleAoiAutonomyGoals = useMemo(
     () =>
@@ -6915,6 +7024,14 @@ const SettingsModal: React.FC<{
   const aoiMissionPanelSummary = useMemo(
     () => buildAoiMissionPanelSummary(aoiMissionState, expandedAoiMissionEvidence),
     [aoiMissionState, expandedAoiMissionEvidence],
+  );
+  const aoiOperatorDigestSummary = useMemo(
+    () =>
+      buildAoiOperatorDigestPanelSummary(
+        aoiOperatorDigest,
+        expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
+      ),
+    [aoiOperatorDigest, expandedAoiMissionEvidence, expandedAoiProposalId],
   );
   const aoiWorkspaceSignalSummary = useMemo(
     () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
@@ -8654,6 +8771,145 @@ const SettingsModal: React.FC<{
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Operator digest</div>
+                      {aoiOperatorDigestSummary.visible ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>{aoiOperatorDigestSummary.summaryLabel}</span>
+                              {aoiOperatorDigestSummary.laneLabels.map((label) => (
+                                <span key={label}>{label}</span>
+                              ))}
+                            </div>
+                            {aoiOperatorDigestSummary.resumeBriefLabel && (
+                              <div className={styles.aoiAutonomyProposalReason}>
+                                {aoiOperatorDigestSummary.resumeBriefLabel}
+                              </div>
+                            )}
+                            {aoiOperatorDigestSummary.hiddenLabel && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                <div>{aoiOperatorDigestSummary.hiddenLabel}</div>
+                              </div>
+                            )}
+                            {aoiOperatorDigestSummary.itemLabels.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiOperatorDigestSummary.itemLabels.map((label, index) => (
+                                  <div key={`digest-item-${index}`}>{label}</div>
+                                ))}
+                              </div>
+                            )}
+                            {aoiOperatorDigestSummary.evidenceRefs.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiOperatorDigestSummary.evidenceRefs.map((ref, index) => (
+                                  <div key={`digest-evidence-${index}`}>Evidence: {ref}</div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                          {(aoiOperatorDigest?.approvalInbox ?? []).map((item) => {
+                            const proposalPending = Boolean(
+                              aoiAutonomyActionId?.startsWith(`proposal:${item.proposalId}:`),
+                            );
+                            const expanded = expandedAoiProposalId === item.proposalId;
+                            return (
+                              <div
+                                className={styles.aoiAutonomyProposalItem}
+                                key={`inbox-${item.proposalId}`}
+                              >
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>approval inbox</span>
+                                  <span>{item.status}</span>
+                                  <span>{item.risk} risk</span>
+                                  <span>evidence {item.evidenceCount}</span>
+                                  <span>requires {item.requiredAutonomyLevel}</span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(item.title, 140)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {sanitizeAoiProposalDisplayText(item.exactNextAction, 220)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>
+                                    Boundary: {sanitizeAoiProposalDisplayText(item.boundary, 260)}
+                                  </div>
+                                  <div>
+                                    Available:{' '}
+                                    {item.availableActions
+                                      .map((action) => action.replace(/_/g, ' '))
+                                      .join(' / ')}
+                                  </div>
+                                  {expanded &&
+                                    item.evidenceRefs.map((ref, index) => (
+                                      <div key={`inbox-${item.proposalId}-evidence-${index}`}>
+                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onDecideAoiProposal(item.proposalId, 'accept')
+                                    }
+                                    disabled={proposalPending || item.status !== 'active'}
+                                    title="Record approval through the existing proposal path"
+                                  >
+                                    Approve
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onDecideAoiProposal(item.proposalId, 'snooze')
+                                    }
+                                    disabled={proposalPending || item.status !== 'active'}
+                                    title="Snooze this prepared action"
+                                  >
+                                    Snooze
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onDecideAoiProposal(item.proposalId, 'dismiss')
+                                    }
+                                    disabled={proposalPending || item.status !== 'active'}
+                                    title="Dismiss this prepared action"
+                                  >
+                                    Dismiss
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      setExpandedAoiProposalId((prev) =>
+                                        prev === item.proposalId ? null : item.proposalId,
+                                      )
+                                    }
+                                    title="Show inbox evidence"
+                                  >
+                                    {expanded ? (
+                                      <ChevronDown size={14} />
+                                    ) : (
+                                      <ChevronRight size={14} />
+                                    )}
+                                    Details
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>
+                          No meaningful ambient operator updates are available.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
                       <div className={styles.promptBudgetSectionTitle}>Context router</div>
                       {aoiContextSourceSummaries.length > 0 ? (
                         <div className={styles.aoiAutonomyProposalList}>
@@ -9043,7 +9299,7 @@ const SettingsModal: React.FC<{
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>
-                      <div className={styles.promptBudgetSectionTitle}>Active proposals</div>
+                      <div className={styles.promptBudgetSectionTitle}>Other active proposals</div>
                       {visibleAoiAutonomyProposals.length > 0 ? (
                         <div className={styles.aoiAutonomyProposalList}>
                           {visibleAoiAutonomyProposals.map((proposal) => {
@@ -9571,7 +9827,7 @@ const SettingsModal: React.FC<{
                         </div>
                       ) : (
                         <p className={styles.modelHint}>
-                          No active autonomy proposals are available for this session.
+                          No other active autonomy proposals are available for this session.
                         </p>
                       )}
                     </div>
