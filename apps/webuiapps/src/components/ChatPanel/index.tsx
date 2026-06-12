@@ -233,6 +233,7 @@ import {
   buildAoiProposalInspectorSummary,
   buildAoiProactiveExplanation,
   buildAoiRecoveryPreviewSummary,
+  buildAoiWorkspaceSignalPanelSummary,
   canShowAoiProposalPrimaryAction,
   loadAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
@@ -255,6 +256,7 @@ import type {
   AoiProposal,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
+  AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
 import type { AoiAutonomyEvaluationResult } from '@/lib/aoiAutonomyEvaluation';
 import {
@@ -1909,6 +1911,9 @@ const ChatPanel: React.FC<{
   const [aoiMissionState, setAoiMissionState] = useState<AoiMissionState | null>(null);
   const [aoiEnvironmentSources, setAoiEnvironmentSources] =
     useState<AoiEnvironmentSourceRegistry | null>(null);
+  const [aoiWorkspaceSnapshot, setAoiWorkspaceSnapshot] = useState<AoiWorkspaceSnapshot | null>(
+    null,
+  );
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
@@ -2077,6 +2082,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyActiveGoals([]);
     setAoiMissionState(null);
     setAoiEnvironmentSources(null);
+    setAoiWorkspaceSnapshot(null);
     setAoiAutonomyEvaluation(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
@@ -2498,6 +2504,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyActiveGoals(snapshot.goals.active);
       setAoiMissionState(snapshot.mission);
       setAoiEnvironmentSources(snapshot.environmentSources);
+      setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
       setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -5898,6 +5905,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
           aoiMissionState={aoiMissionState}
           aoiEnvironmentSources={aoiEnvironmentSources}
+          aoiWorkspaceSnapshot={aoiWorkspaceSnapshot}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
@@ -6354,6 +6362,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveGoals: AoiGoal[];
   aoiMissionState: AoiMissionState | null;
   aoiEnvironmentSources: AoiEnvironmentSourceRegistry | null;
+  aoiWorkspaceSnapshot: AoiWorkspaceSnapshot | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
@@ -6430,6 +6439,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveGoals,
   aoiMissionState,
   aoiEnvironmentSources,
+  aoiWorkspaceSnapshot,
   aoiAutonomyEvaluation,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
@@ -6684,6 +6694,10 @@ const SettingsModal: React.FC<{
   const aoiMissionPanelSummary = useMemo(
     () => buildAoiMissionPanelSummary(aoiMissionState, expandedAoiMissionEvidence),
     [aoiMissionState, expandedAoiMissionEvidence],
+  );
+  const aoiWorkspaceSignalSummary = useMemo(
+    () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
+    [aoiWorkspaceSnapshot],
   );
   const aoiEnvironmentSourceSummaries = useMemo(
     () => buildAoiEnvironmentSourcePanelSummaries(aoiEnvironmentSources),
@@ -8284,6 +8298,16 @@ const SettingsModal: React.FC<{
                         </strong>
                       </div>
                       <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Workspace</span>
+                        <strong>
+                          {aoiWorkspaceSignalSummary.visible ? 'Observed' : 'No signal'}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Validation</span>
+                        <strong>{aoiWorkspaceSignalSummary.freshnessLabel}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
                         <span className={styles.promptBudgetLabel}>Private gated</span>
                         <strong>{privateAoiEnvironmentSourceCount}</strong>
                       </div>
@@ -8398,6 +8422,41 @@ const SettingsModal: React.FC<{
                           ))}
                         </select>
                       </div>
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Workspace signals</div>
+                      {aoiWorkspaceSignalSummary.visible ? (
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiWorkspaceSignalSummary.workspaceLabel}</span>
+                            <span>branch {aoiWorkspaceSignalSummary.branchLabel}</span>
+                            <span>validation {aoiWorkspaceSignalSummary.freshnessLabel}</span>
+                            <span>sources {aoiWorkspaceSignalSummary.sourceLabel}</span>
+                            {aoiWorkspaceSignalSummary.warningCount > 0 && (
+                              <span>warnings {aoiWorkspaceSignalSummary.warningCount}</span>
+                            )}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiWorkspaceSignalSummary.dirtyLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {aoiWorkspaceSignalSummary.validationLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>{aoiWorkspaceSignalSummary.recommendationLabel}</div>
+                            <div>{aoiWorkspaceSignalSummary.recommendationReason}</div>
+                            {aoiWorkspaceSignalSummary.changedFileLabels.map((label, index) => (
+                              <div key={`workspace-file-${index}`}>{label}</div>
+                            ))}
+                            {aoiWorkspaceSignalSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`workspace-evidence-${index}`}>{ref}</div>
+                            ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No workspace signal recorded.</p>
+                      )}
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>

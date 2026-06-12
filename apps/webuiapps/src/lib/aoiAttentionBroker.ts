@@ -17,6 +17,7 @@ import type {
   AoiObservation,
   AoiProposal,
   AoiProposalDecision,
+  AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
 const ATTENTION_SUMMARY_MAX_CHARS = 240;
@@ -34,6 +35,7 @@ export interface AoiAttentionBrokerInput {
   recentDecisions: AoiProposalDecision[];
   activeGoals: AoiGoal[];
   mission?: AoiMissionState | null;
+  workspaceSnapshots?: AoiWorkspaceSnapshot[];
   quietMode?: boolean;
   userIdleMs?: number;
   maxActionableEvents?: number;
@@ -301,11 +303,65 @@ function collectGoalAndFeedbackEvents(params: AoiAttentionBrokerInput): AoiAtten
   return events;
 }
 
+function collectWorkspaceEvents(params: AoiAttentionBrokerInput): AoiAttentionEvent[] {
+  const events: AoiAttentionEvent[] = [];
+  const missionGoalRef = params.mission?.activeGoalId
+    ? `goal:${params.mission.activeGoalId}`
+    : undefined;
+
+  for (const snapshot of params.workspaceSnapshots ?? []) {
+    const validationFreshness = snapshot.validation.freshness;
+    const relevantValidation = validationFreshness === 'stale' || validationFreshness === 'failed';
+    const branchChanged = snapshot.git?.branchChanged === true;
+    if (!relevantValidation && !branchChanged) {
+      continue;
+    }
+    if (!params.mission || params.mission.status === 'none' || params.mission.status === 'paused') {
+      continue;
+    }
+    const sourceRef = snapshot.evidenceRefs[0] ?? `workspace:${snapshot.sessionPath}`;
+    const evidenceRefs = [
+      sourceRef,
+      ...snapshot.evidenceRefs,
+      ...(missionGoalRef ? [missionGoalRef] : []),
+    ];
+    const branchSummary = branchChanged
+      ? ` Branch changed from ${snapshot.git?.previousBranchName ?? 'unknown'} to ${
+          snapshot.git?.branchName ?? 'unknown'
+        }.`
+      : '';
+    const validationSummary = relevantValidation
+      ? ` Previous validation is ${validationFreshness}.`
+      : '';
+    const dirtySummary = snapshot.git?.isDirty
+      ? ` ${snapshot.git.changedFileCount} changed files are present.`
+      : '';
+    events.push(
+      makeEvent({
+        sessionPath: snapshot.sessionPath,
+        kind: 'workspace_validation_stale',
+        sourceRef,
+        sourceSignature: `workspace_validation:${snapshot.sessionPath}:${validationFreshness}:${
+          snapshot.git?.branchName ?? 'no-branch'
+        }:${snapshot.git?.statusSummary ?? 'no-status'}`,
+        summary: `The mission is still active.${branchSummary}${validationSummary}${dirtySummary} I can prepare the next safe check.`,
+        risk: validationFreshness === 'failed' ? 'medium' : 'low',
+        evidenceRefs,
+        suggestedAttentionLevel: 'badge',
+        createdAt: snapshot.collectedAt,
+      }),
+    );
+  }
+
+  return events;
+}
+
 export function collectAoiAttentionEvents(params: AoiAttentionBrokerInput): AoiAttentionEvent[] {
   const events = [
     ...collectResearchEvents(params),
     ...collectKiraEvents(params),
     ...collectGoalAndFeedbackEvents(params),
+    ...collectWorkspaceEvents(params),
   ];
   const bySignature = new Map<string, AoiAttentionEvent>();
   for (const event of events) {
@@ -396,6 +452,9 @@ export function scoreAoiAttentionEvent(
   if (event.kind === 'research_failed_or_insufficient') {
     score += 0.18;
   }
+  if (event.kind === 'workspace_validation_stale') {
+    score += 0.14;
+  }
   if (event.kind === 'active_goal_waiting_too_long') {
     score += 0.08;
   }
@@ -422,9 +481,11 @@ function eventToObservation(event: AoiAttentionEvent): AoiObservation {
         ? 'research_run'
         : event.kind.startsWith('kira')
           ? 'kira'
-          : event.kind === 'proposal_feedback_trust_changed'
-            ? 'proposal'
-            : 'system',
+          : event.kind === 'workspace_validation_stale'
+            ? 'workspace'
+            : event.kind === 'proposal_feedback_trust_changed'
+              ? 'proposal'
+              : 'system',
     sessionPath: event.sessionPath,
     stableKey: event.dedupeKey,
     createdAt: event.createdAt,

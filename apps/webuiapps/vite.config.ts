@@ -3291,6 +3291,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     aoiAutonomyPlugin({
       configFile: LLM_CONFIG_FILE,
       sessionsDir: SESSIONS_DIR,
+      workspaceRoot: OPENROOM_ROOT,
     }),
     youtubeSearchPlugin(),
     tavilyProxyPlugin(),

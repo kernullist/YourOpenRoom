@@ -151,6 +151,7 @@ function isAoiObservationSource(value: unknown): value is AoiObservation['source
     value === 'kira' ||
     value === 'proposal' ||
     value === 'memory' ||
+    value === 'workspace' ||
     value === 'app' ||
     value === 'system'
   );

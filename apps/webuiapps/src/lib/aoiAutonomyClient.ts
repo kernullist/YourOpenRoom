@@ -15,6 +15,7 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiReflection,
+  AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
 
@@ -55,6 +56,7 @@ export interface AoiAutonomyDashboardSnapshot {
   goals: AoiAutonomyGoalList;
   mission: AoiMissionState | null;
   environmentSources: AoiEnvironmentSourceRegistry;
+  workspaceSnapshot: AoiWorkspaceSnapshot | null;
   evaluation: AoiAutonomyEvaluationResult;
 }
 
@@ -83,6 +85,12 @@ export interface AoiEnvironmentSourceUpdateResult {
   sessionPath: string;
   registry: AoiEnvironmentSourceRegistry;
   status?: AoiAutonomyStatus;
+}
+
+export interface AoiWorkspaceSignalResponse {
+  ok: boolean;
+  sessionPath: string;
+  snapshot: AoiWorkspaceSnapshot | null;
 }
 
 export interface AoiAutonomyProposalDecisionResult {
@@ -353,17 +361,41 @@ export async function fetchAoiEnvironmentSources(
   };
 }
 
+export async function fetchAoiWorkspaceSnapshot(
+  sessionPath: string,
+  options: { collect?: boolean } = {},
+): Promise<AoiWorkspaceSignalResponse> {
+  const collectQuery =
+    typeof options.collect === 'boolean' ? `&collect=${String(options.collect)}` : '';
+  const response = await fetch(
+    `${API_PREFIX}/workspace?${sessionQuery(sessionPath)}${collectQuery}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi workspace signal.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    snapshot: isRecord(payload.snapshot) ? (payload.snapshot as AoiWorkspaceSnapshot) : null,
+  };
+}
+
 export async function fetchAoiAutonomyDashboard(
   sessionPath: string,
 ): Promise<AoiAutonomyDashboardSnapshot> {
-  const [status, proposals, goals, mission, environmentSources, evaluation] = await Promise.all([
-    fetchAoiAutonomyStatus(sessionPath),
-    fetchAoiAutonomyProposals(sessionPath, true),
-    fetchAoiAutonomyGoals(sessionPath),
-    fetchAoiMissionState(sessionPath),
-    fetchAoiEnvironmentSources(sessionPath),
-    fetchAoiAutonomyEvaluation(sessionPath),
-  ]);
+  const [status, proposals, goals, mission, environmentSources, workspace, evaluation] =
+    await Promise.all([
+      fetchAoiAutonomyStatus(sessionPath),
+      fetchAoiAutonomyProposals(sessionPath, true),
+      fetchAoiAutonomyGoals(sessionPath),
+      fetchAoiMissionState(sessionPath),
+      fetchAoiEnvironmentSources(sessionPath),
+      fetchAoiWorkspaceSnapshot(sessionPath),
+      fetchAoiAutonomyEvaluation(sessionPath),
+    ]);
 
   return {
     sessionPath,
@@ -372,6 +404,7 @@ export async function fetchAoiAutonomyDashboard(
     goals,
     mission: mission.mission,
     environmentSources: environmentSources.registry,
+    workspaceSnapshot: workspace.snapshot,
     evaluation: evaluation.evaluation,
   };
 }

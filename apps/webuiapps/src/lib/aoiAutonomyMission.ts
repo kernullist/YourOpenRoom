@@ -171,6 +171,7 @@ function normalizeRecommendedAction(value: unknown): AoiMissionRecommendedAction
     raw.kind === 'inspect_research' ||
     raw.kind === 'prepare_research' ||
     raw.kind === 'prepare_kira' ||
+    raw.kind === 'prepare_validation' ||
     raw.kind === 'resume_mission'
       ? raw.kind
       : 'none';
@@ -205,6 +206,12 @@ function normalizeSourceRefs(value: unknown): AoiMissionSourceRefs {
       : {}),
     ...(normalizeOptionalText(raw.kiraWorkRef, 240)
       ? { kiraWorkRef: normalizeOptionalText(raw.kiraWorkRef, 240) }
+      : {}),
+    ...(normalizeOptionalText(raw.workspaceSnapshotRef, 240)
+      ? { workspaceSnapshotRef: normalizeOptionalText(raw.workspaceSnapshotRef, 240) }
+      : {}),
+    ...(normalizeOptionalText(raw.validationRef, 240)
+      ? { validationRef: normalizeOptionalText(raw.validationRef, 240) }
       : {}),
   };
 }
@@ -342,6 +349,24 @@ function latestObservationRef(observations: AoiObservation[], goal: AoiGoal): st
   return match ? `observation:${match.id}` : undefined;
 }
 
+function latestWorkspaceValidationObservation(
+  observations: AoiObservation[],
+  goal: AoiGoal,
+): AoiObservation | undefined {
+  const goalRef = `goal:${goal.id}`;
+  return observations
+    .filter(
+      (observation) =>
+        observation.source === 'workspace' &&
+        observation.riskSignals.some(
+          (signal) =>
+            signal === 'workspace-validation:stale' || signal === 'workspace-validation:failed',
+        ) &&
+        observation.artifactRefs.some((ref) => ref === goalRef),
+    )
+    .sort((left, right) => right.createdAt - left.createdAt)[0];
+}
+
 function latestDecisionRef(
   decisions: AoiProposalDecision[],
   proposal: AoiProposal | undefined,
@@ -420,6 +445,8 @@ function waitingAction(params: {
   proposal?: AoiProposal;
   researchRunRef?: string;
   kiraWorkRef?: string;
+  validationObservationRef?: string;
+  validationFreshness?: 'stale' | 'failed';
 }): AoiMissionRecommendedAction {
   if (params.status === 'paused') {
     return {
@@ -462,6 +489,20 @@ function waitingAction(params: {
         ? 'A research run is linked to the mission.'
         : 'The next plan step requires fresh evidence.',
       ref: params.researchRunRef,
+    };
+  }
+  if (params.validationObservationRef && params.validationFreshness) {
+    return {
+      kind: 'prepare_validation',
+      label:
+        params.validationFreshness === 'failed'
+          ? 'Prepare a focused validation follow-up.'
+          : 'Prepare the next safe validation check.',
+      reason:
+        params.validationFreshness === 'failed'
+          ? 'The last recorded validation failed; treat it as unresolved evidence.'
+          : 'Relevant files changed after the last passed validation, so the previous result is stale.',
+      ref: params.validationObservationRef,
     };
   }
   return {
@@ -697,6 +738,22 @@ export function deriveAoiMissionState(params: {
   const observations = loadAoiObservations(params.sessionsDir, sessionPath);
   const progress = loadAoiGoalProgressEvents(params.sessionsDir, sessionPath);
   const researchRuns = listAoiResearchRunSummaries(params.sessionsDir, sessionPath);
+  const workspaceValidationObservation = latestWorkspaceValidationObservation(
+    observations,
+    activeGoal,
+  );
+  const workspaceValidationObservationRef = workspaceValidationObservation
+    ? `observation:${workspaceValidationObservation.id}`
+    : undefined;
+  const workspaceValidationFreshness = workspaceValidationObservation?.riskSignals.some(
+    (signal) => signal === 'workspace-validation:failed',
+  )
+    ? 'failed'
+    : workspaceValidationObservation?.riskSignals.some(
+          (signal) => signal === 'workspace-validation:stale',
+        )
+      ? 'stale'
+      : undefined;
   const kiraWorkRef = findKiraWorkRef({
     sessionsDir: params.sessionsDir,
     sessionPath,
@@ -730,6 +787,12 @@ export function deriveAoiMissionState(params: {
     ...(observationRef ? { observationRef } : {}),
     ...(researchRunRef ? { researchRunRef } : {}),
     ...(kiraWorkRef ? { kiraWorkRef } : {}),
+    ...(workspaceValidationObservation?.payloadRef
+      ? { workspaceSnapshotRef: workspaceValidationObservation.payloadRef }
+      : {}),
+    ...(workspaceValidationFreshness
+      ? { validationRef: `workspace:validation:${workspaceValidationFreshness}` }
+      : {}),
   };
   const evidenceRefs = dedupeRefs([
     goalRef,
@@ -737,6 +800,8 @@ export function deriveAoiMissionState(params: {
     proposalRef,
     decisionRef,
     observationRef,
+    workspaceValidationObservationRef,
+    workspaceValidationObservation?.payloadRef,
     researchRunRef,
     kiraWorkRef,
     lastMeaningfulEventRef,
@@ -760,6 +825,8 @@ export function deriveAoiMissionState(params: {
       proposal: currentProposal,
       researchRunRef,
       kiraWorkRef,
+      validationObservationRef: workspaceValidationObservationRef,
+      validationFreshness: workspaceValidationFreshness,
     }),
     evidenceRefs,
     sourceRefs,

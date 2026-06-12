@@ -62,6 +62,7 @@ export type AoiObservationSource =
   | 'kira'
   | 'proposal'
   | 'memory'
+  | 'workspace'
   | 'app'
   | 'system';
 
@@ -122,6 +123,7 @@ export type AoiAttentionEventKind =
   | 'kira_completed_reviewed_work'
   | 'research_completed'
   | 'research_failed_or_insufficient'
+  | 'workspace_validation_stale'
   | 'active_goal_waiting_too_long'
   | 'user_returned_after_idle'
   | 'proposal_feedback_trust_changed';
@@ -426,6 +428,7 @@ export type AoiMissionRecommendedActionKind =
   | 'inspect_research'
   | 'prepare_research'
   | 'prepare_kira'
+  | 'prepare_validation'
   | 'resume_mission';
 
 export interface AoiMissionRecommendedAction {
@@ -443,6 +446,66 @@ export interface AoiMissionSourceRefs {
   observationRef?: string;
   researchRunRef?: string;
   kiraWorkRef?: string;
+  workspaceSnapshotRef?: string;
+  validationRef?: string;
+}
+
+export type AoiSignalFreshness = 'unknown' | 'fresh' | 'stale' | 'failed';
+
+export type AoiValidationSignalResult = 'unknown' | 'passed' | 'failed';
+
+export interface AoiChangedFileSignal {
+  version: 1;
+  pathLabel: string;
+  pathHash: string;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+  changedAt?: number;
+  directoryLabel?: string;
+  extension?: string;
+}
+
+export interface AoiGitSignal {
+  version: 1;
+  branchName: string;
+  previousBranchName?: string;
+  branchChanged: boolean;
+  isDirty: boolean;
+  changedFileCount: number;
+  stagedFileCount: number;
+  unstagedFileCount: number;
+  untrackedFileCount: number;
+  statusSummary: string;
+  changedFiles: AoiChangedFileSignal[];
+  recentCommitHash?: string;
+  recentCommitMessage?: string;
+  error?: string;
+}
+
+export interface AoiValidationSignal {
+  version: 1;
+  command?: string;
+  result: AoiValidationSignalResult;
+  completedAt?: number;
+  touchedFileScopes: string[];
+  freshness: AoiSignalFreshness;
+  staleReason?: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiWorkspaceSnapshot {
+  version: 1;
+  sessionPath: string;
+  collectedAt: number;
+  workspaceLabel: string;
+  sourceIds: string[];
+  git?: AoiGitSignal;
+  validation: AoiValidationSignal;
+  freshness: AoiSignalFreshness;
+  evidenceRefs: string[];
+  warnings: string[];
 }
 
 export interface AoiMissionTransitionRef {

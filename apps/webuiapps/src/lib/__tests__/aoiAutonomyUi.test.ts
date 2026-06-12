@@ -9,6 +9,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiWorkspaceSignalPanelSummary,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
   buildAoiProactiveExplanation,
@@ -25,6 +26,7 @@ import type {
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
+  AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 
 function makePolicy(partial: Partial<AoiAutonomyPolicy> = {}): AoiAutonomyPolicy {
@@ -132,6 +134,55 @@ function makeEnvironmentSourceRegistry(
         updatedAt: 1000,
       },
     ],
+    ...partial,
+  };
+}
+
+function makeWorkspaceSnapshot(partial: Partial<AoiWorkspaceSnapshot> = {}): AoiWorkspaceSnapshot {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    collectedAt: 1000,
+    workspaceLabel: 'YourOpenRoom',
+    sourceIds: ['workspace-git', 'workspace-build'],
+    git: {
+      version: 1,
+      branchName: 'codex/aoi-workspace',
+      branchChanged: false,
+      isDirty: true,
+      changedFileCount: 1,
+      stagedFileCount: 0,
+      unstagedFileCount: 1,
+      untrackedFileCount: 0,
+      statusSummary: 'dirty: 1 changed, 0 staged',
+      changedFiles: [
+        {
+          version: 1,
+          pathLabel: 'apps/webuiapps/src/lib/aoiWorkspaceSignals.ts',
+          pathHash: 'changed',
+          status: 'M',
+          staged: false,
+          unstaged: true,
+          untracked: false,
+          changedAt: 1000,
+          directoryLabel: 'apps/webuiapps/src/lib',
+          extension: 'ts',
+        },
+      ],
+    },
+    validation: {
+      version: 1,
+      command: 'pnpm --filter @openroom/webuiapps test',
+      result: 'passed',
+      completedAt: 500,
+      touchedFileScopes: ['apps/webuiapps/src'],
+      freshness: 'stale',
+      staleReason: 'Relevant files changed after the last passed validation.',
+      evidenceRefs: [],
+    },
+    freshness: 'stale',
+    evidenceRefs: ['workspace:snapshot:ui-test', 'workspace:validation:stale'],
+    warnings: [],
     ...partial,
   };
 }
@@ -421,6 +472,84 @@ describe('Aoi autonomy UI helpers', () => {
     expect(browser?.consentSummary).not.toContain('secret-value');
     expect(browser?.gateReason).toContain('source disabled');
     expect(browser?.toggleTitle).toContain('explicit target');
+  });
+
+  it('summarizes stale workspace validation as a recommendation without leaking local paths', () => {
+    const summary = buildAoiWorkspaceSignalPanelSummary(
+      makeWorkspaceSnapshot({
+        workspaceLabel: 'F:\\kernullist\\YourOpenRoom',
+        git: {
+          version: 1,
+          branchName: 'codex/aoi-workspace',
+          previousBranchName: 'main',
+          branchChanged: true,
+          isDirty: true,
+          changedFileCount: 1,
+          stagedFileCount: 0,
+          unstagedFileCount: 1,
+          untrackedFileCount: 0,
+          statusSummary: 'dirty: 1 changed, 0 staged',
+          changedFiles: [
+            {
+              version: 1,
+              pathLabel: 'F:\\kernullist\\YourOpenRoom\\private\\secret.ts',
+              pathHash: 'changed',
+              status: 'M',
+              staged: false,
+              unstaged: true,
+              untracked: false,
+              changedAt: 1000,
+            },
+          ],
+        },
+      }),
+    );
+
+    expect(summary).toMatchObject({
+      visible: true,
+      freshness: 'stale',
+      recommendationTone: 'recommendation',
+      recommendationLabel: 'Prepare the next safe validation check.',
+    });
+    expect(summary.evidenceRefs).toContain('workspace:validation:stale');
+    expect(JSON.stringify(summary)).toContain('[local path]');
+    expect(JSON.stringify(summary)).not.toContain('F:\\');
+    expect(JSON.stringify(summary)).not.toContain('secret.ts');
+  });
+
+  it('keeps fresh workspace summaries neutral', () => {
+    const summary = buildAoiWorkspaceSignalPanelSummary(
+      makeWorkspaceSnapshot({
+        git: {
+          version: 1,
+          branchName: 'main',
+          branchChanged: false,
+          isDirty: false,
+          changedFileCount: 0,
+          stagedFileCount: 0,
+          unstagedFileCount: 0,
+          untrackedFileCount: 0,
+          statusSummary: 'clean',
+          changedFiles: [],
+        },
+        validation: {
+          version: 1,
+          result: 'passed',
+          completedAt: 1000,
+          touchedFileScopes: ['apps/webuiapps/src'],
+          freshness: 'fresh',
+          evidenceRefs: [],
+        },
+        freshness: 'fresh',
+      }),
+    );
+
+    expect(summary).toMatchObject({
+      visible: true,
+      freshness: 'fresh',
+      recommendationTone: 'neutral',
+      dirtyLabel: 'Working tree clean',
+    });
   });
 
   it('builds short proactive message summaries with the full explanation contract', () => {

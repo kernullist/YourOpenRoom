@@ -16,6 +16,7 @@ import type {
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
+  AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
 export const AOI_INLINE_SUGGESTION_COOLDOWN_MS = 30 * 60 * 1000;
@@ -152,6 +153,23 @@ export interface AoiEnvironmentSourcePanelSummary {
   gateReason: string;
   canToggle: boolean;
   toggleTitle: string;
+}
+
+export interface AoiWorkspaceSignalPanelSummary {
+  visible: boolean;
+  workspaceLabel: string;
+  sourceLabel: string;
+  branchLabel: string;
+  dirtyLabel: string;
+  validationLabel: string;
+  freshness: AoiWorkspaceSnapshot['freshness'];
+  freshnessLabel: string;
+  recommendationLabel: string;
+  recommendationReason: string;
+  recommendationTone: 'neutral' | 'recommendation';
+  changedFileLabels: string[];
+  evidenceRefs: string[];
+  warningCount: number;
 }
 
 export interface AoiProposalActionPresentation {
@@ -1151,6 +1169,125 @@ export function buildAoiEnvironmentSourcePanelSummaries(
           : 'Enable this environment source for metadata-only observation.',
     };
   });
+}
+
+function formatAoiWorkspaceDirtyLabel(snapshot: AoiWorkspaceSnapshot): string {
+  const git = snapshot.git;
+  if (!git) {
+    return 'No git status signal';
+  }
+  if (!git.isDirty) {
+    return 'Working tree clean';
+  }
+  return `${git.changedFileCount} changed, ${git.stagedFileCount} staged`;
+}
+
+function formatAoiWorkspaceValidationLabel(snapshot: AoiWorkspaceSnapshot): string {
+  const validation = snapshot.validation;
+  if (validation.freshness === 'fresh') {
+    return validation.command ? `Fresh: ${validation.command}` : 'Fresh validation evidence';
+  }
+  if (validation.freshness === 'stale') {
+    return 'Validation evidence is stale';
+  }
+  if (validation.freshness === 'failed') {
+    return 'Last validation failed';
+  }
+  return validation.result === 'passed'
+    ? 'Validation recorded without freshness'
+    : 'Validation unknown';
+}
+
+function getAoiWorkspaceRecommendation(
+  snapshot: AoiWorkspaceSnapshot,
+): Pick<
+  AoiWorkspaceSignalPanelSummary,
+  'recommendationLabel' | 'recommendationReason' | 'recommendationTone'
+> {
+  if (snapshot.validation.freshness === 'failed') {
+    return {
+      recommendationLabel: 'Prepare a focused validation follow-up.',
+      recommendationReason:
+        'The last recorded validation failed, so it remains unresolved evidence.',
+      recommendationTone: 'recommendation',
+    };
+  }
+  if (snapshot.validation.freshness === 'stale') {
+    return {
+      recommendationLabel: 'Prepare the next safe validation check.',
+      recommendationReason: 'Relevant files changed after the last passed validation.',
+      recommendationTone: 'recommendation',
+    };
+  }
+  if (snapshot.git?.branchChanged) {
+    return {
+      recommendationLabel: 'Review branch drift before continuing.',
+      recommendationReason: 'The workspace branch changed since the previous signal.',
+      recommendationTone: 'neutral',
+    };
+  }
+  return {
+    recommendationLabel: 'No validation follow-up needed.',
+    recommendationReason: 'No stale or failed validation signal is attached.',
+    recommendationTone: 'neutral',
+  };
+}
+
+export function buildAoiWorkspaceSignalPanelSummary(
+  snapshot: AoiWorkspaceSnapshot | null | undefined,
+): AoiWorkspaceSignalPanelSummary {
+  if (!snapshot) {
+    return {
+      visible: false,
+      workspaceLabel: 'No workspace signal',
+      sourceLabel: 'No source',
+      branchLabel: 'No branch signal',
+      dirtyLabel: 'No git status signal',
+      validationLabel: 'Validation unknown',
+      freshness: 'unknown',
+      freshnessLabel: 'unknown',
+      recommendationLabel: 'No workspace recommendation.',
+      recommendationReason: 'Workspace signals are not available yet.',
+      recommendationTone: 'neutral',
+      changedFileLabels: [],
+      evidenceRefs: [],
+      warningCount: 0,
+    };
+  }
+
+  const recommendation = getAoiWorkspaceRecommendation(snapshot);
+  const branchLabel = snapshot.git
+    ? snapshot.git.branchChanged
+      ? `${snapshot.git.previousBranchName ?? 'unknown'} -> ${snapshot.git.branchName}`
+      : snapshot.git.branchName
+    : 'No branch signal';
+  return {
+    visible: true,
+    workspaceLabel: sanitizeAoiProposalDisplayText(snapshot.workspaceLabel, 80),
+    sourceLabel: sanitizeAoiProposalDisplayText(
+      snapshot.sourceIds.length > 0 ? snapshot.sourceIds.join(', ') : 'No source',
+      120,
+    ),
+    branchLabel: sanitizeAoiProposalDisplayText(branchLabel, 120),
+    dirtyLabel: sanitizeAoiProposalDisplayText(formatAoiWorkspaceDirtyLabel(snapshot), 120),
+    validationLabel: sanitizeAoiProposalDisplayText(
+      formatAoiWorkspaceValidationLabel(snapshot),
+      160,
+    ),
+    freshness: snapshot.freshness,
+    freshnessLabel: sanitizeAoiProposalDisplayText(snapshot.freshness, 40),
+    recommendationLabel: sanitizeAoiProposalDisplayText(recommendation.recommendationLabel, 140),
+    recommendationReason: sanitizeAoiProposalDisplayText(recommendation.recommendationReason, 220),
+    recommendationTone: recommendation.recommendationTone,
+    changedFileLabels:
+      snapshot.git?.changedFiles
+        .slice(0, 4)
+        .map((file) => sanitizeAoiProposalDisplayText(file.pathLabel, 100)) ?? [],
+    evidenceRefs: snapshot.evidenceRefs
+      .slice(0, 8)
+      .map((ref) => sanitizeAoiProposalDisplayText(ref, 160)),
+    warningCount: snapshot.warnings.length,
+  };
 }
 
 export function buildAoiMissionResumePrompt(mission: AoiMissionState | null | undefined): string {

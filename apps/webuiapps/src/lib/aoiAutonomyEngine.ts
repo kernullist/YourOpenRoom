@@ -76,6 +76,10 @@ import {
 } from './aoiMemoryShared';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
+import {
+  collectAndPersistAoiWorkspaceSnapshot,
+  createAoiWorkspaceObservations,
+} from './aoiWorkspaceSignals';
 
 const MAX_OBSERVATIONS_PER_TICK = 24;
 const MAX_MEMORY_OBSERVATIONS = 12;
@@ -115,6 +119,7 @@ export interface AoiAutonomyTickParams {
   maxObservations?: number;
   quietMode?: boolean;
   userIdleMs?: number;
+  workspaceRoot?: string;
 }
 
 export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
@@ -1874,6 +1879,22 @@ export async function runAoiAutonomyTick(
       now,
       persist: false,
     });
+  const workspaceSnapshot = params.workspaceRoot
+    ? collectAndPersistAoiWorkspaceSnapshot({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        workspaceRoot: params.workspaceRoot,
+        now,
+      })
+    : null;
+  if (workspaceSnapshot) {
+    bundle.observations.push(
+      ...createAoiWorkspaceObservations({
+        snapshot: workspaceSnapshot,
+        mission: missionForAttention,
+      }),
+    );
+  }
   const attentionResult = runAoiAttentionBroker({
     sessionPath,
     now,
@@ -1884,6 +1905,7 @@ export async function runAoiAutonomyTick(
     recentDecisions: bundle.decisions,
     activeGoals: activeGoalsForTick,
     mission: missionForAttention,
+    workspaceSnapshots: workspaceSnapshot ? [workspaceSnapshot] : [],
     quietMode: params.quietMode,
     userIdleMs: params.userIdleMs,
     maxActionableEvents: latestUserMessage ? 0 : 1,

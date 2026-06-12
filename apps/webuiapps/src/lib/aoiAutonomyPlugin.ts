@@ -26,6 +26,11 @@ import {
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { applyAoiMissionDecision, deriveAoiMissionState } from './aoiAutonomyMission';
+import {
+  collectAndPersistAoiWorkspaceSnapshot,
+  loadAoiWorkspaceSnapshot,
+  recordAoiValidationSignal,
+} from './aoiWorkspaceSignals';
 import type { AoiAutonomyTickReason } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
 
@@ -35,6 +40,7 @@ const MAX_BODY_BYTES = 128 * 1024;
 export interface AoiAutonomyPluginOptions {
   sessionsDir: string;
   configFile: string;
+  workspaceRoot?: string;
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -115,6 +121,7 @@ async function handleAoiAutonomyRequest(
   url: URL,
   sessionsDir: string,
   configFile: string,
+  workspaceRoot: string,
 ): Promise<boolean> {
   const route = getAoiAutonomyRoute(url.pathname);
   if (route === null) {
@@ -264,6 +271,31 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/workspace') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const collect = url.searchParams.get('collect') !== 'false';
+      const snapshot = collect
+        ? collectAndPersistAoiWorkspaceSnapshot({
+            sessionsDir,
+            sessionPath,
+            workspaceRoot,
+          })
+        : loadAoiWorkspaceSnapshot(sessionsDir, sessionPath);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        snapshot,
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -316,6 +348,45 @@ async function handleAoiAutonomyRequest(
           code: statusCode === 404 ? 'source_not_found' : 'invalid_source_update',
         });
       }
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/workspace/validation') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const result = body.result;
+      if (result !== 'unknown' && result !== 'passed' && result !== 'failed') {
+        writeJson(res, 400, {
+          error: 'result must be one of unknown, passed, failed',
+          code: 'invalid_validation_result',
+        });
+        return true;
+      }
+      const snapshot = recordAoiValidationSignal({
+        sessionsDir,
+        sessionPath,
+        signal: {
+          result,
+          command: typeof body.command === 'string' ? body.command : undefined,
+          completedAt: typeof body.completedAt === 'number' ? body.completedAt : Date.now(),
+          touchedFileScopes: Array.isArray(body.touchedFileScopes)
+            ? body.touchedFileScopes.filter((item): item is string => typeof item === 'string')
+            : [],
+        },
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        snapshot,
+        status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+      });
       return true;
     }
 
@@ -398,6 +469,7 @@ async function handleAoiAutonomyRequest(
         maxRuntimeMs: typeof body.maxRuntimeMs === 'number' ? body.maxRuntimeMs : undefined,
         quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
+        workspaceRoot,
       });
       writeJson(res, 200, result);
       return true;
@@ -671,6 +743,7 @@ async function handleAoiAutonomyRequest(
 export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   const sessionsDir = resolve(options.sessionsDir);
   const configFile = resolve(options.configFile);
+  const workspaceRoot = resolve(options.workspaceRoot || process.cwd());
 
   const mount = (middlewares: {
     use: (
@@ -679,7 +752,7 @@ export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   }): void => {
     middlewares.use((req, res, next) => {
       const url = new URL(req.url || '/', 'http://localhost');
-      void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile)
+      void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile, workspaceRoot)
         .then((handled) => {
           if (!handled) {
             next();

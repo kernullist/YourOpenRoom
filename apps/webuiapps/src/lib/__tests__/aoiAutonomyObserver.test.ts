@@ -1,10 +1,22 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ingestAoiObservation } from '../aoiAutonomyObserver';
+import { runAoiAttentionBroker } from '../aoiAttentionBroker';
+import {
+  DEFAULT_AOI_AUTONOMY_POLICY,
+  getDefaultAoiEnvironmentSourceRegistry,
+} from '../aoiAutonomyPolicy';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiObservationIndex, loadAoiObservations } from '../aoiAutonomyStore';
+import type { AoiEnvironmentSourceRegistry, AoiMissionState } from '../aoiAutonomyTypes';
+import {
+  collectAoiWorkspaceSnapshot,
+  createAoiWorkspaceObservations,
+  deriveAoiValidationFreshness,
+  normalizeAoiWorkspaceSnapshot,
+} from '../aoiWorkspaceSignals';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -14,6 +26,47 @@ function makeTempRoot(): string {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-autonomy-observer-test-'));
   tempRoots.push(root);
   return root;
+}
+
+function makeWorkspaceRegistry(): AoiEnvironmentSourceRegistry {
+  const registry = getDefaultAoiEnvironmentSourceRegistry(SESSION_PATH, NOW);
+  return {
+    ...registry,
+    sources: registry.sources.map((source) =>
+      source.id === 'workspace-git' || source.id === 'workspace-build'
+        ? {
+            ...source,
+            enabled: true,
+            consentReason: 'Test enables metadata-only workspace signals.',
+            updatedAt: NOW,
+          }
+        : source,
+    ),
+  };
+}
+
+function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
+  return {
+    version: 1,
+    sessionPath: SESSION_PATH,
+    status: 'active',
+    activeGoalId: 'aoi-goal-workspace-test',
+    focusSummary: 'Finish workspace signal connector goal',
+    waitingOn: 'aoi',
+    nextRecommendedAction: {
+      kind: 'review_goal',
+      label: 'Review goal state.',
+      reason: 'The mission is active.',
+    },
+    evidenceRefs: ['goal:aoi-goal-workspace-test'],
+    sourceRefs: {
+      goalRef: 'goal:aoi-goal-workspace-test',
+    },
+    transitions: [],
+    createdAt: NOW,
+    updatedAt: NOW,
+    ...partial,
+  };
 }
 
 afterEach(() => {
@@ -134,5 +187,254 @@ describe('Aoi autonomy observer', () => {
     expect(result.relationRecorded).toBe(false);
     expect(result.warnings).toContain('observation_relation_write_failed');
     expect(loadAoiObservations(root, SESSION_PATH)).toHaveLength(1);
+  });
+
+  it('normalizes workspace snapshots and redacts local dirty tree paths', () => {
+    const snapshot = normalizeAoiWorkspaceSnapshot(
+      {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        collectedAt: NOW,
+        workspaceLabel: 'YourOpenRoom',
+        sourceIds: ['workspace-git', 'workspace-build'],
+        git: {
+          version: 1,
+          branchName: 'codex/aoi-workspace',
+          branchChanged: false,
+          isDirty: true,
+          changedFileCount: 1,
+          stagedFileCount: 0,
+          unstagedFileCount: 1,
+          untrackedFileCount: 0,
+          statusSummary: 'dirty',
+          changedFiles: [
+            {
+              version: 1,
+              pathLabel: 'F:\\kernullist\\YourOpenRoom\\apps\\webuiapps\\src\\secret.ts',
+              pathHash: 'raw',
+              status: 'M',
+              staged: false,
+              unstaged: true,
+              untracked: false,
+              changedAt: NOW,
+            },
+          ],
+        },
+        validation: {
+          version: 1,
+          command: 'pnpm test',
+          result: 'passed',
+          completedAt: NOW - 1000,
+          touchedFileScopes: ['apps/webuiapps/src'],
+          freshness: 'fresh',
+          evidenceRefs: [],
+        },
+        freshness: 'fresh',
+        evidenceRefs: ['workspace:snapshot:test'],
+        warnings: [],
+      },
+      SESSION_PATH,
+      NOW,
+      'F:\\kernullist\\YourOpenRoom',
+    );
+
+    expect(snapshot?.git?.changedFiles[0].pathLabel).toBe('apps/webuiapps/src/secret.ts');
+    expect(snapshot?.validation.freshness).toBe('stale');
+    expect(snapshot?.freshness).toBe('stale');
+    expect(JSON.stringify(snapshot)).not.toContain('F:\\');
+    expect(JSON.stringify(snapshot)).not.toContain('kernullist');
+  });
+
+  it('collects bounded read-only git snapshots and suppresses default disabled sources', () => {
+    const disabledRunner = vi.fn(() => {
+      throw new Error('git should not run');
+    });
+    const disabledSnapshot = collectAoiWorkspaceSnapshot({
+      sessionPath: SESSION_PATH,
+      workspaceRoot: 'F:\\kernullist\\YourOpenRoom',
+      registry: getDefaultAoiEnvironmentSourceRegistry(SESSION_PATH, NOW),
+      now: NOW,
+      runGitCommand: disabledRunner,
+    });
+
+    expect(disabledSnapshot).toBeNull();
+    expect(disabledRunner).not.toHaveBeenCalled();
+
+    const gitRunner = vi.fn((args: string[]) => {
+      const command = args.join(' ');
+      if (command === 'rev-parse --abbrev-ref HEAD') {
+        return 'codex/aoi-workspace';
+      }
+      if (command === 'status --porcelain=v1') {
+        return [
+          ' M F:\\kernullist\\YourOpenRoom\\apps\\webuiapps\\src\\private.ts',
+          'A  apps/webuiapps/src/new-file.ts',
+          '?? C:\\Users\\someone\\outside-secret.txt',
+        ].join('\n');
+      }
+      if (command === 'log -1 --pretty=%H%x00%s') {
+        return 'abcdef0123456789abcdef0123456789abcdef01\u0000add workspace signal connector';
+      }
+      throw new Error(`unexpected git command: ${command}`);
+    });
+
+    const snapshot = collectAoiWorkspaceSnapshot({
+      sessionPath: SESSION_PATH,
+      workspaceRoot: 'F:\\kernullist\\YourOpenRoom',
+      registry: makeWorkspaceRegistry(),
+      now: NOW,
+      runGitCommand: gitRunner,
+    });
+    const paths = snapshot?.git?.changedFiles.map((file) => file.pathLabel) ?? [];
+    const observations = snapshot
+      ? createAoiWorkspaceObservations({
+          snapshot,
+          mission: makeMission(),
+        })
+      : [];
+
+    expect(gitRunner).toHaveBeenCalledWith(
+      ['rev-parse', '--abbrev-ref', 'HEAD'],
+      'F:\\kernullist\\YourOpenRoom',
+    );
+    expect(paths).toContain('apps/webuiapps/src/private.ts');
+    expect(paths).toContain('apps/webuiapps/src/new-file.ts');
+    expect(paths).toContain('outside-secret.txt');
+    expect(JSON.stringify(paths)).not.toContain('F:\\');
+    expect(JSON.stringify(paths)).not.toContain('C:\\');
+    expect(observations.some((observation) => observation.source === 'workspace')).toBe(true);
+    expect(JSON.stringify(observations)).not.toContain('F:\\');
+  });
+
+  it('detects stale validation only when relevant files changed after the recorded result', () => {
+    const changedFile = {
+      version: 1 as const,
+      pathLabel: 'apps/webuiapps/src/lib/aoiWorkspaceSignals.ts',
+      pathHash: 'changed',
+      status: 'M',
+      staged: false,
+      unstaged: true,
+      untracked: false,
+      changedAt: NOW,
+      directoryLabel: 'apps/webuiapps/src/lib',
+      extension: 'ts',
+    };
+
+    expect(
+      deriveAoiValidationFreshness({
+        validation: {
+          result: 'passed',
+          completedAt: NOW - 1000,
+          touchedFileScopes: ['apps/webuiapps/src'],
+        },
+        changedFiles: [changedFile],
+        now: NOW,
+      }),
+    ).toBe('stale');
+    expect(
+      deriveAoiValidationFreshness({
+        validation: {
+          result: 'passed',
+          completedAt: NOW - 1000,
+          touchedFileScopes: ['docs'],
+        },
+        changedFiles: [changedFile],
+        now: NOW,
+      }),
+    ).toBe('fresh');
+    expect(
+      deriveAoiValidationFreshness({
+        validation: {
+          result: 'failed',
+          completedAt: NOW - 1000,
+          touchedFileScopes: ['apps/webuiapps/src'],
+        },
+        changedFiles: [changedFile],
+        now: NOW,
+      }),
+    ).toBe('failed');
+  });
+
+  it('keeps workspace validation attention quiet without chat interruption or proposal spam', () => {
+    const mission = makeMission();
+    const snapshot = normalizeAoiWorkspaceSnapshot(
+      {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        collectedAt: NOW,
+        workspaceLabel: 'YourOpenRoom',
+        sourceIds: ['workspace-git', 'workspace-build'],
+        git: {
+          version: 1,
+          branchName: 'codex/aoi-workspace',
+          branchChanged: false,
+          isDirty: true,
+          changedFileCount: 1,
+          stagedFileCount: 0,
+          unstagedFileCount: 1,
+          untrackedFileCount: 0,
+          statusSummary: 'dirty: 1 changed, 0 staged',
+          changedFiles: [
+            {
+              version: 1,
+              pathLabel: 'apps/webuiapps/src/lib/aoiWorkspaceSignals.ts',
+              pathHash: 'changed',
+              status: 'M',
+              staged: false,
+              unstaged: true,
+              untracked: false,
+              changedAt: NOW,
+            },
+          ],
+        },
+        validation: {
+          version: 1,
+          command: 'pnpm --filter @openroom/webuiapps test',
+          result: 'passed',
+          completedAt: NOW - 1000,
+          touchedFileScopes: ['apps/webuiapps/src'],
+          freshness: 'fresh',
+          evidenceRefs: [],
+        },
+        freshness: 'fresh',
+        evidenceRefs: ['workspace:snapshot:quiet-test'],
+        warnings: [],
+      },
+      SESSION_PATH,
+      NOW,
+      'F:\\kernullist\\YourOpenRoom',
+    );
+    if (!snapshot) {
+      throw new Error('Expected workspace snapshot.');
+    }
+    expect(snapshot.validation.freshness).toBe('stale');
+
+    const result = runAoiAttentionBroker({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      policy: {
+        ...DEFAULT_AOI_AUTONOMY_POLICY,
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        level: 'L3',
+        updatedAt: NOW,
+      },
+      researchRuns: [],
+      memories: [],
+      activeProposals: [],
+      recentDecisions: [],
+      activeGoals: [],
+      mission,
+      workspaceSnapshots: [snapshot],
+      quietMode: true,
+    });
+
+    expect(result.events.some((event) => event.kind === 'workspace_validation_stale')).toBe(true);
+    expect(result.proposals).toHaveLength(0);
+    expect(result.directClarificationRequested).toBe(false);
+    expect(result.suppressedNotifications).toBeGreaterThan(0);
+    expect(result.decisions.every((decision) => decision.kind !== 'ask_direct_clarification')).toBe(
+      true,
+    );
   });
 });
