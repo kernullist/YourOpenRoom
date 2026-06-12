@@ -3,6 +3,8 @@ import type {
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
+  AoiEnvironmentSource,
+  AoiEnvironmentSourceRegistry,
   AoiGoal,
   AoiGoalProgressEvent,
   AoiMissionDecisionAction,
@@ -52,6 +54,7 @@ export interface AoiAutonomyDashboardSnapshot {
   proposals: AoiAutonomyProposalList;
   goals: AoiAutonomyGoalList;
   mission: AoiMissionState | null;
+  environmentSources: AoiEnvironmentSourceRegistry;
   evaluation: AoiAutonomyEvaluationResult;
 }
 
@@ -64,6 +67,22 @@ export interface AoiAutonomyProposalFeedbackResult {
 export interface AoiAutonomyPolicyUpdateResult {
   sessionPath: string;
   policy: AoiAutonomyPolicy;
+}
+
+export interface AoiEnvironmentSourceListResponse {
+  sessionPath: string;
+  registry: AoiEnvironmentSourceRegistry;
+}
+
+export interface AoiEnvironmentSourceUpdateInput {
+  sourceId: string;
+  patch: Partial<AoiEnvironmentSource>;
+}
+
+export interface AoiEnvironmentSourceUpdateResult {
+  sessionPath: string;
+  registry: AoiEnvironmentSourceRegistry;
+  status?: AoiAutonomyStatus;
 }
 
 export interface AoiAutonomyProposalDecisionResult {
@@ -314,14 +333,35 @@ export async function fetchAoiMissionState(
   };
 }
 
+export async function fetchAoiEnvironmentSources(
+  sessionPath: string,
+): Promise<AoiEnvironmentSourceListResponse> {
+  const response = await fetch(`${API_PREFIX}/sources?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi environment sources.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    registry: requireRecordField<AoiEnvironmentSourceRegistry>(
+      payload,
+      'registry',
+      'Aoi environment source response was malformed.',
+    ),
+  };
+}
+
 export async function fetchAoiAutonomyDashboard(
   sessionPath: string,
 ): Promise<AoiAutonomyDashboardSnapshot> {
-  const [status, proposals, goals, mission, evaluation] = await Promise.all([
+  const [status, proposals, goals, mission, environmentSources, evaluation] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
     fetchAoiAutonomyGoals(sessionPath),
     fetchAoiMissionState(sessionPath),
+    fetchAoiEnvironmentSources(sessionPath),
     fetchAoiAutonomyEvaluation(sessionPath),
   ]);
 
@@ -331,6 +371,7 @@ export async function fetchAoiAutonomyDashboard(
     proposals,
     goals,
     mission: mission.mission,
+    environmentSources: environmentSources.registry,
     evaluation: evaluation.evaluation,
   };
 }
@@ -357,6 +398,36 @@ export async function updateAoiAutonomyPolicy(
       'policy',
       'Aoi autonomy policy response was malformed.',
     ),
+  };
+}
+
+export async function updateAoiEnvironmentSource(
+  sessionPath: string,
+  input: AoiEnvironmentSourceUpdateInput,
+): Promise<AoiEnvironmentSourceUpdateResult> {
+  const response = await fetch(`${API_PREFIX}/sources`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      sourceId: input.sourceId,
+      patch: input.patch,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to update Aoi environment source.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    registry: requireRecordField<AoiEnvironmentSourceRegistry>(
+      payload,
+      'registry',
+      'Aoi environment source response was malformed.',
+    ),
+    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
   };
 }
 

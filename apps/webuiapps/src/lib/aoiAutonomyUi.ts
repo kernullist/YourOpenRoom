@@ -1,6 +1,7 @@
 import {
   AOI_AUTONOMY_LEVEL_ORDER,
   DEFAULT_AOI_AUTONOMY_POLICY,
+  checkAoiEnvironmentSourceOperation,
   checkAoiProposalPolicy,
 } from './aoiAutonomyPolicy';
 import type {
@@ -10,6 +11,9 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
   AoiAutonomyStatus,
+  AoiEnvironmentSource,
+  AoiEnvironmentSourceOperation,
+  AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
 } from './aoiAutonomyTypes';
@@ -129,6 +133,25 @@ export interface AoiMissionPanelSummary {
   resumeTitle: string;
   showEvidenceLabel: string;
   showEvidenceTitle: string;
+}
+
+export interface AoiEnvironmentSourcePanelSummary {
+  id: string;
+  label: string;
+  kindLabel: string;
+  enabled: boolean;
+  enabledLabel: string;
+  scopeLabel: string;
+  risk: AoiAutonomyRisk;
+  riskLabel: string;
+  privateLabel: string;
+  operationsLabel: string;
+  quietModeLabel: string;
+  lastObservedLabel: string;
+  consentSummary: string;
+  gateReason: string;
+  canToggle: boolean;
+  toggleTitle: string;
 }
 
 export interface AoiProposalActionPresentation {
@@ -1049,6 +1072,85 @@ export function buildAoiMissionPanelSummary(
     showEvidenceLabel: 'Show evidence',
     showEvidenceTitle: 'Show mission evidence and source references.',
   };
+}
+
+function formatAoiEnvironmentSourceKind(kind: string): string {
+  return kind.replace(/_/g, ' ');
+}
+
+function formatAoiEnvironmentSourceOperations(operations: AoiEnvironmentSourceOperation[]): string {
+  if (operations.length === 0) {
+    return 'No operations';
+  }
+  return operations.map((operation) => operation.replace(/_/g, ' ')).join(', ');
+}
+
+function buildAoiEnvironmentSourceGateReason(
+  source: AoiEnvironmentSource,
+  registry: AoiEnvironmentSourceRegistry,
+  operation: AoiEnvironmentSourceOperation,
+): string {
+  const policy = checkAoiEnvironmentSourceOperation({
+    registry,
+    sourceId: source.id,
+    operation,
+  });
+  if (policy.allowed) {
+    return 'Allowed for registry metadata only.';
+  }
+  return policy.reasons
+    .map((reason) => reason.replace(/_/g, ' '))
+    .map((reason) => sanitizeAoiProposalDisplayText(reason, 120))
+    .join(' / ');
+}
+
+export function buildAoiEnvironmentSourcePanelSummaries(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  options: { operation?: AoiEnvironmentSourceOperation; now?: number } = {},
+): AoiEnvironmentSourcePanelSummary[] {
+  if (!registry) {
+    return [];
+  }
+  const operation = options.operation ?? 'summarize';
+  return registry.sources.map((source) => {
+    const gatedFromEnable = !source.enabled && (source.risk === 'high' || source.privateByDefault);
+    const consentSummary = source.consentReason
+      ? source.consentReason
+      : gatedFromEnable
+        ? 'Explicit target consent is required before Aoi can use this source.'
+        : 'No consent reason recorded.';
+
+    return {
+      id: source.id,
+      label: sanitizeAoiProposalDisplayText(source.label, 96),
+      kindLabel: sanitizeAoiProposalDisplayText(formatAoiEnvironmentSourceKind(source.kind), 80),
+      enabled: source.enabled,
+      enabledLabel: source.enabled ? 'Enabled' : 'Disabled',
+      scopeLabel: sanitizeAoiProposalDisplayText(source.scope.replace(/_/g, ' '), 60),
+      risk: source.risk,
+      riskLabel: source.risk,
+      privateLabel: source.privateByDefault ? 'private by default' : 'metadata only',
+      operationsLabel: sanitizeAoiProposalDisplayText(
+        formatAoiEnvironmentSourceOperations(source.allowedOperations),
+        160,
+      ),
+      quietModeLabel:
+        source.quietModeBehavior === 'suppress'
+          ? 'Quiet mode suppresses UI'
+          : 'Quiet mode records only',
+      lastObservedLabel: source.lastObservedAt
+        ? new Date(source.lastObservedAt).toLocaleString()
+        : 'Not observed',
+      consentSummary: sanitizeAoiProposalDisplayText(consentSummary, 180),
+      gateReason: buildAoiEnvironmentSourceGateReason(source, registry, operation),
+      canToggle: !gatedFromEnable,
+      toggleTitle: gatedFromEnable
+        ? 'This high-risk or private source needs an explicit target flow before enabling.'
+        : source.enabled
+          ? 'Disable this environment source.'
+          : 'Enable this environment source for metadata-only observation.',
+    };
+  });
 }
 
 export function buildAoiMissionResumePrompt(mission: AoiMissionState | null | undefined): string {

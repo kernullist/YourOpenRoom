@@ -6,6 +6,7 @@ import {
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
+  buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalActionPresentation,
@@ -19,7 +20,12 @@ import {
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
-import type { AoiAutonomyPolicy, AoiMissionState, AoiProposal } from '../aoiAutonomyTypes';
+import type {
+  AoiAutonomyPolicy,
+  AoiEnvironmentSourceRegistry,
+  AoiMissionState,
+  AoiProposal,
+} from '../aoiAutonomyTypes';
 
 function makePolicy(partial: Partial<AoiAutonomyPolicy> = {}): AoiAutonomyPolicy {
   return {
@@ -86,6 +92,46 @@ function makeMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
     transitions: [],
     createdAt: 1000,
     updatedAt: 2000,
+    ...partial,
+  };
+}
+
+function makeEnvironmentSourceRegistry(
+  partial: Partial<AoiEnvironmentSourceRegistry> = {},
+): AoiEnvironmentSourceRegistry {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    updatedAt: 1000,
+    sources: [
+      {
+        version: 1,
+        id: 'app-state',
+        kind: 'app_state',
+        label: 'OpenRoom app state',
+        enabled: true,
+        scope: 'session',
+        risk: 'low',
+        allowedOperations: ['summarize', 'status', 'read_metadata'],
+        privateByDefault: false,
+        quietModeBehavior: 'record_only',
+        updatedAt: 1000,
+      },
+      {
+        version: 1,
+        id: 'browser-context',
+        kind: 'browser_context',
+        label: 'Explicit page at F:\\kernullist\\YourOpenRoom\\secret.md',
+        enabled: false,
+        scope: 'explicit_target',
+        risk: 'high',
+        allowedOperations: ['summarize', 'read_metadata'],
+        privateByDefault: true,
+        quietModeBehavior: 'suppress',
+        consentReason: 'Use api_key=secret-value only for this page.',
+        updatedAt: 1000,
+      },
+    ],
     ...partial,
   };
 }
@@ -352,6 +398,29 @@ describe('Aoi autonomy UI helpers', () => {
     expect(explanation.messageSummary).not.toContain('secret-value');
     expect(explanation.details.join(' ')).toContain('[private secret]');
     expect(explanation.details.join(' ')).not.toContain('ghp_1234567890abcdefghijkl');
+  });
+
+  it('redacts private environment source summaries and shows gated sources', () => {
+    const summaries = buildAoiEnvironmentSourcePanelSummaries(makeEnvironmentSourceRegistry());
+    const browser = summaries.find((summary) => summary.id === 'browser-context');
+    const app = summaries.find((summary) => summary.id === 'app-state');
+
+    expect(app).toMatchObject({
+      enabled: true,
+      canToggle: true,
+      gateReason: 'Allowed for registry metadata only.',
+    });
+    expect(browser).toMatchObject({
+      enabled: false,
+      canToggle: false,
+      riskLabel: 'high',
+      privateLabel: 'private by default',
+    });
+    expect(browser?.label).toContain('[local path]');
+    expect(browser?.consentSummary).toContain('api_key=[private secret]');
+    expect(browser?.consentSummary).not.toContain('secret-value');
+    expect(browser?.gateReason).toContain('source disabled');
+    expect(browser?.toggleTitle).toContain('explicit target');
   });
 
   it('builds short proactive message summaries with the full explanation contract', () => {

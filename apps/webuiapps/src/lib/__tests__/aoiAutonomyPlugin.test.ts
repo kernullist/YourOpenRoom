@@ -7,6 +7,7 @@ describe('Aoi autonomy plugin routes', () => {
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/tick')).toBe('/tick');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goals')).toBe('/goals');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/evaluation')).toBe('/evaluation');
+    expect(getAoiAutonomyRoute('/api/aoi-autonomy/sources')).toBe('/sources');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/decision')).toBe('/goal/decision');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/check')).toBe('/goal/check');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/proposal/feedback')).toBe('/proposal/feedback');

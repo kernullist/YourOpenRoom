@@ -2,6 +2,50 @@ export type AoiAutonomyLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export type AoiAutonomyRisk = 'low' | 'medium' | 'high';
 
+export type AoiEnvironmentSourceKind =
+  | 'workspace_git'
+  | 'workspace_build'
+  | 'kira_board'
+  | 'research_runs'
+  | 'app_state'
+  | 'browser_context'
+  | 'manual_note';
+
+export type AoiEnvironmentSourceOperation = 'summarize' | 'status' | 'diff' | 'read_metadata';
+
+export type AoiEnvironmentSourceScope = 'session' | 'project' | 'workspace' | 'explicit_target';
+
+export type AoiEnvironmentSourceQuietModeBehavior = 'record_only' | 'suppress';
+
+export interface AoiEnvironmentSource {
+  version: 1;
+  id: string;
+  kind: AoiEnvironmentSourceKind;
+  label: string;
+  enabled: boolean;
+  scope: AoiEnvironmentSourceScope;
+  risk: AoiAutonomyRisk;
+  allowedOperations: AoiEnvironmentSourceOperation[];
+  privateByDefault: boolean;
+  quietModeBehavior: AoiEnvironmentSourceQuietModeBehavior;
+  updatedAt: number;
+  lastObservedAt?: number;
+  consentReason?: string;
+}
+
+export interface AoiEnvironmentSourceRegistry {
+  version: 1;
+  sessionPath: string;
+  sources: AoiEnvironmentSource[];
+  updatedAt: number;
+}
+
+export interface AoiEnvironmentSourcePolicyCheckResult {
+  allowed: boolean;
+  reasons: string[];
+  source?: AoiEnvironmentSource;
+}
+
 export type AoiProposalStatus =
   | 'active'
   | 'accepted'
@@ -502,6 +546,11 @@ export interface AoiAutonomyStatus {
   activeGoalCount: number;
   currentGoalTitle?: string;
   nextGoalStepTitle?: string;
+  environmentSourceCount?: number;
+  enabledEnvironmentSourceCount?: number;
+  highRiskEnvironmentSourceCount?: number;
+  privateEnvironmentSourceCount?: number;
+  lastEnvironmentSourceObservedAt?: number;
   updatedAt: number;
 }
 

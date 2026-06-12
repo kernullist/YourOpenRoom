@@ -10,6 +10,7 @@ import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
   isValidAoiAutonomyId,
+  loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
@@ -20,6 +21,7 @@ import {
   normalizeAoiAutonomySessionPath,
   resolveAoiAutonomyPaths,
   saveAoiActiveProposals,
+  updateAoiEnvironmentSource,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
 import type { AoiObservation, AoiProposal, AoiReflection } from '../aoiAutonomyTypes';
@@ -117,6 +119,112 @@ describe('Aoi autonomy policy storage', () => {
       updatedAt: 1234,
     });
     expect(loadAoiAutonomyPolicy(root, 'aoi/default')).toMatchObject(saved);
+  });
+});
+
+describe('Aoi environment source registry storage', () => {
+  it('loads default registry without creating a separate settings island', () => {
+    const root = makeTempRoot();
+    const registry = loadAoiEnvironmentSourceRegistry(root, 'aoi/default', 1000);
+    const paths = resolveAoiAutonomyPaths(root, 'aoi/default');
+
+    expect(paths.environmentSources).toBe(join(paths.root, 'environment-sources.json'));
+    expect(registry).toMatchObject({
+      version: 1,
+      sessionPath: 'aoi/default',
+      updatedAt: 1000,
+    });
+    expect(registry.sources.map((source) => source.id)).toEqual([
+      'workspace-git',
+      'workspace-build',
+      'kira-board',
+      'research-runs',
+      'app-state',
+      'browser-context',
+      'manual-note',
+    ]);
+    expect(registry.sources.find((source) => source.id === 'browser-context')).toMatchObject({
+      enabled: false,
+      risk: 'high',
+      privateByDefault: true,
+      scope: 'explicit_target',
+    });
+  });
+
+  it('updates source state through the autonomy store and keeps status counts current', () => {
+    const root = makeTempRoot();
+
+    const updated = updateAoiEnvironmentSource(root, 'aoi/default', {
+      sourceId: 'workspace-git',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled git metadata for the current mission.',
+        lastObservedAt: 1500,
+      },
+      now: 2000,
+    });
+
+    expect(updated.sources.find((source) => source.id === 'workspace-git')).toMatchObject({
+      enabled: true,
+      consentReason: 'User enabled git metadata for the current mission.',
+      lastObservedAt: 1500,
+      updatedAt: 2000,
+    });
+    expect(loadAoiEnvironmentSourceRegistry(root, 'aoi/default', 3000)).toMatchObject(updated);
+
+    const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);
+    expect(status).toMatchObject({
+      environmentSourceCount: 7,
+      enabledEnvironmentSourceCount: 5,
+      highRiskEnvironmentSourceCount: 1,
+      privateEnvironmentSourceCount: 1,
+      lastEnvironmentSourceObservedAt: 1500,
+    });
+  });
+
+  it('does not let source updates rewrite structural policy metadata', () => {
+    const root = makeTempRoot();
+
+    const updated = updateAoiEnvironmentSource(root, 'aoi/default', {
+      sourceId: 'browser-context',
+      patch: {
+        enabled: true,
+        kind: 'app_state',
+        label: 'Low risk browser',
+        risk: 'low',
+        scope: 'session',
+        allowedOperations: ['diff'],
+        privateByDefault: false,
+        consentReason: '',
+      },
+      now: 3000,
+    });
+    const browserSource = updated.sources.find((source) => source.id === 'browser-context');
+
+    expect(browserSource).toMatchObject({
+      enabled: true,
+      kind: 'browser_context',
+      label: 'Explicit browser page context',
+      risk: 'high',
+      scope: 'explicit_target',
+      allowedOperations: ['summarize', 'read_metadata'],
+      privateByDefault: true,
+      updatedAt: 3000,
+    });
+    expect(browserSource?.consentReason).toBeUndefined();
+  });
+
+  it('rejects unknown source updates', () => {
+    const root = makeTempRoot();
+
+    expect(() =>
+      updateAoiEnvironmentSource(root, 'aoi/default', {
+        sourceId: 'missing-source',
+        patch: {
+          enabled: true,
+        },
+      }),
+    ).toThrow(/not found/);
   });
 });
 

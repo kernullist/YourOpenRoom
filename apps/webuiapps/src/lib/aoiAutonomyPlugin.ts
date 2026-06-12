@@ -16,12 +16,14 @@ import {
   applyAoiProposalFeedback,
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
+  loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiObservations,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
+  updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { applyAoiMissionDecision, deriveAoiMissionState } from './aoiAutonomyMission';
 import type { AoiAutonomyTickReason } from './aoiAutonomyTypes';
@@ -245,6 +247,23 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/sources') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        registry: loadAoiEnvironmentSourceRegistry(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/policy') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -261,6 +280,42 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         policy,
       });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/sources') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const sourceId = typeof body.sourceId === 'string' ? body.sourceId : '';
+      const patch =
+        body.patch && typeof body.patch === 'object' && !Array.isArray(body.patch)
+          ? body.patch
+          : {};
+      try {
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          registry: updateAoiEnvironmentSource(sessionsDir, sessionPath, {
+            sourceId,
+            patch,
+          }),
+          status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+        });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const statusCode = message.includes('not found') ? 404 : 400;
+        writeJson(res, statusCode, {
+          error: message,
+          code: statusCode === 404 ? 'source_not_found' : 'invalid_source_update',
+        });
+      }
       return true;
     }
 

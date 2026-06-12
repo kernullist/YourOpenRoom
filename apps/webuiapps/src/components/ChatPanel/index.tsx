@@ -216,6 +216,7 @@ import {
   previewAoiProposalAction,
   recordAoiProposalFeedback,
   runAoiAutonomyManualTick,
+  updateAoiEnvironmentSource,
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalPreviewResult,
   type AoiAutonomyProposalExecutionResult,
@@ -225,6 +226,7 @@ import {
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
+  buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalActionPresentation,
@@ -245,6 +247,8 @@ import type {
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
+  AoiEnvironmentSource,
+  AoiEnvironmentSourceRegistry,
   AoiGoal,
   AoiMissionDecisionAction,
   AoiMissionState,
@@ -1903,6 +1907,8 @@ const ChatPanel: React.FC<{
   );
   const [aoiAutonomyActiveGoals, setAoiAutonomyActiveGoals] = useState<AoiGoal[]>([]);
   const [aoiMissionState, setAoiMissionState] = useState<AoiMissionState | null>(null);
+  const [aoiEnvironmentSources, setAoiEnvironmentSources] =
+    useState<AoiEnvironmentSourceRegistry | null>(null);
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
@@ -2070,6 +2076,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyArchivedProposals([]);
     setAoiAutonomyActiveGoals([]);
     setAoiMissionState(null);
+    setAoiEnvironmentSources(null);
     setAoiAutonomyEvaluation(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
@@ -2490,6 +2497,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
       setAoiMissionState(snapshot.mission);
+      setAoiEnvironmentSources(snapshot.environmentSources);
       setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2557,6 +2565,34 @@ const ChatPanel: React.FC<{
               }
             : null,
         );
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  const updateAoiEnvironmentSourceFromPanel = useCallback(
+    async (sourceId: string, patch: Partial<AoiEnvironmentSource>) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy) {
+        return;
+      }
+      const actionId = `source:${sourceId}`;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      try {
+        const result = await updateAoiEnvironmentSource(sessionPathForAutonomy, {
+          sourceId,
+          patch,
+        });
+        setAoiEnvironmentSources(result.registry);
+        if (result.status) {
+          setAoiAutonomyStatus(result.status);
+        }
         await refreshAoiAutonomy({ silent: true });
       } catch (error) {
         setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -5861,6 +5897,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
           aoiMissionState={aoiMissionState}
+          aoiEnvironmentSources={aoiEnvironmentSources}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
@@ -5880,6 +5917,7 @@ const ChatPanel: React.FC<{
           onRefreshAoiAutonomy={refreshAoiAutonomy}
           onAdvancedTabVisible={handleAoiAutonomyAdvancedVisible}
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
+          onUpdateAoiEnvironmentSource={updateAoiEnvironmentSourceFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiMission={decideAoiMissionFromPanel}
@@ -6315,6 +6353,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyArchivedProposals: AoiProposal[];
   aoiAutonomyActiveGoals: AoiGoal[];
   aoiMissionState: AoiMissionState | null;
+  aoiEnvironmentSources: AoiEnvironmentSourceRegistry | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
@@ -6339,6 +6378,10 @@ const SettingsModal: React.FC<{
   onRefreshAoiAutonomy: (options?: { silent?: boolean }) => Promise<void>;
   onAdvancedTabVisible: () => void;
   onUpdateAoiAutonomyPolicy: (patch: Partial<AoiAutonomyPolicy>) => Promise<void>;
+  onUpdateAoiEnvironmentSource: (
+    sourceId: string,
+    patch: Partial<AoiEnvironmentSource>,
+  ) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
   onDecideAoiMission: (action: AoiMissionDecisionAction) => Promise<void>;
@@ -6386,6 +6429,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyArchivedProposals,
   aoiAutonomyActiveGoals,
   aoiMissionState,
+  aoiEnvironmentSources,
   aoiAutonomyEvaluation,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
@@ -6405,6 +6449,7 @@ const SettingsModal: React.FC<{
   onRefreshAoiAutonomy,
   onAdvancedTabVisible,
   onUpdateAoiAutonomyPolicy,
+  onUpdateAoiEnvironmentSource,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
   onDecideAoiMission,
@@ -6640,6 +6685,17 @@ const SettingsModal: React.FC<{
     () => buildAoiMissionPanelSummary(aoiMissionState, expandedAoiMissionEvidence),
     [aoiMissionState, expandedAoiMissionEvidence],
   );
+  const aoiEnvironmentSourceSummaries = useMemo(
+    () => buildAoiEnvironmentSourcePanelSummaries(aoiEnvironmentSources),
+    [aoiEnvironmentSources],
+  );
+  const enabledAoiEnvironmentSourceCount =
+    aoiAutonomyStatus?.enabledEnvironmentSourceCount ??
+    aoiEnvironmentSourceSummaries.filter((source) => source.enabled).length;
+  const privateAoiEnvironmentSourceCount =
+    aoiAutonomyStatus?.privateEnvironmentSourceCount ??
+    aoiEnvironmentSourceSummaries.filter((source) => source.privateLabel === 'private by default')
+      .length;
   const [autoVerifyFixes, setAutoVerifyFixes] = useState(toolSafetyPolicy.autoVerifyFixes);
   const [allowWorkspaceCommands, setAllowWorkspaceCommands] = useState(
     toolSafetyPolicy.allowWorkspaceCommands,
@@ -8219,6 +8275,18 @@ const SettingsModal: React.FC<{
                         <span className={styles.promptBudgetLabel}>Next goal step</span>
                         <strong>{aoiAutonomyNextGoalStepLabel}</strong>
                       </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Sources</span>
+                        <strong>
+                          {enabledAoiEnvironmentSourceCount} /{' '}
+                          {aoiAutonomyStatus?.environmentSourceCount ??
+                            aoiEnvironmentSourceSummaries.length}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Private gated</span>
+                        <strong>{privateAoiEnvironmentSourceCount}</strong>
+                      </div>
                     </div>
 
                     <div className={styles.aoiAutonomyControls}>
@@ -8330,6 +8398,60 @@ const SettingsModal: React.FC<{
                           ))}
                         </select>
                       </div>
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Environment sources</div>
+                      {aoiEnvironmentSourceSummaries.length > 0 ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {aoiEnvironmentSourceSummaries.map((source) => (
+                            <div className={styles.aoiAutonomyProposalItem} key={source.id}>
+                              <div className={styles.aoiAutonomyProposalMeta}>
+                                <span>{source.enabledLabel}</span>
+                                <span>{source.kindLabel}</span>
+                                <span>risk {source.riskLabel}</span>
+                                <span>scope {source.scopeLabel}</span>
+                                <span>{source.privateLabel}</span>
+                              </div>
+                              <div className={styles.aoiAutonomyProposalTitle}>{source.label}</div>
+                              <div className={styles.aoiAutonomyProposalReason}>
+                                {source.operationsLabel}
+                              </div>
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                <div>{source.consentSummary}</div>
+                                <div>{source.gateReason}</div>
+                                <div>{source.quietModeLabel}</div>
+                                <div>Last observed: {source.lastObservedLabel}</div>
+                              </div>
+                              <div className={styles.aoiAutonomyProposalActions}>
+                                <button
+                                  type="button"
+                                  className={source.enabled ? styles.saveBtn : styles.cancelBtn}
+                                  onClick={() =>
+                                    void onUpdateAoiEnvironmentSource(source.id, {
+                                      enabled: !source.enabled,
+                                      consentReason: !source.enabled
+                                        ? 'User enabled metadata-only observation in Aoi Autonomy panel.'
+                                        : undefined,
+                                    })
+                                  }
+                                  disabled={
+                                    !source.canToggle ||
+                                    aoiAutonomyActionId === `source:${source.id}`
+                                  }
+                                  title={source.toggleTitle}
+                                >
+                                  {source.enabled ? 'Enabled' : 'Disabled'}
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>
+                          Environment sources will appear after autonomy state refresh.
+                        </p>
+                      )}
                     </div>
 
                     <div className={styles.aoiAutonomyProposalSection}>

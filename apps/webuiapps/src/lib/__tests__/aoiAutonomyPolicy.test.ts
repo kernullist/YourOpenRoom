@@ -8,10 +8,13 @@ import {
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
   applyAoiFeedbackCalibrationToProposal,
+  checkAoiEnvironmentSourceOperation,
   checkAoiProposalPolicy,
   compareAoiAutonomyLevel,
+  getDefaultAoiEnvironmentSourceRegistry,
   evaluateAoiProposalExecution,
   getAoiFeedbackAdjustedCooldownMs,
+  isAoiEnvironmentSourceEnabled,
   getAoiProposalFeedbackPriorityBoost,
   getAoiToolAutonomyPolicy,
   isAoiToolAllowedAtLevel,
@@ -108,6 +111,98 @@ describe('Aoi autonomy tool policy', () => {
     expect(unknown.blocked).toBe(true);
     expect(isAoiToolAllowedAtLevel('remote_shell', 'L5')).toBe(false);
     expect(requiresAoiProposalApproval('remote_shell')).toBe(true);
+  });
+});
+
+describe('Aoi environment source policy', () => {
+  it('creates conservative defaults and keeps unknown sources fail-closed', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+
+    expect(registry.sources.map((source) => source.kind)).toEqual([
+      'workspace_git',
+      'workspace_build',
+      'kira_board',
+      'research_runs',
+      'app_state',
+      'browser_context',
+      'manual_note',
+    ]);
+    expect(isAoiEnvironmentSourceEnabled(registry, 'research-runs')).toBe(true);
+    expect(isAoiEnvironmentSourceEnabled(registry, 'workspace-git')).toBe(false);
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry,
+        sourceId: 'unknown-source',
+        operation: 'summarize',
+      }),
+    ).toMatchObject({
+      allowed: false,
+      reasons: ['unknown_source'],
+    });
+  });
+
+  it('requires explicit target consent for browser and private sources', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+
+    const blocked = checkAoiEnvironmentSourceOperation({
+      registry: {
+        ...registry,
+        sources: registry.sources.map((source) =>
+          source.id === 'browser-context'
+            ? {
+                ...source,
+                enabled: true,
+                consentReason: undefined,
+              }
+            : source,
+        ),
+      },
+      sourceId: 'browser-context',
+      operation: 'summarize',
+    });
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reasons).toContain('explicit_target_scope_required');
+
+    const allowed = checkAoiEnvironmentSourceOperation({
+      registry: {
+        ...registry,
+        sources: registry.sources.map((source) =>
+          source.id === 'browser-context'
+            ? {
+                ...source,
+                enabled: true,
+                scope: 'explicit_target',
+                consentReason: 'User attached the current page for this mission.',
+              }
+            : source,
+        ),
+      },
+      sourceId: 'browser-context',
+      operation: 'summarize',
+    });
+    expect(allowed).toMatchObject({
+      allowed: true,
+      reasons: [],
+    });
+  });
+
+  it('blocks disabled sources and disallowed operations', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry,
+        sourceId: 'workspace-git',
+        operation: 'status',
+      }).reasons,
+    ).toContain('source_disabled');
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry,
+        sourceId: 'manual-note',
+        operation: 'diff',
+      }).reasons,
+    ).toContain('operation_not_allowed:diff');
   });
 });
 

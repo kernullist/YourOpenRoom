@@ -3,6 +3,13 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
   AoiAutonomyToolPolicy,
+  AoiEnvironmentSource,
+  AoiEnvironmentSourceKind,
+  AoiEnvironmentSourceOperation,
+  AoiEnvironmentSourcePolicyCheckResult,
+  AoiEnvironmentSourceQuietModeBehavior,
+  AoiEnvironmentSourceRegistry,
+  AoiEnvironmentSourceScope,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalExecutionPolicyContext,
@@ -24,6 +31,116 @@ export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
   L4: 4,
   L5: 5,
 };
+
+export const AOI_ENVIRONMENT_SOURCE_KINDS: readonly AoiEnvironmentSourceKind[] = [
+  'workspace_git',
+  'workspace_build',
+  'kira_board',
+  'research_runs',
+  'app_state',
+  'browser_context',
+  'manual_note',
+];
+
+export const AOI_ENVIRONMENT_SOURCE_OPERATIONS: readonly AoiEnvironmentSourceOperation[] = [
+  'summarize',
+  'status',
+  'diff',
+  'read_metadata',
+];
+
+export const AOI_ENVIRONMENT_SOURCE_SCOPES: readonly AoiEnvironmentSourceScope[] = [
+  'session',
+  'project',
+  'workspace',
+  'explicit_target',
+];
+
+export const AOI_ENVIRONMENT_SOURCE_QUIET_MODE_BEHAVIORS: readonly AoiEnvironmentSourceQuietModeBehavior[] =
+  ['record_only', 'suppress'];
+
+const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
+  AoiEnvironmentSource,
+  'version' | 'updatedAt' | 'lastObservedAt' | 'consentReason'
+>[] = [
+  {
+    id: 'workspace-git',
+    kind: 'workspace_git',
+    label: 'Workspace git status',
+    enabled: false,
+    scope: 'workspace',
+    risk: 'medium',
+    allowedOperations: ['summarize', 'status', 'diff', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'workspace-build',
+    kind: 'workspace_build',
+    label: 'Workspace validation state',
+    enabled: false,
+    scope: 'workspace',
+    risk: 'medium',
+    allowedOperations: ['summarize', 'status', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'kira-board',
+    kind: 'kira_board',
+    label: 'Kira reviewed work',
+    enabled: true,
+    scope: 'project',
+    risk: 'medium',
+    allowedOperations: ['summarize', 'status', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'research-runs',
+    kind: 'research_runs',
+    label: 'Aoi research runs',
+    enabled: true,
+    scope: 'session',
+    risk: 'low',
+    allowedOperations: ['summarize', 'status', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'app-state',
+    kind: 'app_state',
+    label: 'OpenRoom app state',
+    enabled: true,
+    scope: 'session',
+    risk: 'low',
+    allowedOperations: ['summarize', 'status', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'browser-context',
+    kind: 'browser_context',
+    label: 'Explicit browser page context',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['summarize', 'read_metadata'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    id: 'manual-note',
+    kind: 'manual_note',
+    label: 'Manual user notes',
+    enabled: true,
+    scope: 'session',
+    risk: 'low',
+    allowedOperations: ['summarize', 'read_metadata'],
+    privateByDefault: false,
+    quietModeBehavior: 'record_only',
+  },
+];
 
 export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   version: 1,
@@ -178,6 +295,22 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function normalizeText(value: unknown, fallback: string, maxLength: number): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  const normalized = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  return normalized || fallback;
+}
+
+function normalizeOptionalText(value: unknown, maxLength: number): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const normalized = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  return normalized || undefined;
+}
+
 export function isAoiProposalFeedbackCategory(
   value: unknown,
 ): value is AoiProposalFeedbackCategory {
@@ -195,6 +328,37 @@ export function isAoiAutonomyLevel(value: unknown): value is AoiAutonomyLevel {
     value === 'L3' ||
     value === 'L4' ||
     value === 'L5'
+  );
+}
+
+export function isAoiEnvironmentSourceKind(value: unknown): value is AoiEnvironmentSourceKind {
+  return (
+    typeof value === 'string' && (AOI_ENVIRONMENT_SOURCE_KINDS as readonly string[]).includes(value)
+  );
+}
+
+export function isAoiEnvironmentSourceOperation(
+  value: unknown,
+): value is AoiEnvironmentSourceOperation {
+  return (
+    typeof value === 'string' &&
+    (AOI_ENVIRONMENT_SOURCE_OPERATIONS as readonly string[]).includes(value)
+  );
+}
+
+export function isAoiEnvironmentSourceScope(value: unknown): value is AoiEnvironmentSourceScope {
+  return (
+    typeof value === 'string' &&
+    (AOI_ENVIRONMENT_SOURCE_SCOPES as readonly string[]).includes(value)
+  );
+}
+
+export function isAoiEnvironmentSourceQuietModeBehavior(
+  value: unknown,
+): value is AoiEnvironmentSourceQuietModeBehavior {
+  return (
+    typeof value === 'string' &&
+    (AOI_ENVIRONMENT_SOURCE_QUIET_MODE_BEHAVIORS as readonly string[]).includes(value)
   );
 }
 
@@ -252,6 +416,168 @@ export function normalizeAoiAutonomyPolicy(
       fallback.requireApprovalForHighRisk,
     ),
     updatedAt: now,
+  };
+}
+
+function normalizeEnvironmentSourceOperations(
+  value: unknown,
+  fallback: AoiEnvironmentSourceOperation[],
+): AoiEnvironmentSourceOperation[] {
+  const raw = Array.isArray(value) ? value : fallback;
+  const operations = raw.filter(isAoiEnvironmentSourceOperation);
+  return [...new Set(operations.length > 0 ? operations : fallback)];
+}
+
+function defaultAoiEnvironmentSourceMap(now: number): Map<string, AoiEnvironmentSource> {
+  return new Map(
+    DEFAULT_AOI_ENVIRONMENT_SOURCES.map((source) => [
+      source.id,
+      {
+        version: 1,
+        ...source,
+        updatedAt: now,
+      },
+    ]),
+  );
+}
+
+export function normalizeAoiEnvironmentSource(
+  value: unknown,
+  fallback: AoiEnvironmentSource,
+  now = Date.now(),
+): AoiEnvironmentSource {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiEnvironmentSource>)
+      : {};
+  const kind = isAoiEnvironmentSourceKind(raw.kind) ? raw.kind : fallback.kind;
+  const scope = isAoiEnvironmentSourceScope(raw.scope) ? raw.scope : fallback.scope;
+  const risk =
+    raw.risk === 'low' || raw.risk === 'medium' || raw.risk === 'high' ? raw.risk : fallback.risk;
+  const quietModeBehavior = isAoiEnvironmentSourceQuietModeBehavior(raw.quietModeBehavior)
+    ? raw.quietModeBehavior
+    : fallback.quietModeBehavior;
+  const enabled = normalizeBoolean(raw.enabled, fallback.enabled);
+  const privateByDefault = normalizeBoolean(raw.privateByDefault, fallback.privateByDefault);
+  const consentReason = normalizeOptionalText(raw.consentReason, 180);
+
+  return {
+    version: 1,
+    id: fallback.id,
+    kind,
+    label: normalizeText(raw.label, fallback.label, 96),
+    enabled,
+    scope,
+    risk,
+    allowedOperations: normalizeEnvironmentSourceOperations(
+      raw.allowedOperations,
+      fallback.allowedOperations,
+    ),
+    privateByDefault,
+    quietModeBehavior,
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+    ...(typeof raw.lastObservedAt === 'number' && raw.lastObservedAt > 0
+      ? { lastObservedAt: raw.lastObservedAt }
+      : {}),
+    ...(consentReason ? { consentReason } : {}),
+  };
+}
+
+export function normalizeAoiEnvironmentSourceRegistry(
+  value: unknown,
+  sessionPath: string,
+  now = Date.now(),
+): AoiEnvironmentSourceRegistry {
+  const defaults = defaultAoiEnvironmentSourceMap(now);
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiEnvironmentSourceRegistry>)
+      : {};
+  const parsedSources = Array.isArray(raw.sources) ? raw.sources : [];
+  const parsedById = new Map<string, unknown>();
+  for (const source of parsedSources) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      continue;
+    }
+    const id = (source as Partial<AoiEnvironmentSource>).id;
+    if (typeof id === 'string' && defaults.has(id)) {
+      parsedById.set(id, source);
+    }
+  }
+
+  return {
+    version: 1,
+    sessionPath,
+    sources: [...defaults.values()].map((fallback) =>
+      normalizeAoiEnvironmentSource(parsedById.get(fallback.id), fallback, now),
+    ),
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+  };
+}
+
+export function getDefaultAoiEnvironmentSourceRegistry(
+  sessionPath: string,
+  now = Date.now(),
+): AoiEnvironmentSourceRegistry {
+  return normalizeAoiEnvironmentSourceRegistry(null, sessionPath, now);
+}
+
+export function getAoiEnvironmentSource(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  sourceId: string,
+): AoiEnvironmentSource | null {
+  return registry?.sources.find((source) => source.id === sourceId) ?? null;
+}
+
+export function classifyAoiEnvironmentSourceRisk(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  sourceId: string,
+): AoiAutonomyRisk {
+  return getAoiEnvironmentSource(registry, sourceId)?.risk ?? 'high';
+}
+
+export function isAoiEnvironmentSourceEnabled(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  sourceId: string,
+): boolean {
+  return getAoiEnvironmentSource(registry, sourceId)?.enabled === true;
+}
+
+export function isAoiEnvironmentSourcePrivateOrExplicit(source: AoiEnvironmentSource): boolean {
+  return source.privateByDefault || source.kind === 'browser_context' || source.risk === 'high';
+}
+
+export function checkAoiEnvironmentSourceOperation(params: {
+  registry: AoiEnvironmentSourceRegistry | null | undefined;
+  sourceId: string;
+  operation: AoiEnvironmentSourceOperation;
+}): AoiEnvironmentSourcePolicyCheckResult {
+  const source = getAoiEnvironmentSource(params.registry, params.sourceId);
+  const reasons: string[] = [];
+
+  if (!source) {
+    return {
+      allowed: false,
+      reasons: ['unknown_source'],
+    };
+  }
+  if (!source.enabled) {
+    reasons.push('source_disabled');
+  }
+  if (!source.allowedOperations.includes(params.operation)) {
+    reasons.push(`operation_not_allowed:${params.operation}`);
+  }
+  if (
+    isAoiEnvironmentSourcePrivateOrExplicit(source) &&
+    (source.scope !== 'explicit_target' || !source.consentReason)
+  ) {
+    reasons.push('explicit_target_scope_required');
+  }
+
+  return {
+    allowed: reasons.length === 0,
+    reasons,
+    source,
   };
 }
 

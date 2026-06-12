@@ -3,7 +3,9 @@ import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
+  isAoiEnvironmentSourceQuietModeBehavior,
   isAoiProposalFeedbackCategory,
+  normalizeAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomyPolicy,
 } from './aoiAutonomyPolicy';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
@@ -13,6 +15,8 @@ import type {
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickState,
+  AoiEnvironmentSource,
+  AoiEnvironmentSourceRegistry,
   AoiObservation,
   AoiObservationIndex,
   AoiObservationIndexEntry,
@@ -42,6 +46,7 @@ export interface AoiAutonomyPaths {
   decisionsDir: string;
   tickState: string;
   evalDir: string;
+  environmentSources: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -78,6 +83,12 @@ export interface AoiProposalFeedbackInput {
   decisionId: string;
   feedbackCategory: unknown;
   feedbackNote?: unknown;
+}
+
+export interface AoiEnvironmentSourceUpdateInput {
+  sourceId: string;
+  patch: Partial<AoiEnvironmentSource>;
+  now?: number;
 }
 
 export interface AoiProposalDecisionResult {
@@ -320,6 +331,7 @@ export function resolveAoiAutonomyPaths(
     decisionsDir: join(root, 'decisions'),
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
+    environmentSources: join(root, 'environment-sources.json'),
   };
 }
 
@@ -343,6 +355,83 @@ export function saveAoiAutonomyPolicy(
   const normalized = normalizeAoiAutonomyPolicy(policy, current, now);
   writeJsonAtomic(paths.policy, normalized);
   return normalized;
+}
+
+export function loadAoiEnvironmentSourceRegistry(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiEnvironmentSourceRegistry {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  return normalizeAoiEnvironmentSourceRegistry(
+    readJson<Partial<AoiEnvironmentSourceRegistry>>(paths.environmentSources),
+    normalizedSessionPath,
+    now,
+  );
+}
+
+export function saveAoiEnvironmentSourceRegistry(
+  sessionsDir: string,
+  sessionPath: string,
+  registry: unknown,
+  now = Date.now(),
+): AoiEnvironmentSourceRegistry {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const normalized = normalizeAoiEnvironmentSourceRegistry(registry, normalizedSessionPath, now);
+  writeJsonAtomic(paths.environmentSources, normalized);
+  return normalized;
+}
+
+export function updateAoiEnvironmentSource(
+  sessionsDir: string,
+  sessionPath: string,
+  input: AoiEnvironmentSourceUpdateInput,
+): AoiEnvironmentSourceRegistry {
+  const now = input.now ?? Date.now();
+  const current = loadAoiEnvironmentSourceRegistry(sessionsDir, sessionPath, now);
+  const target = current.sources.find((source) => source.id === input.sourceId);
+  if (!target) {
+    throw new Error('Aoi environment source not found.');
+  }
+  const nextConsentReason = Object.prototype.hasOwnProperty.call(input.patch, 'consentReason')
+    ? normalizeOptionalText(input.patch.consentReason, 180)
+    : target.consentReason;
+  const nextLastObservedAt = Object.prototype.hasOwnProperty.call(input.patch, 'lastObservedAt')
+    ? typeof input.patch.lastObservedAt === 'number'
+      ? input.patch.lastObservedAt
+      : undefined
+    : target.lastObservedAt;
+  const nextQuietModeBehavior = isAoiEnvironmentSourceQuietModeBehavior(
+    input.patch.quietModeBehavior,
+  )
+    ? input.patch.quietModeBehavior
+    : target.quietModeBehavior;
+  const next: AoiEnvironmentSourceRegistry = {
+    ...current,
+    sources: current.sources.map((source) =>
+      source.id === input.sourceId
+        ? {
+            ...source,
+            enabled:
+              typeof input.patch.enabled === 'boolean' ? input.patch.enabled : source.enabled,
+            quietModeBehavior: nextQuietModeBehavior,
+            consentReason: nextConsentReason,
+            lastObservedAt: nextLastObservedAt,
+            updatedAt: now,
+          }
+        : source,
+    ),
+    updatedAt: now,
+  };
+  return saveAoiEnvironmentSourceRegistry(sessionsDir, sessionPath, next, now);
 }
 
 function normalizeRecordSessionPath<T extends { sessionPath: string }>(record: T): T {
@@ -1103,6 +1192,11 @@ export function buildAoiAutonomyStatus(
   const reflections = loadAoiReflections(sessionsDir, normalizedSessionPath);
   const decisions = loadAoiProposalDecisions(sessionsDir, normalizedSessionPath);
   const tickState = loadAoiAutonomyTickState(sessionsDir, normalizedSessionPath, now);
+  const environmentSources = loadAoiEnvironmentSourceRegistry(
+    sessionsDir,
+    normalizedSessionPath,
+    now,
+  );
   const activeGoals = loadAoiActiveGoals(sessionsDir, normalizedSessionPath).filter(
     (goal) => goal.status === 'active' || goal.status === 'blocked' || goal.status === 'paused',
   );
@@ -1138,6 +1232,19 @@ export function buildAoiAutonomyStatus(
     activeGoalCount: activeGoals.length,
     currentGoalTitle: currentGoal?.title,
     nextGoalStepTitle: nextGoalStep?.title,
+    environmentSourceCount: environmentSources.sources.length,
+    enabledEnvironmentSourceCount: environmentSources.sources.filter((source) => source.enabled)
+      .length,
+    highRiskEnvironmentSourceCount: environmentSources.sources.filter(
+      (source) => source.risk === 'high',
+    ).length,
+    privateEnvironmentSourceCount: environmentSources.sources.filter(
+      (source) => source.privateByDefault,
+    ).length,
+    lastEnvironmentSourceObservedAt: environmentSources.sources
+      .map((source) => source.lastObservedAt ?? 0)
+      .filter((observedAt) => observedAt > 0)
+      .sort((left, right) => right - left)[0],
     updatedAt: now,
   };
 }
