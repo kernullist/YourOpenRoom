@@ -29,6 +29,11 @@ const RISK_SCORE: Record<AoiAutonomyRisk, number> = {
 const WINDOWS_PRIVATE_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'"`<>|]+/g;
 const UNIX_PRIVATE_PATH_PATTERN =
   /(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace)\/[^\s'"`<>|]+)/g;
+const PRIVATE_KEY_BLOCK_PATTERN =
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g;
+const SECRET_TOKEN_PATTERN = /\b(?:sk|pk|ghp|github_pat|xox[baprs])[-_][A-Za-z0-9_=-]{12,}/gi;
+const SECRET_ASSIGNMENT_PATTERN =
+  /\b(api[_ -]?key|access[_ -]?token|refresh[_ -]?token|id[_ -]?token|password|passwd|secret|client[_ -]?secret|private[_ -]?key)\b\s*[:=]\s*['"]?[^'"\s,;]+/gi;
 
 export interface AoiInlineProposalSelectionOptions {
   now?: number;
@@ -73,6 +78,24 @@ export interface AoiProposalInspectorSummary {
   policyReasons: string[];
   evidenceRefs: string[];
   safeAlternative: string;
+}
+
+export interface AoiProactiveExplanation {
+  whyNow: string;
+  whatChanged: string;
+  evidenceRefs: string[];
+  evidenceSummary: string;
+  evidenceCount: number;
+  confidence: number;
+  confidenceLabel: string;
+  risk: AoiAutonomyRisk;
+  safeNextAction: string;
+  willNotDoWithoutApproval: string;
+  oneLineRationale: string;
+  messageSummary: string;
+  approvalBoundary: string;
+  details: string[];
+  lowEvidence: boolean;
 }
 
 export interface AoiRecoveryPreviewSummary {
@@ -209,6 +232,9 @@ export function saveAoiAutonomyPanelSettings(
 
 export function sanitizeAoiProposalDisplayText(value: string, maxLength = 520): string {
   const withoutPrivatePaths = value
+    .replace(PRIVATE_KEY_BLOCK_PATTERN, '[private secret]')
+    .replace(SECRET_TOKEN_PATTERN, '[private secret]')
+    .replace(SECRET_ASSIGNMENT_PATTERN, (_match, key: string) => `${key}=[private secret]`)
     .replace(WINDOWS_PRIVATE_PATH_PATTERN, '[local path]')
     .replace(UNIX_PRIVATE_PATH_PATTERN, '[local path]');
   const compact = withoutPrivatePaths.replace(/\s+/g, ' ').trim();
@@ -218,6 +244,210 @@ export function sanitizeAoiProposalDisplayText(value: string, maxLength = 520): 
   }
 
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function formatAoiEvidenceSummary(evidenceCount: number): string {
+  if (evidenceCount <= 0) {
+    return 'Limited evidence: no evidence refs are attached yet.';
+  }
+  return `${evidenceCount} evidence ref${evidenceCount === 1 ? '' : 's'} attached; details stay in the panel.`;
+}
+
+function getAoiConfidenceLabel(confidence: number, evidenceCount: number): string {
+  if (evidenceCount <= 0 || confidence < 0.55) {
+    return 'low evidence';
+  }
+  if (confidence < 0.7) {
+    return 'moderate confidence';
+  }
+  return 'good confidence';
+}
+
+function triggerLabel(trigger: string): string {
+  const normalized = sanitizeAoiProposalDisplayText(trigger.replace(/[_-]+/g, ' '), 80);
+  return normalized || 'background check';
+}
+
+function describeAoiProposalChange(proposal: AoiProposal, policyReasons: string[]): string {
+  if (proposal.blockedReason || policyReasons.length > 0 || proposal.status === 'blocked') {
+    return 'A policy or evidence gate is blocking the next step.';
+  }
+  if (proposal.recoveryPreview) {
+    return `A narrower recovery proposal is available after ${proposal.recoveryPreview.failureKind.replace(/_/g, ' ')}.`;
+  }
+  if (proposal.trigger === 'attention_broker') {
+    return 'A background event surfaced a proposal worth reviewing.';
+  }
+  if (proposal.trigger === 'kira_outcome_followup') {
+    return 'Reviewed Kira work produced one follow-up note.';
+  }
+  if (proposal.trigger === 'goal_continuation') {
+    return 'The active goal has a proposed next step.';
+  }
+  if (proposal.evidenceRefs.length <= 0) {
+    return 'A proposal exists, but supporting evidence is incomplete.';
+  }
+  return `A ${triggerLabel(proposal.trigger)} proposal is ready for review.`;
+}
+
+function getAoiApprovalBoundary(
+  proposal: AoiProposal,
+  action: AoiProposalActionPresentation,
+): string {
+  if (proposal.acceptAction?.kind === 'create_kira_work') {
+    return 'I will not edit files directly; approval only creates one reviewed Kira work item.';
+  }
+  if (proposal.acceptAction?.kind === 'start_research') {
+    return 'I will not start a research run without explicit approval.';
+  }
+  if (proposal.acceptAction?.kind === 'save_memory') {
+    return 'I will not promote memory or create a skill draft without explicit approval.';
+  }
+  if (proposal.risk === 'high') {
+    return 'High-risk work needs fresh explicit approval before any action.';
+  }
+  if (proposal.requiresUserApproval || proposal.acceptAction) {
+    return 'I will not run tools or change state without explicit approval.';
+  }
+  if (action.primaryRole === 'none') {
+    return 'This explanation does not run tools or change state.';
+  }
+  return action.mutationBoundary;
+}
+
+export function buildAoiProactiveExplanation(params: {
+  proposal: AoiProposal;
+  policy?: AoiAutonomyPolicy | null;
+  activeProposals?: AoiProposal[];
+  includeEvidence?: boolean;
+  hasKiraPreview?: boolean;
+  now?: number;
+}): AoiProactiveExplanation {
+  const policy = params.policy ?? DEFAULT_AOI_AUTONOMY_POLICY;
+  const policyResult = checkAoiProposalPolicy({
+    policy,
+    proposal: params.proposal,
+    activeProposals: params.activeProposals,
+    now: params.now,
+  });
+  const action = buildAoiProposalActionPresentation(params.proposal, {
+    hasKiraPreview: params.hasKiraPreview,
+  });
+  const evidenceCount = params.proposal.evidenceRefs.length;
+  const lowEvidence = evidenceCount <= 0 || params.proposal.confidence < 0.55;
+  const reason = sanitizeAoiProposalDisplayText(params.proposal.reason, 180);
+  const whyNow = lowEvidence
+    ? `Limited evidence: ${reason || 'this should stay as a suggestion.'}`
+    : reason;
+  const whatChanged = sanitizeAoiProposalDisplayText(
+    describeAoiProposalChange(params.proposal, policyResult.reasons),
+    180,
+  );
+  const safeNextAction = sanitizeAoiProposalDisplayText(action.primaryLabel, 120);
+  const approvalBoundary = sanitizeAoiProposalDisplayText(
+    getAoiApprovalBoundary(params.proposal, action),
+    180,
+  );
+  const evidenceSummary = formatAoiEvidenceSummary(evidenceCount);
+  const confidenceLabel = getAoiConfidenceLabel(params.proposal.confidence, evidenceCount);
+  const oneLineRationale = sanitizeAoiProposalDisplayText(
+    lowEvidence ? `Low evidence, review first: ${reason || whatChanged}` : reason || whatChanged,
+    180,
+  );
+  const details = [
+    `Body: ${params.proposal.body}`,
+    `Reason: ${params.proposal.reason}`,
+    `Policy: ${policyResult.allowed ? 'allowed' : 'blocked'}`,
+    policyResult.reasons.length > 0 ? `Policy reasons: ${policyResult.reasons.join(' / ')}` : '',
+    `Trigger: ${params.proposal.trigger}`,
+    `Cooldown: ${params.proposal.cooldownKey}`,
+  ]
+    .filter(Boolean)
+    .map((item) => sanitizeAoiProposalDisplayText(item, 260));
+  const messageSummary = sanitizeAoiProposalDisplayText(
+    [
+      `Why now: ${whyNow}`,
+      `Changed: ${whatChanged}`,
+      `Evidence: ${evidenceSummary}`,
+      `Next: ${safeNextAction}`,
+      `Boundary: ${approvalBoundary}`,
+    ].join(' '),
+    520,
+  );
+
+  return {
+    whyNow,
+    whatChanged,
+    evidenceRefs: params.includeEvidence
+      ? params.proposal.evidenceRefs
+          .slice(0, 8)
+          .map((ref) => sanitizeAoiProposalDisplayText(ref, 220))
+      : [],
+    evidenceSummary,
+    evidenceCount,
+    confidence: params.proposal.confidence,
+    confidenceLabel,
+    risk: params.proposal.risk,
+    safeNextAction,
+    willNotDoWithoutApproval: approvalBoundary,
+    oneLineRationale,
+    messageSummary,
+    approvalBoundary,
+    details,
+    lowEvidence,
+  };
+}
+
+export function buildAoiBlockedProactiveExplanation(params: {
+  blockedProposal: AoiAutonomyBlockedProposal;
+  includeEvidence?: boolean;
+}): AoiProactiveExplanation {
+  const blockedSummary = buildAoiBlockedStateSummary({
+    blockedProposal: params.blockedProposal,
+  });
+  const evidenceCount = params.blockedProposal.evidenceRefs.length;
+  const whyNow = blockedSummary.policyReasons[0] ?? 'A background proposal was blocked by policy.';
+  const whatChanged = 'A policy or evidence gate stopped the proposal before execution.';
+  const safeNextAction = blockedSummary.safeAlternative;
+  const approvalBoundary = 'No tools run from a blocked proposal; resolve the policy gate first.';
+  const evidenceSummary = formatAoiEvidenceSummary(evidenceCount);
+  const details = [
+    ...blockedSummary.policyReasons.map((reason) => `Policy reason: ${reason}`),
+    ...blockedSummary.missingEvidence.map((item) => `Missing evidence: ${item}`),
+    `Safe alternative: ${blockedSummary.safeAlternative}`,
+  ].map((item) => sanitizeAoiProposalDisplayText(item, 260));
+  const messageSummary = sanitizeAoiProposalDisplayText(
+    [
+      `Why now: ${whyNow}`,
+      `Changed: ${whatChanged}`,
+      `Evidence: ${evidenceSummary}`,
+      `Next: ${safeNextAction}`,
+      `Boundary: ${approvalBoundary}`,
+    ].join(' '),
+    520,
+  );
+
+  return {
+    whyNow: sanitizeAoiProposalDisplayText(whyNow, 180),
+    whatChanged,
+    evidenceRefs: params.includeEvidence
+      ? params.blockedProposal.evidenceRefs
+          .slice(0, 8)
+          .map((ref) => sanitizeAoiProposalDisplayText(ref, 220))
+      : [],
+    evidenceSummary,
+    evidenceCount,
+    confidence: 0,
+    confidenceLabel: evidenceCount > 0 ? 'blocked by policy' : 'blocked with limited evidence',
+    risk: params.blockedProposal.risk ?? 'medium',
+    safeNextAction,
+    willNotDoWithoutApproval: approvalBoundary,
+    oneLineRationale: sanitizeAoiProposalDisplayText(whyNow, 180),
+    messageSummary,
+    approvalBoundary,
+    details,
+    lowEvidence: evidenceCount <= 0,
+  };
 }
 
 export function rankAoiProposal(

@@ -16,8 +16,11 @@ const FEEDBACK_CATEGORIES: AoiProposalFeedbackCategory[] = [
   'useful',
   'not_useful',
   'wrong_memory',
+  'wrong_evidence',
   'stale',
   'too_frequent',
+  'too_much',
+  'wrong_timing',
   'unsafe',
   'already_done',
   'needs_more_detail',
@@ -259,7 +262,11 @@ function buildNoisyProposalTypes(decisions: AoiProposalDecision[]): AoiNoisyProp
       notUsefulCount: 0,
     };
     bucket.dismissCount += 1;
-    if (decision.feedbackCategory === 'too_frequent') {
+    if (
+      decision.feedbackCategory === 'too_frequent' ||
+      decision.feedbackCategory === 'too_much' ||
+      decision.feedbackCategory === 'wrong_timing'
+    ) {
       bucket.tooFrequentCount += 1;
     }
     if (decision.feedbackCategory === 'not_useful') {

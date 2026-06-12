@@ -589,6 +589,47 @@ describe('checkAoiProposalPolicy()', () => {
     ).toBe(policy.defaultCooldownMs * 3);
   });
 
+  it('maps proactive timing and evidence feedback into calibration', () => {
+    const timingDecisions = [
+      makeFeedbackDecisionFixture({
+        id: 'decision-too-much-001',
+        feedbackCategory: 'too_much',
+        action: 'snooze',
+        nextStatus: 'snoozed',
+      }),
+      makeFeedbackDecisionFixture({
+        id: 'decision-wrong-timing-001',
+        feedbackCategory: 'wrong_timing',
+        action: 'snooze',
+        nextStatus: 'snoozed',
+      }),
+    ];
+    const wrongEvidenceDecision = makeFeedbackDecisionFixture({
+      id: 'decision-wrong-evidence-001',
+      feedbackCategory: 'wrong_evidence',
+    });
+
+    expect(
+      getAoiFeedbackAdjustedCooldownMs({
+        proposal: feedbackMemoryProposalFixture,
+        recentDecisions: timingDecisions,
+        baseCooldownMs: policy.defaultCooldownMs,
+      }),
+    ).toBe(policy.defaultCooldownMs * 3);
+    expect(
+      checkAoiProposalPolicy({
+        policy: normalizeAoiAutonomyPolicy(
+          { enabled: true, previewMode: true, level: 'L4', confidenceFloor: 0.65 },
+          DEFAULT_AOI_AUTONOMY_POLICY,
+          4000,
+        ),
+        proposal: feedbackMemoryProposalFixture,
+        recentDecisions: [wrongEvidenceDecision],
+        now: 4000,
+      }).reasons,
+    ).toContain('confidence_below_floor');
+  });
+
   it('treats unsafe feedback as risk escalation, never risk reduction', () => {
     const unsafeDecision = makeFeedbackDecisionFixture({
       feedbackCategory: 'unsafe',

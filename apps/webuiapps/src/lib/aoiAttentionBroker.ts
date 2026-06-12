@@ -344,9 +344,12 @@ function hasRecentNegativeFeedback(
     (decision) =>
       decision.cooldownKey === family &&
       (decision.feedbackCategory === 'too_frequent' ||
+        decision.feedbackCategory === 'too_much' ||
+        decision.feedbackCategory === 'wrong_timing' ||
         decision.feedbackCategory === 'not_useful' ||
         decision.feedbackCategory === 'unsafe' ||
-        decision.feedbackCategory === 'wrong_memory'),
+        decision.feedbackCategory === 'wrong_memory' ||
+        decision.feedbackCategory === 'wrong_evidence'),
   );
 }
 

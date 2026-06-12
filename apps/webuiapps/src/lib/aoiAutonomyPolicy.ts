@@ -157,8 +157,11 @@ export const AOI_PROPOSAL_FEEDBACK_CATEGORIES: readonly AoiProposalFeedbackCateg
   'useful',
   'not_useful',
   'wrong_memory',
+  'wrong_evidence',
   'stale',
   'too_frequent',
+  'too_much',
+  'wrong_timing',
   'unsafe',
   'already_done',
   'needs_more_detail',
@@ -528,6 +531,19 @@ function feedbackDecisions(
   );
 }
 
+function feedbackDecisionsForCategories(
+  proposal: AoiProposal,
+  decisions: AoiProposalDecision[] | undefined,
+  categories: ReadonlySet<AoiProposalFeedbackCategory>,
+): AoiProposalDecision[] {
+  return (decisions ?? []).filter(
+    (decision) =>
+      Boolean(decision.feedbackCategory) &&
+      categories.has(decision.feedbackCategory as AoiProposalFeedbackCategory) &&
+      decisionAppliesToProposal(proposal, decision),
+  );
+}
+
 function isRefreshProposal(proposal: AoiProposal): boolean {
   return (
     proposal.acceptAction?.kind === 'start_research' &&
@@ -542,9 +558,15 @@ export function getAoiFeedbackAdjustedCooldownMs(params: {
   recentDecisions?: AoiProposalDecision[];
   baseCooldownMs: number;
 }): number {
+  const noisyTimingCategories = new Set<AoiProposalFeedbackCategory>([
+    'too_frequent',
+    'too_much',
+    'wrong_timing',
+  ]);
   const tooFrequentCount = (params.recentDecisions ?? []).filter(
     (decision) =>
-      decision.feedbackCategory === 'too_frequent' &&
+      Boolean(decision.feedbackCategory) &&
+      noisyTimingCategories.has(decision.feedbackCategory as AoiProposalFeedbackCategory) &&
       decision.cooldownKey === params.proposal.cooldownKey,
   ).length;
   if (tooFrequentCount <= 0) {
@@ -569,15 +591,21 @@ export function applyAoiFeedbackCalibrationToProposal(
   proposal: AoiProposal,
   recentDecisions?: AoiProposalDecision[],
 ): AoiProposal {
-  const wrongMemoryCount = feedbackDecisions(proposal, recentDecisions, 'wrong_memory').filter(
-    (decision) => sharesMemoryRef(proposal, decision),
-  ).length;
+  const wrongEvidenceCount =
+    feedbackDecisions(proposal, recentDecisions, 'wrong_memory').filter((decision) =>
+      sharesMemoryRef(proposal, decision),
+    ).length +
+    feedbackDecisionsForCategories(
+      proposal,
+      recentDecisions,
+      new Set<AoiProposalFeedbackCategory>(['wrong_evidence']),
+    ).length;
   const unsafeCount = feedbackDecisions(proposal, recentDecisions, 'unsafe').filter((decision) =>
     actionKindMatches(proposal, decision),
   ).length;
   const confidence = Math.min(
     1,
-    Math.max(0, proposal.confidence - wrongMemoryCount * WRONG_MEMORY_CONFIDENCE_PENALTY),
+    Math.max(0, proposal.confidence - wrongEvidenceCount * WRONG_MEMORY_CONFIDENCE_PENALTY),
   );
 
   if (unsafeCount <= 0) {

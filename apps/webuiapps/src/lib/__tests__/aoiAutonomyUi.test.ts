@@ -4,11 +4,13 @@ import { decideAoiMission } from '../aoiAutonomyClient';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiBlockedStateSummary,
+  buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
+  buildAoiProactiveExplanation,
   buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
   getAoiSafeAlternativeForReasons,
@@ -334,6 +336,149 @@ describe('Aoi autonomy UI helpers', () => {
     ).toBe('Read [local path] now');
   });
 
+  it('redacts local paths and secrets from proactive explanations', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        reason:
+          'Read F:\\kernullist\\YourOpenRoom\\private\\report.md with api_key=secret-value before suggesting the next step.',
+        body: 'Token ghp_1234567890abcdefghijkl should never be shown.',
+      }),
+      policy: makePolicy(),
+      includeEvidence: true,
+    });
+
+    expect(explanation.messageSummary).toContain('[local path]');
+    expect(explanation.messageSummary).toContain('api_key=[private secret]');
+    expect(explanation.messageSummary).not.toContain('secret-value');
+    expect(explanation.details.join(' ')).toContain('[private secret]');
+    expect(explanation.details.join(' ')).not.toContain('ghp_1234567890abcdefghijkl');
+  });
+
+  it('builds short proactive message summaries with the full explanation contract', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal(),
+      policy: makePolicy(),
+    });
+
+    expect(explanation).toMatchObject({
+      whyNow: 'The current topic overlaps with a completed research run.',
+      whatChanged: 'A research followup proposal is ready for review.',
+      evidenceSummary: '1 evidence ref attached; details stay in the panel.',
+      safeNextAction: 'Approve exact action',
+      approvalBoundary: 'I will not run tools or change state without explicit approval.',
+      evidenceRefs: [],
+      evidenceCount: 1,
+      risk: 'low',
+    });
+    expect(explanation.messageSummary).toMatchInlineSnapshot(
+      `"Why now: The current topic overlaps with a completed research run. Changed: A research followup proposal is ready for review. Evidence: 1 evidence ref attached; details stay in the panel. Next: Approve exact action Boundary: I will not run tools or change state without explicit approval."`,
+    );
+    expect(explanation.messageSummary.length).toBeLessThan(360);
+  });
+
+  it('includes approval boundaries for high-risk proactive explanations', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        risk: 'high',
+        requiredAutonomyLevel: 'L5',
+        requiresUserApproval: true,
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            query: 'high risk follow-up',
+          },
+        },
+      }),
+      policy: makePolicy({ level: 'L5' }),
+    });
+
+    expect(explanation.risk).toBe('high');
+    expect(explanation.willNotDoWithoutApproval).toContain('explicit approval');
+    expect(explanation.messageSummary).toContain('Boundary:');
+  });
+
+  it('explains Kira handoff boundaries without claiming direct file edits', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        status: 'accepted',
+        title: 'Create one reviewed Kira work item',
+        trigger: 'goal_continuation',
+        risk: 'medium',
+        requiredAutonomyLevel: 'L4',
+        requiresUserApproval: true,
+        suggestedTools: ['create_kira_work'],
+        evidenceRefs: ['goal:aoi-goal-ui-test', 'proposal:aoi-proposal-ui-test-001'],
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            title: 'Implement one reviewed follow-up',
+          },
+        },
+      }),
+      policy: makePolicy({ level: 'L4' }),
+      hasKiraPreview: true,
+    });
+
+    expect(explanation.safeNextAction).toBe('Approve and create Kira work item');
+    expect(explanation.willNotDoWithoutApproval).toContain('reviewed Kira work item');
+    expect(explanation.willNotDoWithoutApproval).toContain('will not edit files');
+    expect(explanation.messageSummary).toContain('Boundary:');
+  });
+
+  it('explains failed validation recovery as a narrow follow-up', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        trigger: 'failure_recovery',
+        title: 'Prepare Kira validation follow-up',
+        reason: 'Kira validation failed and the recovery should target evidence only.',
+        risk: 'medium',
+        requiredAutonomyLevel: 'L4',
+        suggestedTools: ['create_kira_work'],
+        evidenceRefs: ['event:kira-validation-failed-001'],
+        recoveryPreview: {
+          version: 1,
+          failureKind: 'kira_validation_failed',
+          rootCauseSummary: 'Kira validation failed after review.',
+          evidenceRefs: ['event:kira-validation-failed-001'],
+          proposedAction: {
+            kind: 'prepare_kira_followup',
+            label: 'Prepare Kira follow-up',
+            reason: 'Target validation evidence only.',
+          },
+          whyNarrowerOrSafer: 'Bounded to one failed validation item.',
+          retryCount: 0,
+          maxRetryCount: 2,
+          cooldownActive: false,
+          sourceRef: 'event:kira-validation-failed-001',
+          failureSignature: 'failure:kira_validation_failed:test',
+          nonGoals: ['Do not broaden scope.'],
+        },
+      }),
+      policy: makePolicy({ level: 'L4' }),
+    });
+
+    expect(explanation.whatChanged).toContain('narrower recovery proposal');
+    expect(explanation.messageSummary).toContain('Kira validation failed');
+    expect(explanation.messageSummary).toContain('Boundary:');
+  });
+
+  it('avoids confident wording when evidence is weak', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        confidence: 0.42,
+        evidenceRefs: [],
+        memoryIds: [],
+        reason: 'The current topic might overlap with an older note.',
+      }),
+      policy: makePolicy(),
+    });
+
+    expect(explanation.lowEvidence).toBe(true);
+    expect(explanation.confidenceLabel).toBe('low evidence');
+    expect(explanation.messageSummary).toContain('Limited evidence');
+    expect(explanation.messageSummary).not.toMatch(/\bready\b/i);
+  });
+
   it('shows a narrowing alternative for broad Kira handoff policy blocks', () => {
     expect(
       getAoiSafeAlternativeForReasons(makeProposal({ requiredAutonomyLevel: 'L4' }), [
@@ -464,6 +609,28 @@ describe('Aoi autonomy UI helpers', () => {
       'An accepted proposal is required before Kira handoff.',
     );
     expect(summary.safeAlternative).toContain('Accept');
+  });
+
+  it('explains blocked proposals without exposing tool execution', () => {
+    const explanation = buildAoiBlockedProactiveExplanation({
+      blockedProposal: {
+        proposalId: 'aoi-proposal-blocked-ui-test',
+        title: 'Create broad Kira work',
+        reasons: ['kira_handoff_scope_too_broad'],
+        evidenceRefs: ['proposal:aoi-proposal-blocked-ui-test'],
+        actionKind: 'create_kira_work',
+        requiredAutonomyLevel: 'L4',
+        requiresUserApproval: true,
+        risk: 'high',
+      },
+      includeEvidence: true,
+    });
+
+    expect(explanation.messageSummary).toContain('Why now:');
+    expect(explanation.messageSummary).toContain('Boundary:');
+    expect(explanation.safeNextAction).toContain('Narrow');
+    expect(explanation.willNotDoWithoutApproval).toContain('No tools run');
+    expect(explanation.evidenceRefs).toEqual(['proposal:aoi-proposal-blocked-ui-test']);
   });
 
   it('uses explicit mission interrupt labels and visible states', () => {

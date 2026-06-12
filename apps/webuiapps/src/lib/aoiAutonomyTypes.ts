@@ -33,8 +33,11 @@ export type AoiProposalFeedbackCategory =
   | 'useful'
   | 'not_useful'
   | 'wrong_memory'
+  | 'wrong_evidence'
   | 'stale'
   | 'too_frequent'
+  | 'too_much'
+  | 'wrong_timing'
   | 'unsafe'
   | 'already_done'
   | 'needs_more_detail';

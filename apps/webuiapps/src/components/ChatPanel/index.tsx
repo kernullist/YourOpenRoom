@@ -223,11 +223,13 @@ import {
 import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiBlockedStateSummary,
+  buildAoiBlockedProactiveExplanation,
   buildAoiAutonomyNotificationBadge,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiProposalActionPresentation,
   buildAoiProposalInspectorSummary,
+  buildAoiProactiveExplanation,
   buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
   loadAoiAutonomyPanelSettings,
@@ -515,31 +517,31 @@ const AOI_PROPOSAL_FEEDBACK_CONTROLS: Array<{
 }> = [
   {
     label: 'Useful',
-    title: 'Mark this proposal as useful and accept it',
+    title: 'Mark this proactive suggestion as useful',
     action: 'accept',
     category: 'useful',
   },
   {
-    label: 'Not useful',
-    title: 'Dismiss this proposal as not useful',
-    action: 'dismiss',
-    category: 'not_useful',
-  },
-  {
-    label: 'Wrong memory',
-    title: 'Dismiss this proposal because it used the wrong memory',
-    action: 'dismiss',
-    category: 'wrong_memory',
-  },
-  {
-    label: 'Too frequent',
-    title: 'Snooze this proposal and increase cooldown for similar suggestions',
+    label: 'Too much',
+    title: 'Snooze this suggestion because it is too much',
     action: 'snooze',
-    category: 'too_frequent',
+    category: 'too_much',
+  },
+  {
+    label: 'Wrong timing',
+    title: 'Snooze this suggestion because the timing is wrong',
+    action: 'snooze',
+    category: 'wrong_timing',
+  },
+  {
+    label: 'Wrong evidence',
+    title: 'Dismiss this suggestion because the evidence is wrong',
+    action: 'dismiss',
+    category: 'wrong_evidence',
   },
   {
     label: 'Unsafe',
-    title: 'Dismiss this proposal as unsafe for future calibration',
+    title: 'Dismiss this suggestion as unsafe for future calibration',
     action: 'dismiss',
     category: 'unsafe',
   },
@@ -5467,6 +5469,17 @@ const ChatPanel: React.FC<{
     () => (inlineAoiProposal ? buildAoiProposalActionPresentation(inlineAoiProposal) : null),
     [inlineAoiProposal],
   );
+  const inlineAoiProposalExplanation = useMemo(
+    () =>
+      inlineAoiProposal
+        ? buildAoiProactiveExplanation({
+            proposal: inlineAoiProposal,
+            policy: aoiAutonomyStatus?.policy,
+            activeProposals: aoiAutonomyActiveProposals,
+          })
+        : null,
+    [aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, inlineAoiProposal],
+  );
 
   useEffect(() => {
     if (!inlineAoiProposal) {
@@ -5629,17 +5642,26 @@ const ChatPanel: React.FC<{
               <div className={styles.aoiInlineSuggestionMain}>
                 <div className={styles.aoiInlineSuggestionMeta}>
                   <span>Aoi proposal</span>
-                  <span>conf {inlineAoiProposal.confidence.toFixed(2)}</span>
-                  <span>{inlineAoiProposal.risk} risk</span>
+                  <span>{inlineAoiProposalExplanation?.confidenceLabel ?? 'proposal'}</span>
+                  <span>{inlineAoiProposalExplanation?.risk ?? inlineAoiProposal.risk} risk</span>
+                  <span>
+                    evidence{' '}
+                    {inlineAoiProposalExplanation?.evidenceCount ??
+                      inlineAoiProposal.evidenceRefs.length}
+                  </span>
                 </div>
                 <div className={styles.aoiInlineSuggestionTitle}>
                   {sanitizeAoiProposalDisplayText(inlineAoiProposal.title, 120)}
                 </div>
                 <div className={styles.aoiInlineSuggestionBody}>
-                  {sanitizeAoiProposalDisplayText(inlineAoiProposal.body, 220)}
+                  {sanitizeAoiProposalDisplayText(
+                    inlineAoiProposalExplanation?.messageSummary ?? inlineAoiProposal.body,
+                    360,
+                  )}
                 </div>
                 <div className={styles.aoiInlineSuggestionHint}>
-                  This is only a proposal. No tool has run.
+                  {inlineAoiProposalExplanation?.willNotDoWithoutApproval ??
+                    'This is only a proposal. No tool has run.'}
                 </div>
               </div>
               <div className={styles.aoiInlineSuggestionActions}>
@@ -5667,15 +5689,26 @@ const ChatPanel: React.FC<{
                 >
                   Pause suggestion family
                 </button>
-                <button
-                  type="button"
-                  className={styles.inlineActionBtn}
-                  onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'dismiss')}
-                  disabled={aoiAutonomyActionId !== null}
-                  title="Dismiss this suggestion and remember why for future calibration"
-                >
-                  Dismiss and remember why
-                </button>
+                {AOI_PROPOSAL_FEEDBACK_CONTROLS.filter((item) => item.category !== 'useful').map(
+                  (item) => (
+                    <button
+                      type="button"
+                      key={`inline-${inlineAoiProposal.id}-${item.category}`}
+                      className={styles.inlineActionBtn}
+                      onClick={() =>
+                        void decideAoiProposalFromPanel(
+                          inlineAoiProposal.id,
+                          item.action,
+                          item.category,
+                        )
+                      }
+                      disabled={aoiAutonomyActionId !== null}
+                      title={item.title}
+                    >
+                      {item.label}
+                    </button>
+                  ),
+                )}
                 <button
                   type="button"
                   className={styles.inlineActionBtn}
@@ -8568,6 +8601,13 @@ const SettingsModal: React.FC<{
                                 ? [proposal.blockedReason, ...inspectorSummary.policyReasons]
                                 : inspectorSummary.policyReasons,
                             });
+                            const proactiveExplanation = buildAoiProactiveExplanation({
+                              proposal,
+                              policy: aoiAutonomyPolicy,
+                              activeProposals: aoiAutonomyActiveProposals,
+                              includeEvidence: expanded,
+                              hasKiraPreview: Boolean(kiraHandoffPreview),
+                            });
 
                             return (
                               <div className={styles.aoiAutonomyProposalItem} key={proposal.id}>
@@ -8576,19 +8616,23 @@ const SettingsModal: React.FC<{
                                   <span>
                                     state {actionPresentation.visibleState.replace(/_/g, ' ')}
                                   </span>
-                                  <span>conf {proposal.confidence.toFixed(2)}</span>
-                                  <span>{proposal.risk} risk</span>
+                                  <span>{proactiveExplanation.confidenceLabel}</span>
+                                  <span>{proactiveExplanation.risk} risk</span>
                                   <span>requires {proposal.requiredAutonomyLevel}</span>
-                                  <span>evidence {proposal.evidenceRefs.length}</span>
+                                  <span>evidence {proactiveExplanation.evidenceCount}</span>
                                 </div>
                                 <div className={styles.aoiAutonomyProposalTitle}>
                                   {sanitizeAoiProposalDisplayText(proposal.title, 140)}
                                 </div>
-                                <div className={styles.aoiAutonomyProposalBody}>
-                                  {sanitizeAoiProposalDisplayText(proposal.body, 360)}
-                                </div>
                                 <div className={styles.aoiAutonomyProposalReason}>
-                                  {sanitizeAoiProposalDisplayText(proposal.reason, 260)}
+                                  {proactiveExplanation.oneLineRationale}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>Why now: {proactiveExplanation.whyNow}</div>
+                                  <div>Changed: {proactiveExplanation.whatChanged}</div>
+                                  <div>Evidence: {proactiveExplanation.evidenceSummary}</div>
+                                  <div>Next: {proactiveExplanation.safeNextAction}</div>
+                                  <div>Boundary: {proactiveExplanation.approvalBoundary}</div>
                                 </div>
                                 {recoverySummary.visible && (
                                   <div className={styles.aoiAutonomyProposalDetails}>
@@ -8724,6 +8768,14 @@ const SettingsModal: React.FC<{
                                 {expanded && (
                                   <div className={styles.aoiAutonomyProposalDetails}>
                                     <div>Title: {inspectorSummary.title}</div>
+                                    {proactiveExplanation.details.map((detail, index) => (
+                                      <div key={`${proposal.id}-explanation-${index}`}>
+                                        {detail}
+                                      </div>
+                                    ))}
+                                    <div>
+                                      Message summary: {proactiveExplanation.messageSummary}
+                                    </div>
                                     <div>Reason: {inspectorSummary.reason}</div>
                                     <div>
                                       Confidence: {inspectorSummary.confidence.toFixed(2)} / Risk:{' '}
@@ -8755,10 +8807,8 @@ const SettingsModal: React.FC<{
                                       Evidence refs: {inspectorSummary.evidenceRefs.length} shown /{' '}
                                       {proposal.evidenceRefs.length} total
                                     </div>
-                                    {inspectorSummary.evidenceRefs.map((ref, index) => (
-                                      <div key={`${proposal.id}-evidence-${index}`}>
-                                        {sanitizeAoiProposalDisplayText(ref, 220)}
-                                      </div>
+                                    {proactiveExplanation.evidenceRefs.map((ref, index) => (
+                                      <div key={`${proposal.id}-evidence-${index}`}>{ref}</div>
                                     ))}
                                     {proposal.riskSignals.slice(0, 5).map((signal, index) => (
                                       <div key={`${proposal.id}-risk-${index}`}>
@@ -8926,6 +8976,10 @@ const SettingsModal: React.FC<{
                             const blockedSummary = buildAoiBlockedStateSummary({
                               blockedProposal: proposal,
                             });
+                            const blockedExplanation = buildAoiBlockedProactiveExplanation({
+                              blockedProposal: proposal,
+                              includeEvidence: true,
+                            });
 
                             return (
                               <div
@@ -8936,12 +8990,12 @@ const SettingsModal: React.FC<{
                                   {sanitizeAoiProposalDisplayText(proposal.title, 140)}
                                 </div>
                                 <div className={styles.aoiAutonomyBlockedReason}>
-                                  {blockedSummary.policyReasons.join(' / ')}
+                                  {blockedExplanation.oneLineRationale}
                                 </div>
                                 <div className={styles.aoiAutonomyProposalMeta}>
                                   <span>state blocked</span>
                                   <span>{proposal.actionKind ?? 'no action'}</span>
-                                  <span>{proposal.risk ?? 'unknown'} risk</span>
+                                  <span>{blockedExplanation.risk} risk</span>
                                   <span>
                                     requires {proposal.requiredAutonomyLevel ?? 'unknown'}
                                   </span>
@@ -8953,12 +9007,21 @@ const SettingsModal: React.FC<{
                                   <span>No tool execution available</span>
                                 </div>
                                 <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>Why now: {blockedExplanation.whyNow}</div>
+                                  <div>Changed: {blockedExplanation.whatChanged}</div>
+                                  <div>Evidence: {blockedExplanation.evidenceSummary}</div>
+                                  <div>Next: {blockedExplanation.safeNextAction}</div>
+                                  <div>Boundary: {blockedExplanation.approvalBoundary}</div>
                                   {blockedSummary.missingEvidence.map((item, index) => (
                                     <div key={`${proposal.proposalId}-missing-${index}`}>
                                       Missing evidence: {item}
                                     </div>
                                   ))}
-                                  <div>Safe alternative: {blockedSummary.safeAlternative}</div>
+                                  {blockedExplanation.evidenceRefs.map((ref, index) => (
+                                    <div key={`${proposal.proposalId}-evidence-${index}`}>
+                                      Evidence: {ref}
+                                    </div>
+                                  ))}
                                 </div>
                               </div>
                             );
