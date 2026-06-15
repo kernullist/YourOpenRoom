@@ -1178,12 +1178,14 @@ export function runAoiJarvisAcceptanceTrial(
   const sessionPath = options.sessionPath ?? AOI_JARVIS_ACCEPTANCE_SESSION_PATH;
   const generatedAt = options.now ?? AOI_JARVIS_ACCEPTANCE_NOW;
   const scenarios = options.scenarios ?? AOI_JARVIS_ACCEPTANCE_SCENARIOS;
-  const results = scenarios.map((scenario) =>
-    scenario.run({
+  const scenarioResults = scenarios.map((scenario) => ({
+    scenario,
+    result: scenario.run({
       sessionPath,
       now: generatedAt,
     }),
-  );
+  }));
+  const results = scenarioResults.map((item) => item.result);
   const metrics = results.flatMap((result) => result.metrics);
   const failedMetrics = metrics.filter((item) => !item.passed);
   const mutationCount = results.reduce((total, result) => total + result.mutationCount, 0);
@@ -1199,21 +1201,17 @@ export function runAoiJarvisAcceptanceTrial(
     passedMetricCount: metrics.length - failedMetrics.length,
     failedMetricCount: failedMetrics.length,
     mutationCount,
-    scenarios: scenarios.map((scenario) => {
-      const result = results.find((item) => item.scenarioId === scenario.id);
-      const scenarioMetrics = metrics.filter((item) => item.scenarioId === scenario.id);
+    scenarios: scenarioResults.map(({ scenario, result }) => {
+      const scenarioMetrics = result.metrics;
       return {
         version: 1,
         id: scenario.id,
         title: scenario.title,
-        passed: result?.passed === true,
-        actualSummary: result?.actualSummary ?? 'Scenario did not run.',
-        evidenceRefs: dedupeRefs([
-          ...(scenario.evidenceRefs ?? []),
-          ...(result?.evidenceRefs ?? []),
-        ]),
-        privacyState: result?.privacyState ?? scenario.privacyState,
-        mutationCount: result?.mutationCount ?? 0,
+        passed: result.passed === true,
+        actualSummary: result.actualSummary,
+        evidenceRefs: dedupeRefs([...(scenario.evidenceRefs ?? []), ...result.evidenceRefs]),
+        privacyState: result.privacyState,
+        mutationCount: result.mutationCount,
         failedMetricIds: scenarioMetrics.filter((item) => !item.passed).map((item) => item.id),
       };
     }),

@@ -64,7 +64,7 @@ v2, Aoi Research, capability registry, run ledger, Kira automation을 기반으�
 따라서 새 설계는 완전히 새 agent framework를 만들기보다, 위 구성 위에 `Aoi Autonomy Runtime`을
 추가하는 형태가 가장 안전하다.
 
-## 구현 현황 - 2026-06-13
+## 구현 현황 - 2026-06-16
 
 이 문서의 초기 설계는 현재 `apps/webuiapps/src/lib/` 아래의 Aoi autonomy control plane으로 상당 부분
 구현되었다. 현 상태의 핵심은 "완전 자동 실행"이 아니라, 관찰, 기억 확인, 맥락 조립, 조용한 주의
@@ -79,7 +79,7 @@ v2, Aoi Research, capability registry, run ledger, Kira automation을 기반으�
 | Attention and digest                | `aoiAttentionBroker.ts`, `aoiOperatorDigest.ts`, `aoiPreferenceMemory.ts`                                                            | background event를 바로 방해하지 않고 critical/approval/FYI/hidden lane으로 분류하며, quiet mode와 "too much" feedback을 반영한다.                                                                                           |
 | UI decision helpers                 | `aoiAutonomyUi.ts`                                                                                                                   | inline proposal, dashboard badge, evidence panel, proactive explanation, approval boundary, blocked-state summary를 같은 결정 모델에서 만든다.                                                                               |
 | Supervised execution                | `aoiAutonomyExecution.ts`, `aoiSafeActionPlan.ts`, `aoiKiraHandoff.ts`, `aoiApprovedCommandPolicy.ts`, `aoiApprovedCommandRunner.ts` | read-only research artifact/status, approval-gated research start, procedure promotion, Kira handoff, approved command runner를 분리했다. high-risk 실행은 승인 fingerprint, cwd guard, audit record 없이는 진행하지 않는다. |
-| Evaluation / replay                 | `aoiAutonomyEvaluation.ts`, `aoiOperatorReplay.ts`                                                                                   | acceptance/dismissal/feedback metrics와 8개 built-in operator replay scenario로 wrong source, unsafe approval boundary, noisy interruption, disabled source leakage를 회귀 테스트한다.                                       |
+| Evaluation / replay                 | `aoiAutonomyEvaluation.ts`, `aoiOperatorReplay.ts`, `aoiJarvisAcceptanceTrial.ts`                                                     | acceptance/dismissal/feedback metrics, 8개 built-in operator replay scenario, 9개 JARVIS acceptance scenario로 wrong source, unsafe approval boundary, noisy interruption, disabled source leakage, personal-source consent, replay redaction을 회귀 테스트한다. |
 
 현재 구현된 built-in replay scenario는 다음 운영 상황을 고정 fixture로 검증한다.
 
@@ -91,6 +91,23 @@ v2, Aoi Research, capability registry, run ledger, Kira automation을 기반으�
 6. 사용자 preference가 project instruction과 충돌하는 경우.
 7. disabled source가 context에 영향을 주면 안 되는 경우.
 8. quiet mode가 low-value digest item을 숨겨야 하는 경우.
+
+Goal 32 이후에는 `aoiJarvisAcceptanceTrial.ts`가 별도 acceptance pack을 제공한다. 이 trial은 synthetic
+timeline/source state만 사용하고, 실제 shell, network, Gmail, Calendar, filesystem source reader,
+Kira mutation을 호출하지 않는다. report는 scenario/metric별 pass/fail, actual summary, evidence refs,
+privacy state, mutation count를 포함한다.
+
+현재 JARVIS acceptance scenario는 다음 9개다.
+
+1. branch drift 이후 stale validation을 감지하고 안전한 next step만 제안하는 경우.
+2. Calendar source가 명시적으로 허용된 metadata만 노출하고 body/description을 숨기는 경우.
+3. Gmail source가 disconnected 상태일 때 inbox를 본 척하지 않고 health blind spot을 보고하는 경우.
+4. Kira completion이 quiet mode에서 operator-visible digest로 정리되는 경우.
+5. too-much feedback 이후 유사 이벤트 interruption이 줄어드는 경우.
+6. approved command preview가 바뀌면 기존 승인이 무효화되는 경우.
+7. multi-step playbook이 Kira 완료 evidence를 기다리고 command approval gate를 유지하는 경우.
+8. voice policy가 FYI는 억제하고 critical blocker만 말하는 경우.
+9. trace export가 개인 값을 redaction하고 replay fixture draft로 승격되는 경우.
 
 따라서 현 단계의 Aoi는 기억과 현재 상태를 능동적으로 확인해 제안할 수 있는 기반을 갖췄지만, 사용자
 승인 없이 고위험 파일 변경이나 명령 실행을 맡기는 단계는 아니다. Jarvis-like 체감은 L2-L4의 근거
@@ -607,7 +624,9 @@ git diff --check
 
 Operator replay는 `aoiAutonomyEvaluation.test.ts`에서 `runBuiltInAoiOperatorReplayFixtures()`로
 실행한다. 이 replay path는 실제 shell, network, file mutation을 호출하지 않고 injected fixture
-state만 사용한다.
+state만 사용한다. JARVIS acceptance trial은 같은 test file에서 `runAoiJarvisAcceptanceTrial()`과
+`formatAoiJarvisAcceptanceReport()`로 실행한다. 이 path도 synthetic fixture만 사용하며 live
+connector, command execution, file mutation을 호출하지 않는다.
 
 ## Security and Failure Modes
 
@@ -626,7 +645,7 @@ state만 사용한다.
 
 ## Current Milestone Status
 
-초기 milestone은 완료된 상태로 본다.
+초기 milestone과 JARVIS-grade presence/trust milestone의 replay-safe 범위는 완료된 상태로 본다.
 
 1. `aoi-autonomy` 저장소와 type/policy/API가 추가되었다.
 2. completed/failed research run, memory v2, Kira outcome, workspace signal을 읽어 proposal 후보를
@@ -639,16 +658,24 @@ state만 사용한다.
 6. relation index는 JSON 기반으로 시작했고 observation, proposal, goal, research, Kira work/review,
    validation evidence를 연결한다.
 7. operator replay harness가 대표 운영 상황을 deterministic fixture로 고정한다.
+8. operator timeline, trace export, replay fixture draft promotion이 추가되어 real-session evidence를
+   redaction-first 방식으로 회귀 테스트 후보로 바꿀 수 있다.
+9. budgeted wakeup, source consent, voice policy, trust calibration, operator health, playbook
+   orchestration이 각자 기존 approval/policy gate 뒤에 붙었다.
+10. JARVIS acceptance trial은 9개 scenario로 context awareness, interruption timing, approval
+    boundary, personal-source consent, voice appropriateness, health honesty, playbook coordination,
+    replay privacy를 한 번에 검증한다.
 
 다음 milestone은 더 많은 실행권을 여는 것이 아니라, 운영자가 신뢰할 수 있는 관측성과 회귀 방어를
 강화하는 쪽이 맞다.
 
-1. Autonomy dashboard에서 replay/evaluation summary를 더 직접적으로 볼 수 있게 한다.
-2. 실제 세션 이벤트를 privacy-safe fixture로 승격하는 capture/export path를 추가한다.
-3. proposal feedback category와 user preference conflict를 장기 calibration 지표로 묶는다.
+1. Autonomy dashboard에서 operator timeline, health, playbook, JARVIS acceptance summary를 한 화면에
+   연결한다.
+2. 실제 세션 trace를 shadow-mode acceptance run으로 돌려 synthetic fixture와 drift를 비교한다.
+3. long-running mission memory와 relation graph를 더 durable한 storage/index boundary로 분리한다.
 4. approved command runner는 allowlist와 rollback/checkpoint 연계를 더 좁게 검증한다.
-5. Calendar/Gmail 같은 외부 개인 데이터 source는 explicit enable, source scope, redaction이 준비된
-   뒤 추가한다.
+5. Calendar/Gmail 같은 외부 개인 데이터 source는 metadata-only consent path를 유지하되, live connector
+   failure와 revocation이 UI/health/replay에 일관되게 반영되는지 운영 테스트한다.
 
 이렇게 하면 Aoi가 "스스로 기억을 확인하고 제안한다"는 체감은 유지하면서, 위험한 자동 실행은 아직
 좁은 승인 경계 안에 둔다.

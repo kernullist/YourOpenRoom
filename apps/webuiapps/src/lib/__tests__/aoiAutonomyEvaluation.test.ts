@@ -18,11 +18,26 @@ import {
   formatAoiJarvisAcceptanceReport,
   runAoiJarvisAcceptanceTrial,
 } from '../aoiJarvisAcceptanceTrial';
+import {
+  appendAoiShadowDecisionLabel,
+  buildAoiShadowReplayBridge,
+  evaluateAoiShadowDecisions,
+  formatAoiShadowDecisionReport,
+  recordAoiShadowDecisions,
+} from '../aoiShadowModeEvaluation';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
-import type { AoiOperatorTraceExport, AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
+import type {
+  AoiApprovedCommandPolicy,
+  AoiEnvironmentSourceRegistry,
+  AoiOperatorDigest,
+  AoiOperatorHealthState,
+  AoiOperatorTraceExport,
+  AoiProposal,
+  AoiProposalDecision,
+} from '../aoiAutonomyTypes';
 
 describe('Aoi autonomy evaluation', () => {
   it('computes compact feedback and execution metrics from local records', () => {
@@ -281,6 +296,28 @@ describe('Aoi autonomy evaluation', () => {
     expect(text.length).toBeLessThan(900);
   });
 
+  it('keeps custom JARVIS scenario summaries paired with their own run results', () => {
+    const firstScenario = brokenJarvisMetricScenario(
+      'jarvis-calendar-metadata-body-withheld',
+      'personal_source.calendar_body_withheld',
+      'First duplicate scenario failed the body consent expectation.',
+    );
+    const secondScenario = brokenJarvisMetricScenario(
+      'jarvis-calendar-metadata-body-withheld',
+      'personal_source.calendar_metadata_only',
+      'Second duplicate scenario failed the metadata expectation.',
+    );
+    const report = runAoiJarvisAcceptanceTrial({
+      scenarios: [firstScenario, secondScenario],
+    });
+
+    expect(report.passed).toBe(false);
+    expect(report.scenarios.map((scenario) => scenario.failedMetricIds)).toEqual([
+      ['personal_source.calendar_body_withheld'],
+      ['personal_source.calendar_metadata_only'],
+    ]);
+  });
+
   it('reports a broken JARVIS approval boundary with the exact metric id', () => {
     const scenario = brokenJarvisMetricScenario(
       'jarvis-command-change-boundary',
@@ -295,6 +332,223 @@ describe('Aoi autonomy evaluation', () => {
     expect(text).toContain('approval.command_change_detected');
     expect(text).toContain('command changed');
     expect(report.mutationCount).toBe(0);
+  });
+
+  it('records a useful shadow would-propose decision without execution', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-shadow-propose',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Validation is stale',
+        summary: 'The workspace validation is stale for private-roadmap@example.com.',
+        nextSafeAction: 'Prepare a validation command preview; do not run it.',
+        risk: 'low',
+        relevance: 0.85,
+        createdAt: 5000,
+        dedupeKey: 'mission:validation-stale',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation-stale'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      missionId: 'mission-approval-ux',
+      digest,
+      now: 6000,
+    });
+    const repeatedDecisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      missionId: 'mission-approval-ux',
+      digest,
+      now: 9000,
+    });
+    const decision = decisions.find((item) => item.kind === 'would_propose');
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decision?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['shadow-review:useful-001'],
+      now: 7000,
+    });
+    const report = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 8000,
+    });
+
+    expect(decision).toMatchObject({
+      kind: 'would_propose',
+      mutationCount: 0,
+      policyResult: 'not_applicable',
+    });
+    expect(JSON.stringify(decisions)).not.toContain('private-roadmap@example.com');
+    expect(repeatedDecisions[0]?.id).toBe(decision?.id);
+    expect(report.metrics.usefulRate).toBe(1);
+    expect(report.metrics.zeroMutation).toBe(true);
+    expect(formatAoiShadowDecisionReport(report)).toContain('mutations=0');
+  });
+
+  it('records a shadow would-stay-quiet decision with reason and evidence refs', () => {
+    const digest = makeShadowDigest(
+      [
+        {
+          version: 1,
+          id: 'digest-shadow-quiet',
+          kind: 'source_change',
+          lane: 'hidden_by_quiet_mode',
+          title: 'Low-value FYI suppressed',
+          summary: 'A similar FYI was recently marked too much.',
+          nextSafeAction: 'Stay quiet and keep the event in the timeline.',
+          risk: 'low',
+          relevance: 0.35,
+          createdAt: 5000,
+          dedupeKey: 'fyi:too-much-suppressed',
+          sourceRefs: ['digest:fyi'],
+          evidenceRefs: ['feedback:too-much-001'],
+          hidden: true,
+        },
+      ],
+      {
+        quietReason: 'Recent too-much feedback suppresses similar FYI updates.',
+      },
+    );
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const report = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const quietDecision = decisions.find((item) => item.kind === 'would_stay_quiet');
+
+    expect(quietDecision?.silenceReason).toContain('too-much feedback');
+    expect(quietDecision?.evidenceRefs).toContain('feedback:too-much-001');
+    expect(report.metrics.silentDecisionExplainabilityCoverage).toBe(1);
+    expect(report.metrics.mutationCount).toBe(0);
+  });
+
+  it('turns wrong-source shadow labels into metrics and replay bridge failures', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-shadow-source',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Browser context looked relevant',
+        summary: 'Browser metadata was selected for the approval UX mission.',
+        nextSafeAction: 'Ask the operator to confirm whether this source matters.',
+        risk: 'low',
+        relevance: 0.55,
+        createdAt: 5000,
+        dedupeKey: 'source:browser-context',
+        sourceRefs: ['browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'wrong_source',
+      evidenceRefs: ['shadow-review:wrong-source-001'],
+      now: 7000,
+    });
+    const report = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 8000,
+    });
+    const bridge = buildAoiShadowReplayBridge({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 9000,
+    });
+
+    expect(report.metrics.wrongSourceRate).toBe(1);
+    expect(bridge.failedMetricCount).toBe(1);
+    expect(bridge.metrics[0]).toMatchObject({
+      label: 'wrong_source',
+      dimension: 'source_selection',
+      passed: false,
+    });
+    expect(bridge.metrics[0]?.id).toContain('wrong_source');
+  });
+
+  it('keeps unsafe shadow labels append-only without relaxing approval policy', () => {
+    const policies: AoiApprovedCommandPolicy[] = [makeApprovedCommandPolicy()];
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      approvedCommandPolicies: policies,
+      now: 6000,
+    });
+    const commandDecision = decisions.find((item) => item.kind === 'would_prepare_approval');
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: commandDecision?.id ?? '',
+      label: 'unsafe',
+      note: 'The preview should stay blocked for review.',
+      now: 7000,
+    });
+    const report = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 8000,
+    });
+    const bridge = buildAoiShadowReplayBridge({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 9000,
+    });
+
+    expect(commandDecision).toMatchObject({
+      policyResult: 'approval_required',
+      mutationCount: 0,
+    });
+    expect(labels).toHaveLength(1);
+    expect(report.metrics.unsafeShadowDecisionCount).toBe(1);
+    expect(report.safetyReviewDecisionIds).toEqual([commandDecision?.id]);
+    expect(bridge.metrics[0]).toMatchObject({
+      label: 'unsafe',
+      dimension: 'safety',
+      passed: false,
+    });
+  });
+
+  it('records health and source-consent blind spots without personal body leakage', () => {
+    const health = makeShadowHealth();
+    const sourceRegistry = makeShadowSourceRegistry();
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      health,
+      sourceRegistry,
+      now: 6000,
+    });
+    const report = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const blindSpots = decisions.filter((item) => item.kind === 'would_mark_blind_spot');
+    const serialized = JSON.stringify(decisions);
+
+    expect(blindSpots.length).toBeGreaterThanOrEqual(2);
+    expect(blindSpots.every((item) => item.evidenceRefs.length > 0)).toBe(true);
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('Do not leak the mail body');
+    expect(report.metrics.zeroMutation).toBe(true);
   });
 
   it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {
@@ -603,5 +857,129 @@ function brokenJarvisMetricScenario(
         ),
       };
     },
+  };
+}
+
+function makeShadowDigest(
+  items: AoiOperatorDigest['items'],
+  options: { quietReason?: string } = {},
+): AoiOperatorDigest {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 5000,
+    summary: 'Synthetic shadow digest.',
+    ...(options.quietReason
+      ? {
+          quietWindow: {
+            version: 1,
+            enabled: true,
+            reason: options.quietReason,
+            startedAt: 4000,
+            hiddenLane: 'hidden_by_quiet_mode',
+          },
+        }
+      : {}),
+    items,
+    approvalInbox: [],
+    laneCounts: {
+      critical_user_blocking: items.filter((item) => item.lane === 'critical_user_blocking').length,
+      needs_approval: items.filter((item) => item.lane === 'needs_approval').length,
+      mission_update: items.filter((item) => item.lane === 'mission_update').length,
+      fyi: items.filter((item) => item.lane === 'fyi').length,
+      hidden_by_quiet_mode: items.filter((item) => item.lane === 'hidden_by_quiet_mode').length,
+    },
+    hiddenItemCount: items.filter((item) => item.hidden).length,
+    evidenceRefs: items.flatMap((item) => item.evidenceRefs),
+  };
+}
+
+function makeApprovedCommandPolicy(): AoiApprovedCommandPolicy {
+  return {
+    version: 1,
+    allowed: true,
+    blockReasons: [],
+    command:
+      'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyEvaluation.test.ts',
+    displayCommand:
+      'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyEvaluation.test.ts',
+    program: 'pnpm',
+    args: [
+      '--filter',
+      '@openroom/webuiapps',
+      'test',
+      '--',
+      'src/lib/__tests__/aoiAutonomyEvaluation.test.ts',
+    ],
+    cwd: 'apps/webuiapps',
+    cwdLabel: 'apps/webuiapps',
+    cwdHash: 'cwd-shadow-test',
+    purpose: 'Run the targeted Aoi shadow-mode evaluation tests.',
+    purposeHash: 'purpose-shadow-test',
+    risk: 'high',
+    requiredAutonomyLevel: 'L5',
+    timeoutMs: 120000,
+    approvalFingerprint: 'shadow-command-fingerprint',
+    expiresAt: 120000,
+    rationale: ['Exact command preview requires explicit user approval.'],
+  };
+}
+
+function makeShadowHealth(): AoiOperatorHealthState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 5000,
+    overallStatus: 'limited',
+    summary: 'Synthetic health state.',
+    capabilities: [],
+    issues: [
+      {
+        version: 1,
+        id: 'health-gmail-disconnected',
+        capability: 'personal_signals',
+        severity: 'error',
+        code: 'gmail_disconnected',
+        title: 'Gmail is disconnected',
+        summary: 'Gmail metadata is unavailable for private-roadmap@example.com.',
+        cannotKnow: 'Do not leak the mail body because Gmail is disconnected.',
+        sourceId: 'gmail-metadata',
+        observedAt: 5000,
+        evidenceRefs: ['environment-source:gmail-metadata'],
+        recommendation: {
+          version: 1,
+          action: 'connect_gmail',
+          label: 'Reconnect Gmail metadata.',
+          targetPanel: 'personal-sources',
+          targetRef: 'gmail-metadata',
+        },
+      },
+    ],
+    userBlockingIssueCount: 0,
+    evidenceRefs: ['environment-source:gmail-metadata'],
+  };
+}
+
+function makeShadowSourceRegistry(): AoiEnvironmentSourceRegistry {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    updatedAt: 5000,
+    sources: [
+      {
+        version: 1,
+        id: 'gmail-metadata',
+        kind: 'gmail_metadata',
+        label: 'Gmail metadata',
+        enabled: false,
+        scope: 'session',
+        risk: 'medium',
+        allowedOperations: ['read_metadata'],
+        privateByDefault: true,
+        quietModeBehavior: 'record_only',
+        updatedAt: 5000,
+        consentReason: 'Explicit user consent is required before Gmail metadata can be used.',
+      },
+    ],
   };
 }
