@@ -750,6 +750,44 @@ function normalizeTraceExport(value: unknown): AoiOperatorTraceExport | null {
   };
 }
 
+export function buildAoiOperatorTraceExportFromEvents(params: {
+  sessionPath: string;
+  events: AoiOperatorTimelineEvent[];
+  exportedAt?: number;
+  exportId?: string;
+  limit?: number;
+}): AoiOperatorTraceExport {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(params.sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const exportedAt = params.exportedAt ?? Date.now();
+  const limit = clampLimit(params.limit, TRACE_EXPORT_DEFAULT_LIMIT, TRACE_EXPORT_MAX_LIMIT);
+  const sourceEvents = sortTimelineEvents(params.events.slice(0, limit), false);
+  const redactor = createTraceRedactor();
+  const events = sourceEvents.map((event) => redactTimelineEvent(event, redactor));
+  const exportRecord: AoiOperatorTraceExport = {
+    version: 1,
+    id: params.exportId ?? createAoiAutonomyId('aoi-trace-export', exportedAt),
+    sessionPath: normalizedSessionPath,
+    exportedAt,
+    eventCount: events.length,
+    sourceEventIds: sourceEvents.map((event) => event.id),
+    events,
+    redactionSummary: redactor.summary(),
+    privacyNotes: [
+      'Export is explicit only; no background trace export is performed.',
+      'Local paths, URLs, email addresses, message bodies, command output, and private metadata fields are replaced with synthetic labels.',
+      'Replay fixture promotion produces a draft and does not mutate built-in fixtures.',
+    ],
+  };
+
+  if (!isValidAoiAutonomyId(exportRecord.id)) {
+    throw new Error('Invalid trace export id.');
+  }
+  return exportRecord;
+}
+
 export function exportAoiOperatorTrace(
   sessionsDir: string,
   sessionPath: string,
@@ -772,23 +810,11 @@ export function exportAoiOperatorTrace(
       .slice(0, limit),
     false,
   );
-  const redactor = createTraceRedactor();
-  const events = sourceEvents.map((event) => redactTimelineEvent(event, redactor));
-  const exportRecord: AoiOperatorTraceExport = {
-    version: 1,
-    id: createAoiAutonomyId('aoi-trace-export', exportedAt),
+  const exportRecord = buildAoiOperatorTraceExportFromEvents({
     sessionPath: normalizedSessionPath,
+    events: sourceEvents,
     exportedAt,
-    eventCount: events.length,
-    sourceEventIds: sourceEvents.map((event) => event.id),
-    events,
-    redactionSummary: redactor.summary(),
-    privacyNotes: [
-      'Export is explicit only; no background trace export is performed.',
-      'Local paths, URLs, email addresses, message bodies, command output, and private metadata fields are replaced with synthetic labels.',
-      'Replay fixture promotion produces a draft and does not mutate built-in fixtures.',
-    ],
-  };
+  });
 
   if (options.persist !== false) {
     writeJsonAtomic(
@@ -801,13 +827,13 @@ export function exportAoiOperatorTrace(
       visibility: 'dashboard_only',
       createdAt: exportedAt,
       title: 'Trace export created',
-      summary: `Trace export ${exportRecord.id} contains ${events.length} redacted timeline events.`,
+      summary: `Trace export ${exportRecord.id} contains ${exportRecord.events.length} redacted timeline events.`,
       evidenceRefs: [`trace-export:${exportRecord.id}`],
       relatedRefs: exportRecord.sourceEventIds.map((id) => `timeline:${id}`),
       redactionState:
         exportRecord.redactionSummary.totalReplacementCount > 0 ? 'synthetic' : 'none',
       metadata: {
-        eventCount: events.length,
+        eventCount: exportRecord.events.length,
         redactionCount: exportRecord.redactionSummary.totalReplacementCount,
       },
     });

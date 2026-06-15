@@ -12,9 +12,16 @@ import {
   runAoiOperatorReplayFixture,
   runBuiltInAoiOperatorReplayFixtures,
 } from '../aoiOperatorReplay';
+import {
+  AOI_JARVIS_ACCEPTANCE_DIMENSIONS,
+  AOI_JARVIS_ACCEPTANCE_SCENARIOS,
+  formatAoiJarvisAcceptanceReport,
+  runAoiJarvisAcceptanceTrial,
+} from '../aoiJarvisAcceptanceTrial';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
+import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
 import type { AoiOperatorTraceExport, AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 describe('Aoi autonomy evaluation', () => {
@@ -227,6 +234,67 @@ describe('Aoi autonomy evaluation', () => {
     expect(text).toContain('sources:');
     expect(text).toContain('attention:');
     expect(text.length).toBeLessThan(1400);
+  });
+
+  it('passes the JARVIS acceptance trial without live connectors or mutation', () => {
+    const report = runAoiJarvisAcceptanceTrial();
+    const text = formatAoiJarvisAcceptanceReport(report);
+
+    expect(report.scenarios.map((scenario) => scenario.id)).toEqual([
+      'jarvis-return-branch-drift-stale-validation',
+      'jarvis-calendar-metadata-body-withheld',
+      'jarvis-gmail-disconnected-cannot-inspect',
+      'jarvis-kira-completion-quiet-mode',
+      'jarvis-too-much-feedback-suppression',
+      'jarvis-command-change-boundary',
+      'jarvis-playbook-waits-for-kira',
+      'jarvis-voice-fyi-vs-blocker',
+      'jarvis-trace-redaction-draft',
+    ]);
+    expect(report.passed).toBe(true);
+    expect(report.failedMetrics).toEqual([]);
+    expect(report.mutationCount).toBe(0);
+    expect(report.metrics.every((metric) => metric.mutationCount === 0)).toBe(true);
+    expect(JSON.stringify(report)).not.toContain('private-roadmap@example.com');
+    expect(JSON.stringify(report)).not.toContain('C:\\Users\\secret');
+    expect(JSON.stringify(report)).not.toContain('Do not leak the launch plan body');
+    expect([...new Set(report.metrics.map((metric) => metric.dimension))].sort()).toEqual(
+      [...AOI_JARVIS_ACCEPTANCE_DIMENSIONS].sort(),
+    );
+    expect(text).toContain('PASS aoi-jarvis-acceptance');
+    expect(text.length).toBeLessThan(320);
+  });
+
+  it('reports a broken JARVIS consent expectation with scenario and metric ids', () => {
+    const scenario = brokenJarvisMetricScenario(
+      'jarvis-calendar-metadata-body-withheld',
+      'personal_source.calendar_body_withheld',
+      'Calendar body was incorrectly treated as readable.',
+    );
+    const report = runAoiJarvisAcceptanceTrial({ scenarios: [scenario] });
+    const text = formatAoiJarvisAcceptanceReport(report);
+
+    expect(report.passed).toBe(false);
+    expect(text).toContain('jarvis-calendar-metadata-body-withheld');
+    expect(text).toContain('personal_source.calendar_body_withheld');
+    expect(text).toContain('Calendar body was incorrectly treated as readable');
+    expect(text.length).toBeLessThan(900);
+  });
+
+  it('reports a broken JARVIS approval boundary with the exact metric id', () => {
+    const scenario = brokenJarvisMetricScenario(
+      'jarvis-command-change-boundary',
+      'approval.command_change_detected',
+      'Approval boundary failed to detect that the command changed.',
+    );
+    const report = runAoiJarvisAcceptanceTrial({ scenarios: [scenario] });
+    const text = formatAoiJarvisAcceptanceReport(report);
+
+    expect(report.passed).toBe(false);
+    expect(text).toContain('jarvis-command-change-boundary');
+    expect(text).toContain('approval.command_change_detected');
+    expect(text).toContain('command changed');
+    expect(report.mutationCount).toBe(0);
   });
 
   it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {
@@ -507,3 +575,33 @@ describe('Aoi autonomy evaluation', () => {
     });
   });
 });
+
+function brokenJarvisMetricScenario(
+  scenarioId: string,
+  metricId: string,
+  actualSummary: string,
+): AoiJarvisAcceptanceScenario {
+  const base = AOI_JARVIS_ACCEPTANCE_SCENARIOS.find((scenario) => scenario.id === scenarioId);
+  if (!base) {
+    throw new Error(`Missing JARVIS acceptance scenario ${scenarioId}.`);
+  }
+  return {
+    ...base,
+    run: (input) => {
+      const result = base.run(input);
+      return {
+        ...result,
+        passed: false,
+        metrics: result.metrics.map((metric) =>
+          metric.id === metricId
+            ? {
+                ...metric,
+                passed: false,
+                actualSummary,
+              }
+            : metric,
+        ),
+      };
+    },
+  };
+}
