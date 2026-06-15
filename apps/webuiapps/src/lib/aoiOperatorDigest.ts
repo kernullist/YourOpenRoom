@@ -12,6 +12,7 @@ import type {
   AoiMissionState,
   AoiNotificationLane,
   AoiOperatorDigest,
+  AoiOperatorHealthState,
   AoiProposal,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
@@ -50,6 +51,7 @@ export interface AoiOperatorDigestInput {
   userIdleMs?: number;
   maxItems?: number;
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
+  operatorHealth?: AoiOperatorHealthState | null;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -368,6 +370,31 @@ function collectWorkspaceItems(snapshot: AoiWorkspaceSnapshot | null | undefined
     );
   }
   return items;
+}
+
+function collectHealthItem(
+  health: AoiOperatorHealthState | null | undefined,
+): AoiDigestItem | null {
+  if (!health || health.userBlockingIssueCount <= 0) {
+    return null;
+  }
+  const blocker = health.issues.find((issue) => issue.severity === 'blocker');
+  if (!blocker) {
+    return null;
+  }
+  return makeDigestItem({
+    kind: 'operator_health',
+    lane: 'critical_user_blocking',
+    title: blocker.title,
+    summary: blocker.cannotKnow ?? blocker.summary,
+    nextSafeAction: blocker.recommendation.label,
+    risk: 'medium',
+    relevance: 0.9,
+    createdAt: blocker.observedAt,
+    dedupeKey: `health:${blocker.code}:${blocker.sourceId ?? blocker.capability}`,
+    sourceRefs: [blocker.sourceId ? `environment-source:${blocker.sourceId}` : blocker.capability],
+    evidenceRefs: blocker.evidenceRefs,
+  });
 }
 
 function collectMemoryOutcomeItems(memories: AoiMemoryEntry[] | undefined): AoiDigestItem[] {
@@ -745,6 +772,7 @@ export function buildAoiOperatorDigest(params: AoiOperatorDigestInput): AoiOpera
     approvalAggregateItem(approvalInbox, now),
     ...collectAttentionItems(params),
     ...collectWorkspaceItems(params.workspaceSnapshot),
+    collectHealthItem(params.operatorHealth),
     ...collectMemoryOutcomeItems(params.memories),
     ...collectBlockedItems(params.blockedProposals),
   ].filter((item): item is AoiDigestItem => Boolean(item));

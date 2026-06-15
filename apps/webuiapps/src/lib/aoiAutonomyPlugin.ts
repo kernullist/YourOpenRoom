@@ -53,6 +53,7 @@ import {
   loadAoiAutonomySchedulerState,
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
+import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import type {
   AoiCalibrationDimension,
   AoiAutonomyTickReason,
@@ -339,6 +340,27 @@ async function handleAoiAutonomyRequest(
         ok: true,
         sessionPath,
         state: loadAoiAutonomySchedulerState(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/health') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        health: buildAoiOperatorHealthState({
+          sessionsDir,
+          sessionPath,
+          configFile,
+        }),
       });
       return true;
     }

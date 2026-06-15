@@ -521,7 +521,9 @@ export function buildAoiOperatorVoiceEventFromDigest(
     });
   }
 
-  const health = visibleItems.find((item) => item.kind === 'stale_validation');
+  const health = visibleItems.find(
+    (item) => item.kind === 'stale_validation' || item.kind === 'operator_health',
+  );
   if (health) {
     return eventFromDigestItem({
       digest,

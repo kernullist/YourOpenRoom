@@ -244,6 +244,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiOperatorDigestPanelSummary,
+  buildAoiOperatorHealthPanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -276,6 +277,7 @@ import type {
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiOperatorDigest,
+  AoiOperatorHealthState,
   AoiOperatorVoiceEventCategory,
   AoiOperatorVoicePolicy,
   AoiApprovedCommandPolicy,
@@ -2060,6 +2062,7 @@ const ChatPanel: React.FC<{
     useState<AoiAutonomySchedulerState | null>(null);
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
+  const [aoiOperatorHealth, setAoiOperatorHealth] = useState<AoiOperatorHealthState | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
     useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
   const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
@@ -2233,6 +2236,7 @@ const ChatPanel: React.FC<{
     setAoiWorkspaceSnapshot(null);
     setAoiContextRouter(null);
     setAoiAutonomyEvaluation(null);
+    setAoiOperatorHealth(null);
     setAoiAutonomyBlockedProposals([]);
     setAoiAutonomyError('');
     setAoiAutonomyActionId(null);
@@ -2678,6 +2682,7 @@ const ChatPanel: React.FC<{
       setAoiContextRouter(snapshot.contextRouter);
       setAoiAutonomyScheduler(snapshot.scheduler);
       setAoiAutonomyEvaluation(snapshot.evaluation);
+      setAoiOperatorHealth(snapshot.health);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -5791,6 +5796,7 @@ const ChatPanel: React.FC<{
         quietMode: aoiAutonomyPanelSettings.quietMode,
         lastSeenAt: aoiAutonomyLastSeenAt,
         trustCalibrationProfile: aoiAutonomyEvaluation?.trustCalibration,
+        operatorHealth: aoiOperatorHealth,
       }),
     [
       aoiAutonomyActiveProposals,
@@ -5803,6 +5809,7 @@ const ChatPanel: React.FC<{
       aoiRecentProposalDecisions,
       aoiMemories,
       aoiMissionState,
+      aoiOperatorHealth,
       aoiWorkspaceSnapshot,
       sessionPath,
     ],
@@ -7268,6 +7275,14 @@ const SettingsModal: React.FC<{
         expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
       ),
     [aoiOperatorDigest, expandedAoiMissionEvidence, expandedAoiProposalId],
+  );
+  const aoiOperatorHealthSummary = useMemo(
+    () =>
+      buildAoiOperatorHealthPanelSummary(
+        aoiOperatorHealth,
+        expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
+      ),
+    [aoiOperatorHealth, expandedAoiMissionEvidence, expandedAoiProposalId],
   );
   const aoiWorkspaceSignalSummary = useMemo(
     () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
@@ -9017,6 +9032,38 @@ const SettingsModal: React.FC<{
                         <strong>{privateAoiEnvironmentSourceCount}</strong>
                       </div>
                     </div>
+
+                    {aoiOperatorHealthSummary.visible && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Operator health</div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiOperatorHealthSummary.statusLabel}</span>
+                            {aoiOperatorHealthSummary.capabilityLabels.map((label) => (
+                              <span key={label}>{label}</span>
+                            ))}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiOperatorHealthSummary.summaryLabel}
+                          </div>
+                          {(aoiOperatorHealthSummary.issueLabels.length > 0 ||
+                            aoiOperatorHealthSummary.recommendationLabels.length > 0 ||
+                            aoiOperatorHealthSummary.evidenceRefs.length > 0) && (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiOperatorHealthSummary.issueLabels.map((label, index) => (
+                                <div key={`health-issue-${index}`}>{label}</div>
+                              ))}
+                              {aoiOperatorHealthSummary.recommendationLabels.map((label, index) => (
+                                <div key={`health-recommendation-${index}`}>Next: {label}</div>
+                              ))}
+                              {aoiOperatorHealthSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`health-evidence-${index}`}>Evidence: {ref}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     <div className={styles.aoiAutonomyControls}>
                       <div className={styles.promptBudgetMetric}>

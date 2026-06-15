@@ -1,9 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
+import {
+  DEFAULT_AOI_AUTONOMY_POLICY,
+  getDefaultAoiEnvironmentSourceRegistry,
+} from '../aoiAutonomyPolicy';
 import { decideAoiMission } from '../aoiAutonomyClient';
 import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContextRouter';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  buildAoiOperatorHealthPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomySchedulerPanelSummary,
@@ -29,6 +33,7 @@ import {
   sanitizeAoiProposalDisplayText,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
+import { evaluateAoiOperatorHealth } from '../aoiOperatorHealth';
 import { buildAoiOperatorDigest } from '../aoiOperatorDigest';
 import {
   buildAoiOperatorVoiceEventFromDigest,
@@ -56,6 +61,7 @@ import type {
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiOperatorTimelineSummary,
+  AoiOperatorHealthState,
   AoiProposal,
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
@@ -251,6 +257,39 @@ function makeWorkspaceSnapshot(partial: Partial<AoiWorkspaceSnapshot> = {}): Aoi
     warnings: [],
     ...partial,
   };
+}
+
+function withSourcePatch(
+  registry: AoiEnvironmentSourceRegistry,
+  sourceId: string,
+  patch: Partial<AoiEnvironmentSourceRegistry['sources'][number]>,
+): AoiEnvironmentSourceRegistry {
+  return {
+    ...registry,
+    sources: registry.sources.map((source) =>
+      source.id === sourceId
+        ? {
+            ...source,
+            ...patch,
+          }
+        : source,
+    ),
+  };
+}
+
+function makeBlockingHealth(): AoiOperatorHealthState {
+  return evaluateAoiOperatorHealth({
+    sessionPath: 'aoi/default',
+    registry: getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000),
+    config: {
+      tavilyConfigured: true,
+      kiraConfigured: true,
+      kiraWorkerRouteConfigured: true,
+      kiraReviewerRouteConfigured: true,
+      memoryAvailable: false,
+    },
+    now: 2000,
+  });
 }
 
 function makeContextSource(
@@ -1603,6 +1642,146 @@ describe('Aoi autonomy UI helpers', () => {
     expect(voiceEvent?.category).toBe('completion_update');
     expect(voiceDecision.status).toBe('suppressed');
     expect(voiceDecision.reasons).toContain('trust_calibration_suppressed');
+  });
+
+  it('summarizes operator health limits without treating disabled personal sources as errors', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: 'aoi/default',
+      registry,
+      config: {
+        tavilyConfigured: false,
+        gmailConfigured: false,
+        gmailConnected: false,
+        kiraConfigured: true,
+        kiraWorkerRouteConfigured: true,
+        kiraReviewerRouteConfigured: true,
+        voiceEnabled: false,
+      },
+      now: 2000,
+    });
+    const researchIssue = health.issues.find((issue) => issue.code === 'tavily_missing');
+    const personalDisabled = health.issues.find((issue) => issue.code === 'gmail_source_disabled');
+    const summary = buildAoiOperatorHealthPanelSummary(health, true);
+
+    expect(health.overallStatus).toBe('limited');
+    expect(researchIssue).toMatchObject({
+      capability: 'research',
+      severity: 'warning',
+    });
+    expect(researchIssue?.cannotKnow).toContain('Aoi cannot know fresh web evidence');
+    expect(personalDisabled).toMatchObject({
+      capability: 'personal_signals',
+      severity: 'info',
+    });
+    expect(summary.recommendationLabels).toContain('Configure Tavily');
+    expect(JSON.stringify(health)).not.toContain('apiKey');
+  });
+
+  it('reports stale validation as a workspace warning with an actionable recommendation', () => {
+    const registry = withSourcePatch(
+      getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000),
+      'workspace-build',
+      {
+        enabled: true,
+        lastObservedAt: 1900,
+      },
+    );
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: 'aoi/default',
+      registry,
+      workspaceSnapshot: makeWorkspaceSnapshot({
+        collectedAt: 2000,
+        validation: {
+          version: 1,
+          command: 'pnpm test',
+          result: 'passed',
+          completedAt: 1500,
+          touchedFileScopes: ['apps/webuiapps/src/lib'],
+          freshness: 'stale',
+          staleReason: 'workspace changed after validation',
+          evidenceRefs: ['workspace:validation:stale'],
+        },
+        freshness: 'stale',
+      }),
+      config: {
+        tavilyConfigured: true,
+        kiraConfigured: true,
+        kiraWorkerRouteConfigured: true,
+        kiraReviewerRouteConfigured: true,
+      },
+      now: 2000,
+    });
+    const issue = health.issues.find((item) => item.code === 'validation_stale');
+
+    expect(issue).toMatchObject({
+      capability: 'workspace',
+      severity: 'warning',
+    });
+    expect(issue?.recommendation.action).toBe('run_validation');
+    expect(issue?.cannotKnow).toContain(
+      'Aoi cannot know whether the current workspace still passes',
+    );
+  });
+
+  it('keeps health digest quiet unless the health state is user-blocking', () => {
+    const warningHealth = evaluateAoiOperatorHealth({
+      sessionPath: 'aoi/default',
+      registry: getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000),
+      config: {
+        tavilyConfigured: false,
+        kiraConfigured: true,
+        kiraWorkerRouteConfigured: true,
+        kiraReviewerRouteConfigured: true,
+      },
+      now: 2000,
+    });
+    const quietDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      operatorHealth: warningHealth,
+      now: 2000,
+    });
+    const blockingDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      operatorHealth: makeBlockingHealth(),
+      now: 2000,
+    });
+
+    expect(warningHealth.userBlockingIssueCount).toBe(0);
+    expect(quietDigest.items.find((item) => item.kind === 'operator_health')).toBeUndefined();
+    expect(blockingDigest.items.find((item) => item.kind === 'operator_health')).toMatchObject({
+      lane: 'critical_user_blocking',
+      kind: 'operator_health',
+    });
+  });
+
+  it('represents replay evaluation failures without running replay at runtime', () => {
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: 'aoi/default',
+      registry: getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000),
+      config: {
+        tavilyConfigured: true,
+        kiraConfigured: true,
+        kiraWorkerRouteConfigured: true,
+        kiraReviewerRouteConfigured: true,
+      },
+      replayScenarios: [
+        {
+          fixtureId: 'health-replay-failure',
+          failed: true,
+          summary: 'Fixture expected health silence but received a blocker.',
+          evidenceRefs: ['replay:health-replay-failure'],
+        },
+      ],
+      now: 2000,
+    });
+    const issue = health.issues.find((item) => item.code === 'replay_scenario_failed');
+
+    expect(issue).toMatchObject({
+      capability: 'replay_evaluation',
+      severity: 'error',
+    });
+    expect(issue?.recommendation.action).toBe('review_replay');
   });
 
   it('keeps approval voice summaries free of execution implication', () => {

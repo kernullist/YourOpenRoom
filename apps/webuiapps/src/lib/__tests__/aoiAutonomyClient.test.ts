@@ -2,12 +2,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   fetchAoiAutonomyDashboard,
+  fetchAoiOperatorHealth,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
   updateAoiEnvironmentSource,
 } from '../aoiAutonomyClient';
+import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiAutonomyEvaluationResult } from '../aoiAutonomyEvaluation';
-import type { AoiAutonomyStatus } from '../aoiAutonomyTypes';
+import type { AoiAutonomyStatus, AoiOperatorHealthState } from '../aoiAutonomyTypes';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -66,16 +68,56 @@ function makeEvaluation(): AoiAutonomyEvaluationResult {
       blockedHighRiskProposalCount: 0,
       acceptedExecutionSuccessRate: 1,
       goalContinuationUsefulness: null,
+      preferenceDemotionCandidateCount: 0,
+      oneOffPreferenceFeedbackCount: 0,
     },
     calibration: {
       noisyProposalTypes: [],
       wrongMemoryRefs: [],
       blockedActionKinds: [],
       staleMemoryRefs: [],
+      preferenceDemotionRefs: [],
       highRiskProposalCount: 0,
       highRiskProposalRate: 0,
       highRiskBlockedCount: 0,
     },
+    trustCalibration: buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      now: 1000,
+    }),
+  };
+}
+
+function makeHealth(): AoiOperatorHealthState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 1000,
+    overallStatus: 'limited',
+    summary: 'Aoi health is limited: Tavily missing for research.',
+    capabilities: [],
+    issues: [
+      {
+        version: 1,
+        id: 'aoi-health-tavily-missing-client-test',
+        capability: 'research',
+        severity: 'warning',
+        code: 'tavily_missing',
+        title: 'Tavily missing for research',
+        summary: 'Research is not configured.',
+        cannotKnow: 'Aoi cannot know fresh web evidence because Tavily is not configured.',
+        observedAt: 1000,
+        evidenceRefs: ['config:tavily'],
+        recommendation: {
+          version: 1,
+          action: 'configure_tavily',
+          label: 'Configure Tavily',
+          targetPanel: 'research',
+        },
+      },
+    ],
+    userBlockingIssueCount: 0,
+    evidenceRefs: ['config:tavily'],
   };
 }
 
@@ -169,6 +211,12 @@ describe('Aoi autonomy client dashboard', () => {
           },
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/health?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          health: makeHealth(),
+        });
+      }
       throw new Error(`Unexpected URL: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -182,7 +230,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.evaluation.metrics.evidenceCoverage).toBe(1);
     expect(snapshot.timeline.totalEventCount).toBe(0);
     expect(snapshot.scheduler.wakeupCount).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(10);
+    expect(snapshot.health.overallStatus).toBe('limited');
+    expect(fetchMock).toHaveBeenCalledTimes(11);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -195,8 +244,25 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/evaluation?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/timeline?sessionPath=aoi%2Fdefault&limit=20',
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault',
       ]),
     );
+  });
+
+  it('fetches the compact operator health snapshot', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      expect(String(input)).toBe('/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault');
+      return jsonResponse({
+        sessionPath: 'aoi/default',
+        health: makeHealth(),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await fetchAoiOperatorHealth('aoi/default');
+
+    expect(result.health.issues[0].recommendation.action).toBe('configure_tavily');
+    expect(result.health.summary).not.toContain('secret');
   });
 
   it('preserves explicit clear markers when updating environment sources', async () => {

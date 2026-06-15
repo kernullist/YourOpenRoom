@@ -22,6 +22,7 @@ import type {
   AoiOperatorTimelineEventKind,
   AoiOperatorTimelineSummary,
   AoiOperatorTraceExport,
+  AoiOperatorHealthState,
   AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
   AoiProposal,
@@ -105,6 +106,11 @@ export interface AoiAutonomySchedulerResponse {
   state: AoiAutonomySchedulerState;
 }
 
+export interface AoiOperatorHealthResponse {
+  sessionPath: string;
+  health: AoiOperatorHealthState;
+}
+
 export interface AoiAutonomyDashboardSnapshot {
   sessionPath: string;
   status: AoiAutonomyStatus;
@@ -117,6 +123,7 @@ export interface AoiAutonomyDashboardSnapshot {
   evaluation: AoiAutonomyEvaluationResult;
   timeline: AoiOperatorTimelineSummary;
   scheduler: AoiAutonomySchedulerState;
+  health: AoiOperatorHealthState;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -456,6 +463,24 @@ export async function fetchAoiAutonomyEvaluation(
   return {
     sessionPath: evaluation.sessionPath || sessionPath,
     evaluation,
+  };
+}
+
+export async function fetchAoiOperatorHealth(
+  sessionPath: string,
+): Promise<AoiOperatorHealthResponse> {
+  const response = await fetch(`${API_PREFIX}/health?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi operator health.');
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    health: requireRecordField<AoiOperatorHealthState>(
+      payload,
+      'health',
+      'Aoi operator health response was malformed.',
+    ),
   };
 }
 
@@ -824,6 +849,7 @@ export async function fetchAoiAutonomyDashboard(
     evaluation,
     timeline,
     scheduler,
+    health,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -835,6 +861,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiAutonomyEvaluation(sessionPath),
     fetchAoiAutonomyTimeline(sessionPath, { limit: 20 }),
     fetchAoiAutonomyScheduler(sessionPath),
+    fetchAoiOperatorHealth(sessionPath),
   ]);
 
   return {
@@ -849,6 +876,7 @@ export async function fetchAoiAutonomyDashboard(
     evaluation: evaluation.evaluation,
     timeline: timeline.summary,
     scheduler: scheduler.state,
+    health: health.health,
   };
 }
 

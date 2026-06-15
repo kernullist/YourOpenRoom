@@ -30,6 +30,7 @@ import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
+import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import type {
   AoiGoal,
   AoiAutonomyTickResult,
@@ -1825,6 +1826,18 @@ describe('runAoiAutonomyWakeup()', () => {
     });
     expect(state.sourceSchedules.find((item) => item.sourceId === 'app-state')).toMatchObject({
       sourceId: 'app-state',
+    });
+    const health = buildAoiOperatorHealthState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      configFile: join(root, 'config.json'),
+      now: NOW + 10,
+    });
+
+    expect(health.overallStatus).toBe('degraded');
+    expect(health.issues.find((issue) => issue.code === 'autonomy_tick_timeout')).toMatchObject({
+      capability: 'memory',
+      severity: 'error',
     });
   });
 

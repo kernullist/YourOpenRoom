@@ -207,7 +207,8 @@ export type AoiDigestItemKind =
   | 'research_outcome'
   | 'stale_validation'
   | 'pending_approval'
-  | 'blocked_item';
+  | 'blocked_item'
+  | 'operator_health';
 
 export interface AoiDigestItem {
   version: 1;
@@ -297,6 +298,78 @@ export interface AoiOperatorVoicePolicy {
   quietWindows: AoiVoiceQuietWindow[];
   personalMetadataVoiceScope: AoiVoicePersonalMetadataScope;
   minInterruptionLevel: AoiVoiceInterruptionLevel;
+}
+
+export type AoiOperatorHealthSeverity = 'info' | 'warning' | 'error' | 'blocker';
+
+export type AoiOperatorHealthStatus = 'healthy' | 'limited' | 'degraded' | 'blocked';
+
+export type AoiOperatorHealthCapability =
+  | 'memory'
+  | 'research'
+  | 'kira'
+  | 'workspace'
+  | 'personal_signals'
+  | 'voice'
+  | 'approved_commands'
+  | 'replay_evaluation';
+
+export type AoiOperatorHealthRecommendationAction =
+  | 'open_source_settings'
+  | 'configure_tavily'
+  | 'connect_gmail'
+  | 'open_kira_settings'
+  | 'refresh_workspace'
+  | 'run_validation'
+  | 'review_scheduler'
+  | 'review_replay'
+  | 'review_approved_command_policy'
+  | 'enable_voice'
+  | 'inspect_memory';
+
+export interface AoiOperatorHealthRecommendation {
+  version: 1;
+  action: AoiOperatorHealthRecommendationAction;
+  label: string;
+  targetPanel?: string;
+  targetRef?: string;
+}
+
+export interface AoiOperatorHealthIssue {
+  version: 1;
+  id: string;
+  capability: AoiOperatorHealthCapability;
+  severity: AoiOperatorHealthSeverity;
+  code: string;
+  title: string;
+  summary: string;
+  cannotKnow?: string;
+  sourceId?: string;
+  observedAt: number;
+  evidenceRefs: string[];
+  recommendation: AoiOperatorHealthRecommendation;
+}
+
+export interface AoiOperatorHealthCapabilityState {
+  version: 1;
+  capability: AoiOperatorHealthCapability;
+  status: AoiOperatorHealthStatus;
+  highestSeverity: AoiOperatorHealthSeverity;
+  issueCount: number;
+  summary: string;
+  issueIds: string[];
+}
+
+export interface AoiOperatorHealthState {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  overallStatus: AoiOperatorHealthStatus;
+  summary: string;
+  capabilities: AoiOperatorHealthCapabilityState[];
+  issues: AoiOperatorHealthIssue[];
+  userBlockingIssueCount: number;
+  evidenceRefs: string[];
 }
 
 export interface AoiOperatorVoiceEvent {

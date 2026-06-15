@@ -24,6 +24,7 @@ import type {
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
   AoiOperatorDigest,
+  AoiOperatorHealthState,
   AoiOperatorTimelineSummary,
   AoiPreparedActionPlan,
   AoiProposal,
@@ -267,6 +268,17 @@ export interface AoiOperatorDigestPanelSummary {
   resumeBriefLabel: string;
   hiddenLabel: string;
   evidenceRefs: string[];
+}
+
+export interface AoiOperatorHealthPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  summaryLabel: string;
+  capabilityLabels: string[];
+  issueLabels: string[];
+  recommendationLabels: string[];
+  evidenceRefs: string[];
+  tone: 'healthy' | 'limited' | 'degraded' | 'blocked';
 }
 
 export interface AoiOperatorTimelinePanelSummary {
@@ -1424,6 +1436,60 @@ export function buildAoiOperatorDigestPanelSummary(
     evidenceRefs: includeDetails
       ? digest.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
       : [],
+  };
+}
+
+export function buildAoiOperatorHealthPanelSummary(
+  health: AoiOperatorHealthState | null | undefined,
+  includeDetails = false,
+): AoiOperatorHealthPanelSummary {
+  if (!health) {
+    return {
+      visible: false,
+      statusLabel: 'unknown',
+      summaryLabel: 'No operator health snapshot',
+      capabilityLabels: [],
+      issueLabels: [],
+      recommendationLabels: [],
+      evidenceRefs: [],
+      tone: 'healthy',
+    };
+  }
+  const actionableIssues = health.issues.filter((issue) => issue.severity !== 'info');
+  const visibleIssues = (actionableIssues.length > 0 ? actionableIssues : health.issues).slice(
+    0,
+    includeDetails ? 6 : 3,
+  );
+  return {
+    visible: true,
+    statusLabel: health.overallStatus.replace(/_/g, ' '),
+    summaryLabel: sanitizeAoiProposalDisplayText(health.summary, 180),
+    capabilityLabels: health.capabilities
+      .filter((capability) => includeDetails || capability.status !== 'healthy')
+      .slice(0, includeDetails ? 8 : 4)
+      .map((capability) =>
+        sanitizeAoiProposalDisplayText(
+          `${capability.capability.replace(/_/g, ' ')}: ${capability.status}`,
+          120,
+        ),
+      ),
+    issueLabels: visibleIssues.map((issue) =>
+      sanitizeAoiProposalDisplayText(
+        issue.cannotKnow
+          ? `${issue.title}. ${issue.cannotKnow}`
+          : `${issue.title}. ${issue.summary}`,
+        includeDetails ? 260 : 180,
+      ),
+    ),
+    recommendationLabels: visibleIssues
+      .map((issue) => issue.recommendation.label)
+      .filter((label, index, all) => label && all.indexOf(label) === index)
+      .slice(0, includeDetails ? 6 : 3)
+      .map((label) => sanitizeAoiProposalDisplayText(label, 140)),
+    evidenceRefs: includeDetails
+      ? health.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
+      : [],
+    tone: health.overallStatus,
   };
 }
 
