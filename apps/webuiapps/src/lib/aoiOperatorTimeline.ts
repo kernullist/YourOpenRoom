@@ -24,6 +24,7 @@ import type {
   AoiProposalDecision,
   AoiTraceRedactionState,
   AoiTraceRedactionSummary,
+  AoiVoiceRenderDecision,
 } from './aoiAutonomyTypes';
 import type {
   AoiOperatorReplayFixture,
@@ -55,6 +56,7 @@ const TIMELINE_MEANINGFUL_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'operator_voice_decision',
   'wakeup_recorded',
 ]);
 
@@ -76,6 +78,7 @@ const DEFAULT_TRACE_EXPORT_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'operator_voice_decision',
   'wakeup_recorded',
 ]);
 
@@ -302,6 +305,7 @@ function isTimelineEventKind(value: unknown): value is AoiOperatorTimelineEventK
     value === 'approved_command_previewed' ||
     value === 'approved_command_recorded' ||
     value === 'feedback_recorded' ||
+    value === 'operator_voice_decision' ||
     value === 'wakeup_recorded' ||
     value === 'trace_exported'
   );
@@ -983,6 +987,45 @@ export function createAoiReplayFixtureDraftFromTraceExport(
       'This helper does not execute shell commands, call network APIs, read source files, or mutate built-in replay fixtures.',
     ],
   };
+}
+
+export function recordAoiOperatorVoiceDecisionTimelineEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  decision: AoiVoiceRenderDecision;
+}): AoiOperatorTimelineEvent {
+  const summaryId = params.decision.summaryId ?? 'none';
+  const transcriptHash = params.decision.transcriptHash ?? 'none';
+  const reason = params.decision.silentReason || params.decision.status;
+  return recordAoiOperatorTimelineEvent(params.sessionsDir, {
+    sessionPath: params.sessionPath,
+    kind: 'operator_voice_decision',
+    visibility: params.decision.status === 'spoken' ? 'operator_visible' : 'dashboard_only',
+    createdAt: params.decision.createdAt,
+    title: `Operator voice ${params.decision.status.replace(/_/g, ' ')}`,
+    summary: `Operator voice ${params.decision.status.replace(/_/g, ' ')} for ${
+      params.decision.category ?? 'no_event'
+    }: ${reason}.`,
+    redactionState: 'redacted',
+    evidenceRefs: params.decision.evidenceRefs,
+    relatedRefs: [
+      ...(params.decision.eventId ? [`voice-event:${params.decision.eventId}`] : []),
+      ...(params.decision.summaryId ? [`voice-summary:${params.decision.summaryId}`] : []),
+    ],
+    sourceRef: params.decision.eventDedupeKey,
+    sourceKind: params.decision.category,
+    status: params.decision.status,
+    metadata: {
+      category: params.decision.category,
+      status: params.decision.status,
+      shouldSpeak: params.decision.shouldSpeak,
+      summaryId,
+      transcriptHash,
+      silentReason: params.decision.silentReason,
+      reasons: params.decision.reasons,
+      replayable: params.decision.replayable,
+    },
+  });
 }
 
 export function recordAoiObservationTimelineEvent(params: {

@@ -20,6 +20,7 @@ import {
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiObservations,
+  loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
@@ -41,6 +42,7 @@ import {
   exportAoiOperatorTrace,
   loadAoiOperatorTimelineEvents,
   loadAoiOperatorTimelineSummary,
+  recordAoiOperatorVoiceDecisionTimelineEvent,
   recordAoiOperatorTimelineEvent,
   recordAoiProposalDecisionTimelineEvent,
   recordAoiProposalFeedbackTimelineEvent,
@@ -55,6 +57,7 @@ import type {
   AoiAutonomyWakeupBudget,
   AoiOperatorTimelineEventKind,
   AoiProposalFeedbackCategory,
+  AoiVoiceRenderDecision,
 } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
 
@@ -148,6 +151,7 @@ function isAoiOperatorTimelineEventKind(value: unknown): value is AoiOperatorTim
     value === 'approved_command_previewed' ||
     value === 'approved_command_recorded' ||
     value === 'feedback_recorded' ||
+    value === 'operator_voice_decision' ||
     value === 'wakeup_recorded' ||
     value === 'trace_exported'
   );
@@ -223,6 +227,27 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         active: loadAoiActiveProposals(sessionsDir, sessionPath),
         archived: includeArchived ? loadAoiArchivedProposals(sessionsDir, sessionPath) : [],
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/decisions') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        decisions: loadAoiProposalDecisions(sessionsDir, sessionPath).slice(
+          0,
+          Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 200) : 50,
+        ),
       });
       return true;
     }
@@ -485,6 +510,40 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         traceExport,
         summary: loadAoiOperatorTimelineSummary(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/voice/decision') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (!body.decision || typeof body.decision !== 'object' || Array.isArray(body.decision)) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing voice decision.',
+          code: 'invalid_voice_decision',
+        });
+        return true;
+      }
+      const decision = {
+        ...(body.decision as AoiVoiceRenderDecision),
+        sessionPath,
+      };
+      const event = recordAoiOperatorVoiceDecisionTimelineEvent({
+        sessionsDir,
+        sessionPath,
+        decision,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        event,
       });
       return true;
     }

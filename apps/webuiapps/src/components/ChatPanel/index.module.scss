@@ -994,6 +994,67 @@
   }
 }
 
+.operatorVoiceToolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.operatorVoiceButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 32px;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.55;
+  }
+}
+
+.operatorVoiceCategoryGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.operatorVoiceCategoryOn,
+.operatorVoiceCategoryOff {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-height: 38px;
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  cursor: pointer;
+
+  span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+
+  strong {
+    flex: 0 0 auto;
+    font-size: 11px;
+  }
+}
+
+.operatorVoiceCategoryOn {
+  border: 1px solid rgba(250, 234, 95, 0.42);
+  background: rgba(250, 234, 95, 0.12);
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.operatorVoiceCategoryOff {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+  color: rgba(255, 255, 255, 0.62);
+}
+
 .aoiMemoryList {
   display: flex;
   flex-direction: column;

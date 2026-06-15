@@ -14,6 +14,9 @@ import {
   PanelRight,
   Plus,
   ImagePlus,
+  Square,
+  Volume2,
+  VolumeX,
   X,
 } from 'lucide-react';
 import {
@@ -215,10 +218,12 @@ import {
   decideAoiProposal,
   executeAoiProposalAction,
   fetchAoiAutonomyDashboard,
+  fetchAoiProposalDecisions,
   fetchAoiContextRouter,
   fetchAoiMissionState,
   previewAoiProposalAction,
   recordAoiContextSourceFeedback,
+  recordAoiOperatorVoiceDecision,
   recordAoiProposalFeedback,
   runAoiAutonomyManualWakeup,
   runAoiAutonomySessionOpenWakeup,
@@ -269,14 +274,25 @@ import type {
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiOperatorDigest,
+  AoiOperatorVoiceEventCategory,
+  AoiOperatorVoicePolicy,
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
   AoiPreparedActionPlan,
   AoiProposal,
+  AoiProposalDecision,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
+  AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
+import {
+  AOI_OPERATOR_VOICE_CATEGORY_LABELS,
+  buildAoiOperatorVoiceEventFromDigest,
+  buildAoiOperatorVoicePanelSummary,
+  decideAoiOperatorVoiceRender,
+  normalizeAoiOperatorVoicePolicy,
+} from '@/lib/aoiOperatorVoice';
 import { buildAoiPreparedActionPlan } from '@/lib/aoiSafeActionPlan';
 import {
   createAoiApprovedCommandRequest,
@@ -1940,6 +1956,9 @@ const ChatPanel: React.FC<{
   const [ttsStatusSnapshot, setTtsStatusSnapshot] = useState<AoiTtsStatusSnapshot>(() =>
     getAoiTtsStatusSnapshot(),
   );
+  const [aoiOperatorVoiceMuted, setAoiOperatorVoiceMuted] = useState(false);
+  const [aoiLastOperatorVoiceDecision, setAoiLastOperatorVoiceDecision] =
+    useState<AoiVoiceRenderDecision | null>(null);
 
   // Suggested replies from latest assistant message
   const [suggestedReplies, setSuggestedReplies] = useState<string[]>([]);
@@ -2018,6 +2037,9 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyArchivedProposals, setAoiAutonomyArchivedProposals] = useState<AoiProposal[]>(
     [],
   );
+  const [aoiRecentProposalDecisions, setAoiRecentProposalDecisions] = useState<
+    AoiProposalDecision[]
+  >([]);
   const [aoiAutonomyActiveGoals, setAoiAutonomyActiveGoals] = useState<AoiGoal[]>([]);
   const [aoiMissionState, setAoiMissionState] = useState<AoiMissionState | null>(null);
   const [aoiEnvironmentSources, setAoiEnvironmentSources] =
@@ -2079,6 +2101,8 @@ const ChatPanel: React.FC<{
   const aoiAutonomyRefreshInFlightRef = useRef(false);
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
+  const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
+  const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2631,10 +2655,14 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
 
     try {
-      const snapshot = await fetchAoiAutonomyDashboard(sessionPathForAutonomy);
+      const [snapshot, decisions] = await Promise.all([
+        fetchAoiAutonomyDashboard(sessionPathForAutonomy),
+        fetchAoiProposalDecisions(sessionPathForAutonomy, 50),
+      ]);
       setAoiAutonomyStatus(snapshot.status);
       setAoiAutonomyActiveProposals(snapshot.proposals.active);
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
+      setAoiRecentProposalDecisions(decisions.decisions);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
       setAoiMissionState(snapshot.mission);
       setAoiEnvironmentSources(snapshot.environmentSources);
@@ -5724,6 +5752,7 @@ const ChatPanel: React.FC<{
         mission: aoiMissionState,
         activeProposals: aoiAutonomyActiveProposals,
         blockedProposals: aoiAutonomyBlockedProposals,
+        recentDecisions: aoiRecentProposalDecisions,
         workspaceSnapshot: aoiWorkspaceSnapshot,
         memories: aoiMemories,
         quietMode: aoiAutonomyPanelSettings.quietMode,
@@ -5736,12 +5765,129 @@ const ChatPanel: React.FC<{
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings.quietMode,
       aoiAutonomyStatus?.updatedAt,
+      aoiRecentProposalDecisions,
       aoiMemories,
       aoiMissionState,
       aoiWorkspaceSnapshot,
       sessionPath,
     ],
   );
+
+  const aoiOperatorVoicePolicy = useMemo(
+    () => normalizeAoiOperatorVoicePolicy(conversationPreferences?.operatorVoicePolicy),
+    [conversationPreferences?.operatorVoicePolicy],
+  );
+  const aoiOperatorVoicePanelSummary = useMemo(
+    () => buildAoiOperatorVoicePanelSummary(aoiLastOperatorVoiceDecision),
+    [aoiLastOperatorVoiceDecision],
+  );
+
+  useEffect(() => {
+    const event = buildAoiOperatorVoiceEventFromDigest({
+      digest: aoiOperatorDigest,
+      mission: aoiMissionState,
+      now: aoiOperatorDigest.generatedAt,
+    });
+    const decision = decideAoiOperatorVoiceRender({
+      sessionPath,
+      event,
+      policy: aoiOperatorVoicePolicy,
+      mission: aoiMissionState,
+      ttsEnabled: conversationPreferences?.ttsEnabled === true,
+      mutedForSession: aoiOperatorVoiceMuted,
+      previousSpokenDedupeKeys: aoiOperatorVoiceSpokenKeysRef.current,
+      recentDecisions: aoiRecentProposalDecisions,
+      now: aoiOperatorDigest.generatedAt,
+    });
+    const recordKey = [
+      decision.eventDedupeKey ?? 'no-event',
+      decision.status,
+      decision.summaryId ?? decision.silentReason,
+    ].join('|');
+
+    setAoiLastOperatorVoiceDecision(decision);
+
+    if (aoiOperatorVoiceDecisionRecordKeyRef.current !== recordKey) {
+      aoiOperatorVoiceDecisionRecordKeyRef.current = recordKey;
+      void recordAoiOperatorVoiceDecision(sessionPath, decision).catch((error) => {
+        console.warn('[ChatPanel] Failed to record Aoi operator voice decision', error);
+      });
+    }
+
+    if (!decision.shouldSpeak || !decision.spokenSummary || !event) {
+      return;
+    }
+
+    const latestUserText =
+      [...chatHistoryRef.current].reverse().find((message) => message.role === 'user')?.content ??
+      '';
+    const language = detectPreferredLanguage(
+      latestUserText,
+      normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
+    );
+
+    void playAoiTtsMessage({
+      text: decision.spokenSummary,
+      emotion: 'peaceful',
+      language,
+      characterName: characterRef.current.character_name,
+      characterDescription: characterRef.current.character_desc,
+    })
+      .then(() => {
+        aoiOperatorVoiceSpokenKeysRef.current.add(event.dedupeKey);
+        aoiOperatorVoiceSpokenKeysRef.current.add(event.id);
+      })
+      .catch((error) => {
+        console.warn('[ChatPanel] Aoi operator voice playback failed', error);
+        const failedDecision: AoiVoiceRenderDecision = {
+          ...decision,
+          id: `${decision.id}-playback-failed`.slice(0, 127),
+          status: 'playback_failed',
+          shouldSpeak: false,
+          silentReason: 'TTS playback failed.',
+          reasons: [...decision.reasons, 'playback_failed'],
+        };
+        setAoiLastOperatorVoiceDecision(failedDecision);
+        void recordAoiOperatorVoiceDecision(sessionPath, failedDecision).catch((recordError) => {
+          console.warn('[ChatPanel] Failed to record Aoi operator voice failure', recordError);
+        });
+      });
+  }, [
+    aoiMissionState,
+    aoiOperatorDigest,
+    aoiOperatorVoiceMuted,
+    aoiOperatorVoicePolicy,
+    aoiRecentProposalDecisions,
+    conversationPreferences?.responseLanguageMode,
+    conversationPreferences?.ttsEnabled,
+    sessionPath,
+  ]);
+
+  const replayAoiLastOperatorVoice = useCallback(() => {
+    if (!aoiLastOperatorVoiceDecision?.spokenSummary) {
+      return;
+    }
+    const latestUserText =
+      [...chatHistoryRef.current].reverse().find((message) => message.role === 'user')?.content ??
+      '';
+    const language = detectPreferredLanguage(
+      latestUserText,
+      normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+    );
+    void playAoiTtsMessage({
+      text: aoiLastOperatorVoiceDecision.spokenSummary,
+      emotion: 'peaceful',
+      language,
+      characterName: characterRef.current.character_name,
+      characterDescription: characterRef.current.character_desc,
+    }).catch((error) => {
+      console.warn('[ChatPanel] Aoi operator voice replay failed', error);
+    });
+  }, [aoiLastOperatorVoiceDecision?.spokenSummary]);
+
+  const stopAoiOperatorVoice = useCallback(() => {
+    stopAoiTtsPlayback();
+  }, []);
 
   const inlineAoiProposal = useMemo(
     () =>
@@ -6214,6 +6360,10 @@ const ChatPanel: React.FC<{
           aoiAutonomyScheduler={aoiAutonomyScheduler}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiOperatorDigest={aoiOperatorDigest}
+          aoiOperatorVoicePolicy={aoiOperatorVoicePolicy}
+          aoiOperatorVoiceMuted={aoiOperatorVoiceMuted}
+          aoiLastOperatorVoiceDecision={aoiLastOperatorVoiceDecision}
+          aoiOperatorVoicePanelSummary={aoiOperatorVoicePanelSummary}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
           aoiAutonomyLoading={aoiAutonomyLoading}
@@ -6242,6 +6392,9 @@ const ChatPanel: React.FC<{
           onRecordAoiProposalFeedback={recordAoiProposalFeedbackFromPanel}
           onPrepareAoiKiraHandoff={prepareAoiKiraHandoffFromPanel}
           onExecuteAoiProposal={executeAoiProposalFromPanel}
+          onToggleAoiOperatorVoiceMute={() => setAoiOperatorVoiceMuted((prev) => !prev)}
+          onReplayAoiOperatorVoice={replayAoiLastOperatorVoice}
+          onStopAoiOperatorVoice={stopAoiOperatorVoice}
           onSaveAoiPreference={saveAoiPreferenceEntry}
           onDemoteAoiMemory={demoteAoiMemoryEntry}
           onMarkAoiMemoryTemporary={markAoiMemoryTemporaryEntry}
@@ -6678,6 +6831,10 @@ const SettingsModal: React.FC<{
   aoiAutonomyScheduler: AoiAutonomySchedulerState | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiOperatorDigest: AoiOperatorDigest | null;
+  aoiOperatorVoicePolicy: AoiOperatorVoicePolicy;
+  aoiOperatorVoiceMuted: boolean;
+  aoiLastOperatorVoiceDecision: AoiVoiceRenderDecision | null;
+  aoiOperatorVoicePanelSummary: ReturnType<typeof buildAoiOperatorVoicePanelSummary>;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
   aoiAutonomyLoading: boolean;
@@ -6726,6 +6883,9 @@ const SettingsModal: React.FC<{
   onRecordAoiProposalFeedback: (feedbackCategory: AoiProposalFeedbackCategory) => Promise<void>;
   onPrepareAoiKiraHandoff: (proposal: AoiProposal) => Promise<void>;
   onExecuteAoiProposal: (proposal: AoiProposal) => Promise<void>;
+  onToggleAoiOperatorVoiceMute: () => void;
+  onReplayAoiOperatorVoice: () => void;
+  onStopAoiOperatorVoice: () => void;
   onSaveAoiPreference: (memoryId: string) => Promise<void>;
   onDemoteAoiMemory: (memoryId: string) => Promise<void>;
   onMarkAoiMemoryTemporary: (memoryId: string) => Promise<void>;
@@ -6770,6 +6930,10 @@ const SettingsModal: React.FC<{
   aoiAutonomyScheduler,
   aoiAutonomyEvaluation,
   aoiOperatorDigest,
+  aoiOperatorVoicePolicy,
+  aoiOperatorVoiceMuted,
+  aoiLastOperatorVoiceDecision,
+  aoiOperatorVoicePanelSummary,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
   aoiAutonomyLoading,
@@ -6798,6 +6962,9 @@ const SettingsModal: React.FC<{
   onRecordAoiProposalFeedback,
   onPrepareAoiKiraHandoff,
   onExecuteAoiProposal,
+  onToggleAoiOperatorVoiceMute,
+  onReplayAoiOperatorVoice,
+  onStopAoiOperatorVoice,
   onSaveAoiPreference,
   onDemoteAoiMemory,
   onMarkAoiMemoryTemporary,
@@ -6841,6 +7008,8 @@ const SettingsModal: React.FC<{
   const [ttsPreloadCommonPhrases, setTtsPreloadCommonPhrases] = useState(
     conversationPreferences?.ttsPreloadCommonPhrases !== false,
   );
+  const [operatorVoicePolicy, setOperatorVoicePolicy] =
+    useState<AoiOperatorVoicePolicy>(aoiOperatorVoicePolicy);
   const [openRouterModels, setOpenRouterModels] = useState<RuntimeModelOption[]>([]);
   const [openRouterModelsStatus, setOpenRouterModelsStatus] = useState<RuntimeModelStatus>('idle');
   const [openRouterModelsError, setOpenRouterModelsError] = useState('');
@@ -6853,6 +7022,25 @@ const SettingsModal: React.FC<{
   useEffect(() => {
     setActiveTab(initialTab);
   }, [initialTab]);
+
+  useEffect(() => {
+    setOperatorVoicePolicy(aoiOperatorVoicePolicy);
+  }, [aoiOperatorVoicePolicy]);
+
+  const setOperatorVoiceCategoryEnabled = useCallback(
+    (category: AoiOperatorVoiceEventCategory, enabled: boolean) => {
+      setOperatorVoicePolicy((prev) =>
+        normalizeAoiOperatorVoicePolicy({
+          ...prev,
+          allowedCategories: {
+            ...prev.allowedCategories,
+            [category]: enabled,
+          },
+        }),
+      );
+    },
+    [],
+  );
 
   useEffect(() => {
     if (activeTab === 'advanced') {
@@ -7856,6 +8044,108 @@ const SettingsModal: React.FC<{
                     Pre-generates the short fixed lines found in the current chat code, like app
                     open acknowledgements and memory confirmations, so they play with less delay.
                   </span>
+                </div>
+
+                <div className={styles.promptBudgetCard}>
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Operator voice presence</span>
+                    <div className={styles.operatorVoiceToolbar}>
+                      <button
+                        type="button"
+                        className={`${operatorVoicePolicy.enabled ? styles.saveBtn : styles.cancelBtn} ${styles.operatorVoiceButton}`}
+                        onClick={() =>
+                          setOperatorVoicePolicy((prev) =>
+                            normalizeAoiOperatorVoicePolicy({
+                              ...prev,
+                              enabled: !prev.enabled,
+                            }),
+                          )
+                        }
+                        title="Toggle operator voice policy"
+                      >
+                        {operatorVoicePolicy.enabled ? (
+                          <Volume2 size={14} />
+                        ) : (
+                          <VolumeX size={14} />
+                        )}
+                        {operatorVoicePolicy.enabled ? 'Enabled' : 'Disabled'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`${aoiOperatorVoiceMuted ? styles.saveBtn : styles.cancelBtn} ${styles.operatorVoiceButton}`}
+                        onClick={onToggleAoiOperatorVoiceMute}
+                        title="Mute operator voice for this session"
+                      >
+                        {aoiOperatorVoiceMuted ? <VolumeX size={14} /> : <Volume2 size={14} />}
+                        {aoiOperatorVoiceMuted ? 'Muted' : 'Mute session'}
+                      </button>
+                      <button
+                        type="button"
+                        className={`${aoiOperatorVoicePanelSummary.canReplay ? styles.saveBtn : styles.cancelBtn} ${styles.operatorVoiceButton}`}
+                        disabled={!aoiOperatorVoicePanelSummary.canReplay}
+                        onClick={onReplayAoiOperatorVoice}
+                        title="Replay last operator voice summary"
+                      >
+                        <RotateCcw size={14} />
+                        Replay
+                      </button>
+                      <button
+                        type="button"
+                        className={`${styles.cancelBtn} ${styles.operatorVoiceButton}`}
+                        onClick={onStopAoiOperatorVoice}
+                        title="Stop current operator voice"
+                      >
+                        <Square size={14} />
+                        Stop
+                      </button>
+                    </div>
+                    <span className={styles.modelHint}>
+                      Operator voice uses the same TTS switch, then applies mission relevance,
+                      category, quiet-window, duplicate, and feedback gates before speaking.
+                    </span>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Voice categories</span>
+                    <div className={styles.operatorVoiceCategoryGrid}>
+                      {(
+                        Object.entries(AOI_OPERATOR_VOICE_CATEGORY_LABELS) as Array<
+                          [AoiOperatorVoiceEventCategory, string]
+                        >
+                      ).map(([category, label]) => {
+                        const enabled = operatorVoicePolicy.allowedCategories[category];
+                        return (
+                          <button
+                            key={category}
+                            type="button"
+                            className={
+                              enabled
+                                ? styles.operatorVoiceCategoryOn
+                                : styles.operatorVoiceCategoryOff
+                            }
+                            onClick={() => setOperatorVoiceCategoryEnabled(category, !enabled)}
+                            title={`Toggle ${label}`}
+                          >
+                            <span>{label}</span>
+                            <strong>{enabled ? 'On' : 'Off'}</strong>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <div className={styles.promptBudgetSection}>
+                    <span className={styles.promptBudgetSectionTitle}>Last voice decision</span>
+                    <p className={styles.modelHint}>
+                      {aoiOperatorVoicePanelSummary.statusLabel}:&nbsp;
+                      {aoiOperatorVoicePanelSummary.reasonLabel}
+                    </p>
+                    {aoiLastOperatorVoiceDecision?.summaryId && (
+                      <p className={styles.modelHint}>
+                        Summary id {aoiLastOperatorVoiceDecision.summaryId}
+                      </p>
+                    )}
+                  </div>
                 </div>
 
                 <div className={styles.promptBudgetCard}>
@@ -10850,6 +11140,7 @@ const SettingsModal: React.FC<{
                 responseLanguageMode: normalizeResponseLanguageMode(responseLanguageMode),
                 ttsEnabled,
                 ttsPreloadCommonPhrases,
+                operatorVoicePolicy: normalizeAoiOperatorVoicePolicy(operatorVoicePolicy),
               };
               const nextKiraProjectDefaults: NonNullable<KiraConfig['projectDefaults']> = {
                 ...(kiraConfig?.projectDefaults ?? {}),

@@ -268,6 +268,85 @@ export interface AoiOperatorDigest {
   evidenceRefs: string[];
 }
 
+export type AoiOperatorVoiceEventCategory =
+  | 'session_resume'
+  | 'critical_blocker'
+  | 'approval_required'
+  | 'completion_update'
+  | 'health_degraded'
+  | 'fyi';
+
+export type AoiVoiceInterruptionLevel = 'silent' | 'ambient' | 'mission' | 'blocking';
+
+export type AoiVoicePersonalMetadataScope = 'redacted' | 'metadata';
+
+export interface AoiVoiceQuietWindow {
+  version: 1;
+  enabled: boolean;
+  reason: string;
+  startedAt?: number;
+  endsAt?: number;
+  categories?: AoiOperatorVoiceEventCategory[];
+}
+
+export interface AoiOperatorVoicePolicy {
+  version: 1;
+  enabled: boolean;
+  allowedCategories: Record<AoiOperatorVoiceEventCategory, boolean>;
+  quietWindows: AoiVoiceQuietWindow[];
+  personalMetadataVoiceScope: AoiVoicePersonalMetadataScope;
+  minInterruptionLevel: AoiVoiceInterruptionLevel;
+}
+
+export interface AoiOperatorVoiceEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  category: AoiOperatorVoiceEventCategory;
+  interruptionLevel: AoiVoiceInterruptionLevel;
+  title: string;
+  whatChanged: string;
+  nextSafeAction: string;
+  approvalBoundary?: string;
+  risk: AoiAutonomyRisk;
+  dedupeKey: string;
+  sourceRefs: string[];
+  evidenceRefs: string[];
+  createdAt: number;
+  privateContent?: boolean;
+}
+
+export type AoiVoiceRenderDecisionStatus =
+  | 'spoken'
+  | 'suppressed'
+  | 'muted'
+  | 'quiet_window'
+  | 'duplicate'
+  | 'disabled_category'
+  | 'tts_disabled'
+  | 'not_mission_relevant'
+  | 'no_event'
+  | 'playback_failed';
+
+export interface AoiVoiceRenderDecision {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  createdAt: number;
+  status: AoiVoiceRenderDecisionStatus;
+  shouldSpeak: boolean;
+  silentReason: string;
+  reasons: string[];
+  replayable: boolean;
+  evidenceRefs: string[];
+  eventId?: string;
+  eventDedupeKey?: string;
+  category?: AoiOperatorVoiceEventCategory;
+  spokenSummary?: string;
+  summaryId?: string;
+  transcriptHash?: string;
+}
+
 export type AoiOperatorTimelineEventKind =
   | 'observation_ingested'
   | 'source_selected'
@@ -286,6 +365,7 @@ export type AoiOperatorTimelineEventKind =
   | 'approved_command_previewed'
   | 'approved_command_recorded'
   | 'feedback_recorded'
+  | 'operator_voice_decision'
   | 'wakeup_recorded'
   | 'trace_exported';
 

@@ -28,6 +28,7 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiReflection,
+  AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
@@ -38,6 +39,11 @@ export interface AoiAutonomyProposalList {
   sessionPath: string;
   active: AoiProposal[];
   archived: AoiProposal[];
+}
+
+export interface AoiAutonomyDecisionList {
+  sessionPath: string;
+  decisions: AoiProposalDecision[];
 }
 
 export interface AoiAutonomyReflectionList {
@@ -72,6 +78,12 @@ export interface AoiAutonomyTraceExportResponse {
   sessionPath: string;
   traceExport: AoiOperatorTraceExport;
   summary: AoiOperatorTimelineSummary;
+}
+
+export interface AoiOperatorVoiceDecisionRecordResponse {
+  ok: boolean;
+  sessionPath: string;
+  event: AoiOperatorTimelineEvent;
 }
 
 export interface AoiAutonomySchedulerResponse {
@@ -346,6 +358,25 @@ export async function fetchAoiAutonomyProposals(
   };
 }
 
+export async function fetchAoiProposalDecisions(
+  sessionPath: string,
+  limit = 50,
+): Promise<AoiAutonomyDecisionList> {
+  const response = await fetch(
+    `${API_PREFIX}/decisions?${sessionQuery(sessionPath)}&limit=${encodeURIComponent(String(limit))}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi proposal decisions.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    decisions: asArray<AoiProposalDecision>(payload.decisions),
+  };
+}
+
 export async function fetchAoiAutonomyReflections(
   sessionPath: string,
 ): Promise<AoiAutonomyReflectionList> {
@@ -545,6 +576,33 @@ export async function exportAoiAutonomyTrace(
       payload,
       'summary',
       'Aoi trace export summary was malformed.',
+    ),
+  };
+}
+
+export async function recordAoiOperatorVoiceDecision(
+  sessionPath: string,
+  decision: AoiVoiceRenderDecision,
+): Promise<AoiOperatorVoiceDecisionRecordResponse> {
+  const response = await fetch(`${API_PREFIX}/voice/decision`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      decision,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi operator voice decision.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    event: requireRecordField<AoiOperatorTimelineEvent>(
+      payload,
+      'event',
+      'Aoi operator voice decision response was malformed.',
     ),
   };
 }

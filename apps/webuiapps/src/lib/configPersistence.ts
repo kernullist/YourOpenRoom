@@ -9,6 +9,7 @@
 
 import type { LLMConfig } from './llmModels';
 import type { ImageGenConfig } from './imageGenClient';
+import type { AoiOperatorVoicePolicy } from './aoiAutonomyTypes';
 
 export interface AlbumConfig {
   photoDirectory?: string;
@@ -67,6 +68,7 @@ export interface ConversationPreferencesConfig {
   responseLanguageMode?: ResponseLanguageMode;
   ttsEnabled?: boolean;
   ttsPreloadCommonPhrases?: boolean;
+  operatorVoicePolicy?: AoiOperatorVoicePolicy;
 }
 
 export interface TavilyConfig {
@@ -164,6 +166,7 @@ export function loadConversationPreferencesSync(): ConversationPreferencesConfig
       responseLanguageMode: normalizeResponseLanguageMode(parsed?.responseLanguageMode),
       ttsEnabled: parsed?.ttsEnabled === true,
       ttsPreloadCommonPhrases: parsed?.ttsPreloadCommonPhrases !== false,
+      ...(parsed?.operatorVoicePolicy ? { operatorVoicePolicy: parsed.operatorVoicePolicy } : {}),
     };
   } catch {
     return null;
@@ -181,6 +184,7 @@ export function saveConversationPreferences(config: ConversationPreferencesConfi
       responseLanguageMode: normalizeResponseLanguageMode(config.responseLanguageMode),
       ttsEnabled: config.ttsEnabled === true,
       ttsPreloadCommonPhrases: config.ttsPreloadCommonPhrases !== false,
+      ...(config.operatorVoicePolicy ? { operatorVoicePolicy: config.operatorVoicePolicy } : {}),
     }),
   );
 }

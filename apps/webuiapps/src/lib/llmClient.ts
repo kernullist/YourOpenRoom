@@ -147,6 +147,9 @@ export async function saveConfig(
       ),
       ttsEnabled: conversationPreferencesConfig.ttsEnabled === true,
       ttsPreloadCommonPhrases: conversationPreferencesConfig.ttsPreloadCommonPhrases !== false,
+      ...(conversationPreferencesConfig.operatorVoicePolicy
+        ? { operatorVoicePolicy: conversationPreferencesConfig.operatorVoicePolicy }
+        : {}),
     };
   } else if (conversationPreferencesConfig === undefined && existing?.conversationPreferences) {
     persisted.conversationPreferences = existing.conversationPreferences;

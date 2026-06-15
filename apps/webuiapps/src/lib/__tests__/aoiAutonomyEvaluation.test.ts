@@ -301,4 +301,64 @@ describe('Aoi autonomy evaluation', () => {
     expect(draftJson).not.toContain('C:\\');
     expect(draftJson).not.toContain('https://');
   });
+
+  it('keeps operator voice decisions as replay context without proposal execution', () => {
+    const traceExport: AoiOperatorTraceExport = {
+      version: 1,
+      id: 'aoi-voice-trace-export-test',
+      sessionPath: 'aoi/default',
+      exportedAt: 6000,
+      eventCount: 1,
+      sourceEventIds: ['timeline-voice-event-001'],
+      events: [
+        {
+          version: 1,
+          id: 'timeline-voice-event-001',
+          sessionPath: 'aoi/default',
+          kind: 'operator_voice_decision',
+          visibility: 'operator_visible',
+          createdAt: 5000,
+          title: 'Operator voice spoken',
+          summary: 'Operator voice spoken for approval_required: summary id only.',
+          redactionState: 'redacted',
+          sourceRef: 'digest:approval-inbox:aggregate',
+          sourceKind: 'approval_required',
+          status: 'spoken',
+          evidenceRefs: ['proposal:aoi-proposal-voice-test'],
+          relatedRefs: ['voice-event:aoi-voice-event-test', 'voice-summary:aoi-summary-test'],
+          metadata: {
+            category: 'approval_required',
+            status: 'spoken',
+            shouldSpeak: true,
+            summaryId: 'aoi-summary-test',
+            transcriptHash: 'abc123',
+            replayable: true,
+          },
+        },
+      ],
+      redactionSummary: {
+        totalReplacementCount: 0,
+        localPathCount: 0,
+        urlCount: 0,
+        emailCount: 0,
+        privateFieldCount: 0,
+        syntheticLabels: {},
+      },
+      privacyNotes: ['Voice transcript body is not exported.'],
+    };
+
+    const draft = createAoiReplayFixtureDraftFromTraceExport(traceExport, {
+      fixtureId: 'voice-trace-draft-test',
+    });
+    const draftJson = JSON.stringify(draft.fixture.inputEvents);
+
+    expect(draft.fixture.inputEvents).toHaveLength(1);
+    expect(draft.fixture.inputEvents[0]).toMatchObject({
+      kind: 'environment_source',
+      sourceRef: 'digest:approval-inbox:aggregate',
+    });
+    expect(draft.fixture.inputEvents[0].kind).not.toBe('proposal_decision');
+    expect(draftJson).not.toContain('proposal_decision');
+    expect(draft.warnings.join(' ')).toContain('does not execute shell commands');
+  });
 });

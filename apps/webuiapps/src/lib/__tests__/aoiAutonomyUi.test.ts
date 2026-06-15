@@ -30,6 +30,12 @@ import {
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
 import { buildAoiOperatorDigest } from '../aoiOperatorDigest';
+import {
+  buildAoiOperatorVoiceEventFromDigest,
+  buildAoiOperatorVoiceSummary,
+  decideAoiOperatorVoiceRender,
+  getDefaultAoiOperatorVoicePolicy,
+} from '../aoiOperatorVoice';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
@@ -1400,6 +1406,206 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(digest.items.some((item) => item.lane === 'fyi')).toBe(true);
     expect(digest.resumeBrief).toBeUndefined();
+  });
+
+  it('speaks a critical blocker when TTS and category policy are enabled', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      blockedProposals: [
+        {
+          proposalId: 'aoi-proposal-blocked-ui-test',
+          title: 'Kira handoff is blocked',
+          reasons: ['needs narrower scope'],
+          evidenceRefs: ['proposal:aoi-proposal-blocked-ui-test'],
+          actionKind: 'create_kira_work',
+          requiredAutonomyLevel: 'L4',
+          requiresUserApproval: true,
+          risk: 'high',
+          safeAlternative: 'Narrow the handoff before approval.',
+        },
+      ],
+    });
+    const event = buildAoiOperatorVoiceEventFromDigest({ digest });
+    const decision = decideAoiOperatorVoiceRender({
+      sessionPath: 'aoi/default',
+      event,
+      policy: getDefaultAoiOperatorVoicePolicy(),
+      ttsEnabled: true,
+      now: 4000,
+    });
+
+    expect(event?.category).toBe('critical_blocker');
+    expect(decision.status).toBe('spoken');
+    expect(decision.shouldSpeak).toBe(true);
+    expect(decision.spokenSummary).toContain('Nothing runs without explicit approval');
+  });
+
+  it('keeps low-value FYI voice events silent by default', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      attentionEvents: [
+        makeAttentionEvent({
+          kind: 'proposal_feedback_trust_changed',
+          sourceRef: 'workspace:low-value',
+          sourceSignature: 'workspace:low-value',
+          evidenceRefs: ['workspace:low-value'],
+          suggestedAttentionLevel: 'silent',
+          summary: 'A low-value workspace metadata source changed.',
+        }),
+      ],
+    });
+    const event = buildAoiOperatorVoiceEventFromDigest({ digest });
+    const decision = decideAoiOperatorVoiceRender({
+      sessionPath: 'aoi/default',
+      event,
+      policy: getDefaultAoiOperatorVoicePolicy(),
+      ttsEnabled: true,
+      now: 4000,
+    });
+
+    expect(event?.category).toBe('fyi');
+    expect(decision.status).toBe('disabled_category');
+    expect(decision.shouldSpeak).toBe(false);
+  });
+
+  it('suppresses operator voice during an active quiet window', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission({ status: 'blocked', waitingOn: 'user' }),
+    });
+    const event = buildAoiOperatorVoiceEventFromDigest({ digest, mission: makeMission() });
+    const policy = getDefaultAoiOperatorVoicePolicy();
+    const decision = decideAoiOperatorVoiceRender({
+      sessionPath: 'aoi/default',
+      event,
+      policy: {
+        ...policy,
+        quietWindows: [
+          {
+            version: 1,
+            enabled: true,
+            reason: 'User is in quiet focus.',
+            startedAt: 3000,
+            endsAt: 5000,
+          },
+        ],
+      },
+      mission: makeMission({ status: 'blocked', waitingOn: 'user' }),
+      ttsEnabled: true,
+      now: 4000,
+    });
+
+    expect(decision.status).toBe('quiet_window');
+    expect(decision.silentReason).toContain('quiet focus');
+  });
+
+  it('suppresses similar future voice events after too-much feedback', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      mission: makeMission({
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-test',
+          researchRunRef: 'research:too-noisy',
+        },
+        evidenceRefs: ['research:too-noisy'],
+      }),
+      attentionEvents: [
+        makeAttentionEvent({
+          id: 'attention-too-noisy-ui-test',
+          sourceRef: 'research:too-noisy',
+          sourceSignature: 'research:too-noisy',
+          evidenceRefs: ['research:too-noisy'],
+          summary: 'A research completion update is too noisy.',
+        }),
+      ],
+    });
+    const event = buildAoiOperatorVoiceEventFromDigest({ digest });
+    const decision = decideAoiOperatorVoiceRender({
+      sessionPath: 'aoi/default',
+      event,
+      policy: getDefaultAoiOperatorVoicePolicy(),
+      mission: makeMission({
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-test',
+          researchRunRef: 'research:too-noisy',
+        },
+        evidenceRefs: ['research:too-noisy'],
+      }),
+      recentDecisions: [
+        makeProposalDecision({
+          cooldownKey: event?.dedupeKey ?? 'digest:research:too-noisy',
+          feedbackCategory: 'too_much',
+          evidenceRefs: ['research:too-noisy'],
+        }),
+      ],
+      ttsEnabled: true,
+      now: 4000,
+    });
+
+    expect(decision.status).toBe('duplicate');
+    expect(decision.shouldSpeak).toBe(false);
+  });
+
+  it('keeps approval voice summaries free of execution implication', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      activeProposals: [
+        makeProposal({
+          risk: 'high',
+          suggestedTools: ['run_command'],
+          acceptAction: {
+            kind: 'run_command',
+            params: {
+              command: 'pnpm --filter @openroom/webuiapps test',
+              cwd: 'F:\\kernullist\\YourOpenRoom',
+              purpose: 'Validate Aoi autonomy UI changes.',
+            },
+          },
+        }),
+      ],
+    });
+    const event = buildAoiOperatorVoiceEventFromDigest({ digest });
+    const summary = event
+      ? buildAoiOperatorVoiceSummary(event, getDefaultAoiOperatorVoicePolicy())
+      : '';
+
+    expect(event?.category).toBe('approval_required');
+    expect(summary).toContain('Nothing runs without explicit approval');
+    expect(summary.toLowerCase()).not.toContain('executed');
+    expect(summary.toLowerCase()).not.toContain('running command');
+    expect(summary).not.toContain('proposal:');
+  });
+
+  it('redacts personal metadata from spoken operator summaries unless voice scope allows it', () => {
+    const policy = getDefaultAoiOperatorVoicePolicy();
+    const summary = buildAoiOperatorVoiceSummary(
+      {
+        version: 1,
+        id: 'aoi-voice-event-personal-ui-test',
+        sessionPath: 'aoi/default',
+        category: 'completion_update',
+        interruptionLevel: 'mission',
+        title: 'Calendar says private interview with Alice',
+        whatChanged: 'Calendar metadata says private interview with Alice is imminent.',
+        nextSafeAction: 'Review personal signal metadata in the dashboard.',
+        risk: 'low',
+        dedupeKey: 'digest:personal-signal:calendar_metadata',
+        sourceRefs: ['personal-signal:calendar_metadata'],
+        evidenceRefs: ['personal-signal:calendar_metadata'],
+        createdAt: 4000,
+        privateContent: true,
+      },
+      policy,
+    );
+
+    expect(summary).toContain('consented personal metadata signal');
+    expect(summary).not.toContain('Alice');
+    expect(summary).not.toContain('interview');
   });
 
   it('reduces and hides similar digest items after negative feedback', () => {
