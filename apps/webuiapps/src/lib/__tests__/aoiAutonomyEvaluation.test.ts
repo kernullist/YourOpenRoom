@@ -26,6 +26,10 @@ import {
   recordAoiShadowDecisions,
 } from '../aoiShadowModeEvaluation';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
+import {
+  buildAoiTracePromotionReport,
+  createAoiTracePromotionDecision,
+} from '../aoiTracePromotion';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
@@ -625,6 +629,335 @@ describe('Aoi autonomy evaluation', () => {
     expect(draftJson).not.toContain('https://');
   });
 
+  it('builds trace promotion candidates from useful shadow labels', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-trace-promotion-useful',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Validation is stale',
+        summary: 'Workspace validation is stale for the approval UX mission.',
+        nextSafeAction: 'Prepare a validation command preview; do not run it.',
+        risk: 'low',
+        relevance: 0.9,
+        createdAt: 5000,
+        dedupeKey: 'trace-promotion:useful-validation',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation-stale'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      missionId: 'mission-trace-promotion',
+      digest,
+      now: 6000,
+    });
+    const decision = decisions[0];
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decision?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['shadow-review:trace-useful'],
+      now: 7000,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      decisionId: decision?.id ?? '',
+      evidenceRefs: ['shadow-review:trace-useful'],
+    });
+
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 8000,
+    });
+    const serialized = JSON.stringify(report);
+
+    expect(report.candidateCount).toBe(1);
+    expect(report.candidates[0]).toMatchObject({
+      sourceTraceId: 'aoi-trace-promotion-test',
+      selectedLabel: 'useful',
+      privacyStatus: 'passed',
+      mutationCount: 0,
+    });
+    expect(report.candidates[0]?.shadowDecisionIds).toContain(decision?.id);
+    expect(report.candidates[0]?.sourceEventRefs.join(' ')).toContain('workspace');
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('C:\\Users\\secret');
+  });
+
+  it('maps wrong-source trace labels to the source-selection acceptance dimension', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-trace-promotion-wrong-source',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Browser source selected',
+        summary: 'Browser metadata looked relevant but the workspace source was the right one.',
+        nextSafeAction: 'Ask the operator to confirm the source.',
+        risk: 'low',
+        relevance: 0.45,
+        createdAt: 5000,
+        dedupeKey: 'trace-promotion:wrong-source',
+        sourceRefs: ['environment-source:browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'wrong_source',
+      evidenceRefs: ['shadow-review:trace-wrong-source'],
+      now: 7000,
+    });
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [
+        makeTracePromotionTraceExport({
+          decisionId: decisions[0]?.id ?? '',
+          evidenceRefs: ['shadow-review:trace-wrong-source'],
+          sourceRef: 'context-source:browser',
+          relatedRefs: ['environment-source:browser-context'],
+        }),
+      ],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 8000,
+    });
+
+    expect(report.candidates[0]).toMatchObject({
+      selectedLabel: 'wrong_source',
+      acceptanceDimension: 'source_selection',
+      jarvisDimension: 'context_awareness',
+    });
+  });
+
+  it('blocks trace promotion when unresolved private data remains', () => {
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest: makeShadowDigest([
+        {
+          version: 1,
+          id: 'digest-trace-promotion-private',
+          kind: 'mission_status',
+          lane: 'mission_update',
+          title: 'Private roadmap update',
+          summary: 'The trace should be blocked if raw private data remains.',
+          nextSafeAction: 'Keep the trace out of acceptance fixtures.',
+          risk: 'low',
+          relevance: 0.7,
+          createdAt: 5000,
+          dedupeKey: 'trace-promotion:private-block',
+          sourceRefs: ['personal-signal:gmail_metadata'],
+          evidenceRefs: ['personal-signal:gmail_metadata'],
+          hidden: false,
+        },
+      ]),
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['shadow-review:trace-private'],
+      now: 7000,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      decisionId: decisions[0]?.id ?? '',
+      summary:
+        'Private trace mentions private-roadmap@example.com, C:\\Users\\secret\\roadmap.md, and Do not leak the mail body.',
+      redactionTotal: 0,
+      syntheticLabels: {},
+      metadata: {
+        messageBody: 'Do not leak the mail body.',
+        stdout: 'raw command output: secret path C:\\Users\\secret\\roadmap.md',
+      },
+      evidenceRefs: ['shadow-review:trace-private'],
+    });
+    const candidateReport = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 8000,
+    });
+    const candidate = candidateReport.candidates[0];
+    const promotion = createAoiTracePromotionDecision({
+      candidate,
+      action: 'promote',
+      reason: 'This should be blocked until privacy is fixed.',
+      now: 9000,
+    });
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      promotionDecisions: [promotion],
+      now: 10000,
+    });
+    const serialized = JSON.stringify(report);
+
+    expect(candidate?.privacyStatus).toBe('blocked');
+    expect(candidate?.privacyWarnings.join(' ')).toContain('raw email');
+    expect(report.blockedPromotionCount).toBe(1);
+    expect(report.fixtureDrafts).toEqual([]);
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('Do not leak the mail body');
+    expect(serialized).not.toContain('C:\\Users\\secret');
+  });
+
+  it('creates promoted fixture drafts without mutating built-in replay fixtures', () => {
+    const builtInCount = AOI_OPERATOR_REPLAY_FIXTURES.length;
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-trace-promotion-draft',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Acceptance candidate ready',
+        summary: 'The trace is useful enough to become a fixture draft.',
+        nextSafeAction: 'Promote the redacted trace to a draft only.',
+        risk: 'low',
+        relevance: 0.88,
+        createdAt: 5000,
+        dedupeKey: 'trace-promotion:draft',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['shadow-review:trace-promote'],
+      now: 7000,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      decisionId: decisions[0]?.id ?? '',
+      evidenceRefs: ['shadow-review:trace-promote'],
+    });
+    const candidateReport = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 8000,
+    });
+    const candidate = candidateReport.candidates[0];
+    const promotion = createAoiTracePromotionDecision({
+      candidate,
+      action: 'promote',
+      acceptanceDimension: 'replayability_privacy',
+      reason: 'Useful redacted trace for the real-world acceptance pack.',
+      evidenceRefs: ['operator-review:promote-trace'],
+      now: 9000,
+    });
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      promotionDecisions: [promotion],
+      now: 10000,
+    });
+    const draft = report.fixtureDrafts[0];
+    const draftJson = JSON.stringify(draft);
+
+    expect(AOI_OPERATOR_REPLAY_FIXTURES).toHaveLength(builtInCount);
+    expect(report.promotedDraftCount).toBe(1);
+    expect(report.mutationCount).toBe(0);
+    expect(draft?.fixtureDraft.fixture.expectedDecisions[0]).toMatchObject({
+      metric: 'snapshot_summary',
+      snapshotIncludes: 'TODO_REPLACE_THIS_EXPECTATION',
+    });
+    expect(draft?.warnings.join(' ')).toContain('built-in replay fixture arrays are not modified');
+    expect(draftJson).not.toContain('private-roadmap@example.com');
+    expect(draftJson).not.toContain('C:\\Users\\secret');
+  });
+
+  it('records defer and reject trace promotion decisions with evidence refs', () => {
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest: makeShadowDigest([
+        {
+          version: 1,
+          id: 'digest-trace-promotion-defer',
+          kind: 'source_change',
+          lane: 'mission_update',
+          title: 'Candidate needs review',
+          summary: 'The candidate needs expectation review before promotion.',
+          nextSafeAction: 'Leave it reviewable.',
+          risk: 'low',
+          relevance: 0.72,
+          createdAt: 5000,
+          dedupeKey: 'trace-promotion:defer-reject',
+          sourceRefs: ['workspace:validation'],
+          evidenceRefs: ['workspace:validation'],
+          hidden: false,
+        },
+      ]),
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'missed_context',
+      evidenceRefs: ['shadow-review:trace-missed-context'],
+      now: 7000,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      decisionId: decisions[0]?.id ?? '',
+      evidenceRefs: ['shadow-review:trace-missed-context'],
+    });
+    const candidateReport = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 8000,
+    });
+    const candidate = candidateReport.candidates[0];
+    const deferred = createAoiTracePromotionDecision({
+      candidate,
+      action: 'defer',
+      evidenceRefs: ['operator-review:defer-trace'],
+      now: 9000,
+    });
+    const rejected = createAoiTracePromotionDecision({
+      candidate,
+      action: 'reject',
+      reason: 'Duplicate of an existing replay fixture.',
+      evidenceRefs: ['operator-review:reject-trace'],
+      now: 9500,
+    });
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [traceExport],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      promotionDecisions: [deferred, rejected],
+      now: 10000,
+    });
+
+    expect(report.decisionCount).toBe(2);
+    expect(report.fixtureDrafts).toEqual([]);
+    expect(report.decisions.map((decision) => decision.action)).toEqual(['defer', 'reject']);
+    expect(report.decisions[0]?.evidenceRefs).toContain('operator-review:defer-trace');
+    expect(report.decisions[1]?.reason).toContain('Duplicate');
+  });
+
   it('keeps operator voice decisions as replay context without proposal execution', () => {
     const traceExport: AoiOperatorTraceExport = {
       version: 1,
@@ -829,6 +1162,77 @@ describe('Aoi autonomy evaluation', () => {
     });
   });
 });
+
+function makeTracePromotionTraceExport(params: {
+  decisionId: string;
+  id?: string;
+  sourceRef?: string;
+  relatedRefs?: string[];
+  evidenceRefs?: string[];
+  summary?: string;
+  redactionTotal?: number;
+  syntheticLabels?: Record<string, string>;
+  metadata?: Record<string, string | number | boolean | string[]>;
+}): AoiOperatorTraceExport {
+  const syntheticLabels = params.syntheticLabels ?? {
+    '[email:1]': '[email:1]',
+  };
+  return {
+    version: 1,
+    id: params.id ?? 'aoi-trace-promotion-test',
+    sessionPath: 'aoi/default',
+    exportedAt: 8000,
+    eventCount: 2,
+    sourceEventIds: ['timeline-trace-promotion-source', 'timeline-trace-promotion-digest'],
+    events: [
+      {
+        version: 1,
+        id: 'timeline-trace-promotion-source',
+        sessionPath: 'aoi/default',
+        kind: 'source_selected',
+        visibility: 'dashboard_only',
+        createdAt: 6000,
+        title: 'Workspace source selected',
+        summary:
+          params.summary ??
+          'Workspace source selected for a redacted acceptance trace involving [email:1].',
+        redactionState: (params.redactionTotal ?? 1) > 0 ? 'synthetic' : 'none',
+        sourceRef: params.sourceRef ?? 'context-source:workspace',
+        sourceKind: 'workspace_git',
+        evidenceRefs: [
+          `shadow-decision:${params.decisionId}`,
+          ...(params.evidenceRefs ?? ['workspace:validation']),
+        ],
+        relatedRefs: params.relatedRefs ?? ['environment-source:workspace-git'],
+        metadata: params.metadata,
+      },
+      {
+        version: 1,
+        id: 'timeline-trace-promotion-digest',
+        sessionPath: 'aoi/default',
+        kind: 'digest_item_surfaced',
+        visibility: 'operator_visible',
+        createdAt: 6500,
+        title: 'Digest item surfaced',
+        summary: 'A redacted digest item was reviewable after shadow labeling.',
+        redactionState: 'redacted',
+        digestItemId: 'digest-trace-promotion',
+        sourceRef: 'digest:trace-promotion',
+        evidenceRefs: [`shadow-decision:${params.decisionId}`, 'digest:trace-promotion'],
+        relatedRefs: [`shadow-decision:${params.decisionId}`],
+      },
+    ],
+    redactionSummary: {
+      totalReplacementCount: params.redactionTotal ?? 1,
+      localPathCount: 0,
+      urlCount: 0,
+      emailCount: params.redactionTotal ?? 1,
+      privateFieldCount: 0,
+      syntheticLabels,
+    },
+    privacyNotes: ['Synthetic labels are retained for trace promotion review.'],
+  };
+}
 
 function brokenJarvisMetricScenario(
   scenarioId: string,
