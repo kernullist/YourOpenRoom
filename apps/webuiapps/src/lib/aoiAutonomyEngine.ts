@@ -81,6 +81,10 @@ import {
   collectAndPersistAoiWorkspaceSnapshot,
   createAoiWorkspaceObservations,
 } from './aoiWorkspaceSignals';
+import {
+  recordAoiProposalBlockedTimelineEvent,
+  recordAoiProposalCreatedTimelineEvent,
+} from './aoiOperatorTimeline';
 
 const MAX_OBSERVATIONS_PER_TICK = 24;
 const MAX_MEMORY_OBSERVATIONS = 12;
@@ -96,6 +100,14 @@ const CLAIM_MAX_CHARS = 240;
 const DEFAULT_BACKGROUND_TICK_MIN_INTERVAL_MS = 60_000;
 const DEFAULT_BACKGROUND_TICK_LOCK_MS = 120_000;
 const DEFAULT_BACKGROUND_TICK_MAX_RUNTIME_MS = 45_000;
+
+function recordAoiEngineTimelineBestEffort(record: () => void): void {
+  try {
+    record();
+  } catch (error) {
+    console.warn('[AoiAutonomyEngine] Failed to record Aoi timeline event', error);
+  }
+}
 
 interface AoiAutonomyReflectionResponse {
   content: string;
@@ -2064,23 +2076,32 @@ export async function runAoiAutonomyTick(
     reasons.push(...policyResult.reasons);
 
     if (reasons.length > 0) {
+      const uniqueReasons = [...new Set(reasons)];
       blockedProposals.push({
         proposalId: proposal.id,
         title: proposal.title,
-        reasons: [...new Set(reasons)],
+        reasons: uniqueReasons,
         evidenceRefs: proposal.evidenceRefs,
         actionKind: proposal.acceptAction?.kind,
         requiredAutonomyLevel: proposal.requiredAutonomyLevel,
         requiresUserApproval: proposal.requiresUserApproval,
         risk: proposal.risk,
-        safeAlternative: makeBlockedProposalSafeAlternative(proposal, [...new Set(reasons)]),
+        safeAlternative: makeBlockedProposalSafeAlternative(proposal, uniqueReasons),
+      });
+      recordAoiEngineTimelineBestEffort(() => {
+        recordAoiProposalBlockedTimelineEvent({
+          sessionsDir: params.sessionsDir,
+          proposal,
+          reasons: uniqueReasons,
+          now,
+        });
       });
       if (proposal.recoveryPreview) {
         recordAoiRecoveryLedgerEvent({
           sessionsDir: params.sessionsDir,
           sessionPath,
           type: 'recovery_blocked_by_policy',
-          message: `Recovery proposal ${proposal.id} was blocked: ${[...new Set(reasons)].join(', ')}.`,
+          message: `Recovery proposal ${proposal.id} was blocked: ${uniqueReasons.join(', ')}.`,
           toolNames: proposal.suggestedTools,
           now,
         });
@@ -2097,7 +2118,7 @@ export async function runAoiAutonomyTick(
         params.sessionsDir,
         makeBlockedReflection({
           proposal,
-          reasons: [...new Set(reasons)],
+          reasons: uniqueReasons,
           sessionPath,
           now,
         }),
@@ -2109,6 +2130,13 @@ export async function runAoiAutonomyTick(
     activeProposals = [proposal, ...activeProposals];
     acceptedProposals.push(proposal);
     recordAoiProposalCreatedRelations(params.sessionsDir, proposal, now);
+    recordAoiEngineTimelineBestEffort(() => {
+      recordAoiProposalCreatedTimelineEvent({
+        sessionsDir: params.sessionsDir,
+        proposal,
+        now,
+      });
+    });
     if (proposal.recoveryPreview) {
       recordAoiRecoveryProposalRelations(params.sessionsDir, proposal, now);
       recordAoiRecoveryLedgerEvent({

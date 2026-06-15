@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
 import { recordAoiObservationRelations } from './aoiAutonomyRelations';
 import { upsertAoiObservation } from './aoiAutonomyStore';
+import { recordAoiObservationTimelineEvent } from './aoiOperatorTimeline';
 import type { AoiObservation, AoiObservationSource } from './aoiAutonomyTypes';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 
@@ -131,6 +132,18 @@ export function ingestAoiObservation(
     relationRecorded = true;
   } catch {
     warnings.push('observation_relation_write_failed');
+  }
+
+  if (stored.created) {
+    try {
+      recordAoiObservationTimelineEvent({
+        sessionsDir,
+        observation: stored.observation,
+        created: stored.created,
+      });
+    } catch {
+      warnings.push('observation_timeline_write_failed');
+    }
   }
 
   return {

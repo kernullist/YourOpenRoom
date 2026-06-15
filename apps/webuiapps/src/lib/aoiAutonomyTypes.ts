@@ -249,6 +249,103 @@ export interface AoiOperatorDigest {
   evidenceRefs: string[];
 }
 
+export type AoiOperatorTimelineEventKind =
+  | 'observation_ingested'
+  | 'source_selected'
+  | 'source_suppressed'
+  | 'proposal_created'
+  | 'proposal_blocked'
+  | 'proposal_accepted'
+  | 'proposal_dismissed'
+  | 'proposal_snoozed'
+  | 'proposal_executed'
+  | 'proposal_failed'
+  | 'mission_state_changed'
+  | 'goal_state_changed'
+  | 'digest_item_surfaced'
+  | 'digest_item_hidden'
+  | 'approved_command_previewed'
+  | 'approved_command_recorded'
+  | 'feedback_recorded'
+  | 'trace_exported';
+
+export type AoiOperatorTimelineVisibility =
+  | 'operator_visible'
+  | 'dashboard_only'
+  | 'hidden'
+  | 'redacted';
+
+export type AoiTraceRedactionState = 'none' | 'redacted' | 'synthetic' | 'removed';
+
+export interface AoiOperatorTimelineEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  kind: AoiOperatorTimelineEventKind;
+  visibility: AoiOperatorTimelineVisibility;
+  createdAt: number;
+  title: string;
+  summary: string;
+  redactionState: AoiTraceRedactionState;
+  evidenceRefs: string[];
+  relatedRefs: string[];
+  sourceRef?: string;
+  sourceKind?: string;
+  proposalId?: string;
+  decisionId?: string;
+  goalId?: string;
+  missionId?: string;
+  digestItemId?: string;
+  commandAuditId?: string;
+  triggerKind?: string;
+  actionKind?: string;
+  status?: string;
+  risk?: AoiAutonomyRisk;
+  metrics?: Record<string, number>;
+  metadata?: Record<string, string | number | boolean | string[]>;
+}
+
+export interface AoiTraceRedactionSummary {
+  totalReplacementCount: number;
+  localPathCount: number;
+  urlCount: number;
+  emailCount: number;
+  privateFieldCount: number;
+  syntheticLabels: Record<string, string>;
+}
+
+export interface AoiOperatorTraceExport {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  exportedAt: number;
+  eventCount: number;
+  sourceEventIds: string[];
+  events: AoiOperatorTimelineEvent[];
+  redactionSummary: AoiTraceRedactionSummary;
+  privacyNotes: string[];
+}
+
+export interface AoiOperatorReplayFixtureDraft {
+  version: 1;
+  traceExportId: string;
+  fixtureId: string;
+  title: string;
+  todoExpectations: string[];
+  warnings: string[];
+}
+
+export interface AoiOperatorTimelineSummary {
+  version: 1;
+  sessionPath: string;
+  newestMeaningfulEvents: AoiOperatorTimelineEvent[];
+  newestEventAt?: number;
+  lastExportAt?: number;
+  lastExportRedactionCount: number;
+  totalEventCount: number;
+  exportedTraceCount: number;
+}
+
 export type AoiKiraOutcomeKind =
   | 'kira_work_completed'
   | 'kira_work_blocked'

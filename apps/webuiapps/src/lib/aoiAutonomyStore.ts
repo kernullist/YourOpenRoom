@@ -54,6 +54,9 @@ export interface AoiAutonomyPaths {
   tickState: string;
   evalDir: string;
   environmentSources: string;
+  timelineDir: string;
+  timelineEvents: string;
+  timelineExportsDir: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -327,6 +330,7 @@ export function resolveAoiAutonomyPaths(
     throw new Error('Resolved Aoi autonomy path escaped the sessions directory.');
   }
   const proposalsDir = join(root, 'proposals');
+  const timelineDir = join(root, 'timeline');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -341,6 +345,9 @@ export function resolveAoiAutonomyPaths(
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
+    timelineDir,
+    timelineEvents: join(timelineDir, 'events.jsonl'),
+    timelineExportsDir: join(timelineDir, 'exports'),
   };
 }
 

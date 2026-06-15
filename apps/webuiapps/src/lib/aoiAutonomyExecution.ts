@@ -39,6 +39,10 @@ import { runAoiApprovedCommand } from './aoiApprovedCommandRunner';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
+import {
+  recordAoiOperatorTimelineEvent,
+  recordAoiProposalDecisionTimelineEvent,
+} from './aoiOperatorTimeline';
 import type {
   AoiAutonomyStatus,
   AoiApprovedCommandPolicy,
@@ -51,6 +55,14 @@ import type {
 import type { AoiResearchArtifactName, AoiResearchManifest } from './aoiResearchTypes';
 
 const MAX_EXECUTION_TEXT_CHARS = 4000;
+
+function recordAoiExecutionTimelineBestEffort(record: () => void): void {
+  try {
+    record();
+  } catch (error) {
+    console.warn('[AoiAutonomyExecution] Failed to record Aoi timeline event', error);
+  }
+}
 
 export interface AoiProposalExecutionDependencies {
   readResearchStatus?: (
@@ -376,6 +388,13 @@ function blockProposal(params: {
     reason: params.reason,
     now: params.now,
   });
+  recordAoiExecutionTimelineBestEffort(() => {
+    recordAoiProposalDecisionTimelineEvent({
+      sessionsDir: params.sessionsDir,
+      proposal: transition.proposal,
+      decision: transition.decision,
+    });
+  });
   return {
     ok: true,
     sessionPath: params.sessionPath,
@@ -673,6 +692,29 @@ export function previewAoiProposal(params: {
         now,
       });
     }
+    if (proposal.acceptAction?.kind === 'run_command') {
+      recordAoiExecutionTimelineBestEffort(() => {
+        recordAoiOperatorTimelineEvent(params.sessionsDir, {
+          sessionPath,
+          kind: 'approved_command_previewed',
+          visibility: 'operator_visible',
+          createdAt: now,
+          title: 'Approved command preview blocked',
+          summary: `Command preview blocked for proposal ${proposal.id}.`,
+          proposalId: proposal.id,
+          actionKind: 'run_command',
+          status: 'blocked',
+          risk: proposal.risk,
+          evidenceRefs: proposal.evidenceRefs,
+          relatedRefs: [`proposal:${proposal.id}`],
+          metadata: {
+            allowed: false,
+            reasons,
+            blockReasons: approvedCommandPolicy?.blockReasons,
+          },
+        });
+      });
+    }
     return {
       ok: true,
       sessionPath,
@@ -695,6 +737,28 @@ export function previewAoiProposal(params: {
     };
   }
   if (proposal.acceptAction?.kind !== 'create_kira_work') {
+    if (proposal.acceptAction?.kind === 'run_command') {
+      recordAoiExecutionTimelineBestEffort(() => {
+        recordAoiOperatorTimelineEvent(params.sessionsDir, {
+          sessionPath,
+          kind: 'approved_command_previewed',
+          visibility: 'operator_visible',
+          createdAt: now,
+          title: 'Approved command preview ready',
+          summary: `Command preview ready for proposal ${proposal.id}.`,
+          proposalId: proposal.id,
+          actionKind: 'run_command',
+          status: 'previewed',
+          risk: proposal.risk,
+          evidenceRefs: proposal.evidenceRefs,
+          relatedRefs: [`proposal:${proposal.id}`],
+          metadata: {
+            allowed: approvedCommandPolicy?.allowed ?? false,
+            blockReasons: approvedCommandPolicy?.blockReasons,
+          },
+        });
+      });
+    }
     return {
       ok: true,
       sessionPath,
@@ -827,6 +891,13 @@ export async function executeAoiProposal(params: {
       reason: `Executed ${proposal.acceptAction?.kind ?? 'proposal action'}.`,
       now,
     });
+    recordAoiExecutionTimelineBestEffort(() => {
+      recordAoiProposalDecisionTimelineEvent({
+        sessionsDir: params.sessionsDir,
+        proposal: transition.proposal,
+        decision: transition.decision,
+      });
+    });
     if (proposal.acceptAction?.kind === 'start_research') {
       const run = result.run as { id?: unknown } | undefined;
       if (typeof run?.id === 'string') {
@@ -929,6 +1000,37 @@ export async function executeAoiProposal(params: {
         toolNames: ['run_command'],
         status: commandResult.ok ? 'completed' : 'failed',
         now,
+      });
+      recordAoiExecutionTimelineBestEffort(() => {
+        recordAoiOperatorTimelineEvent(params.sessionsDir, {
+          sessionPath,
+          kind: 'approved_command_recorded',
+          visibility: 'operator_visible',
+          createdAt: audit.completedAt,
+          title: commandResult.ok ? 'Approved command passed' : 'Approved command failed',
+          summary: `Approved command audit ${audit.id} recorded for proposal ${proposal.id}.`,
+          proposalId: proposal.id,
+          decisionId: transition.decision.id,
+          commandAuditId: audit.id,
+          actionKind: 'run_command',
+          status: commandResult.ok ? 'passed' : 'failed',
+          risk: proposal.risk,
+          evidenceRefs: audit.evidenceRefs,
+          relatedRefs: [
+            `proposal:${proposal.id}`,
+            `decision:${transition.decision.id}`,
+            `aoi-command-audit:${audit.id}`,
+          ],
+          metrics: {
+            durationMs: audit.durationMs,
+          },
+          metadata: {
+            exitCode: audit.exitCode ?? -1,
+            timedOut: audit.timedOut,
+            stdoutTruncated: audit.stdoutTruncated,
+            stderrTruncated: audit.stderrTruncated,
+          },
+        });
       });
       try {
         ingestAoiObservation(

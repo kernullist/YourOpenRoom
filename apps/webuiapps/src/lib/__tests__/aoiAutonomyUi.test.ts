@@ -12,6 +12,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiOperatorDigestPanelSummary,
+  buildAoiOperatorTimelinePanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -28,6 +29,7 @@ import {
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
 import { buildAoiOperatorDigest } from '../aoiOperatorDigest';
+import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -44,6 +46,7 @@ import type {
   AoiContextSourceSummary,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
+  AoiOperatorTimelineSummary,
   AoiProposal,
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
@@ -1348,6 +1351,62 @@ describe('Aoi autonomy UI helpers', () => {
     expect(baseItem?.hidden).toBe(false);
     expect(reducedItem?.relevance).toBeLessThan(baseItem?.relevance ?? 0);
     expect(reducedItem?.lane).toBe('hidden_by_quiet_mode');
+  });
+
+  it('builds digest timeline events and a compact timeline panel summary', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      attentionEvents: [
+        makeAttentionEvent({
+          id: 'attention-visible-ui-test',
+          sourceRef: 'research:visible',
+          sourceSignature: 'research:visible',
+          evidenceRefs: ['research:visible'],
+          summary: 'A useful research update is ready.',
+        }),
+      ],
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      quietMode: true,
+    });
+    const timelineInputs = buildAoiDigestTimelineEvents(digest);
+    const hidden = timelineInputs.find((event) => event.kind === 'digest_item_hidden');
+    const surfaced = timelineInputs.find((event) => event.kind === 'digest_item_surfaced');
+
+    expect(hidden?.relatedRefs?.length).toBeGreaterThan(0);
+    expect(surfaced?.evidenceRefs?.length).toBeGreaterThan(0);
+
+    const timelineSummary: AoiOperatorTimelineSummary = {
+      version: 1,
+      sessionPath: 'aoi/default',
+      newestMeaningfulEvents: [
+        {
+          version: 1,
+          id: 'timeline-ui-test-001',
+          sessionPath: 'aoi/default',
+          kind: 'digest_item_surfaced',
+          visibility: 'operator_visible',
+          createdAt: 4000,
+          title: surfaced?.title ?? 'Digest surfaced',
+          summary: surfaced?.summary ?? 'Digest item surfaced.',
+          redactionState: 'none',
+          evidenceRefs: surfaced?.evidenceRefs ?? [],
+          relatedRefs: surfaced?.relatedRefs ?? [],
+        },
+      ],
+      newestEventAt: 4000,
+      lastExportAt: 4500,
+      lastExportRedactionCount: 3,
+      totalEventCount: 4,
+      exportedTraceCount: 1,
+    };
+    const panelSummary = buildAoiOperatorTimelinePanelSummary(timelineSummary);
+
+    expect(panelSummary.visible).toBe(true);
+    expect(panelSummary.summaryLabel).toBe('4 timeline events');
+    expect(panelSummary.eventLabels[0]).toContain('digest item surfaced');
+    expect(panelSummary.exportLabel).toContain('1970-01-01T00:00:04.500Z');
+    expect(panelSummary.redactionLabel).toBe('3 privacy replacements');
   });
 
   it('sends pause and resume mission client calls without dropping evidence refs', async () => {

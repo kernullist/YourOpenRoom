@@ -13,6 +13,10 @@ import type {
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiObservation,
+  AoiOperatorTimelineEvent,
+  AoiOperatorTimelineEventKind,
+  AoiOperatorTimelineSummary,
+  AoiOperatorTraceExport,
   AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
   AoiProposal,
@@ -54,6 +58,18 @@ export interface AoiAutonomyEvaluationResponse {
   evaluation: AoiAutonomyEvaluationResult;
 }
 
+export interface AoiAutonomyTimelineResponse {
+  sessionPath: string;
+  events: AoiOperatorTimelineEvent[];
+  summary: AoiOperatorTimelineSummary;
+}
+
+export interface AoiAutonomyTraceExportResponse {
+  sessionPath: string;
+  traceExport: AoiOperatorTraceExport;
+  summary: AoiOperatorTimelineSummary;
+}
+
 export interface AoiAutonomyDashboardSnapshot {
   sessionPath: string;
   status: AoiAutonomyStatus;
@@ -64,6 +80,7 @@ export interface AoiAutonomyDashboardSnapshot {
   workspaceSnapshot: AoiWorkspaceSnapshot | null;
   contextRouter: AoiContextRouterResult | null;
   evaluation: AoiAutonomyEvaluationResult;
+  timeline: AoiOperatorTimelineSummary;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -456,6 +473,60 @@ export async function fetchAoiContextRouter(
   };
 }
 
+export async function fetchAoiAutonomyTimeline(
+  sessionPath: string,
+  options: { limit?: number } = {},
+): Promise<AoiAutonomyTimelineResponse> {
+  const limitQuery =
+    typeof options.limit === 'number' ? `&limit=${encodeURIComponent(String(options.limit))}` : '';
+  const response = await fetch(`${API_PREFIX}/timeline?${sessionQuery(sessionPath)}${limitQuery}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi operator timeline.');
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    events: Array.isArray(payload.events) ? (payload.events as AoiOperatorTimelineEvent[]) : [],
+    summary: requireRecordField<AoiOperatorTimelineSummary>(
+      payload,
+      'summary',
+      'Aoi timeline response was malformed.',
+    ),
+  };
+}
+
+export async function exportAoiAutonomyTrace(
+  sessionPath: string,
+  options: { limit?: number; eventKinds?: AoiOperatorTimelineEventKind[] } = {},
+): Promise<AoiAutonomyTraceExportResponse> {
+  const response = await fetch(`${API_PREFIX}/timeline/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      limit: options.limit,
+      eventKinds: options.eventKinds,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to export Aoi operator timeline.');
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    traceExport: requireRecordField<AoiOperatorTraceExport>(
+      payload,
+      'traceExport',
+      'Aoi trace export response was malformed.',
+    ),
+    summary: requireRecordField<AoiOperatorTimelineSummary>(
+      payload,
+      'summary',
+      'Aoi trace export summary was malformed.',
+    ),
+  };
+}
+
 export async function recordAoiBrowserContext(
   sessionPath: string,
   input: AoiBrowserContextInput,
@@ -531,6 +602,7 @@ export async function fetchAoiAutonomyDashboard(
     workspace,
     contextRouter,
     evaluation,
+    timeline,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -540,6 +612,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiWorkspaceSnapshot(sessionPath),
     fetchAoiContextRouter(sessionPath),
     fetchAoiAutonomyEvaluation(sessionPath),
+    fetchAoiAutonomyTimeline(sessionPath, { limit: 20 }),
   ]);
 
   return {
@@ -552,6 +625,7 @@ export async function fetchAoiAutonomyDashboard(
     workspaceSnapshot: workspace.snapshot,
     contextRouter: contextRouter.context,
     evaluation: evaluation.evaluation,
+    timeline: timeline.summary,
   };
 }
 

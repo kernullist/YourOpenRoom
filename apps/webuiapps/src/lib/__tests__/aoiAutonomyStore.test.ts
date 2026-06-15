@@ -24,6 +24,13 @@ import {
   updateAoiEnvironmentSource,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
+import {
+  exportAoiOperatorTrace,
+  loadAoiOperatorTimelineEvents,
+  loadAoiOperatorTimelineSummary,
+  recordAoiOperatorTimelineEvent,
+  recordAoiProposalDecisionTimelineEvent,
+} from '../aoiOperatorTimeline';
 import type { AoiObservation, AoiProposal, AoiReflection } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
@@ -425,5 +432,132 @@ describe('Aoi autonomy proposal storage and decisions', () => {
       observationCount: 1,
       updatedAt: 4000,
     });
+  });
+});
+
+describe('Aoi operator timeline storage and trace export', () => {
+  it('loads newest timeline events deterministically with proposal refs', () => {
+    const root = makeTempRoot();
+    const proposal = makeProposal();
+    saveAoiActiveProposals(root, 'aoi/default', [proposal]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: proposal.id,
+      action: 'accept',
+      now: 2000,
+    });
+    const proposalEvent = recordAoiProposalDecisionTimelineEvent({
+      sessionsDir: root,
+      proposal: accepted.proposal,
+      decision: accepted.decision,
+    });
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'digest_item_surfaced',
+      visibility: 'operator_visible',
+      createdAt: 2500,
+      title: 'Digest surfaced',
+      summary: 'A mission update was shown.',
+      digestItemId: 'digest-test-001',
+      evidenceRefs: ['proposal:proposal-test-001'],
+      relatedRefs: ['proposal:proposal-test-001'],
+    });
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'source_suppressed',
+      visibility: 'hidden',
+      createdAt: 1500,
+      title: 'Source suppressed',
+      summary: 'A low relevance source was kept out of the prompt.',
+      sourceRef: 'context-source:low-relevance',
+      evidenceRefs: ['source:low-relevance'],
+      relatedRefs: ['environment-source:manual-note'],
+    });
+
+    const newest = loadAoiOperatorTimelineEvents(root, 'aoi/default', { limit: 2 });
+
+    expect(newest.map((event) => event.kind)).toEqual([
+      'digest_item_surfaced',
+      'proposal_accepted',
+    ]);
+    expect(newest[1]).toMatchObject({
+      id: proposalEvent.id,
+      proposalId: proposal.id,
+      decisionId: accepted.decision.id,
+      relatedRefs: expect.arrayContaining([`proposal:${proposal.id}`]),
+    });
+  });
+
+  it('exports privacy-safe traces without raw paths, message bodies, or command output', () => {
+    const root = makeTempRoot();
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'approved_command_recorded',
+      visibility: 'operator_visible',
+      createdAt: 1000,
+      title: 'Command touched F:\\kernullist\\YourOpenRoom\\secret.txt',
+      summary: 'Command output included https://private.example.local/report and user@example.com.',
+      proposalId: 'proposal-test-001',
+      commandAuditId: 'audit-secret-001',
+      evidenceRefs: ['file:F:\\kernullist\\YourOpenRoom\\secret.txt'],
+      relatedRefs: ['aoi-command-audit:audit-secret-001'],
+      metadata: {
+        messageBody: 'private chat body that must not be exported',
+        stdoutExcerpt: 'secret command output that must not be exported',
+        command: 'type F:\\kernullist\\YourOpenRoom\\secret.txt',
+      },
+    });
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'proposal_accepted',
+      visibility: 'operator_visible',
+      createdAt: 1200,
+      title: 'Proposal accepted',
+      summary: 'The user accepted the safe follow-up.',
+      proposalId: 'proposal-test-001',
+      evidenceRefs: ['proposal:proposal-test-001'],
+      relatedRefs: ['proposal:proposal-test-001'],
+    });
+
+    const traceExport = exportAoiOperatorTrace(root, 'aoi/default', {
+      now: 2000,
+      persist: false,
+    });
+    const exportJson = JSON.stringify(traceExport);
+
+    expect(traceExport.events.map((event) => event.kind)).toEqual([
+      'approved_command_recorded',
+      'proposal_accepted',
+    ]);
+    expect(exportJson).not.toContain('F:\\kernullist\\YourOpenRoom\\secret.txt');
+    expect(exportJson).not.toContain('private chat body');
+    expect(exportJson).not.toContain('secret command output');
+    expect(exportJson).not.toContain('https://private.example.local/report');
+    expect(exportJson).toContain('[local-path:1]');
+    expect(traceExport.redactionSummary.totalReplacementCount).toBeGreaterThanOrEqual(4);
+    expect(traceExport.privacyNotes.join(' ')).toContain('synthetic labels');
+  });
+
+  it('summarizes last trace export redactions for the dashboard', () => {
+    const root = makeTempRoot();
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'observation_ingested',
+      visibility: 'dashboard_only',
+      createdAt: 1000,
+      title: 'Observation',
+      summary: 'Observed C:\\Users\\secret\\mail.txt.',
+      evidenceRefs: ['observation:timeline-test'],
+      relatedRefs: ['observation:timeline-test'],
+    });
+    exportAoiOperatorTrace(root, 'aoi/default', {
+      now: 1500,
+    });
+
+    const summary = loadAoiOperatorTimelineSummary(root, 'aoi/default');
+
+    expect(summary.totalEventCount).toBe(2);
+    expect(summary.exportedTraceCount).toBe(1);
+    expect(summary.lastExportAt).toBe(1500);
+    expect(summary.lastExportRedactionCount).toBeGreaterThanOrEqual(1);
   });
 });

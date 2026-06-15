@@ -22,6 +22,7 @@ import type {
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
   AoiOperatorDigest,
+  AoiOperatorTimelineSummary,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiWorkspaceSnapshot,
@@ -259,6 +260,14 @@ export interface AoiOperatorDigestPanelSummary {
   resumeBriefLabel: string;
   hiddenLabel: string;
   evidenceRefs: string[];
+}
+
+export interface AoiOperatorTimelinePanelSummary {
+  visible: boolean;
+  summaryLabel: string;
+  eventLabels: string[];
+  exportLabel: string;
+  redactionLabel: string;
 }
 
 export interface AoiBlockedStateSummary {
@@ -1397,6 +1406,49 @@ export function buildAoiOperatorDigestPanelSummary(
     evidenceRefs: includeDetails
       ? digest.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
       : [],
+  };
+}
+
+export function buildAoiOperatorTimelinePanelSummary(
+  summary: AoiOperatorTimelineSummary | null | undefined,
+  includeDetails = false,
+): AoiOperatorTimelinePanelSummary {
+  if (!summary || summary.totalEventCount === 0) {
+    return {
+      visible: false,
+      summaryLabel: 'No timeline events',
+      eventLabels: [],
+      exportLabel: 'No trace export',
+      redactionLabel: '',
+    };
+  }
+  const eventLabels = summary.newestMeaningfulEvents
+    .slice(0, includeDetails ? 6 : 3)
+    .map((event) =>
+      sanitizeAoiProposalDisplayText(
+        `${event.kind.replace(/_/g, ' ')}: ${event.title} - ${event.summary}`,
+        includeDetails ? 260 : 160,
+      ),
+    );
+  const exportLabel = summary.lastExportAt
+    ? `Last trace export: ${new Date(summary.lastExportAt).toISOString()}`
+    : 'No trace export';
+  const redactionLabel =
+    summary.lastExportRedactionCount > 0
+      ? `${summary.lastExportRedactionCount} privacy replacement${summary.lastExportRedactionCount === 1 ? '' : 's'}`
+      : summary.lastExportAt
+        ? 'No privacy replacements'
+        : '';
+
+  return {
+    visible: true,
+    summaryLabel: sanitizeAoiProposalDisplayText(
+      `${summary.totalEventCount} timeline event${summary.totalEventCount === 1 ? '' : 's'}`,
+      120,
+    ),
+    eventLabels,
+    exportLabel,
+    redactionLabel,
   };
 }
 

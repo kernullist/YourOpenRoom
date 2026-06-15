@@ -36,7 +36,20 @@ import {
   recordAoiBrowserContextMetadata,
   recordAoiContextSourceFeedback,
 } from './aoiContextRouter';
-import type { AoiAutonomyTickReason, AoiProposalFeedbackCategory } from './aoiAutonomyTypes';
+import {
+  buildAoiContextRouterTimelineEvents,
+  exportAoiOperatorTrace,
+  loadAoiOperatorTimelineEvents,
+  loadAoiOperatorTimelineSummary,
+  recordAoiOperatorTimelineEvent,
+  recordAoiProposalDecisionTimelineEvent,
+  recordAoiProposalFeedbackTimelineEvent,
+} from './aoiOperatorTimeline';
+import type {
+  AoiAutonomyTickReason,
+  AoiOperatorTimelineEventKind,
+  AoiProposalFeedbackCategory,
+} from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
 
 const API_PREFIX = '/api/aoi-autonomy';
@@ -110,6 +123,29 @@ function isAoiAutonomyTickReason(value: unknown): value is AoiAutonomyTickReason
   );
 }
 
+function isAoiOperatorTimelineEventKind(value: unknown): value is AoiOperatorTimelineEventKind {
+  return (
+    value === 'observation_ingested' ||
+    value === 'source_selected' ||
+    value === 'source_suppressed' ||
+    value === 'proposal_created' ||
+    value === 'proposal_blocked' ||
+    value === 'proposal_accepted' ||
+    value === 'proposal_dismissed' ||
+    value === 'proposal_snoozed' ||
+    value === 'proposal_executed' ||
+    value === 'proposal_failed' ||
+    value === 'mission_state_changed' ||
+    value === 'goal_state_changed' ||
+    value === 'digest_item_surfaced' ||
+    value === 'digest_item_hidden' ||
+    value === 'approved_command_previewed' ||
+    value === 'approved_command_recorded' ||
+    value === 'feedback_recorded' ||
+    value === 'trace_exported'
+  );
+}
+
 function getHeaderString(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] || '' : value || '';
 }
@@ -118,6 +154,14 @@ function getRequestOrigin(req: IncomingMessage): string {
   const forwardedProto = getHeaderString(req.headers['x-forwarded-proto']).trim();
   const host = getHeaderString(req.headers.host).trim() || '127.0.0.1:3000';
   return `${forwardedProto || 'http'}://${host}`;
+}
+
+function recordAoiTimelineBestEffort(record: () => void): void {
+  try {
+    record();
+  } catch (error) {
+    console.warn('[AoiAutonomyPlugin] Failed to record Aoi timeline event', error);
+  }
 }
 
 async function handleAoiAutonomyRequest(
@@ -203,6 +247,27 @@ async function handleAoiAutonomyRequest(
           0,
           Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 200) : 50,
         ),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/timeline') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        events: loadAoiOperatorTimelineEvents(sessionsDir, sessionPath, {
+          limit: Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 200) : 50,
+        }),
+        summary: loadAoiOperatorTimelineSummary(sessionsDir, sessionPath),
       });
       return true;
     }
@@ -311,14 +376,42 @@ async function handleAoiAutonomyRequest(
         return true;
       }
       const latestUserMessage = url.searchParams.get('latestUserMessage') || '';
+      const context = buildAoiContextRouterResult({
+        sessionsDir,
+        sessionPath,
+        latestUserMessage,
+      });
       writeJson(res, 200, {
         ok: true,
         sessionPath,
-        context: buildAoiContextRouterResult({
-          sessionsDir,
-          sessionPath,
-          latestUserMessage,
-        }),
+        context,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/timeline/export') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = typeof body.limit === 'number' ? body.limit : undefined;
+      const eventKinds = Array.isArray(body.eventKinds)
+        ? body.eventKinds.filter(isAoiOperatorTimelineEventKind)
+        : undefined;
+      const traceExport = exportAoiOperatorTrace(sessionsDir, sessionPath, {
+        limit,
+        eventKinds,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        traceExport,
+        summary: loadAoiOperatorTimelineSummary(sessionsDir, sessionPath),
       });
       return true;
     }
@@ -404,14 +497,20 @@ async function handleAoiAutonomyRequest(
         purpose: typeof body.purpose === 'string' ? body.purpose : undefined,
         capturedAt: typeof body.capturedAt === 'number' ? body.capturedAt : undefined,
       });
+      const routerContext = buildAoiContextRouterResult({
+        sessionsDir,
+        sessionPath,
+      });
+      recordAoiTimelineBestEffort(() => {
+        for (const event of buildAoiContextRouterTimelineEvents(routerContext)) {
+          recordAoiOperatorTimelineEvent(sessionsDir, event);
+        }
+      });
       writeJson(res, 200, {
         ok: true,
         sessionPath,
         browserContext: context,
-        context: buildAoiContextRouterResult({
-          sessionsDir,
-          sessionPath,
-        }),
+        context: routerContext,
       });
       return true;
     }
@@ -439,14 +538,40 @@ async function handleAoiAutonomyRequest(
             ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
             : undefined,
         });
+        const routerContext = buildAoiContextRouterResult({
+          sessionsDir,
+          sessionPath,
+        });
+        recordAoiTimelineBestEffort(() => {
+          recordAoiOperatorTimelineEvent(sessionsDir, {
+            sessionPath,
+            kind: 'feedback_recorded',
+            visibility: 'operator_visible',
+            createdAt: feedback.createdAt,
+            title: 'Context source feedback recorded',
+            summary: `Feedback category ${feedback.feedbackCategory} recorded for source ${feedback.sourceId}.`,
+            sourceRef: feedback.contextSummaryId
+              ? `context-source:${feedback.contextSummaryId}`
+              : `environment-source:${feedback.sourceId}`,
+            sourceKind: feedback.sourceId,
+            evidenceRefs: feedback.evidenceRefs,
+            relatedRefs: [
+              `environment-source:${feedback.sourceId}`,
+              ...(feedback.contextSummaryId ? [`context-source:${feedback.contextSummaryId}`] : []),
+            ],
+            metadata: {
+              feedbackCategory: feedback.feedbackCategory,
+            },
+          });
+          for (const event of buildAoiContextRouterTimelineEvents(routerContext)) {
+            recordAoiOperatorTimelineEvent(sessionsDir, event);
+          }
+        });
         writeJson(res, 200, {
           ok: true,
           sessionPath,
           feedback,
-          context: buildAoiContextRouterResult({
-            sessionsDir,
-            sessionPath,
-          }),
+          context: routerContext,
         });
       } catch (error) {
         writeJson(res, 400, {
@@ -632,6 +757,13 @@ async function handleAoiAutonomyRequest(
             sessionPath,
             proposal: result.proposal,
           });
+          recordAoiTimelineBestEffort(() => {
+            recordAoiProposalDecisionTimelineEvent({
+              sessionsDir,
+              proposal: result.proposal,
+              decision: result.decision,
+            });
+          });
           writeJson(res, 200, {
             ok: true,
             sessionPath,
@@ -720,6 +852,13 @@ async function handleAoiAutonomyRequest(
                 proposal: result.proposal,
               })
             : null;
+        recordAoiTimelineBestEffort(() => {
+          recordAoiProposalDecisionTimelineEvent({
+            sessionsDir,
+            proposal: result.proposal,
+            decision: result.decision,
+          });
+        });
         writeJson(res, 200, {
           ok: true,
           sessionPath,
@@ -756,6 +895,12 @@ async function handleAoiAutonomyRequest(
           decisionId: String(body.decisionId ?? ''),
           feedbackCategory: body.feedbackCategory,
           feedbackNote: body.feedbackNote,
+        });
+        recordAoiTimelineBestEffort(() => {
+          recordAoiProposalFeedbackTimelineEvent({
+            sessionsDir,
+            decision,
+          });
         });
         writeJson(res, 200, {
           ok: true,

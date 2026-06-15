@@ -100,10 +100,55 @@ describe('Aoi autonomy client dashboard', () => {
           progress: [],
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/mission?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          mission: null,
+        });
+      }
+      if (url.startsWith('/api/aoi-autonomy/sources?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          registry: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            updatedAt: 1000,
+            sources: [],
+          },
+        });
+      }
+      if (url.startsWith('/api/aoi-autonomy/workspace?')) {
+        return jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          snapshot: null,
+        });
+      }
+      if (url.startsWith('/api/aoi-autonomy/context?')) {
+        return jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          context: null,
+        });
+      }
       if (url.startsWith('/api/aoi-autonomy/evaluation?')) {
         return jsonResponse({
           sessionPath: 'aoi/default',
           evaluation: makeEvaluation(),
+        });
+      }
+      if (url.startsWith('/api/aoi-autonomy/timeline?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          events: [],
+          summary: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            newestMeaningfulEvents: [],
+            lastExportRedactionCount: 0,
+            totalEventCount: 0,
+            exportedTraceCount: 0,
+          },
         });
       }
       throw new Error(`Unexpected URL: ${url}`);
@@ -117,13 +162,19 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.proposals.active).toHaveLength(1);
     expect(snapshot.goals.active).toHaveLength(1);
     expect(snapshot.evaluation.metrics.evidenceCoverage).toBe(1);
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(snapshot.timeline.totalEventCount).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(9);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/proposals?sessionPath=aoi%2Fdefault&includeArchived=true',
         '/api/aoi-autonomy/goals?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/mission?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/sources?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/workspace?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/context?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/evaluation?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/timeline?sessionPath=aoi%2Fdefault&limit=20',
       ]),
     );
   });

@@ -12,8 +12,9 @@ import {
   runAoiOperatorReplayFixture,
   runBuiltInAoiOperatorReplayFixtures,
 } from '../aoiOperatorReplay';
+import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
-import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
+import type { AoiOperatorTraceExport, AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
 describe('Aoi autonomy evaluation', () => {
   it('computes compact feedback and execution metrics from local records', () => {
@@ -225,5 +226,79 @@ describe('Aoi autonomy evaluation', () => {
     expect(text).toContain('sources:');
     expect(text).toContain('attention:');
     expect(text.length).toBeLessThan(1400);
+  });
+
+  it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {
+    const builtInCount = AOI_OPERATOR_REPLAY_FIXTURES.length;
+    const traceExport: AoiOperatorTraceExport = {
+      version: 1,
+      id: 'aoi-trace-export-test',
+      sessionPath: 'aoi/default',
+      exportedAt: 5000,
+      eventCount: 2,
+      sourceEventIds: ['timeline-event-001', 'timeline-event-002'],
+      events: [
+        {
+          version: 1,
+          id: 'timeline-event-001',
+          sessionPath: 'aoi/default',
+          kind: 'source_selected',
+          visibility: 'dashboard_only',
+          createdAt: 1000,
+          title: 'Source selected',
+          summary: 'Synthetic source [url:1] selected for context.',
+          redactionState: 'synthetic',
+          sourceRef: 'context-source:browser',
+          evidenceRefs: ['browser:[url:1]'],
+          relatedRefs: ['environment-source:browser-context'],
+        },
+        {
+          version: 1,
+          id: 'timeline-event-002',
+          sessionPath: 'aoi/default',
+          kind: 'proposal_accepted',
+          visibility: 'operator_visible',
+          createdAt: 1500,
+          title: 'Proposal accepted',
+          summary: 'The safe proposal was accepted.',
+          redactionState: 'none',
+          proposalId: 'proposal-test-001',
+          decisionId: 'decision-test-001',
+          evidenceRefs: ['proposal:proposal-test-001'],
+          relatedRefs: ['proposal:proposal-test-001', 'decision:decision-test-001'],
+        },
+      ],
+      redactionSummary: {
+        totalReplacementCount: 1,
+        localPathCount: 0,
+        urlCount: 1,
+        emailCount: 0,
+        privateFieldCount: 0,
+        syntheticLabels: {
+          '[url:1]': '[url:1]',
+        },
+      },
+      privacyNotes: ['Synthetic labels are retained.'],
+    };
+
+    const draft = createAoiReplayFixtureDraftFromTraceExport(traceExport, {
+      fixtureId: 'trace-draft-test',
+    });
+    const draftJson = JSON.stringify(draft);
+
+    expect(AOI_OPERATOR_REPLAY_FIXTURES).toHaveLength(builtInCount);
+    expect(draft.fixture.id).toBe('trace-draft-test');
+    expect(draft.fixture.inputEvents.map((event) => event.kind)).toEqual([
+      'environment_source',
+      'proposal_decision',
+    ]);
+    expect(draft.fixture.expectedDecisions[0]).toMatchObject({
+      metric: 'snapshot_summary',
+      snapshotIncludes: 'TODO_REPLACE_THIS_EXPECTATION',
+    });
+    expect(draft.todoExpectations.join(' ')).toContain('Replace the placeholder');
+    expect(draft.warnings.join(' ')).toContain('does not execute shell commands');
+    expect(draftJson).not.toContain('C:\\');
+    expect(draftJson).not.toContain('https://');
   });
 });
