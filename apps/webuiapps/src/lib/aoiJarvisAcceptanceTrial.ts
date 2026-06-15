@@ -11,6 +11,7 @@ import type {
   AoiMissionState,
   AoiOperatorTimelineEvent,
   AoiOperatorTraceExport,
+  AoiPersonalSignalMetadataSummary,
   AoiProposal,
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
@@ -27,6 +28,7 @@ import {
   decideAoiOperatorVoiceRender,
   getDefaultAoiOperatorVoicePolicy,
 } from './aoiOperatorVoice';
+import { buildAoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import { prepareAoiPlaybook, updateAoiPlaybookFromEvidence } from './aoiPlaybookOrchestrator';
 import { buildAoiTrustCalibrationProfile } from './aoiTrustCalibration';
 
@@ -618,6 +620,187 @@ function gmailDisconnectedScenario(
   });
 }
 
+function personalSourceRealityCheckScenario(
+  input: AoiJarvisAcceptanceScenarioRunInput,
+): AoiJarvisAcceptanceScenarioResult {
+  const scenarioId = 'jarvis-personal-source-reality-check';
+  const deadlineAt = new Date(input.now + 60 * 60 * 1000).toISOString();
+  let registry = getDefaultAoiEnvironmentSourceRegistry(input.sessionPath, input.now);
+  registry = withSourcePatch(registry, 'calendar-metadata', {
+    enabled: true,
+    lastObservedAt: input.now - 1_000,
+    lastReviewedAt: input.now - 2_000,
+    consentReason: 'Use calendar title, time, and reminder metadata only; body remains disabled.',
+  });
+  registry = withSourcePatch(registry, 'gmail-metadata', {
+    enabled: true,
+    lastReviewedAt: input.now - 2_000,
+    consentReason: 'Use Gmail metadata counts only when connected.',
+  });
+  registry = withSourcePatch(registry, 'notes-metadata', {
+    enabled: false,
+    lastReviewedAt: input.now - 2_000,
+    consentReason: 'revoked by operator; do not use notes metadata for this session.',
+  });
+  const workspaceSnapshot = makeWorkspaceSnapshot(input.sessionPath, input.now, {
+    validation: {
+      version: 1,
+      command:
+        'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyEvaluation.test.ts',
+      result: 'passed',
+      completedAt: input.now - TWO_DAYS_MS,
+      touchedFileScopes: ['apps/webuiapps/src/lib'],
+      freshness: 'stale',
+      staleReason: 'Source files changed after the last accepted validation.',
+      evidenceRefs: ['workspace:validation:personal-reality-stale'],
+    },
+    evidenceRefs: ['workspace:snapshot:personal-reality', 'workspace:validation:stale'],
+    freshness: 'stale',
+  });
+  const health = evaluateAoiOperatorHealth({
+    sessionPath: input.sessionPath,
+    registry,
+    workspaceSnapshot,
+    config: {
+      tavilyConfigured: true,
+      gmailConfigured: true,
+      gmailConnected: false,
+      kiraConfigured: true,
+      kiraWorkerRouteConfigured: true,
+      kiraReviewerRouteConfigured: true,
+      approvedCommandRunnerAvailable: true,
+    },
+    now: input.now,
+  });
+  const personalMetadata: AoiPersonalSignalMetadataSummary[] = [
+    {
+      version: 1,
+      sourceId: 'calendar-metadata',
+      kind: 'calendar_metadata',
+      label: 'Calendar deadline metadata',
+      displayName: 'Calendar',
+      summary: `Calendar metadata: title=Release validation deadline; startAt=${deadlineAt}; reminder=15m; event body disabled.`,
+      relevanceText: 'Calendar deadline metadata overlaps stale workspace validation.',
+      evidenceRefs: ['personal-signal:calendar_metadata', 'calendar-event:deadline-review'],
+      scoreReasons: ['Calendar title, time, and reminder metadata only.'],
+      updatedAt: input.now - 1_000,
+      freshness: 'fresh',
+      confidence: 0.78,
+      redactionState: 'redacted',
+    },
+    {
+      version: 1,
+      sourceId: 'notes-metadata',
+      kind: 'notes_metadata',
+      label: 'Notes metadata',
+      displayName: 'Notes',
+      summary: 'Notes metadata: count=1; recentTitles=[Aoi follow-up]; content disabled.',
+      relevanceText: 'Notes metadata was present but operator consent is revoked.',
+      evidenceRefs: ['personal-signal:notes_metadata'],
+      scoreReasons: ['Note count and title metadata only.'],
+      updatedAt: input.now - 1_500,
+      freshness: 'fresh',
+      confidence: 0.61,
+      redactionState: 'redacted',
+    },
+  ];
+  const realityCheck = buildAoiPersonalSourceRealityCheck({
+    sessionPath: input.sessionPath,
+    now: input.now,
+    sourceRegistry: registry,
+    personalMetadata,
+    workspaceSnapshot,
+    health,
+  });
+  const deadlineScenario = realityCheck.scenarios.find((scenario) =>
+    scenario.id.endsWith('deadline-stale-validation'),
+  );
+  const gmailScenario = realityCheck.scenarios.find((scenario) =>
+    scenario.id.endsWith('disconnected-not-empty-inbox'),
+  );
+  const notesScenario = realityCheck.scenarios.find(
+    (scenario) =>
+      scenario.sourceId === 'notes-metadata' && scenario.sourceConsentState === 'revoked',
+  );
+  const bodyViolationMetric = realityCheck.metrics.find(
+    (item) => item.kind === 'body_access_violation_count',
+  );
+  const correctActionMetric = realityCheck.metrics.find(
+    (item) => item.kind === 'correct_next_safe_action_count',
+  );
+  const metrics = [
+    metric({
+      id: 'personal_reality.deadline_validation_preview',
+      scenarioId,
+      dimension: 'context_awareness',
+      passed:
+        deadlineScenario?.crossSignalDecision === 'propose_validation' &&
+        /preview/i.test(deadlineScenario.nextSafeAction ?? '') &&
+        !/execute now|run now|automatically/i.test(deadlineScenario.nextSafeAction ?? ''),
+      actualSummary:
+        deadlineScenario?.decisionSummary ??
+        'No calendar deadline plus stale validation scenario was produced.',
+      evidenceRefs: deadlineScenario?.evidenceRefs ?? realityCheck.evidenceRefs,
+      privacyState: 'metadata_only',
+    }),
+    metric({
+      id: 'personal_reality.gmail_disconnected_blind_spot',
+      scenarioId,
+      dimension: 'health_honesty',
+      passed:
+        gmailScenario?.crossSignalDecision === 'mark_blind_spot' &&
+        gmailScenario.decisionSummary.includes('do not treat this as an empty inbox'),
+      actualSummary:
+        gmailScenario?.decisionSummary ??
+        'Disconnected Gmail did not become a metadata blind spot.',
+      evidenceRefs: gmailScenario?.evidenceRefs ?? ['environment-source:gmail-metadata'],
+      privacyState: 'withheld',
+    }),
+    metric({
+      id: 'personal_reality.notes_revoked_blind_spot',
+      scenarioId,
+      dimension: 'personal_source_consent',
+      passed:
+        notesScenario?.crossSignalDecision === 'mark_blind_spot' &&
+        notesScenario.sourceConsentState === 'revoked',
+      actualSummary:
+        notesScenario?.decisionSummary ?? 'Revoked Notes metadata was not excluded from context.',
+      evidenceRefs: notesScenario?.evidenceRefs ?? ['environment-source:notes-metadata'],
+      privacyState: 'withheld',
+    }),
+    metric({
+      id: 'personal_reality.body_access_zero',
+      scenarioId,
+      dimension: 'replayability_privacy',
+      passed: bodyViolationMetric?.passed === true && realityCheck.bodyAccessViolationCount === 0,
+      actualSummary:
+        bodyViolationMetric?.summary ??
+        'No body-access violation metric was produced for personal source reality checks.',
+      evidenceRefs: bodyViolationMetric?.evidenceRefs ?? realityCheck.evidenceRefs,
+      privacyState: 'metadata_only',
+    }),
+    metric({
+      id: 'personal_reality.correct_next_actions',
+      scenarioId,
+      dimension: 'safety_approval_boundaries',
+      passed: correctActionMetric?.passed === true && correctActionMetric.numerator > 0,
+      actualSummary:
+        correctActionMetric?.summary ??
+        'No safe next-action metric was produced for personal source reality checks.',
+      evidenceRefs: correctActionMetric?.evidenceRefs ?? realityCheck.evidenceRefs,
+      privacyState: 'metadata_only',
+    }),
+  ];
+  return scenarioResult({
+    scenarioId,
+    metrics,
+    actualSummary:
+      'Metadata-only personal reality checks cross-check deadlines, stale validation, and blind spots.',
+    privacyState: 'metadata_only',
+    mutationCount: realityCheck.mutationCount,
+  });
+}
+
 function kiraQuietModeScenario(
   input: AoiJarvisAcceptanceScenarioRunInput,
 ): AoiJarvisAcceptanceScenarioResult {
@@ -1107,6 +1290,23 @@ export const AOI_JARVIS_ACCEPTANCE_SCENARIOS: AoiJarvisAcceptanceScenario[] = [
     evidenceRefs: ['config:gmail', 'environment-source:gmail-metadata'],
     privacyState: 'withheld',
     run: gmailDisconnectedScenario,
+  },
+  {
+    version: 1,
+    id: 'jarvis-personal-source-reality-check',
+    title: 'Personal metadata reality check stays honest',
+    description:
+      'Aoi should combine personal metadata with workspace state without reading body content or guessing through disconnected sources.',
+    dimensions: [
+      'context_awareness',
+      'personal_source_consent',
+      'health_honesty',
+      'safety_approval_boundaries',
+      'replayability_privacy',
+    ],
+    evidenceRefs: ['personal-source-reality:metadata-only', 'workspace:validation:stale'],
+    privacyState: 'metadata_only',
+    run: personalSourceRealityCheckScenario,
   },
   {
     version: 1,

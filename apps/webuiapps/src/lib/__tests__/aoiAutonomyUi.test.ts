@@ -51,6 +51,7 @@ import {
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiMissionMemorySnapshot } from '../aoiMissionMemory';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
+import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -71,6 +72,7 @@ import type {
   AoiMissionState,
   AoiOperatorTimelineSummary,
   AoiOperatorHealthState,
+  AoiPersonalSignalMetadataSummary,
   AoiPlaybook,
   AoiProposal,
   AoiProposalDecision,
@@ -2156,6 +2158,139 @@ describe('Aoi autonomy UI helpers', () => {
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('Do not leak the mail body');
     expect(serialized).not.toContain('mail body.');
+  });
+
+  it('feeds personal source reality checks into dashboard and shadow hooks', () => {
+    let registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 6000);
+    registry = withSourcePatch(registry, 'calendar-metadata', {
+      enabled: true,
+      lastObservedAt: 5900,
+      lastReviewedAt: 5800,
+      consentReason: 'Use calendar title/time/reminder metadata only; body disabled.',
+    });
+    registry = withSourcePatch(registry, 'gmail-metadata', {
+      enabled: true,
+      lastReviewedAt: 5800,
+      consentReason: 'Use Gmail metadata counts only when connected.',
+    });
+    const workspaceSnapshot = makeWorkspaceSnapshot({
+      validation: {
+        version: 1,
+        command: 'pnpm --filter @openroom/webuiapps test',
+        result: 'passed',
+        completedAt: 1000,
+        touchedFileScopes: ['apps/webuiapps/src/lib'],
+        freshness: 'stale',
+        staleReason: 'Relevant files changed after validation.',
+        evidenceRefs: ['workspace:validation:stale'],
+      },
+      freshness: 'stale',
+    });
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: 'aoi/default',
+      registry,
+      workspaceSnapshot,
+      config: {
+        tavilyConfigured: true,
+        gmailConfigured: true,
+        gmailConnected: false,
+        kiraConfigured: true,
+        kiraWorkerRouteConfigured: true,
+        kiraReviewerRouteConfigured: true,
+      },
+      now: 6000,
+    });
+    const metadata: AoiPersonalSignalMetadataSummary[] = [
+      {
+        version: 1,
+        sourceId: 'calendar-metadata',
+        kind: 'calendar_metadata',
+        label: 'Calendar metadata',
+        displayName: 'Calendar',
+        summary:
+          'Calendar metadata: title=Validation deadline; startAt=1970-01-01T02:00:00.000Z; reminder=15m; description=private launch plan body.',
+        relevanceText: 'Deadline metadata overlaps stale workspace validation.',
+        evidenceRefs: ['personal-signal:calendar_metadata'],
+        scoreReasons: ['Title, time, and reminder metadata only.'],
+        updatedAt: 5900,
+        freshness: 'fresh',
+        confidence: 0.78,
+        redactionState: 'redacted',
+      },
+    ];
+    const realityCheck = buildAoiPersonalSourceRealityCheck({
+      sessionPath: 'aoi/default',
+      now: 6000,
+      sourceRegistry: registry,
+      workspaceSnapshot,
+      health,
+      personalMetadata: metadata,
+    });
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      personalSourceRealityCheck: realityCheck,
+      now: 6100,
+    });
+    const shadowReport = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 6200,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      workspaceSnapshot,
+      health,
+      sourceRegistry: registry,
+      personalSourceRealityCheck: realityCheck,
+      shadowReport,
+      now: 6300,
+    });
+    const serialized = JSON.stringify(dashboard);
+
+    expect(decisions.some((decision) => decision.kind === 'would_propose')).toBe(true);
+    expect(decisions.some((decision) => decision.kind === 'would_mark_blind_spot')).toBe(true);
+    expect(dashboard.currentBrief.visible).toBe(true);
+    expect(dashboard.currentBrief.missionLabel).toContain('workspace validation is stale');
+    expect(dashboard.blindSpots.visible).toBe(true);
+    expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain('Gmail');
+    expect(dashboard.nextSafeAction.visible).toBe(true);
+    expect(dashboard.nextSafeAction.actionLabel).toContain('preview');
+    expect(dashboard.nextSafeAction.boundaryLabel).toContain('does not execute commands');
+    expect(dashboard.replayHealth.visible).toBe(true);
+    expect(dashboard.replayHealth.evidenceRefs).toContain(
+      `personal-source-reality:${realityCheck.id}`,
+    );
+    expect(shadowReport.metrics.zeroMutation).toBe(true);
+    expect(serialized).not.toContain('private launch plan body');
+    expect(serialized).not.toContain('description=private');
+
+    const failedRealityCheck = {
+      ...realityCheck,
+      metrics: [
+        ...realityCheck.metrics,
+        {
+          version: 1 as const,
+          id: 'personal-reality.body_access_violation.synthetic',
+          kind: 'body_access_violation_count' as const,
+          passed: false,
+          value: 1,
+          numerator: 1,
+          denominator: 1,
+          summary: 'Synthetic personal source reality failure.',
+          evidenceRefs: ['personal-source-reality:synthetic-failure'],
+        },
+      ],
+    };
+    const failedRealityDashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      personalSourceRealityCheck: failedRealityCheck,
+      now: 6400,
+    });
+
+    expect(failedRealityDashboard.replayHealth.visible).toBe(true);
+    expect(failedRealityDashboard.replayHealth.failedMetricIds).toContain(
+      'personal-reality.body_access_violation.synthetic',
+    );
   });
 
   it('explains quiet suppression from shadow decisions and digest evidence', () => {

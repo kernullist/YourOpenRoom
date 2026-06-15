@@ -6,10 +6,12 @@ import {
   isAoiPersonalSignalSourceKind,
 } from './aoiAutonomyPolicy';
 import { buildAoiMissionMemoryDashboardContext } from './aoiMissionMemory';
+import { buildAoiPersonalSourceRealityDashboardContext } from './aoiPersonalSourceRealityCheck';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
+import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import type { AoiReplayReport } from './aoiOperatorReplay';
 import type { AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type {
@@ -406,6 +408,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   playbooks?: AoiPlaybook[];
   missionMemory?: AoiMissionMemorySnapshot | null;
+  personalSourceRealityCheck?: AoiPersonalSourceRealityCheck | null;
   approvedCommandPolicies?: AoiApprovedCommandPolicy[];
   approvedCommandResults?: AoiApprovedCommandResult[];
   builtInReplayReports?: AoiReplayReport[];
@@ -1842,6 +1845,9 @@ function buildAoiCurrentBriefPanel(
   const workspace = input.workspaceSnapshot;
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
+  const realityContext = buildAoiPersonalSourceRealityDashboardContext(
+    input.personalSourceRealityCheck,
+  );
   const workspaceSummary = workspace
     ? `${workspace.workspaceLabel}; ${
         workspace.git?.branchChanged
@@ -1884,11 +1890,19 @@ function buildAoiCurrentBriefPanel(
       )
     : memoryContext
       ? sanitizeAoiAcceptanceDashboardText(memoryContext.currentBriefLabel, 220)
-      : 'No mission focus yet';
+      : realityContext?.currentBriefLabels[0]
+        ? sanitizeAoiAcceptanceDashboardText(realityContext.currentBriefLabels[0], 220)
+        : 'No mission focus yet';
 
   return {
     visible: Boolean(
-      mission || workspace || latestKiraEvent || kiraIssue || hasKiraPlaybook || memoryContext,
+      mission ||
+      workspace ||
+      latestKiraEvent ||
+      kiraIssue ||
+      hasKiraPlaybook ||
+      memoryContext ||
+      realityContext,
     ),
     statusLabel,
     missionLabel,
@@ -1903,7 +1917,11 @@ function buildAoiCurrentBriefPanel(
       ...(latestKiraEvent?.evidenceRefs ?? []),
       ...(kiraIssue?.evidenceRefs ?? []),
       ...(memoryContext?.evidenceRefs ?? []),
+      ...(realityContext?.evidenceRefs ?? []),
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
+      input.personalSourceRealityCheck
+        ? `personal-source-reality:${input.personalSourceRealityCheck.id}`
+        : undefined,
     ]),
   };
 }
@@ -1911,6 +1929,9 @@ function buildAoiCurrentBriefPanel(
 function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): AoiBlindSpotsPanel {
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
+  const realityContext = buildAoiPersonalSourceRealityDashboardContext(
+    input.personalSourceRealityCheck,
+  );
   const blindSpotSources =
     input.sourceRegistry?.sources.filter(
       (source) =>
@@ -1943,7 +1964,13 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
       )
       .map((event) => `${event.title}: ${event.summary}`) ?? [];
   const labels = uniqueDashboardLabels(
-    [...issueLabels, ...sourceLabels, ...timelineLabels, ...(memoryContext?.blindSpotLabels ?? [])],
+    [
+      ...issueLabels,
+      ...sourceLabels,
+      ...timelineLabels,
+      ...(memoryContext?.blindSpotLabels ?? []),
+      ...(realityContext?.blindSpotLabels ?? []),
+    ],
     8,
   );
 
@@ -1958,7 +1985,11 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
       ...(input.timelineSummary?.newestMeaningfulEvents.flatMap((event) => event.evidenceRefs) ??
         []),
       ...(memoryContext?.evidenceRefs ?? []),
+      ...(realityContext?.evidenceRefs ?? []),
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
+      input.personalSourceRealityCheck
+        ? `personal-source-reality:${input.personalSourceRealityCheck.id}`
+        : undefined,
     ]),
   };
 }
@@ -1968,6 +1999,9 @@ function buildAoiNextSafeActionPanel(
 ): AoiNextSafeActionPanel {
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
+  const realityContext = buildAoiPersonalSourceRealityDashboardContext(
+    input.personalSourceRealityCheck,
+  );
   if (missionMemory && memoryContext && memoryContext.blockedReasonLabels.length > 0) {
     return {
       visible: true,
@@ -2007,6 +2041,23 @@ function buildAoiNextSafeActionPanel(
         `playbook:${playbook.id}`,
         ...playbook.evidenceRefs,
         ...nextStep.evidenceRefs,
+      ]),
+    };
+  }
+  if (input.personalSourceRealityCheck && realityContext?.nextSafeActionLabel) {
+    return {
+      visible: true,
+      actionLabel: sanitizeAoiAcceptanceDashboardText(realityContext.nextSafeActionLabel, 180),
+      sourceLabel: sanitizeAoiAcceptanceDashboardText(
+        `personal-source-reality:${input.personalSourceRealityCheck.id}`,
+        120,
+      ),
+      boundaryLabel:
+        'Personal metadata can only justify a preview or blind-spot note; it does not execute commands.',
+      blockedReasonLabels: realityContext.blockedReasonLabels,
+      evidenceRefs: dashboardRefs([
+        ...realityContext.evidenceRefs,
+        `personal-source-reality:${input.personalSourceRealityCheck.id}`,
       ]),
     };
   }
@@ -2174,6 +2225,9 @@ function buildAoiPendingApprovalPanel(
 function buildAoiReplayHealthPanel(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiReplayHealthPanel {
+  const realityContext = buildAoiPersonalSourceRealityDashboardContext(
+    input.personalSourceRealityCheck,
+  );
   const replayReports = input.builtInReplayReports ?? [];
   const replayFailed = replayReports.filter((report) => !report.passed);
   const builtInReplayLabel =
@@ -2201,6 +2255,7 @@ function buildAoiReplayHealthPanel(
             ...(shadow.metrics.tooMuchRate > 0 ? ['shadow.too_much'] : []),
           ]
         : []),
+      ...(realityContext?.failedMetricIds ?? []),
     ],
     10,
   );
@@ -2213,7 +2268,9 @@ function buildAoiReplayHealthPanel(
   const failedCount = failedMetricIds.length;
 
   return {
-    visible: Boolean(replayReports.length || jarvis || shadow || promotedFixtureLabels.length),
+    visible: Boolean(
+      replayReports.length || jarvis || shadow || promotedFixtureLabels.length || failedCount,
+    ),
     statusLabel:
       failedCount > 0 ? `${failedCount} replay issue(s)` : 'Replay health passing or unavailable',
     builtInReplayLabel: sanitizeAoiAcceptanceDashboardText(builtInReplayLabel, 140),
@@ -2226,6 +2283,7 @@ function buildAoiReplayHealthPanel(
       ...(jarvis?.evidenceRefs ?? []),
       ...(shadow?.evidenceRefs ?? []),
       ...(input.promotedFixtureCandidates?.flatMap((candidate) => candidate.evidenceRefs) ?? []),
+      ...(realityContext?.evidenceRefs ?? []),
     ]),
   };
 }

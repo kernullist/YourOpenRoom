@@ -4,6 +4,7 @@ import {
   feedbackRefreshProposalFixture,
   makeFeedbackDecisionFixture,
 } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
+import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { evaluateAoiAutonomyRecords } from '../aoiAutonomyEvaluation';
 import {
   AOI_OPERATOR_REPLAY_FIXTURES,
@@ -30,6 +31,7 @@ import {
   buildAoiTracePromotionReport,
   createAoiTracePromotionDecision,
 } from '../aoiTracePromotion';
+import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
@@ -39,8 +41,10 @@ import type {
   AoiOperatorDigest,
   AoiOperatorHealthState,
   AoiOperatorTraceExport,
+  AoiPersonalSignalMetadataSummary,
   AoiProposal,
   AoiProposalDecision,
+  AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 
 describe('Aoi autonomy evaluation', () => {
@@ -263,6 +267,7 @@ describe('Aoi autonomy evaluation', () => {
       'jarvis-return-branch-drift-stale-validation',
       'jarvis-calendar-metadata-body-withheld',
       'jarvis-gmail-disconnected-cannot-inspect',
+      'jarvis-personal-source-reality-check',
       'jarvis-kira-completion-quiet-mode',
       'jarvis-too-much-feedback-suppression',
       'jarvis-command-change-boundary',
@@ -281,7 +286,164 @@ describe('Aoi autonomy evaluation', () => {
       [...AOI_JARVIS_ACCEPTANCE_DIMENSIONS].sort(),
     );
     expect(text).toContain('PASS aoi-jarvis-acceptance');
-    expect(text.length).toBeLessThan(320);
+    expect(text.length).toBeLessThan(340);
+  });
+
+  it('evaluates metadata-only personal source reality without body inference', () => {
+    const registry = makePersonalRealityRegistry();
+    const workspaceSnapshot = makePersonalRealityWorkspaceSnapshot();
+    const health = makePersonalRealityHealth(registry, workspaceSnapshot);
+    const check = buildAoiPersonalSourceRealityCheck({
+      sessionPath: 'aoi/default',
+      now: 6000,
+      sourceRegistry: registry,
+      workspaceSnapshot,
+      health,
+      personalMetadata: [
+        makePersonalRealityMetadata({
+          sourceId: 'calendar-metadata',
+          kind: 'calendar_metadata',
+          summary:
+            'Calendar metadata: title=Validation deadline; startAt=1970-01-01T02:00:00.000Z; reminder=15m; description=private launch plan body.',
+        }),
+        makePersonalRealityMetadata({
+          sourceId: 'gmail-metadata',
+          kind: 'gmail_metadata',
+          summary: 'Gmail metadata: configured=true; connected=false; unread=unknown.',
+        }),
+        makePersonalRealityMetadata({
+          sourceId: 'notes-metadata',
+          kind: 'notes_metadata',
+          summary: 'Notes metadata: count=1; recentTitles=[private roadmap]; content disabled.',
+        }),
+      ],
+    });
+    const deadlineScenario = check.scenarios.find((scenario) =>
+      scenario.id.endsWith('deadline-stale-validation'),
+    );
+    const gmailScenario = check.scenarios.find((scenario) =>
+      scenario.id.endsWith('disconnected-not-empty-inbox'),
+    );
+    const notesScenario = check.scenarios.find(
+      (scenario) => scenario.sourceId === 'notes-metadata',
+    );
+    const serialized = JSON.stringify(check);
+
+    expect(deadlineScenario).toMatchObject({
+      crossSignalDecision: 'propose_validation',
+      bodyAccessState: 'withheld',
+      confidenceBand: 'low',
+    });
+    expect(deadlineScenario?.nextSafeAction).toContain('preview');
+    expect(deadlineScenario?.nextSafeAction).not.toMatch(/execute now|run now|automatically/i);
+    expect(gmailScenario).toMatchObject({
+      sourceConsentState: 'disconnected',
+      crossSignalDecision: 'mark_blind_spot',
+    });
+    expect(gmailScenario?.decisionSummary).toContain('do not treat this as an empty inbox');
+    expect(notesScenario).toMatchObject({
+      sourceConsentState: 'revoked',
+      crossSignalDecision: 'mark_blind_spot',
+    });
+    expect(check.metrics.every((metric) => metric.passed)).toBe(true);
+    expect(check.bodyAccessViolationCount).toBe(0);
+    expect(serialized).not.toContain('private launch plan body');
+    expect(serialized).not.toContain('description=private');
+  });
+
+  it('keeps reviewer metadata useful while wrong-source feedback suppresses overuse', () => {
+    const registry = makePersonalRealityRegistry({
+      gmailEnabled: true,
+      notesEnabled: true,
+      notesRevoked: false,
+    });
+    const workspaceSnapshot = makePersonalRealityWorkspaceSnapshot({
+      validation: {
+        version: 1,
+        command: 'pnpm --filter @openroom/webuiapps test',
+        result: 'passed',
+        completedAt: 5000,
+        touchedFileScopes: ['apps/webuiapps/src/lib'],
+        freshness: 'fresh',
+        evidenceRefs: ['workspace:validation:fresh'],
+      },
+      freshness: 'fresh',
+      evidenceRefs: ['workspace:snapshot:fresh'],
+    });
+    const usefulCheck = buildAoiPersonalSourceRealityCheck({
+      sessionPath: 'aoi/default',
+      now: 6000,
+      sourceRegistry: registry,
+      workspaceSnapshot,
+      personalMetadata: [
+        makePersonalRealityMetadata({
+          sourceId: 'gmail-metadata',
+          kind: 'gmail_metadata',
+          summary:
+            'Gmail metadata: configured=true; connected=true; unread=1; thread label=reviewer; thread metadata only.',
+        }),
+        makePersonalRealityMetadata({
+          sourceId: 'notes-metadata',
+          kind: 'notes_metadata',
+          summary: 'Notes metadata: count=1; recentTitles=[Design review]; content disabled.',
+        }),
+      ],
+    });
+    const reviewerScenario = usefulCheck.scenarios.find((scenario) =>
+      scenario.id.endsWith('reviewer-reply-body-unreadable'),
+    );
+    const notesChangedScenario = usefulCheck.scenarios.find((scenario) =>
+      scenario.id.endsWith('changed-content-disabled'),
+    );
+    const trustCalibration = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      decisions: [
+        makeFeedbackDecisionFixture({
+          id: 'decision-wrong-calendar-source',
+          feedbackCategory: 'wrong_source',
+          evidenceRefs: ['personal-signal:calendar_metadata'],
+          createdAt: 5000,
+        }),
+      ],
+      now: 6000,
+    });
+    const penalizedCheck = buildAoiPersonalSourceRealityCheck({
+      sessionPath: 'aoi/default',
+      now: 6000,
+      sourceRegistry: registry,
+      workspaceSnapshot: makePersonalRealityWorkspaceSnapshot(),
+      personalMetadata: [
+        makePersonalRealityMetadata({
+          sourceId: 'calendar-metadata',
+          kind: 'calendar_metadata',
+          summary:
+            'Calendar metadata: title=Validation deadline; startAt=1970-01-01T02:00:00.000Z; reminder=15m.',
+        }),
+      ],
+      trustCalibration,
+    });
+    const penalizedScenario = penalizedCheck.scenarios.find((scenario) =>
+      scenario.id.endsWith('deadline-stale-validation'),
+    );
+
+    expect(reviewerScenario).toMatchObject({
+      crossSignalDecision: 'speak',
+      bodyAccessState: 'withheld',
+      confidenceBand: 'low',
+    });
+    expect(reviewerScenario?.decisionSummary).toContain('cannot claim what the email body says');
+    expect(notesChangedScenario).toMatchObject({
+      crossSignalDecision: 'mark_blind_spot',
+      bodyAccessState: 'withheld',
+    });
+    expect(penalizedScenario).toMatchObject({
+      crossSignalDecision: 'stay_quiet',
+      confidenceBand: 'low',
+      wrongSourcePenalized: true,
+    });
+    expect(
+      penalizedCheck.metrics.find((metric) => metric.kind === 'wrong_source_avoidance'),
+    ).toMatchObject({ passed: true, numerator: 2 });
   });
 
   it('reports a broken JARVIS consent expectation with scenario and metric ids', () => {
@@ -1261,6 +1423,165 @@ function brokenJarvisMetricScenario(
         ),
       };
     },
+  };
+}
+
+function withRealitySourcePatch(
+  registry: AoiEnvironmentSourceRegistry,
+  sourceId: string,
+  patch: Partial<AoiEnvironmentSourceRegistry['sources'][number]>,
+): AoiEnvironmentSourceRegistry {
+  return {
+    ...registry,
+    sources: registry.sources.map((source) =>
+      source.id === sourceId
+        ? {
+            ...source,
+            ...patch,
+          }
+        : source,
+    ),
+  };
+}
+
+function makePersonalRealityRegistry(
+  options: {
+    calendarEnabled?: boolean;
+    gmailEnabled?: boolean;
+    notesEnabled?: boolean;
+    notesRevoked?: boolean;
+  } = {},
+): AoiEnvironmentSourceRegistry {
+  let registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 6000);
+  registry = withRealitySourcePatch(registry, 'calendar-metadata', {
+    enabled: options.calendarEnabled ?? true,
+    lastObservedAt: 5500,
+    lastReviewedAt: 5400,
+    consentReason: 'Use calendar title/time/reminder metadata only; body disabled.',
+  });
+  registry = withRealitySourcePatch(registry, 'gmail-metadata', {
+    enabled: options.gmailEnabled ?? true,
+    lastObservedAt: 5500,
+    lastReviewedAt: 5400,
+    consentReason: 'Use Gmail counts and thread metadata only when connected.',
+  });
+  registry = withRealitySourcePatch(registry, 'notes-metadata', {
+    enabled: options.notesEnabled ?? false,
+    lastObservedAt: 5500,
+    lastReviewedAt: 5400,
+    consentReason:
+      (options.notesRevoked ?? true)
+        ? 'revoked by operator; do not use notes metadata.'
+        : 'Use note count, title, tag, and pinned metadata only.',
+  });
+  return registry;
+}
+
+function makePersonalRealityWorkspaceSnapshot(
+  partial: Partial<AoiWorkspaceSnapshot> = {},
+): AoiWorkspaceSnapshot {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    collectedAt: 6000,
+    workspaceLabel: 'YourOpenRoom',
+    sourceIds: ['workspace-git', 'workspace-build'],
+    git: {
+      version: 1,
+      branchName: 'main',
+      branchChanged: false,
+      isDirty: true,
+      changedFileCount: 1,
+      stagedFileCount: 0,
+      unstagedFileCount: 1,
+      untrackedFileCount: 0,
+      statusSummary: 'dirty: 1 changed',
+      changedFiles: [
+        {
+          version: 1,
+          pathLabel: 'apps/webuiapps/src/lib/aoiPersonalSourceRealityCheck.ts',
+          pathHash: 'personal-reality-check',
+          status: 'M',
+          staged: false,
+          unstaged: true,
+          untracked: false,
+          changedAt: 6000,
+          directoryLabel: 'apps/webuiapps/src/lib',
+          extension: 'ts',
+        },
+      ],
+    },
+    validation: {
+      version: 1,
+      command: 'pnpm --filter @openroom/webuiapps test',
+      result: 'passed',
+      completedAt: 1000,
+      touchedFileScopes: ['apps/webuiapps/src/lib'],
+      freshness: 'stale',
+      staleReason: 'Source files changed after the last passed validation.',
+      evidenceRefs: ['workspace:validation:stale'],
+    },
+    freshness: 'stale',
+    evidenceRefs: ['workspace:snapshot:personal-reality', 'workspace:validation:stale'],
+    warnings: [],
+    ...partial,
+  };
+}
+
+function makePersonalRealityHealth(
+  registry: AoiEnvironmentSourceRegistry,
+  workspaceSnapshot: AoiWorkspaceSnapshot,
+): AoiOperatorHealthState {
+  return {
+    version: 1,
+    sessionPath: registry.sessionPath,
+    generatedAt: 6000,
+    overallStatus: 'limited',
+    summary: 'Synthetic personal source health state.',
+    capabilities: [],
+    issues: [
+      {
+        version: 1,
+        id: 'health-gmail-disconnected-personal-reality',
+        capability: 'personal_signals',
+        severity: 'error',
+        code: 'gmail_disconnected',
+        title: 'Gmail metadata disconnected',
+        summary: 'Gmail metadata is disconnected and cannot be inspected.',
+        cannotKnow: 'Gmail metadata is disconnected; this is not evidence of an empty inbox.',
+        sourceId: 'gmail-metadata',
+        observedAt: 6000,
+        evidenceRefs: ['environment-source:gmail-metadata', ...workspaceSnapshot.evidenceRefs],
+        recommendation: {
+          version: 1,
+          action: 'connect_gmail',
+          label: 'Reconnect Gmail metadata.',
+          targetPanel: 'personal-sources',
+          targetRef: 'gmail-metadata',
+        },
+      },
+    ],
+    userBlockingIssueCount: 0,
+    evidenceRefs: ['environment-source:gmail-metadata'],
+  };
+}
+
+function makePersonalRealityMetadata(
+  partial: Pick<AoiPersonalSignalMetadataSummary, 'sourceId' | 'kind' | 'summary'> &
+    Partial<AoiPersonalSignalMetadataSummary>,
+): AoiPersonalSignalMetadataSummary {
+  return {
+    version: 1,
+    label: partial.label ?? partial.sourceId,
+    displayName: partial.displayName ?? partial.sourceId,
+    relevanceText: partial.relevanceText ?? 'Synthetic metadata-only personal signal.',
+    evidenceRefs: partial.evidenceRefs ?? [`personal-signal:${partial.kind}`],
+    scoreReasons: partial.scoreReasons ?? ['Metadata fields only.'],
+    updatedAt: partial.updatedAt ?? 5500,
+    freshness: partial.freshness ?? 'fresh',
+    confidence: partial.confidence ?? 0.72,
+    redactionState: partial.redactionState ?? 'redacted',
+    ...partial,
   };
 }
 

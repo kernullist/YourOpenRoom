@@ -1,4 +1,5 @@
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
 import type {
   AoiApprovedCommandPolicy,
@@ -143,6 +144,7 @@ export interface AoiShadowDecisionRecorderInput {
   health?: AoiOperatorHealthState | null;
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   sourceConsent?: AoiShadowSourceConsentSnapshot[];
+  personalSourceRealityCheck?: AoiPersonalSourceRealityCheck | null;
   playbooks?: AoiPlaybook[];
   approvedCommandPolicies?: AoiApprovedCommandPolicy[];
   now?: number;
@@ -406,7 +408,7 @@ function recordHealthDecisions(
         kind: 'would_mark_blind_spot',
         now,
         dedupeKey: `health:${issue.capability}:${issue.code}:${issue.sourceId ?? 'global'}`,
-        sourceRefs: [issueRef(issue), issue.sourceId],
+        sourceRefs: issue.sourceId ? [issueRef(issue), issue.sourceId] : [issueRef(issue)],
         sourceSummary: issueSummary,
         consentState,
         risk: issue.severity === 'blocker' ? 'medium' : 'low',
@@ -467,6 +469,77 @@ function recordSourceConsentDecisions(
         policyResult: 'record_only',
         operatorMessagePreview: `${source.label} is a blind spot.`,
         evidenceRefs: source.evidenceRefs,
+      }),
+    );
+  }
+}
+
+function recordPersonalSourceRealityDecisions(
+  out: Map<string, AoiShadowDecision>,
+  input: AoiShadowDecisionRecorderInput,
+  sessionPath: string,
+  now: number,
+): void {
+  const check = input.personalSourceRealityCheck;
+  if (!check) {
+    return;
+  }
+  for (const scenario of check.scenarios) {
+    const kind: AoiShadowDecisionKind =
+      scenario.crossSignalDecision === 'mark_blind_spot'
+        ? 'would_mark_blind_spot'
+        : scenario.crossSignalDecision === 'stay_quiet'
+          ? 'would_stay_quiet'
+          : scenario.crossSignalDecision === 'speak'
+            ? 'would_speak'
+            : 'would_propose';
+    const consentState: AoiShadowConsentState =
+      scenario.sourceConsentState === 'revoked'
+        ? 'revoked'
+        : scenario.sourceConsentState === 'disconnected'
+          ? 'disconnected'
+          : scenario.sourceConsentState === 'disabled'
+            ? 'disabled'
+            : scenario.sourceConsentState === 'unknown'
+              ? 'unknown'
+              : 'allowed';
+    addDecision(
+      out,
+      makeDecision({
+        sessionPath,
+        missionId: input.missionId,
+        kind,
+        now,
+        dedupeKey: `personal-reality:${scenario.id}:${kind}`,
+        sourceRefs: [
+          `personal-source-reality:${check.id}`,
+          `environment-source:${scenario.sourceId}`,
+          `personal-signal:${scenario.sourceKind}`,
+          ...scenario.sourceRefs,
+        ],
+        sourceSummary: scenario.decisionSummary,
+        consentState,
+        risk: scenario.crossSignalDecision === 'propose_validation' ? 'medium' : 'low',
+        policyResult:
+          scenario.crossSignalDecision === 'propose_validation' ? 'record_only' : undefined,
+        operatorMessagePreview:
+          kind === 'would_stay_quiet'
+            ? undefined
+            : `${scenario.label}: ${scenario.decisionSummary}`,
+        silenceReason:
+          kind === 'would_stay_quiet'
+            ? 'Personal metadata reality check lowered confidence or wrong-source feedback applied.'
+            : undefined,
+        suggestedAction: scenario.nextSafeAction,
+        approvalBoundary:
+          scenario.crossSignalDecision === 'propose_validation'
+            ? 'Shadow mode only records a validation preview suggestion; no command execution is allowed.'
+            : undefined,
+        evidenceRefs: [
+          `personal-source-reality:${check.id}`,
+          ...scenario.evidenceRefs,
+          ...check.evidenceRefs,
+        ],
       }),
     );
   }
@@ -561,6 +634,7 @@ export function recordAoiShadowDecisions(
   recordDigestDecisions(decisions, input, sessionPath, now);
   recordHealthDecisions(decisions, input, sessionPath, now);
   recordSourceConsentDecisions(decisions, input, sessionPath, now);
+  recordPersonalSourceRealityDecisions(decisions, input, sessionPath, now);
   recordPlaybookDecisions(decisions, input, sessionPath, now);
   recordApprovedCommandDecisions(decisions, input, sessionPath, now);
   return [...decisions.values()].sort(
