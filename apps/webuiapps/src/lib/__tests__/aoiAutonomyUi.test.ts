@@ -49,6 +49,7 @@ import {
   getDefaultAoiOperatorVoicePolicy,
 } from '../aoiOperatorVoice';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
+import { buildAoiMissionMemorySnapshot } from '../aoiMissionMemory';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
@@ -63,6 +64,7 @@ import type {
   AoiAutonomyPolicy,
   AoiAutonomySchedulerState,
   AoiAttentionEvent,
+  AoiApprovedCommandPolicy,
   AoiContextRouterResult,
   AoiContextSourceSummary,
   AoiEnvironmentSourceRegistry,
@@ -2065,6 +2067,61 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.whyQuiet.reasonLabels).toEqual(['No quiet suppression recorded']);
     expect(dashboard.pendingApproval.visible).toBe(false);
     expect(dashboard.replayHealth.builtInReplayLabel).toBe('No built-in replay report');
+  });
+
+  it('uses mission memory to explain stale validation, pending external work, and approvals', () => {
+    const approvalPolicy: AoiApprovedCommandPolicy = {
+      version: 1,
+      allowed: true,
+      blockReasons: [],
+      command: 'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+      displayCommand:
+        'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+      program: 'pnpm',
+      args: ['--filter', '@openroom/webuiapps', 'test'],
+      cwd: 'apps/webuiapps',
+      cwdLabel: 'apps/webuiapps',
+      cwdHash: 'cwd-hash',
+      purpose: 'Validate acceptance dashboard mission memory.',
+      purposeHash: 'purpose-hash',
+      risk: 'high',
+      requiredAutonomyLevel: 'L5',
+      timeoutMs: 120000,
+      approvalFingerprint: 'approval-ui-mission-memory',
+      expiresAt: 9000,
+      rationale: ['Command execution requires renewed user approval.'],
+    };
+    const missionMemory = buildAoiMissionMemorySnapshot({
+      sessionPath: 'aoi/default',
+      mission: makeMission({
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-test',
+          researchRunRef: 'research:aoi-research-ui-test',
+          validationRef: 'workspace:validation:stale',
+        },
+      }),
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      approvedCommandPolicies: [approvalPolicy],
+      now: 6000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      missionMemory,
+      now: 7000,
+    });
+
+    expect(dashboard.currentBrief.visible).toBe(true);
+    expect(dashboard.currentBrief.statusLabel).toContain('mission memory stale');
+    expect(dashboard.currentBrief.validationLabel).toContain('Validation stale');
+    expect(dashboard.blindSpots.visible).toBe(true);
+    expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain('Validation is stale');
+    expect(dashboard.nextSafeAction.actionLabel).toContain('Wait for external evidence');
+    expect(dashboard.nextSafeAction.blockedReasonLabels).toContain('pending external evidence');
+    expect(dashboard.pendingApproval.visible).toBe(true);
+    expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
+      'approval-ui-mission-memory',
+    );
+    expect(dashboard.evidenceRefs).toContain(`mission-memory:${missionMemory.id}`);
   });
 
   it('shows disabled personal sources as blind spots without inferred private content', () => {
