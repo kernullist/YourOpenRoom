@@ -7,6 +7,9 @@ import {
 } from './aoiAutonomyPolicy';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
+import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
+import type { AoiReplayReport } from './aoiOperatorReplay';
+import type { AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
@@ -312,6 +315,100 @@ export interface AoiAutonomySchedulerPanelSummary {
   warningLabels: string[];
   budgetLabel: string;
   evidenceRefs: string[];
+}
+
+export interface AoiCurrentBriefPanel {
+  visible: boolean;
+  statusLabel: string;
+  missionLabel: string;
+  workspaceLabel: string;
+  validationLabel: string;
+  kiraLabel: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiBlindSpotsPanel {
+  visible: boolean;
+  statusLabel: string;
+  blindSpotLabels: string[];
+  sourceLabels: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiNextSafeActionPanel {
+  visible: boolean;
+  actionLabel: string;
+  sourceLabel: string;
+  boundaryLabel: string;
+  blockedReasonLabels: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiWhyQuietPanel {
+  visible: boolean;
+  reasonLabels: string[];
+  quietDecisionRefs: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiPendingApprovalPanel {
+  visible: boolean;
+  approvalLabels: string[];
+  boundaryLabels: string[];
+  riskLabels: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiPromotedFixtureCandidateSummary {
+  id: string;
+  label: string;
+  status: 'candidate' | 'promoted' | 'blocked' | 'deferred';
+  evidenceRefs: string[];
+}
+
+export interface AoiReplayHealthPanel {
+  visible: boolean;
+  statusLabel: string;
+  builtInReplayLabel: string;
+  jarvisAcceptanceLabel: string;
+  shadowLabel: string;
+  failedMetricIds: string[];
+  promotedFixtureLabels: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiOperatorAcceptanceDashboard {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  answerLabel: string;
+  currentBrief: AoiCurrentBriefPanel;
+  blindSpots: AoiBlindSpotsPanel;
+  nextSafeAction: AoiNextSafeActionPanel;
+  whyQuiet: AoiWhyQuietPanel;
+  pendingApproval: AoiPendingApprovalPanel;
+  replayHealth: AoiReplayHealthPanel;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiOperatorAcceptanceDashboardInput {
+  sessionPath: string;
+  now?: number;
+  mission?: AoiMissionState | null;
+  workspaceSnapshot?: AoiWorkspaceSnapshot | null;
+  health?: AoiOperatorHealthState | null;
+  digest?: AoiOperatorDigest | null;
+  timelineSummary?: AoiOperatorTimelineSummary | null;
+  sourceRegistry?: AoiEnvironmentSourceRegistry | null;
+  playbooks?: AoiPlaybook[];
+  approvedCommandPolicies?: AoiApprovedCommandPolicy[];
+  approvedCommandResults?: AoiApprovedCommandResult[];
+  builtInReplayReports?: AoiReplayReport[];
+  jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
+  shadowReport?: AoiShadowDecisionReport | null;
+  promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
 }
 
 export interface AoiBlockedStateSummary {
@@ -1698,6 +1795,415 @@ export function buildAoiAutonomySchedulerPanelSummary(
       .map((warning) => sanitizeAoiProposalDisplayText(warning, 180)),
     budgetLabel: sanitizeAoiProposalDisplayText(budgetLabel, 120),
     evidenceRefs: includeDetails ? [`wakeup:${lastWakeup.id}`] : [],
+  };
+}
+
+function sanitizeAoiAcceptanceDashboardText(value: string, maxLength = 220): string {
+  return sanitizeAoiProposalDisplayText(
+    value
+      .replace(
+        /\b(?:do not leak|private|raw|full|secret)[^.!?]{0,100}\b(?:mail|email|calendar|event|note)?\s*body[^.!?]*(?:[.!?]|$)/gi,
+        '[private body withheld]',
+      )
+      .replace(/\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi, '[private email]')
+      .replace(/https?:\/\/[^\s'"`<>]+/gi, '[external url]'),
+    maxLength,
+  );
+}
+
+function uniqueDashboardLabels(values: Array<string | undefined | null>, maxItems = 12): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const label = sanitizeAoiAcceptanceDashboardText(value ?? '', 220);
+    if (!label || seen.has(label)) {
+      continue;
+    }
+    seen.add(label);
+    labels.push(label);
+    if (labels.length >= maxItems) {
+      break;
+    }
+  }
+  return labels;
+}
+
+function dashboardRefs(values: Array<string | undefined | null>, maxItems = 16): string[] {
+  return uniqueDashboardLabels(values, maxItems);
+}
+
+function buildAoiCurrentBriefPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiCurrentBriefPanel {
+  const mission = input.mission;
+  const workspace = input.workspaceSnapshot;
+  const workspaceSummary = workspace
+    ? `${workspace.workspaceLabel}; ${
+        workspace.git?.branchChanged
+          ? `${workspace.git.previousBranchName ?? 'unknown'} -> ${workspace.git.branchName}`
+          : (workspace.git?.branchName ?? 'no branch')
+      }; ${formatAoiWorkspaceDirtyLabel(workspace)}`
+    : 'No workspace signal';
+  const validationLabel = workspace
+    ? formatAoiWorkspaceValidationLabel(workspace)
+    : 'Validation unknown';
+  const latestKiraEvent = input.timelineSummary?.newestMeaningfulEvents.find((event) =>
+    event.kind.startsWith('kira'),
+  );
+  const kiraIssue = input.health?.issues.find((issue) => issue.capability === 'kira');
+  const hasKiraPlaybook = input.playbooks?.some((playbook) =>
+    playbook.steps.some(
+      (step) => step.kind === 'create_kira_work' || step.kind === 'wait_for_external_event',
+    ),
+  );
+  const kiraLabel = latestKiraEvent
+    ? `${latestKiraEvent.title}: ${latestKiraEvent.summary}`
+    : kiraIssue
+      ? `${kiraIssue.title}: ${kiraIssue.summary}`
+      : hasKiraPlaybook
+        ? 'Kira/playbook state is available'
+        : 'Kira status unknown';
+
+  return {
+    visible: Boolean(mission || workspace || latestKiraEvent || kiraIssue || hasKiraPlaybook),
+    statusLabel: mission
+      ? sanitizeAoiAcceptanceDashboardText(mission.status.replace(/_/g, ' '), 80)
+      : 'no active mission',
+    missionLabel: mission
+      ? sanitizeAoiAcceptanceDashboardText(
+          `${mission.focusSummary || 'Mission focus unknown'}; next ${
+            mission.nextRecommendedAction.label || 'none'
+          }`,
+          220,
+        )
+      : 'No mission focus yet',
+    workspaceLabel: sanitizeAoiAcceptanceDashboardText(workspaceSummary, 220),
+    validationLabel: sanitizeAoiAcceptanceDashboardText(validationLabel, 160),
+    kiraLabel: sanitizeAoiAcceptanceDashboardText(kiraLabel, 180),
+    evidenceRefs: dashboardRefs([
+      ...(mission?.evidenceRefs ?? []),
+      mission?.lastMeaningfulEventRef,
+      mission?.nextRecommendedAction.ref,
+      ...(workspace?.evidenceRefs ?? []),
+      ...(latestKiraEvent?.evidenceRefs ?? []),
+      ...(kiraIssue?.evidenceRefs ?? []),
+    ]),
+  };
+}
+
+function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): AoiBlindSpotsPanel {
+  const blindSpotSources =
+    input.sourceRegistry?.sources.filter(
+      (source) =>
+        !source.enabled ||
+        (isAoiPersonalSignalSourceKind(source.kind) &&
+          !source.allowedOperations.includes('summarize')),
+    ) ?? [];
+  const issueLabels =
+    input.health?.issues
+      .filter(
+        (issue) =>
+          issue.severity !== 'info' ||
+          Boolean(issue.cannotKnow) ||
+          /disabled|disconnected|revoked|stale|degraded|missing/i.test(issue.code),
+      )
+      .map((issue) =>
+        issue.cannotKnow
+          ? `${issue.title}: ${issue.cannotKnow}`
+          : `${issue.title}: ${issue.summary}`,
+      ) ?? [];
+  const sourceLabels = blindSpotSources.map((source) =>
+    source.enabled
+      ? `${source.label}: metadata only; private bodies are outside consent scope.`
+      : `${source.label}: disabled source; Aoi cannot use it as context.`,
+  );
+  const timelineLabels =
+    input.timelineSummary?.newestMeaningfulEvents
+      .filter((event) =>
+        /blind|disabled|disconnected|stale|degraded|cannot know/i.test(event.summary),
+      )
+      .map((event) => `${event.title}: ${event.summary}`) ?? [];
+  const labels = uniqueDashboardLabels([...issueLabels, ...sourceLabels, ...timelineLabels], 8);
+
+  return {
+    visible: labels.length > 0,
+    statusLabel: labels.length > 0 ? `${labels.length} blind spot(s)` : 'No known blind spots',
+    blindSpotLabels: labels,
+    sourceLabels: uniqueDashboardLabels(sourceLabels, 6),
+    evidenceRefs: dashboardRefs([
+      ...(input.health?.issues.flatMap((issue) => issue.evidenceRefs) ?? []),
+      ...blindSpotSources.map((source) => `environment-source:${source.id}`),
+      ...(input.timelineSummary?.newestMeaningfulEvents.flatMap((event) => event.evidenceRefs) ??
+        []),
+    ]),
+  };
+}
+
+function buildAoiNextSafeActionPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiNextSafeActionPanel {
+  const playbook = input.playbooks?.find(
+    (item) => item.status !== 'completed' && item.status !== 'archived',
+  );
+  const nextStep = playbook?.steps.find((step) => step.id === playbook.nextStepId);
+  if (playbook && nextStep) {
+    const boundary = nextStep.executionBoundary.requiresApproval
+      ? nextStep.executionBoundary.summary
+      : nextStep.executionBoundary.mutationCapable || nextStep.executionBoundary.commandCapable
+        ? `${nextStep.executionBoundary.summary}; preview only until approved.`
+        : nextStep.executionBoundary.summary || 'Read-only or preview-only next step.';
+    return {
+      visible: true,
+      actionLabel: sanitizeAoiAcceptanceDashboardText(
+        playbook.nextRequiredDecision || nextStep.summary,
+        220,
+      ),
+      sourceLabel: sanitizeAoiAcceptanceDashboardText(`playbook:${playbook.id}`, 120),
+      boundaryLabel: sanitizeAoiAcceptanceDashboardText(boundary, 220),
+      blockedReasonLabels: uniqueDashboardLabels(
+        [...playbook.blockedReasons, ...nextStep.blockedReasons],
+        6,
+      ),
+      evidenceRefs: dashboardRefs([
+        `playbook:${playbook.id}`,
+        ...playbook.evidenceRefs,
+        ...nextStep.evidenceRefs,
+      ]),
+    };
+  }
+  if (input.workspaceSnapshot) {
+    const recommendation = getAoiWorkspaceRecommendation(input.workspaceSnapshot);
+    return {
+      visible: recommendation.recommendationTone === 'recommendation',
+      actionLabel: sanitizeAoiAcceptanceDashboardText(recommendation.recommendationLabel, 180),
+      sourceLabel: 'workspace signal',
+      boundaryLabel:
+        'Dashboard can only recommend or prepare a preview; it does not run validation.',
+      blockedReasonLabels: [],
+      evidenceRefs: dashboardRefs(input.workspaceSnapshot.evidenceRefs),
+    };
+  }
+  const digestItem = input.digest?.items.find((item) => !item.hidden && item.nextSafeAction);
+  if (digestItem) {
+    return {
+      visible: true,
+      actionLabel: sanitizeAoiAcceptanceDashboardText(digestItem.nextSafeAction, 180),
+      sourceLabel: sanitizeAoiAcceptanceDashboardText(digestItem.sourceRefs.join(', '), 140),
+      boundaryLabel:
+        'Digest recommendation is display-only until the user approves a concrete action.',
+      blockedReasonLabels: [],
+      evidenceRefs: dashboardRefs(digestItem.evidenceRefs),
+    };
+  }
+  return {
+    visible: false,
+    actionLabel: 'No safe next action',
+    sourceLabel: 'No source selected',
+    boundaryLabel: 'Dashboard display only; no execution authority.',
+    blockedReasonLabels: [],
+    evidenceRefs: [],
+  };
+}
+
+function buildAoiWhyQuietPanel(input: AoiOperatorAcceptanceDashboardInput): AoiWhyQuietPanel {
+  const shadowQuiet = input.shadowReport?.decisions.filter(
+    (decision) => decision.kind === 'would_stay_quiet',
+  );
+  const shadowLabels =
+    shadowQuiet?.map(
+      (decision) => `${decision.silenceReason ?? 'Aoi stayed quiet.'} (${decision.policyResult})`,
+    ) ?? [];
+  const digestHidden =
+    input.digest?.items
+      .filter((item) => item.hidden || item.lane === 'hidden_by_quiet_mode')
+      .map((item) => `${item.title}: ${item.summary}`) ?? [];
+  const quietWindow = input.digest?.quietWindow?.enabled
+    ? [`Quiet mode: ${input.digest.quietWindow.reason}`]
+    : [];
+  const labels = uniqueDashboardLabels([...shadowLabels, ...digestHidden, ...quietWindow], 6);
+
+  return {
+    visible: labels.length > 0,
+    reasonLabels: labels.length > 0 ? labels : ['No quiet suppression recorded'],
+    quietDecisionRefs: dashboardRefs(
+      shadowQuiet?.map((decision) => `shadow-decision:${decision.id}`) ?? [],
+    ),
+    evidenceRefs: dashboardRefs([
+      ...(shadowQuiet?.flatMap((decision) => decision.evidenceRefs) ?? []),
+      ...(input.digest?.items
+        .filter((item) => item.hidden || item.lane === 'hidden_by_quiet_mode')
+        .flatMap((item) => item.evidenceRefs) ?? []),
+    ]),
+  };
+}
+
+function buildAoiPendingApprovalPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiPendingApprovalPanel {
+  const digestApprovals =
+    input.digest?.approvalInbox.map(
+      (item) =>
+        `${item.title}: ${item.exactNextAction} (${item.risk}, ${item.requiredAutonomyLevel})`,
+    ) ?? [];
+  const commandApprovals =
+    input.approvedCommandPolicies?.map(
+      (policy) =>
+        `${policy.allowed ? 'command preview' : 'blocked command'}: ${
+          policy.displayCommand
+        }; cwd=${policy.cwdLabel}; fingerprint=${policy.approvalFingerprint}`,
+    ) ?? [];
+  const playbookApprovals =
+    input.playbooks?.flatMap((playbook) =>
+      playbook.steps
+        .filter(
+          (step) =>
+            step.status === 'waiting_for_approval' || step.executionBoundary.requiresApproval,
+        )
+        .map((step) => `${playbook.title}: ${step.title}; ${step.executionBoundary.summary}`),
+    ) ?? [];
+  const labels = uniqueDashboardLabels(
+    [...digestApprovals, ...commandApprovals, ...playbookApprovals],
+    8,
+  );
+  const boundaryLabels = uniqueDashboardLabels(
+    [
+      ...(input.digest?.approvalInbox.map((item) => item.boundary) ?? []),
+      ...(input.approvedCommandPolicies?.map(
+        (policy) =>
+          `cwd=${policy.cwdLabel}; fingerprint=${policy.approvalFingerprint}; ${policy.rationale.join('; ')}`,
+      ) ?? []),
+      ...(input.playbooks?.flatMap((playbook) =>
+        playbook.steps
+          .filter(
+            (step) =>
+              step.status === 'waiting_for_approval' || step.executionBoundary.requiresApproval,
+          )
+          .map((step) => step.executionBoundary.summary),
+      ) ?? []),
+    ],
+    8,
+  );
+
+  return {
+    visible: labels.length > 0,
+    approvalLabels: labels,
+    boundaryLabels,
+    riskLabels: uniqueDashboardLabels(
+      [
+        ...(input.digest?.approvalInbox.map(
+          (item) => `${item.risk} risk ${item.requiredAutonomyLevel}`,
+        ) ?? []),
+        ...(input.approvedCommandPolicies?.map((policy) => `${policy.risk} risk L5`) ?? []),
+      ],
+      6,
+    ),
+    evidenceRefs: dashboardRefs([
+      ...(input.digest?.approvalInbox.flatMap((item) => [
+        `proposal:${item.proposalId}`,
+        ...item.evidenceRefs,
+      ]) ?? []),
+      ...(input.approvedCommandPolicies?.map(
+        (policy) => `command-approval:${policy.approvalFingerprint}`,
+      ) ?? []),
+      ...(input.playbooks?.flatMap((playbook) => [
+        `playbook:${playbook.id}`,
+        ...playbook.evidenceRefs,
+      ]) ?? []),
+    ]),
+  };
+}
+
+function buildAoiReplayHealthPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiReplayHealthPanel {
+  const replayReports = input.builtInReplayReports ?? [];
+  const replayFailed = replayReports.filter((report) => !report.passed);
+  const builtInReplayLabel =
+    replayReports.length > 0
+      ? `${replayReports.length - replayFailed.length}/${replayReports.length} built-in replay passed`
+      : 'No built-in replay report';
+  const jarvis = input.jarvisAcceptanceReport;
+  const jarvisLabel = jarvis
+    ? `${jarvis.passedMetricCount}/${jarvis.metricCount} JARVIS acceptance metrics passed`
+    : 'No JARVIS acceptance report';
+  const shadow = input.shadowReport;
+  const shadowLabel = shadow
+    ? `${shadow.metrics.labeledDecisionCount}/${shadow.metrics.totalDecisions} shadow decisions labeled; useful ${shadow.metrics.usefulRate}; wrong source ${shadow.metrics.wrongSourceRate}`
+    : 'No shadow label report';
+  const failedMetricIds = uniqueDashboardLabels(
+    [
+      ...replayReports.flatMap((report) =>
+        report.metrics.filter((metric) => !metric.passed).map((metric) => metric.id),
+      ),
+      ...(jarvis?.failedMetrics.map((metric) => metric.id) ?? []),
+      ...(shadow
+        ? [
+            ...(shadow.metrics.unsafeShadowDecisionCount > 0 ? ['shadow.unsafe'] : []),
+            ...(shadow.metrics.wrongSourceRate > 0 ? ['shadow.wrong_source'] : []),
+            ...(shadow.metrics.tooMuchRate > 0 ? ['shadow.too_much'] : []),
+          ]
+        : []),
+    ],
+    10,
+  );
+  const promotedFixtureLabels = uniqueDashboardLabels(
+    input.promotedFixtureCandidates?.map(
+      (candidate) => `${candidate.status}: ${candidate.label} (${candidate.id})`,
+    ) ?? [],
+    5,
+  );
+  const failedCount = failedMetricIds.length;
+
+  return {
+    visible: Boolean(replayReports.length || jarvis || shadow || promotedFixtureLabels.length),
+    statusLabel:
+      failedCount > 0 ? `${failedCount} replay issue(s)` : 'Replay health passing or unavailable',
+    builtInReplayLabel: sanitizeAoiAcceptanceDashboardText(builtInReplayLabel, 140),
+    jarvisAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(jarvisLabel, 160),
+    shadowLabel: sanitizeAoiAcceptanceDashboardText(shadowLabel, 180),
+    failedMetricIds,
+    promotedFixtureLabels,
+    evidenceRefs: dashboardRefs([
+      ...replayReports.flatMap((report) => report.metrics.flatMap((metric) => metric.evidenceRefs)),
+      ...(jarvis?.evidenceRefs ?? []),
+      ...(shadow?.evidenceRefs ?? []),
+      ...(input.promotedFixtureCandidates?.flatMap((candidate) => candidate.evidenceRefs) ?? []),
+    ]),
+  };
+}
+
+export function buildAoiOperatorAcceptanceDashboard(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiOperatorAcceptanceDashboard {
+  const currentBrief = buildAoiCurrentBriefPanel(input);
+  const blindSpots = buildAoiBlindSpotsPanel(input);
+  const nextSafeAction = buildAoiNextSafeActionPanel(input);
+  const whyQuiet = buildAoiWhyQuietPanel(input);
+  const pendingApproval = buildAoiPendingApprovalPanel(input);
+  const replayHealth = buildAoiReplayHealthPanel(input);
+  const evidenceRefs = dashboardRefs([
+    ...currentBrief.evidenceRefs,
+    ...blindSpots.evidenceRefs,
+    ...nextSafeAction.evidenceRefs,
+    ...whyQuiet.evidenceRefs,
+    ...pendingApproval.evidenceRefs,
+    ...replayHealth.evidenceRefs,
+  ]);
+
+  return {
+    version: 1,
+    sessionPath: sanitizeAoiAcceptanceDashboardText(input.sessionPath, 160),
+    generatedAt: input.now ?? Date.now(),
+    answerLabel: 'Why did Aoi judge the situation this way?',
+    currentBrief,
+    blindSpots,
+    nextSafeAction,
+    whyQuiet,
+    pendingApproval,
+    replayHealth,
+    evidenceRefs,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
   };
 }
 

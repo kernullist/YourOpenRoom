@@ -18,6 +18,7 @@ import {
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
   buildAoiOperatorDigestPanelSummary,
+  buildAoiOperatorAcceptanceDashboard,
   buildAoiOperatorTimelinePanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
@@ -36,6 +37,11 @@ import {
 } from '../aoiAutonomyUi';
 import { evaluateAoiOperatorHealth } from '../aoiOperatorHealth';
 import { buildAoiOperatorDigest } from '../aoiOperatorDigest';
+import {
+  appendAoiShadowDecisionLabel,
+  evaluateAoiShadowDecisions,
+  recordAoiShadowDecisions,
+} from '../aoiShadowModeEvaluation';
 import {
   buildAoiOperatorVoiceEventFromDigest,
   buildAoiOperatorVoiceSummary,
@@ -2034,6 +2040,307 @@ describe('Aoi autonomy UI helpers', () => {
     expect(panelSummary.eventLabels[0]).toContain('digest item surfaced');
     expect(panelSummary.exportLabel).toContain('1970-01-01T00:00:04.500Z');
     expect(panelSummary.redactionLabel).toBe('3 privacy replacements');
+  });
+
+  it('builds an acceptance dashboard with all six panels and stable empty states', () => {
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      now: 5000,
+    });
+
+    expect(dashboard).toMatchObject({
+      version: 1,
+      sessionPath: 'aoi/default',
+      answerLabel: 'Why did Aoi judge the situation this way?',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(dashboard.currentBrief).toMatchObject({
+      visible: false,
+      missionLabel: 'No mission focus yet',
+      validationLabel: 'Validation unknown',
+    });
+    expect(dashboard.blindSpots.statusLabel).toBe('No known blind spots');
+    expect(dashboard.nextSafeAction.boundaryLabel).toContain('no execution authority');
+    expect(dashboard.whyQuiet.reasonLabels).toEqual(['No quiet suppression recorded']);
+    expect(dashboard.pendingApproval.visible).toBe(false);
+    expect(dashboard.replayHealth.builtInReplayLabel).toBe('No built-in replay report');
+  });
+
+  it('shows disabled personal sources as blind spots without inferred private content', () => {
+    const registry = makeEnvironmentSourceRegistry({
+      sources: [
+        {
+          version: 1,
+          id: 'gmail-metadata',
+          kind: 'gmail_metadata',
+          label: 'Gmail metadata for private-roadmap@example.com',
+          enabled: false,
+          scope: 'session',
+          risk: 'medium',
+          allowedOperations: ['read_metadata'],
+          privateByDefault: true,
+          quietModeBehavior: 'record_only',
+          consentReason: 'Do not leak the mail body.',
+          updatedAt: 5000,
+        },
+      ],
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      sourceRegistry: registry,
+      now: 6000,
+    });
+    const serialized = JSON.stringify(dashboard);
+
+    expect(dashboard.blindSpots.visible).toBe(true);
+    expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain('Gmail metadata');
+    expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain('disabled source');
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('Do not leak the mail body');
+    expect(serialized).not.toContain('mail body.');
+  });
+
+  it('explains quiet suppression from shadow decisions and digest evidence', () => {
+    const digest = {
+      version: 1 as const,
+      sessionPath: 'aoi/default',
+      generatedAt: 6000,
+      summary: 'A low-value FYI was suppressed.',
+      quietWindow: {
+        version: 1 as const,
+        enabled: true,
+        reason: 'Recent too-much feedback suppresses similar FYI updates.',
+        startedAt: 5500,
+        hiddenLane: 'hidden_by_quiet_mode' as const,
+      },
+      items: [
+        {
+          version: 1 as const,
+          id: 'digest-quiet-dashboard',
+          kind: 'source_change' as const,
+          lane: 'hidden_by_quiet_mode' as const,
+          title: 'FYI suppressed',
+          summary: 'A low-value FYI matched recent too-much feedback.',
+          nextSafeAction: 'Stay quiet and keep the evidence in the dashboard.',
+          risk: 'low' as const,
+          relevance: 0.3,
+          createdAt: 6000,
+          dedupeKey: 'quiet-dashboard-too-much',
+          sourceRefs: ['digest:fyi'],
+          evidenceRefs: ['feedback:too-much-dashboard'],
+          hidden: true,
+        },
+      ],
+      approvalInbox: [],
+      laneCounts: {
+        critical_user_blocking: 0,
+        needs_approval: 0,
+        mission_update: 0,
+        fyi: 0,
+        hidden_by_quiet_mode: 1,
+      },
+      hiddenItemCount: 1,
+      evidenceRefs: ['feedback:too-much-dashboard'],
+    };
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const shadowReport = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      digest,
+      shadowReport,
+      now: 8000,
+    });
+
+    expect(dashboard.whyQuiet.visible).toBe(true);
+    const quietReasons = dashboard.whyQuiet.reasonLabels.join(' ').toLowerCase();
+    expect(quietReasons).toContain('quiet');
+    expect(quietReasons).toContain('too-much');
+    expect(dashboard.whyQuiet.quietDecisionRefs[0]).toContain('shadow-decision:');
+    expect(dashboard.whyQuiet.evidenceRefs).toContain('feedback:too-much-dashboard');
+  });
+
+  it('preserves pending approval boundaries with cwd, risk, and command fingerprint', () => {
+    const request = createAoiApprovedCommandRequest({
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-dashboard-command',
+      decisionId: 'decision-dashboard-command',
+      command: 'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+      cwd: 'apps/webuiapps',
+      purpose: 'Validate the acceptance dashboard summary.',
+      risk: 'high',
+      timeoutMs: 120000,
+      requestedAt: 6000,
+      evidenceRefs: ['proposal:proposal-dashboard-command'],
+    });
+    const policy = evaluateAoiApprovedCommandPolicy(request);
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      approvedCommandPolicies: [policy],
+      now: 7000,
+    });
+
+    expect(dashboard.pendingApproval.visible).toBe(true);
+    expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
+      policy.approvalFingerprint,
+    );
+    expect(dashboard.pendingApproval.boundaryLabels.join(' ')).toContain(policy.cwdLabel);
+    expect(dashboard.pendingApproval.boundaryLabels.join(' ')).toContain(
+      policy.approvalFingerprint,
+    );
+    expect(dashboard.pendingApproval.riskLabels).toContain('high risk L5');
+    expect(dashboard.actionAuthority).toBe('display_only');
+    expect(dashboard.mutationCount).toBe(0);
+  });
+
+  it('summarizes replay health failures by metric id without long snapshots', () => {
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 6000,
+      attentionEvents: [
+        makeAttentionEvent({
+          id: 'attention-replay-dashboard-test',
+          sourceRef: 'browser-context',
+          sourceSignature: 'browser-context',
+          evidenceRefs: ['environment-source:browser-context'],
+          dedupeKey: 'attention:replay-dashboard',
+        }),
+      ],
+    });
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decisions[0]?.id ?? '',
+      label: 'wrong_source',
+      evidenceRefs: ['shadow-review:wrong-source-dashboard'],
+      now: 6500,
+    });
+    const shadowReport = evaluateAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      decisions,
+      labels,
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      builtInReplayReports: [
+        {
+          version: 1,
+          fixtureId: 'dashboard-replay-failure',
+          title: 'Dashboard replay failure',
+          sessionPath: 'aoi/replay',
+          generatedAt: 6000,
+          passed: false,
+          summary: 'A replay expectation failed.',
+          metrics: [
+            {
+              version: 1,
+              id: 'replay.source_selected.dashboard',
+              name: 'source_selected',
+              label: 'Expected selected source.',
+              passed: false,
+              expected: 'workspace',
+              actual: 'browser',
+              evidenceRefs: ['replay:dashboard-replay-failure'],
+            },
+          ],
+          selectedSourceLabels: [],
+          attentionDecisionLabels: [],
+          generatedProposalLabels: [],
+          blockedReasonLabels: [],
+          preferenceConflictLabels: [],
+          digestSummary: '',
+          commandExecutionCount: 0,
+          mutationAttemptCount: 0,
+        },
+      ],
+      jarvisAcceptanceReport: {
+        version: 1,
+        id: 'jarvis-dashboard-report',
+        sessionPath: 'aoi/default',
+        generatedAt: 6000,
+        passed: false,
+        scenarioCount: 1,
+        metricCount: 1,
+        passedMetricCount: 0,
+        failedMetricCount: 1,
+        mutationCount: 0,
+        scenarios: [
+          {
+            version: 1,
+            id: 'jarvis-dashboard-scenario',
+            title: 'Dashboard scenario',
+            passed: false,
+            actualSummary: 'Failed source expectation.',
+            evidenceRefs: ['jarvis:dashboard'],
+            privacyState: 'synthetic',
+            mutationCount: 0,
+            failedMetricIds: ['jarvis.dashboard.metric'],
+          },
+        ],
+        metrics: [
+          {
+            version: 1,
+            id: 'jarvis.dashboard.metric',
+            scenarioId: 'jarvis-dashboard-scenario',
+            dimension: 'context_awareness',
+            passed: false,
+            actualSummary: 'Very long actual summary should not appear in the dashboard.',
+            evidenceRefs: ['jarvis:dashboard'],
+            privacyState: 'synthetic',
+            mutationCount: 0,
+          },
+        ],
+        failedMetrics: [
+          {
+            version: 1,
+            id: 'jarvis.dashboard.metric',
+            scenarioId: 'jarvis-dashboard-scenario',
+            dimension: 'context_awareness',
+            passed: false,
+            actualSummary: 'Very long actual summary should not appear in the dashboard.',
+            evidenceRefs: ['jarvis:dashboard'],
+            privacyState: 'synthetic',
+            mutationCount: 0,
+          },
+        ],
+        evidenceRefs: ['jarvis:dashboard'],
+      },
+      shadowReport,
+      promotedFixtureCandidates: [
+        {
+          id: 'trace-dashboard-candidate',
+          label: 'Wrong source dashboard trace',
+          status: 'candidate',
+          evidenceRefs: ['trace:dashboard-candidate'],
+        },
+      ],
+      now: 8000,
+    });
+    const replayHealthJson = JSON.stringify(dashboard.replayHealth);
+
+    expect(dashboard.replayHealth.visible).toBe(true);
+    expect(dashboard.replayHealth.failedMetricIds).toEqual([
+      'replay.source_selected.dashboard',
+      'jarvis.dashboard.metric',
+      'shadow.wrong_source',
+    ]);
+    expect(dashboard.replayHealth.promotedFixtureLabels[0]).toContain(
+      'Wrong source dashboard trace',
+    );
+    expect(replayHealthJson).not.toContain('Very long actual summary');
+    expect(replayHealthJson.length).toBeLessThan(1400);
   });
 
   it('summarizes scheduler wakeups and limits skipped source noise', () => {
