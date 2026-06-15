@@ -4,6 +4,7 @@ import type { Plugin } from 'vite';
 import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
+import { resetAoiTrustCalibrationCategory } from './aoiTrustCalibrationStore';
 import {
   activateAoiGoalFromProposal,
   applyAoiGoalDecision,
@@ -53,6 +54,7 @@ import {
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
 import type {
+  AoiCalibrationDimension,
   AoiAutonomyTickReason,
   AoiAutonomyWakeupBudget,
   AoiOperatorTimelineEventKind,
@@ -154,6 +156,19 @@ function isAoiOperatorTimelineEventKind(value: unknown): value is AoiOperatorTim
     value === 'operator_voice_decision' ||
     value === 'wakeup_recorded' ||
     value === 'trace_exported'
+  );
+}
+
+function isAoiCalibrationDimension(value: unknown): value is AoiCalibrationDimension {
+  return (
+    value === 'source_kind' ||
+    value === 'trigger_kind' ||
+    value === 'action_kind' ||
+    value === 'risk_level' ||
+    value === 'notification_lane' ||
+    value === 'voice_category' ||
+    value === 'interruption_gap' ||
+    value === 'feedback_category'
   );
 }
 
@@ -363,6 +378,46 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'POST' && route === '/calibration/reset') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (!isAoiCalibrationDimension(body.dimension)) {
+        writeJson(res, 400, {
+          error: 'Invalid calibration dimension.',
+          code: 'invalid_calibration_dimension',
+        });
+        return true;
+      }
+      const key = typeof body.key === 'string' ? body.key.trim() : '';
+      if (!key) {
+        writeJson(res, 400, {
+          error: 'Calibration key is required.',
+          code: 'invalid_calibration_key',
+        });
+        return true;
+      }
+      const reset = resetAoiTrustCalibrationCategory({
+        sessionsDir,
+        sessionPath,
+        dimension: body.dimension,
+        key,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        reset,
+        evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
+      });
+      return true;
+    }
+
     if (req.method === 'GET' && route === '/mission') {
       const sessionPath = getSessionPathFromUrl(url);
       if (!sessionPath) {
@@ -435,7 +490,7 @@ async function handleAoiAutonomyRequest(
       const context = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
-        configFile: options.configFile,
+        configFile,
         latestUserMessage,
       });
       writeJson(res, 200, {
@@ -632,7 +687,7 @@ async function handleAoiAutonomyRequest(
       const routerContext = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
-        configFile: options.configFile,
+        configFile,
       });
       recordAoiTimelineBestEffort(() => {
         for (const event of buildAoiContextRouterTimelineEvents(routerContext)) {
@@ -674,7 +729,7 @@ async function handleAoiAutonomyRequest(
         const routerContext = buildAoiContextRouterResult({
           sessionsDir,
           sessionPath,
-          configFile: options.configFile,
+          configFile,
         });
         recordAoiTimelineBestEffort(() => {
           recordAoiOperatorTimelineEvent(sessionsDir, {

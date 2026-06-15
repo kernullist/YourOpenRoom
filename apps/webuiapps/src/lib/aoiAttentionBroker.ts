@@ -3,6 +3,7 @@ import { createAoiObservation } from './aoiAutonomyObserver';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import { createAoiAutonomyId } from './aoiAutonomyStore';
+import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import type {
   AoiAttentionBrokerDecision,
@@ -17,6 +18,7 @@ import type {
   AoiObservation,
   AoiProposal,
   AoiProposalDecision,
+  AoiTrustCalibrationProfile,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
@@ -39,6 +41,7 @@ export interface AoiAttentionBrokerInput {
   quietMode?: boolean;
   userIdleMs?: number;
   maxActionableEvents?: number;
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
 }
 
 export interface AoiAttentionBrokerResult {
@@ -405,8 +408,36 @@ function hasRecentNegativeFeedback(
         decision.feedbackCategory === 'not_useful' ||
         decision.feedbackCategory === 'unsafe' ||
         decision.feedbackCategory === 'wrong_memory' ||
-        decision.feedbackCategory === 'wrong_evidence'),
+        decision.feedbackCategory === 'wrong_evidence' ||
+        decision.feedbackCategory === 'wrong_source'),
   );
+}
+
+function sourceKindFromRef(ref: string): string | undefined {
+  if (ref.startsWith('research:')) {
+    return 'research_runs';
+  }
+  if (ref.startsWith('workspace:')) {
+    return ref.includes('validation') || ref.includes('build')
+      ? 'workspace_build'
+      : 'workspace_git';
+  }
+  if (ref.startsWith('memory:') || ref.startsWith('kira:')) {
+    return 'kira_board';
+  }
+  if (ref.startsWith('browser:') || ref.includes('browser-context')) {
+    return 'browser_context';
+  }
+  if (ref.includes('calendar')) {
+    return 'calendar_metadata';
+  }
+  if (ref.includes('gmail')) {
+    return 'gmail_metadata';
+  }
+  if (ref.includes('notes')) {
+    return 'notes_metadata';
+  }
+  return undefined;
 }
 
 function eventTouchesMission(event: AoiAttentionEvent, mission?: AoiMissionState | null): boolean {
@@ -426,7 +457,10 @@ function eventTouchesMission(event: AoiAttentionEvent, mission?: AoiMissionState
 
 export function scoreAoiAttentionEvent(
   event: AoiAttentionEvent,
-  params: Pick<AoiAttentionBrokerInput, 'now' | 'recentDecisions' | 'activeProposals' | 'mission'>,
+  params: Pick<
+    AoiAttentionBrokerInput,
+    'now' | 'recentDecisions' | 'activeProposals' | 'mission' | 'trustCalibrationProfile'
+  >,
 ): number {
   let score =
     event.suggestedAttentionLevel === 'direct'
@@ -469,6 +503,23 @@ export function scoreAoiAttentionEvent(
   }
   if (event.risk === 'high') {
     score -= 0.35;
+  }
+  const calibration = applyAoiTrustCalibration({
+    profile: params.trustCalibrationProfile,
+    triggerKind: event.kind,
+    sourceKind: sourceKindFromRef(event.sourceRef),
+    risk: event.risk,
+    score,
+  });
+  score +=
+    calibration.rankingAdjustment +
+    calibration.interruptionAdjustment -
+    calibration.sourceSelectionPenalty;
+  if (calibration.suppress && event.kind !== 'kira_needs_clarification') {
+    score = Math.min(
+      score,
+      (params.trustCalibrationProfile?.interruptionPolicy.suppressThreshold ?? 0.24) - 0.01,
+    );
   }
 
   return Math.min(1, Math.max(0, Number(score.toFixed(3))));

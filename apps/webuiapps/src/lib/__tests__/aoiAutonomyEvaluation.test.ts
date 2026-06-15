@@ -13,6 +13,7 @@ import {
   runBuiltInAoiOperatorReplayFixtures,
 } from '../aoiOperatorReplay';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
+import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiOperatorTraceExport, AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 
@@ -360,5 +361,149 @@ describe('Aoi autonomy evaluation', () => {
     expect(draft.fixture.inputEvents[0].kind).not.toBe('proposal_decision');
     expect(draftJson).not.toContain('proposal_decision');
     expect(draft.warnings.join(' ')).toContain('does not execute shell commands');
+  });
+
+  it('calibrates interruption and source trust from feedback without uncapped promotion', () => {
+    const tooMuchProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      proposals: [feedbackMemoryProposalFixture],
+      decisions: [
+        makeFeedbackDecisionFixture({
+          id: 'decision-too-much-calibration',
+          action: 'snooze',
+          feedbackCategory: 'too_much',
+          proposalTrigger: 'research_outcome',
+          createdAt: 3000,
+        }),
+      ],
+      now: 5000,
+    });
+    const suppressed = applyAoiTrustCalibration({
+      profile: tooMuchProfile,
+      triggerKind: 'research_outcome',
+      score: 0.5,
+    });
+
+    expect(suppressed.suppress).toBe(true);
+    expect(suppressed.interruptionAdjustment).toBeLessThanOrEqual(-0.28);
+
+    const wrongSourceProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      proposals: [feedbackMemoryProposalFixture],
+      decisions: [],
+      contextFeedback: [
+        {
+          version: 1,
+          id: 'context-feedback-wrong-source',
+          sessionPath: 'aoi/default',
+          sourceId: 'research-runs',
+          feedbackCategory: 'wrong_source',
+          evidenceRefs: ['research:aoi-research-old-001'],
+          createdAt: 3500,
+        },
+      ],
+      now: 5000,
+    });
+    const sourcePenalty = applyAoiTrustCalibration({
+      profile: wrongSourceProfile,
+      sourceKind: 'research_runs',
+      score: 0.8,
+    });
+
+    expect(sourcePenalty.sourceSelectionPenalty).toBeGreaterThanOrEqual(0.3);
+    expect(wrongSourceProfile.negativeSources[0]).toMatchObject({
+      sourceKind: 'research_runs',
+    });
+
+    const acceptedDecisions = Array.from({ length: 8 }, (_, index) =>
+      makeFeedbackDecisionFixture({
+        id: `decision-useful-cap-${index}`,
+        action: 'accept',
+        nextStatus: 'accepted',
+        feedbackCategory: 'useful',
+        proposalTrigger: 'research_followup',
+        createdAt: 4000 + index,
+      }),
+    );
+    const positiveProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      proposals: [feedbackMemoryProposalFixture],
+      decisions: acceptedDecisions,
+      now: 5000,
+    });
+    const positive = applyAoiTrustCalibration({
+      profile: positiveProfile,
+      triggerKind: 'research_followup',
+      actionKind: 'read_research_artifact',
+      risk: 'low',
+      score: 0.5,
+    });
+
+    expect(positive.rankingAdjustment).toBeLessThanOrEqual(
+      positiveProfile.interruptionPolicy.positiveLearningCap,
+    );
+    expect(positive.suppress).toBe(false);
+  });
+
+  it('blocks replay-failed promotion and reset returns a category to default', () => {
+    const replayBlockedProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      proposals: [feedbackMemoryProposalFixture],
+      decisions: [
+        makeFeedbackDecisionFixture({
+          id: 'decision-accepted-replay-failed',
+          action: 'accept',
+          nextStatus: 'accepted',
+          feedbackCategory: 'useful',
+          proposalTrigger: 'research_followup',
+          createdAt: 3000,
+        }),
+      ],
+      replayFailures: [{ key: 'trigger:research_followup' }],
+      now: 5000,
+    });
+    const replayBlocked = applyAoiTrustCalibration({
+      profile: replayBlockedProfile,
+      triggerKind: 'research_followup',
+      score: 0.5,
+    });
+
+    expect(replayBlocked.rankingAdjustment).toBe(0);
+    expect(replayBlockedProfile.recentChanges.some((item) => item.replayBlocked)).toBe(true);
+
+    const resetProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      proposals: [feedbackMemoryProposalFixture],
+      decisions: [
+        makeFeedbackDecisionFixture({
+          id: 'decision-too-much-reset',
+          action: 'snooze',
+          feedbackCategory: 'too_much',
+          proposalTrigger: 'research_outcome',
+          createdAt: 3000,
+        }),
+      ],
+      resets: [
+        {
+          version: 1,
+          dimension: 'trigger_kind',
+          key: 'research_outcome',
+          resetAt: 4000,
+        },
+      ],
+      now: 5000,
+    });
+    const afterReset = applyAoiTrustCalibration({
+      profile: resetProfile,
+      triggerKind: 'research_outcome',
+      score: 0.5,
+    });
+
+    expect(afterReset.suppress).toBe(false);
+    expect(afterReset.interruptionAdjustment).toBe(0);
+    expect(resetProfile.resetCategories[0]).toMatchObject({
+      dimension: 'trigger_kind',
+      key: 'research_outcome',
+    });
   });
 });

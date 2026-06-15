@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { DEFAULT_AOI_AUTONOMY_POLICY, checkAoiProposalPolicy } from '../aoiAutonomyPolicy';
 import { loadAoiActiveGoals, saveAoiActiveGoals } from '../aoiAutonomyGoals';
 import {
   runAoiAutonomyBackgroundTick,
@@ -28,6 +29,7 @@ import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
+import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type {
   AoiGoal,
   AoiAutonomyTickResult,
@@ -897,6 +899,66 @@ describe('runAoiAutonomyTick()', () => {
     );
     expect(loadAoiActiveProposals(root, SESSION_PATH)).toEqual([]);
   });
+
+  it('keeps high-risk proposals approval-gated despite positive trust calibration', () => {
+    const proposal = makeProposal({
+      id: 'proposal-high-risk-positive-calibration',
+      trigger: 'research_followup',
+      risk: 'high',
+      requiredAutonomyLevel: 'L5',
+      requiresUserApproval: false,
+      suggestedTools: ['read_research_artifact'],
+      evidenceRefs: ['research:aoi-research-done-001/report'],
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: {
+          runId: 'aoi-research-done-001',
+          artifact: 'report',
+        },
+      },
+    });
+    const trustCalibrationProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: SESSION_PATH,
+      proposals: [proposal],
+      decisions: Array.from({ length: 8 }, (_, index) =>
+        makeDecision({
+          id: `decision-positive-high-risk-${index}`,
+          proposalId: proposal.id,
+          cooldownKey: proposal.cooldownKey,
+          action: 'accept',
+          nextStatus: 'accepted',
+          feedbackCategory: 'useful',
+          proposalTrigger: proposal.trigger,
+          proposalRisk: proposal.risk,
+          actionKind: proposal.acceptAction?.kind,
+          suggestedTools: proposal.suggestedTools,
+          evidenceRefs: proposal.evidenceRefs,
+          createdAt: NOW - 10_000 + index,
+        }),
+      ),
+      now: NOW,
+    });
+    const policyResult = checkAoiProposalPolicy({
+      policy: {
+        ...DEFAULT_AOI_AUTONOMY_POLICY,
+        enabled: true,
+        previewMode: true,
+        level: 'L5',
+        requireApprovalForHighRisk: true,
+      },
+      proposal,
+      trustCalibrationProfile,
+      now: NOW,
+    });
+
+    expect(policyResult.allowed).toBe(false);
+    expect(policyResult.reasons).toContain('high_risk_requires_approval');
+    expect(
+      trustCalibrationProfile.triggerCalibrations.find(
+        (item) => item.triggerKind === 'research_followup',
+      )?.usefulnessScore,
+    ).toBeLessThanOrEqual(trustCalibrationProfile.interruptionPolicy.positiveLearningCap);
+  });
 });
 
 describe('runAoiAutonomyBackgroundTick()', () => {
@@ -1326,8 +1388,28 @@ describe('runAoiAutonomyBackgroundTick()', () => {
       ],
       now: NOW,
     });
+    const wrongSource = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'notes 상태를 봐줘',
+      contextFeedback: [
+        {
+          version: 1,
+          id: 'ctx-feedback-wrong-source',
+          sessionPath: SESSION_PATH,
+          sourceId: 'notes-metadata',
+          feedbackCategory: 'wrong_source',
+          evidenceRefs: ['personal-signal:notes_metadata'],
+          createdAt: NOW - 1000,
+        },
+      ],
+      now: NOW,
+    });
     const baseNotes = base.candidateSources.find((source) => source.sourceId === 'notes-metadata');
     const penalizedNotes = penalized.candidateSources.find(
+      (source) => source.sourceId === 'notes-metadata',
+    );
+    const wrongSourceNotes = wrongSource.candidateSources.find(
       (source) => source.sourceId === 'notes-metadata',
     );
 
@@ -1335,6 +1417,8 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     expect(penalizedNotes).toBeDefined();
     expect(penalizedNotes?.relevanceScore).toBeLessThan(baseNotes?.relevanceScore ?? 0);
     expect(penalizedNotes?.scoreReasons.join(' ')).toContain('too_much');
+    expect(wrongSourceNotes?.relevanceScore).toBeLessThan(baseNotes?.relevanceScore ?? 0);
+    expect(wrongSourceNotes?.scoreReasons.join(' ')).toContain('wrong_source');
   });
 
   it('updates mission state silently for stale active-goal waiting events', async () => {

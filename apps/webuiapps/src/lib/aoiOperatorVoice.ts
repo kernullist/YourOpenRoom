@@ -1,4 +1,5 @@
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 import type {
   AoiDigestItem,
   AoiMissionState,
@@ -7,6 +8,7 @@ import type {
   AoiOperatorVoiceEventCategory,
   AoiOperatorVoicePolicy,
   AoiProposalDecision,
+  AoiTrustCalibrationProfile,
   AoiVoiceInterruptionLevel,
   AoiVoiceQuietWindow,
   AoiVoiceRenderDecision,
@@ -37,6 +39,7 @@ const NEGATIVE_VOICE_FEEDBACK = new Set([
   'dismiss',
   'not_useful',
   'wrong_evidence',
+  'wrong_source',
   'wrong_timing',
   'too_frequent',
   'too_much',
@@ -89,6 +92,7 @@ export interface AoiOperatorVoiceDecisionInput {
   mutedForSession?: boolean;
   previousSpokenDedupeKeys?: Iterable<string>;
   recentDecisions?: AoiProposalDecision[];
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   now?: number;
 }
 
@@ -373,6 +377,33 @@ function feedbackSuppressesEvent(
   });
 }
 
+function sourceKindFromRefs(refs: string[]): string | undefined {
+  if (refs.some((ref) => ref.startsWith('research:'))) {
+    return 'research_runs';
+  }
+  if (refs.some((ref) => ref.startsWith('workspace:'))) {
+    return refs.some((ref) => ref.includes('validation') || ref.includes('build'))
+      ? 'workspace_build'
+      : 'workspace_git';
+  }
+  if (refs.some((ref) => ref.startsWith('memory:') || ref.startsWith('kira:'))) {
+    return 'kira_board';
+  }
+  if (refs.some((ref) => ref.startsWith('browser:') || ref.includes('browser-context'))) {
+    return 'browser_context';
+  }
+  if (refs.some((ref) => ref.includes('calendar'))) {
+    return 'calendar_metadata';
+  }
+  if (refs.some((ref) => ref.includes('gmail'))) {
+    return 'gmail_metadata';
+  }
+  if (refs.some((ref) => ref.includes('notes'))) {
+    return 'notes_metadata';
+  }
+  return undefined;
+}
+
 function decision(params: {
   sessionPath: string;
   event?: AoiOperatorVoiceEvent | null;
@@ -637,6 +668,25 @@ export function decideAoiOperatorVoiceRender(
       shouldSpeak: false,
       silentReason: 'Event interruption level is below the operator voice threshold.',
       reasons: ['below_interruption_threshold', event.interruptionLevel],
+      now,
+    });
+  }
+  const calibration = applyAoiTrustCalibration({
+    profile: input.trustCalibrationProfile,
+    triggerKind: event.category,
+    sourceKind: sourceKindFromRefs([...event.sourceRefs, ...event.evidenceRefs]),
+    risk: event.risk,
+    voiceCategory: event.category,
+    score: VOICE_LEVEL_RANK[event.interruptionLevel] / 3,
+  });
+  if (calibration.suppress && event.interruptionLevel !== 'blocking') {
+    return decision({
+      sessionPath: input.sessionPath,
+      event,
+      status: 'suppressed',
+      shouldSpeak: false,
+      silentReason: 'Trust calibration suppressed a similar operator voice event.',
+      reasons: ['trust_calibration_suppressed', ...calibration.reasons],
       now,
     });
   }

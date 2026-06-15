@@ -5,13 +5,21 @@ import {
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
 } from './aoiAutonomyStore';
+import { loadAoiContextSourceFeedback } from './aoiContextRouter';
+import { loadAoiOperatorTimelineEvents } from './aoiOperatorTimeline';
 import { getAoiPreferenceDemotions } from './aoiPreferenceMemory';
+import { buildAoiTrustCalibrationProfile } from './aoiTrustCalibration';
+import { loadAoiTrustCalibrationResets } from './aoiTrustCalibrationStore';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
+  AoiContextSourceFeedback,
   AoiGoalProgressEvent,
+  AoiOperatorTimelineEvent,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalFeedbackCategory,
+  AoiTrustCalibrationProfile,
+  AoiTrustCalibrationReset,
 } from './aoiAutonomyTypes';
 
 const FEEDBACK_CATEGORIES: AoiProposalFeedbackCategory[] = [
@@ -19,6 +27,7 @@ const FEEDBACK_CATEGORIES: AoiProposalFeedbackCategory[] = [
   'not_useful',
   'wrong_memory',
   'wrong_evidence',
+  'wrong_source',
   'stale',
   'too_frequent',
   'too_much',
@@ -79,6 +88,7 @@ export interface AoiAutonomyEvaluationResult {
   generatedAt: number;
   metrics: AoiAutonomyEvaluationMetrics;
   calibration: AoiAutonomyCalibrationReport;
+  trustCalibration: AoiTrustCalibrationProfile;
 }
 
 export interface AoiAutonomyEvaluationRecords {
@@ -87,6 +97,10 @@ export interface AoiAutonomyEvaluationRecords {
   decisions: AoiProposalDecision[];
   goalProgress?: AoiGoalProgressEvent[];
   memories?: AoiMemoryEntry[];
+  contextFeedback?: AoiContextSourceFeedback[];
+  timelineEvents?: AoiOperatorTimelineEvent[];
+  trustCalibrationResets?: AoiTrustCalibrationReset[];
+  replayFailures?: Array<{ key: string; evidenceRefs?: string[] }>;
   now?: number;
 }
 
@@ -312,6 +326,7 @@ export function evaluateAoiAutonomyRecords(
 
   const proposals = records.proposals;
   const decisions = records.decisions;
+  const generatedAt = records.now ?? Date.now();
   const primaryDecisions = decisions.filter(isPrimaryDecision);
   const acceptedDecisions = primaryDecisions.filter((decision) => decision.action === 'accept');
   const negativeDecisions = primaryDecisions.filter(isNegativeDecision);
@@ -370,11 +385,21 @@ export function evaluateAoiAutonomyRecords(
     highRiskProposalRate: ratio(highRiskProposalIds.size, proposalUniverseCount),
     highRiskBlockedCount: highRiskBlockedIds.size,
   };
+  const trustCalibration = buildAoiTrustCalibrationProfile({
+    sessionPath,
+    proposals,
+    decisions,
+    contextFeedback: records.contextFeedback,
+    timelineEvents: records.timelineEvents,
+    replayFailures: records.replayFailures,
+    resets: records.trustCalibrationResets,
+    now: generatedAt,
+  });
 
   return {
     version: 1,
     sessionPath,
-    generatedAt: records.now ?? Date.now(),
+    generatedAt,
     metrics: {
       totalProposals: proposals.length,
       totalDecisions: decisions.length,
@@ -394,6 +419,7 @@ export function evaluateAoiAutonomyRecords(
       oneOffPreferenceFeedbackCount: countOneOffPreferenceFeedback(decisions),
     },
     calibration,
+    trustCalibration,
   };
 }
 
@@ -414,6 +440,11 @@ export function buildAoiAutonomyEvaluation(params: {
     ],
     decisions: loadAoiProposalDecisions(params.sessionsDir, sessionPath),
     goalProgress: loadAoiGoalProgressEvents(params.sessionsDir, sessionPath),
+    contextFeedback: loadAoiContextSourceFeedback(params.sessionsDir, sessionPath),
+    timelineEvents: loadAoiOperatorTimelineEvents(params.sessionsDir, sessionPath, {
+      limit: 160,
+    }),
+    trustCalibrationResets: loadAoiTrustCalibrationResets(params.sessionsDir, sessionPath),
     now: params.now,
   });
 }

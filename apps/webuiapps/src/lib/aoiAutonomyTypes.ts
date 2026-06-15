@@ -88,6 +88,7 @@ export type AoiProposalFeedbackCategory =
   | 'not_useful'
   | 'wrong_memory'
   | 'wrong_evidence'
+  | 'wrong_source'
   | 'stale'
   | 'too_frequent'
   | 'too_much'
@@ -345,6 +346,101 @@ export interface AoiVoiceRenderDecision {
   spokenSummary?: string;
   summaryId?: string;
   transcriptHash?: string;
+}
+
+export type AoiCalibrationDimension =
+  | 'source_kind'
+  | 'trigger_kind'
+  | 'action_kind'
+  | 'risk_level'
+  | 'notification_lane'
+  | 'voice_category'
+  | 'interruption_gap'
+  | 'feedback_category';
+
+export type AoiCalibrationDirection = 'positive' | 'negative' | 'safety';
+
+export interface AoiCalibrationEvidence {
+  version: 1;
+  id: string;
+  dimension: AoiCalibrationDimension;
+  key: string;
+  direction: AoiCalibrationDirection;
+  delta: number;
+  reason: string;
+  createdAt: number;
+  evidenceRefs: string[];
+  feedbackCategory?: AoiProposalFeedbackCategory;
+  replayBlocked?: boolean;
+}
+
+export interface AoiTriggerCalibration {
+  version: 1;
+  triggerKind: string;
+  usefulnessScore: number;
+  interruptionScore: number;
+  requiredEvidenceBoost: number;
+  approvalStrictnessBoost: number;
+  evidenceCount: number;
+  lastUpdatedAt?: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiSourceCalibration {
+  version: 1;
+  sourceKind: string;
+  usefulnessScore: number;
+  selectionPenalty: number;
+  evidenceCount: number;
+  negativeFeedbackCount: number;
+  lastUpdatedAt?: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiActionCalibration {
+  version: 1;
+  actionKind: string;
+  usefulnessScore: number;
+  approvalStrictnessBoost: number;
+  evidenceCount: number;
+  unsafeFeedbackCount: number;
+  lastUpdatedAt?: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiInterruptionPolicy {
+  version: 1;
+  defaultThreshold: number;
+  askFirstThreshold: number;
+  suppressThreshold: number;
+  minInterruptionGapMs: number;
+  positiveLearningCap: number;
+  negativeLearningCap: number;
+}
+
+export interface AoiTrustCalibrationReset {
+  version: 1;
+  dimension: AoiCalibrationDimension;
+  key: string;
+  resetAt: number;
+}
+
+export interface AoiTrustCalibrationProfile {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  interruptionPolicy: AoiInterruptionPolicy;
+  triggerCalibrations: AoiTriggerCalibration[];
+  sourceCalibrations: AoiSourceCalibration[];
+  actionCalibrations: AoiActionCalibration[];
+  riskCalibration: Record<AoiAutonomyRisk, number>;
+  laneCalibration: Partial<Record<AoiNotificationLane, number>>;
+  voiceCalibration: Partial<Record<AoiOperatorVoiceEventCategory, number>>;
+  feedbackCalibration: Partial<Record<AoiProposalFeedbackCategory, number>>;
+  topSuppressedCategories: AoiCalibrationEvidence[];
+  negativeSources: AoiSourceCalibration[];
+  recentChanges: AoiCalibrationEvidence[];
+  resetCategories: AoiTrustCalibrationReset[];
 }
 
 export type AoiOperatorTimelineEventKind =
@@ -1257,6 +1353,7 @@ export interface AoiProposalPolicyCheckInput {
   proposal: AoiProposal;
   activeProposals?: AoiProposal[];
   recentDecisions?: AoiProposalDecision[];
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   now?: number;
 }
 

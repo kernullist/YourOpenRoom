@@ -29,6 +29,7 @@ import {
   evaluateAoiApprovedCommandPolicy,
   normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
+import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 
 export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
   L0: 0,
@@ -326,6 +327,7 @@ export const AOI_PROPOSAL_FEEDBACK_CATEGORIES: readonly AoiProposalFeedbackCateg
   'not_useful',
   'wrong_memory',
   'wrong_evidence',
+  'wrong_source',
   'stale',
   'too_frequent',
   'too_much',
@@ -990,6 +992,34 @@ function actionKindMatches(proposal: AoiProposal, decision: AoiProposalDecision)
   return Boolean(decision.suggestedTools?.some((tool) => tools.has(tool)));
 }
 
+function sourceKindFromProposal(proposal: AoiProposal): string | undefined {
+  const refs = [...proposal.evidenceRefs, ...proposal.artifactRefs];
+  if (refs.some((ref) => ref.startsWith('research:'))) {
+    return 'research_runs';
+  }
+  if (refs.some((ref) => ref.startsWith('workspace:'))) {
+    return refs.some((ref) => ref.includes('validation') || ref.includes('build'))
+      ? 'workspace_build'
+      : 'workspace_git';
+  }
+  if (refs.some((ref) => ref.startsWith('memory:') || ref.startsWith('kira:'))) {
+    return 'kira_board';
+  }
+  if (refs.some((ref) => ref.startsWith('browser:') || ref.includes('browser-context'))) {
+    return 'browser_context';
+  }
+  if (refs.some((ref) => ref.includes('calendar'))) {
+    return 'calendar_metadata';
+  }
+  if (refs.some((ref) => ref.includes('gmail'))) {
+    return 'gmail_metadata';
+  }
+  if (refs.some((ref) => ref.includes('notes'))) {
+    return 'notes_metadata';
+  }
+  return undefined;
+}
+
 function decisionAppliesToProposal(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
   return (
     decision.cooldownKey === proposal.cooldownKey ||
@@ -1114,6 +1144,14 @@ export function checkAoiProposalPolicy(
   const reasons: string[] = [];
   const { policy } = input;
   const proposal = applyAoiFeedbackCalibrationToProposal(input.proposal, input.recentDecisions);
+  const trustCalibration = applyAoiTrustCalibration({
+    profile: input.trustCalibrationProfile,
+    triggerKind: proposal.trigger,
+    actionKind: proposal.acceptAction?.kind ?? proposal.suggestedTools[0],
+    sourceKind: sourceKindFromProposal(proposal),
+    risk: proposal.risk,
+    score: proposal.confidence,
+  });
   const staleMemoryFeedbackApplies =
     feedbackDecisions(proposal, input.recentDecisions, 'stale').filter((decision) =>
       sharesMemoryRef(proposal, decision),
@@ -1127,6 +1165,12 @@ export function checkAoiProposalPolicy(
   }
   if (policy.requireEvidenceRefs && proposal.evidenceRefs.length === 0) {
     reasons.push('missing_evidence_refs');
+  }
+  if (trustCalibration.requiredEvidenceBoost > 0 && proposal.evidenceRefs.length < 2) {
+    reasons.push('trust_calibration_requires_more_evidence');
+  }
+  if (trustCalibration.approvalStrictnessBoost > 0 && !proposal.requiresUserApproval) {
+    reasons.push('trust_calibration_requires_user_approval');
   }
   if (policy.duplicateCheckEnabled && hasDuplicateActiveProposal(proposal, input.activeProposals)) {
     reasons.push('duplicate_active_proposal');

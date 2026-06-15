@@ -8,6 +8,7 @@ import type {
   AoiAutonomyWakeupReason,
   AoiAutonomyWakeupResult,
   AoiBrowserContextMetadata,
+  AoiCalibrationDimension,
   AoiContextRouterResult,
   AoiContextSourceFeedback,
   AoiEnvironmentSource,
@@ -28,6 +29,7 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiReflection,
+  AoiTrustCalibrationReset,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
@@ -65,6 +67,18 @@ export interface AoiAutonomyGoalList {
 
 export interface AoiAutonomyEvaluationResponse {
   sessionPath: string;
+  evaluation: AoiAutonomyEvaluationResult;
+}
+
+export interface AoiTrustCalibrationResetInput {
+  dimension: AoiCalibrationDimension;
+  key: string;
+}
+
+export interface AoiTrustCalibrationResetResponse {
+  ok: boolean;
+  sessionPath: string;
+  reset: AoiTrustCalibrationReset;
   evaluation: AoiAutonomyEvaluationResult;
 }
 
@@ -175,7 +189,7 @@ export interface AoiContextSourceFeedbackInput {
   contextSummaryId?: string;
   feedbackCategory: Extract<
     AoiProposalFeedbackCategory,
-    'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+    'wrong_evidence' | 'wrong_source' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
   >;
   feedbackNote?: string;
   evidenceRefs?: string[];
@@ -442,6 +456,39 @@ export async function fetchAoiAutonomyEvaluation(
   return {
     sessionPath: evaluation.sessionPath || sessionPath,
     evaluation,
+  };
+}
+
+export async function resetAoiTrustCalibrationCategory(
+  sessionPath: string,
+  input: AoiTrustCalibrationResetInput,
+): Promise<AoiTrustCalibrationResetResponse> {
+  const response = await fetch(`${API_PREFIX}/calibration/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      dimension: input.dimension,
+      key: input.key,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to reset Aoi trust calibration.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    reset: requireRecordField<AoiTrustCalibrationReset>(
+      payload,
+      'reset',
+      'Aoi trust calibration reset response was malformed.',
+    ),
+    evaluation: requireRecordField<AoiAutonomyEvaluationResult>(
+      payload,
+      'evaluation',
+      'Aoi trust calibration reset response was malformed.',
+    ),
   };
 }
 

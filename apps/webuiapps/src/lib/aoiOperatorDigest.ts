@@ -1,4 +1,5 @@
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiApprovalInboxItem,
@@ -16,6 +17,7 @@ import type {
   AoiProposalDecision,
   AoiQuietWindow,
   AoiResumeBrief,
+  AoiTrustCalibrationProfile,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
@@ -25,6 +27,7 @@ const RESUME_IDLE_THRESHOLD_MS = 15 * 60 * 1000;
 const NEGATIVE_DIGEST_FEEDBACK = new Set([
   'not_useful',
   'wrong_evidence',
+  'wrong_source',
   'wrong_timing',
   'too_frequent',
   'too_much',
@@ -46,6 +49,7 @@ export interface AoiOperatorDigestInput {
   lastSeenAt?: number | null;
   userIdleMs?: number;
   maxItems?: number;
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -553,14 +557,58 @@ function hasNegativeFeedback(
   });
 }
 
+function sourceKindFromRefs(refs: string[]): string | undefined {
+  if (refs.some((ref) => ref.startsWith('research:'))) {
+    return 'research_runs';
+  }
+  if (refs.some((ref) => ref.startsWith('workspace:'))) {
+    return refs.some((ref) => ref.includes('validation') || ref.includes('build'))
+      ? 'workspace_build'
+      : 'workspace_git';
+  }
+  if (refs.some((ref) => ref.startsWith('memory:') || ref.startsWith('kira:'))) {
+    return 'kira_board';
+  }
+  if (refs.some((ref) => ref.startsWith('browser:') || ref.includes('browser-context'))) {
+    return 'browser_context';
+  }
+  if (refs.some((ref) => ref.includes('calendar'))) {
+    return 'calendar_metadata';
+  }
+  if (refs.some((ref) => ref.includes('gmail'))) {
+    return 'gmail_metadata';
+  }
+  if (refs.some((ref) => ref.includes('notes'))) {
+    return 'notes_metadata';
+  }
+  return undefined;
+}
+
 function applyQuietAndFeedback(
   item: AoiDigestItem,
-  params: Pick<AoiOperatorDigestInput, 'quietMode' | 'recentDecisions'>,
+  params: Pick<AoiOperatorDigestInput, 'quietMode' | 'recentDecisions' | 'trustCalibrationProfile'>,
 ): AoiDigestItem {
   const negativeFeedback = hasNegativeFeedback(item, params.recentDecisions);
-  let relevance = item.relevance - (negativeFeedback ? 0.34 : 0);
+  const calibration = applyAoiTrustCalibration({
+    profile: params.trustCalibrationProfile,
+    triggerKind: item.kind,
+    sourceKind: sourceKindFromRefs([...item.sourceRefs, ...item.evidenceRefs]),
+    risk: item.risk,
+    notificationLane: item.lane,
+    score: item.relevance,
+  });
+  let relevance =
+    item.relevance -
+    (negativeFeedback ? 0.34 : 0) +
+    calibration.rankingAdjustment +
+    calibration.interruptionAdjustment -
+    calibration.sourceSelectionPenalty;
   let lane = item.lane;
   let hidden = false;
+  if (calibration.suppress && lane !== 'critical_user_blocking' && lane !== 'needs_approval') {
+    lane = 'hidden_by_quiet_mode';
+    hidden = true;
+  }
   if (
     params.quietMode &&
     lane !== 'critical_user_blocking' &&

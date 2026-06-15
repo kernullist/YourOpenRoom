@@ -18,6 +18,7 @@ import {
 } from './aoiAutonomyGoals';
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
 import { buildAoiOperatorDigest } from './aoiOperatorDigest';
+import { loadAoiContextSourceFeedback } from './aoiContextRouter';
 import {
   runAoiKiraOutcomeLearning,
   type AoiKiraOutcomeLearningResult,
@@ -65,6 +66,7 @@ import type {
   AoiProposalAcceptAction,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
+  AoiTrustCalibrationProfile,
   AoiReflection,
 } from './aoiAutonomyTypes';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
@@ -84,7 +86,10 @@ import {
 import {
   recordAoiProposalBlockedTimelineEvent,
   recordAoiProposalCreatedTimelineEvent,
+  loadAoiOperatorTimelineEvents,
 } from './aoiOperatorTimeline';
+import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from './aoiTrustCalibration';
+import { loadAoiTrustCalibrationResets } from './aoiTrustCalibrationStore';
 
 const MAX_OBSERVATIONS_PER_TICK = 24;
 const MAX_MEMORY_OBSERVATIONS = 12;
@@ -1707,13 +1712,68 @@ function makeBlockedProposalSafeAlternative(proposal: AoiProposal, reasons: stri
   return 'Inspect evidence before continuing.';
 }
 
+function sourceKindFromProposal(proposal: AoiProposal): string | undefined {
+  const refs = [...proposal.evidenceRefs, ...proposal.artifactRefs];
+  if (refs.some((ref) => ref.startsWith('research:'))) {
+    return 'research_runs';
+  }
+  if (refs.some((ref) => ref.startsWith('workspace:'))) {
+    return refs.some((ref) => ref.includes('validation') || ref.includes('build'))
+      ? 'workspace_build'
+      : 'workspace_git';
+  }
+  if (refs.some((ref) => ref.startsWith('memory:') || ref.startsWith('kira:'))) {
+    return 'kira_board';
+  }
+  if (refs.some((ref) => ref.startsWith('browser:') || ref.includes('browser-context'))) {
+    return 'browser_context';
+  }
+  if (refs.some((ref) => ref.includes('calendar'))) {
+    return 'calendar_metadata';
+  }
+  if (refs.some((ref) => ref.includes('gmail'))) {
+    return 'gmail_metadata';
+  }
+  if (refs.some((ref) => ref.includes('notes'))) {
+    return 'notes_metadata';
+  }
+  return undefined;
+}
+
+function proposalTrustPriorityAdjustment(
+  proposal: AoiProposal,
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null,
+): number {
+  const applied = applyAoiTrustCalibration({
+    profile: trustCalibrationProfile,
+    triggerKind: proposal.trigger,
+    actionKind: proposal.acceptAction?.kind ?? proposal.suggestedTools[0],
+    sourceKind: sourceKindFromProposal(proposal),
+    risk: proposal.risk,
+    score: proposal.confidence,
+  });
+  return (
+    applied.rankingAdjustment +
+    applied.interruptionAdjustment -
+    applied.sourceSelectionPenalty -
+    applied.approvalStrictnessBoost
+  );
+}
+
 function sortProposalPriority(
   a: AoiProposal,
   b: AoiProposal,
   recentDecisions: AoiProposalDecision[],
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null,
 ): number {
-  const leftScore = a.confidence + getAoiProposalFeedbackPriorityBoost(a, recentDecisions);
-  const rightScore = b.confidence + getAoiProposalFeedbackPriorityBoost(b, recentDecisions);
+  const leftScore =
+    a.confidence +
+    getAoiProposalFeedbackPriorityBoost(a, recentDecisions) +
+    proposalTrustPriorityAdjustment(a, trustCalibrationProfile);
+  const rightScore =
+    b.confidence +
+    getAoiProposalFeedbackPriorityBoost(b, recentDecisions) +
+    proposalTrustPriorityAdjustment(b, trustCalibrationProfile);
   return rightScore - leftScore || a.createdAt - b.createdAt;
 }
 
@@ -1902,6 +1962,20 @@ export async function runAoiAutonomyTick(
         now,
       })
     : null;
+  const trustCalibrationProfile = buildAoiTrustCalibrationProfile({
+    sessionPath,
+    proposals: [
+      ...bundle.activeProposals,
+      ...loadAoiArchivedProposals(params.sessionsDir, sessionPath),
+    ],
+    decisions: bundle.decisions,
+    contextFeedback: loadAoiContextSourceFeedback(params.sessionsDir, sessionPath),
+    timelineEvents: loadAoiOperatorTimelineEvents(params.sessionsDir, sessionPath, {
+      limit: 160,
+    }),
+    resets: loadAoiTrustCalibrationResets(params.sessionsDir, sessionPath),
+    now,
+  });
   if (workspaceSnapshot) {
     bundle.observations.push(
       ...createAoiWorkspaceObservations({
@@ -1924,6 +1998,7 @@ export async function runAoiAutonomyTick(
     quietMode: params.quietMode,
     userIdleMs: params.userIdleMs,
     maxActionableEvents: latestUserMessage ? 0 : 1,
+    trustCalibrationProfile,
   });
   const kiraOutcomeResult = runAoiKiraOutcomeLearning({
     sessionsDir: params.sessionsDir,
@@ -2051,7 +2126,9 @@ export async function runAoiAutonomyTick(
     ...llmResult.proposals,
   ]
     .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
-    .sort((left, right) => sortProposalPriority(left, right, recentDecisions));
+    .sort((left, right) =>
+      sortProposalPriority(left, right, recentDecisions, trustCalibrationProfile),
+    );
   const blockedProposals: AoiAutonomyBlockedProposal[] = [];
   const acceptedProposals: AoiProposal[] = [];
   let newReflectionCount = llmResult.reflections.length;
@@ -2079,6 +2156,7 @@ export async function runAoiAutonomyTick(
       proposal,
       activeProposals,
       recentDecisions,
+      trustCalibrationProfile,
       now,
     });
     reasons.push(...policyResult.reasons);
@@ -2200,6 +2278,7 @@ export async function runAoiAutonomyTick(
     memories: bundle.memories,
     quietMode: params.quietMode,
     userIdleMs: params.userIdleMs,
+    trustCalibrationProfile,
   });
 
   return {

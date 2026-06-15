@@ -225,6 +225,7 @@ import {
   recordAoiContextSourceFeedback,
   recordAoiOperatorVoiceDecision,
   recordAoiProposalFeedback,
+  resetAoiTrustCalibrationCategory,
   runAoiAutonomyManualWakeup,
   runAoiAutonomySessionOpenWakeup,
   updateAoiEnvironmentSource,
@@ -263,6 +264,7 @@ import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
   AoiAutonomyBlockedProposal,
+  AoiCalibrationDimension,
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
   AoiAutonomySchedulerState,
@@ -606,6 +608,12 @@ const AOI_PROPOSAL_FEEDBACK_CONTROLS: Array<{
     title: 'Dismiss this suggestion because the evidence is wrong',
     action: 'dismiss',
     category: 'wrong_evidence',
+  },
+  {
+    label: 'Wrong source',
+    title: 'Dismiss this suggestion because the source selection is wrong',
+    action: 'dismiss',
+    category: 'wrong_source',
   },
   {
     label: 'Unsafe',
@@ -2797,7 +2805,7 @@ const ChatPanel: React.FC<{
       contextSummaryId: string,
       feedbackCategory: Extract<
         AoiProposalFeedbackCategory,
-        'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+        'wrong_evidence' | 'wrong_source' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
       >,
       evidenceRefs: string[],
     ) => {
@@ -2816,6 +2824,31 @@ const ChatPanel: React.FC<{
           evidenceRefs,
         });
         setAoiContextRouter(result.context);
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  const resetAoiTrustCalibrationFromPanel = useCallback(
+    async (dimension: AoiCalibrationDimension, key: string) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy || !key.trim()) {
+        return;
+      }
+      const actionId = `trust-reset:${dimension}:${key}`;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      try {
+        const result = await resetAoiTrustCalibrationCategory(sessionPathForAutonomy, {
+          dimension,
+          key,
+        });
+        setAoiAutonomyEvaluation(result.evaluation);
         await refreshAoiAutonomy({ silent: true });
       } catch (error) {
         setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -5757,10 +5790,12 @@ const ChatPanel: React.FC<{
         memories: aoiMemories,
         quietMode: aoiAutonomyPanelSettings.quietMode,
         lastSeenAt: aoiAutonomyLastSeenAt,
+        trustCalibrationProfile: aoiAutonomyEvaluation?.trustCalibration,
       }),
     [
       aoiAutonomyActiveProposals,
       aoiAutonomyBlockedProposals,
+      aoiAutonomyEvaluation?.trustCalibration,
       aoiAutonomyLastSeenAt,
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings.quietMode,
@@ -5797,6 +5832,7 @@ const ChatPanel: React.FC<{
       mutedForSession: aoiOperatorVoiceMuted,
       previousSpokenDedupeKeys: aoiOperatorVoiceSpokenKeysRef.current,
       recentDecisions: aoiRecentProposalDecisions,
+      trustCalibrationProfile: aoiAutonomyEvaluation?.trustCalibration,
       now: aoiOperatorDigest.generatedAt,
     });
     const recordKey = [
@@ -5855,6 +5891,7 @@ const ChatPanel: React.FC<{
   }, [
     aoiMissionState,
     aoiOperatorDigest,
+    aoiAutonomyEvaluation?.trustCalibration,
     aoiOperatorVoiceMuted,
     aoiOperatorVoicePolicy,
     aoiRecentProposalDecisions,
@@ -6384,6 +6421,7 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onUpdateAoiEnvironmentSource={updateAoiEnvironmentSourceFromPanel}
           onRecordAoiContextSourceFeedback={recordAoiContextSourceFeedbackFromPanel}
+          onResetAoiTrustCalibration={resetAoiTrustCalibrationFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
           onDecideAoiMission={decideAoiMissionFromPanel}
@@ -6867,10 +6905,11 @@ const SettingsModal: React.FC<{
     contextSummaryId: string,
     feedbackCategory: Extract<
       AoiProposalFeedbackCategory,
-      'wrong_evidence' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
+      'wrong_evidence' | 'wrong_source' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
     >,
     evidenceRefs: string[],
   ) => Promise<void>;
+  onResetAoiTrustCalibration: (dimension: AoiCalibrationDimension, key: string) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
   onDecideAoiMission: (action: AoiMissionDecisionAction) => Promise<void>;
@@ -6954,6 +6993,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onUpdateAoiEnvironmentSource,
   onRecordAoiContextSourceFeedback,
+  onResetAoiTrustCalibration,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
   onDecideAoiMission,
@@ -7614,6 +7654,11 @@ const SettingsModal: React.FC<{
     : 'n/a';
   const aoiAutonomyNoisyTypeLabel =
     aoiAutonomyEvaluation?.calibration.noisyProposalTypes[0]?.key ?? 'None';
+  const aoiTrustCalibration = aoiAutonomyEvaluation?.trustCalibration ?? null;
+  const aoiTrustSuppressedCategories =
+    aoiTrustCalibration?.topSuppressedCategories.slice(0, 4) ?? [];
+  const aoiTrustNegativeSources = aoiTrustCalibration?.negativeSources.slice(0, 4) ?? [];
+  const aoiTrustRecentChanges = aoiTrustCalibration?.recentChanges.slice(0, 5) ?? [];
   const settingsTabs: Array<{ key: SettingsTabKey; label: string }> = [
     { key: 'chat', label: 'Chat' },
     { key: 'models', label: 'Models' },
@@ -9229,6 +9274,7 @@ const SettingsModal: React.FC<{
                         <div className={styles.aoiAutonomyProposalList}>
                           {aoiContextSourceSummaries.map((source) => {
                             const wrongEvidenceActionId = `context:${source.id}:wrong_evidence`;
+                            const wrongSourceActionId = `context:${source.id}:wrong_source`;
                             const wrongTimingActionId = `context:${source.id}:wrong_timing`;
                             return (
                               <div className={styles.aoiAutonomyProposalItem} key={source.id}>
@@ -9270,6 +9316,22 @@ const SettingsModal: React.FC<{
                                     title={source.wrongEvidenceTitle}
                                   >
                                     Wrong evidence
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() =>
+                                      void onRecordAoiContextSourceFeedback(
+                                        source.sourceId,
+                                        source.id,
+                                        'wrong_source',
+                                        source.evidenceRefs,
+                                      )
+                                    }
+                                    disabled={aoiAutonomyActionId === wrongSourceActionId}
+                                    title={`Mark ${source.displayNameLabel} as wrong source for future routing.`}
+                                  >
+                                    Wrong source
                                   </button>
                                   <button
                                     type="button"
@@ -9592,6 +9654,90 @@ const SettingsModal: React.FC<{
                           </strong>
                         </div>
                       </div>
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Trust calibration</div>
+                      {aoiTrustCalibration ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          <div className={styles.aoiAutonomyProposalItem}>
+                            <div className={styles.aoiAutonomyProposalMeta}>
+                              <span>
+                                generated{' '}
+                                {new Date(aoiTrustCalibration.generatedAt).toLocaleTimeString()}
+                              </span>
+                              <span>suppressed {aoiTrustSuppressedCategories.length}</span>
+                              <span>negative sources {aoiTrustNegativeSources.length}</span>
+                              <span>resets {aoiTrustCalibration.resetCategories.length}</span>
+                            </div>
+                            {aoiTrustSuppressedCategories.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiTrustSuppressedCategories.map((item) => {
+                                  const resetId = `trust-reset:${item.dimension}:${item.key}`;
+                                  return (
+                                    <div key={`trust-suppressed-${item.id}`}>
+                                      {item.dimension.replace(/_/g, ' ')}:{' '}
+                                      {sanitizeAoiProposalDisplayText(item.key, 80)}{' '}
+                                      {item.delta.toFixed(2)}{' '}
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          void onResetAoiTrustCalibration(item.dimension, item.key)
+                                        }
+                                        disabled={aoiAutonomyActionId === resetId}
+                                        title="Reset this calibration category"
+                                      >
+                                        Reset
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {aoiTrustNegativeSources.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiTrustNegativeSources.map((source) => {
+                                  const resetId = `trust-reset:source_kind:${source.sourceKind}`;
+                                  return (
+                                    <div key={`trust-source-${source.sourceKind}`}>
+                                      source {sanitizeAoiProposalDisplayText(source.sourceKind, 80)}
+                                      : penalty {source.selectionPenalty.toFixed(2)}{' '}
+                                      <button
+                                        type="button"
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          void onResetAoiTrustCalibration(
+                                            'source_kind',
+                                            source.sourceKind,
+                                          )
+                                        }
+                                        disabled={aoiAutonomyActionId === resetId}
+                                        title="Reset this source calibration"
+                                      >
+                                        Reset
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                            {aoiTrustRecentChanges.length > 0 && (
+                              <div className={styles.aoiAutonomyProposalDetails}>
+                                {aoiTrustRecentChanges.map((item) => (
+                                  <div key={`trust-change-${item.id}`}>
+                                    {item.direction}: {item.dimension.replace(/_/g, ' ')}{' '}
+                                    {sanitizeAoiProposalDisplayText(item.key, 80)} (
+                                    {item.delta.toFixed(2)})
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No trust calibration data yet.</p>
+                      )}
                     </div>
 
                     {aoiAutonomyPendingFeedback && (

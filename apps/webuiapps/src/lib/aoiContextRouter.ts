@@ -6,6 +6,8 @@ import {
   checkAoiEnvironmentSourceOperation,
   isAoiProposalFeedbackCategory,
 } from './aoiAutonomyPolicy';
+import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from './aoiTrustCalibration';
+import { loadAoiTrustCalibrationResets } from './aoiTrustCalibrationStore';
 import { deriveAoiMissionState } from './aoiAutonomyMission';
 import {
   loadAoiEnvironmentSourceRegistry,
@@ -30,6 +32,7 @@ import type {
   AoiProposalDecision,
   AoiProposalFeedbackCategory,
   AoiSignalFreshness,
+  AoiTrustCalibrationProfile,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
@@ -60,6 +63,7 @@ const SOURCE_ID_BY_KIND: Record<AoiEnvironmentSourceKind, string> = {
 const NEGATIVE_FEEDBACK = new Set<AoiProposalFeedbackCategory>([
   'not_useful',
   'wrong_evidence',
+  'wrong_source',
   'stale',
   'too_frequent',
   'too_much',
@@ -70,6 +74,7 @@ const NEGATIVE_FEEDBACK = new Set<AoiProposalFeedbackCategory>([
 
 const CONTEXT_FEEDBACK_CATEGORIES = new Set<AoiProposalFeedbackCategory>([
   'wrong_evidence',
+  'wrong_source',
   'wrong_timing',
   'stale',
   'not_useful',
@@ -89,6 +94,7 @@ export interface AoiContextRouterInput {
   researchRuns?: AoiResearchRunSummary[];
   browserContexts?: AoiBrowserContextMetadata[];
   contextFeedback?: AoiContextSourceFeedback[];
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   now?: number;
   maxPromptSources?: number;
   maxPromptChars?: number;
@@ -335,6 +341,7 @@ function applyFeedbackPenalties(params: {
   summary: AoiContextSourceSummary;
   decisions: AoiProposalDecision[];
   contextFeedback: AoiContextSourceFeedback[];
+  trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
 }): AoiContextSourceSummary {
   let penalty = 0;
   const reasons = [...params.summary.scoreReasons];
@@ -349,7 +356,11 @@ function applyFeedbackPenalties(params: {
       decision.proposalId ? `proposal:${decision.proposalId}` : undefined,
     ]);
     if (hasIntersect(params.summary.evidenceRefs, decisionRefs)) {
-      penalty += decision.feedbackCategory === 'wrong_evidence' ? 0.24 : 0.14;
+      penalty +=
+        decision.feedbackCategory === 'wrong_source' ||
+        decision.feedbackCategory === 'wrong_evidence'
+          ? 0.24
+          : 0.14;
       reasons.push(`penalized by proposal feedback:${decision.feedbackCategory}`);
     }
   }
@@ -364,7 +375,10 @@ function applyFeedbackPenalties(params: {
     ) {
       continue;
     }
-    if (feedback.feedbackCategory === 'wrong_evidence') {
+    if (
+      feedback.feedbackCategory === 'wrong_source' ||
+      feedback.feedbackCategory === 'wrong_evidence'
+    ) {
       penalty += 0.34;
     } else if (
       feedback.feedbackCategory === 'wrong_timing' ||
@@ -379,6 +393,19 @@ function applyFeedbackPenalties(params: {
   if (params.summary.confidence < 0.65) {
     penalty += 0.08;
     reasons.push('penalized by low confidence');
+  }
+  const sourceKind =
+    params.summary.kind === 'mission_state'
+      ? params.summary.sourceId.replace(/-/g, '_')
+      : params.summary.kind;
+  const trustCalibration = applyAoiTrustCalibration({
+    profile: params.trustCalibrationProfile,
+    sourceKind,
+    score: params.summary.relevanceScore,
+  });
+  if (trustCalibration.sourceSelectionPenalty > 0) {
+    penalty += trustCalibration.sourceSelectionPenalty;
+    reasons.push(`penalized by trust calibration:${sourceKind}`);
   }
   penalty -= scoreFreshness(params.summary.freshness);
   return {
@@ -1058,6 +1085,15 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
   const decisions = params.decisions ?? loadAoiProposalDecisions(params.sessionsDir, sessionPath);
   const contextFeedback =
     params.contextFeedback ?? loadAoiContextSourceFeedback(params.sessionsDir, sessionPath);
+  const trustCalibrationProfile =
+    params.trustCalibrationProfile ??
+    buildAoiTrustCalibrationProfile({
+      sessionPath,
+      decisions,
+      contextFeedback,
+      resets: loadAoiTrustCalibrationResets(params.sessionsDir, sessionPath),
+      now,
+    });
   const runs = params.researchRuns ?? listAoiResearchRunSummaries(params.sessionsDir, sessionPath);
   const browserContexts =
     params.browserContexts ?? loadAoiBrowserContextMetadata(params.sessionsDir, sessionPath);
@@ -1086,7 +1122,14 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
   ];
 
   const candidateSources = rawCandidates
-    .map((summary) => applyFeedbackPenalties({ summary, decisions, contextFeedback }))
+    .map((summary) =>
+      applyFeedbackPenalties({
+        summary,
+        decisions,
+        contextFeedback,
+        trustCalibrationProfile,
+      }),
+    )
     .filter((summary) => summary.relevanceScore > 0)
     .sort((left, right) => {
       if (right.relevanceScore !== left.relevanceScore) {

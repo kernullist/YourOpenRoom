@@ -36,6 +36,7 @@ import {
   decideAoiOperatorVoiceRender,
   getDefaultAoiOperatorVoicePolicy,
 } from '../aoiOperatorVoice';
+import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
@@ -1548,6 +1549,60 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(decision.status).toBe('duplicate');
     expect(decision.shouldSpeak).toBe(false);
+  });
+
+  it('suppresses similar digest and voice events through trust calibration', () => {
+    const trustCalibrationProfile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      decisions: [
+        makeProposalDecision({
+          id: 'decision-digest-too-much-trust',
+          proposalTrigger: 'research_outcome',
+          feedbackCategory: 'too_much',
+          action: 'snooze',
+        }),
+        makeProposalDecision({
+          id: 'decision-voice-too-much-trust',
+          proposalTrigger: 'completion_update',
+          feedbackCategory: 'too_much',
+          action: 'snooze',
+        }),
+      ],
+      now: 5000,
+    });
+    const event = makeAttentionEvent({
+      id: 'attention-trust-suppressed-ui-test',
+      sourceRef: 'research:too-noisy-trust',
+      sourceSignature: 'research:too-noisy-trust',
+      evidenceRefs: ['research:too-noisy-trust'],
+      summary: 'A research completion update should be quiet after calibration.',
+    });
+    const calibratedDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      attentionEvents: [event],
+      trustCalibrationProfile,
+    });
+    const baseDigest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      attentionEvents: [event],
+    });
+    const voiceEvent = buildAoiOperatorVoiceEventFromDigest({ digest: baseDigest });
+    const voiceDecision = decideAoiOperatorVoiceRender({
+      sessionPath: 'aoi/default',
+      event: voiceEvent,
+      policy: getDefaultAoiOperatorVoicePolicy(),
+      ttsEnabled: true,
+      trustCalibrationProfile,
+      now: 5000,
+    });
+
+    expect(calibratedDigest.items[0].lane).toBe('hidden_by_quiet_mode');
+    expect(calibratedDigest.items[0].hidden).toBe(true);
+    expect(voiceEvent?.category).toBe('completion_update');
+    expect(voiceDecision.status).toBe('suppressed');
+    expect(voiceDecision.reasons).toContain('trust_calibration_suppressed');
   });
 
   it('keeps approval voice summaries free of execution implication', () => {
