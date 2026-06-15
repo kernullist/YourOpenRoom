@@ -117,6 +117,16 @@ export type AoiAutonomyTickReason =
   | 'memory'
   | 'app';
 
+export type AoiAutonomyWakeupReason =
+  | 'session_open'
+  | 'user_return_idle'
+  | 'manual_refresh'
+  | 'source_ttl_expired'
+  | 'mission_waiting_too_long'
+  | 'kira_event'
+  | 'research_event'
+  | 'health_check';
+
 export type AoiAttentionEventKind =
   | 'kira_work_status_changed'
   | 'kira_needs_clarification'
@@ -267,6 +277,7 @@ export type AoiOperatorTimelineEventKind =
   | 'approved_command_previewed'
   | 'approved_command_recorded'
   | 'feedback_recorded'
+  | 'wakeup_recorded'
   | 'trace_exported';
 
 export type AoiOperatorTimelineVisibility =
@@ -344,6 +355,86 @@ export interface AoiOperatorTimelineSummary {
   lastExportRedactionCount: number;
   totalEventCount: number;
   exportedTraceCount: number;
+}
+
+export interface AoiAutonomyWakeupBudget {
+  version: 1;
+  maxSchedulerRuntimeMs: number;
+  maxBackgroundTickRuntimeMs: number;
+  maxSourceCount: number;
+  maxGeneratedProposalCount: number;
+  perSourceCooldownMs: number;
+  wakeupCooldownMs: number;
+  quietMode: boolean;
+  allowNetwork: boolean;
+}
+
+export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';
+
+export interface AoiAutonomySourceSchedule {
+  version: 1;
+  sourceId: string;
+  operation: AoiEnvironmentSourceOperation;
+  ttlMs: number;
+  cooldownMs: number;
+  nextAllowedAt?: number;
+  lastRefreshedAt?: number;
+  lastSkippedAt?: number;
+  lastResult?: AoiAutonomySourceScheduleResult;
+  lastReasons: string[];
+  refreshCount: number;
+  skipCount: number;
+  updatedAt: number;
+}
+
+export interface AoiAutonomyWakeupSkippedSource {
+  sourceId: string;
+  reasons: string[];
+}
+
+export interface AoiAutonomyWakeupRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  reason: AoiAutonomyWakeupReason;
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  ok: boolean;
+  status: 'completed' | 'skipped' | 'failed';
+  budget: AoiAutonomyWakeupBudget;
+  selectedSourceIds: string[];
+  refreshedSourceIds: string[];
+  skippedSources: AoiAutonomyWakeupSkippedSource[];
+  tickRan: boolean;
+  tickSkipped: boolean;
+  tickOk: boolean;
+  tickReason: AoiAutonomyTickReason;
+  proposalsCreated: number;
+  observationsSeen: number;
+  warnings: string[];
+}
+
+export interface AoiAutonomySchedulerState {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  wakeupCount: number;
+  lastWakeupAt?: number;
+  lastWakeupReason?: AoiAutonomyWakeupReason;
+  lastWakeupStatus?: AoiAutonomyWakeupRecord['status'];
+  nextAllowedWakeupAt?: number;
+  sourceSchedules: AoiAutonomySourceSchedule[];
+  recentWakeups: AoiAutonomyWakeupRecord[];
+}
+
+export interface AoiAutonomyWakeupResult {
+  ok: boolean;
+  sessionPath: string;
+  record: AoiAutonomyWakeupRecord;
+  state: AoiAutonomySchedulerState;
+  status: AoiAutonomyStatus;
+  tickResult?: AoiAutonomyTickResult;
 }
 
 export type AoiKiraOutcomeKind =

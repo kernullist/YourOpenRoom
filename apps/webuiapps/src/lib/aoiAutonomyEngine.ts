@@ -130,6 +130,7 @@ export interface AoiAutonomyTickParams {
   reflectionChat?: AoiAutonomyReflectionChat;
   now?: number;
   maxObservations?: number;
+  maxGeneratedProposals?: number;
   quietMode?: boolean;
   userIdleMs?: number;
   workspaceRoot?: string;
@@ -2054,8 +2055,15 @@ export async function runAoiAutonomyTick(
   const blockedProposals: AoiAutonomyBlockedProposal[] = [];
   const acceptedProposals: AoiProposal[] = [];
   let newReflectionCount = llmResult.reflections.length;
+  const maxGeneratedProposals =
+    typeof params.maxGeneratedProposals === 'number'
+      ? Math.min(Math.max(Math.trunc(params.maxGeneratedProposals), 0), policy.maxProposalsPerTick)
+      : policy.maxProposalsPerTick;
 
-  for (const proposal of candidates.slice(0, Math.max(1, policy.maxProposalsPerTick * 3))) {
+  for (const proposal of candidates.slice(0, Math.max(1, maxGeneratedProposals * 3))) {
+    if (acceptedProposals.length >= maxGeneratedProposals) {
+      break;
+    }
     const reasons: string[] = [];
     if (acceptActionLooksSecretBearing(proposal.acceptAction)) {
       reasons.push('accept_action_contains_secret');
@@ -2162,7 +2170,7 @@ export async function runAoiAutonomyTick(
       proposal,
       now,
     });
-    if (acceptedProposals.length >= policy.maxProposalsPerTick) {
+    if (acceptedProposals.length >= maxGeneratedProposals) {
       break;
     }
   }

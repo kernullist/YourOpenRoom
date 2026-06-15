@@ -220,7 +220,8 @@ import {
   previewAoiProposalAction,
   recordAoiContextSourceFeedback,
   recordAoiProposalFeedback,
-  runAoiAutonomyManualTick,
+  runAoiAutonomyManualWakeup,
+  runAoiAutonomySessionOpenWakeup,
   updateAoiEnvironmentSource,
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalPreviewResult,
@@ -230,6 +231,7 @@ import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
+  buildAoiAutonomySchedulerPanelSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
@@ -258,6 +260,7 @@ import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyLevel,
   AoiAutonomyPolicy,
+  AoiAutonomySchedulerState,
   AoiAutonomyStatus,
   AoiContextRouterResult,
   AoiEnvironmentSource,
@@ -2023,6 +2026,8 @@ const ChatPanel: React.FC<{
     null,
   );
   const [aoiContextRouter, setAoiContextRouter] = useState<AoiContextRouterResult | null>(null);
+  const [aoiAutonomyScheduler, setAoiAutonomyScheduler] =
+    useState<AoiAutonomySchedulerState | null>(null);
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
@@ -2635,6 +2640,7 @@ const ChatPanel: React.FC<{
       setAoiEnvironmentSources(snapshot.environmentSources);
       setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
       setAoiContextRouter(snapshot.contextRouter);
+      setAoiAutonomyScheduler(snapshot.scheduler);
       setAoiAutonomyEvaluation(snapshot.evaluation);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -2682,12 +2688,10 @@ const ChatPanel: React.FC<{
     const userIdleMs = lastSeenAt ? Math.max(0, now - lastSeenAt) : undefined;
 
     try {
-      const result = await runAoiAutonomyManualTick({
+      const result = await runAoiAutonomySessionOpenWakeup({
         sessionPath: sessionPathForAutonomy,
-        reason: 'app',
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
-        maxRuntimeMs: 15000,
         quietMode: aoiAutonomyPanelSettings.quietMode,
         ...(typeof userIdleMs === 'number' ? { userIdleMs } : {}),
       });
@@ -2695,8 +2699,9 @@ const ChatPanel: React.FC<{
         return;
       }
       setAoiAutonomyStatus(result.status);
-      setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
-      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? null);
+      setAoiAutonomyScheduler(result.state);
+      setAoiAutonomyBlockedProposals(result.tickResult?.blockedProposals ?? []);
+      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? result.record.completedAt);
       await refreshAoiAutonomy({ silent: true });
     } catch (error) {
       console.warn('[ChatPanel] Aoi autonomy session-open tick failed', error);
@@ -2814,16 +2819,16 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
 
     try {
-      const result = await runAoiAutonomyManualTick({
+      const result = await runAoiAutonomyManualWakeup({
         sessionPath: sessionPathForAutonomy,
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
-        maxRuntimeMs: 15000,
         quietMode: aoiAutonomyPanelSettings.quietMode,
       });
       setAoiAutonomyStatus(result.status);
-      setAoiAutonomyBlockedProposals(result.blockedProposals ?? []);
-      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? (result.status.updatedAt || Date.now()));
+      setAoiAutonomyScheduler(result.state);
+      setAoiAutonomyBlockedProposals(result.tickResult?.blockedProposals ?? []);
+      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? result.record.completedAt);
       await refreshAoiAutonomy({ silent: true });
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -6206,6 +6211,7 @@ const ChatPanel: React.FC<{
           aoiEnvironmentSources={aoiEnvironmentSources}
           aoiWorkspaceSnapshot={aoiWorkspaceSnapshot}
           aoiContextRouter={aoiContextRouter}
+          aoiAutonomyScheduler={aoiAutonomyScheduler}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiOperatorDigest={aoiOperatorDigest}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
@@ -6669,6 +6675,7 @@ const SettingsModal: React.FC<{
   aoiEnvironmentSources: AoiEnvironmentSourceRegistry | null;
   aoiWorkspaceSnapshot: AoiWorkspaceSnapshot | null;
   aoiContextRouter: AoiContextRouterResult | null;
+  aoiAutonomyScheduler: AoiAutonomySchedulerState | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiOperatorDigest: AoiOperatorDigest | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
@@ -6760,6 +6767,7 @@ const SettingsModal: React.FC<{
   aoiEnvironmentSources,
   aoiWorkspaceSnapshot,
   aoiContextRouter,
+  aoiAutonomyScheduler,
   aoiAutonomyEvaluation,
   aoiOperatorDigest,
   aoiAutonomyPanelSettings,
@@ -7036,6 +7044,14 @@ const SettingsModal: React.FC<{
   const aoiWorkspaceSignalSummary = useMemo(
     () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
     [aoiWorkspaceSnapshot],
+  );
+  const aoiAutonomySchedulerSummary = useMemo(
+    () =>
+      buildAoiAutonomySchedulerPanelSummary(
+        aoiAutonomyScheduler,
+        expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
+      ),
+    [aoiAutonomyScheduler, expandedAoiMissionEvidence, expandedAoiProposalId],
   );
   const aoiContextSourceSummaries = useMemo(
     () => buildAoiContextSourcePanelSummaries(aoiContextRouter),
@@ -8616,6 +8632,14 @@ const SettingsModal: React.FC<{
                         <strong>{aoiAutonomyStatus?.activeTick ? 'Running' : 'Idle'}</strong>
                       </div>
                       <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Wakeups</span>
+                        <strong>{aoiAutonomyScheduler?.wakeupCount ?? 0}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Scheduler</span>
+                        <strong>{aoiAutonomySchedulerSummary.nextWakeupLabel}</strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
                         <span className={styles.promptBudgetLabel}>Observed</span>
                         <strong>{aoiAutonomyStatus?.recentObservationCount ?? 0}</strong>
                       </div>
@@ -9015,6 +9039,42 @@ const SettingsModal: React.FC<{
                         </div>
                       ) : (
                         <p className={styles.modelHint}>No workspace signal recorded.</p>
+                      )}
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>Wakeup scheduler</div>
+                      {aoiAutonomySchedulerSummary.visible ? (
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiAutonomySchedulerSummary.lastWakeupLabel}</span>
+                            <span>{aoiAutonomySchedulerSummary.nextWakeupLabel}</span>
+                            {aoiAutonomySchedulerSummary.budgetLabel && (
+                              <span>{aoiAutonomySchedulerSummary.budgetLabel}</span>
+                            )}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiAutonomySchedulerSummary.summaryLabel}
+                          </div>
+                          {(aoiAutonomySchedulerSummary.skippedSourceLabels.length > 0 ||
+                            aoiAutonomySchedulerSummary.warningLabels.length > 0) && (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiAutonomySchedulerSummary.skippedSourceLabels.map(
+                                (label, index) => (
+                                  <div key={`scheduler-skip-${index}`}>{label}</div>
+                                ),
+                              )}
+                              {aoiAutonomySchedulerSummary.warningLabels.map((label, index) => (
+                                <div key={`scheduler-warning-${index}`}>{label}</div>
+                              ))}
+                              {aoiAutonomySchedulerSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`scheduler-evidence-${index}`}>{ref}</div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No wakeup scheduler record yet.</p>
                       )}
                     </div>
 

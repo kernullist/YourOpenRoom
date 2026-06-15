@@ -11,12 +11,16 @@ import {
 import {
   appendAoiProposalDecision,
   beginAoiAutonomyTick,
+  buildAoiAutonomyStatus,
   loadAoiActiveProposals,
   loadAoiAutonomyTickState,
+  loadAoiCommandAuditRecords,
   loadAoiObservations,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
+  updateAoiEnvironmentSource,
 } from '../aoiAutonomyStore';
+import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
@@ -26,9 +30,11 @@ import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
 import type {
   AoiGoal,
+  AoiAutonomyTickResult,
   AoiMissionState,
   AoiProposal,
   AoiProposalDecision,
+  AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 import type { LLMConfig } from '../llmModels';
 
@@ -158,6 +164,48 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     artifactRefs: ['research:aoi-research-done-001/report'],
     riskSignals: [],
     ...partial,
+  };
+}
+
+function makeSchedulerTickResult(
+  root: string,
+  partial: Partial<AoiAutonomyTickResult> = {},
+): AoiAutonomyTickResult {
+  const now = typeof partial.status?.updatedAt === 'number' ? partial.status.updatedAt : NOW;
+  return {
+    ok: true,
+    sessionPath: SESSION_PATH,
+    reason: 'app',
+    status: buildAoiAutonomyStatus(root, SESSION_PATH, now),
+    tickState: loadAoiAutonomyTickState(root, SESSION_PATH, now),
+    skipped: false,
+    newObservationCount: 0,
+    newReflectionCount: 0,
+    newActiveProposalCount: 0,
+    blockedProposalCount: 0,
+    blockedProposals: [],
+    warnings: [],
+    ...partial,
+  };
+}
+
+function makeSchedulerWorkspaceSnapshot(sourceIds: string[]): AoiWorkspaceSnapshot {
+  return {
+    version: 1,
+    sessionPath: SESSION_PATH,
+    collectedAt: NOW,
+    workspaceLabel: 'YourOpenRoom',
+    sourceIds,
+    validation: {
+      version: 1,
+      result: 'unknown',
+      touchedFileScopes: [],
+      freshness: 'unknown',
+      evidenceRefs: [],
+    },
+    freshness: 'unknown',
+    evidenceRefs: sourceIds.map((sourceId) => `workspace:${sourceId}`),
+    warnings: [],
   };
 }
 
@@ -1260,5 +1308,338 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     expect(skipped.skipped).toBe(true);
     expect(skipped.warnings).toContain('tick_already_running');
     expect(skipped.status.activeTick).toBe(true);
+  });
+});
+
+describe('runAoiAutonomyWakeup()', () => {
+  it('runs a session-open wakeup within the configured source count budget', async () => {
+    const root = makeTempRoot();
+    const tickCalls: Array<{ maxGeneratedProposals?: number; llmConfigPresent: boolean }> = [];
+    enablePolicy(root, 'L4');
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'workspace-git',
+      patch: { enabled: true },
+      now: NOW,
+    });
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'workspace-build',
+      patch: { enabled: true },
+      now: NOW,
+    });
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'session_open',
+      workspaceRoot: root,
+      llmConfig: TEST_LLM_CONFIG,
+      sourceIds: ['workspace-git', 'workspace-build'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        perSourceCooldownMs: 60_000,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+      dependencies: {
+        collectWorkspaceSnapshot: (input) =>
+          makeSchedulerWorkspaceSnapshot(
+            input.registry.sources.filter((source) => source.enabled).map((source) => source.id),
+          ),
+        runBackgroundTick: async (params) => {
+          tickCalls.push({
+            maxGeneratedProposals: params.maxGeneratedProposals,
+            llmConfigPresent: Boolean(params.llmConfig),
+          });
+          return makeSchedulerTickResult(root, {
+            reason: params.reason,
+          });
+        },
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.record.selectedSourceIds).toEqual(['workspace-git']);
+    expect(result.record.refreshedSourceIds).toEqual(['workspace-git']);
+    expect(result.record.skippedSources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceId: 'workspace-build',
+          reasons: ['max_source_count_reached'],
+        }),
+      ]),
+    );
+    expect(tickCalls).toEqual([{ maxGeneratedProposals: 0, llmConfigPresent: false }]);
+    expect(
+      result.state.sourceSchedules.find((item) => item.sourceId === 'workspace-git'),
+    ).toMatchObject({
+      refreshCount: 1,
+      nextAllowedAt: NOW + 60_000,
+    });
+  });
+
+  it('records disabled sources as skipped instead of refreshing them', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: ['workspace-git'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+      dependencies: {
+        runBackgroundTick: async (params) =>
+          makeSchedulerTickResult(root, {
+            reason: params.reason,
+          }),
+      },
+    });
+
+    expect(result.record.refreshedSourceIds).toEqual([]);
+    expect(result.record.skippedSources).toEqual([
+      {
+        sourceId: 'workspace-git',
+        reasons: ['source_disabled'],
+      },
+    ]);
+    expect(
+      result.state.sourceSchedules.find((item) => item.sourceId === 'workspace-git'),
+    ).toMatchObject({
+      lastResult: 'skipped',
+      skipCount: 1,
+    });
+  });
+
+  it('applies per-source cooldowns across repeated wakeups', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: ['app-state'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        perSourceCooldownMs: 60_000,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+      dependencies: {
+        runBackgroundTick: async (params) =>
+          makeSchedulerTickResult(root, {
+            reason: params.reason,
+          }),
+      },
+    });
+
+    const second = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: ['app-state'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        perSourceCooldownMs: 60_000,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW + 1_000,
+      dependencies: {
+        runBackgroundTick: async (params) =>
+          makeSchedulerTickResult(root, {
+            reason: params.reason,
+          }),
+      },
+    });
+
+    expect(second.record.refreshedSourceIds).toEqual([]);
+    expect(second.record.skippedSources).toEqual([
+      {
+        sourceId: 'app-state',
+        reasons: ['source_cooldown_active'],
+      },
+    ]);
+    expect(
+      second.state.sourceSchedules.find((item) => item.sourceId === 'app-state'),
+    ).toMatchObject({
+      refreshCount: 1,
+      skipCount: 1,
+    });
+  });
+
+  it('suppresses low-value quiet-mode sources while still recording the wakeup', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'browser-context',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled this explicit browser page for metadata only.',
+      },
+      now: NOW,
+    });
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'session_open',
+      sourceIds: ['browser-context'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      quietMode: true,
+      now: NOW,
+      dependencies: {
+        runBackgroundTick: async (params) =>
+          makeSchedulerTickResult(root, {
+            reason: params.reason,
+          }),
+      },
+    });
+
+    expect(result.record.budget.quietMode).toBe(true);
+    expect(result.record.refreshedSourceIds).toEqual([]);
+    expect(result.record.skippedSources).toEqual([
+      {
+        sourceId: 'browser-context',
+        reasons: ['quiet_mode_suppressed'],
+      },
+    ]);
+    expect(loadAoiAutonomySchedulerState(root, SESSION_PATH).recentWakeups[0].id).toBe(
+      result.record.id,
+    );
+  });
+
+  it('does not execute approved commands from a background wakeup', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    saveAoiActiveProposals(root, SESSION_PATH, [
+      makeProposal({
+        id: 'proposal-run-command-approved',
+        status: 'accepted',
+        title: 'Run validation command',
+        body: 'A command proposal already exists, but scheduler wakeups must not execute it.',
+        reason: 'The scheduler path is observe-only.',
+        trigger: 'goal_continuation',
+        cooldownKey: 'scheduler:no-command-execution',
+        risk: 'high',
+        requiredAutonomyLevel: 'L5',
+        requiresUserApproval: true,
+        suggestedTools: ['run_command'],
+        acceptAction: {
+          kind: 'run_command',
+          params: {
+            command: 'pnpm --filter @openroom/webuiapps test',
+            cwd: root,
+            purpose: 'Validate that scheduler does not execute commands.',
+          },
+        },
+        evidenceRefs: ['proposal:proposal-run-command-approved'],
+      }),
+    ]);
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'health_check',
+      sourceIds: ['app-state'],
+      budget: {
+        maxSourceCount: 1,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(loadAoiCommandAuditRecords(root, SESSION_PATH)).toEqual([]);
+  });
+
+  it('records a failed wakeup on background tick timeout without corrupting scheduler state', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'health_check',
+      sourceIds: ['app-state'],
+      budget: {
+        maxSourceCount: 1,
+        maxBackgroundTickRuntimeMs: 1,
+        maxSchedulerRuntimeMs: 1_000,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+      dependencies: {
+        runBackgroundTick: () => new Promise<AoiAutonomyTickResult>(() => undefined),
+      },
+    });
+
+    const state = loadAoiAutonomySchedulerState(root, SESSION_PATH);
+
+    expect(result.ok).toBe(false);
+    expect(result.record.status).toBe('failed');
+    expect(result.record.warnings.join(' ')).toContain('background tick exceeded runtime budget');
+    expect(state.recentWakeups[0]).toMatchObject({
+      id: result.record.id,
+      status: 'failed',
+    });
+    expect(state.sourceSchedules.find((item) => item.sourceId === 'app-state')).toMatchObject({
+      sourceId: 'app-state',
+    });
+  });
+
+  it('does not overwrite failed state when the outer scheduler runtime budget wins the race', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'health_check',
+      sourceIds: ['app-state'],
+      budget: {
+        maxSourceCount: 1,
+        maxBackgroundTickRuntimeMs: 100,
+        maxSchedulerRuntimeMs: 1,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+      dependencies: {
+        runBackgroundTick: () =>
+          new Promise<AoiAutonomyTickResult>((resolve) => {
+            setTimeout(() => {
+              resolve(makeSchedulerTickResult(root));
+            }, 25);
+          }),
+      },
+    });
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 50);
+    });
+
+    const state = loadAoiAutonomySchedulerState(root, SESSION_PATH);
+
+    expect(result.ok).toBe(false);
+    expect(result.record.warnings).toContain('Aoi scheduler exceeded runtime budget.');
+    expect(state.recentWakeups).toHaveLength(1);
+    expect(state.recentWakeups[0]).toMatchObject({
+      id: result.record.id,
+      status: 'failed',
+    });
   });
 });

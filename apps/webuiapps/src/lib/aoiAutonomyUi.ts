@@ -12,6 +12,7 @@ import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
+  AoiAutonomySchedulerState,
   AoiAutonomyStatus,
   AoiContextRouterResult,
   AoiContextSourceSummary,
@@ -268,6 +269,17 @@ export interface AoiOperatorTimelinePanelSummary {
   eventLabels: string[];
   exportLabel: string;
   redactionLabel: string;
+}
+
+export interface AoiAutonomySchedulerPanelSummary {
+  visible: boolean;
+  summaryLabel: string;
+  lastWakeupLabel: string;
+  nextWakeupLabel: string;
+  skippedSourceLabels: string[];
+  warningLabels: string[];
+  budgetLabel: string;
+  evidenceRefs: string[];
 }
 
 export interface AoiBlockedStateSummary {
@@ -1449,6 +1461,79 @@ export function buildAoiOperatorTimelinePanelSummary(
     eventLabels,
     exportLabel,
     redactionLabel,
+  };
+}
+
+export function buildAoiAutonomySchedulerPanelSummary(
+  state: AoiAutonomySchedulerState | null | undefined,
+  includeDetails = false,
+): AoiAutonomySchedulerPanelSummary {
+  if (!state || (state.wakeupCount === 0 && state.sourceSchedules.length === 0)) {
+    return {
+      visible: false,
+      summaryLabel: 'No scheduled wakeups',
+      lastWakeupLabel: 'Not run',
+      nextWakeupLabel: 'Ready',
+      skippedSourceLabels: [],
+      warningLabels: [],
+      budgetLabel: '',
+      evidenceRefs: [],
+    };
+  }
+
+  const lastWakeup = state.recentWakeups[0];
+  if (!lastWakeup) {
+    return {
+      visible: true,
+      summaryLabel: `${state.wakeupCount} wakeup${state.wakeupCount === 1 ? '' : 's'} recorded`,
+      lastWakeupLabel: 'No recent wakeup record',
+      nextWakeupLabel:
+        state.nextAllowedWakeupAt && state.nextAllowedWakeupAt > Date.now()
+          ? `Next after ${new Date(state.nextAllowedWakeupAt).toLocaleTimeString()}`
+          : 'Ready',
+      skippedSourceLabels: [],
+      warningLabels: [],
+      budgetLabel: '',
+      evidenceRefs: [],
+    };
+  }
+
+  const skippedLimit = includeDetails ? 8 : 3;
+  const skippedSourceLabels = lastWakeup.skippedSources
+    .slice(0, skippedLimit)
+    .map((source) =>
+      sanitizeAoiProposalDisplayText(
+        `${source.sourceId}: ${source.reasons.map((reason) => reason.replace(/_/g, ' ')).join(', ')}`,
+        includeDetails ? 220 : 140,
+      ),
+    );
+  const hiddenSkippedCount = Math.max(0, lastWakeup.skippedSources.length - skippedLimit);
+  if (hiddenSkippedCount > 0) {
+    skippedSourceLabels.push(`${hiddenSkippedCount} more skipped source(s)`);
+  }
+
+  const nextWakeupLabel =
+    state.nextAllowedWakeupAt && state.nextAllowedWakeupAt > Date.now()
+      ? `Next after ${new Date(state.nextAllowedWakeupAt).toLocaleTimeString()}`
+      : 'Ready';
+  const budgetLabel = `${lastWakeup.budget.maxSourceCount} source(s), ${lastWakeup.budget.maxGeneratedProposalCount} proposal(s), ${Math.round(
+    lastWakeup.budget.maxBackgroundTickRuntimeMs / 1000,
+  )}s tick budget`;
+
+  return {
+    visible: true,
+    summaryLabel: sanitizeAoiProposalDisplayText(
+      `${lastWakeup.reason.replace(/_/g, ' ')} ${lastWakeup.status}: ${lastWakeup.refreshedSourceIds.length} refreshed, ${lastWakeup.skippedSources.length} skipped`,
+      160,
+    ),
+    lastWakeupLabel: `${lastWakeup.status} at ${new Date(lastWakeup.completedAt).toLocaleString()}`,
+    nextWakeupLabel,
+    skippedSourceLabels,
+    warningLabels: lastWakeup.warnings
+      .slice(0, includeDetails ? 6 : 2)
+      .map((warning) => sanitizeAoiProposalDisplayText(warning, 180)),
+    budgetLabel: sanitizeAoiProposalDisplayText(budgetLabel, 120),
+    evidenceRefs: includeDetails ? [`wakeup:${lastWakeup.id}`] : [],
   };
 }
 

@@ -1,8 +1,12 @@
 import type {
   AoiAutonomyPolicy,
+  AoiAutonomySchedulerState,
   AoiAutonomyStatus,
   AoiAutonomyTickReason,
   AoiAutonomyTickResult,
+  AoiAutonomyWakeupBudget,
+  AoiAutonomyWakeupReason,
+  AoiAutonomyWakeupResult,
   AoiBrowserContextMetadata,
   AoiContextRouterResult,
   AoiContextSourceFeedback,
@@ -70,6 +74,11 @@ export interface AoiAutonomyTraceExportResponse {
   summary: AoiOperatorTimelineSummary;
 }
 
+export interface AoiAutonomySchedulerResponse {
+  sessionPath: string;
+  state: AoiAutonomySchedulerState;
+}
+
 export interface AoiAutonomyDashboardSnapshot {
   sessionPath: string;
   status: AoiAutonomyStatus;
@@ -81,6 +90,7 @@ export interface AoiAutonomyDashboardSnapshot {
   contextRouter: AoiContextRouterResult | null;
   evaluation: AoiAutonomyEvaluationResult;
   timeline: AoiOperatorTimelineSummary;
+  scheduler: AoiAutonomySchedulerState;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -527,6 +537,99 @@ export async function exportAoiAutonomyTrace(
   };
 }
 
+export async function fetchAoiAutonomyScheduler(
+  sessionPath: string,
+): Promise<AoiAutonomySchedulerResponse> {
+  const response = await fetch(`${API_PREFIX}/scheduler?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi autonomy scheduler.');
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    state: requireRecordField<AoiAutonomySchedulerState>(
+      payload,
+      'state',
+      'Aoi scheduler response was malformed.',
+    ),
+  };
+}
+
+export async function runAoiAutonomyWakeup(params: {
+  sessionPath: string;
+  reason: AoiAutonomyWakeupReason;
+  latestUserMessage?: string;
+  llmConfig?: unknown;
+  sourceIds?: string[];
+  budget?: Partial<AoiAutonomyWakeupBudget>;
+  quietMode?: boolean;
+  userIdleMs?: number;
+}): Promise<AoiAutonomyWakeupResult> {
+  const response = await fetch(`${API_PREFIX}/wakeup`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      reason: params.reason,
+      latestUserMessage: params.latestUserMessage,
+      llmConfig: params.llmConfig,
+      sourceIds: params.sourceIds,
+      budget: params.budget,
+      quietMode: params.quietMode,
+      userIdleMs: params.userIdleMs,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to run Aoi autonomy wakeup.');
+  const hasWakeupResultPayload =
+    isRecord(payload.record) && isRecord(payload.state) && isRecord(payload.status);
+  if (payload.ok !== true && !hasWakeupResultPayload) {
+    throw new Error(getErrorMessage(payload, 'Aoi autonomy wakeup did not complete.'));
+  }
+  return payload as unknown as AoiAutonomyWakeupResult;
+}
+
+export function runAoiAutonomySessionOpenWakeup(params: {
+  sessionPath: string;
+  latestUserMessage?: string;
+  llmConfig?: unknown;
+  quietMode?: boolean;
+  userIdleMs?: number;
+}): Promise<AoiAutonomyWakeupResult> {
+  return runAoiAutonomyWakeup({
+    ...params,
+    reason: typeof params.userIdleMs === 'number' ? 'user_return_idle' : 'session_open',
+    budget: {
+      maxSchedulerRuntimeMs: 15000,
+      maxBackgroundTickRuntimeMs: 12000,
+      maxSourceCount: 3,
+      maxGeneratedProposalCount: 2,
+      wakeupCooldownMs: 60000,
+    },
+  });
+}
+
+export function runAoiAutonomyManualWakeup(params: {
+  sessionPath: string;
+  latestUserMessage?: string;
+  llmConfig?: unknown;
+  sourceIds?: string[];
+  budget?: Partial<AoiAutonomyWakeupBudget>;
+  quietMode?: boolean;
+}): Promise<AoiAutonomyWakeupResult> {
+  return runAoiAutonomyWakeup({
+    ...params,
+    reason: 'manual_refresh',
+    budget: {
+      maxSchedulerRuntimeMs: 15000,
+      maxBackgroundTickRuntimeMs: 12000,
+      maxSourceCount: 3,
+      maxGeneratedProposalCount: 2,
+      wakeupCooldownMs: 0,
+      ...params.budget,
+    },
+  });
+}
+
 export async function recordAoiBrowserContext(
   sessionPath: string,
   input: AoiBrowserContextInput,
@@ -603,6 +706,7 @@ export async function fetchAoiAutonomyDashboard(
     contextRouter,
     evaluation,
     timeline,
+    scheduler,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -613,6 +717,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiContextRouter(sessionPath),
     fetchAoiAutonomyEvaluation(sessionPath),
     fetchAoiAutonomyTimeline(sessionPath, { limit: 20 }),
+    fetchAoiAutonomyScheduler(sessionPath),
   ]);
 
   return {
@@ -626,6 +731,7 @@ export async function fetchAoiAutonomyDashboard(
     contextRouter: contextRouter.context,
     evaluation: evaluation.evaluation,
     timeline: timeline.summary,
+    scheduler: scheduler.state,
   };
 }
 

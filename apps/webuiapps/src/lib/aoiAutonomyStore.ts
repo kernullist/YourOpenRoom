@@ -57,6 +57,7 @@ export interface AoiAutonomyPaths {
   timelineDir: string;
   timelineEvents: string;
   timelineExportsDir: string;
+  schedulerState: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -348,6 +349,7 @@ export function resolveAoiAutonomyPaths(
     timelineDir,
     timelineEvents: join(timelineDir, 'events.jsonl'),
     timelineExportsDir: join(timelineDir, 'exports'),
+    schedulerState: join(root, 'scheduler-state.json'),
   };
 }
 

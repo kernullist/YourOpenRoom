@@ -6,6 +6,7 @@ import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
+  buildAoiAutonomySchedulerPanelSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
@@ -41,6 +42,7 @@ import {
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiAutonomyPolicy,
+  AoiAutonomySchedulerState,
   AoiAttentionEvent,
   AoiContextRouterResult,
   AoiContextSourceSummary,
@@ -278,6 +280,62 @@ function makeAttentionEvent(partial: Partial<AoiAttentionEvent> = {}): AoiAttent
     suggestedAttentionLevel: 'inline',
     createdAt: 3000,
     dedupeKey: 'attention:research_completed:research:aoi-research-ui-test',
+    ...partial,
+  };
+}
+
+function makeSchedulerState(
+  partial: Partial<AoiAutonomySchedulerState> = {},
+): AoiAutonomySchedulerState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    updatedAt: 5000,
+    wakeupCount: 1,
+    lastWakeupAt: 5000,
+    lastWakeupReason: 'session_open',
+    lastWakeupStatus: 'completed',
+    nextAllowedWakeupAt: 6000,
+    sourceSchedules: [],
+    recentWakeups: [
+      {
+        version: 1,
+        id: 'aoi-wakeup-ui-test',
+        sessionPath: 'aoi/default',
+        reason: 'session_open',
+        startedAt: 4500,
+        completedAt: 5000,
+        durationMs: 500,
+        ok: true,
+        status: 'completed',
+        budget: {
+          version: 1,
+          maxSchedulerRuntimeMs: 15000,
+          maxBackgroundTickRuntimeMs: 12000,
+          maxSourceCount: 3,
+          maxGeneratedProposalCount: 2,
+          perSourceCooldownMs: 60000,
+          wakeupCooldownMs: 60000,
+          quietMode: false,
+          allowNetwork: false,
+        },
+        selectedSourceIds: ['app-state'],
+        refreshedSourceIds: ['app-state'],
+        skippedSources: [
+          { sourceId: 'workspace-git', reasons: ['source_disabled'] },
+          { sourceId: 'workspace-build', reasons: ['max_source_count_reached'] },
+          { sourceId: 'browser-context', reasons: ['quiet_mode_suppressed'] },
+          { sourceId: 'manual-note', reasons: ['source_cooldown_active'] },
+        ],
+        tickRan: true,
+        tickSkipped: false,
+        tickOk: true,
+        tickReason: 'app',
+        proposalsCreated: 1,
+        observationsSeen: 2,
+        warnings: ['background tick warning with F:\\kernullist\\YourOpenRoom\\secret.txt'],
+      },
+    ],
     ...partial,
   };
 }
@@ -1407,6 +1465,23 @@ describe('Aoi autonomy UI helpers', () => {
     expect(panelSummary.eventLabels[0]).toContain('digest item surfaced');
     expect(panelSummary.exportLabel).toContain('1970-01-01T00:00:04.500Z');
     expect(panelSummary.redactionLabel).toBe('3 privacy replacements');
+  });
+
+  it('summarizes scheduler wakeups and limits skipped source noise', () => {
+    const collapsed = buildAoiAutonomySchedulerPanelSummary(makeSchedulerState(), false);
+    const expanded = buildAoiAutonomySchedulerPanelSummary(makeSchedulerState(), true);
+
+    expect(collapsed).toMatchObject({
+      visible: true,
+      summaryLabel: 'session open completed: 1 refreshed, 4 skipped',
+      budgetLabel: '3 source(s), 2 proposal(s), 12s tick budget',
+    });
+    expect(collapsed.skippedSourceLabels).toHaveLength(4);
+    expect(collapsed.skippedSourceLabels[0]).toContain('workspace-git');
+    expect(collapsed.skippedSourceLabels[3]).toBe('1 more skipped source(s)');
+    expect(collapsed.warningLabels.join(' ')).toContain('[local path]');
+    expect(expanded.skippedSourceLabels).toHaveLength(4);
+    expect(expanded.evidenceRefs).toEqual(['wakeup:aoi-wakeup-ui-test']);
   });
 
   it('sends pause and resume mission client calls without dropping evidence refs', async () => {

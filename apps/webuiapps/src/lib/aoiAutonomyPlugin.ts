@@ -45,8 +45,14 @@ import {
   recordAoiProposalDecisionTimelineEvent,
   recordAoiProposalFeedbackTimelineEvent,
 } from './aoiOperatorTimeline';
+import {
+  isAoiAutonomyWakeupReason,
+  loadAoiAutonomySchedulerState,
+  runAoiAutonomyWakeup,
+} from './aoiAutonomyScheduler';
 import type {
   AoiAutonomyTickReason,
+  AoiAutonomyWakeupBudget,
   AoiOperatorTimelineEventKind,
   AoiProposalFeedbackCategory,
 } from './aoiAutonomyTypes';
@@ -142,8 +148,16 @@ function isAoiOperatorTimelineEventKind(value: unknown): value is AoiOperatorTim
     value === 'approved_command_previewed' ||
     value === 'approved_command_recorded' ||
     value === 'feedback_recorded' ||
+    value === 'wakeup_recorded' ||
     value === 'trace_exported'
   );
+}
+
+function getWakeupBudgetFromBody(value: unknown): Partial<AoiAutonomyWakeupBudget> | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Partial<AoiAutonomyWakeupBudget>;
 }
 
 function getHeaderString(value: string | string[] | undefined): string {
@@ -272,6 +286,23 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'GET' && route === '/scheduler') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        state: loadAoiAutonomySchedulerState(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
     if (req.method === 'GET' && route === '/goals') {
       const sessionPath = getSessionPathFromUrl(url);
       if (!sessionPath) {
@@ -386,6 +417,47 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         context,
       });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/wakeup') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (!isAoiAutonomyWakeupReason(body.reason)) {
+        writeJson(res, 400, {
+          error:
+            'reason must be one of session_open, user_return_idle, manual_refresh, source_ttl_expired, mission_waiting_too_long, kira_event, research_event, health_check',
+          code: 'invalid_wakeup_reason',
+        });
+        return true;
+      }
+      const llmConfig =
+        body.llmConfig && typeof body.llmConfig === 'object' && !Array.isArray(body.llmConfig)
+          ? (body.llmConfig as LLMConfig)
+          : undefined;
+      const result = await runAoiAutonomyWakeup({
+        sessionsDir,
+        sessionPath,
+        reason: body.reason,
+        workspaceRoot,
+        latestUserMessage:
+          typeof body.latestUserMessage === 'string' ? body.latestUserMessage : undefined,
+        llmConfig,
+        sourceIds: Array.isArray(body.sourceIds)
+          ? body.sourceIds.filter((item): item is string => typeof item === 'string')
+          : undefined,
+        budget: getWakeupBudgetFromBody(body.budget),
+        quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
+        userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
+      });
+      writeJson(res, 200, result);
       return true;
     }
 

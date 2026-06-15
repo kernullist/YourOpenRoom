@@ -55,6 +55,7 @@ const TIMELINE_MEANINGFUL_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'wakeup_recorded',
 ]);
 
 const DEFAULT_TRACE_EXPORT_KINDS = new Set<AoiOperatorTimelineEventKind>([
@@ -75,6 +76,7 @@ const DEFAULT_TRACE_EXPORT_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'wakeup_recorded',
 ]);
 
 const PRIVATE_METADATA_KEYS = new Set<string>([
@@ -280,6 +282,7 @@ function isTimelineEventKind(value: unknown): value is AoiOperatorTimelineEventK
     value === 'approved_command_previewed' ||
     value === 'approved_command_recorded' ||
     value === 'feedback_recorded' ||
+    value === 'wakeup_recorded' ||
     value === 'trace_exported'
   );
 }

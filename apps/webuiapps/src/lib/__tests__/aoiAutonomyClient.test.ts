@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
-import { fetchAoiAutonomyDashboard, runAoiAutonomyManualTick } from '../aoiAutonomyClient';
+import {
+  fetchAoiAutonomyDashboard,
+  runAoiAutonomyManualTick,
+  runAoiAutonomyManualWakeup,
+} from '../aoiAutonomyClient';
 import type { AoiAutonomyEvaluationResult } from '../aoiAutonomyEvaluation';
 import type { AoiAutonomyStatus } from '../aoiAutonomyTypes';
 
@@ -151,6 +155,19 @@ describe('Aoi autonomy client dashboard', () => {
           },
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/scheduler?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          state: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            updatedAt: 1000,
+            wakeupCount: 0,
+            sourceSchedules: [],
+            recentWakeups: [],
+          },
+        });
+      }
       throw new Error(`Unexpected URL: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -163,7 +180,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.goals.active).toHaveLength(1);
     expect(snapshot.evaluation.metrics.evidenceCoverage).toBe(1);
     expect(snapshot.timeline.totalEventCount).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(9);
+    expect(snapshot.scheduler.wakeupCount).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(10);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -175,6 +193,7 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/context?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/evaluation?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/timeline?sessionPath=aoi%2Fdefault&limit=20',
+        '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
       ]),
     );
   });
@@ -209,5 +228,86 @@ describe('Aoi autonomy client dashboard', () => {
       reason: 'manual',
       maxRuntimeMs: 5000,
     });
+  });
+
+  it('posts a bounded manual wakeup through the scheduler endpoint', async () => {
+    let requestBody: Record<string, unknown> = {};
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(String(input)).toBe('/api/aoi-autonomy/wakeup');
+      expect(init?.method).toBe('POST');
+      return jsonResponse({
+        ok: true,
+        sessionPath: 'aoi/default',
+        record: {
+          id: 'aoi-wakeup-client-test',
+          completedAt: 2000,
+        },
+        state: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          updatedAt: 2000,
+          wakeupCount: 1,
+          sourceSchedules: [],
+          recentWakeups: [],
+        },
+        status: makeStatus(),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runAoiAutonomyManualWakeup({
+      sessionPath: 'aoi/default',
+      latestUserMessage: 'check this session',
+      sourceIds: ['app-state'],
+      quietMode: true,
+    });
+
+    expect(result.sessionPath).toBe('aoi/default');
+    expect(requestBody).toMatchObject({
+      sessionPath: 'aoi/default',
+      latestUserMessage: 'check this session',
+      sourceIds: ['app-state'],
+      reason: 'manual_refresh',
+      quietMode: true,
+    });
+    expect(requestBody.budget).toMatchObject({
+      maxSchedulerRuntimeMs: 15000,
+      maxBackgroundTickRuntimeMs: 12000,
+      maxSourceCount: 3,
+      maxGeneratedProposalCount: 2,
+      wakeupCooldownMs: 0,
+    });
+  });
+
+  it('returns failed wakeup records instead of treating them as HTTP failures', async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({
+        ok: false,
+        sessionPath: 'aoi/default',
+        record: {
+          id: 'aoi-wakeup-failed-client-test',
+          status: 'failed',
+          completedAt: 2000,
+        },
+        state: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          updatedAt: 2000,
+          wakeupCount: 1,
+          sourceSchedules: [],
+          recentWakeups: [],
+        },
+        status: makeStatus(),
+      }),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await runAoiAutonomyManualWakeup({
+      sessionPath: 'aoi/default',
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.record.status).toBe('failed');
   });
 });
