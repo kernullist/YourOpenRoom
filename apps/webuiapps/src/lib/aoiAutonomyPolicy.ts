@@ -10,6 +10,7 @@ import type {
   AoiEnvironmentSourceQuietModeBehavior,
   AoiEnvironmentSourceRegistry,
   AoiEnvironmentSourceScope,
+  AoiPersonalSignalSourceKind,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalExecutionPolicyContext,
@@ -46,6 +47,9 @@ export const AOI_ENVIRONMENT_SOURCE_KINDS: readonly AoiEnvironmentSourceKind[] =
   'app_state',
   'browser_context',
   'manual_note',
+  'calendar_metadata',
+  'gmail_metadata',
+  'notes_metadata',
 ];
 
 export const AOI_ENVIRONMENT_SOURCE_OPERATIONS: readonly AoiEnvironmentSourceOperation[] = [
@@ -53,6 +57,7 @@ export const AOI_ENVIRONMENT_SOURCE_OPERATIONS: readonly AoiEnvironmentSourceOpe
   'status',
   'diff',
   'read_metadata',
+  'summarize_counts',
 ];
 
 export const AOI_ENVIRONMENT_SOURCE_SCOPES: readonly AoiEnvironmentSourceScope[] = [
@@ -65,9 +70,15 @@ export const AOI_ENVIRONMENT_SOURCE_SCOPES: readonly AoiEnvironmentSourceScope[]
 export const AOI_ENVIRONMENT_SOURCE_QUIET_MODE_BEHAVIORS: readonly AoiEnvironmentSourceQuietModeBehavior[] =
   ['record_only', 'suppress'];
 
+export const AOI_PERSONAL_SIGNAL_SOURCE_KINDS: readonly AoiPersonalSignalSourceKind[] = [
+  'calendar_metadata',
+  'gmail_metadata',
+  'notes_metadata',
+];
+
 const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
   AoiEnvironmentSource,
-  'version' | 'updatedAt' | 'lastObservedAt' | 'consentReason'
+  'version' | 'updatedAt' | 'lastObservedAt' | 'lastReviewedAt' | 'consentReason'
 >[] = [
   {
     id: 'workspace-git',
@@ -145,6 +156,39 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     allowedOperations: ['summarize', 'read_metadata'],
     privateByDefault: false,
     quietModeBehavior: 'record_only',
+  },
+  {
+    id: 'calendar-metadata',
+    kind: 'calendar_metadata',
+    label: 'Calendar metadata',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'medium',
+    allowedOperations: ['status', 'read_metadata', 'summarize_counts'],
+    privateByDefault: false,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    id: 'gmail-metadata',
+    kind: 'gmail_metadata',
+    label: 'Gmail metadata',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['status', 'read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
+    id: 'notes-metadata',
+    kind: 'notes_metadata',
+    label: 'Notes metadata',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['status', 'read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
   },
 ];
 
@@ -369,6 +413,19 @@ export function isAoiEnvironmentSourceQuietModeBehavior(
   );
 }
 
+export function isAoiPersonalSignalSourceKind(
+  value: unknown,
+): value is AoiPersonalSignalSourceKind {
+  return (
+    typeof value === 'string' &&
+    (AOI_PERSONAL_SIGNAL_SOURCE_KINDS as readonly string[]).includes(value)
+  );
+}
+
+export function isAoiPersonalSignalSource(source: AoiEnvironmentSource): boolean {
+  return isAoiPersonalSignalSourceKind(source.kind);
+}
+
 export function compareAoiAutonomyLevel(a: AoiAutonomyLevel, b: AoiAutonomyLevel): number {
   return AOI_AUTONOMY_LEVEL_ORDER[a] - AOI_AUTONOMY_LEVEL_ORDER[b];
 }
@@ -467,6 +524,10 @@ export function normalizeAoiEnvironmentSource(
   const enabled = normalizeBoolean(raw.enabled, fallback.enabled);
   const privateByDefault = normalizeBoolean(raw.privateByDefault, fallback.privateByDefault);
   const consentReason = normalizeOptionalText(raw.consentReason, 180);
+  const lastReviewedAt =
+    typeof raw.lastReviewedAt === 'number' && raw.lastReviewedAt > 0
+      ? raw.lastReviewedAt
+      : undefined;
 
   return {
     version: 1,
@@ -486,6 +547,7 @@ export function normalizeAoiEnvironmentSource(
     ...(typeof raw.lastObservedAt === 'number' && raw.lastObservedAt > 0
       ? { lastObservedAt: raw.lastObservedAt }
       : {}),
+    ...(lastReviewedAt ? { lastReviewedAt } : {}),
     ...(consentReason ? { consentReason } : {}),
   };
 }
@@ -551,7 +613,12 @@ export function isAoiEnvironmentSourceEnabled(
 }
 
 export function isAoiEnvironmentSourcePrivateOrExplicit(source: AoiEnvironmentSource): boolean {
-  return source.privateByDefault || source.kind === 'browser_context' || source.risk === 'high';
+  return (
+    source.privateByDefault ||
+    source.kind === 'browser_context' ||
+    isAoiPersonalSignalSource(source) ||
+    source.risk === 'high'
+  );
 }
 
 export function checkAoiEnvironmentSourceOperation(params: {
@@ -579,6 +646,9 @@ export function checkAoiEnvironmentSourceOperation(params: {
     (source.scope !== 'explicit_target' || !source.consentReason)
   ) {
     reasons.push('explicit_target_scope_required');
+  }
+  if (isAoiPersonalSignalSource(source) && !source.lastReviewedAt) {
+    reasons.push('source_consent_review_required');
   }
 
   return {

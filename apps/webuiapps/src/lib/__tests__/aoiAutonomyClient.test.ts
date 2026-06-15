@@ -4,6 +4,7 @@ import {
   fetchAoiAutonomyDashboard,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
+  updateAoiEnvironmentSource,
 } from '../aoiAutonomyClient';
 import type { AoiAutonomyEvaluationResult } from '../aoiAutonomyEvaluation';
 import type { AoiAutonomyStatus } from '../aoiAutonomyTypes';
@@ -196,6 +197,48 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
       ]),
     );
+  });
+
+  it('preserves explicit clear markers when updating environment sources', async () => {
+    let requestBody: Record<string, unknown> = {};
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>;
+      expect(String(input)).toBe('/api/aoi-autonomy/sources');
+      expect(init?.method).toBe('POST');
+      return jsonResponse({
+        ok: true,
+        sessionPath: 'aoi/default',
+        registry: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          updatedAt: 2000,
+          sources: [],
+        },
+        status: makeStatus(),
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    await updateAoiEnvironmentSource('aoi/default', {
+      sourceId: 'notes-metadata',
+      patch: {
+        enabled: false,
+        consentReason: undefined,
+        lastObservedAt: undefined,
+        lastReviewedAt: undefined,
+      },
+    });
+
+    expect(requestBody).toMatchObject({
+      sessionPath: 'aoi/default',
+      sourceId: 'notes-metadata',
+      patch: {
+        enabled: false,
+        consentReason: null,
+        lastObservedAt: null,
+        lastReviewedAt: null,
+      },
+    });
   });
 
   it('posts a bounded manual tick when the user runs check now', async () => {

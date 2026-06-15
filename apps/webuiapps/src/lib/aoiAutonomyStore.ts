@@ -427,6 +427,11 @@ export function updateAoiEnvironmentSource(
       ? input.patch.lastObservedAt
       : undefined
     : target.lastObservedAt;
+  const nextLastReviewedAt = Object.prototype.hasOwnProperty.call(input.patch, 'lastReviewedAt')
+    ? typeof input.patch.lastReviewedAt === 'number' && input.patch.lastReviewedAt > 0
+      ? input.patch.lastReviewedAt
+      : undefined
+    : target.lastReviewedAt;
   const nextQuietModeBehavior = isAoiEnvironmentSourceQuietModeBehavior(
     input.patch.quietModeBehavior,
   )
@@ -443,6 +448,7 @@ export function updateAoiEnvironmentSource(
             quietModeBehavior: nextQuietModeBehavior,
             consentReason: nextConsentReason,
             lastObservedAt: nextLastObservedAt,
+            lastReviewedAt: nextLastReviewedAt,
             updatedAt: now,
           }
         : source,

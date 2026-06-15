@@ -9097,9 +9097,12 @@ const SettingsModal: React.FC<{
                               </div>
                               <div className={styles.aoiAutonomyProposalDetails}>
                                 <div>{source.consentSummary}</div>
+                                <div>{source.metadataScopeLabel}</div>
+                                <div>{source.willNotReadOrDoLabel}</div>
                                 <div>{source.gateReason}</div>
                                 <div>{source.quietModeLabel}</div>
                                 <div>Last observed: {source.lastObservedLabel}</div>
+                                <div>Last reviewed: {source.lastReviewedLabel}</div>
                               </div>
                               <div className={styles.aoiAutonomyProposalActions}>
                                 <button
@@ -9111,6 +9114,7 @@ const SettingsModal: React.FC<{
                                       consentReason: !source.enabled
                                         ? 'User enabled metadata-only observation in Aoi Autonomy panel.'
                                         : undefined,
+                                      lastReviewedAt: !source.enabled ? Date.now() : undefined,
                                     })
                                   }
                                   disabled={
@@ -9121,6 +9125,24 @@ const SettingsModal: React.FC<{
                                 >
                                   {source.enabled ? 'Enabled' : 'Disabled'}
                                 </button>
+                                {source.canClear && (
+                                  <button
+                                    type="button"
+                                    className={styles.cancelBtn}
+                                    onClick={() =>
+                                      void onUpdateAoiEnvironmentSource(source.id, {
+                                        enabled: false,
+                                        consentReason: undefined,
+                                        lastObservedAt: undefined,
+                                        lastReviewedAt: undefined,
+                                      })
+                                    }
+                                    disabled={aoiAutonomyActionId === `source:${source.id}`}
+                                    title={source.clearTitle}
+                                  >
+                                    Clear
+                                  </button>
+                                )}
                               </div>
                             </div>
                           ))}

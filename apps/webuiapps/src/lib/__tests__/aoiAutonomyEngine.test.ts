@@ -1194,6 +1194,149 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     );
   });
 
+  it('routes consented personal metadata only when relevant and omits private bodies', () => {
+    const root = makeTempRoot();
+    const configFile = join(root, 'config.json');
+    writeJson(join(root, SESSION_PATH, 'apps', 'calendar', 'data', 'events', 'event-1.json'), {
+      id: 'event-1',
+      title: 'Kernel review sync',
+      notes: 'calendar private notes must not leak',
+      description: 'calendar long description must not leak',
+      startAt: new Date(NOW + 60 * 60 * 1000).toISOString(),
+      remindBeforeMinutes: 15,
+      completed: false,
+      updatedAt: NOW - 1000,
+    });
+    writeJson(join(root, SESSION_PATH, 'apps', 'email', 'data', 'emails', 'mail-1.json'), {
+      id: 'mail-1',
+      folder: 'inbox',
+      isRead: false,
+      labelIds: ['INBOX', 'UNREAD', 'SECURITY'],
+      subject: 'Gmail subject must not enter Aoi metadata summary',
+      snippet: 'gmail snippet must not leak',
+      content: 'gmail body must not leak',
+      timestamp: NOW - 2000,
+    });
+    writeJson(join(root, SESSION_PATH, 'apps', 'notes', 'data', 'notes', 'note-1.json'), {
+      id: 'note-1',
+      title: 'Driver hardening plan',
+      content: 'notes full body must not leak',
+      tags: ['kernel', 'anti-cheat'],
+      pinned: true,
+      updatedAt: NOW - 3000,
+    });
+    writeJson(configFile, {
+      gmail: {
+        clientId: 'test-client',
+        refreshToken: 'test-refresh',
+        lastSyncAt: NOW - 2000,
+      },
+    });
+    for (const sourceId of ['calendar-metadata', 'gmail-metadata', 'notes-metadata']) {
+      updateAoiEnvironmentSource(root, SESSION_PATH, {
+        sourceId,
+        patch: {
+          enabled: true,
+          consentReason: `User enabled ${sourceId} metadata for this mission.`,
+          lastReviewedAt: NOW - 5000,
+        },
+        now: NOW - 4000,
+      });
+    }
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      configFile,
+      latestUserMessage: '오늘 calendar 일정, Gmail unread, notes tag 상태를 요약해줘',
+      now: NOW,
+    });
+    const calendar = result.candidateSources.find(
+      (source) => source.sourceId === 'calendar-metadata',
+    );
+    const gmail = result.candidateSources.find((source) => source.sourceId === 'gmail-metadata');
+    const notes = result.candidateSources.find((source) => source.sourceId === 'notes-metadata');
+    const resultJson = JSON.stringify(result);
+
+    expect(calendar?.summary).toContain('Kernel review sync');
+    expect(calendar?.summary).toContain('reminder 15m');
+    expect(resultJson).not.toContain('calendar private notes must not leak');
+    expect(resultJson).not.toContain('calendar long description must not leak');
+    expect(gmail?.summary).toContain('unread=1');
+    expect(gmail?.summary).toContain('labels=INBOX:1');
+    expect(resultJson).not.toContain('Gmail subject must not enter');
+    expect(resultJson).not.toContain('gmail snippet must not leak');
+    expect(resultJson).not.toContain('gmail body must not leak');
+    expect(notes?.summary).toContain('Driver hardening plan');
+    expect(notes?.summary).toContain('kernel');
+    expect(resultJson).not.toContain('notes full body must not leak');
+    expect(notes?.redactionState).toBe('redacted');
+  });
+
+  it('ignores disabled personal metadata and applies intrusive feedback penalties', () => {
+    const root = makeTempRoot();
+    writeJson(join(root, SESSION_PATH, 'apps', 'notes', 'data', 'notes', 'note-1.json'), {
+      id: 'note-1',
+      title: 'Private roadmap',
+      content: 'private body must not leak',
+      tags: ['sensitive'],
+      pinned: true,
+      updatedAt: NOW - 3000,
+    });
+
+    const disabled = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'notes 상태를 봐줘',
+      now: NOW,
+    });
+    expect(disabled.candidateSources.some((source) => source.sourceId === 'notes-metadata')).toBe(
+      false,
+    );
+
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'notes-metadata',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled note metadata for this mission.',
+        lastReviewedAt: NOW - 5000,
+      },
+      now: NOW - 4000,
+    });
+    const base = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'notes 상태를 봐줘',
+      now: NOW,
+    });
+    const penalized = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'notes 상태를 봐줘',
+      contextFeedback: [
+        {
+          version: 1,
+          id: 'ctx-feedback-too-intrusive',
+          sessionPath: SESSION_PATH,
+          sourceId: 'notes-metadata',
+          feedbackCategory: 'too_much',
+          evidenceRefs: ['personal-signal:notes_metadata'],
+          createdAt: NOW - 1000,
+        },
+      ],
+      now: NOW,
+    });
+    const baseNotes = base.candidateSources.find((source) => source.sourceId === 'notes-metadata');
+    const penalizedNotes = penalized.candidateSources.find(
+      (source) => source.sourceId === 'notes-metadata',
+    );
+
+    expect(baseNotes).toBeDefined();
+    expect(penalizedNotes).toBeDefined();
+    expect(penalizedNotes?.relevanceScore).toBeLessThan(baseNotes?.relevanceScore ?? 0);
+    expect(penalizedNotes?.scoreReasons.join(' ')).toContain('too_much');
+  });
+
   it('updates mission state silently for stale active-goal waiting events', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

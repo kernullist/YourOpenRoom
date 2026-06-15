@@ -149,10 +149,32 @@ describe('Aoi environment source registry storage', () => {
       'app-state',
       'browser-context',
       'manual-note',
+      'calendar-metadata',
+      'gmail-metadata',
+      'notes-metadata',
     ]);
     expect(registry.sources.find((source) => source.id === 'browser-context')).toMatchObject({
       enabled: false,
       risk: 'high',
+      privateByDefault: true,
+      scope: 'explicit_target',
+    });
+    expect(registry.sources.find((source) => source.id === 'calendar-metadata')).toMatchObject({
+      enabled: false,
+      kind: 'calendar_metadata',
+      allowedOperations: ['status', 'read_metadata', 'summarize_counts'],
+      privateByDefault: false,
+      scope: 'explicit_target',
+    });
+    expect(registry.sources.find((source) => source.id === 'gmail-metadata')).toMatchObject({
+      enabled: false,
+      kind: 'gmail_metadata',
+      privateByDefault: true,
+      scope: 'explicit_target',
+    });
+    expect(registry.sources.find((source) => source.id === 'notes-metadata')).toMatchObject({
+      enabled: false,
+      kind: 'notes_metadata',
       privateByDefault: true,
       scope: 'explicit_target',
     });
@@ -181,12 +203,52 @@ describe('Aoi environment source registry storage', () => {
 
     const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);
     expect(status).toMatchObject({
-      environmentSourceCount: 7,
+      environmentSourceCount: 10,
       enabledEnvironmentSourceCount: 5,
-      highRiskEnvironmentSourceCount: 1,
-      privateEnvironmentSourceCount: 1,
+      highRiskEnvironmentSourceCount: 3,
+      privateEnvironmentSourceCount: 3,
       lastEnvironmentSourceObservedAt: 1500,
     });
+  });
+
+  it('stores and clears explicit personal source consent review state', () => {
+    const root = makeTempRoot();
+
+    const enabled = updateAoiEnvironmentSource(root, 'aoi/default', {
+      sourceId: 'notes-metadata',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled note metadata for the current mission.',
+        lastReviewedAt: 2500,
+        lastObservedAt: 2600,
+      },
+      now: 3000,
+    });
+    expect(enabled.sources.find((source) => source.id === 'notes-metadata')).toMatchObject({
+      enabled: true,
+      consentReason: 'User enabled note metadata for the current mission.',
+      lastReviewedAt: 2500,
+      lastObservedAt: 2600,
+    });
+
+    const cleared = updateAoiEnvironmentSource(root, 'aoi/default', {
+      sourceId: 'notes-metadata',
+      patch: {
+        enabled: false,
+        consentReason: undefined,
+        lastReviewedAt: undefined,
+        lastObservedAt: undefined,
+      },
+      now: 4000,
+    });
+    const notesSource = cleared.sources.find((source) => source.id === 'notes-metadata');
+    expect(notesSource).toMatchObject({
+      enabled: false,
+      updatedAt: 4000,
+    });
+    expect(notesSource?.consentReason).toBeUndefined();
+    expect(notesSource?.lastReviewedAt).toBeUndefined();
+    expect(notesSource?.lastObservedAt).toBeUndefined();
   });
 
   it('does not let source updates rewrite structural policy metadata', () => {
@@ -535,6 +597,37 @@ describe('Aoi operator timeline storage and trace export', () => {
     expect(exportJson).toContain('[local-path:1]');
     expect(traceExport.redactionSummary.totalReplacementCount).toBeGreaterThanOrEqual(4);
     expect(traceExport.privacyNotes.join(' ')).toContain('synthetic labels');
+  });
+
+  it('redacts personal metadata labels from trace exports', () => {
+    const root = makeTempRoot();
+    recordAoiOperatorTimelineEvent(root, {
+      sessionPath: 'aoi/default',
+      kind: 'source_selected',
+      visibility: 'dashboard_only',
+      createdAt: 1000,
+      title: 'Source selected: Private roadmap',
+      summary: 'Notes metadata: recentTitles=Private roadmap; tags=sensitive-kernel',
+      sourceRef: 'context-source:notes-private-roadmap',
+      sourceKind: 'notes_metadata',
+      evidenceRefs: ['personal-signal:notes_metadata', 'environment-source:notes-metadata'],
+      relatedRefs: ['environment-source:notes-metadata'],
+      metadata: {
+        recentTitles: ['Private roadmap'],
+        tags: ['sensitive-kernel'],
+      },
+    });
+
+    const traceExport = exportAoiOperatorTrace(root, 'aoi/default', {
+      now: 2000,
+      persist: false,
+    });
+    const exportJson = JSON.stringify(traceExport);
+
+    expect(exportJson).not.toContain('Private roadmap');
+    expect(exportJson).not.toContain('sensitive-kernel');
+    expect(exportJson).toContain('[personal-metadata:');
+    expect(traceExport.events[0].redactionState).toBe('synthetic');
   });
 
   it('summarizes last trace export redactions for the dashboard', () => {

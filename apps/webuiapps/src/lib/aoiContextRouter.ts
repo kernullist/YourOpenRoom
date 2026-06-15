@@ -16,6 +16,7 @@ import {
 import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
+import { loadAoiPersonalSignalMetadataSummaries } from './aoiPersonalSignalConnectors';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiBrowserContextMetadata,
@@ -51,6 +52,9 @@ const SOURCE_ID_BY_KIND: Record<AoiEnvironmentSourceKind, string> = {
   app_state: 'app-state',
   browser_context: 'browser-context',
   manual_note: 'manual-note',
+  calendar_metadata: 'calendar-metadata',
+  gmail_metadata: 'gmail-metadata',
+  notes_metadata: 'notes-metadata',
 };
 
 const NEGATIVE_FEEDBACK = new Set<AoiProposalFeedbackCategory>([
@@ -76,6 +80,7 @@ export interface AoiContextRouterInput {
   sessionsDir: string;
   sessionPath: string;
   latestUserMessage?: string;
+  configFile?: string;
   registry?: AoiEnvironmentSourceRegistry | null;
   mission?: AoiMissionState | null;
   memories?: AoiMemoryEntry[];
@@ -249,11 +254,12 @@ function hasIntent(value: string, pattern: RegExp): boolean {
 function sourceAllowed(
   registry: AoiEnvironmentSourceRegistry | null | undefined,
   sourceId: string,
+  operation: 'summarize' | 'summarize_counts' = 'summarize',
 ): boolean {
   return checkAoiEnvironmentSourceOperation({
     registry,
     sourceId,
-    operation: 'summarize',
+    operation,
   }).allowed;
 }
 
@@ -842,6 +848,80 @@ function buildBrowserCandidates(params: {
   });
 }
 
+function buildPersonalSignalCandidates(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  configFile?: string;
+  latestUserMessage: string;
+  registry: AoiEnvironmentSourceRegistry;
+  mission: AoiMissionState | null;
+  now: number;
+}): AoiContextSourceSummary[] {
+  const missionEvidence = missionRefs(params.mission);
+  const summaries = loadAoiPersonalSignalMetadataSummaries({
+    sessionsDir: params.sessionsDir,
+    sessionPath: params.sessionPath,
+    configFile: params.configFile,
+    now: params.now,
+  });
+  return summaries
+    .map((summary) => {
+      if (!sourceAllowed(params.registry, summary.sourceId, 'summarize_counts')) {
+        return null;
+      }
+      const message = params.latestUserMessage;
+      const sourceIntent =
+        summary.kind === 'calendar_metadata'
+          ? hasIntent(
+              message,
+              /(calendar|schedule|meeting|event|reminder|deadline|일정|캘린더|회의|미팅|리마인더)/i,
+            )
+          : summary.kind === 'gmail_metadata'
+            ? hasIntent(
+                message,
+                /(gmail|email|mail|inbox|unread|label|thread|메일|이메일|받은편지|읽지 않은)/i,
+              )
+            : hasIntent(message, /(note|notes|memo|tag|pinned|record|메모|노트|태그|기록|핀)/i);
+      const linkedToMission =
+        missionEvidence.includes(`environment-source:${summary.sourceId}`) ||
+        missionEvidence.includes(`personal-signal:${summary.kind}`);
+      const overlap = overlapScore(message, summary.relevanceText);
+      if (!sourceIntent && !linkedToMission && overlap < 0.28) {
+        return null;
+      }
+      const score =
+        0.18 +
+        (sourceIntent ? 0.34 : 0) +
+        (linkedToMission ? 0.26 : 0) +
+        overlap * 0.18 +
+        scoreFreshness(summary.freshness);
+      return makeSummary({
+        sourceId: summary.sourceId,
+        kind: summary.kind,
+        label: summary.label,
+        displayName: summary.displayName,
+        summary: summary.summary,
+        evidenceRefs: summary.evidenceRefs,
+        relevanceScore: score,
+        confidence: summary.confidence,
+        freshness: summary.freshness,
+        scoreReasons: dedupeStrings([
+          ...summary.scoreReasons,
+          sourceIntent ? 'personal source intent detected' : undefined,
+          linkedToMission ? 'linked to active mission' : undefined,
+          overlap > 0 ? 'message overlaps personal metadata' : undefined,
+        ]),
+        updatedAt: summary.updatedAt,
+        redactionState: summary.redactionState,
+        staleReason:
+          summary.freshness === 'stale'
+            ? 'Personal signal metadata is older than the default freshness window.'
+            : undefined,
+      });
+    })
+    .filter((summary): summary is AoiContextSourceSummary => summary !== null);
+}
+
 function buildWorkspaceCandidates(params: {
   snapshot: AoiWorkspaceSnapshot | null;
   latestUserMessage: string;
@@ -988,6 +1068,15 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
     ...buildResearchCandidates({ runs, latestUserMessage, registry, mission, now }),
     ...buildKiraCandidates({ memories, latestUserMessage, registry, mission, now }),
     ...buildBrowserCandidates({ browserContexts, latestUserMessage, registry, now }),
+    ...buildPersonalSignalCandidates({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      configFile: params.configFile,
+      latestUserMessage,
+      registry,
+      mission,
+      now,
+    }),
     ...buildWorkspaceCandidates({
       snapshot: workspaceSnapshot,
       latestUserMessage,

@@ -3,6 +3,7 @@ import {
   DEFAULT_AOI_AUTONOMY_POLICY,
   checkAoiEnvironmentSourceOperation,
   checkAoiProposalPolicy,
+  isAoiPersonalSignalSourceKind,
 } from './aoiAutonomyPolicy';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
@@ -159,10 +160,15 @@ export interface AoiEnvironmentSourcePanelSummary {
   operationsLabel: string;
   quietModeLabel: string;
   lastObservedLabel: string;
+  lastReviewedLabel: string;
   consentSummary: string;
+  metadataScopeLabel: string;
+  willNotReadOrDoLabel: string;
   gateReason: string;
   canToggle: boolean;
+  canClear: boolean;
   toggleTitle: string;
+  clearTitle: string;
 }
 
 export interface AoiWorkspaceSignalPanelSummary {
@@ -1686,6 +1692,38 @@ function buildAoiEnvironmentSourceGateReason(
     .join(' / ');
 }
 
+function buildAoiEnvironmentSourceMetadataScopeLabel(source: AoiEnvironmentSource): string {
+  if (source.kind === 'calendar_metadata') {
+    return 'Scope: event title, date/time, completion count, and reminder state only.';
+  }
+  if (source.kind === 'gmail_metadata') {
+    return 'Scope: configured/connected state, last sync, unread counts, folders, and label counts only.';
+  }
+  if (source.kind === 'notes_metadata') {
+    return 'Scope: note count, recent modified titles, tags, and pinned state only.';
+  }
+  if (source.kind === 'browser_context') {
+    return 'Scope: explicit page title, host, redacted URL, and user-provided purpose only.';
+  }
+  return 'Scope: registry metadata and compact source status only.';
+}
+
+function buildAoiEnvironmentSourceWillNotReadOrDoLabel(source: AoiEnvironmentSource): string {
+  if (source.kind === 'calendar_metadata') {
+    return 'Will not read event descriptions or private notes, and will not create/update/delete events.';
+  }
+  if (source.kind === 'gmail_metadata') {
+    return 'Will not read email bodies, snippets, attachments, recipients, or subjects, and will not reply/send/archive/delete/modify email.';
+  }
+  if (source.kind === 'notes_metadata') {
+    return 'Will not read full note bodies or mutate notes; titles and tags are redacted in trace exports.';
+  }
+  if (source.kind === 'browser_context') {
+    return 'Will not scrape page bodies or follow links from context routing alone.';
+  }
+  return 'Will not mutate this source from context routing alone.';
+}
+
 export function buildAoiEnvironmentSourcePanelSummaries(
   registry: AoiEnvironmentSourceRegistry | null | undefined,
   options: { operation?: AoiEnvironmentSourceOperation; now?: number } = {},
@@ -1695,10 +1733,14 @@ export function buildAoiEnvironmentSourcePanelSummaries(
   }
   const operation = options.operation ?? 'summarize';
   return registry.sources.map((source) => {
-    const gatedFromEnable = !source.enabled && (source.risk === 'high' || source.privateByDefault);
+    const personalSource = isAoiPersonalSignalSourceKind(source.kind);
+    const gateOperation =
+      personalSource && operation === 'summarize' ? 'summarize_counts' : operation;
+    const gatedFromEnable =
+      !source.enabled && !personalSource && (source.risk === 'high' || source.privateByDefault);
     const consentSummary = source.consentReason
       ? source.consentReason
-      : gatedFromEnable
+      : gatedFromEnable || personalSource
         ? 'Explicit target consent is required before Aoi can use this source.'
         : 'No consent reason recorded.';
 
@@ -1723,14 +1765,32 @@ export function buildAoiEnvironmentSourcePanelSummaries(
       lastObservedLabel: source.lastObservedAt
         ? new Date(source.lastObservedAt).toLocaleString()
         : 'Not observed',
+      lastReviewedLabel: source.lastReviewedAt
+        ? new Date(source.lastReviewedAt).toLocaleString()
+        : 'Not reviewed',
       consentSummary: sanitizeAoiProposalDisplayText(consentSummary, 180),
-      gateReason: buildAoiEnvironmentSourceGateReason(source, registry, operation),
+      metadataScopeLabel: sanitizeAoiProposalDisplayText(
+        buildAoiEnvironmentSourceMetadataScopeLabel(source),
+        220,
+      ),
+      willNotReadOrDoLabel: sanitizeAoiProposalDisplayText(
+        buildAoiEnvironmentSourceWillNotReadOrDoLabel(source),
+        260,
+      ),
+      gateReason: buildAoiEnvironmentSourceGateReason(source, registry, gateOperation),
       canToggle: !gatedFromEnable,
+      canClear:
+        personalSource && Boolean(source.enabled || source.consentReason || source.lastReviewedAt),
       toggleTitle: gatedFromEnable
         ? 'This high-risk or private source needs an explicit target flow before enabling.'
-        : source.enabled
-          ? 'Disable this environment source.'
-          : 'Enable this environment source for metadata-only observation.',
+        : personalSource && !source.enabled
+          ? 'Enable this personal metadata source after reviewing its exact metadata scope.'
+          : source.enabled
+            ? 'Disable this environment source.'
+            : 'Enable this environment source for metadata-only observation.',
+      clearTitle: personalSource
+        ? 'Disable this personal source and clear consent, review, and observation state.'
+        : 'No clear action is available for this source.',
     };
   });
 }

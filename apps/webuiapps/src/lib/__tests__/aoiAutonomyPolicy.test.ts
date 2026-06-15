@@ -164,6 +164,9 @@ describe('Aoi environment source policy', () => {
       'app_state',
       'browser_context',
       'manual_note',
+      'calendar_metadata',
+      'gmail_metadata',
+      'notes_metadata',
     ]);
     expect(isAoiEnvironmentSourceEnabled(registry, 'research-runs')).toBe(true);
     expect(isAoiEnvironmentSourceEnabled(registry, 'workspace-git')).toBe(false);
@@ -219,6 +222,54 @@ describe('Aoi environment source policy', () => {
       operation: 'summarize',
     });
     expect(allowed).toMatchObject({
+      allowed: true,
+      reasons: [],
+    });
+  });
+
+  it('requires reviewed explicit consent before personal metadata sources are usable', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    const enabledWithoutReview = {
+      ...registry,
+      sources: registry.sources.map((source) =>
+        source.id === 'gmail-metadata'
+          ? {
+              ...source,
+              enabled: true,
+              consentReason: 'User enabled Gmail metadata for this mission.',
+            }
+          : source,
+      ),
+    };
+
+    const blocked = checkAoiEnvironmentSourceOperation({
+      registry: enabledWithoutReview,
+      sourceId: 'gmail-metadata',
+      operation: 'summarize_counts',
+    });
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reasons).toContain('source_consent_review_required');
+
+    const enabledWithReview = {
+      ...registry,
+      sources: registry.sources.map((source) =>
+        source.id === 'gmail-metadata'
+          ? {
+              ...source,
+              enabled: true,
+              consentReason: 'User enabled Gmail metadata for this mission.',
+              lastReviewedAt: 1200,
+            }
+          : source,
+      ),
+    };
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry: enabledWithReview,
+        sourceId: 'gmail-metadata',
+        operation: 'summarize_counts',
+      }),
+    ).toMatchObject({
       allowed: true,
       reasons: [],
     });

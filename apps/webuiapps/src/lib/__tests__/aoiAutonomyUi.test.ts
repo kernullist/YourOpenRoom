@@ -179,6 +179,19 @@ function makeEnvironmentSourceRegistry(
         consentReason: 'Use api_key=secret-value only for this page.',
         updatedAt: 1000,
       },
+      {
+        version: 1,
+        id: 'notes-metadata',
+        kind: 'notes_metadata',
+        label: 'Notes metadata',
+        enabled: false,
+        scope: 'explicit_target',
+        risk: 'high',
+        allowedOperations: ['status', 'read_metadata', 'summarize_counts'],
+        privateByDefault: true,
+        quietModeBehavior: 'suppress',
+        updatedAt: 1000,
+      },
     ],
     ...partial,
   };
@@ -626,6 +639,7 @@ describe('Aoi autonomy UI helpers', () => {
     const summaries = buildAoiEnvironmentSourcePanelSummaries(makeEnvironmentSourceRegistry());
     const browser = summaries.find((summary) => summary.id === 'browser-context');
     const app = summaries.find((summary) => summary.id === 'app-state');
+    const notes = summaries.find((summary) => summary.id === 'notes-metadata');
 
     expect(app).toMatchObject({
       enabled: true,
@@ -643,6 +657,16 @@ describe('Aoi autonomy UI helpers', () => {
     expect(browser?.consentSummary).not.toContain('secret-value');
     expect(browser?.gateReason).toContain('source disabled');
     expect(browser?.toggleTitle).toContain('explicit target');
+    expect(notes).toMatchObject({
+      enabled: false,
+      canToggle: true,
+      canClear: false,
+      privateLabel: 'private by default',
+    });
+    expect(notes?.metadataScopeLabel).toContain('note count');
+    expect(notes?.willNotReadOrDoLabel).toContain('full note bodies');
+    expect(notes?.gateReason).toContain('source consent review required');
+    expect(notes?.toggleTitle).toContain('metadata scope');
   });
 
   it('redacts explicit browser context URLs before UI or prompt display', () => {

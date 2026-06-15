@@ -2,6 +2,8 @@ export type AoiAutonomyLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export type AoiAutonomyRisk = 'low' | 'medium' | 'high';
 
+export type AoiPersonalSignalSourceKind = 'calendar_metadata' | 'gmail_metadata' | 'notes_metadata';
+
 export type AoiEnvironmentSourceKind =
   | 'workspace_git'
   | 'workspace_build'
@@ -9,9 +11,15 @@ export type AoiEnvironmentSourceKind =
   | 'research_runs'
   | 'app_state'
   | 'browser_context'
-  | 'manual_note';
+  | 'manual_note'
+  | AoiPersonalSignalSourceKind;
 
-export type AoiEnvironmentSourceOperation = 'summarize' | 'status' | 'diff' | 'read_metadata';
+export type AoiEnvironmentSourceOperation =
+  | 'summarize'
+  | 'status'
+  | 'diff'
+  | 'read_metadata'
+  | 'summarize_counts';
 
 export type AoiEnvironmentSourceScope = 'session' | 'project' | 'workspace' | 'explicit_target';
 
@@ -30,6 +38,7 @@ export interface AoiEnvironmentSource {
   quietModeBehavior: AoiEnvironmentSourceQuietModeBehavior;
   updatedAt: number;
   lastObservedAt?: number;
+  lastReviewedAt?: number;
   consentReason?: string;
 }
 
@@ -983,6 +992,22 @@ export interface AoiContextSourceSummary {
   scoreReasons: string[];
   updatedAt: number;
   staleReason?: string;
+}
+
+export interface AoiPersonalSignalMetadataSummary {
+  version: 1;
+  sourceId: string;
+  kind: AoiPersonalSignalSourceKind;
+  label: string;
+  displayName: string;
+  summary: string;
+  relevanceText: string;
+  evidenceRefs: string[];
+  scoreReasons: string[];
+  updatedAt: number;
+  freshness: AoiSignalFreshness;
+  confidence: number;
+  redactionState: AoiContextRedactionState;
 }
 
 export interface AoiBrowserContextMetadata {

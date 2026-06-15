@@ -120,6 +120,18 @@ export interface AoiEnvironmentSourceUpdateResult {
   status?: AoiAutonomyStatus;
 }
 
+function serializeAoiEnvironmentSourcePatch(
+  patch: Partial<AoiEnvironmentSource>,
+): Record<string, unknown> {
+  const serialized: Record<string, unknown> = { ...patch };
+  for (const key of ['consentReason', 'lastObservedAt', 'lastReviewedAt'] as const) {
+    if (Object.prototype.hasOwnProperty.call(patch, key) && patch[key] === undefined) {
+      serialized[key] = null;
+    }
+  }
+  return serialized;
+}
+
 export interface AoiWorkspaceSignalResponse {
   ok: boolean;
   sessionPath: string;
@@ -770,7 +782,7 @@ export async function updateAoiEnvironmentSource(
     body: JSON.stringify({
       sessionPath,
       sourceId: input.sourceId,
-      patch: input.patch,
+      patch: serializeAoiEnvironmentSourcePatch(input.patch),
     }),
   });
   const payload = await readJsonRecord(response, 'Failed to update Aoi environment source.');

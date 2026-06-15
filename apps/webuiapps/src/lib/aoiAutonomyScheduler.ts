@@ -55,6 +55,9 @@ const SOURCE_TTL_MS_BY_ID: Record<string, number> = {
   'app-state': 60 * 1000,
   'browser-context': 5 * 60 * 1000,
   'manual-note': 5 * 60 * 1000,
+  'calendar-metadata': 10 * 60 * 1000,
+  'gmail-metadata': 15 * 60 * 1000,
+  'notes-metadata': 10 * 60 * 1000,
 };
 
 export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {

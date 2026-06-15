@@ -99,6 +99,21 @@ const PRIVATE_METADATA_KEYS = new Set<string>([
   'url',
 ]);
 
+const PERSONAL_SOURCE_KINDS = new Set<string>([
+  'calendar_metadata',
+  'gmail_metadata',
+  'notes_metadata',
+]);
+
+const PERSONAL_SOURCE_REFS = [
+  'personal-signal:calendar_metadata',
+  'personal-signal:gmail_metadata',
+  'personal-signal:notes_metadata',
+  'environment-source:calendar-metadata',
+  'environment-source:gmail-metadata',
+  'environment-source:notes-metadata',
+];
+
 const WINDOWS_PATH_PATTERN = /\b[A-Za-z]:(?:[\\/][^\s'"`<>|]+)+/g;
 const UNC_PATH_PATTERN = /\\\\[^\s'"`<>|]+(?:\\[^\s'"`<>|]+)+/g;
 const URL_PATTERN = /\bhttps?:\/\/[^\s'"`<>]+/gi;
@@ -150,7 +165,12 @@ export interface AoiOperatorReplayFixtureDraftResult extends AoiOperatorReplayFi
 
 interface Redactor {
   redactText: (value: string) => string;
+  redactPersonalText: (value: string) => string;
   redactMetadata: (
+    key: string,
+    value: string | number | boolean | string[],
+  ) => string | number | boolean | string[];
+  redactPersonalMetadata: (
     key: string,
     value: string | number | boolean | string[],
   ) => string | number | boolean | string[];
@@ -529,6 +549,14 @@ function createTraceRedactor(): Redactor {
     return next;
   }
 
+  function redactPersonalText(value: string): string {
+    if (!value) {
+      return value;
+    }
+    privateFieldCount += 1;
+    return labelFor(privateFieldLabels, `personal:${value}`, 'personal-metadata');
+  }
+
   function redactPrivateField(
     key: string,
     value: string | number | boolean | string[],
@@ -553,6 +581,22 @@ function createTraceRedactor(): Redactor {
     return labelFor(privateFieldLabels, `${key}:${String(value)}`, 'redacted-field');
   }
 
+  function redactPersonalMetadata(
+    key: string,
+    value: string | number | boolean | string[],
+  ): string | number | boolean | string[] {
+    if (typeof value === 'boolean' || typeof value === 'number') {
+      return value;
+    }
+    privateFieldCount += 1;
+    if (Array.isArray(value)) {
+      return value.map((item) =>
+        labelFor(privateFieldLabels, `personal:${key}:${item}`, 'personal-metadata'),
+      );
+    }
+    return labelFor(privateFieldLabels, `personal:${key}:${value}`, 'personal-metadata');
+  }
+
   function buildSummary(): AoiTraceRedactionSummary {
     const syntheticLabels: Record<string, string> = {};
     for (const label of [
@@ -575,10 +619,22 @@ function createTraceRedactor(): Redactor {
 
   return {
     redactText,
+    redactPersonalText,
     redactMetadata: redactPrivateField,
+    redactPersonalMetadata,
     summary: buildSummary,
     didRedactSince: (previousCount: number) => buildSummary().totalReplacementCount > previousCount,
   };
+}
+
+function isPersonalTimelineEvent(event: AoiOperatorTimelineEvent): boolean {
+  if (event.sourceKind && PERSONAL_SOURCE_KINDS.has(event.sourceKind)) {
+    return true;
+  }
+  const refs = [event.sourceRef, ...event.evidenceRefs, ...event.relatedRefs].filter(
+    (ref): ref is string => typeof ref === 'string',
+  );
+  return refs.some((ref) => PERSONAL_SOURCE_REFS.some((marker) => ref.includes(marker)));
 }
 
 function redactTimelineEvent(
@@ -586,15 +642,22 @@ function redactTimelineEvent(
   redactor: Redactor,
 ): AoiOperatorTimelineEvent {
   const before = redactor.summary().totalReplacementCount;
+  const personalEvent = isPersonalTimelineEvent(event);
   const metadata: Record<string, string | number | boolean | string[]> = {};
   for (const [key, value] of Object.entries(event.metadata ?? {})) {
-    metadata[key] = redactor.redactMetadata(key, value);
+    metadata[key] = personalEvent
+      ? redactor.redactPersonalMetadata(key, value)
+      : redactor.redactMetadata(key, value);
   }
 
   const redacted: AoiOperatorTimelineEvent = {
     ...event,
-    title: redactor.redactText(event.title),
-    summary: redactor.redactText(event.summary),
+    title: personalEvent
+      ? redactor.redactPersonalText(event.title)
+      : redactor.redactText(event.title),
+    summary: personalEvent
+      ? redactor.redactPersonalText(event.summary)
+      : redactor.redactText(event.summary),
     evidenceRefs: event.evidenceRefs.map((ref) => redactor.redactText(ref)),
     relatedRefs: event.relatedRefs.map((ref) => redactor.redactText(ref)),
     ...(event.sourceRef ? { sourceRef: redactor.redactText(event.sourceRef) } : {}),

@@ -410,6 +410,7 @@ async function handleAoiAutonomyRequest(
       const context = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
+        configFile: options.configFile,
         latestUserMessage,
       });
       writeJson(res, 200, {
@@ -572,6 +573,7 @@ async function handleAoiAutonomyRequest(
       const routerContext = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
+        configFile: options.configFile,
       });
       recordAoiTimelineBestEffort(() => {
         for (const event of buildAoiContextRouterTimelineEvents(routerContext)) {
@@ -613,6 +615,7 @@ async function handleAoiAutonomyRequest(
         const routerContext = buildAoiContextRouterResult({
           sessionsDir,
           sessionPath,
+          configFile: options.configFile,
         });
         recordAoiTimelineBestEffort(() => {
           recordAoiOperatorTimelineEvent(sessionsDir, {
