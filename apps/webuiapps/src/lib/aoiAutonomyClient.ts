@@ -25,6 +25,9 @@ import type {
   AoiOperatorHealthState,
   AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
+  AoiPlaybook,
+  AoiPlaybookEvidenceKind,
+  AoiPlaybookStepRefs,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
@@ -111,6 +114,37 @@ export interface AoiOperatorHealthResponse {
   health: AoiOperatorHealthState;
 }
 
+export interface AoiAutonomyPlaybookList {
+  sessionPath: string;
+  active: AoiPlaybook[];
+  archived: AoiPlaybook[];
+}
+
+export interface AoiPlaybookPrepareInput {
+  proposalId?: string;
+  goalId?: string;
+  title?: string;
+  objective?: string;
+}
+
+export interface AoiPlaybookEvidenceUpdateInput {
+  playbookId: string;
+  kind: AoiPlaybookEvidenceKind;
+  stepId?: string;
+  resultSummary?: string;
+  evidenceRefs?: string[];
+  refs?: Partial<AoiPlaybookStepRefs>;
+  failedReason?: string;
+}
+
+export interface AoiPlaybookMutationResponse {
+  ok: boolean;
+  sessionPath: string;
+  playbook: AoiPlaybook;
+  active: AoiPlaybook[];
+  archived: AoiPlaybook[];
+}
+
 export interface AoiAutonomyDashboardSnapshot {
   sessionPath: string;
   status: AoiAutonomyStatus;
@@ -124,6 +158,7 @@ export interface AoiAutonomyDashboardSnapshot {
   timeline: AoiOperatorTimelineSummary;
   scheduler: AoiAutonomySchedulerState;
   health: AoiOperatorHealthState;
+  playbooks: AoiAutonomyPlaybookList;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -481,6 +516,91 @@ export async function fetchAoiOperatorHealth(
       'health',
       'Aoi operator health response was malformed.',
     ),
+  };
+}
+
+export async function fetchAoiPlaybooks(
+  sessionPath: string,
+  includeArchived = true,
+): Promise<AoiAutonomyPlaybookList> {
+  const response = await fetch(
+    `${API_PREFIX}/playbooks?${sessionQuery(sessionPath)}&includeArchived=${includeArchived}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi playbooks.');
+  return {
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    active: asArray<AoiPlaybook>(payload.active),
+    archived: asArray<AoiPlaybook>(payload.archived),
+  };
+}
+
+export async function prepareAoiPlaybookPreview(
+  sessionPath: string,
+  input: AoiPlaybookPrepareInput = {},
+): Promise<AoiPlaybookMutationResponse> {
+  const response = await fetch(`${API_PREFIX}/playbooks/prepare`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      proposalId: input.proposalId,
+      goalId: input.goalId,
+      title: input.title,
+      objective: input.objective,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to prepare Aoi playbook.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    playbook: requireRecordField<AoiPlaybook>(
+      payload,
+      'playbook',
+      'Aoi playbook prepare response was malformed.',
+    ),
+    active: asArray<AoiPlaybook>(payload.active),
+    archived: asArray<AoiPlaybook>(payload.archived),
+  };
+}
+
+export async function updateAoiPlaybookProgress(
+  sessionPath: string,
+  input: AoiPlaybookEvidenceUpdateInput,
+): Promise<AoiPlaybookMutationResponse> {
+  const response = await fetch(`${API_PREFIX}/playbooks/update`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      playbookId: input.playbookId,
+      kind: input.kind,
+      stepId: input.stepId,
+      resultSummary: input.resultSummary,
+      evidenceRefs: input.evidenceRefs,
+      refs: input.refs,
+      failedReason: input.failedReason,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to update Aoi playbook.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+    playbook: requireRecordField<AoiPlaybook>(
+      payload,
+      'playbook',
+      'Aoi playbook update response was malformed.',
+    ),
+    active: asArray<AoiPlaybook>(payload.active),
+    archived: asArray<AoiPlaybook>(payload.archived),
   };
 }
 
@@ -850,6 +970,7 @@ export async function fetchAoiAutonomyDashboard(
     timeline,
     scheduler,
     health,
+    playbooks,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -862,6 +983,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiAutonomyTimeline(sessionPath, { limit: 20 }),
     fetchAoiAutonomyScheduler(sessionPath),
     fetchAoiOperatorHealth(sessionPath),
+    fetchAoiPlaybooks(sessionPath, true),
   ]);
 
   return {
@@ -877,6 +999,7 @@ export async function fetchAoiAutonomyDashboard(
     timeline: timeline.summary,
     scheduler: scheduler.state,
     health: health.health,
+    playbooks,
   };
 }
 

@@ -3,13 +3,16 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   fetchAoiAutonomyDashboard,
   fetchAoiOperatorHealth,
+  fetchAoiPlaybooks,
+  prepareAoiPlaybookPreview,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
+  updateAoiPlaybookProgress,
   updateAoiEnvironmentSource,
 } from '../aoiAutonomyClient';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiAutonomyEvaluationResult } from '../aoiAutonomyEvaluation';
-import type { AoiAutonomyStatus, AoiOperatorHealthState } from '../aoiAutonomyTypes';
+import type { AoiAutonomyStatus, AoiOperatorHealthState, AoiPlaybook } from '../aoiAutonomyTypes';
 
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
@@ -121,6 +124,58 @@ function makeHealth(): AoiOperatorHealthState {
   };
 }
 
+function makePlaybook(): AoiPlaybook {
+  return {
+    version: 1,
+    id: 'aoi-playbook-client-test',
+    sessionPath: 'aoi/default',
+    title: 'Coordinate validation',
+    objective: 'Preview validation and ask for the next decision.',
+    status: 'preview',
+    createdAt: 1000,
+    updatedAt: 1000,
+    sourceRefs: ['proposal:aoi-proposal-client-test'],
+    evidenceRefs: ['proposal:aoi-proposal-client-test'],
+    proposalId: 'aoi-proposal-client-test',
+    healthIssueRefs: [],
+    blockedReasons: [],
+    nextStepId: 'aoi-playbook-client-test-step-01',
+    nextRequiredDecision: 'Review the context step.',
+    steps: [
+      {
+        version: 1,
+        id: 'aoi-playbook-client-test-step-01',
+        kind: 'inspect_context',
+        title: 'Inspect context',
+        summary: 'Review current evidence.',
+        status: 'ready',
+        dependsOn: [],
+        evidenceRefs: ['proposal:aoi-proposal-client-test'],
+        sourceRefs: ['proposal:aoi-proposal-client-test'],
+        blockedReasons: [],
+        executionBoundary: {
+          version: 1,
+          mutationCapable: false,
+          commandCapable: false,
+          requiresApproval: false,
+          requiredAutonomyLevel: 'L2',
+          freshAcceptanceRequired: false,
+          approver: 'none',
+          existingGate: 'none',
+          canAutoRun: false,
+          summary: 'Read-only context inspection.',
+        },
+        checkpointNotes: [],
+        rollbackNotes: [],
+        validationNotes: [],
+        refs: { proposalRef: 'proposal:aoi-proposal-client-test' },
+        updatedAt: 1000,
+      },
+    ],
+    edges: [],
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -217,6 +272,13 @@ describe('Aoi autonomy client dashboard', () => {
           health: makeHealth(),
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/playbooks?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          active: [makePlaybook()],
+          archived: [],
+        });
+      }
       throw new Error(`Unexpected URL: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -231,7 +293,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.timeline.totalEventCount).toBe(0);
     expect(snapshot.scheduler.wakeupCount).toBe(0);
     expect(snapshot.health.overallStatus).toBe('limited');
-    expect(fetchMock).toHaveBeenCalledTimes(11);
+    expect(snapshot.playbooks.active).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(12);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -245,6 +308,7 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/timeline?sessionPath=aoi%2Fdefault&limit=20',
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/playbooks?sessionPath=aoi%2Fdefault&includeArchived=true',
       ]),
     );
   });
@@ -263,6 +327,70 @@ describe('Aoi autonomy client dashboard', () => {
 
     expect(result.health.issues[0].recommendation.action).toBe('configure_tavily');
     expect(result.health.summary).not.toContain('secret');
+  });
+
+  it('fetches and mutates compact playbook previews', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/aoi-autonomy/playbooks?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          active: [makePlaybook()],
+          archived: [],
+        });
+      }
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (url === '/api/aoi-autonomy/playbooks/prepare') {
+        return jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          playbook: makePlaybook(),
+          active: [makePlaybook()],
+          archived: [],
+        });
+      }
+      if (url === '/api/aoi-autonomy/playbooks/update') {
+        return jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          playbook: {
+            ...makePlaybook(),
+            steps: makePlaybook().steps.map((step) => ({ ...step, status: 'completed' })),
+          },
+          active: [makePlaybook()],
+          archived: [],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await fetchAoiPlaybooks('aoi/default');
+    const prepared = await prepareAoiPlaybookPreview('aoi/default', {
+      proposalId: 'aoi-proposal-client-test',
+    });
+    const updated = await updateAoiPlaybookProgress('aoi/default', {
+      playbookId: 'aoi-playbook-client-test',
+      kind: 'inspect_context_completed',
+      evidenceRefs: ['timeline:context-reviewed'],
+    });
+
+    expect(list.active[0].id).toBe('aoi-playbook-client-test');
+    expect(prepared.playbook.steps[0].executionBoundary.canAutoRun).toBe(false);
+    expect(updated.playbook.steps[0].status).toBe('completed');
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        proposalId: 'aoi-proposal-client-test',
+      },
+      {
+        sessionPath: 'aoi/default',
+        playbookId: 'aoi-playbook-client-test',
+        kind: 'inspect_context_completed',
+        evidenceRefs: ['timeline:context-reviewed'],
+      },
+    ]);
   });
 
   it('preserves explicit clear markers when updating environment sources', async () => {

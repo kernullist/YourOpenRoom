@@ -33,6 +33,7 @@ import {
   loadAoiWorkspaceSnapshot,
   recordAoiValidationSignal,
 } from './aoiWorkspaceSignals';
+import { recordAoiPlaybookRelations } from './aoiAutonomyRelations';
 import {
   buildAoiContextRouterResult,
   recordAoiBrowserContextMetadata,
@@ -54,11 +55,23 @@ import {
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
+import {
+  findAoiPlaybook,
+  loadAoiActivePlaybooks,
+  loadAoiArchivedPlaybooks,
+  prepareAoiPlaybook,
+  updateAoiPlaybookFromEvidence,
+  upsertAoiPlaybook,
+} from './aoiPlaybookOrchestrator';
 import type {
   AoiCalibrationDimension,
   AoiAutonomyTickReason,
   AoiAutonomyWakeupBudget,
+  AoiGoal,
   AoiOperatorTimelineEventKind,
+  AoiPlaybookEvidenceKind,
+  AoiPlaybookStepRefs,
+  AoiProposal,
   AoiProposalFeedbackCategory,
   AoiVoiceRenderDecision,
 } from './aoiAutonomyTypes';
@@ -173,6 +186,20 @@ function isAoiCalibrationDimension(value: unknown): value is AoiCalibrationDimen
   );
 }
 
+function isAoiPlaybookEvidenceKind(value: unknown): value is AoiPlaybookEvidenceKind {
+  return (
+    value === 'inspect_context_completed' ||
+    value === 'read_research_artifact_completed' ||
+    value === 'research_completed' ||
+    value === 'kira_work_created' ||
+    value === 'kira_work_completed' ||
+    value === 'approved_command_recorded' ||
+    value === 'summarize_result_completed' ||
+    value === 'user_decision_recorded' ||
+    value === 'step_failed'
+  );
+}
+
 function getWakeupBudgetFromBody(value: unknown): Partial<AoiAutonomyWakeupBudget> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
@@ -196,6 +223,59 @@ function recordAoiTimelineBestEffort(record: () => void): void {
   } catch (error) {
     console.warn('[AoiAutonomyPlugin] Failed to record Aoi timeline event', error);
   }
+}
+
+function recordAoiPlaybookRelationsBestEffort(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  playbook: Parameters<typeof recordAoiPlaybookRelations>[0]['playbook'];
+}): void {
+  try {
+    recordAoiPlaybookRelations(params);
+  } catch (error) {
+    console.warn('[AoiAutonomyPlugin] Failed to record Aoi playbook relations', error);
+  }
+}
+
+function idFromRef(ref: string | undefined, prefix: string): string | undefined {
+  if (!ref?.startsWith(prefix)) {
+    return undefined;
+  }
+  return ref.slice(prefix.length);
+}
+
+function findProposalForPlaybook(
+  sessionsDir: string,
+  sessionPath: string,
+  proposalId: unknown,
+): AoiProposal | null {
+  const id = typeof proposalId === 'string' ? proposalId.trim() : '';
+  if (!id) {
+    return null;
+  }
+  return (
+    [
+      ...loadAoiActiveProposals(sessionsDir, sessionPath),
+      ...loadAoiArchivedProposals(sessionsDir, sessionPath),
+    ].find((proposal) => proposal.id === id) ?? null
+  );
+}
+
+function findGoalForPlaybook(
+  sessionsDir: string,
+  sessionPath: string,
+  goalId: unknown,
+): AoiGoal | null {
+  const id = typeof goalId === 'string' ? goalId.trim() : '';
+  if (!id) {
+    return null;
+  }
+  return (
+    [
+      ...loadAoiActiveGoals(sessionsDir, sessionPath),
+      ...loadAoiArchivedGoals(sessionsDir, sessionPath),
+    ].find((goal) => goal.id === id) ?? null
+  );
 }
 
 async function handleAoiAutonomyRequest(
@@ -361,6 +441,138 @@ async function handleAoiAutonomyRequest(
           sessionPath,
           configFile,
         }),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/playbooks') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const includeArchived = url.searchParams.get('includeArchived') === 'true';
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        active: loadAoiActivePlaybooks(sessionsDir, sessionPath),
+        archived: includeArchived ? loadAoiArchivedPlaybooks(sessionsDir, sessionPath) : [],
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/playbooks/prepare') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const mission = deriveAoiMissionState({ sessionsDir, sessionPath });
+      const proposal =
+        findProposalForPlaybook(sessionsDir, sessionPath, body.proposalId) ??
+        findProposalForPlaybook(
+          sessionsDir,
+          sessionPath,
+          idFromRef(mission.sourceRefs.proposalRef, 'proposal:'),
+        );
+      const goal =
+        findGoalForPlaybook(sessionsDir, sessionPath, body.goalId) ??
+        findGoalForPlaybook(sessionsDir, sessionPath, mission.activeGoalId);
+      const health = buildAoiOperatorHealthState({
+        sessionsDir,
+        sessionPath,
+        configFile,
+      });
+      const playbook = upsertAoiPlaybook(
+        sessionsDir,
+        sessionPath,
+        prepareAoiPlaybook({
+          sessionPath,
+          proposal,
+          activeGoal: goal,
+          mission,
+          health,
+          title: typeof body.title === 'string' ? body.title : undefined,
+          objective: typeof body.objective === 'string' ? body.objective : undefined,
+        }),
+      );
+      recordAoiPlaybookRelationsBestEffort({
+        sessionsDir,
+        sessionPath,
+        playbook,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        playbook,
+        active: loadAoiActivePlaybooks(sessionsDir, sessionPath),
+        archived: loadAoiArchivedPlaybooks(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/playbooks/update') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const playbookId = typeof body.playbookId === 'string' ? body.playbookId.trim() : '';
+      const playbook = findAoiPlaybook(sessionsDir, sessionPath, playbookId);
+      if (!playbook) {
+        writeJson(res, 404, {
+          error: 'Aoi playbook was not found.',
+          code: 'playbook_not_found',
+        });
+        return true;
+      }
+      if (!isAoiPlaybookEvidenceKind(body.kind)) {
+        writeJson(res, 400, {
+          error: 'Invalid playbook evidence kind.',
+          code: 'invalid_playbook_evidence_kind',
+        });
+        return true;
+      }
+      const updated = upsertAoiPlaybook(
+        sessionsDir,
+        sessionPath,
+        updateAoiPlaybookFromEvidence({
+          playbook,
+          kind: body.kind,
+          stepId: typeof body.stepId === 'string' ? body.stepId : undefined,
+          resultSummary: typeof body.resultSummary === 'string' ? body.resultSummary : undefined,
+          evidenceRefs: Array.isArray(body.evidenceRefs)
+            ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
+            : undefined,
+          refs:
+            body.refs && typeof body.refs === 'object' && !Array.isArray(body.refs)
+              ? (body.refs as Partial<AoiPlaybookStepRefs>)
+              : undefined,
+          failedReason: typeof body.failedReason === 'string' ? body.failedReason : undefined,
+        }),
+      );
+      recordAoiPlaybookRelationsBestEffort({
+        sessionsDir,
+        sessionPath,
+        playbook: updated,
+      });
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        playbook: updated,
+        active: loadAoiActivePlaybooks(sessionsDir, sessionPath),
+        archived: loadAoiArchivedPlaybooks(sessionsDir, sessionPath),
       });
       return true;
     }

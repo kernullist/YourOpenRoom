@@ -8,6 +8,7 @@ import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContext
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiOperatorHealthPanelSummary,
+  buildAoiPlaybookPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomySchedulerPanelSummary,
@@ -62,6 +63,7 @@ import type {
   AoiMissionState,
   AoiOperatorTimelineSummary,
   AoiOperatorHealthState,
+  AoiPlaybook,
   AoiProposal,
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
@@ -1722,6 +1724,109 @@ describe('Aoi autonomy UI helpers', () => {
     expect(issue?.cannotKnow).toContain(
       'Aoi cannot know whether the current workspace still passes',
     );
+  });
+
+  it('builds compact playbook cards with boundaries and blocked prerequisites', () => {
+    const playbook: AoiPlaybook = {
+      version: 1,
+      id: 'aoi-playbook-ui-test',
+      sessionPath: 'aoi/default',
+      title: 'Coordinate Kira validation',
+      objective: 'Create Kira work, wait for review, then run approved validation.',
+      status: 'blocked',
+      createdAt: 1000,
+      updatedAt: 2000,
+      sourceRefs: ['proposal:aoi-proposal-ui-test-001'],
+      evidenceRefs: ['proposal:aoi-proposal-ui-test-001', 'health:approved_commands:runner'],
+      proposalId: 'aoi-proposal-ui-test-001',
+      healthIssueRefs: ['health:approved_commands:runner'],
+      blockedReasons: ['approved_commands:approved_command_runner_unavailable'],
+      nextStepId: 'aoi-playbook-ui-test-step-02',
+      nextRequiredDecision:
+        'Resolve prerequisite: approved_commands:approved_command_runner_unavailable',
+      steps: [
+        {
+          version: 1,
+          id: 'aoi-playbook-ui-test-step-01',
+          kind: 'inspect_context',
+          title: 'Inspect context',
+          summary: 'Review current context.',
+          status: 'completed',
+          dependsOn: [],
+          evidenceRefs: ['timeline:context'],
+          sourceRefs: ['proposal:aoi-proposal-ui-test-001'],
+          resultSummary: 'Context reviewed.',
+          blockedReasons: [],
+          executionBoundary: {
+            version: 1,
+            mutationCapable: false,
+            commandCapable: false,
+            requiresApproval: false,
+            requiredAutonomyLevel: 'L2',
+            freshAcceptanceRequired: false,
+            approver: 'none',
+            existingGate: 'none',
+            canAutoRun: false,
+            summary: 'Read-only context inspection.',
+          },
+          checkpointNotes: [],
+          rollbackNotes: [],
+          validationNotes: [],
+          refs: { proposalRef: 'proposal:aoi-proposal-ui-test-001' },
+          updatedAt: 1500,
+        },
+        {
+          version: 1,
+          id: 'aoi-playbook-ui-test-step-02',
+          kind: 'run_approved_command',
+          title: 'Run approved validation command',
+          summary: 'Run one exact command only after approval.',
+          status: 'blocked',
+          dependsOn: ['aoi-playbook-ui-test-step-01'],
+          evidenceRefs: ['health:approved_commands:runner'],
+          sourceRefs: ['proposal:aoi-proposal-ui-test-001'],
+          blockedReasons: ['approved_commands:approved_command_runner_unavailable'],
+          executionBoundary: {
+            version: 1,
+            mutationCapable: false,
+            commandCapable: true,
+            requiresApproval: true,
+            requiredAutonomyLevel: 'L5',
+            freshAcceptanceRequired: true,
+            approver: 'user',
+            existingGate: 'approved_command',
+            canAutoRun: false,
+            summary: 'Validation command execution requires fresh approval for the exact command.',
+          },
+          checkpointNotes: [],
+          rollbackNotes: ['Validation-only command does not promise rollback.'],
+          validationNotes: ['pnpm test'],
+          refs: { proposalRef: 'proposal:aoi-proposal-ui-test-001' },
+          updatedAt: 2000,
+        },
+      ],
+      edges: [
+        {
+          version: 1,
+          id: 'edge-aoi-playbook-ui-test',
+          fromStepId: 'aoi-playbook-ui-test-step-01',
+          toStepId: 'aoi-playbook-ui-test-step-02',
+          kind: 'depends_on',
+          evidenceRefs: ['proposal:aoi-proposal-ui-test-001'],
+        },
+      ],
+    };
+
+    const summary = buildAoiPlaybookPanelSummary(playbook, true);
+
+    expect(summary.visible).toBe(true);
+    expect(summary.tone).toBe('blocked');
+    expect(summary.boundaryLabels[0]).toContain('fresh approval');
+    expect(summary.boundaryLabels[0]).toContain('auto-run no');
+    expect(summary.blockedPrerequisiteLabels).toContain(
+      'approved_commands:approved_command_runner_unavailable',
+    );
+    expect(summary.nextDecisionLabel).toContain('Resolve prerequisite');
   });
 
   it('keeps health digest quiet unless the health state is user-blocking', () => {

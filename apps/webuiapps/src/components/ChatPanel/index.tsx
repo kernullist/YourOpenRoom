@@ -245,6 +245,7 @@ import {
   buildAoiMissionResumePrompt,
   buildAoiOperatorDigestPanelSummary,
   buildAoiOperatorHealthPanelSummary,
+  buildAoiPlaybookPanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -283,6 +284,7 @@ import type {
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
   AoiPreparedActionPlan,
+  AoiPlaybook,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
@@ -2051,6 +2053,7 @@ const ChatPanel: React.FC<{
     AoiProposalDecision[]
   >([]);
   const [aoiAutonomyActiveGoals, setAoiAutonomyActiveGoals] = useState<AoiGoal[]>([]);
+  const [aoiActivePlaybooks, setAoiActivePlaybooks] = useState<AoiPlaybook[]>([]);
   const [aoiMissionState, setAoiMissionState] = useState<AoiMissionState | null>(null);
   const [aoiEnvironmentSources, setAoiEnvironmentSources] =
     useState<AoiEnvironmentSourceRegistry | null>(null);
@@ -2231,6 +2234,7 @@ const ChatPanel: React.FC<{
     setAoiAutonomyActiveProposals([]);
     setAoiAutonomyArchivedProposals([]);
     setAoiAutonomyActiveGoals([]);
+    setAoiActivePlaybooks([]);
     setAoiMissionState(null);
     setAoiEnvironmentSources(null);
     setAoiWorkspaceSnapshot(null);
@@ -2676,6 +2680,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
       setAoiRecentProposalDecisions(decisions.decisions);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
+      setAoiActivePlaybooks(snapshot.playbooks.active);
       setAoiMissionState(snapshot.mission);
       setAoiEnvironmentSources(snapshot.environmentSources);
       setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
@@ -6397,6 +6402,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
+          aoiActivePlaybooks={aoiActivePlaybooks}
           aoiMissionState={aoiMissionState}
           aoiEnvironmentSources={aoiEnvironmentSources}
           aoiWorkspaceSnapshot={aoiWorkspaceSnapshot}
@@ -6869,6 +6875,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveProposals: AoiProposal[];
   aoiAutonomyArchivedProposals: AoiProposal[];
   aoiAutonomyActiveGoals: AoiGoal[];
+  aoiActivePlaybooks: AoiPlaybook[];
   aoiMissionState: AoiMissionState | null;
   aoiEnvironmentSources: AoiEnvironmentSourceRegistry | null;
   aoiWorkspaceSnapshot: AoiWorkspaceSnapshot | null;
@@ -6969,6 +6976,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyActiveProposals,
   aoiAutonomyArchivedProposals,
   aoiAutonomyActiveGoals,
+  aoiActivePlaybooks,
   aoiMissionState,
   aoiEnvironmentSources,
   aoiWorkspaceSnapshot,
@@ -7283,6 +7291,19 @@ const SettingsModal: React.FC<{
         expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
       ),
     [aoiOperatorHealth, expandedAoiMissionEvidence, expandedAoiProposalId],
+  );
+  const latestAoiPlaybook = useMemo(
+    () =>
+      aoiActivePlaybooks.slice().sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
+    [aoiActivePlaybooks],
+  );
+  const aoiPlaybookSummary = useMemo(
+    () =>
+      buildAoiPlaybookPanelSummary(
+        latestAoiPlaybook,
+        expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
+      ),
+    [latestAoiPlaybook, expandedAoiMissionEvidence, expandedAoiProposalId],
   );
   const aoiWorkspaceSignalSummary = useMemo(
     () => buildAoiWorkspaceSignalPanelSummary(aoiWorkspaceSnapshot),
@@ -9061,6 +9082,39 @@ const SettingsModal: React.FC<{
                               ))}
                             </div>
                           )}
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiPlaybookSummary.visible && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Current playbook</div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiPlaybookSummary.statusLabel}</span>
+                            <span>{aoiPlaybookSummary.stepLabels.length} steps shown</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiPlaybookSummary.titleLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {aoiPlaybookSummary.objectiveLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>Next: {aoiPlaybookSummary.nextDecisionLabel}</div>
+                            {aoiPlaybookSummary.stepLabels.map((label, index) => (
+                              <div key={`playbook-step-${index}`}>{label}</div>
+                            ))}
+                            {aoiPlaybookSummary.boundaryLabels.map((label, index) => (
+                              <div key={`playbook-boundary-${index}`}>Boundary: {label}</div>
+                            ))}
+                            {aoiPlaybookSummary.blockedPrerequisiteLabels.map((label, index) => (
+                              <div key={`playbook-blocked-${index}`}>Blocked: {label}</div>
+                            ))}
+                            {aoiPlaybookSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`playbook-evidence-${index}`}>Evidence: {ref}</div>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     )}

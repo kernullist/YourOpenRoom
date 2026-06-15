@@ -27,6 +27,7 @@ import type {
   AoiOperatorHealthState,
   AoiOperatorTimelineSummary,
   AoiPreparedActionPlan,
+  AoiPlaybook,
   AoiProposal,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
@@ -279,6 +280,19 @@ export interface AoiOperatorHealthPanelSummary {
   recommendationLabels: string[];
   evidenceRefs: string[];
   tone: 'healthy' | 'limited' | 'degraded' | 'blocked';
+}
+
+export interface AoiPlaybookPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  titleLabel: string;
+  objectiveLabel: string;
+  stepLabels: string[];
+  boundaryLabels: string[];
+  nextDecisionLabel: string;
+  blockedPrerequisiteLabels: string[];
+  evidenceRefs: string[];
+  tone: 'neutral' | 'waiting' | 'blocked' | 'completed';
 }
 
 export interface AoiOperatorTimelinePanelSummary {
@@ -1490,6 +1504,84 @@ export function buildAoiOperatorHealthPanelSummary(
       ? health.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
       : [],
     tone: health.overallStatus,
+  };
+}
+
+function aoiPlaybookTone(playbook: AoiPlaybook): AoiPlaybookPanelSummary['tone'] {
+  if (playbook.status === 'blocked') {
+    return 'blocked';
+  }
+  if (playbook.status === 'completed' || playbook.status === 'archived') {
+    return 'completed';
+  }
+  if (
+    playbook.status === 'waiting' ||
+    playbook.steps.some((step) => step.status.includes('waiting'))
+  ) {
+    return 'waiting';
+  }
+  return 'neutral';
+}
+
+export function buildAoiPlaybookPanelSummary(
+  playbook: AoiPlaybook | null | undefined,
+  includeDetails = false,
+): AoiPlaybookPanelSummary {
+  if (!playbook) {
+    return {
+      visible: false,
+      statusLabel: 'no playbook',
+      titleLabel: '',
+      objectiveLabel: '',
+      stepLabels: [],
+      boundaryLabels: [],
+      nextDecisionLabel: '',
+      blockedPrerequisiteLabels: [],
+      evidenceRefs: [],
+      tone: 'neutral',
+    };
+  }
+  const visibleSteps = playbook.steps.slice(0, includeDetails ? 8 : 5);
+  const boundaryLabels = playbook.steps
+    .filter(
+      (step) =>
+        step.executionBoundary.requiresApproval ||
+        step.executionBoundary.commandCapable ||
+        step.executionBoundary.mutationCapable,
+    )
+    .slice(0, includeDetails ? 6 : 3)
+    .map((step) =>
+      sanitizeAoiProposalDisplayText(
+        `${step.title}: ${step.executionBoundary.summary}; auto-run no`,
+        includeDetails ? 260 : 180,
+      ),
+    );
+  const blockedPrerequisiteLabels = [
+    ...playbook.blockedReasons,
+    ...playbook.steps.flatMap((step) => step.blockedReasons),
+  ]
+    .filter((label, index, all) => label && all.indexOf(label) === index)
+    .slice(0, includeDetails ? 6 : 3)
+    .map((label) => sanitizeAoiProposalDisplayText(label, 160));
+
+  return {
+    visible: true,
+    statusLabel: sanitizeAoiProposalDisplayText(playbook.status.replace(/_/g, ' '), 80),
+    titleLabel: sanitizeAoiProposalDisplayText(playbook.title, 140),
+    objectiveLabel: sanitizeAoiProposalDisplayText(playbook.objective, includeDetails ? 260 : 180),
+    stepLabels: visibleSteps.map((step, index) =>
+      sanitizeAoiProposalDisplayText(
+        `${index + 1}. ${step.title}: ${step.status.replace(/_/g, ' ')}`,
+        160,
+      ),
+    ),
+    boundaryLabels,
+    nextDecisionLabel: sanitizeAoiProposalDisplayText(playbook.nextRequiredDecision, 220),
+    blockedPrerequisiteLabels,
+    evidenceRefs: includeDetails
+      ? playbook.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
+      : [],
+    tone: aoiPlaybookTone(playbook),
   };
 }
 

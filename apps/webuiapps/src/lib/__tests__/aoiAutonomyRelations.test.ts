@@ -11,10 +11,12 @@ import {
   recordAoiAttentionEventRelations,
   recordAoiKiraOutcomeRelations,
   recordAoiProposalCreatedRelations,
+  recordAoiPlaybookRelations,
   recordAoiRecoveryProposalRelations,
   upsertAoiRelations,
 } from '../aoiAutonomyRelations';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
+import { prepareAoiPlaybook } from '../aoiPlaybookOrchestrator';
 import { updateAoiEnvironmentSource } from '../aoiAutonomyStore';
 import type {
   AoiAttentionEvent,
@@ -409,6 +411,80 @@ describe('Aoi autonomy relation index', () => {
     expect(
       index.edges.some(
         (edge) => edge.to === missionNode?.id && edge.evidenceRefs.includes('kira-work:kira-001'),
+      ),
+    ).toBe(true);
+  });
+
+  it('records playbook links to steps, proposal, command audit, and evidence refs', () => {
+    const root = makeTempRoot();
+    const proposal = makeProposal({
+      id: 'proposal-playbook-relation-001',
+      status: 'accepted',
+      risk: 'high',
+      requiredAutonomyLevel: 'L5',
+      requiresUserApproval: true,
+      suggestedTools: ['run_command'],
+      evidenceRefs: ['timeline:playbook-source-001', 'research:aoi-research-relation-001/report'],
+      acceptAction: {
+        kind: 'run_command',
+        params: {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyRelations.test.ts',
+          cwd: '.',
+          purpose: 'Validate Aoi relation graph.',
+        },
+      },
+    });
+    const playbook = prepareAoiPlaybook({
+      sessionPath: 'aoi/default',
+      proposal,
+      now: 3100,
+      playbookId: 'aoi-playbook-relation-test',
+    });
+    const withCommandAudit = {
+      ...playbook,
+      evidenceRefs: [...playbook.evidenceRefs, 'aoi-command-audit:aoi-command-audit-relation-001'],
+      steps: playbook.steps.map((step) =>
+        step.kind === 'run_approved_command'
+          ? {
+              ...step,
+              refs: {
+                ...step.refs,
+                commandAuditRef: 'aoi-command-audit:aoi-command-audit-relation-001',
+              },
+              evidenceRefs: [
+                ...step.evidenceRefs,
+                'aoi-command-audit:aoi-command-audit-relation-001',
+              ],
+            }
+          : step,
+      ),
+    };
+
+    const index = recordAoiPlaybookRelations({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      playbook: withCommandAudit,
+      now: 3200,
+    });
+
+    const playbookNode = index.nodes.find(
+      (node) => node.ref === 'playbook:aoi-playbook-relation-test',
+    );
+    const commandNode = index.nodes.find(
+      (node) => node.ref === 'aoi-command-audit:aoi-command-audit-relation-001',
+    );
+    expect(playbookNode).toMatchObject({ kind: 'playbook' });
+    expect(index.nodes.some((node) => node.kind === 'playbook_step')).toBe(true);
+    expect(index.nodes.some((node) => node.ref === 'proposal:proposal-playbook-relation-001')).toBe(
+      true,
+    );
+    expect(commandNode).toBeTruthy();
+    expect(
+      index.edges.some(
+        (edge) =>
+          edge.from === commandNode?.id &&
+          edge.evidenceRefs.includes('aoi-command-audit:aoi-command-audit-relation-001'),
       ),
     ).toBe(true);
   });

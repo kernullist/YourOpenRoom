@@ -9,6 +9,12 @@ import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution'
 import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
 import { buildAoiKiraHandoffPreparedActionPlan } from '../aoiSafeActionPlan';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
+import {
+  prepareAoiPlaybook,
+  updateAoiPlaybookFromEvidence,
+  upsertAoiPlaybook,
+  loadAoiActivePlaybooks,
+} from '../aoiPlaybookOrchestrator';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import {
   applyAoiProposalDecision,
@@ -777,6 +783,215 @@ describe('executeAoiProposal()', () => {
     });
     expect(fs.existsSync(join(root, 'aoi/default', 'aoi-research', 'runs'))).toBe(false);
     expect(loadAoiActiveProposals(root, 'aoi/default')[0].status).toBe('accepted');
+  });
+
+  it('previews a multistep playbook without bypassing per-step approvals', () => {
+    const proposal = makeKiraProposal({
+      status: 'active',
+      id: 'proposal-playbook-kira-001',
+    });
+    const playbook = prepareAoiPlaybook({
+      sessionPath: 'aoi/default',
+      proposal,
+      now: 4000,
+      playbookId: 'aoi-playbook-preview-test',
+    });
+
+    expect(playbook.steps.map((step) => step.kind)).toEqual([
+      'inspect_context',
+      'create_kira_work',
+      'wait_for_external_event',
+      'preview_command',
+      'run_approved_command',
+      'summarize_result',
+      'ask_user',
+    ]);
+    const kiraStep = playbook.steps.find((step) => step.kind === 'create_kira_work');
+    const commandStep = playbook.steps.find((step) => step.kind === 'run_approved_command');
+    expect(kiraStep).toMatchObject({
+      status: 'pending',
+      executionBoundary: {
+        requiresApproval: true,
+        freshAcceptanceRequired: true,
+        existingGate: 'kira_handoff',
+        canAutoRun: false,
+      },
+    });
+    expect(commandStep).toMatchObject({
+      status: 'pending',
+      executionBoundary: {
+        requiresApproval: true,
+        requiredAutonomyLevel: 'L5',
+        existingGate: 'approved_command',
+        canAutoRun: false,
+      },
+    });
+
+    const afterContext = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'inspect_context_completed',
+      evidenceRefs: ['timeline:context-reviewed'],
+      now: 5000,
+    });
+
+    expect(afterContext.steps.find((step) => step.kind === 'create_kira_work')?.status).toBe(
+      'waiting_for_approval',
+    );
+    expect(afterContext.steps.find((step) => step.kind === 'run_approved_command')?.status).toBe(
+      'pending',
+    );
+  });
+
+  it('updates waiting playbook steps from Kira and command evidence only', () => {
+    const proposal = makeKiraProposal({
+      status: 'accepted',
+      id: 'proposal-playbook-update-001',
+    });
+    let playbook = prepareAoiPlaybook({
+      sessionPath: 'aoi/default',
+      proposal,
+      now: 4000,
+      playbookId: 'aoi-playbook-update-test',
+    });
+
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'inspect_context_completed',
+      evidenceRefs: ['timeline:context-reviewed'],
+      now: 4100,
+    });
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'kira_work_created',
+      evidenceRefs: ['kira-work:kira-playbook-001'],
+      refs: { kiraWorkRef: 'kira-work:kira-playbook-001' },
+      now: 4200,
+    });
+    expect(playbook.steps.find((step) => step.kind === 'wait_for_external_event')?.status).toBe(
+      'waiting_for_external_event',
+    );
+
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'kira_work_completed',
+      evidenceRefs: ['kira-review:kira-review-playbook-001'],
+      refs: { kiraWorkRef: 'kira-work:kira-playbook-001' },
+      now: 4300,
+    });
+    expect(playbook.steps.find((step) => step.kind === 'preview_command')?.status).toBe('ready');
+
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'approved_command_recorded',
+      evidenceRefs: ['aoi-command-audit:aoi-command-playbook-001'],
+      refs: { commandAuditRef: 'aoi-command-audit:aoi-command-playbook-001' },
+      now: 4400,
+    });
+    expect(playbook.steps.find((step) => step.kind === 'run_approved_command')?.status).toBe(
+      'completed',
+    );
+    expect(playbook.evidenceRefs).toContain('aoi-command-audit:aoi-command-playbook-001');
+  });
+
+  it('updates a research waiting playbook step from completed research evidence', () => {
+    const proposal = makeProposal({
+      status: 'accepted',
+      id: 'proposal-playbook-research-001',
+      requiredAutonomyLevel: 'L4',
+      risk: 'medium',
+      suggestedTools: ['start_research'],
+      acceptAction: {
+        kind: 'start_research',
+        params: {
+          sessionPath: 'aoi/default',
+          request: 'Investigate current ETW telemetry changes',
+          mode: 'standard',
+        },
+      },
+    });
+    let playbook = prepareAoiPlaybook({
+      sessionPath: 'aoi/default',
+      proposal,
+      now: 4000,
+      playbookId: 'aoi-playbook-research-test',
+    });
+
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'inspect_context_completed',
+      evidenceRefs: ['timeline:context-reviewed'],
+      now: 4100,
+    });
+    playbook = updateAoiPlaybookFromEvidence({
+      playbook,
+      kind: 'research_completed',
+      evidenceRefs: ['research:aoi-research-playbook-001/report'],
+      refs: {
+        researchRunRef: 'research:aoi-research-playbook-001',
+        researchArtifactRef: 'research:aoi-research-playbook-001/report',
+      },
+      now: 4200,
+    });
+
+    expect(playbook.steps.find((step) => step.kind === 'wait_for_external_event')?.status).toBe(
+      'completed',
+    );
+    expect(playbook.steps.find((step) => step.kind === 'start_research')?.status).toBe('completed');
+    expect(playbook.steps.find((step) => step.kind === 'read_research_artifact')?.status).toBe(
+      'ready',
+    );
+    expect(playbook.evidenceRefs).toContain('research:aoi-research-playbook-001/report');
+  });
+
+  it('persists a failed-prerequisite playbook without deleting it', () => {
+    const root = makeTempRoot();
+    const proposal = makeCommandProposal({
+      id: 'proposal-playbook-command-001',
+      status: 'accepted',
+    });
+    const playbook = prepareAoiPlaybook({
+      sessionPath: 'aoi/default',
+      proposal,
+      health: {
+        version: 1,
+        sessionPath: 'aoi/default',
+        overallStatus: 'blocked',
+        summary: 'Approved command runner is unavailable.',
+        updatedAt: 4000,
+        issueCounts: { info: 0, warning: 0, error: 0, blocker: 1 },
+        userBlockingIssueCount: 1,
+        capabilities: [],
+        issues: [
+          {
+            version: 1,
+            id: 'health-command-blocker',
+            capability: 'approved_commands',
+            severity: 'blocker',
+            code: 'approved_command_runner_unavailable',
+            title: 'Approved command runner unavailable',
+            summary: 'Aoi cannot run approved commands.',
+            cannotKnow: 'Aoi cannot know validation output until the runner is available.',
+            evidenceRefs: ['health:approved-command-runner'],
+            recommendation: {
+              action: 'configure_source',
+              label: 'Repair approved command runner.',
+              reason: 'Validation command execution is blocked.',
+            },
+          },
+        ],
+        evidenceRefs: ['health:approved-command-runner'],
+      },
+      now: 4000,
+      playbookId: 'aoi-playbook-blocked-test',
+    });
+
+    expect(playbook.status).toBe('blocked');
+    expect(playbook.blockedReasons).toContain(
+      'approved_commands:approved_command_runner_unavailable',
+    );
+    upsertAoiPlaybook(root, 'aoi/default', playbook);
+    expect(loadAoiActivePlaybooks(root, 'aoi/default')).toHaveLength(1);
+    expect(loadAoiActivePlaybooks(root, 'aoi/default')[0].status).toBe('blocked');
   });
 
   it('executes one exactly approved command and records audit, relations, and validation freshness', async () => {

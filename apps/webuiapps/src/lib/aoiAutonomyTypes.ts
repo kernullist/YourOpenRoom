@@ -821,6 +821,128 @@ export interface AoiPreparedActionPlan {
   nonGoals: string[];
 }
 
+export type AoiPlaybookStatus =
+  | 'preview'
+  | 'active'
+  | 'waiting'
+  | 'blocked'
+  | 'completed'
+  | 'archived';
+
+export type AoiPlaybookStepKind =
+  | 'inspect_context'
+  | 'read_research_artifact'
+  | 'start_research'
+  | 'create_kira_work'
+  | 'preview_command'
+  | 'run_approved_command'
+  | 'summarize_result'
+  | 'ask_user'
+  | 'wait_for_external_event';
+
+export type AoiPlaybookStepStatus =
+  | 'pending'
+  | 'ready'
+  | 'waiting_for_approval'
+  | 'waiting_for_external_event'
+  | 'completed'
+  | 'blocked'
+  | 'skipped';
+
+export type AoiPlaybookEvidenceKind =
+  | 'inspect_context_completed'
+  | 'read_research_artifact_completed'
+  | 'research_completed'
+  | 'kira_work_created'
+  | 'kira_work_completed'
+  | 'approved_command_recorded'
+  | 'summarize_result_completed'
+  | 'user_decision_recorded'
+  | 'step_failed';
+
+export interface AoiPlaybookExecutionBoundary {
+  version: 1;
+  mutationCapable: boolean;
+  commandCapable: boolean;
+  requiresApproval: boolean;
+  requiredAutonomyLevel: AoiAutonomyLevel;
+  freshAcceptanceRequired: boolean;
+  approver: 'user' | 'kira_reviewer' | 'none';
+  existingGate:
+    | 'none'
+    | 'proposal_acceptance'
+    | 'research_approval'
+    | 'kira_handoff'
+    | 'approved_command'
+    | 'user_decision';
+  canAutoRun: false;
+  summary: string;
+  approvalRef?: string;
+}
+
+export interface AoiPlaybookStepRefs {
+  proposalRef?: string;
+  goalRef?: string;
+  missionRef?: string;
+  researchRunRef?: string;
+  researchArtifactRef?: string;
+  kiraWorkRef?: string;
+  commandAuditRef?: string;
+  timelineEventRef?: string;
+}
+
+export interface AoiPlaybookStep {
+  version: 1;
+  id: string;
+  kind: AoiPlaybookStepKind;
+  title: string;
+  summary: string;
+  status: AoiPlaybookStepStatus;
+  dependsOn: string[];
+  evidenceRefs: string[];
+  sourceRefs: string[];
+  resultSummary?: string;
+  blockedReasons: string[];
+  executionBoundary: AoiPlaybookExecutionBoundary;
+  checkpointNotes: string[];
+  rollbackNotes: string[];
+  validationNotes: string[];
+  refs: AoiPlaybookStepRefs;
+  updatedAt: number;
+}
+
+export interface AoiPlaybookEdge {
+  version: 1;
+  id: string;
+  fromStepId: string;
+  toStepId: string;
+  kind: 'depends_on' | 'unblocks' | 'waits_for';
+  evidenceRefs: string[];
+}
+
+export interface AoiPlaybook {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  title: string;
+  objective: string;
+  status: AoiPlaybookStatus;
+  createdAt: number;
+  updatedAt: number;
+  archivedAt?: number;
+  sourceRefs: string[];
+  evidenceRefs: string[];
+  goalId?: string;
+  proposalId?: string;
+  missionRef?: string;
+  healthIssueRefs: string[];
+  blockedReasons: string[];
+  nextStepId?: string;
+  nextRequiredDecision: string;
+  steps: AoiPlaybookStep[];
+  edges: AoiPlaybookEdge[];
+}
+
 export type AoiCommandBlockReason =
   | 'missing_command'
   | 'command_too_long'

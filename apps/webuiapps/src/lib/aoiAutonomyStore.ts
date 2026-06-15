@@ -49,6 +49,9 @@ export interface AoiAutonomyPaths {
   proposalsDir: string;
   activeProposals: string;
   archivedProposals: string;
+  playbooksDir: string;
+  activePlaybooks: string;
+  archivedPlaybooks: string;
   decisionsDir: string;
   commandAuditDir: string;
   tickState: string;
@@ -331,6 +334,7 @@ export function resolveAoiAutonomyPaths(
     throw new Error('Resolved Aoi autonomy path escaped the sessions directory.');
   }
   const proposalsDir = join(root, 'proposals');
+  const playbooksDir = join(root, 'playbooks');
   const timelineDir = join(root, 'timeline');
   return {
     root,
@@ -341,6 +345,9 @@ export function resolveAoiAutonomyPaths(
     proposalsDir,
     activeProposals: join(proposalsDir, 'active.json'),
     archivedProposals: join(proposalsDir, 'archived.json'),
+    playbooksDir,
+    activePlaybooks: join(playbooksDir, 'active.json'),
+    archivedPlaybooks: join(playbooksDir, 'archived.json'),
     decisionsDir: join(root, 'decisions'),
     commandAuditDir: join(root, 'command-audit'),
     tickState: join(root, 'tick-state.json'),

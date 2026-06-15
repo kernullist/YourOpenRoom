@@ -8,6 +8,8 @@ import type {
   AoiMissionState,
   AoiObservation,
   AoiPlanStep,
+  AoiPlaybook,
+  AoiPlaybookStep,
   AoiProposal,
   AoiProposalDecision,
 } from './aoiAutonomyTypes';
@@ -24,6 +26,8 @@ export type AoiRelationNodeKind =
   | 'goal'
   | 'mission'
   | 'plan_step'
+  | 'playbook'
+  | 'playbook_step'
   | 'project'
   | 'kira_work'
   | 'kira_attempt'
@@ -210,6 +214,12 @@ export function inferAoiRelationNodeKind(ref: string): AoiRelationNodeKind {
   }
   if (ref.startsWith('plan-step:')) {
     return 'plan_step';
+  }
+  if (ref.startsWith('playbook:')) {
+    return 'playbook';
+  }
+  if (ref.startsWith('playbook-step:')) {
+    return 'playbook_step';
   }
   if (ref.startsWith('project:')) {
     return 'project';
@@ -1179,6 +1189,116 @@ export function recordAoiMissionStateRelations(params: {
   return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
 }
 
+function refsForAoiPlaybookStep(step: AoiPlaybookStep): string[] {
+  return [
+    `playbook-step:${step.id}`,
+    step.refs.proposalRef,
+    step.refs.goalRef,
+    step.refs.missionRef,
+    step.refs.researchRunRef,
+    step.refs.researchArtifactRef,
+    step.refs.kiraWorkRef,
+    step.refs.commandAuditRef,
+    step.refs.timelineEventRef,
+    ...step.evidenceRefs,
+    ...step.sourceRefs,
+  ].filter((ref): ref is string => Boolean(ref));
+}
+
+export function recordAoiPlaybookRelations(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  playbook: AoiPlaybook;
+  now?: number;
+}): AoiRelationIndex {
+  const now = params.now ?? Date.now();
+  const playbookRef = `playbook:${params.playbook.id}`;
+  const playbookNode = makeAoiRelationNode({
+    ref: playbookRef,
+    kind: 'playbook',
+    label: params.playbook.title,
+    status:
+      params.playbook.status === 'archived' || params.playbook.status === 'completed'
+        ? 'archived'
+        : 'active',
+    now,
+  });
+  const nodes = [playbookNode];
+  const edges: AoiRelationEdge[] = [];
+
+  const sourceRefs = [
+    ...params.playbook.sourceRefs,
+    ...params.playbook.evidenceRefs,
+    ...(params.playbook.goalId ? [`goal:${params.playbook.goalId}`] : []),
+    ...(params.playbook.proposalId ? [`proposal:${params.playbook.proposalId}`] : []),
+    params.playbook.missionRef,
+    ...params.playbook.healthIssueRefs,
+  ].filter((ref): ref is string => Boolean(ref));
+
+  for (const ref of [...new Set(sourceRefs)]) {
+    const node = makeAoiRelationNode({ ref, now });
+    nodes.push(node);
+    edges.push(
+      makeAoiRelationEdge({
+        from: node.id,
+        to: playbookNode.id,
+        kind: 'supports',
+        evidenceRefs: [ref, playbookRef],
+        now,
+      }),
+    );
+  }
+
+  for (const step of params.playbook.steps) {
+    const stepRef = `playbook-step:${step.id}`;
+    const stepNode = makeAoiRelationNode({
+      ref: stepRef,
+      kind: 'playbook_step',
+      label: step.title,
+      status:
+        step.status === 'completed' || step.status === 'skipped'
+          ? 'archived'
+          : step.status === 'blocked'
+            ? 'unknown'
+            : 'active',
+      now,
+    });
+    nodes.push(stepNode);
+    edges.push(
+      makeAoiRelationEdge({
+        from: stepNode.id,
+        to: playbookNode.id,
+        kind: 'belongs_to',
+        evidenceRefs: [stepRef, playbookRef],
+        now,
+      }),
+      makeAoiRelationEdge({
+        from: playbookNode.id,
+        to: stepNode.id,
+        kind: 'followed_by',
+        evidenceRefs: [playbookRef, stepRef],
+        now,
+      }),
+    );
+
+    for (const ref of [...new Set(refsForAoiPlaybookStep(step))].filter((ref) => ref !== stepRef)) {
+      const node = makeAoiRelationNode({ ref, now });
+      nodes.push(node);
+      edges.push(
+        makeAoiRelationEdge({
+          from: node.id,
+          to: stepNode.id,
+          kind: 'supports',
+          evidenceRefs: [ref, stepRef],
+          now,
+        }),
+      );
+    }
+  }
+
+  return upsertAoiRelations(params.sessionsDir, params.sessionPath, { nodes, edges, now });
+}
+
 export function getActiveAoiRelationMemoryIds(
   index: AoiRelationIndex,
   memories: AoiMemoryEntry[],
@@ -1234,6 +1354,8 @@ function isAoiRelationNodeKind(value: unknown): value is AoiRelationNodeKind {
     value === 'goal' ||
     value === 'mission' ||
     value === 'plan_step' ||
+    value === 'playbook' ||
+    value === 'playbook_step' ||
     value === 'project' ||
     value === 'kira_work' ||
     value === 'kira_attempt' ||

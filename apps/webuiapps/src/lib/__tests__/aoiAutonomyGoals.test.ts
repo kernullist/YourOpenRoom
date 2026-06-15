@@ -29,6 +29,7 @@ import {
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
+import { prepareAoiPlaybook } from '../aoiPlaybookOrchestrator';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type {
   AoiGoal,
@@ -661,6 +662,38 @@ describe('Aoi autonomy goals', () => {
       status: 'waiting_on_research',
       waitingOn: 'research',
     });
+  });
+
+  it('prepares a playbook from active goal and mission state without a proposal card', () => {
+    const root = makeTempRoot();
+    const goal = markFirstStepDone(
+      root,
+      makeGoal(root, '최신 Windows 커널 보안 리서치를 목표로 관리하자.'),
+    );
+    const mission = deriveAoiMissionState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+    });
+    const playbook = prepareAoiPlaybook({
+      sessionPath: SESSION_PATH,
+      activeGoal: goal,
+      mission,
+      now: NOW + 2000,
+      playbookId: 'aoi-playbook-goal-test',
+    });
+
+    expect(playbook.goalId).toBe(goal.id);
+    expect(playbook.missionRef).toBe(`mission:${goal.id}`);
+    expect(playbook.sourceRefs).toContain(`goal:${goal.id}`);
+    expect(playbook.steps.map((step) => step.kind)).toEqual([
+      'inspect_context',
+      'wait_for_external_event',
+      'read_research_artifact',
+      'summarize_result',
+      'ask_user',
+    ]);
+    expect(playbook.nextRequiredDecision).toContain('Review the active goal');
   });
 
   it('pauses and resumes mission focus without deleting evidence or creating proposals', () => {
