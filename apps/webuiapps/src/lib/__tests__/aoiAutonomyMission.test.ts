@@ -13,6 +13,7 @@ import {
   buildAoiMissionMemoryReport,
   buildAoiMissionMemorySnapshot,
 } from '../aoiMissionMemory';
+import { buildAoiMissionControlState } from '../aoiMissionControlRuntime';
 import { loadAoiMissionMemoryReport, saveAoiMissionMemoryReport } from '../aoiMissionMemoryStore';
 import { ingestAoiObservation } from '../aoiAutonomyObserver';
 import type {
@@ -509,5 +510,181 @@ describe('Aoi autonomy mission workspace signals', () => {
     expect(driftSignal?.summary).toContain('safety rules');
     expect(snapshot.nextApprovalRefs).toContain('command-approval:approval-mission-memory');
     expect(context?.boundaryLabel).toContain('display-only');
+  });
+});
+
+describe('Aoi mission control runtime', () => {
+  function makeActiveMission(partial: Partial<AoiMissionState> = {}): AoiMissionState {
+    return makeMission({
+      nextRecommendedAction: {
+        kind: 'review_goal',
+        label: 'Continue the active mission.',
+        reason: 'The mission is active.',
+        ref: 'goal:goal-mission-memory',
+      },
+      sourceRefs: {
+        goalRef: 'goal:goal-mission-memory',
+      },
+      evidenceRefs: ['goal:goal-mission-memory'],
+      ...partial,
+    });
+  }
+
+  it('degrades stale validation to a validation-preview mission state', () => {
+    const mission = makeActiveMission();
+    const state = buildAoiMissionControlState({
+      sessionPath: SESSION_PATH,
+      mission,
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      now: NOW + 120_000,
+    });
+    const top = state.topMission;
+
+    expect(top?.status).toBe('needs_validation_preview');
+    expect(top?.confidence).toBeLessThan(0.5);
+    expect(top?.lastKnownState).toContain('STALE');
+    expect(top?.staleAgeMs).toBeGreaterThan(0);
+    expect(top?.nextSafeAction.kind).toBe('prepare_preview');
+    expect(top?.nextSafeAction.executionAllowed).toBe(false);
+    expect(top?.transitions.map((item) => `${item.from}->${item.to}`)).toEqual([
+      'active->stale',
+      'stale->needs_validation_preview',
+    ]);
+    expect(state.health.staleMissionCount).toBe(1);
+  });
+
+  it('keeps pending external events waiting instead of treating them as failure', () => {
+    const mission = makeActiveMission({
+      status: 'waiting_on_kira',
+      waitingOn: 'kira',
+      nextRecommendedAction: {
+        kind: 'inspect_kira',
+        label: 'Wait for Kira review.',
+        reason: 'Kira work is still pending.',
+        ref: 'kira:work:mission-control',
+      },
+      sourceRefs: {
+        goalRef: 'goal:goal-mission-memory',
+        kiraWorkRef: 'kira:work:mission-control',
+      },
+      evidenceRefs: ['kira:work:mission-control'],
+    });
+    const playbook = makePlaybook({
+      nextStepId: 'step-external',
+      steps: [
+        {
+          ...makePlaybook().steps[0],
+          id: 'step-external',
+          kind: 'wait_for_external_event',
+          title: 'Wait for Kira result',
+          summary: 'Kira review has not returned yet.',
+          status: 'waiting_for_external_event',
+          refs: {
+            goalRef: 'goal:goal-mission-memory',
+            missionRef: 'mission:goal-mission-memory',
+            kiraWorkRef: 'kira:work:mission-control',
+          },
+          evidenceRefs: ['kira:work:mission-control'],
+        },
+      ],
+    });
+
+    const state = buildAoiMissionControlState({
+      sessionPath: SESSION_PATH,
+      mission,
+      playbooks: [playbook],
+      now: NOW + 1000,
+    });
+
+    expect(state.topMission?.status).toBe('waiting_on_external');
+    expect(state.topMission?.pendingExternalRefs).toContain('kira:work:mission-control');
+    expect(state.topMission?.nextSafeAction.reason).toContain('not a failure');
+    expect(state.topMission?.nextSafeAction.executionAllowed).toBe(false);
+    expect(state.health.waitingExternalCount).toBe(1);
+    expect(state.health.staleMissionCount).toBe(0);
+  });
+
+  it('keeps approval refs from becoming execution authority', () => {
+    const state = buildAoiMissionControlState({
+      sessionPath: SESSION_PATH,
+      mission: makeActiveMission(),
+      playbooks: [makePlaybook()],
+      approvedCommandPolicies: [makeApprovalPolicy()],
+      now: NOW + 1000,
+    });
+    const top = state.topMission;
+
+    expect(top?.status).toBe('waiting_on_approval');
+    expect(top?.approvalRefs).toContain('command-approval:approval-mission-memory');
+    expect(top?.nextSafeAction.requiresApproval).toBe(true);
+    expect(top?.nextSafeAction.executionAllowed).toBe(false);
+    expect(top?.nextSafeAction.boundaryLabel).toContain('approval gates');
+    expect(state.health.waitingApprovalCount).toBe(1);
+  });
+
+  it('does not select a completed mission as the top active mission', () => {
+    const completedMission = makeActiveMission({
+      status: 'completed',
+      waitingOn: 'none',
+      activeGoalId: 'goal-completed',
+      focusSummary: 'Completed mission should not win top focus.',
+      nextRecommendedAction: {
+        kind: 'none',
+        label: 'No immediate action.',
+        reason: 'Mission completed.',
+      },
+      sourceRefs: {
+        goalRef: 'goal:goal-completed',
+      },
+      evidenceRefs: ['goal:goal-completed'],
+      updatedAt: NOW + 10_000,
+    });
+    const activeMission = makeActiveMission({
+      activeGoalId: 'goal-active',
+      sourceRefs: {
+        goalRef: 'goal:goal-active',
+      },
+      evidenceRefs: ['goal:goal-active'],
+      updatedAt: NOW,
+    });
+
+    const state = buildAoiMissionControlState({
+      sessionPath: SESSION_PATH,
+      missions: [completedMission, activeMission],
+      now: NOW + 20_000,
+    });
+
+    expect(state.items.some((item) => item.missionId === 'goal:goal-completed')).toBe(true);
+    expect(state.health.completedMissionCount).toBe(1);
+    expect(state.topMission?.missionId).toBe('goal:goal-active');
+    expect(state.topMission?.status).toBe('active');
+  });
+
+  it('keeps blocked missions visible in the dashboard summary without private leaks', () => {
+    const state = buildAoiMissionControlState({
+      sessionPath: SESSION_PATH,
+      mission: makeActiveMission({
+        status: 'blocked',
+        waitingOn: 'user',
+        activeGoalId: 'goal-blocked',
+        focusSummary:
+          'Blocked on private-roadmap@example.com and F:\\private\\aoi\\blocked-notes.md.',
+        blockedReason: 'Operator must choose a narrower continuation.',
+        sourceRefs: {
+          goalRef: 'goal:goal-blocked',
+        },
+        evidenceRefs: ['goal:goal-blocked'],
+      }),
+      now: NOW + 1000,
+    });
+    const serialized = JSON.stringify(state.dashboardSummary);
+
+    expect(state.health.blockedMissionCount).toBe(1);
+    expect(state.dashboardSummary.visible).toBe(true);
+    expect(state.dashboardSummary.itemLabels.join(' ')).toContain('goal:goal-blocked');
+    expect(state.dashboardSummary.itemLabels.join(' ')).toContain('needs_operator_input');
+    expect(state.topMission?.nextSafeAction.kind).toBe('ask');
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('F:\\private\\aoi\\blocked-notes.md');
   });
 });

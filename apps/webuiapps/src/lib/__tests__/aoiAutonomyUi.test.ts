@@ -55,6 +55,7 @@ import {
 } from '../aoiOperatorVoice';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiMissionMemorySnapshot } from '../aoiMissionMemory';
+import { buildAoiMissionControlState } from '../aoiMissionControlRuntime';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import {
@@ -2129,6 +2130,103 @@ describe('Aoi autonomy UI helpers', () => {
       'approval-ui-mission-memory',
     );
     expect(dashboard.evidenceRefs).toContain(`mission-memory:${missionMemory.id}`);
+  });
+
+  it('surfaces mission control runtime counts and top mission next action', () => {
+    const missionControl = buildAoiMissionControlState({
+      sessionPath: 'aoi/default',
+      mission: makeMission({
+        status: 'waiting_on_user',
+        waitingOn: 'user',
+        activeGoalId: 'aoi-goal-ui-approval',
+        focusSummary: 'Polish the operator dashboard mission control panel.',
+        nextRecommendedAction: {
+          kind: 'wait_for_user',
+          label: 'Wait for approval.',
+          reason: 'Approval is required before validation can run.',
+          ref: 'proposal:aoi-proposal-ui-approval',
+        },
+        sourceRefs: {
+          goalRef: 'goal:aoi-goal-ui-approval',
+          proposalRef: 'proposal:aoi-proposal-ui-approval',
+        },
+        evidenceRefs: ['goal:aoi-goal-ui-approval', 'proposal:aoi-proposal-ui-approval'],
+      }),
+      playbooks: [
+        {
+          version: 1,
+          id: 'playbook-ui-mission-control',
+          sessionPath: 'aoi/default',
+          title: 'Mission control dashboard playbook',
+          objective: 'Keep approval boundaries visible.',
+          status: 'waiting',
+          createdAt: 6000,
+          updatedAt: 6000,
+          sourceRefs: ['goal:aoi-goal-ui-approval'],
+          evidenceRefs: ['playbook:ui-mission-control'],
+          goalId: 'aoi-goal-ui-approval',
+          missionRef: 'mission:aoi-goal-ui-approval',
+          healthIssueRefs: [],
+          blockedReasons: [],
+          nextStepId: 'step-ui-approval',
+          nextRequiredDecision: 'Ask for approval before validation.',
+          steps: [
+            {
+              version: 1,
+              id: 'step-ui-approval',
+              kind: 'preview_command',
+              title: 'Preview validation',
+              summary: 'Preview the validation command only.',
+              status: 'waiting_for_approval',
+              dependsOn: [],
+              evidenceRefs: ['playbook-step:ui-approval'],
+              sourceRefs: ['goal:aoi-goal-ui-approval'],
+              blockedReasons: [],
+              executionBoundary: {
+                version: 1,
+                mutationCapable: false,
+                commandCapable: true,
+                requiresApproval: true,
+                requiredAutonomyLevel: 'L5',
+                freshAcceptanceRequired: true,
+                approver: 'user',
+                existingGate: 'approved_command',
+                canAutoRun: false,
+                summary: 'Validation command execution requires fresh approval.',
+                approvalRef: 'command-approval:ui-mission-control',
+              },
+              checkpointNotes: [],
+              rollbackNotes: [],
+              validationNotes: ['pnpm --filter @openroom/webuiapps test'],
+              refs: {
+                goalRef: 'goal:aoi-goal-ui-approval',
+                missionRef: 'mission:aoi-goal-ui-approval',
+                commandAuditRef: 'command-approval:ui-mission-control',
+              },
+              updatedAt: 6000,
+            },
+          ],
+          edges: [],
+        },
+      ],
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      missionControl,
+      now: 8000,
+    });
+
+    expect(dashboard.missionControl.visible).toBe(true);
+    expect(dashboard.missionControl.waitingApprovalCountLabel).toContain('1 waiting approval');
+    expect(dashboard.currentBrief.statusLabel).toContain('mission control waiting on approval');
+    expect(dashboard.nextSafeAction.actionLabel).toContain('approval');
+    expect(dashboard.nextSafeAction.boundaryLabel).toContain('approval gates');
+    expect(dashboard.pendingApproval.visible).toBe(true);
+    expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
+      'command-approval:ui-mission-control',
+    );
+    expect(dashboard.evidenceRefs).toContain(`mission-control:${missionControl.id}`);
   });
 
   it('shows disabled personal sources as blind spots without inferred private content', () => {

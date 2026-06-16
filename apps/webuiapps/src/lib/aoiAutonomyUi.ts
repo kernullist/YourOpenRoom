@@ -5,6 +5,11 @@ import {
   checkAoiProposalPolicy,
   isAoiPersonalSignalSourceKind,
 } from './aoiAutonomyPolicy';
+import {
+  buildAoiMissionControlDashboardSummary,
+  type AoiMissionControlDashboardSummary,
+  type AoiMissionControlState,
+} from './aoiMissionControlRuntime';
 import { buildAoiMissionMemoryDashboardContext } from './aoiMissionMemory';
 import { buildAoiPersonalSourceRealityDashboardContext } from './aoiPersonalSourceRealityCheck';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
@@ -398,6 +403,7 @@ export interface AoiOperatorAcceptanceDashboard {
   sessionPath: string;
   generatedAt: number;
   answerLabel: string;
+  missionControl: AoiMissionControlDashboardSummary;
   currentBrief: AoiCurrentBriefPanel;
   blindSpots: AoiBlindSpotsPanel;
   nextSafeAction: AoiNextSafeActionPanel;
@@ -420,6 +426,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   timelineSummary?: AoiOperatorTimelineSummary | null;
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   playbooks?: AoiPlaybook[];
+  missionControl?: AoiMissionControlState | null;
   missionMemory?: AoiMissionMemorySnapshot | null;
   personalSourceRealityCheck?: AoiPersonalSourceRealityCheck | null;
   approvedCommandPolicies?: AoiApprovedCommandPolicy[];
@@ -1857,6 +1864,8 @@ function buildAoiCurrentBriefPanel(
 ): AoiCurrentBriefPanel {
   const mission = input.mission;
   const workspace = input.workspaceSnapshot;
+  const missionControl = input.missionControl;
+  const missionControlSummary = buildAoiMissionControlDashboardSummary(missionControl);
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
   const realityContext = buildAoiPersonalSourceRealityDashboardContext(
@@ -1892,9 +1901,14 @@ function buildAoiCurrentBriefPanel(
         : 'Kira status unknown';
   const statusLabel = mission
     ? sanitizeAoiAcceptanceDashboardText(mission.status.replace(/_/g, ' '), 80)
-    : memoryContext
-      ? sanitizeAoiAcceptanceDashboardText(`mission memory ${memoryContext.freshnessLabel}`, 80)
-      : 'no active mission';
+    : missionControl?.topMission
+      ? sanitizeAoiAcceptanceDashboardText(
+          `mission control ${missionControl.topMission.status.replace(/_/g, ' ')}`,
+          80,
+        )
+      : memoryContext
+        ? sanitizeAoiAcceptanceDashboardText(`mission memory ${memoryContext.freshnessLabel}`, 80)
+        : 'no active mission';
   const missionLabel = mission
     ? sanitizeAoiAcceptanceDashboardText(
         `${mission.focusSummary || 'Mission focus unknown'}; next ${
@@ -1902,11 +1916,16 @@ function buildAoiCurrentBriefPanel(
         }${memoryContext ? `; memory ${memoryContext.freshnessLabel}` : ''}`,
         220,
       )
-    : memoryContext
-      ? sanitizeAoiAcceptanceDashboardText(memoryContext.currentBriefLabel, 220)
-      : realityContext?.currentBriefLabels[0]
-        ? sanitizeAoiAcceptanceDashboardText(realityContext.currentBriefLabels[0], 220)
-        : 'No mission focus yet';
+    : missionControl?.topMission
+      ? sanitizeAoiAcceptanceDashboardText(
+          `${missionControl.topMission.lastKnownState}; next ${missionControl.topMission.nextSafeAction.label}`,
+          220,
+        )
+      : memoryContext
+        ? sanitizeAoiAcceptanceDashboardText(memoryContext.currentBriefLabel, 220)
+        : realityContext?.currentBriefLabels[0]
+          ? sanitizeAoiAcceptanceDashboardText(realityContext.currentBriefLabels[0], 220)
+          : 'No mission focus yet';
 
   return {
     visible: Boolean(
@@ -1915,6 +1934,7 @@ function buildAoiCurrentBriefPanel(
       latestKiraEvent ||
       kiraIssue ||
       hasKiraPlaybook ||
+      missionControlSummary.visible ||
       memoryContext ||
       realityContext,
     ),
@@ -1930,8 +1950,10 @@ function buildAoiCurrentBriefPanel(
       ...(workspace?.evidenceRefs ?? []),
       ...(latestKiraEvent?.evidenceRefs ?? []),
       ...(kiraIssue?.evidenceRefs ?? []),
+      ...(missionControl?.evidenceRefs ?? []),
       ...(memoryContext?.evidenceRefs ?? []),
       ...(realityContext?.evidenceRefs ?? []),
+      missionControl ? `mission-control:${missionControl.id}` : undefined,
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
       input.personalSourceRealityCheck
         ? `personal-source-reality:${input.personalSourceRealityCheck.id}`
@@ -1941,6 +1963,7 @@ function buildAoiCurrentBriefPanel(
 }
 
 function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): AoiBlindSpotsPanel {
+  const missionControl = input.missionControl;
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
   const realityContext = buildAoiPersonalSourceRealityDashboardContext(
@@ -1977,11 +2000,22 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
         /blind|disabled|disconnected|stale|degraded|cannot know/i.test(event.summary),
       )
       .map((event) => `${event.title}: ${event.summary}`) ?? [];
+  const missionControlLabels =
+    missionControl?.items
+      .filter(
+        (item) =>
+          item.status === 'needs_validation_preview' ||
+          item.status === 'stale' ||
+          item.status === 'needs_operator_input' ||
+          item.status === 'blocked',
+      )
+      .map((item) => `${item.missionId}: ${item.status}; ${item.nextSafeAction.reason}`) ?? [];
   const labels = uniqueDashboardLabels(
     [
       ...issueLabels,
       ...sourceLabels,
       ...timelineLabels,
+      ...missionControlLabels,
       ...(memoryContext?.blindSpotLabels ?? []),
       ...(realityContext?.blindSpotLabels ?? []),
     ],
@@ -1998,8 +2032,10 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
       ...blindSpotSources.map((source) => `environment-source:${source.id}`),
       ...(input.timelineSummary?.newestMeaningfulEvents.flatMap((event) => event.evidenceRefs) ??
         []),
+      ...(missionControl?.evidenceRefs ?? []),
       ...(memoryContext?.evidenceRefs ?? []),
       ...(realityContext?.evidenceRefs ?? []),
+      missionControl ? `mission-control:${missionControl.id}` : undefined,
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
       input.personalSourceRealityCheck
         ? `personal-source-reality:${input.personalSourceRealityCheck.id}`
@@ -2011,6 +2047,38 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
 function buildAoiNextSafeActionPanel(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiNextSafeActionPanel {
+  const missionControl = input.missionControl;
+  if (missionControl?.topMission) {
+    const topMission = missionControl.topMission;
+    return {
+      visible: true,
+      actionLabel: sanitizeAoiAcceptanceDashboardText(topMission.nextSafeAction.label, 180),
+      sourceLabel: sanitizeAoiAcceptanceDashboardText(
+        `mission-control:${topMission.missionId}`,
+        120,
+      ),
+      boundaryLabel: sanitizeAoiAcceptanceDashboardText(
+        topMission.nextSafeAction.boundaryLabel,
+        220,
+      ),
+      blockedReasonLabels: uniqueDashboardLabels(
+        [
+          ...topMission.staleReasonLabels,
+          ...(topMission.status === 'waiting_on_external' ? ['pending external evidence'] : []),
+          ...(topMission.status === 'waiting_on_approval' ? ['pending approval'] : []),
+          ...(topMission.status === 'needs_operator_input' || topMission.status === 'blocked'
+            ? ['operator input required']
+            : []),
+        ],
+        8,
+      ),
+      evidenceRefs: dashboardRefs([
+        ...topMission.evidenceRefs,
+        ...missionControl.evidenceRefs,
+        `mission-control:${missionControl.id}`,
+      ]),
+    };
+  }
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
   const realityContext = buildAoiPersonalSourceRealityDashboardContext(
@@ -2123,6 +2191,11 @@ function buildAoiNextSafeActionPanel(
 }
 
 function buildAoiWhyQuietPanel(input: AoiOperatorAcceptanceDashboardInput): AoiWhyQuietPanel {
+  const missionControlQuiet =
+    input.missionControl?.health.whyQuiet &&
+    !/may brief/i.test(input.missionControl.health.whyQuiet)
+      ? [input.missionControl.health.whyQuiet]
+      : [];
   const shadowQuiet = input.shadowReport?.decisions.filter(
     (decision) => decision.kind === 'would_stay_quiet',
   );
@@ -2137,7 +2210,10 @@ function buildAoiWhyQuietPanel(input: AoiOperatorAcceptanceDashboardInput): AoiW
   const quietWindow = input.digest?.quietWindow?.enabled
     ? [`Quiet mode: ${input.digest.quietWindow.reason}`]
     : [];
-  const labels = uniqueDashboardLabels([...shadowLabels, ...digestHidden, ...quietWindow], 6);
+  const labels = uniqueDashboardLabels(
+    [...missionControlQuiet, ...shadowLabels, ...digestHidden, ...quietWindow],
+    6,
+  );
 
   return {
     visible: labels.length > 0,
@@ -2146,6 +2222,7 @@ function buildAoiWhyQuietPanel(input: AoiOperatorAcceptanceDashboardInput): AoiW
       shadowQuiet?.map((decision) => `shadow-decision:${decision.id}`) ?? [],
     ),
     evidenceRefs: dashboardRefs([
+      ...(input.missionControl?.evidenceRefs ?? []),
       ...(shadowQuiet?.flatMap((decision) => decision.evidenceRefs) ?? []),
       ...(input.digest?.items
         .filter((item) => item.hidden || item.lane === 'hidden_by_quiet_mode')
@@ -2157,8 +2234,16 @@ function buildAoiWhyQuietPanel(input: AoiOperatorAcceptanceDashboardInput): AoiW
 function buildAoiPendingApprovalPanel(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiPendingApprovalPanel {
+  const missionControl = input.missionControl;
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
+  const missionControlApprovals =
+    missionControl?.items
+      .filter((item) => item.approvalRefs.length > 0 || item.status === 'waiting_on_approval')
+      .map(
+        (item) =>
+          `${item.missionId}: ${item.nextSafeAction.label}; ${item.approvalRefs.join(', ')}`,
+      ) ?? [];
   const digestApprovals =
     input.digest?.approvalInbox.map(
       (item) =>
@@ -2182,11 +2267,20 @@ function buildAoiPendingApprovalPanel(
     ) ?? [];
   const memoryApprovals = memoryContext?.pendingApprovalLabels ?? [];
   const labels = uniqueDashboardLabels(
-    [...digestApprovals, ...commandApprovals, ...playbookApprovals, ...memoryApprovals],
+    [
+      ...missionControlApprovals,
+      ...digestApprovals,
+      ...commandApprovals,
+      ...playbookApprovals,
+      ...memoryApprovals,
+    ],
     8,
   );
   const boundaryLabels = uniqueDashboardLabels(
     [
+      ...(missionControl?.items
+        .filter((item) => item.approvalRefs.length > 0 || item.status === 'waiting_on_approval')
+        .map((item) => item.nextSafeAction.boundaryLabel) ?? []),
       ...(input.digest?.approvalInbox.map((item) => item.boundary) ?? []),
       ...(input.approvedCommandPolicies?.map(
         (policy) =>
@@ -2219,6 +2313,8 @@ function buildAoiPendingApprovalPanel(
       6,
     ),
     evidenceRefs: dashboardRefs([
+      ...(missionControl?.items.flatMap((item) => item.approvalRefs) ?? []),
+      ...(missionControl?.evidenceRefs ?? []),
       ...(input.digest?.approvalInbox.flatMap((item) => [
         `proposal:${item.proposalId}`,
         ...item.evidenceRefs,
@@ -2231,6 +2327,7 @@ function buildAoiPendingApprovalPanel(
         ...playbook.evidenceRefs,
       ]) ?? []),
       ...(memoryContext?.evidenceRefs ?? []),
+      missionControl ? `mission-control:${missionControl.id}` : undefined,
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
     ]),
   };
@@ -2353,6 +2450,7 @@ function buildAoiOperatorFeedbackInboxPanel(
 export function buildAoiOperatorAcceptanceDashboard(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiOperatorAcceptanceDashboard {
+  const missionControl = buildAoiMissionControlDashboardSummary(input.missionControl);
   const currentBrief = buildAoiCurrentBriefPanel(input);
   const blindSpots = buildAoiBlindSpotsPanel(input);
   const nextSafeAction = buildAoiNextSafeActionPanel(input);
@@ -2361,6 +2459,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const replayHealth = buildAoiReplayHealthPanel(input);
   const feedbackInbox = buildAoiOperatorFeedbackInboxPanel(input.feedbackInbox);
   const evidenceRefs = dashboardRefs([
+    ...missionControl.evidenceRefs,
     ...currentBrief.evidenceRefs,
     ...blindSpots.evidenceRefs,
     ...nextSafeAction.evidenceRefs,
@@ -2375,6 +2474,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     sessionPath: sanitizeAoiAcceptanceDashboardText(input.sessionPath, 160),
     generatedAt: input.now ?? Date.now(),
     answerLabel: 'Why did Aoi judge the situation this way?',
+    missionControl,
     currentBrief,
     blindSpots,
     nextSafeAction,
