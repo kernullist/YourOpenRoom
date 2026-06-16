@@ -8,6 +8,12 @@ import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEval
 import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
 import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
 import { buildAoiKiraHandoffPreparedActionPlan } from '../aoiSafeActionPlan';
+import {
+  buildAoiBoundedWorkOrderFromProposal,
+  createAoiBoundedWorkOrder,
+  createAoiBoundedWorkOrderApprovalSnapshot,
+  evaluateAoiBoundedWorkOrderPolicy,
+} from '../aoiBoundedWorkOrder';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import {
   prepareAoiPlaybook,
@@ -387,6 +393,337 @@ describe('runAoiApprovedCommand()', () => {
     expect(result.stderrExcerpt).toContain('password=[redacted_secret]');
     expect(result.stderrExcerpt).not.toContain('another-secret-value');
     expect(result.auditRecord.stdoutTruncated).toBe(true);
+  });
+});
+
+describe('Aoi bounded autonomous work orders', () => {
+  it('keeps a narrow read-only work order previewable', () => {
+    const order = buildAoiBoundedWorkOrderFromProposal(makeProposal({ status: 'accepted' }), {
+      now: 3000,
+      generated: false,
+    });
+
+    expect(order.policyResult).toMatchObject({
+      status: 'preview_only',
+      executionAllowed: false,
+      canAutoRun: false,
+    });
+    expect(order.risk).toMatchObject({
+      mutationCapable: false,
+      commandCapable: false,
+    });
+    expect(order.actionAuthority).toBe('preview_only');
+    expect(order.mutationCount).toBe(0);
+  });
+
+  it('requires approval for mutation-capable work with explicit file scope', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Format one Aoi autonomy helper file.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      files: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [
+        {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+          cwd: '.',
+          purpose: 'Validate bounded work-order policy tests.',
+        },
+      ],
+      risk: {
+        level: 'low',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is the checkpoint baseline.',
+        instructions: [],
+        evidenceRefs: ['git:status'],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Use the git diff baseline for manual revert.',
+        instructions: ['Revert the exact file diff if review rejects it.'],
+        evidenceRefs: ['git:status'],
+      },
+      now: 3000,
+    });
+
+    expect(order.policyResult.status).toBe('approval_required');
+    expect(order.policyResult.reasons).toContain('approval_missing');
+    expect(order.approval.required).toBe(true);
+    expect(order.policyResult.executionAllowed).toBe(false);
+  });
+
+  it('blocks mutation-capable work when file and module scope is missing', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Patch Aoi autonomy implementation.',
+      affectedSurfaces: ['Workspace files'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [
+        {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+        },
+      ],
+      risk: {
+        level: 'medium',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual revert is available.',
+        instructions: ['Use git diff review before reverting.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.policyResult.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain('missing_file_or_module_scope');
+  });
+
+  it('blocks unsafe absolute file scope before approval can be reused', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Patch one local helper file.',
+      affectedSurfaces: ['F:\\secret\\outside-workspace.ts'],
+      files: ['F:\\secret\\outside-workspace.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [{ command: 'git diff --check' }],
+      risk: {
+        level: 'medium',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual revert is available.',
+        instructions: ['Use git diff review before reverting.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.policyResult.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain('unsafe_file_or_module_scope');
+  });
+
+  it('rejects ambiguous work orders before approval review', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Fix stuff',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      files: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [{ command: 'git diff --check' }],
+      risk: {
+        level: 'medium',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual revert is available.',
+        instructions: ['Use git diff review before reverting.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.policyResult.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain('objective_ambiguous');
+  });
+
+  it('requires validation command preview even when a mutation draft disables validation', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Patch one scoped Aoi helper.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      files: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      allowedOperations: ['edit_file'],
+      risk: {
+        level: 'low',
+        mutationCapable: true,
+      },
+      validation: {
+        required: false,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual revert is available.',
+        instructions: ['Use git diff review before reverting.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.validation.required).toBe(true);
+    expect(order.policyResult.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain('missing_validation_command_preview');
+  });
+
+  it('invalidates prior approval when the validation command changes', () => {
+    const base = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Run one exact validation command.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      files: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      allowedOperations: ['run_validation_command'],
+      commands: [{ command: 'git diff --check', cwd: '.' }],
+      risk: {
+        level: 'low',
+        commandCapable: true,
+      },
+      now: 3000,
+    });
+    const approved = createAoiBoundedWorkOrderApprovalSnapshot(base, {
+      approvedAt: 3100,
+      expiresAt: 10_000,
+      evidenceRefs: ['approval:base-command'],
+    });
+    const unchanged = createAoiBoundedWorkOrder(
+      {
+        sessionPath: 'aoi/default',
+        objective: 'Run one exact validation command.',
+        affectedSurfaces: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+        files: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+        allowedOperations: ['run_validation_command'],
+        commands: [{ command: 'git diff --check', cwd: '.' }],
+        risk: {
+          level: 'low',
+          commandCapable: true,
+        },
+        now: 3200,
+      },
+      {
+        approvedSnapshot: approved,
+        now: 3200,
+      },
+    );
+    const changed = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Run one exact validation command.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      files: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      allowedOperations: ['run_validation_command'],
+      commands: [{ command: 'git status --short', cwd: '.' }],
+      risk: {
+        level: 'low',
+        commandCapable: true,
+      },
+      now: 3200,
+    });
+    const result = evaluateAoiBoundedWorkOrderPolicy(changed, {
+      approvedSnapshot: approved,
+      now: 3200,
+    });
+
+    expect(unchanged.policyResult.status).toBe('preview_only');
+    expect(unchanged.approval.satisfied).toBe(true);
+    expect(result.status).toBe('approval_required');
+    expect(result.approvalInvalidationReasons).toContain('approval_command_changed');
+    expect(result.approvalInvalidationReasons).toContain('approval_work_order_changed');
+  });
+
+  it('raises risk when rollback is unavailable for mutation-capable work', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Adjust one bounded work-order test fixture.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      files: ['apps/webuiapps/src/lib/__tests__/aoiAutonomyExecution.test.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [
+        {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+        },
+      ],
+      risk: {
+        level: 'low',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: false,
+        guarantee: 'none',
+        summary: 'No rollback path is available yet.',
+        instructions: ['Require rollback before approval.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.risk.level).toBe('high');
+    expect(order.risk.escalated).toBe(true);
+    expect(order.risk.reasons.join(' ')).toContain('Rollback is unavailable');
+  });
+
+  it('requires Kira review for generated medium-risk mutation work', () => {
+    const order = buildAoiBoundedWorkOrderFromProposal(makeKiraProposal(), {
+      now: 3000,
+      generated: true,
+    });
+
+    expect(order.policyResult.status).toBe('kira_review_required');
+    expect(order.policyResult.reasons).toContain(
+      'generated_medium_or_high_risk_requires_kira_review',
+    );
+    expect(order.risk.commandCapable).toBe(true);
+    expect(order.approval.approver).toBe('kira_reviewer');
+    expect(order.policyResult.executionAllowed).toBe(false);
   });
 });
 

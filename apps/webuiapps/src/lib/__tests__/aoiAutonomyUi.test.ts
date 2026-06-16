@@ -64,6 +64,10 @@ import {
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
 } from '../aoiSafeActionPlan';
 import {
+  buildAoiBoundedWorkOrderFromProposal,
+  createAoiBoundedWorkOrder,
+} from '../aoiBoundedWorkOrder';
+import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from '../aoiApprovedCommandPolicy';
@@ -2648,6 +2652,117 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.pendingApproval.riskLabels).toContain('high risk L5');
     expect(dashboard.actionAuthority).toBe('display_only');
     expect(dashboard.mutationCount).toBe(0);
+  });
+
+  it('summarizes bounded work orders without implying execution happened', () => {
+    const eligibleOrder = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Adjust one Aoi dashboard helper.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiAutonomyUi.ts'],
+      files: ['apps/webuiapps/src/lib/aoiAutonomyUi.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [
+        {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyUi.test.ts',
+          cwd: '.',
+          purpose: 'Validate Aoi dashboard work-order summary.',
+        },
+      ],
+      risk: {
+        level: 'low',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: true,
+        summary: 'Existing git state is available.',
+        instructions: [],
+        evidenceRefs: ['git:status'],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual revert through reviewed diff.',
+        instructions: ['Use the exact git diff if review rejects it.'],
+        evidenceRefs: ['git:status'],
+      },
+      evidenceRefs: ['proposal:bounded-ui'],
+      now: 7000,
+    });
+    const blockedOrder = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Fix everything in the repository.',
+      affectedSurfaces: ['entire repo'],
+      allowedOperations: ['edit_file'],
+      risk: {
+        level: 'medium',
+        mutationCapable: true,
+      },
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      boundedWorkOrders: [eligibleOrder, blockedOrder],
+      now: 8000,
+    });
+    const serialized = JSON.stringify(dashboard.boundedWorkOrders).toLowerCase();
+
+    expect(dashboard.boundedWorkOrders.visible).toBe(true);
+    expect(dashboard.boundedWorkOrders.statusLabel).toContain('1/2 work order');
+    expect(dashboard.boundedWorkOrders.eligibleWorkOrderLabels.join(' ')).toContain(
+      'Adjust one Aoi dashboard helper',
+    );
+    expect(dashboard.boundedWorkOrders.blockedReasonLabels.join(' ')).toContain('scope_too_broad');
+    expect(dashboard.boundedWorkOrders.exactNextApprovalLabels.join(' ')).toContain(
+      eligibleOrder.approval.approvalFingerprint,
+    );
+    expect(dashboard.boundedWorkOrders.checkpointLabels.join(' ')).toContain('available');
+    expect(dashboard.boundedWorkOrders.rollbackLabels.join(' ')).toContain('manual_revert');
+    expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
+      eligibleOrder.approval.approvalFingerprint,
+    );
+    expect(serialized).not.toContain('executed');
+    expect(dashboard.actionAuthority).toBe('display_only');
+    expect(dashboard.mutationCount).toBe(0);
+  });
+
+  it('can display generated Kira-review work orders from accepted proposals', () => {
+    const order = buildAoiBoundedWorkOrderFromProposal(
+      makeProposal({
+        status: 'accepted',
+        title: 'Create reviewed Kira work order',
+        risk: 'medium',
+        requiredAutonomyLevel: 'L4',
+        suggestedTools: ['create_kira_work'],
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            projectName: 'YourOpenRoom',
+            title: 'Patch Aoi dashboard summary',
+            objective: 'Patch one Aoi dashboard summary helper.',
+            scope: ['apps/webuiapps/src/lib/aoiAutonomyUi.ts'],
+            modules: ['aoiAutonomyUi'],
+            validationProfile: 'aoi-autonomy',
+          },
+        },
+      }),
+      {
+        now: 7000,
+        generated: true,
+      },
+    );
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      boundedWorkOrders: [order],
+      now: 8000,
+    });
+
+    expect(order.policyResult.status).toBe('kira_review_required');
+    expect(dashboard.boundedWorkOrders.exactNextApprovalLabels.join(' ')).toContain('Kira review');
+    expect(dashboard.pendingApproval.riskLabels.join(' ')).toContain('medium risk L4');
   });
 
   it('summarizes replay health failures by metric id without long snapshots', () => {

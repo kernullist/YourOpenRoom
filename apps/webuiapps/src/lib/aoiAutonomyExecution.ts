@@ -32,6 +32,10 @@ import {
 } from './aoiKiraHandoff';
 import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
 import {
+  buildAoiBoundedWorkOrderFromProposal,
+  type AoiBoundedWorkOrder,
+} from './aoiBoundedWorkOrder';
+import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
@@ -126,6 +130,7 @@ export interface AoiProposalPreviewResult {
   reasons: string[];
   preparedActionPlan?: AoiPreparedActionPlan;
   approvedCommandPolicy?: AoiApprovedCommandPolicy;
+  boundedWorkOrder?: AoiBoundedWorkOrder;
   result?: Record<string, unknown>;
 }
 
@@ -670,6 +675,10 @@ export function previewAoiProposal(params: {
           }),
         )
       : undefined;
+  const boundedWorkOrder = buildAoiBoundedWorkOrderFromProposal(proposal, {
+    now,
+    generated: true,
+  });
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -725,9 +734,11 @@ export function previewAoiProposal(params: {
       reasons: [...new Set(reasons)],
       preparedActionPlan,
       ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+      boundedWorkOrder,
       result: {
         preparedActionPlan,
         ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+        boundedWorkOrder,
         safeAlternative:
           evaluation.safeAlternative ??
           (proposal.acceptAction?.kind === 'create_kira_work'
@@ -769,9 +780,11 @@ export function previewAoiProposal(params: {
       reasons: [],
       preparedActionPlan,
       ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+      boundedWorkOrder,
       result: {
         preparedActionPlan,
         ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+        boundedWorkOrder,
       },
     };
   }
@@ -795,9 +808,11 @@ export function previewAoiProposal(params: {
     outcome: 'previewed',
     reasons: [],
     preparedActionPlan,
+    boundedWorkOrder,
     result: {
       preview: preview as unknown as Record<string, unknown>,
       preparedActionPlan,
+      boundedWorkOrder,
     },
   };
 }
