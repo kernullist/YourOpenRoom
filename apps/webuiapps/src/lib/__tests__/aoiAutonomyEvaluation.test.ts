@@ -34,6 +34,7 @@ import {
   buildAoiOperatorFeedbackPromotionLabels,
   createAoiOperatorFeedbackLabelActionForItem,
 } from '../aoiOperatorFeedbackInbox';
+import { buildAoiAdaptiveAcceptancePack } from '../aoiAdaptiveAcceptanceCuration';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import {
   buildAoiTracePromotionReport,
@@ -981,6 +982,365 @@ describe('Aoi autonomy evaluation', () => {
     );
     expect(promotionLabels).toHaveLength(3);
     expect(promotionLabels.every((label) => label.decisionId.length > 0)).toBe(true);
+  });
+
+  it('curates a useful field feedback label into an adaptive acceptance candidate', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-adaptive-useful',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Validation is stale',
+        summary: 'Workspace validation is stale and ready for a reviewable trace.',
+        nextSafeAction: 'Prepare a validation preview without executing it.',
+        risk: 'low',
+        relevance: 0.84,
+        createdAt: 5000,
+        dedupeKey: 'adaptive:useful-validation',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation-stale'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items.find((candidate) => candidate.decisionKind === 'would_propose');
+    if (!item) {
+      throw new Error('Expected useful adaptive acceptance inbox item.');
+    }
+    const useful = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'useful',
+      evidenceRefs: ['operator-feedback:adaptive-useful'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-useful',
+      decisionId: item.decisionId,
+      evidenceRefs: ['operator-feedback:adaptive-useful'],
+    });
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+
+    expect(pack.candidateCount).toBe(1);
+    expect(pack.countsByLabel.useful).toBe(1);
+    expect(pack.countsByDimension.usefulness).toBe(1);
+    expect(pack.privacyPassCount).toBe(1);
+    expect(candidate).toMatchObject({
+      labelCategory: 'useful',
+      acceptanceDimension: 'usefulness',
+      privacyStatus: 'passed',
+      replayDraftStatus: 'draft',
+      reviewStatus: 'needs_review',
+      policyRelaxed: false,
+      mutationCount: 0,
+    });
+    expect(candidate?.sourceDecisionRecordIds).toContain(item.decisionRecordId);
+    expect(candidate?.labelIds).toContain(useful.id);
+    expect(candidate?.traceExportIds).toContain(traceExport.id);
+    expect(candidate?.replayDraft?.fixture.expectedDecisions[0]).toMatchObject({
+      metric: 'snapshot_summary',
+      snapshotIncludes: 'TODO_REPLACE_THIS_EXPECTATION',
+    });
+  });
+
+  it('maps wrong-source adaptive acceptance candidates to source selection', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-adaptive-wrong-source',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Browser context selected',
+        summary: 'Browser metadata looked relevant but workspace validation was the right source.',
+        nextSafeAction: 'Ask whether browser context is relevant before speaking.',
+        risk: 'medium',
+        relevance: 0.7,
+        createdAt: 5000,
+        dedupeKey: 'adaptive:wrong-source-browser',
+        sourceRefs: ['browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items.find((candidate) => candidate.sourceKinds.includes('browser_context'));
+    if (!item) {
+      throw new Error('Expected browser adaptive acceptance inbox item.');
+    }
+    const wrongSource = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'wrong_source',
+      note: 'Workspace evidence was the useful source.',
+      evidenceRefs: ['operator-feedback:adaptive-wrong-source'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-wrong-source',
+      decisionId: item.decisionId,
+      sourceRef: 'context-source:browser',
+      relatedRefs: ['environment-source:browser-context'],
+      evidenceRefs: ['operator-feedback:adaptive-wrong-source'],
+    });
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [wrongSource],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+
+    expect(candidate).toMatchObject({
+      labelCategory: 'wrong_source',
+      acceptanceDimension: 'source_selection',
+      wouldCatchPriorFailure: true,
+      replayDraftStatus: 'draft',
+    });
+    expect(pack.countsByDimension.source_selection).toBe(1);
+    expect(pack.wouldCatchPriorFailureCount).toBe(1);
+    expect(pack.metrics.find((metric) => metric.name === 'prior_failure_catch')?.value).toBe(1);
+  });
+
+  it('maps unsafe adaptive acceptance candidates to safety without relaxing policy', () => {
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      approvedCommandPolicies: [makeApprovedCommandPolicy()],
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items.find(
+      (candidate) => candidate.decisionKind === 'would_prepare_approval',
+    );
+    if (!item) {
+      throw new Error('Expected approval adaptive acceptance inbox item.');
+    }
+    const unsafe = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'unsafe',
+      note: 'Keep command preview under approval.',
+      evidenceRefs: ['operator-feedback:adaptive-unsafe'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-unsafe',
+      decisionId: item.decisionId,
+      evidenceRefs: ['operator-feedback:adaptive-unsafe', 'approved-command:shadow-command'],
+    });
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [unsafe],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+
+    expect(item.policyResult).toBe('approval_required');
+    expect(candidate).toMatchObject({
+      labelCategory: 'unsafe',
+      acceptanceDimension: 'safety',
+      policyEffect: 'tighten_only',
+      policyRelaxed: false,
+      replayDraftStatus: 'draft',
+      wouldCatchPriorFailure: true,
+    });
+    expect(candidate?.warnings.join(' ')).toContain('only tighten approval gates');
+    expect(pack.countsByDimension.safety).toBe(1);
+  });
+
+  it('blocks adaptive acceptance candidates when private trace data remains', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-adaptive-private',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Private trace needs blocking',
+        summary: 'A private source trace should not become an acceptance candidate.',
+        nextSafeAction: 'Keep the trace blocked until redacted.',
+        risk: 'low',
+        relevance: 0.7,
+        createdAt: 5000,
+        dedupeKey: 'adaptive:private-trace',
+        sourceRefs: ['personal-signal:gmail_metadata'],
+        evidenceRefs: ['personal-signal:gmail_metadata'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items[0];
+    if (!item) {
+      throw new Error('Expected private adaptive acceptance inbox item.');
+    }
+    const useful = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'useful',
+      evidenceRefs: ['operator-feedback:adaptive-private'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-private',
+      decisionId: item.decisionId,
+      summary:
+        'Private trace mentions private-roadmap@example.com, C:\\Users\\secret\\roadmap.md, and Do not leak the mail body.',
+      redactionTotal: 0,
+      syntheticLabels: {},
+      metadata: {
+        messageBody: 'Do not leak the mail body.',
+        stdout: 'raw command output: secret path C:\\Users\\secret\\roadmap.md',
+      },
+      evidenceRefs: ['operator-feedback:adaptive-private'],
+    });
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+    const serialized = JSON.stringify(pack);
+
+    expect(candidate).toMatchObject({
+      privacyStatus: 'blocked',
+      replayDraftStatus: 'blocked',
+    });
+    expect(pack.privacyFailCount).toBe(1);
+    expect(candidate?.replayDraft).toBeUndefined();
+    expect(candidate?.privacyWarnings.join(' ')).toContain('raw email');
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('Do not leak the mail body');
+    expect(serialized).not.toContain('C:\\Users\\secret');
+  });
+
+  it('generates adaptive replay drafts without mutating built-in replay fixtures', () => {
+    const builtInCount = AOI_OPERATOR_REPLAY_FIXTURES.length;
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-adaptive-draft',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Adaptive candidate ready',
+        summary: 'A redacted trace is ready for adaptive acceptance review.',
+        nextSafeAction: 'Create a draft candidate only.',
+        risk: 'low',
+        relevance: 0.86,
+        createdAt: 5000,
+        dedupeKey: 'adaptive:draft-only',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items.find((candidate) => candidate.decisionKind === 'would_propose');
+    if (!item) {
+      throw new Error('Expected draft adaptive acceptance inbox item.');
+    }
+    const useful = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'useful',
+      evidenceRefs: ['operator-feedback:adaptive-draft'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-draft',
+      decisionId: item.decisionId,
+      evidenceRefs: ['operator-feedback:adaptive-draft'],
+    });
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+
+    expect(AOI_OPERATOR_REPLAY_FIXTURES).toHaveLength(builtInCount);
+    expect(pack.replayDraftCount).toBe(1);
+    expect(pack.promotedCandidateCount).toBe(0);
+    expect(candidate?.replayDraftStatus).toBe('draft');
+    expect(candidate?.reviewStatus).toBe('needs_review');
+    expect(candidate?.todoExpectations.join(' ')).toContain('TODO');
+    expect(candidate?.warnings.join(' ')).toContain('built-in replay fixtures are not modified');
+    expect(candidate?.replayDraft?.fixture.expectedDecisions[0]).toMatchObject({
+      metric: 'snapshot_summary',
+      snapshotIncludes: 'TODO_REPLACE_THIS_EXPECTATION',
+    });
   });
 
   it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {
