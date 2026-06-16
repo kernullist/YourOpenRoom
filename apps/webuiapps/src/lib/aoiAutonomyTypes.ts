@@ -1363,6 +1363,8 @@ export interface AoiContextSourceSummary {
   scoreReasons: string[];
   updatedAt: number;
   staleReason?: string;
+  sourceFreshnessContractId?: string;
+  cannotKnowStatements?: string[];
 }
 
 export interface AoiPersonalSignalMetadataSummary {

@@ -14,6 +14,11 @@ import type {
   AoiOperatorHealthStatus,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
+import {
+  buildAoiSourceFreshnessContracts,
+  type AoiSourceFreshnessContract,
+  type AoiSourceFreshnessFailureHint,
+} from './aoiSourceFreshnessContract';
 
 const MAX_HEALTH_ISSUES = 12;
 const MAX_EVIDENCE_REFS = 16;
@@ -90,6 +95,7 @@ export interface AoiOperatorHealthInput {
   commandAudits?: AoiCommandAuditRecord[];
   config?: AoiOperatorHealthConfigSnapshot;
   replayScenarios?: AoiOperatorHealthReplayScenario[];
+  sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   now?: number;
 }
 
@@ -244,14 +250,55 @@ function sourceRefreshFailed(
   return [...new Set([...reasons, ...wakeupReasons])].slice(0, 4);
 }
 
+function buildSourceFailureHints(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  scheduler?: AoiAutonomySchedulerState | null,
+): AoiSourceFreshnessFailureHint[] {
+  return (registry?.sources ?? [])
+    .map((source) => {
+      const reasons = sourceRefreshFailed(source.id, scheduler);
+      if (reasons.length === 0) {
+        return null;
+      }
+      const failedAt =
+        scheduler?.sourceSchedules.find((item) => item.sourceId === source.id)?.updatedAt ??
+        scheduler?.recentWakeups[0]?.completedAt ??
+        scheduler?.recentWakeups[0]?.startedAt;
+      return {
+        sourceId: source.id,
+        ...(typeof failedAt === 'number' ? { failedAt } : {}),
+        reasons,
+      };
+    })
+    .filter((item): item is AoiSourceFreshnessFailureHint => item !== null);
+}
+
+function sourceTtlMap(
+  registry: AoiEnvironmentSourceRegistry | null | undefined,
+  scheduler?: AoiAutonomySchedulerState | null,
+): Record<string, number> {
+  return Object.fromEntries(
+    (registry?.sources ?? []).map((source) => [source.id, sourceTtl(source.id, scheduler)]),
+  );
+}
+
+function contractCannotKnow(
+  contract: AoiSourceFreshnessContract | undefined,
+  fallback: string,
+): string {
+  return contract?.cannotKnow.map((item) => item.statement).join(' ') || fallback;
+}
+
 function addSourceIssues(
   issues: AoiOperatorHealthIssue[],
   input: AoiOperatorHealthInput,
   now: number,
+  contractsBySourceId: ReadonlyMap<string, AoiSourceFreshnessContract>,
 ): void {
   for (const source of input.registry?.sources ?? []) {
     const capability = sourceCapability(source);
-    if (!source.enabled) {
+    const contract = contractsBySourceId.get(source.id);
+    if (!source.enabled || contract?.freshnessState === 'disabled') {
       issues.push(
         makeIssue({
           capability,
@@ -259,10 +306,13 @@ function addSourceIssues(
           code: source.kind === 'gmail_metadata' ? 'gmail_source_disabled' : 'source_disabled',
           title: `${source.label} disabled`,
           summary: `${source.label} is disabled by source settings.`,
-          cannotKnow: `Aoi cannot know ${source.label} because that source is disabled.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot know ${source.label} because that source is disabled.`,
+          ),
           sourceId: source.id,
           observedAt: source.updatedAt || now,
-          evidenceRefs: [`environment-source:${source.id}`],
+          evidenceRefs: contract?.evidenceRefs ?? [`environment-source:${source.id}`],
           recommendation: recommendation(
             'open_source_settings',
             'Open source settings',
@@ -274,21 +324,93 @@ function addSourceIssues(
       continue;
     }
 
+    if (contract?.consentState === 'revoked' || contract?.consentState === 'missing') {
+      issues.push(
+        makeIssue({
+          capability,
+          severity: 'warning',
+          code:
+            contract.consentState === 'revoked'
+              ? 'source_consent_revoked'
+              : 'source_consent_missing',
+          title:
+            contract.consentState === 'revoked'
+              ? `${source.label} consent revoked`
+              : `${source.label} consent missing`,
+          summary:
+            contract.consentState === 'revoked'
+              ? `${source.label} is enabled, but source consent is revoked.`
+              : `${source.label} is enabled, but explicit reviewed consent is missing.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot use ${source.label} without explicit reviewed consent.`,
+          ),
+          sourceId: source.id,
+          observedAt: source.lastReviewedAt ?? source.updatedAt ?? now,
+          evidenceRefs: contract.evidenceRefs,
+          recommendation: recommendation(
+            'open_source_settings',
+            'Review source consent',
+            'environment_sources',
+            `environment-source:${source.id}`,
+          ),
+        }),
+      );
+      continue;
+    }
+
+    if (contract?.freshnessState === 'disconnected') {
+      issues.push(
+        makeIssue({
+          capability,
+          severity: 'warning',
+          code: source.kind === 'gmail_metadata' ? 'gmail_disconnected' : 'source_disconnected',
+          title: `${source.label} disconnected`,
+          summary: `${source.label} is enabled, but the source connector is disconnected.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot know current ${source.label} because the source is disconnected.`,
+          ),
+          sourceId: source.id,
+          observedAt: contract.lastObservedAt ?? source.updatedAt ?? now,
+          evidenceRefs: contract.evidenceRefs,
+          recommendation: recommendation(
+            source.kind === 'gmail_metadata' ? 'connect_gmail' : 'open_source_settings',
+            source.kind === 'gmail_metadata' ? 'Reconnect Gmail' : 'Review source settings',
+            'environment_sources',
+            `environment-source:${source.id}`,
+          ),
+        }),
+      );
+      continue;
+    }
+
     const failedReasons = sourceRefreshFailed(source.id, input.scheduler);
-    if (failedReasons.length > 0) {
+    if (failedReasons.length > 0 || contract?.freshnessState === 'failed') {
       issues.push(
         makeIssue({
           capability,
           severity: 'error',
           code: 'source_refresh_failed',
           title: `${source.label} refresh failed`,
-          summary: `Last refresh failed: ${redactHealthText(failedReasons.join(', '))}`,
-          cannotKnow: `Aoi cannot know current ${source.label} because the last refresh failed.`,
+          summary:
+            failedReasons.length > 0
+              ? `Last refresh failed: ${redactHealthText(failedReasons.join(', '))}`
+              : `${source.label} freshness contract reports a failed read.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot know current ${source.label} because the last refresh failed.`,
+          ),
           sourceId: source.id,
           observedAt:
+            contract?.lastFailedReadAt ??
             input.scheduler?.sourceSchedules.find((item) => item.sourceId === source.id)
-              ?.updatedAt ?? now,
-          evidenceRefs: [`environment-source:${source.id}`, `scheduler:source:${source.id}`],
+              ?.updatedAt ??
+            now,
+          evidenceRefs: contract?.evidenceRefs ?? [
+            `environment-source:${source.id}`,
+            `scheduler:source:${source.id}`,
+          ],
           recommendation: recommendation(
             'review_scheduler',
             'Review wakeup scheduler',
@@ -301,8 +423,8 @@ function addSourceIssues(
     }
 
     if (
-      source.lastObservedAt &&
-      now - source.lastObservedAt > sourceTtl(source.id, input.scheduler)
+      contract?.freshnessState === 'stale' ||
+      (source.lastObservedAt && now - source.lastObservedAt > sourceTtl(source.id, input.scheduler))
     ) {
       issues.push(
         makeIssue({
@@ -311,10 +433,13 @@ function addSourceIssues(
           code: 'source_stale',
           title: `${source.label} stale`,
           summary: `${source.label} has not refreshed within its configured source TTL.`,
-          cannotKnow: `Aoi cannot know current ${source.label} because the source is stale.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot know current ${source.label} because the source is stale.`,
+          ),
           sourceId: source.id,
-          observedAt: source.lastObservedAt,
-          evidenceRefs: [`environment-source:${source.id}`],
+          observedAt: contract?.lastObservedAt ?? source.lastObservedAt ?? now,
+          evidenceRefs: contract?.evidenceRefs ?? [`environment-source:${source.id}`],
           recommendation: recommendation(
             'review_scheduler',
             'Refresh or review source TTL',
@@ -323,7 +448,7 @@ function addSourceIssues(
           ),
         }),
       );
-    } else if (!source.lastObservedAt && source.id !== 'app-state') {
+    } else if (!source.lastObservedAt && !contract?.lastObservedAt && source.id !== 'app-state') {
       issues.push(
         makeIssue({
           capability,
@@ -331,10 +456,13 @@ function addSourceIssues(
           code: 'source_not_observed',
           title: `${source.label} not observed yet`,
           summary: `${source.label} is enabled but has no recorded observation timestamp yet.`,
-          cannotKnow: `Aoi cannot know whether ${source.label} is fresh until it observes the source.`,
+          cannotKnow: contractCannotKnow(
+            contract,
+            `Aoi cannot know whether ${source.label} is fresh until it observes the source.`,
+          ),
           sourceId: source.id,
           observedAt: source.updatedAt || now,
-          evidenceRefs: [`environment-source:${source.id}`],
+          evidenceRefs: contract?.evidenceRefs ?? [`environment-source:${source.id}`],
           recommendation: recommendation(
             'review_scheduler',
             'Run a scoped refresh',
@@ -397,20 +525,30 @@ function addConfigIssues(
         }),
       );
     } else if (config.gmailConnected !== true) {
-      issues.push(
-        makeIssue({
-          capability: 'personal_signals',
-          severity: 'warning',
-          code: 'gmail_disconnected',
-          title: 'Gmail metadata disconnected',
-          summary: 'Gmail metadata is enabled, but no active refresh token is available.',
-          cannotKnow: 'Aoi cannot know current Gmail metadata because Gmail is disconnected.',
-          sourceId: 'gmail-metadata',
-          observedAt: now,
-          evidenceRefs: ['config:gmail', 'environment-source:gmail-metadata'],
-          recommendation: recommendation('connect_gmail', 'Reconnect Gmail', 'environment_sources'),
-        }),
+      const alreadyReported = issues.some(
+        (issue) => issue.code === 'gmail_disconnected' && issue.sourceId === 'gmail-metadata',
       );
+      if (!alreadyReported) {
+        issues.push(
+          makeIssue({
+            capability: 'personal_signals',
+            severity: 'warning',
+            code: 'gmail_disconnected',
+            title: 'Gmail metadata disconnected',
+            summary: 'Gmail metadata is enabled, but no active refresh token is available.',
+            cannotKnow:
+              'Aoi cannot know current Gmail metadata because Gmail is disconnected; disconnected is not evidence of an empty inbox.',
+            sourceId: 'gmail-metadata',
+            observedAt: now,
+            evidenceRefs: ['config:gmail', 'environment-source:gmail-metadata'],
+            recommendation: recommendation(
+              'connect_gmail',
+              'Reconnect Gmail',
+              'environment_sources',
+            ),
+          }),
+        );
+      }
     }
   }
 
@@ -787,7 +925,23 @@ function stateSummary(status: AoiOperatorHealthStatus, issues: AoiOperatorHealth
 export function evaluateAoiOperatorHealth(input: AoiOperatorHealthInput): AoiOperatorHealthState {
   const now = input.now ?? Date.now();
   const issues: AoiOperatorHealthIssue[] = [];
-  addSourceIssues(issues, input, now);
+  const sourceFreshnessContracts =
+    input.sourceFreshnessContracts ??
+    buildAoiSourceFreshnessContracts({
+      sourceRegistry: input.registry,
+      workspaceSnapshot: input.workspaceSnapshot,
+      sourceFailureHints: buildSourceFailureHints(input.registry, input.scheduler),
+      disconnectedSourceIds:
+        input.config?.gmailConfigured === true && input.config.gmailConnected !== true
+          ? ['gmail-metadata']
+          : [],
+      staleAfterMsBySourceId: sourceTtlMap(input.registry, input.scheduler),
+      now,
+    });
+  const contractsBySourceId = new Map(
+    sourceFreshnessContracts.map((contract) => [contract.sourceId, contract]),
+  );
+  addSourceIssues(issues, input, now, contractsBySourceId);
   addConfigIssues(issues, input, now);
   addWorkspaceIssues(issues, input, now);
   addTickIssues(issues, input, now);

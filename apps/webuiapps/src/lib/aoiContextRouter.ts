@@ -19,6 +19,11 @@ import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import { loadAoiPersonalSignalMetadataSummaries } from './aoiPersonalSignalConnectors';
+import {
+  buildAoiSourceFreshnessContracts,
+  findAoiSourceFreshnessContract,
+  scoreAoiSourceFreshnessContract,
+} from './aoiSourceFreshnessContract';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiBrowserContextMetadata,
@@ -29,6 +34,7 @@ import type {
   AoiEnvironmentSourceKind,
   AoiEnvironmentSourceRegistry,
   AoiMissionState,
+  AoiPersonalSignalMetadataSummary,
   AoiProposalDecision,
   AoiProposalFeedbackCategory,
   AoiSignalFreshness,
@@ -36,6 +42,7 @@ import type {
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
+import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 
 const BROWSER_CONTEXT_FILE = 'browser-context.json';
 const CONTEXT_FEEDBACK_FILE = 'context-feedback.json';
@@ -93,6 +100,8 @@ export interface AoiContextRouterInput {
   decisions?: AoiProposalDecision[];
   researchRuns?: AoiResearchRunSummary[];
   browserContexts?: AoiBrowserContextMetadata[];
+  personalMetadata?: AoiPersonalSignalMetadataSummary[];
+  sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   contextFeedback?: AoiContextSourceFeedback[];
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   now?: number;
@@ -283,6 +292,8 @@ function makeSummary(params: {
   displayName?: string;
   redactionState?: 'none' | 'redacted' | 'withheld';
   staleReason?: string;
+  sourceFreshnessContractId?: string;
+  cannotKnowStatements?: string[];
 }): AoiContextSourceSummary {
   const evidenceRefs = dedupeStrings(params.evidenceRefs, 10);
   const id = `ctx-${stableHash(
@@ -310,6 +321,85 @@ function makeSummary(params: {
     scoreReasons: dedupeStrings(params.scoreReasons, 8),
     updatedAt: params.updatedAt,
     ...(params.staleReason ? { staleReason: truncateText(params.staleReason, 180) } : {}),
+    ...(params.sourceFreshnessContractId
+      ? { sourceFreshnessContractId: truncateText(params.sourceFreshnessContractId, 127) }
+      : {}),
+    ...(params.cannotKnowStatements?.length
+      ? { cannotKnowStatements: dedupeStrings(params.cannotKnowStatements, 5) }
+      : {}),
+  };
+}
+
+function freshnessRank(freshness: AoiSignalFreshness): number {
+  if (freshness === 'failed') {
+    return 3;
+  }
+  if (freshness === 'stale') {
+    return 2;
+  }
+  if (freshness === 'unknown') {
+    return 1;
+  }
+  return 0;
+}
+
+function mergeFreshness(left: AoiSignalFreshness, right: AoiSignalFreshness): AoiSignalFreshness {
+  return freshnessRank(right) > freshnessRank(left) ? right : left;
+}
+
+function applySourceFreshnessContract(params: {
+  summary: AoiContextSourceSummary;
+  contracts: readonly AoiSourceFreshnessContract[];
+}): AoiContextSourceSummary {
+  const contract = findAoiSourceFreshnessContract(params.contracts, params.summary.sourceId);
+  if (!contract) {
+    return params.summary;
+  }
+  const adjustment = scoreAoiSourceFreshnessContract(contract);
+  const relevancePenalty =
+    contract.freshnessState === 'failed' ||
+    contract.freshnessState === 'disconnected' ||
+    contract.freshnessState === 'revoked' ||
+    contract.freshnessState === 'disabled'
+      ? Math.abs(Math.min(0, adjustment))
+      : 0;
+  const confidencePenalty =
+    contract.freshnessState === 'failed' ||
+    contract.freshnessState === 'disconnected' ||
+    contract.freshnessState === 'revoked' ||
+    contract.freshnessState === 'disabled'
+      ? 0.26
+      : contract.freshnessState === 'stale'
+        ? 0.08
+        : 0;
+  const cannotKnowStatements = dedupeStrings(
+    [
+      ...(params.summary.cannotKnowStatements ?? []),
+      ...contract.cannotKnow.map((item) => item.statement),
+    ],
+    5,
+  );
+  const contractReason =
+    contract.freshnessState === 'fresh'
+      ? undefined
+      : `source freshness contract:${contract.freshnessState}`;
+  return {
+    ...params.summary,
+    relevanceScore: clamp(
+      Number((params.summary.relevanceScore - relevancePenalty).toFixed(3)),
+      0,
+      1,
+    ),
+    confidence: clamp(Number((params.summary.confidence - confidencePenalty).toFixed(3)), 0, 1),
+    freshness: mergeFreshness(params.summary.freshness, contract.signalFreshness),
+    scoreReasons: dedupeStrings([...params.summary.scoreReasons, contractReason], 8),
+    sourceFreshnessContractId: contract.id,
+    cannotKnowStatements,
+    staleReason:
+      params.summary.staleReason ??
+      (contract.freshnessState === 'stale'
+        ? contract.cannotKnow.find((item) => item.code === 'source_stale')?.statement
+        : undefined),
   };
 }
 
@@ -879,18 +969,21 @@ function buildPersonalSignalCandidates(params: {
   sessionsDir: string;
   sessionPath: string;
   configFile?: string;
+  summaries?: AoiPersonalSignalMetadataSummary[];
   latestUserMessage: string;
   registry: AoiEnvironmentSourceRegistry;
   mission: AoiMissionState | null;
   now: number;
 }): AoiContextSourceSummary[] {
   const missionEvidence = missionRefs(params.mission);
-  const summaries = loadAoiPersonalSignalMetadataSummaries({
-    sessionsDir: params.sessionsDir,
-    sessionPath: params.sessionPath,
-    configFile: params.configFile,
-    now: params.now,
-  });
+  const summaries =
+    params.summaries ??
+    loadAoiPersonalSignalMetadataSummaries({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      configFile: params.configFile,
+      now: params.now,
+    });
   return summaries
     .map((summary) => {
       if (!sourceAllowed(params.registry, summary.sourceId, 'summarize_counts')) {
@@ -1049,7 +1142,14 @@ export function buildAoiContextPromptBlock(
           ? ` evidence=${source.evidenceRefs.slice(0, 3).join(', ')}`
           : '';
       const displayName = source.displayName ? `${source.displayName} / ` : '';
-      return `- ${displayName}${source.label}: score=${source.relevanceScore.toFixed(2)}, freshness=${source.freshness}, confidence=${source.confidence.toFixed(2)}. ${JSON.stringify(source.summary)}.${refs}`;
+      const cannotKnow =
+        source.cannotKnowStatements && source.cannotKnowStatements.length > 0
+          ? ` cannotKnow=${source.cannotKnowStatements
+              .slice(0, 2)
+              .map((statement) => JSON.stringify(statement))
+              .join('; ')}`
+          : '';
+      return `- ${displayName}${source.label}: score=${source.relevanceScore.toFixed(2)}, freshness=${source.freshness}, confidence=${source.confidence.toFixed(2)}. ${JSON.stringify(source.summary)}.${refs}${cannotKnow}`;
     }),
   ];
   const block = lines.join('\n');
@@ -1097,6 +1197,25 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
   const runs = params.researchRuns ?? listAoiResearchRunSummaries(params.sessionsDir, sessionPath);
   const browserContexts =
     params.browserContexts ?? loadAoiBrowserContextMetadata(params.sessionsDir, sessionPath);
+  const personalSummaries =
+    params.personalMetadata ??
+    loadAoiPersonalSignalMetadataSummaries({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      configFile: params.configFile,
+      now,
+    });
+  const sourceFreshnessContracts =
+    params.sourceFreshnessContracts ??
+    buildAoiSourceFreshnessContracts({
+      sourceRegistry: registry,
+      workspaceSnapshot,
+      personalMetadata: personalSummaries,
+      memories,
+      researchRuns: runs,
+      browserContexts,
+      now,
+    });
 
   const rawCandidates = [
     ...buildMissionCandidates(mission, now),
@@ -1108,6 +1227,7 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
       sessionsDir: params.sessionsDir,
       sessionPath,
       configFile: params.configFile,
+      summaries: personalSummaries,
       latestUserMessage,
       registry,
       mission,
@@ -1122,6 +1242,12 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
   ];
 
   const candidateSources = rawCandidates
+    .map((summary) =>
+      applySourceFreshnessContract({
+        summary,
+        contracts: sourceFreshnessContracts,
+      }),
+    )
     .map((summary) =>
       applyFeedbackPenalties({
         summary,

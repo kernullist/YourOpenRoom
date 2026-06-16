@@ -2,7 +2,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { DEFAULT_AOI_AUTONOMY_POLICY, checkAoiProposalPolicy } from '../aoiAutonomyPolicy';
+import {
+  DEFAULT_AOI_AUTONOMY_POLICY,
+  checkAoiProposalPolicy,
+  getDefaultAoiEnvironmentSourceRegistry,
+} from '../aoiAutonomyPolicy';
 import { loadAoiActiveGoals, saveAoiActiveGoals } from '../aoiAutonomyGoals';
 import {
   runAoiAutonomyBackgroundTick,
@@ -34,6 +38,7 @@ import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import type {
   AoiGoal,
   AoiAutonomyTickResult,
+  AoiEnvironmentSourceRegistry,
   AoiMissionState,
   AoiProposal,
   AoiProposalDecision,
@@ -209,6 +214,24 @@ function makeSchedulerWorkspaceSnapshot(sourceIds: string[]): AoiWorkspaceSnapsh
     freshness: 'unknown',
     evidenceRefs: sourceIds.map((sourceId) => `workspace:${sourceId}`),
     warnings: [],
+  };
+}
+
+function withContextSourcePatch(
+  registry: AoiEnvironmentSourceRegistry,
+  sourceId: string,
+  patch: Partial<AoiEnvironmentSourceRegistry['sources'][number]>,
+): AoiEnvironmentSourceRegistry {
+  return {
+    ...registry,
+    sources: registry.sources.map((source) =>
+      source.id === sourceId
+        ? {
+            ...source,
+            ...patch,
+          }
+        : source,
+    ),
   };
 }
 
@@ -1334,6 +1357,117 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     expect(notes?.summary).toContain('kernel');
     expect(resultJson).not.toContain('notes full body must not leak');
     expect(notes?.redactionState).toBe('redacted');
+  });
+
+  it('downranks stale context sources and attaches cannot-know statements', () => {
+    const root = makeTempRoot();
+    const registry = withContextSourcePatch(
+      getDefaultAoiEnvironmentSourceRegistry(SESSION_PATH, NOW),
+      'browser-context',
+      {
+        enabled: true,
+        lastReviewedAt: NOW - 5_000,
+        consentReason: 'Use explicit browser metadata only for this test.',
+      },
+    );
+    const fresh = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      registry,
+      latestUserMessage: 'browser page url 링크 상태를 확인해줘',
+      browserContexts: [
+        {
+          version: 1,
+          id: 'browser-fresh-context',
+          sessionPath: SESSION_PATH,
+          pageTitle: 'OpenRoom status page',
+          urlHost: 'example.com',
+          redactedUrl: 'https://example.com/status',
+          purpose: 'Explicit browser metadata for status review.',
+          capturedAt: NOW - 1000,
+          evidenceRefs: ['browser:fresh-context'],
+          redactionState: 'redacted',
+        },
+      ],
+      now: NOW,
+    });
+    const stale = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      registry,
+      latestUserMessage: 'browser page url 링크 상태를 확인해줘',
+      browserContexts: [
+        {
+          version: 1,
+          id: 'browser-stale-context',
+          sessionPath: SESSION_PATH,
+          pageTitle: 'OpenRoom status page',
+          urlHost: 'example.com',
+          redactedUrl: 'https://example.com/status',
+          purpose: 'Explicit browser metadata for status review.',
+          capturedAt: NOW - 40 * 24 * 60 * 60 * 1000,
+          evidenceRefs: ['browser:stale-context'],
+          redactionState: 'redacted',
+        },
+      ],
+      now: NOW,
+    });
+    const freshBrowser = fresh.candidateSources.find(
+      (source) => source.sourceId === 'browser-context',
+    );
+    const staleBrowser = stale.candidateSources.find(
+      (source) => source.sourceId === 'browser-context',
+    );
+
+    expect(freshBrowser).toBeDefined();
+    expect(staleBrowser).toBeDefined();
+    expect(staleBrowser?.freshness).toBe('stale');
+    expect(staleBrowser?.relevanceScore).toBeLessThan(freshBrowser?.relevanceScore ?? 0);
+    expect(staleBrowser?.cannotKnowStatements?.join(' ')).toContain('page body');
+    expect(stale.promptBlock).toContain('cannotKnow');
+  });
+
+  it('reduces workspace validation confidence when the source freshness contract is stale', () => {
+    const root = makeTempRoot();
+    let registry = getDefaultAoiEnvironmentSourceRegistry(SESSION_PATH, NOW);
+    registry = withContextSourcePatch(registry, 'workspace-build', {
+      enabled: true,
+      lastObservedAt: NOW - 40 * 24 * 60 * 60 * 1000,
+    });
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      registry,
+      latestUserMessage: 'workspace validation test 상태를 확인하자',
+      workspaceSnapshot: {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        collectedAt: NOW - 40 * 24 * 60 * 60 * 1000,
+        workspaceLabel: 'YourOpenRoom',
+        sourceIds: ['workspace-build'],
+        validation: {
+          version: 1,
+          command: 'pnpm --filter @openroom/webuiapps test',
+          result: 'passed',
+          completedAt: NOW - 40 * 24 * 60 * 60 * 1000,
+          touchedFileScopes: ['apps/webuiapps/src/lib'],
+          freshness: 'stale',
+          staleReason: 'Source files changed after validation.',
+          evidenceRefs: ['workspace:validation:stale'],
+        },
+        freshness: 'stale',
+        evidenceRefs: ['workspace:snapshot:stale-validation'],
+        warnings: [],
+      },
+      now: NOW,
+    });
+    const workspaceBuild = result.candidateSources.find(
+      (source) => source.sourceId === 'workspace-build',
+    );
+
+    expect(workspaceBuild?.freshness).toBe('stale');
+    expect(workspaceBuild?.confidence).toBeLessThan(0.76);
+    expect(workspaceBuild?.scoreReasons.join(' ')).toContain('source freshness contract:stale');
   });
 
   it('ignores disabled personal metadata and applies intrusive feedback penalties', () => {

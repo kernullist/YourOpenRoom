@@ -41,6 +41,7 @@ import {
   createAoiTracePromotionDecision,
 } from '../aoiTracePromotion';
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
+import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
@@ -1948,6 +1949,98 @@ describe('Aoi autonomy evaluation', () => {
       dimension: 'trigger_kind',
       key: 'research_outcome',
     });
+  });
+
+  it('builds personal source freshness contracts without treating disconnection as empty inbox', () => {
+    const registry = makePersonalRealityRegistry({
+      calendarEnabled: true,
+      gmailEnabled: true,
+      notesEnabled: false,
+    });
+    const contracts = buildAoiSourceFreshnessContracts({
+      sourceRegistry: registry,
+      personalMetadata: [
+        {
+          version: 1,
+          sourceId: 'calendar-metadata',
+          kind: 'calendar_metadata',
+          label: 'Calendar metadata',
+          displayName: 'Calendar',
+          summary:
+            'Calendar metadata: 1 upcoming of 1; Validation deadline at 1970-01-01T02:00:00.000Z (reminder 15m).',
+          relevanceText: 'calendar deadline metadata',
+          evidenceRefs: ['personal-signal:calendar_metadata', 'calendar-event:deadline'],
+          scoreReasons: ['calendar title, time, and reminder metadata only'],
+          updatedAt: 5900,
+          freshness: 'fresh',
+          confidence: 0.78,
+          redactionState: 'redacted',
+        },
+        {
+          version: 1,
+          sourceId: 'gmail-metadata',
+          kind: 'gmail_metadata',
+          label: 'Gmail metadata',
+          displayName: 'Gmail',
+          summary:
+            'Gmail metadata: configured=true; connected=false; lastSync=never; cached=0; unread=0; folders=none; labels=none',
+          relevanceText: 'gmail inbox unread metadata',
+          evidenceRefs: ['personal-signal:gmail_metadata', 'gmail-cache:counts'],
+          scoreReasons: ['gmail connection, sync, unread, folder, and label counts only'],
+          updatedAt: 5900,
+          freshness: 'fresh',
+          confidence: 0.72,
+          redactionState: 'redacted',
+        },
+      ],
+      now: 6000,
+    });
+    const gmail = contracts.find((contract) => contract.sourceId === 'gmail-metadata');
+    const calendar = contracts.find((contract) => contract.sourceId === 'calendar-metadata');
+
+    expect(gmail?.freshnessState).toBe('disconnected');
+    expect(gmail?.cannotKnow.map((item) => item.statement).join(' ')).toContain(
+      'not evidence of an empty inbox',
+    );
+    expect(calendar?.bodyAccessState).toBe('body_disabled');
+    expect(calendar?.cannotKnow.map((item) => item.statement).join(' ')).toContain(
+      'calendar descriptions',
+    );
+    expect(JSON.stringify(contracts)).not.toContain('private launch plan body');
+  });
+
+  it('keeps stale memory facts out of current-truth source contracts', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 6000);
+    const contracts = buildAoiSourceFreshnessContracts({
+      sourceRegistry: registry,
+      staleAfterMsBySourceId: {
+        'manual-note': 60_000,
+      },
+      memories: [
+        {
+          version: 2,
+          id: 'memory-stale-current-truth',
+          scope: 'project',
+          type: 'fact',
+          status: 'active',
+          content: 'The workspace validation currently passes.',
+          normalizedContent: 'workspace validation currently passes',
+          importance: 0.7,
+          confidence: 0.8,
+          hits: 1,
+          createdAt: 1000,
+          updatedAt: 1000,
+          sourceEpisodeIds: ['episode-stale-current-truth'],
+          tags: ['workspace'],
+          entities: ['validation'],
+        },
+      ],
+      now: 200_000,
+    });
+    const memory = contracts.find((contract) => contract.sourceId === 'manual-note');
+
+    expect(memory?.freshnessState).toBe('stale');
+    expect(memory?.cannotKnow.map((item) => item.statement).join(' ')).toContain('current truth');
   });
 });
 

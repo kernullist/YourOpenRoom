@@ -58,6 +58,7 @@ import { buildAoiMissionMemorySnapshot } from '../aoiMissionMemory';
 import { buildAoiMissionControlState } from '../aoiMissionControlRuntime';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
+import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -2261,6 +2262,74 @@ describe('Aoi autonomy UI helpers', () => {
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('Do not leak the mail body');
     expect(serialized).not.toContain('mail body.');
+  });
+
+  it('shows source freshness contracts with disconnected and metadata-only boundaries', () => {
+    let registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 6000);
+    registry = withSourcePatch(registry, 'gmail-metadata', {
+      enabled: true,
+      lastReviewedAt: 5500,
+      consentReason: 'Use Gmail metadata counts only when connected.',
+    });
+    registry = withSourcePatch(registry, 'calendar-metadata', {
+      enabled: true,
+      lastReviewedAt: 5500,
+      consentReason: 'Use calendar title/time/reminder metadata only; body disabled.',
+    });
+    const contracts = buildAoiSourceFreshnessContracts({
+      sourceRegistry: registry,
+      personalMetadata: [
+        {
+          version: 1,
+          sourceId: 'gmail-metadata',
+          kind: 'gmail_metadata',
+          label: 'Gmail metadata',
+          displayName: 'Gmail',
+          summary:
+            'Gmail metadata: configured=true; connected=false; lastSync=never; cached=0; unread=0; folders=none; labels=none',
+          relevanceText: 'gmail unread inbox metadata',
+          evidenceRefs: ['personal-signal:gmail_metadata'],
+          scoreReasons: ['gmail connection, sync, unread, folder, and label counts only'],
+          updatedAt: 5900,
+          freshness: 'fresh',
+          confidence: 0.72,
+          redactionState: 'redacted',
+        },
+        {
+          version: 1,
+          sourceId: 'calendar-metadata',
+          kind: 'calendar_metadata',
+          label: 'Calendar metadata',
+          displayName: 'Calendar',
+          summary:
+            'Calendar metadata: 1 upcoming of 1; Validation deadline at 1970-01-01T02:00:00.000Z (reminder 15m).',
+          relevanceText: 'calendar deadline metadata',
+          evidenceRefs: ['personal-signal:calendar_metadata'],
+          scoreReasons: ['calendar title, time, and reminder metadata only'],
+          updatedAt: 5900,
+          freshness: 'fresh',
+          confidence: 0.76,
+          redactionState: 'redacted',
+        },
+      ],
+      now: 6000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      sourceRegistry: registry,
+      sourceFreshnessContracts: contracts,
+      now: 6000,
+    });
+
+    expect(dashboard.sourceFreshness.visible).toBe(true);
+    expect(dashboard.sourceFreshness.disconnectedSourceLabels.join(' ')).toContain('Gmail');
+    expect(dashboard.sourceFreshness.metadataOnlyBoundaryLabels.join(' ')).toContain(
+      'Calendar metadata',
+    );
+    expect(dashboard.sourceFreshness.lastObservedLabels.join(' ')).toContain('Gmail metadata');
+    expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain(
+      'not evidence of an empty inbox',
+    );
   });
 
   it('feeds personal source reality checks into dashboard and shadow hooks', () => {

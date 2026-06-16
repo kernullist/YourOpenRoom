@@ -9,6 +9,7 @@ import type {
   AoiPlaybook,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
+import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 import type { AoiMissionMemoryReport, AoiMissionMemorySnapshot } from './aoiMissionMemory';
 import type {
   AoiFieldShadowDecisionRecord,
@@ -164,6 +165,7 @@ export interface AoiMissionControlRuntimeInput {
   adaptiveAcceptancePack?: AoiAdaptiveAcceptancePack | null;
   traceCandidates?: AoiAdaptiveAcceptanceCandidate[];
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
+  sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   previousState?: AoiMissionControlState | null;
   limit?: number;
 }
@@ -194,6 +196,7 @@ interface RuntimeSourceSet {
   approvedCommandPolicies: AoiApprovedCommandPolicy[];
   health: AoiOperatorHealthState | null;
   sourceRegistry: AoiEnvironmentSourceRegistry | null;
+  sourceFreshnessContracts: AoiSourceFreshnessContract[];
 }
 
 function normalizeWhitespace(value: string): string {
@@ -389,6 +392,7 @@ function collectSources(input: AoiMissionControlRuntimeInput): RuntimeSourceSet 
     approvedCommandPolicies: input.approvedCommandPolicies ?? [],
     health: input.health?.sessionPath === sessionPath ? input.health : null,
     sourceRegistry: input.sourceRegistry?.sessionPath === sessionPath ? input.sourceRegistry : null,
+    sourceFreshnessContracts: input.sourceFreshnessContracts ?? [],
   };
 }
 
@@ -614,21 +618,37 @@ function collectStaleReasonLabels(seed: MissionSeed): string[] {
 function collectSourceFreshnessRefs(
   seed: MissionSeed,
   sourceRegistry: AoiEnvironmentSourceRegistry | null,
+  sourceFreshnessContracts: AoiSourceFreshnessContract[],
   now: number,
 ): string[] {
+  const contractRefs = sourceFreshnessContracts.flatMap((contract) => [
+    `source-freshness:${contract.sourceId}:${contract.freshnessState}`,
+    contract.consentState === 'revoked' || contract.consentState === 'missing'
+      ? `source-consent:${contract.sourceId}:${contract.consentState}`
+      : undefined,
+    contract.bodyAccessState === 'body_disabled' || contract.bodyAccessState === 'metadata_only'
+      ? `source-boundary:${contract.sourceId}:${contract.bodyAccessState}`
+      : undefined,
+    ...contract.cannotKnow.map((item) => `cannot-know:${contract.sourceId}:${item.code}`),
+  ]);
   const sourceRefs =
-    sourceRegistry?.sources.flatMap((source) => {
-      const ageMs = source.lastObservedAt ? now - source.lastObservedAt : Number.POSITIVE_INFINITY;
-      const stale = source.enabled && ageMs > 24 * 60 * 60 * 1000;
-      if (!source.enabled) {
-        return [`environment-source:${source.id}:disabled`];
-      }
-      if (stale) {
-        return [`environment-source:${source.id}:stale`];
-      }
-      return [`environment-source:${source.id}:freshness-known`];
-    }) ?? [];
+    sourceFreshnessContracts.length > 0
+      ? []
+      : (sourceRegistry?.sources.flatMap((source) => {
+          const ageMs = source.lastObservedAt
+            ? now - source.lastObservedAt
+            : Number.POSITIVE_INFINITY;
+          const stale = source.enabled && ageMs > 24 * 60 * 60 * 1000;
+          if (!source.enabled) {
+            return [`environment-source:${source.id}:disabled`];
+          }
+          if (stale) {
+            return [`environment-source:${source.id}:stale`];
+          }
+          return [`environment-source:${source.id}:freshness-known`];
+        }) ?? []);
   return normalizeRefs([
+    ...contractRefs,
     ...sourceRefs,
     ...seed.workspaceSnapshots.flatMap((snapshot) => [
       `workspace:${snapshot.freshness}`,
@@ -1200,6 +1220,7 @@ function buildItem(params: {
   const sourceFreshnessRefs = collectSourceFreshnessRefs(
     params.seed,
     params.sources.sourceRegistry,
+    params.sources.sourceFreshnessContracts,
     params.sources.now,
   );
   const baseStatus = deriveBaseStatus(params.seed);

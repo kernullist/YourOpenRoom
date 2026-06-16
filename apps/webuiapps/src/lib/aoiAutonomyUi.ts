@@ -13,6 +13,11 @@ import {
 import { buildAoiMissionMemoryDashboardContext } from './aoiMissionMemory';
 import { buildAoiPersonalSourceRealityDashboardContext } from './aoiPersonalSourceRealityCheck';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
+import {
+  buildAoiSourceFreshnessContracts,
+  buildAoiSourceFreshnessDashboardContext,
+  type AoiSourceFreshnessContract,
+} from './aoiSourceFreshnessContract';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
@@ -345,6 +350,18 @@ export interface AoiBlindSpotsPanel {
   evidenceRefs: string[];
 }
 
+export interface AoiSourceFreshnessPanel {
+  visible: boolean;
+  statusLabel: string;
+  topStaleSourceLabels: string[];
+  disconnectedSourceLabels: string[];
+  revokedSourceLabels: string[];
+  metadataOnlyBoundaryLabels: string[];
+  lastObservedLabels: string[];
+  lastSuccessfulReadLabels: string[];
+  evidenceRefs: string[];
+}
+
 export interface AoiNextSafeActionPanel {
   visible: boolean;
   actionLabel: string;
@@ -406,6 +423,7 @@ export interface AoiOperatorAcceptanceDashboard {
   missionControl: AoiMissionControlDashboardSummary;
   currentBrief: AoiCurrentBriefPanel;
   blindSpots: AoiBlindSpotsPanel;
+  sourceFreshness: AoiSourceFreshnessPanel;
   nextSafeAction: AoiNextSafeActionPanel;
   whyQuiet: AoiWhyQuietPanel;
   pendingApproval: AoiPendingApprovalPanel;
@@ -425,6 +443,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   digest?: AoiOperatorDigest | null;
   timelineSummary?: AoiOperatorTimelineSummary | null;
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
+  sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   playbooks?: AoiPlaybook[];
   missionControl?: AoiMissionControlState | null;
   missionMemory?: AoiMissionMemorySnapshot | null;
@@ -1859,6 +1878,19 @@ function dashboardRefs(values: Array<string | undefined | null>, maxItems = 16):
   return uniqueDashboardLabels(values, maxItems);
 }
 
+function resolveAoiSourceFreshnessContracts(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiSourceFreshnessContract[] {
+  return (
+    input.sourceFreshnessContracts ??
+    buildAoiSourceFreshnessContracts({
+      sourceRegistry: input.sourceRegistry,
+      workspaceSnapshot: input.workspaceSnapshot,
+      now: input.now,
+    })
+  );
+}
+
 function buildAoiCurrentBriefPanel(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiCurrentBriefPanel {
@@ -1969,6 +2001,9 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
   const realityContext = buildAoiPersonalSourceRealityDashboardContext(
     input.personalSourceRealityCheck,
   );
+  const sourceFreshnessContext = buildAoiSourceFreshnessDashboardContext(
+    resolveAoiSourceFreshnessContracts(input),
+  );
   const blindSpotSources =
     input.sourceRegistry?.sources.filter(
       (source) =>
@@ -2018,6 +2053,7 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
       ...missionControlLabels,
       ...(memoryContext?.blindSpotLabels ?? []),
       ...(realityContext?.blindSpotLabels ?? []),
+      ...sourceFreshnessContext.blindSpotLabels,
     ],
     8,
   );
@@ -2035,12 +2071,34 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
       ...(missionControl?.evidenceRefs ?? []),
       ...(memoryContext?.evidenceRefs ?? []),
       ...(realityContext?.evidenceRefs ?? []),
+      ...sourceFreshnessContext.evidenceRefs,
       missionControl ? `mission-control:${missionControl.id}` : undefined,
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
       input.personalSourceRealityCheck
         ? `personal-source-reality:${input.personalSourceRealityCheck.id}`
         : undefined,
     ]),
+  };
+}
+
+function buildAoiSourceFreshnessPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiSourceFreshnessPanel {
+  const context = buildAoiSourceFreshnessDashboardContext(
+    resolveAoiSourceFreshnessContracts(input),
+  );
+  const sanitizeLabels = (labels: string[], maxChars = 220): string[] =>
+    labels.map((label) => sanitizeAoiAcceptanceDashboardText(label, maxChars));
+  return {
+    visible: context.visible,
+    statusLabel: sanitizeAoiAcceptanceDashboardText(context.statusLabel, 140),
+    topStaleSourceLabels: sanitizeLabels(context.topStaleSourceLabels),
+    disconnectedSourceLabels: sanitizeLabels(context.disconnectedSourceLabels),
+    revokedSourceLabels: sanitizeLabels(context.revokedSourceLabels),
+    metadataOnlyBoundaryLabels: sanitizeLabels(context.metadataOnlyBoundaryLabels),
+    lastObservedLabels: sanitizeLabels(context.lastObservedLabels),
+    lastSuccessfulReadLabels: sanitizeLabels(context.lastSuccessfulReadLabels),
+    evidenceRefs: context.evidenceRefs,
   };
 }
 
@@ -2453,6 +2511,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const missionControl = buildAoiMissionControlDashboardSummary(input.missionControl);
   const currentBrief = buildAoiCurrentBriefPanel(input);
   const blindSpots = buildAoiBlindSpotsPanel(input);
+  const sourceFreshness = buildAoiSourceFreshnessPanel(input);
   const nextSafeAction = buildAoiNextSafeActionPanel(input);
   const whyQuiet = buildAoiWhyQuietPanel(input);
   const pendingApproval = buildAoiPendingApprovalPanel(input);
@@ -2462,6 +2521,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...missionControl.evidenceRefs,
     ...currentBrief.evidenceRefs,
     ...blindSpots.evidenceRefs,
+    ...sourceFreshness.evidenceRefs,
     ...nextSafeAction.evidenceRefs,
     ...whyQuiet.evidenceRefs,
     ...pendingApproval.evidenceRefs,
@@ -2477,6 +2537,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     missionControl,
     currentBrief,
     blindSpots,
+    sourceFreshness,
     nextSafeAction,
     whyQuiet,
     pendingApproval,
