@@ -42,6 +42,11 @@ import {
   evaluateAoiShadowDecisions,
   recordAoiShadowDecisions,
 } from '../aoiShadowModeEvaluation';
+import { buildAoiFieldShadowRecordReport } from '../aoiFieldShadowDogfooding';
+import {
+  buildAoiOperatorFeedbackInbox,
+  createAoiOperatorFeedbackLabelActionForItem,
+} from '../aoiOperatorFeedbackInbox';
 import {
   buildAoiOperatorVoiceEventFromDigest,
   buildAoiOperatorVoiceSummary,
@@ -2358,6 +2363,91 @@ describe('Aoi autonomy UI helpers', () => {
     expect(quietReasons).toContain('too-much');
     expect(dashboard.whyQuiet.quietDecisionRefs[0]).toContain('shadow-decision:');
     expect(dashboard.whyQuiet.evidenceRefs).toContain('feedback:too-much-dashboard');
+  });
+
+  it('summarizes operator feedback inbox counts and source review pressure', () => {
+    const digest = {
+      version: 1 as const,
+      sessionPath: 'aoi/default',
+      generatedAt: 6000,
+      summary: 'Browser source needs field review.',
+      items: [
+        {
+          version: 1 as const,
+          id: 'digest-feedback-dashboard',
+          kind: 'source_change' as const,
+          lane: 'mission_update' as const,
+          title: 'Browser context selected',
+          summary:
+            'Browser metadata mentioned private-roadmap@example.com and C:\\Users\\secret\\note.txt.',
+          nextSafeAction: 'Ask whether browser context is relevant before speaking.',
+          risk: 'medium' as const,
+          relevance: 0.67,
+          createdAt: 6000,
+          dedupeKey: 'feedback-dashboard-browser',
+          sourceRefs: ['browser-context'],
+          evidenceRefs: ['environment-source:browser-context'],
+          hidden: false,
+        },
+      ],
+      approvalInbox: [],
+      laneCounts: {
+        critical_user_blocking: 0,
+        needs_approval: 0,
+        mission_update: 1,
+        fyi: 0,
+        hidden_by_quiet_mode: 0,
+      },
+      hiddenItemCount: 0,
+      evidenceRefs: ['environment-source:browser-context'],
+    };
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6100,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 6200,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 6300,
+    });
+    const browserItem = inbox.items.find((item) => item.sourceKinds.includes('browser_context'));
+    if (!browserItem) {
+      throw new Error('Expected browser feedback inbox item.');
+    }
+    const wrongSource = createAoiOperatorFeedbackLabelActionForItem({
+      item: browserItem,
+      label: 'wrong_source',
+      now: 6400,
+    });
+    const labeledInbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [wrongSource],
+      now: 6500,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      feedbackInbox: labeledInbox,
+      now: 6600,
+    });
+    const serialized = JSON.stringify(dashboard.feedbackInbox);
+
+    expect(dashboard.feedbackInbox.visible).toBe(true);
+    expect(dashboard.feedbackInbox.inboxCountLabel).toContain('field feedback');
+    expect(dashboard.feedbackInbox.unlabeledCountLabel).toContain('0 unlabeled');
+    expect(dashboard.feedbackInbox.labelDistributionLabels.join(' ')).toContain('wrong source 1');
+    expect(dashboard.feedbackInbox.topSourceKindLabels.join(' ')).toContain('browser context');
+    expect(dashboard.feedbackInbox.calibrationInputLabel).toContain('1 calibration');
+    expect(dashboard.feedbackInbox.promotionCandidateLabel).toContain('1 promotion');
+    expect(dashboard.evidenceRefs).toContain('environment-source:browser-context');
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('C:\\Users\\secret\\note.txt');
   });
 
   it('preserves pending approval boundaries with cwd, risk, and command fingerprint', () => {

@@ -23,6 +23,12 @@ import {
   type AoiFieldShadowRecordReport,
   type AoiFieldShadowRecorderInput,
 } from './aoiFieldShadowDogfooding';
+import {
+  createAoiOperatorFeedbackLabelAction,
+  normalizeAoiOperatorFeedbackLabelAction,
+  type AoiOperatorFeedbackLabelAction,
+  type AoiOperatorFeedbackLabelInput,
+} from './aoiOperatorFeedbackInbox';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
@@ -70,6 +76,7 @@ export interface AoiAutonomyPaths {
   timelineExportsDir: string;
   fieldShadowDir: string;
   fieldShadowRecords: string;
+  fieldShadowFeedbackLabels: string;
   schedulerState: string;
 }
 
@@ -369,6 +376,7 @@ export function resolveAoiAutonomyPaths(
     timelineExportsDir: join(timelineDir, 'exports'),
     fieldShadowDir,
     fieldShadowRecords: join(fieldShadowDir, 'records.json'),
+    fieldShadowFeedbackLabels: join(fieldShadowDir, 'feedback-labels.json'),
     schedulerState: join(root, 'scheduler-state.json'),
   };
 }
@@ -1110,6 +1118,56 @@ export function cleanupExpiredAoiFieldShadowDecisionRecords(
   const retainedRecords = pruneExpiredAoiFieldShadowRecords(records, now);
   writeJsonAtomic(paths.fieldShadowRecords, retainedRecords);
   return retainedRecords;
+}
+
+function loadAoiOperatorFeedbackLabelActionList(
+  filePath: string,
+  sessionPath: string,
+): AoiOperatorFeedbackLabelAction[] {
+  const labels = readJson<unknown[]>(filePath);
+  if (!Array.isArray(labels)) {
+    return [];
+  }
+  return labels
+    .map((label) => normalizeAoiOperatorFeedbackLabelAction(label, sessionPath))
+    .filter((label): label is AoiOperatorFeedbackLabelAction => label !== null)
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+export function loadAoiOperatorFeedbackLabelActions(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiOperatorFeedbackLabelAction[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  return loadAoiOperatorFeedbackLabelActionList(
+    paths.fieldShadowFeedbackLabels,
+    normalizedSessionPath,
+  );
+}
+
+export function recordAoiOperatorFeedbackLabelAction(
+  sessionsDir: string,
+  input: AoiOperatorFeedbackLabelInput,
+): AoiOperatorFeedbackLabelAction {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(input.sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const action = createAoiOperatorFeedbackLabelAction({
+    ...input,
+    sessionPath: normalizedSessionPath,
+  });
+  const existing = loadAoiOperatorFeedbackLabelActionList(
+    paths.fieldShadowFeedbackLabels,
+    normalizedSessionPath,
+  );
+  writeJsonAtomic(paths.fieldShadowFeedbackLabels, [...existing, action]);
+  return action;
 }
 
 function isAoiProposalDecisionAction(value: unknown): value is AoiProposalDecisionAction {

@@ -14,6 +14,7 @@ import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
 import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import type { AoiReplayReport } from './aoiOperatorReplay';
 import type { AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
+import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
@@ -381,6 +382,17 @@ export interface AoiReplayHealthPanel {
   evidenceRefs: string[];
 }
 
+export interface AoiOperatorFeedbackInboxPanel {
+  visible: boolean;
+  inboxCountLabel: string;
+  unlabeledCountLabel: string;
+  labelDistributionLabels: string[];
+  topSourceKindLabels: string[];
+  promotionCandidateLabel: string;
+  calibrationInputLabel: string;
+  evidenceRefs: string[];
+}
+
 export interface AoiOperatorAcceptanceDashboard {
   version: 1;
   sessionPath: string;
@@ -392,6 +404,7 @@ export interface AoiOperatorAcceptanceDashboard {
   whyQuiet: AoiWhyQuietPanel;
   pendingApproval: AoiPendingApprovalPanel;
   replayHealth: AoiReplayHealthPanel;
+  feedbackInbox: AoiOperatorFeedbackInboxPanel;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -415,6 +428,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   shadowReport?: AoiShadowDecisionReport | null;
   promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
+  feedbackInbox?: AoiOperatorFeedbackInbox | null;
 }
 
 export interface AoiBlockedStateSummary {
@@ -2288,6 +2302,54 @@ function buildAoiReplayHealthPanel(
   };
 }
 
+function buildAoiOperatorFeedbackInboxPanel(
+  inbox: AoiOperatorFeedbackInbox | null | undefined,
+): AoiOperatorFeedbackInboxPanel {
+  if (!inbox || inbox.inboxCount <= 0) {
+    return {
+      visible: false,
+      inboxCountLabel: 'No field feedback inbox items',
+      unlabeledCountLabel: '0 unlabeled',
+      labelDistributionLabels: [],
+      topSourceKindLabels: [],
+      promotionCandidateLabel: '0 promotion candidates',
+      calibrationInputLabel: '0 calibration inputs',
+      evidenceRefs: [],
+    };
+  }
+  const labelDistributionLabels = uniqueDashboardLabels(
+    Object.entries(inbox.labelDistribution)
+      .filter(([, count]) => count > 0)
+      .map(([label, count]) => `${label.replace(/_/g, ' ')} ${count}`),
+    6,
+  );
+  const topSourceKindLabels = uniqueDashboardLabels(
+    inbox.topSourceKindsNeedingReview.map(
+      (item) =>
+        `${item.sourceKind.replace(/_/g, ' ')} ${item.unlabeledCount}/${item.count} unlabeled`,
+    ),
+    6,
+  );
+
+  return {
+    visible: true,
+    inboxCountLabel: `${inbox.inboxCount} field feedback item${inbox.inboxCount === 1 ? '' : 's'}`,
+    unlabeledCountLabel: `${inbox.unlabeledCount} unlabeled`,
+    labelDistributionLabels,
+    topSourceKindLabels,
+    promotionCandidateLabel: `${inbox.promotionCandidateCount} promotion candidate${
+      inbox.promotionCandidateCount === 1 ? '' : 's'
+    }`,
+    calibrationInputLabel: `${inbox.calibrationInputCount} calibration input${
+      inbox.calibrationInputCount === 1 ? '' : 's'
+    }`,
+    evidenceRefs: dashboardRefs([
+      ...inbox.evidenceRefs,
+      ...inbox.topSourceKindsNeedingReview.flatMap((item) => item.evidenceRefs),
+    ]),
+  };
+}
+
 export function buildAoiOperatorAcceptanceDashboard(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiOperatorAcceptanceDashboard {
@@ -2297,6 +2359,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const whyQuiet = buildAoiWhyQuietPanel(input);
   const pendingApproval = buildAoiPendingApprovalPanel(input);
   const replayHealth = buildAoiReplayHealthPanel(input);
+  const feedbackInbox = buildAoiOperatorFeedbackInboxPanel(input.feedbackInbox);
   const evidenceRefs = dashboardRefs([
     ...currentBrief.evidenceRefs,
     ...blindSpots.evidenceRefs,
@@ -2304,6 +2367,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...whyQuiet.evidenceRefs,
     ...pendingApproval.evidenceRefs,
     ...replayHealth.evidenceRefs,
+    ...feedbackInbox.evidenceRefs,
   ]);
 
   return {
@@ -2317,6 +2381,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     whyQuiet,
     pendingApproval,
     replayHealth,
+    feedbackInbox,
     evidenceRefs,
     actionAuthority: 'display_only',
     mutationCount: 0,

@@ -19,10 +19,12 @@ import {
   loadAoiFieldShadowRecordReport,
   loadAoiObservationIndex,
   loadAoiObservations,
+  loadAoiOperatorFeedbackLabelActions,
   loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
   recordAoiFieldShadowDecisions,
+  recordAoiOperatorFeedbackLabelAction,
   resolveAoiAutonomyPaths,
   saveAoiActiveProposals,
   updateAoiEnvironmentSource,
@@ -279,6 +281,53 @@ describe('Aoi field shadow dogfooding storage', () => {
     expect(retainedRecords[0]?.dedupeKey).toBe('health:field-shadow-fresh:gmail');
     expect(afterCleanup.totalRecordCount).toBe(1);
     expect(afterCleanup.expiredRecordCount).toBe(0);
+  });
+
+  it('persists operator feedback label actions as append-only field evidence', () => {
+    const root = makeTempRoot();
+    const report = recordAoiFieldShadowDecisions(root, {
+      sessionPath: 'aoi/default',
+      decisions: [
+        makeFieldShadowDecision({
+          id: 'aoi-shadow-feedback-label',
+          dedupeKey: 'digest:feedback-label:would_propose',
+          sourceRefs: ['browser-context'],
+          evidenceRefs: ['environment-source:browser-context'],
+        }),
+      ],
+      now: 1000,
+    });
+    const record = report.records[0];
+    if (!record) {
+      throw new Error('Expected field shadow record.');
+    }
+
+    const wrongSource = recordAoiOperatorFeedbackLabelAction(root, {
+      sessionPath: 'aoi/default',
+      decisionRecordId: record.id,
+      decisionId: record.decisionId,
+      label: 'wrong_source',
+      sourceKinds: ['browser_context'],
+      evidenceRefs: record.evidenceRefs,
+      now: 2000,
+    });
+    const unsafe = recordAoiOperatorFeedbackLabelAction(root, {
+      sessionPath: 'aoi/default',
+      decisionRecordId: record.id,
+      decisionId: record.decisionId,
+      label: 'unsafe',
+      sourceKinds: ['browser_context'],
+      note: 'Keep this gated.',
+      evidenceRefs: record.evidenceRefs,
+      now: 3000,
+    });
+    const labels = loadAoiOperatorFeedbackLabelActions(root, 'aoi/default');
+
+    expect(labels.map((label) => label.id)).toEqual([wrongSource.id, unsafe.id]);
+    expect(labels.map((label) => label.label)).toEqual(['wrong_source', 'unsafe']);
+    expect(labels[0]?.calibrationEligible).toBe(true);
+    expect(labels[1]?.safetyTightening).toBe(true);
+    expect(labels.every((label) => label.mutationCount === 0)).toBe(true);
   });
 });
 

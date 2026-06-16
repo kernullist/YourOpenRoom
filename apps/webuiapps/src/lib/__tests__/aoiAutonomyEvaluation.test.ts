@@ -27,6 +27,13 @@ import {
   recordAoiShadowDecisions,
 } from '../aoiShadowModeEvaluation';
 import { buildAoiFieldShadowRecordReport } from '../aoiFieldShadowDogfooding';
+import {
+  appendAoiOperatorFeedbackLabelAction,
+  buildAoiOperatorFeedbackCalibrationDecisions,
+  buildAoiOperatorFeedbackInbox,
+  buildAoiOperatorFeedbackPromotionLabels,
+  createAoiOperatorFeedbackLabelActionForItem,
+} from '../aoiOperatorFeedbackInbox';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import {
   buildAoiTracePromotionReport,
@@ -790,6 +797,190 @@ describe('Aoi autonomy evaluation', () => {
     expect(report.records.every((record) => record.evidenceRefs.length > 0)).toBe(true);
     expect(JSON.stringify(report)).not.toContain('private-roadmap@example.com');
     expect(JSON.stringify(report)).not.toContain('Do not leak the mail body');
+  });
+
+  it('builds an operator feedback inbox from field shadow records without private summaries', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-feedback-browser',
+        kind: 'source_change',
+        lane: 'critical_user_blocking',
+        title: 'Browser context looked relevant',
+        summary:
+          'Browser source mentioned private-roadmap@example.com and C:\\Users\\secret\\roadmap.md.',
+        nextSafeAction: 'Ask whether browser context is relevant before speaking.',
+        risk: 'medium',
+        relevance: 0.76,
+        createdAt: 5000,
+        dedupeKey: 'feedback:browser-context',
+        sourceRefs: ['browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      approvedCommandPolicies: [makeApprovedCommandPolicy()],
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const serialized = JSON.stringify(inbox);
+
+    expect(inbox.inboxCount).toBe(fieldReport.activeRecordCount);
+    expect(inbox.unlabeledCount).toBe(inbox.inboxCount);
+    expect(inbox.items[0]?.priorityScore).toBeGreaterThanOrEqual(
+      inbox.items[inbox.items.length - 1]?.priorityScore ?? 0,
+    );
+    expect(inbox.items.some((item) => item.decisionKind === 'would_prepare_approval')).toBe(true);
+    expect(inbox.items.some((item) => item.sourceKinds.includes('browser_context'))).toBe(true);
+    expect(
+      inbox.topSourceKindsNeedingReview.some((item) => item.sourceKind === 'browser_context'),
+    ).toBe(true);
+    expect(inbox.actionAuthority).toBe('label_only');
+    expect(inbox.mutationCount).toBe(0);
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('C:\\Users\\secret\\roadmap.md');
+  });
+
+  it('keeps operator feedback labels append-only and feeds calibration plus trace promotion', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-feedback-wrong-source',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Browser context selected',
+        summary: 'Browser metadata was selected for the current mission.',
+        nextSafeAction: 'Ask whether this source matters before interrupting.',
+        risk: 'medium',
+        relevance: 0.66,
+        createdAt: 5000,
+        dedupeKey: 'feedback:wrong-source-browser',
+        sourceRefs: ['browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      approvedCommandPolicies: [makeApprovedCommandPolicy()],
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const browserItem = inbox.items.find((item) => item.sourceKinds.includes('browser_context'));
+    const approvalItem = inbox.items.find((item) => item.decisionKind === 'would_prepare_approval');
+    if (!browserItem || !approvalItem) {
+      throw new Error('Expected browser and approval feedback inbox items.');
+    }
+
+    const wrongSource = createAoiOperatorFeedbackLabelActionForItem({
+      item: browserItem,
+      label: 'wrong_source',
+      note: 'Browser context was not relevant to this mission.',
+      now: 8100,
+    });
+    const relabel = appendAoiOperatorFeedbackLabelAction([wrongSource], {
+      sessionPath: browserItem.sessionPath,
+      decisionRecordId: browserItem.decisionRecordId,
+      decisionId: browserItem.decisionId,
+      label: 'missed_context',
+      sourceKinds: browserItem.sourceKinds,
+      evidenceRefs: browserItem.evidenceRefs,
+      now: 8200,
+    });
+    const unsafe = createAoiOperatorFeedbackLabelActionForItem({
+      item: approvalItem,
+      label: 'unsafe',
+      note: 'Keep this approval preview strict.',
+      now: 8300,
+    });
+    const orphan = appendAoiOperatorFeedbackLabelAction([], {
+      sessionPath: 'aoi/default',
+      decisionRecordId: 'missing-field-shadow-record',
+      decisionId: 'missing-shadow-decision',
+      label: 'useful',
+      now: 8400,
+    })[0];
+    if (!orphan) {
+      throw new Error('Expected orphan label action.');
+    }
+    const labels = [...relabel, unsafe, orphan];
+    const labeledInbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: labels,
+      now: 9000,
+    });
+    const labeledBrowserItem = labeledInbox.items.find(
+      (item) => item.decisionRecordId === browserItem.decisionRecordId,
+    );
+    const calibrationDecisions = buildAoiOperatorFeedbackCalibrationDecisions({
+      sessionPath: 'aoi/default',
+      labelActions: labels,
+      records: fieldReport.records,
+    });
+    const profile = buildAoiTrustCalibrationProfile({
+      sessionPath: 'aoi/default',
+      decisions: calibrationDecisions,
+      now: 9500,
+    });
+    const sourcePenalty = applyAoiTrustCalibration({
+      profile,
+      sourceKind: 'browser_context',
+      score: 0.55,
+    });
+    const unsafeStrictness = applyAoiTrustCalibration({
+      profile,
+      actionKind: 'field_shadow_prepare_approval',
+      score: 0.55,
+    });
+    const promotionLabels = buildAoiOperatorFeedbackPromotionLabels({
+      sessionPath: 'aoi/default',
+      labelActions: labels,
+      records: fieldReport.records,
+    });
+
+    expect(labeledBrowserItem?.labelHistoryCount).toBe(2);
+    expect(labeledBrowserItem?.latestLabel).toBe('missed_context');
+    expect(labeledInbox.labelDistribution.wrong_source).toBe(1);
+    expect(labeledInbox.labelDistribution.missed_context).toBe(1);
+    expect(labeledInbox.labelDistribution.unsafe).toBe(1);
+    expect(labeledInbox.labelDistribution.useful).toBe(0);
+    expect(labeledInbox.unsafeLabelCount).toBe(1);
+    expect(labeledInbox.calibrationInputCount).toBe(2);
+    expect(labels).toHaveLength(4);
+    expect(calibrationDecisions.map((decision) => decision.feedbackCategory)).toEqual(
+      expect.arrayContaining(['wrong_source', 'unsafe']),
+    );
+    expect(calibrationDecisions).toHaveLength(2);
+    expect(sourcePenalty.sourceSelectionPenalty).toBeGreaterThanOrEqual(0.3);
+    expect(unsafeStrictness.approvalStrictnessBoost).toBeGreaterThan(0);
+    expect(promotionLabels.map((label) => label.label)).toEqual(
+      expect.arrayContaining(['wrong_source', 'missed_context', 'unsafe']),
+    );
+    expect(promotionLabels).toHaveLength(3);
+    expect(promotionLabels.every((label) => label.decisionId.length > 0)).toBe(true);
   });
 
   it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {
