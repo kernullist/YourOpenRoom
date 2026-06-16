@@ -18,6 +18,10 @@ import {
   buildAoiSourceFreshnessDashboardContext,
   type AoiSourceFreshnessContract,
 } from './aoiSourceFreshnessContract';
+import {
+  buildAoiJarvisReadinessScorecard,
+  type AoiJarvisReadinessScorecard,
+} from './aoiJarvisReadinessScorecard';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
@@ -416,6 +420,17 @@ export interface AoiReplayHealthPanel {
   evidenceRefs: string[];
 }
 
+export interface AoiJarvisReadinessPanel {
+  visible: boolean;
+  statusLabel: string;
+  levelLabel: string;
+  scoreLabel: string;
+  modeRecommendationLabel: string;
+  gateLabels: string[];
+  recommendationLabels: string[];
+  evidenceRefs: string[];
+}
+
 export interface AoiOperatorFeedbackInboxPanel {
   visible: boolean;
   inboxCountLabel: string;
@@ -441,6 +456,7 @@ export interface AoiOperatorAcceptanceDashboard {
   whyQuiet: AoiWhyQuietPanel;
   pendingApproval: AoiPendingApprovalPanel;
   replayHealth: AoiReplayHealthPanel;
+  jarvisReadiness: AoiJarvisReadinessPanel;
   feedbackInbox: AoiOperatorFeedbackInboxPanel;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
@@ -466,6 +482,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   approvedCommandResults?: AoiApprovedCommandResult[];
   builtInReplayReports?: AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
+  jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
   shadowReport?: AoiShadowDecisionReport | null;
   promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
   feedbackInbox?: AoiOperatorFeedbackInbox | null;
@@ -2585,6 +2602,106 @@ function buildAoiReplayHealthPanel(
   };
 }
 
+function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInput): boolean {
+  return Boolean(
+    input.jarvisReadinessScorecard ||
+    input.shadowReport ||
+    input.feedbackInbox ||
+    input.jarvisAcceptanceReport ||
+    input.personalSourceRealityCheck ||
+    input.missionControl ||
+    input.sourceRegistry ||
+    input.workspaceSnapshot ||
+    input.builtInReplayReports?.length ||
+    input.boundedWorkOrders?.length ||
+    input.sourceFreshnessContracts?.length ||
+    input.promotedFixtureCandidates?.length,
+  );
+}
+
+function formatAoiJarvisReadinessLevel(level: string): string {
+  return level.replace(/_/g, ' ');
+}
+
+function formatAoiJarvisModeRecommendation(value: string): string {
+  switch (value) {
+    case 'tighten_or_rollback':
+      return 'Tighten or roll back current mode';
+    case 'candidate_for_higher_trust':
+      return 'Candidate for higher trust after operator approval';
+    case 'remain_current_mode':
+    default:
+      return 'Remain in current mode';
+  }
+}
+
+function buildAoiJarvisReadinessPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiJarvisReadinessPanel {
+  if (!hasAoiJarvisReadinessEvidence(input)) {
+    return {
+      visible: false,
+      statusLabel: 'No JARVIS readiness evidence',
+      levelLabel: 'Readiness level unavailable',
+      scoreLabel: 'No readiness score',
+      modeRecommendationLabel: 'Remain in current mode',
+      gateLabels: [],
+      recommendationLabels: [],
+      evidenceRefs: [],
+    };
+  }
+  const scorecard =
+    input.jarvisReadinessScorecard ??
+    buildAoiJarvisReadinessScorecard({
+      sessionPath: input.sessionPath,
+      now: input.now,
+      shadowReport: input.shadowReport,
+      feedbackInbox: input.feedbackInbox,
+      builtInReplayReports: input.builtInReplayReports,
+      jarvisAcceptanceReport: input.jarvisAcceptanceReport,
+      personalSourceRealityCheck: input.personalSourceRealityCheck,
+      sourceFreshnessContracts: resolveAoiSourceFreshnessContracts(input),
+      missionControl: input.missionControl,
+      boundedWorkOrders: input.boundedWorkOrders,
+      promotedFixtureCandidates: input.promotedFixtureCandidates,
+    });
+  const blockingOrWarningGates = scorecard.gates.filter((gate) => gate.status !== 'pass');
+  const gateLabels = uniqueDashboardLabels(
+    (blockingOrWarningGates.length > 0 ? blockingOrWarningGates : scorecard.gates.slice(0, 3)).map(
+      (gate) => `${gate.status}: ${gate.label}; ${gate.reason}`,
+    ),
+    6,
+  );
+  const recommendationLabels = uniqueDashboardLabels(
+    scorecard.recommendations.map((item) => `${item.severity}: ${item.label}; ${item.action}`),
+    5,
+  );
+
+  return {
+    visible: true,
+    statusLabel: sanitizeAoiAcceptanceDashboardText(
+      `${scorecard.gateStatus}; ${scorecard.score}/100 readiness`,
+      120,
+    ),
+    levelLabel: sanitizeAoiAcceptanceDashboardText(
+      `Readiness level: ${formatAoiJarvisReadinessLevel(scorecard.level)}`,
+      120,
+    ),
+    scoreLabel: sanitizeAoiAcceptanceDashboardText(`${scorecard.score}/100 score`, 80),
+    modeRecommendationLabel: sanitizeAoiAcceptanceDashboardText(
+      formatAoiJarvisModeRecommendation(scorecard.modeRecommendation),
+      140,
+    ),
+    gateLabels,
+    recommendationLabels,
+    evidenceRefs: dashboardRefs([
+      `jarvis-readiness:${scorecard.id}`,
+      ...scorecard.evidenceRefs,
+      ...scorecard.blockerRefs,
+    ]),
+  };
+}
+
 function buildAoiOperatorFeedbackInboxPanel(
   inbox: AoiOperatorFeedbackInbox | null | undefined,
 ): AoiOperatorFeedbackInboxPanel {
@@ -2645,6 +2762,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const whyQuiet = buildAoiWhyQuietPanel(input);
   const pendingApproval = buildAoiPendingApprovalPanel(input);
   const replayHealth = buildAoiReplayHealthPanel(input);
+  const jarvisReadiness = buildAoiJarvisReadinessPanel(input);
   const feedbackInbox = buildAoiOperatorFeedbackInboxPanel(input.feedbackInbox);
   const evidenceRefs = dashboardRefs([
     ...missionControl.evidenceRefs,
@@ -2656,6 +2774,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...whyQuiet.evidenceRefs,
     ...pendingApproval.evidenceRefs,
     ...replayHealth.evidenceRefs,
+    ...jarvisReadiness.evidenceRefs,
     ...feedbackInbox.evidenceRefs,
   ]);
 
@@ -2673,6 +2792,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     whyQuiet,
     pendingApproval,
     replayHealth,
+    jarvisReadiness,
     feedbackInbox,
     evidenceRefs,
     actionAuthority: 'display_only',

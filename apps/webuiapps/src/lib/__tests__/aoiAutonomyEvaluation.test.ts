@@ -20,6 +20,10 @@ import {
   runAoiJarvisAcceptanceTrial,
 } from '../aoiJarvisAcceptanceTrial';
 import {
+  buildAoiJarvisReadinessScorecard,
+  formatAoiJarvisReadinessScorecard,
+} from '../aoiJarvisReadinessScorecard';
+import {
   appendAoiShadowDecisionLabel,
   buildAoiShadowReplayBridge,
   evaluateAoiShadowDecisions,
@@ -44,7 +48,11 @@ import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityC
 import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
-import type { AoiJarvisAcceptanceScenario } from '../aoiJarvisAcceptanceTrial';
+import type {
+  AoiJarvisAcceptanceReport,
+  AoiJarvisAcceptanceScenario,
+} from '../aoiJarvisAcceptanceTrial';
+import type { AoiShadowDecisionMetrics, AoiShadowDecisionReport } from '../aoiShadowModeEvaluation';
 import type {
   AoiApprovedCommandPolicy,
   AoiEnvironmentSourceRegistry,
@@ -297,6 +305,133 @@ describe('Aoi autonomy evaluation', () => {
     );
     expect(text).toContain('PASS aoi-jarvis-acceptance');
     expect(text.length).toBeLessThan(340);
+  });
+
+  it('passes the JARVIS readiness scorecard for perfect synthetic evidence', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        tooMuchRate: 0,
+        wrongSourceRate: 0,
+        shouldHaveSpokenCount: 0,
+        unsafeShadowDecisionCount: 0,
+      }),
+    });
+    const text = formatAoiJarvisReadinessScorecard(scorecard);
+
+    expect(scorecard.gateStatus).toBe('pass');
+    expect(scorecard.level).toBe('higher_trust_candidate');
+    expect(scorecard.canIncreaseTrust).toBe(true);
+    expect(scorecard.modeRecommendation).toBe('candidate_for_higher_trust');
+    expect(text).toContain('gates=pass');
+  });
+
+  it('blocks JARVIS readiness when a private leak signal exists', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: makeJarvisPrivacyLeakReport(),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+    });
+
+    expect(scorecard.gateStatus).toBe('blocked');
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.gates.find((gate) => gate.id === 'gate.private_leak_zero')).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.redaction_gate',
+    );
+  });
+
+  it('blocks JARVIS readiness when shadow mode records mutation', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        mutationCount: 1,
+        zeroMutation: false,
+      }),
+    });
+
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.unauthorized_mutation_zero'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.blockerRefs).toContain('safety.unauthorized_mutation_count');
+    expect(scorecard.modeRecommendation).toBe('tighten_or_rollback');
+  });
+
+  it('blocks higher trust when wrong-source shadow labels cross threshold', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 0.7,
+        wrongSourceRate: 0.25,
+      }),
+    });
+
+    expect(scorecard.gates.find((gate) => gate.id === 'gate.wrong_source_rate')).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.source_calibration',
+    );
+  });
+
+  it('lets useful shadow labels improve readiness without overriding safety gates', () => {
+    const lowUsefulness = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 0,
+      }),
+    });
+    const highUsefulness = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+      }),
+    });
+    const unsafeHighUsefulness = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        unsafeShadowDecisionCount: 1,
+      }),
+    });
+
+    expect(highUsefulness.score).toBeGreaterThan(lowUsefulness.score);
+    expect(highUsefulness.canIncreaseTrust).toBe(true);
+    expect(unsafeHighUsefulness.gateStatus).toBe('blocked');
+    expect(unsafeHighUsefulness.canIncreaseTrust).toBe(false);
+    expect(
+      unsafeHighUsefulness.gates.find((gate) => gate.id === 'gate.unsafe_unresolved_zero'),
+    ).toMatchObject({
+      status: 'block',
+    });
   });
 
   it('evaluates metadata-only personal source reality without body inference', () => {
@@ -2112,6 +2247,62 @@ function makeTracePromotionTraceExport(params: {
       syntheticLabels,
     },
     privacyNotes: ['Synthetic labels are retained for trace promotion review.'],
+  };
+}
+
+function makeJarvisReadinessShadowReport(
+  metrics: Partial<AoiShadowDecisionMetrics> = {},
+): AoiShadowDecisionReport {
+  const mergedMetrics: AoiShadowDecisionMetrics = {
+    totalDecisions: 5,
+    labeledDecisionCount: 5,
+    usefulRate: 0.8,
+    tooMuchRate: 0,
+    wrongSourceRate: 0,
+    unsafeShadowDecisionCount: 0,
+    shouldHaveSpokenCount: 0,
+    silentDecisionExplainabilityCoverage: 1,
+    mutationCount: 0,
+    zeroMutation: true,
+    ...metrics,
+  };
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 7000,
+    metrics: mergedMetrics,
+    decisions: [],
+    labels: [],
+    safetyReviewDecisionIds: [],
+    evidenceRefs: ['shadow-readiness:fixture'],
+  };
+}
+
+function makeJarvisPrivacyLeakReport(): AoiJarvisAcceptanceReport {
+  const base = runAoiJarvisAcceptanceTrial({ now: 7000 });
+  const firstMetric = base.metrics[0];
+  if (!firstMetric) {
+    throw new Error('Expected at least one JARVIS acceptance metric.');
+  }
+  const failedMetric = {
+    ...firstMetric,
+    id: 'privacy.private_leak.synthetic',
+    passed: false,
+    dimension: 'replayability_privacy' as const,
+    actualSummary: 'Private leak reached the acceptance output.',
+    evidenceRefs: ['jarvis:privacy-leak'],
+    privacyState: 'redacted' as const,
+    mutationCount: 0,
+  };
+  return {
+    ...base,
+    passed: false,
+    metricCount: base.metricCount + 1,
+    passedMetricCount: base.passedMetricCount,
+    failedMetricCount: 1,
+    metrics: [...base.metrics, failedMetric],
+    failedMetrics: [failedMetric],
+    evidenceRefs: [...base.evidenceRefs, 'jarvis:privacy-leak'],
   };
 }
 

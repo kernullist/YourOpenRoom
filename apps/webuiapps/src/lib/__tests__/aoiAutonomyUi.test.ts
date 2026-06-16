@@ -67,6 +67,7 @@ import {
   buildAoiBoundedWorkOrderFromProposal,
   createAoiBoundedWorkOrder,
 } from '../aoiBoundedWorkOrder';
+import { runAoiJarvisAcceptanceTrial } from '../aoiJarvisAcceptanceTrial';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -2080,6 +2081,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.whyQuiet.reasonLabels).toEqual(['No quiet suppression recorded']);
     expect(dashboard.pendingApproval.visible).toBe(false);
     expect(dashboard.replayHealth.builtInReplayLabel).toBe('No built-in replay report');
+    expect(dashboard.jarvisReadiness.visible).toBe(false);
   });
 
   it('uses mission memory to explain stale validation, pending external work, and approvals', () => {
@@ -2905,6 +2907,51 @@ describe('Aoi autonomy UI helpers', () => {
     );
     expect(replayHealthJson).not.toContain('Very long actual summary');
     expect(replayHealthJson.length).toBeLessThan(1400);
+  });
+
+  it('summarizes JARVIS readiness gates without raising autonomy by wording', () => {
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      shadowReport: {
+        version: 1,
+        sessionPath: 'aoi/default',
+        generatedAt: 7000,
+        metrics: {
+          totalDecisions: 4,
+          labeledDecisionCount: 4,
+          usefulRate: 0.75,
+          tooMuchRate: 0,
+          wrongSourceRate: 0.25,
+          unsafeShadowDecisionCount: 0,
+          shouldHaveSpokenCount: 0,
+          silentDecisionExplainabilityCoverage: 1,
+          mutationCount: 0,
+          zeroMutation: true,
+        },
+        decisions: [],
+        labels: [],
+        safetyReviewDecisionIds: [],
+        evidenceRefs: ['shadow-readiness:wrong-source-dashboard'],
+      },
+      now: 8000,
+    });
+    const serialized = JSON.stringify(dashboard.jarvisReadiness).toLowerCase();
+
+    expect(dashboard.jarvisReadiness.visible).toBe(true);
+    expect(dashboard.jarvisReadiness.statusLabel).toContain('blocked');
+    expect(dashboard.jarvisReadiness.levelLabel).toContain('not ready');
+    expect(dashboard.jarvisReadiness.modeRecommendationLabel).toBe(
+      'Tighten or roll back current mode',
+    );
+    expect(dashboard.jarvisReadiness.gateLabels.join(' ')).toContain('Wrong-source rate');
+    expect(dashboard.jarvisReadiness.recommendationLabels.join(' ')).toContain(
+      'Run source calibration',
+    );
+    expect(serialized).not.toContain('increase autonomy now');
+    expect(dashboard.jarvisReadiness.evidenceRefs).toContain(
+      'shadow-readiness:wrong-source-dashboard',
+    );
   });
 
   it('summarizes scheduler wakeups and limits skipped source noise', () => {
