@@ -26,6 +26,7 @@ import {
   formatAoiShadowDecisionReport,
   recordAoiShadowDecisions,
 } from '../aoiShadowModeEvaluation';
+import { buildAoiFieldShadowRecordReport } from '../aoiFieldShadowDogfooding';
 import { createAoiReplayFixtureDraftFromTraceExport } from '../aoiOperatorTimeline';
 import {
   buildAoiTracePromotionReport,
@@ -715,6 +716,80 @@ describe('Aoi autonomy evaluation', () => {
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('Do not leak the mail body');
     expect(report.metrics.zeroMutation).toBe(true);
+  });
+
+  it('builds field shadow dogfooding records from real-session shadow decisions', () => {
+    const digest = makeShadowDigest(
+      [
+        {
+          version: 1,
+          id: 'digest-field-propose',
+          kind: 'mission_status',
+          lane: 'mission_update',
+          title: 'Workspace validation is stale',
+          summary: 'Workspace validation is stale for the current mission.',
+          nextSafeAction: 'Prepare a validation preview and wait for approval.',
+          risk: 'low',
+          relevance: 0.82,
+          createdAt: 5000,
+          dedupeKey: 'field:validation-stale',
+          sourceRefs: ['workspace:validation'],
+          evidenceRefs: ['workspace:validation-stale'],
+          hidden: false,
+        },
+        {
+          version: 1,
+          id: 'digest-field-quiet',
+          kind: 'source_change',
+          lane: 'hidden_by_quiet_mode',
+          title: 'Low relevance source suppressed',
+          summary: 'The source matched recent too-much feedback.',
+          nextSafeAction: 'Stay quiet and keep the event for review.',
+          risk: 'low',
+          relevance: 0.31,
+          createdAt: 5000,
+          dedupeKey: 'field:quiet-source',
+          sourceRefs: ['digest:fyi'],
+          evidenceRefs: ['feedback:too-much-field'],
+          hidden: true,
+        },
+      ],
+      {
+        quietReason: 'Recent too-much feedback suppresses similar source updates.',
+      },
+    );
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      missionId: 'mission-field-shadow',
+      digest,
+      health: makeShadowHealth(),
+      sourceRegistry: makeShadowSourceRegistry(),
+      now: 6000,
+    });
+    const report = buildAoiFieldShadowRecordReport({
+      sessionPath: ' /aoi/default/ ',
+      sessionId: 'field-session-001',
+      missionId: 'mission-field-shadow',
+      decisions,
+      evidenceRefs: ['field-session:dogfood-001'],
+      now: 7000,
+    });
+
+    expect(report.sessionPath).toBe('aoi/default');
+    expect(report.zeroMutation).toBe(true);
+    expect(report.mutationCount).toBe(0);
+    expect(report.activeRecordCount).toBe(report.totalRecordCount);
+    expect(report.decisionKindCounts.would_propose).toBeGreaterThanOrEqual(1);
+    expect(report.decisionKindCounts.would_stay_quiet).toBeGreaterThanOrEqual(1);
+    expect(report.decisionKindCounts.would_mark_blind_spot).toBeGreaterThanOrEqual(2);
+    expect(report.subsystemOriginCounts.digest).toBeGreaterThanOrEqual(2);
+    expect(report.subsystemOriginCounts.health).toBeGreaterThanOrEqual(1);
+    expect(report.subsystemOriginCounts.source_consent).toBeGreaterThanOrEqual(1);
+    expect(report.sourceKindCounts.workspace).toBeGreaterThanOrEqual(1);
+    expect(report.records.every((record) => record.mutationCount === 0)).toBe(true);
+    expect(report.records.every((record) => record.evidenceRefs.length > 0)).toBe(true);
+    expect(JSON.stringify(report)).not.toContain('private-roadmap@example.com');
+    expect(JSON.stringify(report)).not.toContain('Do not leak the mail body');
   });
 
   it('promotes privacy-safe trace exports into replay fixture drafts without mutating built-ins', () => {

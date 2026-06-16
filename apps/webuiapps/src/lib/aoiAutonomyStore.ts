@@ -15,6 +15,14 @@ import {
 } from './aoiApprovedCommandPolicy';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
+import {
+  buildAoiFieldShadowRecordReport,
+  normalizeAoiFieldShadowDecisionRecord,
+  pruneExpiredAoiFieldShadowRecords,
+  type AoiFieldShadowDecisionRecord,
+  type AoiFieldShadowRecordReport,
+  type AoiFieldShadowRecorderInput,
+} from './aoiFieldShadowDogfooding';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomyStatus,
@@ -60,6 +68,8 @@ export interface AoiAutonomyPaths {
   timelineDir: string;
   timelineEvents: string;
   timelineExportsDir: string;
+  fieldShadowDir: string;
+  fieldShadowRecords: string;
   schedulerState: string;
 }
 
@@ -336,6 +346,7 @@ export function resolveAoiAutonomyPaths(
   const proposalsDir = join(root, 'proposals');
   const playbooksDir = join(root, 'playbooks');
   const timelineDir = join(root, 'timeline');
+  const fieldShadowDir = join(root, 'field-shadow');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -356,6 +367,8 @@ export function resolveAoiAutonomyPaths(
     timelineDir,
     timelineEvents: join(timelineDir, 'events.jsonl'),
     timelineExportsDir: join(timelineDir, 'exports'),
+    fieldShadowDir,
+    fieldShadowRecords: join(fieldShadowDir, 'records.json'),
     schedulerState: join(root, 'scheduler-state.json'),
   };
 }
@@ -1002,6 +1015,101 @@ export function loadAoiCommandAuditRecords(
   return listJsonFiles<unknown>(paths.commandAuditDir)
     .filter(isAoiCommandAuditRecord)
     .sort((a, b) => b.completedAt - a.completedAt);
+}
+
+function loadAoiFieldShadowRecordList(
+  filePath: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiFieldShadowDecisionRecord[] {
+  const records = readJson<unknown[]>(filePath);
+  if (!Array.isArray(records)) {
+    return [];
+  }
+  return records
+    .map((record) => normalizeAoiFieldShadowDecisionRecord(record, { sessionPath, now }))
+    .filter((record): record is AoiFieldShadowDecisionRecord => record !== null)
+    .sort((left, right) => left.recordedAt - right.recordedAt || left.id.localeCompare(right.id));
+}
+
+export function loadAoiFieldShadowDecisionRecords(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiFieldShadowDecisionRecord[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  return loadAoiFieldShadowRecordList(paths.fieldShadowRecords, normalizedSessionPath, now);
+}
+
+export function recordAoiFieldShadowDecisions(
+  sessionsDir: string,
+  input: AoiFieldShadowRecorderInput,
+): AoiFieldShadowRecordReport {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(input.sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const existingRecords = loadAoiFieldShadowRecordList(
+    paths.fieldShadowRecords,
+    normalizedSessionPath,
+    input.now,
+  );
+  const report = buildAoiFieldShadowRecordReport(
+    {
+      ...input,
+      sessionPath: normalizedSessionPath,
+    },
+    existingRecords,
+  );
+  if (report.records.length > existingRecords.length) {
+    writeJsonAtomic(paths.fieldShadowRecords, report.records);
+  }
+  return report;
+}
+
+export function loadAoiFieldShadowRecordReport(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiFieldShadowRecordReport {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const records = loadAoiFieldShadowDecisionRecords(sessionsDir, normalizedSessionPath, now);
+  return buildAoiFieldShadowRecordReport(
+    {
+      sessionPath: normalizedSessionPath,
+      decisions: [],
+      now,
+    },
+    records,
+  );
+}
+
+export function cleanupExpiredAoiFieldShadowDecisionRecords(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiFieldShadowDecisionRecord[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const records = loadAoiFieldShadowRecordList(
+    paths.fieldShadowRecords,
+    normalizedSessionPath,
+    now,
+  );
+  const retainedRecords = pruneExpiredAoiFieldShadowRecords(records, now);
+  writeJsonAtomic(paths.fieldShadowRecords, retainedRecords);
+  return retainedRecords;
 }
 
 function isAoiProposalDecisionAction(value: unknown): value is AoiProposalDecisionAction {

@@ -8,17 +8,21 @@ import {
   applyAoiProposalDecision,
   applyAoiProposalFeedback,
   buildAoiAutonomyStatus,
+  cleanupExpiredAoiFieldShadowDecisionRecords,
   createAoiAutonomyId,
   isValidAoiAutonomyId,
   loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
+  loadAoiFieldShadowDecisionRecords,
+  loadAoiFieldShadowRecordReport,
   loadAoiObservationIndex,
   loadAoiObservations,
   loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
+  recordAoiFieldShadowDecisions,
   resolveAoiAutonomyPaths,
   saveAoiActiveProposals,
   updateAoiEnvironmentSource,
@@ -32,6 +36,7 @@ import {
   recordAoiProposalDecisionTimelineEvent,
 } from '../aoiOperatorTimeline';
 import type { AoiObservation, AoiProposal, AoiReflection } from '../aoiAutonomyTypes';
+import type { AoiShadowDecision } from '../aoiShadowModeEvaluation';
 
 const tempRoots: string[] = [];
 
@@ -64,6 +69,39 @@ function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
     artifactRefs: ['research:aoi-research-001/report'],
     riskSignals: [],
     ...partial,
+  };
+}
+
+function makeFieldShadowDecision(partial: Partial<AoiShadowDecision> = {}): AoiShadowDecision {
+  const kind = partial.kind ?? 'would_propose';
+  const policyResult =
+    partial.policyResult ??
+    (kind === 'would_prepare_approval'
+      ? 'approval_required'
+      : kind === 'would_stay_quiet' || kind === 'would_mark_blind_spot'
+        ? 'record_only'
+        : 'not_applicable');
+  return {
+    version: 1,
+    id: partial.id ?? 'aoi-shadow-field-test',
+    sessionPath: partial.sessionPath ?? 'aoi/default',
+    kind,
+    createdAt: partial.createdAt ?? 1000,
+    ...(partial.missionId ? { missionId: partial.missionId } : {}),
+    sourceRefs: partial.sourceRefs ?? ['workspace:validation'],
+    sourceSummary: partial.sourceSummary ?? 'Workspace validation is stale.',
+    consentState: partial.consentState ?? 'unknown',
+    risk: partial.risk ?? 'low',
+    policyResult,
+    ...(partial.operatorMessagePreview
+      ? { operatorMessagePreview: partial.operatorMessagePreview }
+      : {}),
+    ...(partial.silenceReason ? { silenceReason: partial.silenceReason } : {}),
+    ...(partial.suggestedAction ? { suggestedAction: partial.suggestedAction } : {}),
+    ...(partial.approvalBoundary ? { approvalBoundary: partial.approvalBoundary } : {}),
+    mutationCount: 0,
+    evidenceRefs: partial.evidenceRefs ?? ['workspace:validation-stale'],
+    dedupeKey: partial.dedupeKey ?? 'digest:field-shadow-test:would_propose',
   };
 }
 
@@ -126,6 +164,121 @@ describe('Aoi autonomy policy storage', () => {
       updatedAt: 1234,
     });
     expect(loadAoiAutonomyPolicy(root, 'aoi/default')).toMatchObject(saved);
+  });
+});
+
+describe('Aoi field shadow dogfooding storage', () => {
+  it('persists field shadow decisions append-only, deduped, and privacy-redacted', () => {
+    const root = makeTempRoot();
+    const paths = resolveAoiAutonomyPaths(root, 'aoi/default');
+    const privateDecision = makeFieldShadowDecision({
+      id: 'aoi-shadow-field-private',
+      dedupeKey: 'digest:field-shadow-private:would_propose',
+      sourceSummary:
+        'Do not leak the mail body: private-roadmap@example.com C:\\Users\\secret\\mail.txt api_key=sk-test-veryprivatevalue.',
+      sourceRefs: ['workspace:validation', 'file:C:\\Users\\secret\\mail.txt'],
+      evidenceRefs: ['workspace:validation-stale', 'token:github_pat_veryprivatevalue12345'],
+      operatorMessagePreview: 'Validation is stale for private-roadmap@example.com; preview only.',
+      suggestedAction: 'Prepare a validation command preview; do not run it.',
+    });
+    const duplicateDecision = makeFieldShadowDecision({
+      ...privateDecision,
+      id: 'aoi-shadow-field-private-duplicate',
+      createdAt: 1200,
+    });
+    const quietDecision = makeFieldShadowDecision({
+      id: 'aoi-shadow-field-quiet',
+      kind: 'would_stay_quiet',
+      dedupeKey: 'digest:field-shadow-quiet:would_stay_quiet',
+      sourceSummary: 'A low relevance source matched too-much feedback.',
+      sourceRefs: ['digest:fyi'],
+      evidenceRefs: ['feedback:too-much-field-shadow'],
+      silenceReason: 'Recent too-much feedback suppresses similar FYI updates.',
+    });
+
+    const report = recordAoiFieldShadowDecisions(root, {
+      sessionPath: ' /aoi/default/ ',
+      sessionId: 'field-private@example.com',
+      decisions: [privateDecision, duplicateDecision, quietDecision],
+      now: 3000,
+      evidenceRefs: ['field-session:dogfood-001'],
+    });
+    const records = loadAoiFieldShadowDecisionRecords(root, 'aoi/default', 3000);
+    const loadedReport = loadAoiFieldShadowRecordReport(root, 'aoi/default', 3000);
+    const storedJson = fs.readFileSync(paths.fieldShadowRecords, 'utf-8');
+
+    expect(report.totalRecordCount).toBe(2);
+    expect(report.dedupedRecordCount).toBe(1);
+    expect(report.activeRecordCount).toBe(2);
+    expect(report.zeroMutation).toBe(true);
+    expect(records).toHaveLength(2);
+    expect(records.map((record) => record.dedupeKey)).toEqual(
+      expect.arrayContaining([
+        'digest:field-shadow-private:would_propose',
+        'digest:field-shadow-quiet:would_stay_quiet',
+      ]),
+    );
+    expect(records.every((record) => record.subsystemOrigin === 'digest')).toBe(true);
+    expect(records.every((record) => record.mutationCount === 0)).toBe(true);
+    expect(loadedReport.session.id).toBe(report.session.id);
+    expect(loadedReport.records.every((record) => record.sessionId === report.session.id)).toBe(
+      true,
+    );
+    expect(storedJson).not.toContain('private-roadmap@example.com');
+    expect(storedJson).not.toContain('C:\\Users\\secret\\mail.txt');
+    expect(storedJson).not.toContain('Do not leak the mail body');
+    expect(storedJson).not.toContain('sk-test-veryprivatevalue');
+    expect(storedJson).not.toContain('github_pat_veryprivatevalue12345');
+    expect(storedJson).toContain('[redacted-private-body]');
+    expect(storedJson).toContain('[email]');
+  });
+
+  it('excludes expired field shadow records from active reports and cleans them explicitly', () => {
+    const root = makeTempRoot();
+    const oldDecision = makeFieldShadowDecision({
+      id: 'aoi-shadow-field-old',
+      dedupeKey: 'digest:field-shadow-old:would_propose',
+      sourceSummary: 'Old shadow decision.',
+    });
+    const freshDecision = makeFieldShadowDecision({
+      id: 'aoi-shadow-field-fresh',
+      dedupeKey: 'health:field-shadow-fresh:gmail',
+      kind: 'would_mark_blind_spot',
+      sourceRefs: ['health:personal_signals:gmail_disconnected', 'gmail-metadata'],
+      evidenceRefs: ['environment-source:gmail-metadata'],
+      sourceSummary: 'Gmail metadata is disconnected.',
+      consentState: 'disconnected',
+    });
+
+    recordAoiFieldShadowDecisions(root, {
+      sessionPath: 'aoi/default',
+      decisions: [oldDecision],
+      now: 1000,
+      retentionMs: 100,
+    });
+    recordAoiFieldShadowDecisions(root, {
+      sessionPath: 'aoi/default',
+      decisions: [freshDecision],
+      now: 1200,
+      retentionMs: 1000,
+    });
+
+    const report = loadAoiFieldShadowRecordReport(root, 'aoi/default', 1200);
+    const retainedRecords = cleanupExpiredAoiFieldShadowDecisionRecords(root, 'aoi/default', 1200);
+    const afterCleanup = loadAoiFieldShadowRecordReport(root, 'aoi/default', 1200);
+
+    expect(report.totalRecordCount).toBe(2);
+    expect(report.activeRecordCount).toBe(1);
+    expect(report.expiredRecordCount).toBe(1);
+    expect(report.activeRecords[0]).toMatchObject({
+      decisionKind: 'would_mark_blind_spot',
+      subsystemOrigin: 'health',
+      privacyState: 'metadata_only',
+    });
+    expect(retainedRecords).toHaveLength(1);
+    expect(retainedRecords[0]?.dedupeKey).toBe('health:field-shadow-fresh:gmail');
+    expect(afterCleanup.totalRecordCount).toBe(1);
+    expect(afterCleanup.expiredRecordCount).toBe(0);
   });
 });
 
