@@ -115,6 +115,7 @@ import {
   shouldUseWebSearch,
   summarizeToolResultForModel,
 } from '@/lib/chatTokenControl';
+import { parseChatMessageContent } from '@/lib/chatMessageLinks';
 import {
   buildPromptBudgetSnapshot,
   summarizePromptBudget,
@@ -1821,24 +1822,21 @@ function renderMessageContent(
   onOpenExternal: (url: string) => void,
   onOpenLink: (url: string) => void,
 ): React.ReactNode {
-  const tokenRegex = /(\[[^\]]+\]\((https?:\/\/[^\s)]+)\)|https?:\/\/[^\s)]+|\([^)]+\))/g;
-  const parts = content.split(tokenRegex);
-
-  return parts.map((part, i) => {
-    if (!part) return null;
-
-    const markdownLinkMatch = part.match(/^\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)$/);
-    if (markdownLinkMatch) {
-      const [, label, url] = markdownLinkMatch;
+  return parseChatMessageContent(content).map((segment, i) => {
+    if (segment.type === 'link') {
       return (
         <span key={i} className={styles.messageLinkGroup}>
-          <button type="button" className={styles.messageLink} onClick={() => onOpenExternal(url)}>
-            {label}
+          <button
+            type="button"
+            className={styles.messageLink}
+            onClick={() => onOpenExternal(segment.url)}
+          >
+            {segment.label}
           </button>
           <button
             type="button"
             className={styles.messageLinkInlineAction}
-            onClick={() => onOpenLink(url)}
+            onClick={() => onOpenLink(segment.url)}
           >
             In-app
           </button>
@@ -1846,32 +1844,15 @@ function renderMessageContent(
       );
     }
 
-    if (/^https?:\/\/[^\s)]+$/.test(part)) {
-      return (
-        <span key={i} className={styles.messageLinkGroup}>
-          <button type="button" className={styles.messageLink} onClick={() => onOpenExternal(part)}>
-            {part}
-          </button>
-          <button
-            type="button"
-            className={styles.messageLinkInlineAction}
-            onClick={() => onOpenLink(part)}
-          >
-            In-app
-          </button>
-        </span>
-      );
-    }
-
-    if (/^\([^)]+\)$/.test(part)) {
+    if (segment.type === 'emotion') {
       return (
         <span key={i} className={styles.emotion}>
-          {part}
+          {segment.text}
         </span>
       );
     }
 
-    return <React.Fragment key={i}>{part}</React.Fragment>;
+    return <React.Fragment key={i}>{segment.text}</React.Fragment>;
   });
 }
 
@@ -6759,9 +6740,9 @@ function formatCodexAuthStatus(result: CodexAuthStatusResult): {
   const version = result.version?.trim() || 'Codex Auth';
   const duration =
     typeof result.durationMs === 'number' ? ` in ${(result.durationMs / 1000).toFixed(1)}s` : '';
-  const details = [
-    result.auth?.summary ? `Auth: ${result.auth.summary}` : null,
-  ].filter((entry): entry is string => Boolean(entry));
+  const details = [result.auth?.summary ? `Auth: ${result.auth.summary}` : null].filter(
+    (entry): entry is string => Boolean(entry),
+  );
 
   if (result.auth?.loggedIn === false || result.ok === false) {
     return {
@@ -6778,8 +6759,10 @@ function formatCodexAuthStatus(result: CodexAuthStatusResult): {
   };
 }
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
+
 function stripAnsiForDisplay(value: string): string {
-  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+  return value.replace(ANSI_ESCAPE_PATTERN, '');
 }
 
 function formatCodexAuthLoginSession(session: CodexAuthDeviceLoginSession): CodexAuthUiStatus {
@@ -6789,7 +6772,9 @@ function formatCodexAuthLoginSession(session: CodexAuthDeviceLoginSession): Code
     session.userCode ? `Code: ${session.userCode}` : null,
     session.browserOpened === true ? 'Browser opened for account OAuth.' : null,
     cleanOutput ? `Output:\n${cleanOutput}` : null,
-    session.exitCode !== undefined && session.exitCode !== null ? `Exit code: ${session.exitCode}` : null,
+    session.exitCode !== undefined && session.exitCode !== null
+      ? `Exit code: ${session.exitCode}`
+      : null,
   ].filter((entry): entry is string => Boolean(entry));
 
   if (session.state === 'running') {

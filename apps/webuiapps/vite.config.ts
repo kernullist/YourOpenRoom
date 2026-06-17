@@ -2573,8 +2573,10 @@ let codexAuthLoginSession:
   | (CodexAuthDeviceLoginSession & { child?: ReturnType<typeof spawn> })
   | null = null;
 
+const ANSI_ESCAPE_PATTERN = new RegExp(`${String.fromCharCode(27)}\\[[0-?]*[ -/]*[@-~]`, 'g');
+
 function stripAnsi(output: string): string {
-  return output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+  return output.replace(ANSI_ESCAPE_PATTERN, '');
 }
 
 function limitCodexLoginOutput(output: string): string {
