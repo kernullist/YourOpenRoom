@@ -75,6 +75,7 @@ import {
   getOsActionTargetApp,
 } from '@/lib/appRegistry';
 import { parseAppActionToolParams } from '@/lib/appActionParams';
+import { shouldSuppressUserActionConversation } from '@/lib/chatActionSuppression';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { dispatchAgentAction, onUserAction } from '@/lib/vibeContainerMock';
 import { closeAllWindows, getWindows } from '@/lib/windowManager';
@@ -3737,6 +3738,15 @@ const ChatPanel: React.FC<{
 
       const app = APP_REGISTRY.find((a) => a.appId === action.app_id);
       if (!app) return;
+
+      if (shouldSuppressUserActionConversation(app, action)) {
+        logger.info('ChatPanel', 'Suppressing low-signal user action conversation:', {
+          appName: app.appName,
+          actionType: action.action_type,
+          params: action.params,
+        });
+        return;
+      }
 
       if (
         app.appName === 'kira' &&
