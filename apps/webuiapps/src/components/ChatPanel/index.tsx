@@ -6410,6 +6410,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyScheduler={aoiAutonomyScheduler}
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiOperatorDigest={aoiOperatorDigest}
+          aoiOperatorHealth={aoiOperatorHealth}
           aoiOperatorVoicePolicy={aoiOperatorVoicePolicy}
           aoiOperatorVoiceMuted={aoiOperatorVoiceMuted}
           aoiLastOperatorVoiceDecision={aoiLastOperatorVoiceDecision}
@@ -6883,6 +6884,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyScheduler: AoiAutonomySchedulerState | null;
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiOperatorDigest: AoiOperatorDigest | null;
+  aoiOperatorHealth: AoiOperatorHealthState | null;
   aoiOperatorVoicePolicy: AoiOperatorVoicePolicy;
   aoiOperatorVoiceMuted: boolean;
   aoiLastOperatorVoiceDecision: AoiVoiceRenderDecision | null;
@@ -6984,6 +6986,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyScheduler,
   aoiAutonomyEvaluation,
   aoiOperatorDigest,
+  aoiOperatorHealth,
   aoiOperatorVoicePolicy,
   aoiOperatorVoiceMuted,
   aoiLastOperatorVoiceDecision,
