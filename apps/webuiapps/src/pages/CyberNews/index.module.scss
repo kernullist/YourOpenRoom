@@ -17,9 +17,18 @@ $tilt-upper-right: -1.2deg;
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: $color-bg;
+  background:
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 82% 0%, rgba(154, 140, 255, 0.07), transparent 34%), $color-bg;
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
   color: $color-text;
   font-family: $font-family;
+  font-variant-numeric: tabular-nums;
   position: relative;
 }
 
@@ -69,33 +78,31 @@ $tilt-upper-right: -1.2deg;
   }
 }
 
-// ============ Nav Bar - Skewed Yellow Banner ============
+// ============ Nav Bar - Intelligence Command Bar ============
 .navBar {
-  height: 60px;
+  height: 62px;
   display: flex;
   align-items: center;
   padding: 0 $spacing-xl;
-  background: $color-accent;
+  border-bottom: 1px solid rgba(199, 203, 212, 0.12);
+  background:
+    linear-gradient(90deg, rgba(154, 140, 255, 0.07), transparent 46%), rgba(10, 12, 16, 0.94);
   flex-shrink: 0;
   gap: $spacing-md;
   position: relative;
   overflow: hidden;
-  // Skewed bottom edge
-  clip-path: polygon(0 0, 100% 0, 100% calc(100% - 6px), 0 100%);
-  padding-bottom: 6px;
 }
 
 .navTitle {
-  font-size: 28px;
-  font-weight: 900;
+  font-size: 20px;
+  font-weight: 780;
   text-transform: uppercase;
-  letter-spacing: 4px;
-  color: #121214;
+  letter-spacing: 0.08em;
+  color: $color-text;
   margin-right: auto;
   display: flex;
   align-items: center;
   gap: $spacing-sm;
-  transform: skewX($skew-angle);
 }
 
 .navTab {
@@ -105,29 +112,22 @@ $tilt-upper-right: -1.2deg;
   font-weight: 800;
   text-transform: uppercase;
   letter-spacing: 1px;
-  color: rgba(18, 18, 20, 0.35);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: $color-text-muted;
   padding: $spacing-xs $spacing-lg;
   transition: all $duration-fast;
-  transform: skewX($skew-angle-strong);
 
   &:hover {
-    color: rgba(18, 18, 20, 0.7);
+    color: $color-text-secondary;
+    background: rgba(199, 203, 212, 0.06);
   }
 
   &.active {
-    color: #121214;
-    background: rgba(18, 18, 20, 0.12);
+    border-color: rgba(199, 203, 212, 0.34);
+    color: $color-text;
+    background: rgba(199, 203, 212, 0.12);
     position: relative;
-
-    &::after {
-      content: '';
-      position: absolute;
-      bottom: -2px;
-      left: 0;
-      right: 0;
-      height: 3px;
-      background: #121214;
-    }
   }
 }
 
@@ -154,7 +154,7 @@ $tilt-upper-right: -1.2deg;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  border-bottom: 1px solid rgba(250, 234, 95, 0.1);
+  border-bottom: 1px solid rgba(199, 203, 212, 0.1);
   background: $color-surface;
 }
 
@@ -194,12 +194,12 @@ $tilt-upper-right: -1.2deg;
   text-transform: uppercase;
   letter-spacing: 1px;
   color: $color-accent;
-  background: rgba(250, 234, 95, 0.08);
-  border: 1px solid rgba(250, 234, 95, 0.22);
+  background: rgba(199, 203, 212, 0.08);
+  border: 1px solid rgba(199, 203, 212, 0.22);
   transition: background $duration-fast;
 
   &:hover:not(:disabled) {
-    background: rgba(250, 234, 95, 0.16);
+    background: rgba(199, 203, 212, 0.16);
   }
 
   &:disabled {
@@ -229,7 +229,8 @@ $tilt-upper-right: -1.2deg;
   letter-spacing: 1.5px;
   color: $color-text-muted;
   padding: $spacing-xs $spacing-lg;
-  transform: skewX($skew-angle-strong);
+  border: 1px solid transparent;
+  border-radius: 6px;
   transition: all $duration-fast;
 
   &:hover {
@@ -238,8 +239,9 @@ $tilt-upper-right: -1.2deg;
   }
 
   &.active {
-    color: #121214;
-    background: $color-accent;
+    border-color: rgba(199, 203, 212, 0.34);
+    color: $color-text;
+    background: $color-accent-dim;
   }
 }
 
@@ -742,11 +744,11 @@ $tilt-upper-right: -1.2deg;
   align-self: flex-start;
   transition: opacity $duration-fast;
   transform: skewX($skew-angle);
-  background: rgba(250, 234, 95, 0.1);
+  background: rgba(199, 203, 212, 0.1);
   padding: $spacing-xs $spacing-lg;
 
   &:hover {
-    background: rgba(250, 234, 95, 0.2);
+    background: rgba(199, 203, 212, 0.2);
   }
 }
 

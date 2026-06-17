@@ -1,35 +1,35 @@
 // Diary page styles
-// Warm journal style - paper background, calendar navigation, handwritten feel, doodle decorations
+// Dark operations journal style with compact calendar navigation.
 
 @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&display=swap');
 
-// ========== Color Scheme - Warm Paper ==========
-$accent: #8b4513;
-$accent-hover: #6d3611;
-$accent-light: rgba(139, 69, 19, 0.08);
+// ========== Color Scheme - Dark Console ==========
+$accent: #c7cbd4;
+$accent-hover: #f2f4f8;
+$accent-light: rgba(199, 203, 212, 0.11);
 
-$bg-primary: #f0e6d2;
-$bg-sidebar: rgba(255, 255, 255, 0.4);
-$bg-card: #ffffff;
-$bg-hover: rgba(139, 69, 19, 0.06);
-$bg-active: rgba(139, 69, 19, 0.12);
+$bg-primary: #06070a;
+$bg-sidebar: rgba(10, 12, 16, 0.96);
+$bg-card: #11151b;
+$bg-hover: rgba(199, 203, 212, 0.065);
+$bg-active: rgba(154, 140, 255, 0.12);
 
-$border-main: rgba(139, 69, 19, 0.15);
-$border-light: rgba(139, 69, 19, 0.08);
-$border-dashed: rgba(139, 69, 19, 0.2);
+$border-main: #1d222b;
+$border-light: rgba(199, 203, 212, 0.1);
+$border-dashed: rgba(199, 203, 212, 0.18);
 
-$text-primary: #1f2937;
-$text-secondary: #5d4037;
-$text-muted: #a1887f;
-$text-placeholder: #c4a882;
+$text-primary: #e8eaed;
+$text-secondary: #c9cdd5;
+$text-muted: #9da3ae;
+$text-placeholder: #757c89;
 
-$danger: #ef4444;
-$danger-bg: rgba(239, 68, 68, 0.08);
+$danger: #d46660;
+$danger-bg: rgba(212, 102, 96, 0.14);
 
 $shadow-paper:
-  5px 5px 15px rgba(0, 0, 0, 0.08),
-  -1px 0 3px rgba(0, 0, 0, 0.04);
-$shadow-btn: 2px 2px 0 rgba(139, 69, 19, 0.12);
+  inset 0 1px 0 rgba(255, 255, 255, 0.03),
+  0 18px 42px rgba(0, 0, 0, 0.24);
+$shadow-btn: 0 0 0 1px rgba(199, 203, 212, 0.12);
 
 $font-handwriting: 'Caveat', 'Bradley Hand', 'Chalkboard SE', 'Comic Sans MS', cursive;
 $font-ui:
@@ -44,16 +44,25 @@ $margin-line-left: 50px;
   position: fixed;
   inset: 0;
   display: flex;
-  background: $bg-primary;
+  background:
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 78% 0%, rgba(154, 140, 255, 0.07), transparent 34%), $bg-primary;
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
   color: $text-primary;
   font-family: $font-ui;
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
 
   &::before {
     content: '';
     position: absolute;
     inset: 0;
-    opacity: 0.06;
+    opacity: 0.035;
     background-image: url("data:image/svg+xml,%3Csvg width='60' height='60' viewBox='0 0 60 60' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='none' fill-rule='evenodd'%3E%3Cg fill='%239C92AC' fill-opacity='0.4'%3E%3Cpath d='M36 34v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6 34v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6 4V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E");
     pointer-events: none;
     z-index: 0;
@@ -69,8 +78,8 @@ $margin-line-left: 50px;
   display: flex;
   flex-direction: column;
   background: $bg-sidebar;
-  backdrop-filter: blur(5px);
-  border-right: 2px solid $border-main;
+  backdrop-filter: blur(14px);
+  border-right: 1px solid $border-main;
   flex-shrink: 0;
   overflow: hidden;
   z-index: 10;
@@ -102,11 +111,11 @@ $margin-line-left: 50px;
 }
 
 .titleText {
-  font-family: $font-handwriting;
-  font-size: 24px;
+  font-family: $font-ui;
+  font-size: 20px;
   font-weight: 700;
   color: $text-secondary;
-  letter-spacing: 0.5px;
+  letter-spacing: 0;
 }
 
 // ========== Month Navigation ==========
@@ -115,7 +124,7 @@ $margin-line-left: 50px;
   align-items: center;
   justify-content: space-between;
   padding: 10px 2px;
-  border-bottom: 2px dashed $border-dashed;
+  border-bottom: 1px solid $border-main;
   margin-bottom: 10px;
   flex-shrink: 0;
 }
@@ -126,9 +135,9 @@ $margin-line-left: 50px;
   display: flex;
   align-items: center;
   justify-content: center;
-  background: $bg-card;
-  border: 2px solid $accent;
-  border-radius: 50%;
+  background: #12161d;
+  border: 1px solid $border-main;
+  border-radius: 6px;
   cursor: pointer;
   box-shadow: $shadow-btn;
   color: $accent;
@@ -138,8 +147,9 @@ $margin-line-left: 50px;
     height: 16px;
   }
   &:hover {
-    background: $accent;
-    color: white;
+    border-color: rgba(199, 203, 212, 0.54);
+    background: #191e26;
+    color: $accent-hover;
   }
 }
 
@@ -147,7 +157,7 @@ $margin-line-left: 50px;
   font-size: 15px;
   font-weight: 700;
   color: $text-secondary;
-  font-family: $font-handwriting;
+  font-family: $font-ui;
 }
 
 // ========== Weekday Headers ==========
@@ -177,7 +187,7 @@ $margin-line-left: 50px;
     width: 3px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(139, 69, 19, 0.12);
+    background: rgba(199, 203, 212, 0.12);
     border-radius: 2px;
   }
 }
@@ -196,7 +206,7 @@ $margin-line-left: 50px;
   font-size: 14px;
   font-weight: 400;
   position: relative;
-  font-family: $font-handwriting;
+  font-family: $font-ui;
   justify-self: center;
   transition: background 0.12s;
 
@@ -205,18 +215,18 @@ $margin-line-left: 50px;
   }
 
   &.hasEntry {
-    background: rgba(232, 245, 233, 0.7);
-    border-color: rgba(76, 175, 80, 0.3);
+    background: rgba(199, 203, 212, 0.1);
+    border-color: rgba(199, 203, 212, 0.24);
     color: $text-secondary;
     font-weight: 600;
     box-shadow: 1px 1px 0 rgba(0, 0, 0, 0.04);
   }
 
   &.selected {
-    background: $accent;
+    background: rgba(199, 203, 212, 0.18);
     border-color: $accent;
-    border-radius: 50%;
-    color: white;
+    border-radius: 8px;
+    color: $accent-hover;
     font-weight: 700;
     box-shadow: none;
   }
@@ -250,7 +260,7 @@ $margin-line-left: 50px;
   align-items: center;
   justify-content: center;
   background: $accent;
-  color: white;
+  color: #090b0f;
   font-size: 9px;
   font-weight: 700;
   border-radius: 7px;
@@ -321,7 +331,7 @@ $margin-line-left: 50px;
     width: 3px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(139, 69, 19, 0.12);
+    background: rgba(199, 203, 212, 0.12);
     border-radius: 2px;
   }
 }
@@ -559,13 +569,13 @@ $margin-line-left: 50px;
   flex-shrink: 0;
   overflow-x: auto;
   border-bottom: 1px solid $border-light;
-  background: rgba(255, 248, 225, 0.3);
+  background: rgba(13, 16, 21, 0.3);
 
   &::-webkit-scrollbar {
     height: 2px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(139, 69, 19, 0.12);
+    background: rgba(199, 203, 212, 0.12);
     border-radius: 1px;
   }
 }
@@ -651,7 +661,7 @@ $margin-line-left: 50px;
   background: $bg-card;
   border: 2px solid $accent;
   border-radius: 10px;
-  box-shadow: 4px 4px 0 rgba(139, 69, 19, 0.12);
+  box-shadow: 4px 4px 0 rgba(199, 203, 212, 0.12);
   z-index: 100;
   min-width: 140px;
   padding: 4px 0;
@@ -674,11 +684,11 @@ $margin-line-left: 50px;
   transition: background 0.1s;
 
   &:hover {
-    background: rgba(255, 248, 225, 0.8);
+    background: rgba(13, 16, 21, 0.8);
   }
 
   &.pickerActive {
-    background: rgba(255, 248, 225, 1);
+    background: rgba(13, 16, 21, 1);
     font-weight: 600;
   }
 }
@@ -736,7 +746,7 @@ $margin-line-left: 50px;
     width: 4px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(139, 69, 19, 0.12);
+    background: rgba(199, 203, 212, 0.12);
     border-radius: 2px;
   }
 
@@ -829,7 +839,7 @@ $margin-line-left: 50px;
     }
 
     :global(.md-inline-code) {
-      background: rgba(139, 69, 19, 0.06);
+      background: rgba(199, 203, 212, 0.06);
       color: $accent;
       padding: 2px 5px;
       border-radius: 4px;
@@ -837,7 +847,7 @@ $margin-line-left: 50px;
       font-size: 0.85em;
     }
     :global(.md-code-block) {
-      background: rgba(139, 69, 19, 0.04);
+      background: rgba(199, 203, 212, 0.04);
       border: 1px solid $border-main;
       border-radius: 8px;
       padding: 14px 16px;
@@ -915,7 +925,7 @@ $margin-line-left: 50px;
     width: 4px;
   }
   &::-webkit-scrollbar-thumb {
-    background: rgba(139, 69, 19, 0.12);
+    background: rgba(199, 203, 212, 0.12);
     border-radius: 2px;
   }
 
@@ -975,7 +985,7 @@ $margin-line-left: 50px;
   }
 
   code {
-    background: rgba(139, 69, 19, 0.06);
+    background: rgba(199, 203, 212, 0.06);
     color: $accent;
     padding: 2px 5px;
     border-radius: 4px;
@@ -983,7 +993,7 @@ $margin-line-left: 50px;
     font-size: 0.85em;
   }
   pre {
-    background: rgba(139, 69, 19, 0.04);
+    background: rgba(199, 203, 212, 0.04);
     border: 1px solid $border-main;
     border-radius: 8px;
     padding: 14px 16px;
@@ -1097,18 +1107,21 @@ $margin-line-left: 50px;
   align-items: center;
   gap: 8px;
   padding: 10px 24px;
-  background: $accent;
-  border: none;
-  border-radius: 20px;
-  color: white;
+  background: linear-gradient(135deg, rgba(199, 203, 212, 0.18), rgba(154, 140, 255, 0.1));
+  border: 1px solid rgba(199, 203, 212, 0.2);
+  border-radius: 8px;
+  color: $text-primary;
   font-size: 15px;
   font-weight: 600;
   font-family: $font-handwriting;
   cursor: pointer;
-  box-shadow: 2px 3px 0 rgba(139, 69, 19, 0.2);
-  transition: box-shadow 0.15s;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
+  transition:
+    background 0.15s,
+    box-shadow 0.15s;
   &:hover {
-    box-shadow: 3px 4px 0 rgba(139, 69, 19, 0.25);
+    background: linear-gradient(135deg, rgba(199, 203, 212, 0.26), rgba(154, 140, 255, 0.16));
+    box-shadow: 0 16px 32px rgba(0, 0, 0, 0.28);
   }
 }
 

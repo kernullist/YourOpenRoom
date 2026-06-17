@@ -1,25 +1,25 @@
-// CyberNews Design System - Cyberpunk 2077 Style
+// CyberNews Design System - Aoi dark intelligence console
 
-// Colors - Cyberpunk Dark Theme
-$color-bg: #121214;
-$color-surface: #1c1d20;
-$color-surface-elevated: #282a2a;
-// Primary - Yellow (Cyberpunk accent)
-$color-accent: #faea5f;
-$color-accent-dim: rgba(250, 234, 95, 0.1);
-$color-accent-muted: rgba(250, 234, 95, 0.4);
+// Colors - Dark console theme
+$color-bg: #06070a;
+$color-surface: #0d1015;
+$color-surface-elevated: #11151b;
+// Primary - steel signal accent
+$color-accent: #c7cbd4;
+$color-accent-dim: rgba(199, 203, 212, 0.1);
+$color-accent-muted: rgba(199, 203, 212, 0.4);
 
 // Functional
-$color-cyan: #2ea7ff;
-$color-red: #ff3f4d;
+$color-cyan: #6eb8d6;
+$color-red: #d46660;
 // Text
-$color-text: rgba(255, 255, 255, 0.9);
-$color-text-secondary: rgba(255, 255, 255, 0.75);
-$color-text-tertiary: rgba(255, 255, 255, 0.6);
-$color-text-muted: rgba(255, 255, 255, 0.35);
+$color-text: #e8eaed;
+$color-text-secondary: #c9cdd5;
+$color-text-tertiary: #9da3ae;
+$color-text-muted: #747c89;
 
 // Typography
-$font-family: 'Rajdhani', 'Segoe UI', system-ui, sans-serif;
+$font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, system-ui, sans-serif;
 $font-size-xs: 11px;
 $font-size-sm: 12px;
 $font-size-base: 14px;

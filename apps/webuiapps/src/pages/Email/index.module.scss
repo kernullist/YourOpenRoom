@@ -1,31 +1,40 @@
-$email-blue: #58a6ff;
-$email-blue-hover: #79c0ff;
-$email-blue-light: rgba(88, 166, 255, 0.14);
-$success-green: #34d399;
-$warning-red: #f87171;
+$email-blue: #c7cbd4;
+$email-blue-hover: #f2f4f8;
+$email-blue-light: rgba(199, 203, 212, 0.12);
+$success-green: #8fbf9f;
+$warning-red: #d46660;
 
-$bg-primary: #0d1117;
-$bg-secondary: #161b22;
-$bg-elevated: #111826;
-$bg-hover: rgba(255, 255, 255, 0.06);
-$bg-selected: rgba(88, 166, 255, 0.12);
+$bg-primary: #06070a;
+$bg-secondary: #11151b;
+$bg-elevated: #0d1015;
+$bg-hover: rgba(199, 203, 212, 0.065);
+$bg-selected: rgba(154, 140, 255, 0.12);
 
-$border-color: #30363d;
-$border-light: #21262d;
+$border-color: #2d333d;
+$border-light: #1d222b;
 
-$text-primary: #e6edf3;
-$text-secondary: #9ba6b2;
-$text-muted: #6e7681;
+$text-primary: #e8eaed;
+$text-secondary: #9da3ae;
+$text-muted: #747c89;
 
 .email {
   height: 100%;
   width: 100%;
   display: flex;
   flex-direction: column;
-  background: $bg-primary;
+  background:
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 82% 0%, rgba(154, 140, 255, 0.07), transparent 34%), $bg-primary;
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
   color: $text-primary;
   overflow: hidden;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .topBar {
@@ -35,7 +44,7 @@ $text-muted: #6e7681;
   gap: 16px;
   padding: 16px 18px;
   border-bottom: 1px solid $border-light;
-  background: linear-gradient(180deg, rgba(17, 24, 38, 0.96), rgba(13, 17, 23, 0.96));
+  background: linear-gradient(90deg, rgba(154, 140, 255, 0.065), transparent 42%), #0b0e13;
 }
 
 .topBarCopy {
@@ -114,7 +123,7 @@ $text-muted: #6e7681;
 }
 
 .starred {
-  color: #eab308;
+  color: #d0a957;
 }
 
 .errorBanner {
@@ -432,7 +441,7 @@ $text-muted: #6e7681;
   align-items: center;
   padding: 6px 10px;
   border-radius: 999px;
-  background: rgba(88, 166, 255, 0.12);
+  background: rgba(199, 203, 212, 0.12);
   color: $email-blue-hover;
   font-size: 12px;
 }
@@ -510,7 +519,7 @@ $text-muted: #6e7681;
 
   &:focus {
     border-color: $email-blue;
-    box-shadow: 0 0 0 3px rgba(88, 166, 255, 0.16);
+    box-shadow: 0 0 0 3px rgba(199, 203, 212, 0.16);
   }
 }
 

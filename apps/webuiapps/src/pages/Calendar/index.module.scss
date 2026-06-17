@@ -1,11 +1,35 @@
 .calendar {
+  --cal-bg: #06070a;
+  --cal-deck: #0a0c10;
+  --cal-panel: #11151b;
+  --cal-panel-soft: #0d1015;
+  --cal-line: #1d222b;
+  --cal-line-hot: #3a424f;
+  --cal-text: #e8eaed;
+  --cal-strong: #ffffff;
+  --cal-muted: #9da3ae;
+  --cal-accent: #c7cbd4;
+  --cal-cyan: #6eb8d6;
+  --cal-amber: #d0a957;
+  --cal-violet: #9a8cff;
+  --cal-bad: #d46660;
   display: grid;
   grid-template-columns: 390px minmax(0, 1fr);
   height: 100%;
   min-width: 0;
   min-height: 0;
-  background: linear-gradient(135deg, #101214 0%, #17201d 44%, #1b1820 100%);
-  color: #edf4f2;
+  background:
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 76% 0%, rgba(154, 140, 255, 0.07), transparent 34%), var(--cal-bg);
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
+  color: var(--cal-text);
+  font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, sans-serif;
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
 }
 
@@ -21,9 +45,10 @@
   min-width: 0;
   min-height: 0;
   padding: 18px;
-  border-right: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(13, 16, 18, 0.7);
-  backdrop-filter: blur(16px);
+  border-right: 1px solid var(--cal-line);
+  background:
+    linear-gradient(180deg, rgba(154, 140, 255, 0.045), transparent 190px), var(--cal-deck);
+  backdrop-filter: blur(14px);
   overflow: hidden;
 }
 
@@ -57,9 +82,9 @@
 .eyebrow {
   margin: 0 0 6px;
   font-size: 11px;
-  letter-spacing: 0.15em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: #5eead4;
+  color: #b8bdc7;
 }
 
 .heading,
@@ -82,9 +107,9 @@
 .statTile {
   min-width: 0;
   padding: 10px 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--cal-line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent), var(--cal-panel);
 }
 
 .statTile span,
@@ -92,7 +117,7 @@
 .reminderMeta,
 .empty,
 .sectionHeader span {
-  color: #a7b8b3;
+  color: var(--cal-muted);
   font-size: 12px;
 }
 
@@ -104,8 +129,8 @@
 }
 
 .statAlert {
-  border-color: rgba(251, 113, 133, 0.36);
-  background: rgba(127, 29, 29, 0.2);
+  border-color: rgba(212, 102, 96, 0.42);
+  background: rgba(212, 102, 96, 0.12);
 }
 
 .weekPanel {
@@ -113,9 +138,9 @@
   flex-direction: column;
   gap: 10px;
   padding: 12px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--cal-line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.045);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.018), transparent), var(--cal-panel);
 }
 
 .weekToolbar {
@@ -126,7 +151,7 @@
   min-width: 0;
   flex: 1;
   font-size: 13px;
-  color: #d6e2df;
+  color: #d8dde5;
 }
 
 .weekStrip {
@@ -143,16 +168,16 @@
   align-items: center;
   justify-content: center;
   gap: 4px;
-  border: 1px solid rgba(255, 255, 255, 0.08);
+  border: 1px solid var(--cal-line);
   border-radius: 8px;
-  background: rgba(0, 0, 0, 0.18);
-  color: #dce7e4;
+  background: #0b0e13;
+  color: #d8dde5;
   cursor: pointer;
 }
 
 .dayButton span {
   font-size: 11px;
-  color: #8fa09c;
+  color: var(--cal-muted);
 }
 
 .dayButton strong {
@@ -166,20 +191,20 @@
   display: grid;
   place-items: center;
   border-radius: 999px;
-  background: rgba(94, 234, 212, 0.12);
-  color: #99f6e4;
+  background: rgba(110, 184, 214, 0.12);
+  color: #b9e7f6;
   font-size: 11px;
   font-style: normal;
 }
 
 .dayButton:hover,
 .dayButtonActive {
-  border-color: rgba(94, 234, 212, 0.58);
-  background: rgba(20, 184, 166, 0.16);
+  border-color: rgba(199, 203, 212, 0.58);
+  background: rgba(199, 203, 212, 0.12);
 }
 
 .dayButtonToday {
-  box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.5);
+  box-shadow: inset 0 0 0 1px rgba(208, 169, 87, 0.5);
 }
 
 .searchBox {
@@ -255,7 +280,7 @@
 .eventCard:hover,
 .eventCardActive {
   transform: translateY(-1px);
-  border-color: rgba(94, 234, 212, 0.54);
+  border-color: rgba(199, 203, 212, 0.54);
   background: rgba(27, 35, 34, 0.92);
 }
 
@@ -271,7 +296,7 @@
 .quickRow button:focus-visible,
 .timePresetRow button:focus-visible,
 .reminderGrid button:focus-visible {
-  outline: 2px solid rgba(94, 234, 212, 0.85);
+  outline: 2px solid rgba(199, 203, 212, 0.85);
   outline-offset: 2px;
 }
 
@@ -293,11 +318,11 @@
 }
 
 .accentsoon {
-  background: #fbbf24;
+  background: #d0a957;
 }
 
 .accentupcoming {
-  background: #5eead4;
+  background: #c7cbd4;
 }
 
 .accentcompleted {
@@ -334,13 +359,13 @@
 }
 
 .statussoon {
-  background: rgba(251, 191, 36, 0.15);
-  color: #fbbf24;
+  background: rgba(208, 169, 87, 0.15);
+  color: #d0a957;
 }
 
 .statusupcoming {
-  background: rgba(45, 212, 191, 0.14);
-  color: #5eead4;
+  background: rgba(110, 184, 214, 0.14);
+  color: #c7cbd4;
 }
 
 .statuspast {
@@ -373,8 +398,8 @@
 
 .completeButton:hover,
 .iconButton:hover {
-  background: rgba(94, 234, 212, 0.14);
-  color: #99f6e4;
+  background: rgba(199, 203, 212, 0.14);
+  color: #d8dde5;
 }
 
 .editor {
@@ -415,8 +440,8 @@
   display: grid;
   place-items: center;
   border-radius: 8px;
-  background: rgba(94, 234, 212, 0.12);
-  color: #99f6e4;
+  background: rgba(199, 203, 212, 0.12);
+  color: #d8dde5;
 }
 
 .editorHeader h2 {
@@ -427,9 +452,9 @@
 .dateBanner {
   margin: 22px 0;
   padding: 14px 16px;
-  border: 1px solid rgba(94, 234, 212, 0.18);
+  border: 1px solid rgba(199, 203, 212, 0.18);
   border-radius: 8px;
-  background: rgba(20, 184, 166, 0.08);
+  background: rgba(199, 203, 212, 0.08);
 }
 
 .dateBanner span,
@@ -467,8 +492,8 @@
 .field input:focus,
 .field textarea:focus {
   outline: none;
-  border-color: rgba(94, 234, 212, 0.68);
-  box-shadow: 0 0 0 4px rgba(20, 184, 166, 0.14);
+  border-color: rgba(199, 203, 212, 0.68);
+  box-shadow: 0 0 0 4px rgba(199, 203, 212, 0.14);
 }
 
 .formGrid {
@@ -553,8 +578,8 @@
 .reminderGrid button:hover,
 .ghostButton:hover,
 .reminderActive {
-  background: rgba(20, 184, 166, 0.18) !important;
-  color: #99f6e4 !important;
+  background: rgba(199, 203, 212, 0.18) !important;
+  color: #d8dde5 !important;
 }
 
 .todayButton {
@@ -569,16 +594,18 @@
 
 .newButton,
 .primaryButton {
+  border: 1px solid rgba(199, 203, 212, 0.34);
   padding: 10px 14px;
-  background: #5eead4;
-  color: #042f2e;
+  background: linear-gradient(180deg, rgba(199, 203, 212, 0.18), rgba(199, 203, 212, 0.1)), #11151b;
+  color: #f2f4f8;
   font-weight: 800;
 }
 
 .secondaryButton {
+  border: 1px solid rgba(199, 203, 212, 0.16);
   padding: 10px 14px;
-  background: rgba(255, 255, 255, 0.08);
-  color: #e2ece9;
+  background: rgba(199, 203, 212, 0.08);
+  color: #d8dde5;
 }
 
 .deleteButton {

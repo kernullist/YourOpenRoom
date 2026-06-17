@@ -1,27 +1,28 @@
 .notesApp {
-  --app-bg: #f4efe6;
-  --navigator-bg: #fffdf8;
-  --list-bg: #f0eadf;
-  --editor-bg: #fffaf2;
-  --surface: #ffffff;
-  --surface-soft: #f8f3ea;
-  --surface-muted: #ebe3d7;
-  --ink: #1e2430;
-  --ink-soft: #343c4c;
-  --muted: #6e7581;
-  --muted-strong: #535b68;
-  --line: #ded3c5;
-  --line-strong: #cbbfad;
-  --accent: #167782;
-  --accent-strong: #0e5d66;
-  --accent-soft: #e2f2f1;
-  --accent-wash: #f0fbfa;
-  --pin: #a66a10;
-  --pin-soft: #fff2d2;
-  --success: #1f8a62;
-  --warning: #c47a12;
-  --danger: #b42318;
-  --danger-soft: #fff0ec;
+  --app-bg: #06070a;
+  --navigator-bg: rgba(10, 12, 16, 0.96);
+  --list-bg: #0d1015;
+  --editor-bg: #080a0e;
+  --surface: #11151b;
+  --surface-soft: #0c1015;
+  --surface-muted: #171b23;
+  --ink: #e8eaed;
+  --ink-strong: #f2f4f8;
+  --ink-soft: #c9cdd5;
+  --muted: #9da3ae;
+  --muted-strong: #b8bdc7;
+  --line: #1d222b;
+  --line-strong: #3a424f;
+  --accent: #c7cbd4;
+  --accent-strong: #f2f4f8;
+  --accent-soft: rgba(199, 203, 212, 0.12);
+  --accent-wash: rgba(154, 140, 255, 0.1);
+  --pin: #d0a957;
+  --pin-soft: rgba(208, 169, 87, 0.14);
+  --success: #8fbf9f;
+  --warning: #d0a957;
+  --danger: #d46660;
+  --danger-soft: rgba(212, 102, 96, 0.14);
 
   box-sizing: border-box;
   display: grid;
@@ -29,9 +30,18 @@
   height: 100%;
   min-height: 0;
   overflow: hidden;
-  background: var(--app-bg);
+  background:
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 22% 0%, rgba(154, 140, 255, 0.06), transparent 32%), var(--app-bg);
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto;
   color: var(--ink);
-  font-family: Aptos, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, sans-serif;
+  font-variant-numeric: tabular-nums;
 }
 
 .notesApp *,
@@ -108,10 +118,11 @@
 .appMark {
   width: 36px;
   height: 36px;
-  border: 1px solid #30384a;
+  border: 1px solid rgba(199, 203, 212, 0.34);
   border-radius: 8px;
-  background: #252c3a;
-  color: #f4d596;
+  background:
+    linear-gradient(135deg, rgba(199, 203, 212, 0.14), rgba(154, 140, 255, 0.08)), #0b0e13;
+  color: var(--accent-strong);
 }
 
 .kicker {
@@ -337,12 +348,14 @@
 
 .newNoteButton {
   margin-top: auto;
-  background: var(--ink);
-  color: #fffaf2;
+  border: 1px solid rgba(199, 203, 212, 0.2);
+  background: linear-gradient(135deg, rgba(199, 203, 212, 0.18), rgba(154, 140, 255, 0.1));
+  color: var(--ink-strong);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
 }
 
 .newNoteButton:hover {
-  background: #30384a;
+  background: linear-gradient(135deg, rgba(199, 203, 212, 0.26), rgba(154, 140, 255, 0.16));
 }
 
 .listPane {
@@ -686,8 +699,10 @@
 .emptyState button {
   margin-top: 4px;
   padding: 0 12px;
-  background: var(--ink);
-  color: #fffaf2;
+  border: 1px solid rgba(199, 203, 212, 0.2);
+  background: linear-gradient(135deg, rgba(199, 203, 212, 0.18), rgba(154, 140, 255, 0.1));
+  color: var(--ink-strong);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.24);
 }
 
 .editorPane {
@@ -705,7 +720,8 @@
   padding: 0 10px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(199, 203, 212, 0.08);
+  color: var(--muted-strong);
   font-weight: 750;
 }
 
@@ -777,17 +793,21 @@
 
 .saveButton {
   padding: 0 13px;
-  background: var(--accent-strong);
-  color: #ffffff;
+  border: 1px solid rgba(199, 203, 212, 0.28);
+  background: rgba(199, 203, 212, 0.14);
+  color: var(--accent-strong);
 }
 
 .saveButton:hover:not(:disabled) {
-  background: var(--accent);
+  border-color: rgba(199, 203, 212, 0.44);
+  background: rgba(199, 203, 212, 0.2);
 }
 
 .saveButton:disabled {
   cursor: not-allowed;
-  opacity: 0.46;
+  background: rgba(199, 203, 212, 0.065);
+  color: var(--muted);
+  opacity: 1;
 }
 
 .editorMeta {
@@ -802,7 +822,8 @@
   padding: 0 8px;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(255, 255, 255, 0.58);
+  background: rgba(199, 203, 212, 0.08);
+  color: var(--muted);
 }
 
 .titleInput {

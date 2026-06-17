@@ -1,17 +1,17 @@
 .kiraApp {
-  --bg-main: #0d1217;
-  --bg-panel: rgba(13, 18, 23, 0.88);
-  --bg-card: rgba(255, 255, 255, 0.05);
-  --line-soft: rgba(255, 255, 255, 0.09);
-  --line-strong: rgba(255, 255, 255, 0.16);
-  --text-main: #f3f6f8;
-  --text-muted: rgba(243, 246, 248, 0.68);
-  --accent: #ff8f3d;
-  --todo: #7dd3fc;
-  --progress: #fb923c;
-  --review: #c084fc;
-  --blocked: #f87171;
-  --done: #4ade80;
+  --bg-main: #06070a;
+  --bg-panel: rgba(13, 16, 21, 0.94);
+  --bg-card: rgba(199, 203, 212, 0.045);
+  --line-soft: rgba(199, 203, 212, 0.11);
+  --line-strong: rgba(199, 203, 212, 0.28);
+  --text-main: #e8eaed;
+  --text-muted: rgba(232, 234, 237, 0.62);
+  --accent: #c7cbd4;
+  --todo: #6eb8d6;
+  --progress: #d0a957;
+  --review: #9a8cff;
+  --blocked: #d46660;
+  --done: #8fbf9f;
   display: grid;
   grid-template-columns: 300px minmax(0, 1fr);
   gap: 18px;
@@ -23,11 +23,19 @@
   height: 100%;
   padding: 18px;
   background:
-    radial-gradient(circle at top left, rgba(255, 143, 61, 0.15), transparent 24%),
-    radial-gradient(circle at 85% 12%, rgba(59, 130, 246, 0.18), transparent 24%),
-    linear-gradient(180deg, #111922 0%, #0d1217 100%);
+    linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
+    linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px),
+    radial-gradient(circle at 78% 0%, rgba(154, 140, 255, 0.07), transparent 34%),
+    radial-gradient(circle at 0% 100%, rgba(208, 169, 87, 0.05), transparent 30%), var(--bg-main);
+  background-size:
+    32px 32px,
+    32px 32px,
+    auto,
+    auto,
+    auto;
   color: var(--text-main);
-  font-family: Aptos, 'Segoe UI Variable Display', 'Segoe UI', sans-serif;
+  font-family: 'Segoe UI Variable', 'Segoe UI', Aptos, sans-serif;
+  font-variant-numeric: tabular-nums;
   overflow: hidden;
 }
 
@@ -85,7 +93,7 @@
 .boardSection,
 .editorSection {
   min-height: 0;
-  border-radius: 28px;
+  border-radius: 8px;
 }
 
 .sidebar {
@@ -119,7 +127,7 @@
   font-weight: 700;
   letter-spacing: 0.16em;
   text-transform: uppercase;
-  color: #ffd2b1;
+  color: #d0a957;
 }
 
 .subtitle,
@@ -334,8 +342,8 @@
     resize: vertical;
 
     &:focus {
-      border-color: rgba(255, 143, 61, 0.42);
-      box-shadow: 0 0 0 3px rgba(255, 143, 61, 0.14);
+      border-color: rgba(208, 169, 87, 0.42);
+      box-shadow: 0 0 0 3px rgba(208, 169, 87, 0.14);
     }
   }
 }
@@ -403,7 +411,7 @@
 }
 
 .contractStatusReady {
-  border-color: rgba(74, 222, 128, 0.22);
+  border-color: rgba(143, 191, 159, 0.22);
 }
 
 .contractStatusError {
@@ -494,8 +502,8 @@
 }
 
 .segmentActive {
-  border-color: rgba(255, 143, 61, 0.5);
-  background: rgba(255, 143, 61, 0.18);
+  border-color: rgba(208, 169, 87, 0.5);
+  background: rgba(208, 169, 87, 0.18);
   color: #ffd7ae;
 }
 
@@ -700,8 +708,8 @@
 
 .rootStateReady {
   color: var(--done);
-  background: rgba(74, 222, 128, 0.12);
-  border-color: rgba(74, 222, 128, 0.24);
+  background: rgba(143, 191, 159, 0.12);
+  border-color: rgba(143, 191, 159, 0.24);
 }
 
 .rootStateMissing {
@@ -722,7 +730,7 @@
   border-radius: 14px;
   background: rgba(6, 10, 14, 0.55);
   border: 1px solid rgba(255, 255, 255, 0.06);
-  color: #ffe1c6;
+  color: #e8dcc5;
   font-size: 12px;
   line-height: 1.55;
   word-break: break-all;
@@ -759,13 +767,13 @@
     border-radius: 14px;
     border: 1px solid rgba(255, 255, 255, 0.08);
     background: rgba(6, 10, 14, 0.55);
-    color: #ffe1c6;
+    color: #e8dcc5;
     font-size: 12px;
     line-height: 1.45;
     outline: none;
 
     &:focus {
-      border-color: rgba(255, 143, 61, 0.42);
+      border-color: rgba(208, 169, 87, 0.42);
     }
   }
 }
@@ -830,7 +838,7 @@
 }
 
 .activeProjectBadge strong {
-  color: #ffe1c6;
+  color: #e8dcc5;
 }
 
 .projectList {
@@ -884,13 +892,13 @@
 }
 
 .projectChipActive {
-  border-color: rgba(255, 143, 61, 0.42);
+  border-color: rgba(208, 169, 87, 0.42);
   background:
-    linear-gradient(180deg, rgba(255, 143, 61, 0.16) 0%, rgba(255, 143, 61, 0.06) 100%),
+    linear-gradient(180deg, rgba(208, 169, 87, 0.16) 0%, rgba(208, 169, 87, 0.06) 100%),
     rgba(255, 255, 255, 0.03);
 
   strong {
-    color: #ffe1c6;
+    color: #e8dcc5;
   }
 }
 
@@ -1157,9 +1165,9 @@
 
 .filterActive,
 .workCardActive {
-  border-color: rgba(255, 143, 61, 0.4);
+  border-color: rgba(208, 169, 87, 0.4);
   background:
-    linear-gradient(180deg, rgba(255, 143, 61, 0.16) 0%, rgba(255, 143, 61, 0.06) 100%),
+    linear-gradient(180deg, rgba(208, 169, 87, 0.16) 0%, rgba(208, 169, 87, 0.06) 100%),
     var(--bg-card);
 }
 
@@ -1240,8 +1248,8 @@
   min-height: 24px;
   padding: 0 9px;
   border-radius: 999px;
-  border: 1px solid rgba(255, 143, 61, 0.22);
-  background: rgba(255, 143, 61, 0.12);
+  border: 1px solid rgba(208, 169, 87, 0.22);
+  background: rgba(208, 169, 87, 0.12);
   color: #ffd5ad;
   font-size: 11px;
   font-weight: 700;
@@ -1286,8 +1294,8 @@
 
 .statusdone {
   color: var(--done);
-  background: rgba(74, 222, 128, 0.12);
-  border-color: rgba(74, 222, 128, 0.26);
+  background: rgba(143, 191, 159, 0.12);
+  border-color: rgba(143, 191, 159, 0.26);
 }
 
 .boardEmpty,
@@ -1350,8 +1358,8 @@
   &:hover::before,
   &:focus-visible::before {
     height: 96px;
-    background: rgba(255, 143, 61, 0.72);
-    box-shadow: 0 0 0 5px rgba(255, 143, 61, 0.14);
+    background: rgba(208, 169, 87, 0.72);
+    box-shadow: 0 0 0 5px rgba(208, 169, 87, 0.14);
   }
 
   &:focus-visible {
@@ -1633,8 +1641,8 @@
 
     &:focus {
       outline: none;
-      border-color: rgba(255, 143, 61, 0.42);
-      box-shadow: 0 0 0 3px rgba(255, 143, 61, 0.14);
+      border-color: rgba(208, 169, 87, 0.42);
+      box-shadow: 0 0 0 3px rgba(208, 169, 87, 0.14);
     }
   }
 
@@ -1656,9 +1664,9 @@
 }
 
 .kindActive {
-  border-color: rgba(255, 143, 61, 0.4) !important;
-  background: rgba(255, 143, 61, 0.16) !important;
-  color: #ffe1c6 !important;
+  border-color: rgba(208, 169, 87, 0.4) !important;
+  background: rgba(208, 169, 87, 0.16) !important;
+  color: #e8dcc5 !important;
 }
 
 .linkedPanel {
@@ -2096,9 +2104,9 @@
 }
 
 .discoveryHeroReady {
-  border-color: rgba(74, 222, 128, 0.18);
+  border-color: rgba(143, 191, 159, 0.18);
   background:
-    radial-gradient(circle at top right, rgba(74, 222, 128, 0.1), transparent 28%),
+    radial-gradient(circle at top right, rgba(143, 191, 159, 0.1), transparent 28%),
     linear-gradient(180deg, rgba(255, 255, 255, 0.04), rgba(255, 255, 255, 0.02));
 }
 
@@ -2238,12 +2246,12 @@
 }
 
 .discoveryStepDone {
-  border-color: rgba(74, 222, 128, 0.18);
+  border-color: rgba(143, 191, 159, 0.18);
 
   span {
-    border-color: rgba(74, 222, 128, 0.24);
-    color: #d8ffe6;
-    background: rgba(74, 222, 128, 0.1);
+    border-color: rgba(143, 191, 159, 0.24);
+    color: #dcebd7;
+    background: rgba(143, 191, 159, 0.1);
   }
 
   strong {
