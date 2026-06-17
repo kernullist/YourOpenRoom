@@ -1050,7 +1050,7 @@ function getBaseLlmModel(config: PersistedConfig | null): {
   if (!llm?.model?.trim()) {
     return { model: '' };
   }
-  if (llm.provider !== 'codex-cli' && !llm.baseUrl?.trim()) {
+  if (llm.provider !== 'codex-auth' && llm.provider !== 'codex-cli' && !llm.baseUrl?.trim()) {
     return { model: '' };
   }
   return {

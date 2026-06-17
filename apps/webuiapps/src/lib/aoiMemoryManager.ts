@@ -836,7 +836,13 @@ export function parseAoiMemoryDistillerResponse(raw: string): AoiMemoryCandidate
 
 function hasUsableDistillerConfig(config: LLMConfig | null | undefined): config is LLMConfig {
   if (!config?.model.trim()) return false;
-  if (config.provider === 'codex-cli' || config.provider === 'claude-cli') return true;
+  if (
+    config.provider === 'codex-auth' ||
+    config.provider === 'codex-cli' ||
+    config.provider === 'claude-cli'
+  ) {
+    return true;
+  }
   return Boolean(config.baseUrl.trim());
 }
 

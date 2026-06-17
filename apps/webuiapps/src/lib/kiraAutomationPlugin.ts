@@ -38,6 +38,7 @@ type LLMProvider =
   | 'openrouter'
   | 'opencode'
   | 'opencode-go'
+  | 'codex-auth'
   | 'claude-cli'
   | 'codex-cli';
 
@@ -1610,7 +1611,7 @@ const LOCKS_DIR_NAME = 'automation-locks';
 const GLOBAL_LOCKS_DIR_NAME = '.kira-automation-locks';
 const SERVER_INSTANCE_ID = makeId('kira-server');
 const kiraModelRouteLocks = new Map<string, KiraModelRouteLock>();
-const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
+const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.5';
 const KIRA_RULE_PACK_PRESETS: KiraRulePackDefinition[] = [
   {
     id: 'strict-typescript',
@@ -4147,7 +4148,13 @@ function loadLlmConfig(configFile: string): LLMConfig | null {
     if (!fs.existsSync(configFile)) return null;
     const raw = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as { llm?: LLMConfig };
     if (!raw.llm?.model?.trim()) return null;
-    if (!isLoginCliProvider(raw.llm.provider) && !raw.llm.baseUrl?.trim()) return null;
+    if (
+      !isLoginCliProvider(raw.llm.provider) &&
+      !isCodexAuthProvider(raw.llm.provider) &&
+      !raw.llm.baseUrl?.trim()
+    ) {
+      return null;
+    }
     return {
       ...raw.llm,
       apiKey: raw.llm.apiKey ?? '',
@@ -4200,6 +4207,10 @@ function defaultBaseUrlForProvider(provider: LLMProvider | undefined): string | 
 
 function isCodexCliProvider(provider: LLMProvider | undefined): boolean {
   return provider === 'codex-cli';
+}
+
+function isCodexAuthProvider(provider: LLMProvider | undefined): boolean {
+  return provider === 'codex-auth';
 }
 
 function isClaudeCliProvider(provider: LLMProvider | undefined): boolean {
@@ -4458,7 +4469,9 @@ export function getOpenAiAssistantReasoningContent(
 
 function isCodexCliModelUpgradeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /requires a newer version of Codex/i.test(message);
+  return /requires a newer version of Codex|model .* is not supported|not supported when using Codex with a ChatGPT account/i.test(
+    message,
+  );
 }
 
 export function resolveRoleLlmConfig(
@@ -4513,13 +4526,13 @@ export function resolveRoleLlmConfig(
     (canInheritBaseProviderSettings ? baseConfig?.parallelToolCalls : undefined);
 
   if (!provider) return null;
-  if (isLoginCliProvider(provider as LLMProvider)) {
+  if (isLoginCliProvider(provider as LLMProvider) || isCodexAuthProvider(provider as LLMProvider)) {
     return {
       provider: provider as LLMProvider,
       apiKey: '',
       baseUrl: '',
       model: model ?? '',
-      ...(command ? { command } : {}),
+      ...(isCodexAuthProvider(provider as LLMProvider) ? {} : command ? { command } : {}),
       ...(name ? { name } : {}),
       ...(reasoningEffort ? { reasoningEffort } : {}),
       ...(reasoningSummary ? { reasoningSummary } : {}),
@@ -6996,11 +7009,13 @@ async function runToolAgent(
   options?: RunToolAgentOptions,
 ): Promise<string> {
   const requestConfig =
-    options?.promptCacheKey && !isLoginCliProvider(config.provider)
+    options?.promptCacheKey &&
+    !isLoginCliProvider(config.provider) &&
+    !isCodexAuthProvider(config.provider)
       ? { ...config, promptCacheKey: options.promptCacheKey }
       : config;
   recordAttemptExploration(attemptState, formatModelRuntimeTrace(requestConfig));
-  if (isCodexCliProvider(requestConfig.provider)) {
+  if (isCodexCliProvider(requestConfig.provider) || isCodexAuthProvider(requestConfig.provider)) {
     recordAttemptCommand(
       attemptState,
       [

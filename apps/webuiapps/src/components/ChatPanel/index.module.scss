@@ -388,6 +388,15 @@
   gap: 8px;
 }
 
+.modelUsageHint {
+  min-height: 14px;
+  padding: 0 2px;
+  color: rgba(255, 255, 255, 0.42);
+  font-size: 10px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 .hiddenFileInput {
   display: none;
 }
@@ -798,6 +807,11 @@
   font-size: 11px;
   line-height: 1.4;
   overflow-wrap: anywhere;
+
+  span {
+    display: block;
+    white-space: pre-wrap;
+  }
 }
 
 .iconActionBtn {

@@ -3,7 +3,7 @@
  * Supports OpenAI-compatible / Anthropic-compatible formats
  */
 
-import type { LLMApiStyle, LLMConfig } from './llmModels';
+import type { LLMApiStyle, LLMConfig, LLMProvider } from './llmModels';
 import {
   applyDeepSeekChatRuntimeOptions,
   applyOpenAiResponsesRuntimeOptions,
@@ -49,6 +49,66 @@ export interface ClaudeCliConnectionCheckResult {
   auth?: ClaudeCliAuthCheck;
   smokeTest?: string;
   durationMs?: number;
+  error?: string;
+}
+
+export interface CodexAuthStatus {
+  loggedIn?: boolean;
+  authMethod?: string;
+  summary: string;
+}
+
+export interface CodexAuthStatusResult {
+  ok: boolean;
+  provider: 'codex-auth';
+  version?: string;
+  auth?: CodexAuthStatus;
+  durationMs?: number;
+  error?: string;
+}
+
+export interface CodexAuthDeviceLoginSession {
+  id: string;
+  provider: 'codex-auth';
+  state: 'running' | 'completed' | 'error';
+  startedAt: number;
+  updatedAt: number;
+  output: string;
+  authorizationUrl?: string;
+  userCode?: string;
+  browserOpened?: boolean;
+  error?: string;
+  exitCode?: number | null;
+}
+
+export type ModelUsageStatus = 'available' | 'unavailable' | 'error';
+
+export interface ModelUsageAmount {
+  used?: number;
+  limit?: number;
+  remaining?: number;
+  percent?: number;
+  unit?: string;
+  resetAt?: string;
+}
+
+export interface ModelUsageAccount {
+  label?: string;
+  authMethod?: string;
+}
+
+export interface CurrentModelUsageStatus {
+  ok: boolean;
+  provider: LLMProvider;
+  model: string;
+  period: 'week';
+  status: ModelUsageStatus;
+  source: string;
+  refreshedAt: number;
+  nextRefreshAt?: number;
+  account?: ModelUsageAccount;
+  usage?: ModelUsageAmount;
+  message?: string;
   error?: string;
 }
 
@@ -612,6 +672,9 @@ export async function chat(
   if (config.provider === 'codex-cli') {
     return chatCodexCli(messages, tools, config);
   }
+  if (config.provider === 'codex-auth') {
+    return chatCodexAuth(messages, tools, config);
+  }
   if (config.provider === 'claude-cli') {
     return chatClaudeCli(messages, tools, config);
   }
@@ -684,6 +747,75 @@ export async function checkClaudeCliConnection(
   return data;
 }
 
+export async function checkCodexAuthStatus(
+  config: Pick<LLMConfig, 'provider'>,
+): Promise<CodexAuthStatusResult> {
+  if (config.provider !== 'codex-auth') {
+    throw new Error('Codex Auth status check only supports the codex-auth provider.');
+  }
+
+  const res = await fetch('/api/codex-auth-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const data = (await res.json()) as CodexAuthStatusResult;
+  if (!res.ok) {
+    throw new Error(data.error || `Codex Auth status check failed with ${res.status}`);
+  }
+  return data;
+}
+
+export async function startCodexAuthDeviceLogin(
+  config: Pick<LLMConfig, 'provider'>,
+): Promise<CodexAuthDeviceLoginSession> {
+  if (config.provider !== 'codex-auth') {
+    throw new Error('Codex Auth device login only supports the codex-auth provider.');
+  }
+
+  const res = await fetch('/api/codex-auth-login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const data = (await res.json()) as CodexAuthDeviceLoginSession & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `Codex Auth device login failed with ${res.status}`);
+  }
+  return data;
+}
+
+export async function getCodexAuthDeviceLoginStatus(
+  sessionId: string,
+): Promise<CodexAuthDeviceLoginSession> {
+  const params = new URLSearchParams({ id: sessionId });
+  const res = await fetch(`/api/codex-auth-login-status?${params.toString()}`);
+  const data = (await res.json()) as CodexAuthDeviceLoginSession & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `Codex Auth device login status failed with ${res.status}`);
+  }
+  return data;
+}
+
+export async function fetchCurrentModelUsage(
+  config: Pick<LLMConfig, 'provider' | 'model' | 'command'>,
+): Promise<CurrentModelUsageStatus> {
+  const res = await fetch('/api/llm-usage-status', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider: config.provider,
+      model: config.model,
+      command: config.command?.trim() || undefined,
+    }),
+  });
+  const data = (await res.json()) as CurrentModelUsageStatus & { error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `LLM usage status check failed with ${res.status}`);
+  }
+  return data;
+}
+
 async function chatCodexCli(
   messages: ChatMessage[],
   tools: ToolDef[],
@@ -707,6 +839,35 @@ async function chatCodexCli(
   const data = (await res.json()) as { content?: string; error?: string };
   if (!res.ok) {
     throw new Error(data.error || `Codex CLI error ${res.status}`);
+  }
+  return {
+    content: data.content?.trim() || '',
+    toolCalls: [],
+  };
+}
+
+async function chatCodexAuth(
+  messages: ChatMessage[],
+  tools: ToolDef[],
+  config: LLMConfig,
+): Promise<LLMResponse> {
+  const runtimeOptions = getExplicitModelRuntimeOptions(config);
+  const res = await fetch('/api/codex-auth-chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      messages,
+      tools,
+      model: config.model,
+      reasoningEffort: runtimeOptions.reasoningEffort,
+      reasoningSummary: runtimeOptions.reasoningSummary,
+      verbosity: runtimeOptions.verbosity,
+      serviceTier: runtimeOptions.serviceTier,
+    }),
+  });
+  const data = (await res.json()) as { content?: string; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error || `Codex Auth error ${res.status}`);
   }
   return {
     content: data.content?.trim() || '',

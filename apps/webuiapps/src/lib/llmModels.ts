@@ -9,6 +9,7 @@ export type LLMProvider =
   | 'openrouter'
   | 'opencode'
   | 'opencode-go'
+  | 'codex-auth'
   | 'claude-cli'
   | 'codex-cli';
 
@@ -319,16 +320,27 @@ export const LLM_PROVIDER_CONFIGS: Record<LLMProvider, ProviderModelConfig> = {
     ],
   },
 
+  'codex-auth': {
+    displayName: 'Codex Auth',
+    baseUrl: '',
+    defaultModel: 'gpt-5.5',
+    models: [
+      { id: 'gpt-5.5', name: 'GPT-5.5', category: 'flagship' },
+      { id: 'gpt-5.4', name: 'GPT-5.4', category: 'flagship' },
+      { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', category: 'lightweight' },
+      { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'coding' },
+    ],
+  },
+
   'codex-cli': {
     displayName: 'Codex CLI',
     baseUrl: '',
-    defaultModel: 'gpt-5.3-codex',
+    defaultModel: 'gpt-5.5',
     models: [
       { id: 'gpt-5.5', name: 'GPT-5.5', category: 'flagship' },
-      { id: 'gpt-5.3-codex', name: 'GPT-5.3 Codex', category: 'coding' },
-      { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'coding' },
       { id: 'gpt-5.4', name: 'GPT-5.4', category: 'flagship' },
       { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', category: 'lightweight' },
+      { id: 'gpt-5.3-codex-spark', name: 'GPT-5.3 Codex Spark', category: 'coding' },
     ],
   },
 };

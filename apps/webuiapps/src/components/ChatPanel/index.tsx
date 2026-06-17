@@ -21,16 +21,23 @@ import {
 } from 'lucide-react';
 import {
   chat,
+  checkCodexAuthStatus,
   checkClaudeCliConnection,
+  fetchCurrentModelUsage,
+  getCodexAuthDeviceLoginStatus,
   loadConfig,
   loadConfigSync,
   resolveLlmOverride,
   saveConfig,
+  startCodexAuthDeviceLogin,
   SUPPORTED_CHAT_IMAGE_MIME_TYPES,
   supportsChatImageAttachments,
+  type CodexAuthDeviceLoginSession,
+  type CodexAuthStatusResult,
   type ClaudeCliConnectionCheckResult,
   type ChatImageAttachment,
   type ChatMessage,
+  type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
 import {
   LLM_REASONING_EFFORTS,
@@ -424,6 +431,7 @@ const CHAT_FONT_SIZE_MAX = 22;
 const CHAT_FONT_SIZE_STEP = 1;
 const MAX_CHAT_IMAGE_ATTACHMENTS = 4;
 const MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024;
+const MODEL_USAGE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 
 interface CalendarReminderEvent {
   id: string;
@@ -522,6 +530,79 @@ function formatAttachmentSize(bytes: number): string {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   }
   return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+}
+
+function formatUsageNumber(value: number): string {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return value.toFixed(1).replace(/\.0$/, '');
+}
+
+function formatCurrentModelUsageLabel(
+  usageStatus: CurrentModelUsageStatus | null,
+  config: LLMConfig | null,
+): string {
+  if (!config) {
+    return 'Weekly usage - configure a model first';
+  }
+  if (!usageStatus) {
+    return `${getProviderDisplayName(config.provider)} / ${config.model} - checking weekly usage`;
+  }
+
+  const providerLabel = getProviderDisplayName(usageStatus.provider);
+  const modelLabel = usageStatus.model || config.model;
+  const usage = usageStatus.usage;
+  if (usageStatus.status === 'available' && usage) {
+    const usageParts: string[] = [];
+    if (typeof usage.percent === 'number' && Number.isFinite(usage.percent)) {
+      usageParts.push(`${Math.round(usage.percent)}%`);
+    }
+    if (
+      typeof usage.used === 'number' &&
+      Number.isFinite(usage.used) &&
+      typeof usage.limit === 'number' &&
+      Number.isFinite(usage.limit)
+    ) {
+      usageParts.push(
+        `${formatUsageNumber(usage.used)}/${formatUsageNumber(usage.limit)}${
+          usage.unit ? ` ${usage.unit}` : ''
+        }`,
+      );
+    } else if (typeof usage.remaining === 'number' && Number.isFinite(usage.remaining)) {
+      usageParts.push(
+        `${formatUsageNumber(usage.remaining)}${usage.unit ? ` ${usage.unit}` : ''} left`,
+      );
+    }
+    if (usage.resetAt) {
+      usageParts.push(`resets ${usage.resetAt}`);
+    }
+    return `${providerLabel} / ${modelLabel} - weekly usage ${
+      usageParts.join(' - ') || 'available'
+    }`;
+  }
+
+  if (usageStatus.status === 'error') {
+    return `${providerLabel} / ${modelLabel} - weekly usage check failed`;
+  }
+
+  return `${providerLabel} / ${modelLabel} - weekly usage unavailable`;
+}
+
+function formatCurrentModelUsageTitle(usageStatus: CurrentModelUsageStatus | null): string {
+  if (!usageStatus) {
+    return 'Checking current model weekly account usage.';
+  }
+  const parts = [
+    usageStatus.message,
+    usageStatus.account?.authMethod ? `Auth: ${usageStatus.account.authMethod}` : null,
+    usageStatus.account?.label ? `Account: ${usageStatus.account.label}` : null,
+    usageStatus.source ? `Source: ${usageStatus.source}` : null,
+    usageStatus.refreshedAt
+      ? `Refreshed: ${new Date(usageStatus.refreshedAt).toLocaleString()}`
+      : null,
+  ].filter((part): part is string => Boolean(part));
+  return parts.join('\n') || 'Current model weekly account usage.';
 }
 
 function isAoiExecutableActionKind(kind: string | undefined): boolean {
@@ -1131,7 +1212,11 @@ function buildIdeOpenAck(
 }
 
 function hasUsableLLMConfig(config: LLMConfig | null | undefined): config is LLMConfig {
-  if (config?.provider === 'codex-cli' || config?.provider === 'claude-cli') {
+  if (
+    config?.provider === 'codex-auth' ||
+    config?.provider === 'codex-cli' ||
+    config?.provider === 'claude-cli'
+  ) {
     return !!config.model.trim();
   }
   return !!config?.baseUrl.trim() && !!config.model.trim();
@@ -1951,6 +2036,8 @@ const ChatPanel: React.FC<{
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<AppSettingsTabKey>('chat');
   const [config, setConfig] = useState<LLMConfig | null>(loadConfigSync);
+  const [currentModelUsageStatus, setCurrentModelUsageStatus] =
+    useState<CurrentModelUsageStatus | null>(null);
   const [dialogLlmConfig, setDialogLlmConfig] = useState<DialogLlmConfig | null>(null);
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
   const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
@@ -2384,6 +2471,58 @@ const ChatPanel: React.FC<{
       }
     });
   }, []);
+
+  useEffect(() => {
+    const activeConfig = config;
+    let active = true;
+    let intervalId: ReturnType<typeof setInterval> | null = null;
+
+    if (!persistedConfigLoaded || !hasUsableLLMConfig(activeConfig)) {
+      setCurrentModelUsageStatus(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const refreshUsageStatus = async () => {
+      try {
+        const status = await fetchCurrentModelUsage(activeConfig);
+        if (active) {
+          setCurrentModelUsageStatus(status);
+        }
+      } catch (error) {
+        if (!active) {
+          return;
+        }
+        const now = Date.now();
+        setCurrentModelUsageStatus({
+          ok: false,
+          provider: activeConfig.provider,
+          model: activeConfig.model,
+          period: 'week',
+          status: 'error',
+          source: 'chat-panel',
+          refreshedAt: now,
+          nextRefreshAt: now + MODEL_USAGE_REFRESH_INTERVAL_MS,
+          message: 'Unable to check weekly model usage.',
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    };
+
+    setCurrentModelUsageStatus(null);
+    void refreshUsageStatus();
+    intervalId = setInterval(() => {
+      void refreshUsageStatus();
+    }, MODEL_USAGE_REFRESH_INTERVAL_MS);
+
+    return () => {
+      active = false;
+      if (intervalId) {
+        clearInterval(intervalId);
+      }
+    };
+  }, [config?.command, config?.model, config?.provider, persistedConfigLoaded]);
 
   // Listen for mod collection changes from Shell (e.g. after mod generation)
   useEffect(() => {
@@ -6356,6 +6495,14 @@ const ChatPanel: React.FC<{
                 Send
               </button>
             </div>
+            <div
+              className={styles.modelUsageHint}
+              title={formatCurrentModelUsageTitle(currentModelUsageStatus)}
+              data-testid="current-model-usage"
+              aria-live="polite"
+            >
+              {formatCurrentModelUsageLabel(currentModelUsageStatus, config)}
+            </div>
           </div>
         </div>
       </div>
@@ -6570,11 +6717,19 @@ interface RuntimeModelOption {
 
 type RuntimeModelStatus = 'idle' | 'loading' | 'loaded' | 'error';
 type ClaudeCliConnectionCheckState = 'idle' | 'checking' | 'ok' | 'error';
+type CodexAuthState = 'idle' | 'checking' | 'logging-in' | 'ok' | 'error';
 
 interface ClaudeCliConnectionCheckStatus {
   state: ClaudeCliConnectionCheckState;
   message: string;
   details: string[];
+}
+
+interface CodexAuthUiStatus {
+  state: CodexAuthState;
+  message: string;
+  details: string[];
+  sessionId?: string;
 }
 
 function formatClaudeCliCheckSuccess(result: ClaudeCliConnectionCheckResult): {
@@ -6596,6 +6751,71 @@ function formatClaudeCliCheckSuccess(result: ClaudeCliConnectionCheckResult): {
   };
 }
 
+function formatCodexAuthStatus(result: CodexAuthStatusResult): {
+  state: CodexAuthState;
+  message: string;
+  details: string[];
+} {
+  const version = result.version?.trim() || 'Codex Auth';
+  const duration =
+    typeof result.durationMs === 'number' ? ` in ${(result.durationMs / 1000).toFixed(1)}s` : '';
+  const details = [
+    result.auth?.summary ? `Auth: ${result.auth.summary}` : null,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  if (result.auth?.loggedIn === false || result.ok === false) {
+    return {
+      state: 'error',
+      message: result.error || `${version} is not logged in.`,
+      details,
+    };
+  }
+
+  return {
+    state: 'ok',
+    message: `${version} ready${duration}.`,
+    details,
+  };
+}
+
+function stripAnsiForDisplay(value: string): string {
+  return value.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function formatCodexAuthLoginSession(session: CodexAuthDeviceLoginSession): CodexAuthUiStatus {
+  const cleanOutput = stripAnsiForDisplay(session.output).trim();
+  const details = [
+    session.authorizationUrl ? `URL: ${session.authorizationUrl}` : null,
+    session.userCode ? `Code: ${session.userCode}` : null,
+    session.browserOpened === true ? 'Browser opened for account OAuth.' : null,
+    cleanOutput ? `Output:\n${cleanOutput}` : null,
+    session.exitCode !== undefined && session.exitCode !== null ? `Exit code: ${session.exitCode}` : null,
+  ].filter((entry): entry is string => Boolean(entry));
+
+  if (session.state === 'running') {
+    return {
+      state: 'logging-in',
+      message: 'Waiting for Codex account OAuth authorization...',
+      details,
+      sessionId: session.id,
+    };
+  }
+  if (session.state === 'completed') {
+    return {
+      state: 'ok',
+      message: 'Codex account OAuth authorization completed.',
+      details,
+      sessionId: session.id,
+    };
+  }
+  return {
+    state: 'error',
+    message: session.error || 'Codex account OAuth authorization failed.',
+    details,
+    sessionId: session.id,
+  };
+}
+
 const MODEL_PROVIDER_OPTIONS: Array<{ value: LLMProvider; label: string }> = [
   'openai',
   'anthropic',
@@ -6605,6 +6825,7 @@ const MODEL_PROVIDER_OPTIONS: Array<{ value: LLMProvider; label: string }> = [
   'z.ai',
   'kimi',
   'openrouter',
+  'codex-auth',
   'claude-cli',
   'codex-cli',
   'opencode',
@@ -6671,7 +6892,10 @@ function canInheritKiraApiKey(
   mainApiKey: string,
 ): boolean {
   return (
-    !isLoginCliProvider(roleProvider) && roleProvider === mainProvider && Boolean(mainApiKey.trim())
+    !isLoginCliProvider(roleProvider) &&
+    !isCodexAuthProvider(roleProvider) &&
+    roleProvider === mainProvider &&
+    Boolean(mainApiKey.trim())
   );
 }
 
@@ -6699,6 +6923,10 @@ function isCodexCliProvider(provider: LLMProvider): boolean {
   return provider === 'codex-cli';
 }
 
+function isCodexAuthProvider(provider: LLMProvider): boolean {
+  return provider === 'codex-auth';
+}
+
 function isClaudeCliProvider(provider: LLMProvider): boolean {
   return provider === 'claude-cli';
 }
@@ -6715,7 +6943,11 @@ function getLoginCliHint(provider: LLMProvider): string {
   if (isClaudeCliProvider(provider)) {
     return 'Uses your local Claude CLI auth session. Run `claude auth` or complete the Claude Code login flow before using this provider.';
   }
-  return 'Uses your local Codex CLI login. Run `codex login` before using this provider.';
+  return 'Runs the local Codex CLI command directly. Use Codex Auth for browser OAuth sign-in.';
+}
+
+function getCodexAuthHint(): string {
+  return 'Uses Codex account OAuth. Sign in through the browser with a device key code before using this provider.';
 }
 
 function isOpenCodeProvider(provider: LLMProvider): boolean {
@@ -6736,6 +6968,13 @@ function getDefaultKiraRoleConfig(
   provider: KiraAgentProvider,
   _mainConfig: LLMConfig | null,
 ): KiraRoleLlmConfig {
+  if (isCodexAuthProvider(provider)) {
+    const defaults = getDefaultProviderConfig(provider);
+    return {
+      provider,
+      model: defaults.model,
+    };
+  }
   if (isLoginCliProvider(provider)) {
     const defaults = getDefaultProviderConfig(provider);
     return {
@@ -6848,6 +7087,9 @@ function kiraDraftToConfig(draft: KiraRoleDraft): KiraRoleLlmConfig {
         ? { command: draft.command.trim() }
         : {}),
     };
+  }
+  if (isCodexAuthProvider(draft.provider)) {
+    return base;
   }
 
   return {
@@ -7040,7 +7282,10 @@ const SettingsModal: React.FC<{
   );
   const [model, setModel] = useState(config?.model || getDefaultProviderConfig('openrouter').model);
   const [command, setCommand] = useState(
-    config?.command || getDefaultCliCommand(config?.provider || 'codex-cli'),
+    config?.command ||
+      (isLoginCliProvider(config?.provider || 'codex-cli')
+        ? getDefaultCliCommand(config?.provider || 'codex-cli')
+        : ''),
   );
   const [apiStyle, setApiStyle] = useState<LLMApiStyle | ''>(config?.apiStyle || '');
   const [customHeaders, setCustomHeaders] = useState(config?.customHeaders || '');
@@ -7072,6 +7317,11 @@ const SettingsModal: React.FC<{
   const [openRouterModelsStatus, setOpenRouterModelsStatus] = useState<RuntimeModelStatus>('idle');
   const [openRouterModelsError, setOpenRouterModelsError] = useState('');
   const [claudeCliCheckStatus, setClaudeCliCheckStatus] = useState<ClaudeCliConnectionCheckStatus>({
+    state: 'idle',
+    message: '',
+    details: [],
+  });
+  const [codexAuthStatus, setCodexAuthStatus] = useState<CodexAuthUiStatus>({
     state: 'idle',
     message: '',
     details: [],
@@ -7138,7 +7388,10 @@ const SettingsModal: React.FC<{
   );
   const [dialogModel, setDialogModel] = useState(dialogConfig?.model || '');
   const [dialogCommand, setDialogCommand] = useState(
-    dialogConfig?.command || getDefaultCliCommand(dialogConfig?.provider || 'codex-cli'),
+    dialogConfig?.command ||
+      (isLoginCliProvider(dialogConfig?.provider || 'codex-cli')
+        ? getDefaultCliCommand(dialogConfig?.provider || 'codex-cli')
+        : ''),
   );
   const [dialogApiStyle, setDialogApiStyle] = useState<LLMApiStyle | ''>(
     dialogConfig?.apiStyle || '',
@@ -7494,6 +7747,11 @@ const SettingsModal: React.FC<{
       message: '',
       details: [],
     });
+    setCodexAuthStatus({
+      state: 'idle',
+      message: '',
+      details: [],
+    });
   }, [provider, command, model, reasoningEffort]);
 
   useEffect(() => {
@@ -7534,10 +7792,105 @@ const SettingsModal: React.FC<{
     }
   }, [command, model, provider, reasoningEffort]);
 
+  const handleCodexAuthStatusCheck = useCallback(async () => {
+    if (!isCodexAuthProvider(provider)) {
+      return;
+    }
+
+    setCodexAuthStatus({
+      state: 'checking',
+      message: 'Checking Codex account OAuth...',
+      details: [],
+    });
+    try {
+      const result = await checkCodexAuthStatus({
+        provider,
+      });
+      setCodexAuthStatus(formatCodexAuthStatus(result));
+    } catch (error) {
+      setCodexAuthStatus({
+        state: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        details: [],
+      });
+    }
+  }, [provider]);
+
+  const handleCodexAuthDeviceLogin = useCallback(async () => {
+    if (!isCodexAuthProvider(provider)) {
+      return;
+    }
+
+    setCodexAuthStatus({
+      state: 'logging-in',
+      message: 'Starting Codex account OAuth device authorization...',
+      details: [],
+    });
+    try {
+      const session = await startCodexAuthDeviceLogin({
+        provider,
+      });
+      setCodexAuthStatus(formatCodexAuthLoginSession(session));
+    } catch (error) {
+      setCodexAuthStatus({
+        state: 'error',
+        message: error instanceof Error ? error.message : String(error),
+        details: [],
+      });
+    }
+  }, [provider]);
+
+  useEffect(() => {
+    if (!isCodexAuthProvider(provider) || codexAuthStatus.state !== 'logging-in') {
+      return;
+    }
+    const sessionId = codexAuthStatus.sessionId;
+    if (!sessionId) {
+      return;
+    }
+
+    let disposed = false;
+    const timer = window.setInterval(() => {
+      void getCodexAuthDeviceLoginStatus(sessionId)
+        .then((session) => {
+          if (disposed) {
+            return;
+          }
+          setCodexAuthStatus(formatCodexAuthLoginSession(session));
+          if (session.state !== 'running') {
+            window.clearInterval(timer);
+          }
+        })
+        .catch((error) => {
+          if (disposed) {
+            return;
+          }
+          setCodexAuthStatus({
+            state: 'error',
+            message: error instanceof Error ? error.message : String(error),
+            details: [],
+            sessionId,
+          });
+          window.clearInterval(timer);
+        });
+    }, 1500);
+
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [codexAuthStatus.sessionId, codexAuthStatus.state, provider]);
+
   const claudeCliCheckClassName =
     claudeCliCheckStatus.state === 'ok'
       ? styles.connectionCheckOk
       : claudeCliCheckStatus.state === 'error'
+        ? styles.connectionCheckError
+        : styles.connectionCheckMuted;
+  const codexAuthClassName =
+    codexAuthStatus.state === 'ok'
+      ? styles.connectionCheckOk
+      : codexAuthStatus.state === 'error'
         ? styles.connectionCheckError
         : styles.connectionCheckMuted;
 
@@ -7558,7 +7911,7 @@ const SettingsModal: React.FC<{
     const defaults = getDefaultProviderConfig(p);
     setBaseUrl(defaults.baseUrl);
     setModel(defaults.model);
-    setCommand(defaults.command || getDefaultCliCommand(p));
+    setCommand(defaults.command || (isLoginCliProvider(p) ? getDefaultCliCommand(p) : ''));
     setApiStyle(defaults.apiStyle || '');
     setReasoningEffort('');
     setReasoningSummary('');
@@ -7584,7 +7937,7 @@ const SettingsModal: React.FC<{
     setDialogProvider(p);
     const defaults = getDefaultProviderConfig(p);
     setDialogBaseUrl(defaults.baseUrl);
-    setDialogCommand(defaults.command || getDefaultCliCommand(p));
+    setDialogCommand(defaults.command || (isLoginCliProvider(p) ? getDefaultCliCommand(p) : ''));
     setDialogApiStyle(defaults.apiStyle || '');
     setDialogModel(defaults.model);
     setDialogReasoningEffort('');
@@ -7810,6 +8163,7 @@ const SettingsModal: React.FC<{
     removable?: boolean,
   ) => {
     const isLoginCli = isLoginCliProvider(draft.provider);
+    const isCodexAuth = isCodexAuthProvider(draft.provider);
     const isOpenCode = isOpenCodeProvider(draft.provider);
     const roleModelOptions = getProviderModelOptions(draft.provider, runtimeModels);
     const hasPresetRoleModel = roleModelOptions.includes(draft.model);
@@ -7863,7 +8217,43 @@ const SettingsModal: React.FC<{
           </select>
         </div>
 
-        {isLoginCli ? (
+        {isCodexAuth ? (
+          <>
+            <div className={styles.connectionCheckBox}>
+              <span className={styles.modelHint}>
+                Uses the same Codex account OAuth session managed in Main LLM.
+              </span>
+            </div>
+
+            <div className={styles.field}>
+              <label className={styles.label}>Model</label>
+              {roleModelOptions.length > 0 ? (
+                <select
+                  className={styles.select}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                >
+                  {!draft.model.trim() ? <option value="">Select a model</option> : null}
+                  {draft.model.trim() && !hasPresetRoleModel ? (
+                    <option value={draft.model}>{draft.model} (custom)</option>
+                  ) : null}
+                  {roleModelOptions.map((modelId) => (
+                    <option key={modelId} value={modelId}>
+                      {formatModelLabel(draft.provider, modelId)}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className={styles.fieldInput}
+                  value={draft.model}
+                  onChange={(e) => onChange({ model: e.target.value })}
+                  placeholder={getDefaultProviderConfig(draft.provider).model}
+                />
+              )}
+            </div>
+          </>
+        ) : isLoginCli ? (
           <>
             <div className={styles.field}>
               <label className={styles.label}>Command</label>
@@ -8295,7 +8685,44 @@ const SettingsModal: React.FC<{
                   </select>
                 </div>
 
-                {isLoginCliProvider(provider) ? (
+                {isCodexAuthProvider(provider) ? (
+                  <div className={styles.connectionCheckBox}>
+                    <span className={styles.modelHint}>{getCodexAuthHint()}</span>
+                    <div className={styles.connectionCheckRow}>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={() => void handleCodexAuthStatusCheck()}
+                        disabled={
+                          codexAuthStatus.state === 'checking' ||
+                          codexAuthStatus.state === 'logging-in'
+                        }
+                      >
+                        {codexAuthStatus.state === 'checking' ? 'Checking...' : 'Check auth'}
+                      </button>
+                      <button
+                        type="button"
+                        className={styles.inlineActionBtn}
+                        onClick={() => void handleCodexAuthDeviceLogin()}
+                        disabled={codexAuthStatus.state === 'logging-in'}
+                      >
+                        {codexAuthStatus.state === 'logging-in'
+                          ? 'Authorizing...'
+                          : 'Sign in with browser'}
+                      </button>
+                      {codexAuthStatus.message ? (
+                        <span className={codexAuthClassName}>{codexAuthStatus.message}</span>
+                      ) : null}
+                    </div>
+                    {codexAuthStatus.details.length > 0 ? (
+                      <div className={styles.connectionCheckDetails}>
+                        {codexAuthStatus.details.map((detail, index) => (
+                          <span key={`codex-auth-detail-${index}`}>{detail}</span>
+                        ))}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : isLoginCliProvider(provider) ? (
                   <>
                     <div className={styles.field}>
                       <label className={styles.label}>Command</label>
@@ -8495,7 +8922,7 @@ const SettingsModal: React.FC<{
                   runs.
                 </span>
 
-                {!isLoginCliProvider(provider) ? (
+                {!isLoginCliProvider(provider) && !isCodexAuthProvider(provider) ? (
                   <div className={styles.field}>
                     <label className={styles.label}>
                       Custom Headers (one per line, Key: Value)
@@ -8544,7 +8971,13 @@ const SettingsModal: React.FC<{
                       </select>
                     </div>
 
-                    {isLoginCliProvider(dialogProvider) ? (
+                    {isCodexAuthProvider(dialogProvider) ? (
+                      <div className={styles.connectionCheckBox}>
+                        <span className={styles.modelHint}>
+                          Uses the same Codex account OAuth session managed in Main LLM.
+                        </span>
+                      </div>
+                    ) : isLoginCliProvider(dialogProvider) ? (
                       <div className={styles.field}>
                         <label className={styles.label}>Command</label>
                         <input
@@ -8714,7 +9147,7 @@ const SettingsModal: React.FC<{
                       },
                     )}
 
-                    {!isLoginCliProvider(dialogProvider) ? (
+                    {!isLoginCliProvider(dialogProvider) && !isCodexAuthProvider(dialogProvider) ? (
                       <div className={styles.field}>
                         <label className={styles.label}>Custom Headers (optional)</label>
                         <textarea
@@ -11314,7 +11747,11 @@ const SettingsModal: React.FC<{
             className={styles.saveBtn}
             onClick={() => {
               const mainIsLoginCli = isLoginCliProvider(provider);
+              const mainIsCodexAuth = isCodexAuthProvider(provider);
               const dialogIsLoginCli = isLoginCliProvider(dialogProvider);
+              const dialogIsCodexAuth = isCodexAuthProvider(dialogProvider);
+              const mainUsesCredentialFields = !mainIsLoginCli && !mainIsCodexAuth;
+              const dialogUsesCredentialFields = !dialogIsLoginCli && !dialogIsCodexAuth;
               const mainDefaultCommand = getDefaultCliCommand(provider);
               const dialogDefaultCommand = getDefaultCliCommand(dialogProvider);
               const mainParallelToolCalls = parallelToolCallsOptionToConfig(parallelToolCalls);
@@ -11322,14 +11759,14 @@ const SettingsModal: React.FC<{
                 parallelToolCallsOptionToConfig(dialogParallelToolCalls);
               const llmCfg: LLMConfig = {
                 provider,
-                apiKey: mainIsLoginCli ? '' : apiKey,
-                baseUrl: mainIsLoginCli ? '' : baseUrl.trim(),
+                apiKey: mainUsesCredentialFields ? apiKey : '',
+                baseUrl: mainUsesCredentialFields ? baseUrl.trim() : '',
                 model,
                 ...(mainIsLoginCli && command.trim() && command.trim() !== mainDefaultCommand
                   ? { command: command.trim() }
                   : {}),
-                ...(!mainIsLoginCli && apiStyle ? { apiStyle } : {}),
-                ...(!mainIsLoginCli && customHeaders.trim() ? { customHeaders } : {}),
+                ...(mainUsesCredentialFields && apiStyle ? { apiStyle } : {}),
+                ...(mainUsesCredentialFields && customHeaders.trim() ? { customHeaders } : {}),
                 ...(reasoningEffort ? { reasoningEffort } : {}),
                 ...(reasoningSummary ? { reasoningSummary } : {}),
                 ...(verbosity ? { verbosity } : {}),
@@ -11348,21 +11785,25 @@ const SettingsModal: React.FC<{
                   }
                 : null;
               const dialogCfg: DialogLlmConfig | null =
-                dialogEnabled && dialogModel.trim() && (dialogIsLoginCli || dialogBaseUrl.trim())
+                dialogEnabled &&
+                dialogModel.trim() &&
+                (dialogIsLoginCli || dialogIsCodexAuth || dialogBaseUrl.trim())
                   ? {
                       provider: dialogProvider,
                       model: dialogModel.trim(),
-                      baseUrl: dialogIsLoginCli ? '' : dialogBaseUrl.trim(),
+                      baseUrl: dialogUsesCredentialFields ? dialogBaseUrl.trim() : '',
                       ...(dialogIsLoginCli &&
                       dialogCommand.trim() &&
                       dialogCommand.trim() !== dialogDefaultCommand
                         ? { command: dialogCommand.trim() }
                         : {}),
-                      ...(!dialogIsLoginCli && dialogApiKey.trim()
+                      ...(dialogUsesCredentialFields && dialogApiKey.trim()
                         ? { apiKey: dialogApiKey.trim() }
                         : {}),
-                      ...(!dialogIsLoginCli && dialogApiStyle ? { apiStyle: dialogApiStyle } : {}),
-                      ...(!dialogIsLoginCli && dialogCustomHeaders.trim()
+                      ...(dialogUsesCredentialFields && dialogApiStyle
+                        ? { apiStyle: dialogApiStyle }
+                        : {}),
+                      ...(dialogUsesCredentialFields && dialogCustomHeaders.trim()
                         ? { customHeaders: dialogCustomHeaders }
                         : {}),
                       ...(dialogReasoningEffort ? { reasoningEffort: dialogReasoningEffort } : {}),

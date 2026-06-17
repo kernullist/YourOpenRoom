@@ -13,7 +13,11 @@ import {
   loadConfigSync,
   saveConfig,
   chat,
+  checkCodexAuthStatus,
   checkClaudeCliConnection,
+  fetchCurrentModelUsage,
+  getCodexAuthDeviceLoginStatus,
+  startCodexAuthDeviceLogin,
   type ChatImageAttachment,
   type ChatMessage,
   type ToolDef,
@@ -199,8 +203,16 @@ describe('getDefaultProviderConfig()', () => {
     const cfg = getDefaultProviderConfig('codex-cli');
     expect(cfg.provider).toBe('codex-cli');
     expect(cfg.baseUrl).toBe('');
-    expect(cfg.model).toBe('gpt-5.3-codex');
+    expect(cfg.model).toBe('gpt-5.5');
     expect(cfg.command).toBe('codex');
+  });
+
+  it('returns correct defaults for codex-auth', () => {
+    const cfg = getDefaultProviderConfig('codex-auth');
+    expect(cfg.provider).toBe('codex-auth');
+    expect(cfg.baseUrl).toBe('');
+    expect(cfg.model).toBe('gpt-5.5');
+    expect(cfg.command).toBeUndefined();
   });
 
   it('returns correct defaults for claude-cli', () => {
@@ -213,6 +225,10 @@ describe('getDefaultProviderConfig()', () => {
 
   it('includes ChatGPT Pro models available through Codex CLI', () => {
     expect(PROVIDER_MODELS['codex-cli']).toEqual(expect.arrayContaining(['gpt-5.5']));
+  });
+
+  it('includes ChatGPT Pro models available through Codex Auth', () => {
+    expect(PROVIDER_MODELS['codex-auth']).toEqual(expect.arrayContaining(['gpt-5.5']));
   });
 
   it('includes Claude CLI model aliases', () => {
@@ -1440,6 +1456,157 @@ respond_to_user
       expect(body.reasoningSummary).toBeUndefined();
       expect(body.verbosity).toBeUndefined();
       expect(body.serviceTier).toBeUndefined();
+    });
+
+  });
+
+  describe('Codex Auth provider', () => {
+    it('routes chat through the local Codex Auth endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: 'Codex Auth answer' }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'codex-auth',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      });
+
+      expect(result.content).toBe('Codex Auth answer');
+      expect(result.toolCalls).toEqual([]);
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/codex-auth-chat',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body as string);
+      expect(body.model).toBe('gpt-5.5');
+      expect(body.command).toBeUndefined();
+      expect(body.tools).toHaveLength(1);
+    });
+
+    it('checks Codex account OAuth status through the local endpoint', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            provider: 'codex-auth',
+            version: 'codex-cli 0.140.0',
+            auth: { loggedIn: true, authMethod: 'ChatGPT', summary: 'Logged in using ChatGPT' },
+          }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await checkCodexAuthStatus({
+        provider: 'codex-auth',
+      });
+
+      expect(result.ok).toBe(true);
+      expect(result.auth?.loggedIn).toBe(true);
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/codex-auth-status',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toEqual({});
+    });
+
+    it('starts and polls Codex account OAuth browser device login sessions', async () => {
+      const runningSession = {
+        id: 'codex-login-test',
+        provider: 'codex-auth',
+        state: 'running',
+        startedAt: 1,
+        updatedAt: 2,
+        output: 'Open the browser device URL.',
+        authorizationUrl: 'https://auth.openai.com/device',
+        userCode: 'ABCD-EFGH',
+        browserOpened: true,
+      };
+      const completedSession = {
+        ...runningSession,
+        state: 'completed',
+        updatedAt: 3,
+        output: 'Logged in using ChatGPT',
+        exitCode: 0,
+      };
+      const mockFetch = vi
+        .fn()
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(runningSession),
+        } as unknown as Response)
+        .mockResolvedValueOnce({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve(completedSession),
+        } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const session = await startCodexAuthDeviceLogin({
+        provider: 'codex-auth',
+      });
+      const status = await getCodexAuthDeviceLoginStatus(session.id);
+
+      expect(session.state).toBe('running');
+      expect(session.authorizationUrl).toBe('https://auth.openai.com/device');
+      expect(status.state).toBe('completed');
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        1,
+        '/api/codex-auth-login',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(mockFetch).toHaveBeenNthCalledWith(
+        2,
+        '/api/codex-auth-login-status?id=codex-login-test',
+      );
+    });
+  });
+
+  describe('current model usage status', () => {
+    it('checks weekly usage for the current model without sending secrets', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () =>
+          Promise.resolve({
+            ok: true,
+            provider: 'codex-auth',
+            model: 'gpt-5.5',
+            period: 'week',
+            status: 'unavailable',
+            source: 'codex-cli-login-status',
+            refreshedAt: 1000,
+            nextRefreshAt: 601000,
+            account: { authMethod: 'ChatGPT', label: 'Logged in using ChatGPT' },
+            message: 'Weekly account usage is not exposed by Codex CLI for this auth session.',
+          }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const configWithSecrets: LLMConfig = {
+        provider: 'codex-auth',
+        apiKey: 'must-not-be-sent',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      };
+      const result = await fetchCurrentModelUsage(configWithSecrets);
+
+      expect(result.status).toBe('unavailable');
+      expect(result.account?.authMethod).toBe('ChatGPT');
+      expect(mockFetch).toHaveBeenCalledWith(
+        '/api/llm-usage-status',
+        expect.objectContaining({ method: 'POST' }),
+      );
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body as string)).toEqual({
+        provider: 'codex-auth',
+        model: 'gpt-5.5',
+      });
     });
   });
 

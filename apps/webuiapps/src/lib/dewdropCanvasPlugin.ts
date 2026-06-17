@@ -291,6 +291,7 @@ function normalizeAoiProvider(value: unknown): LLMProvider | null {
     value === 'openrouter' ||
     value === 'opencode' ||
     value === 'opencode-go' ||
+    value === 'codex-auth' ||
     value === 'claude-cli' ||
     value === 'codex-cli'
   ) {
@@ -301,6 +302,10 @@ function normalizeAoiProvider(value: unknown): LLMProvider | null {
 
 function isAoiCliProvider(provider: LLMProvider | undefined): boolean {
   return provider === 'codex-cli' || provider === 'claude-cli';
+}
+
+function isAoiManagedAuthProvider(provider: LLMProvider | undefined): boolean {
+  return provider === 'codex-auth';
 }
 
 function isAoiOpenCodeProvider(provider: LLMProvider | undefined): boolean {
@@ -393,7 +398,9 @@ export function loadAoiMainLlmConfig(configFile: string): LLMConfig | null {
     const model = getString(raw.model).trim();
     const baseUrl = getString(raw.baseUrl).trim();
     if (!provider || !model) return null;
-    if (!isAoiCliProvider(provider) && !baseUrl) return null;
+    if (!isAoiCliProvider(provider) && !isAoiManagedAuthProvider(provider) && !baseUrl) {
+      return null;
+    }
 
     const apiStyle = normalizeApiStyle(raw.apiStyle);
     const customHeaders = getString(raw.customHeaders).trim();
@@ -461,9 +468,12 @@ export function getAoiLlmStatus(configFile: string): Record<string, unknown> {
     model: config.model,
     apiStyle: config.apiStyle || null,
     cli: isAoiCliProvider(config.provider),
+    managedAuth: isAoiManagedAuthProvider(config.provider),
     baseUrlConfigured: Boolean(config.baseUrl.trim()),
     apiKeyConfigured:
-      isAoiCliProvider(config.provider) || Boolean(resolveAoiProviderApiKey(config)),
+      isAoiCliProvider(config.provider) ||
+      isAoiManagedAuthProvider(config.provider) ||
+      Boolean(resolveAoiProviderApiKey(config)),
   };
 }
 
@@ -504,7 +514,12 @@ async function callAoiCliTextModel(
   serverOrigin: string,
   prompt: string,
 ): Promise<string> {
-  const endpoint = config.provider === 'codex-cli' ? '/api/codex-cli-chat' : '/api/claude-cli-chat';
+  const endpoint =
+    config.provider === 'codex-auth'
+      ? '/api/codex-auth-chat'
+      : config.provider === 'codex-cli'
+        ? '/api/codex-cli-chat'
+        : '/api/claude-cli-chat';
   const response = await fetchWithTimeout(joinUrl(serverOrigin, endpoint), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -512,7 +527,12 @@ async function callAoiCliTextModel(
       messages: [{ role: 'user', content: prompt }],
       tools: [],
       model: config.model,
-      command: config.command?.trim() || (config.provider === 'codex-cli' ? 'codex' : 'claude'),
+      ...(config.provider === 'codex-auth'
+        ? {}
+        : {
+            command:
+              config.command?.trim() || (config.provider === 'codex-cli' ? 'codex' : 'claude'),
+          }),
       reasoningEffort: config.reasoningEffort,
       reasoningSummary: config.reasoningSummary,
       verbosity: config.verbosity,
@@ -664,7 +684,7 @@ export async function callAoiMainTextModel(
   maxTokens: number,
   responseJson = false,
 ): Promise<string> {
-  if (isAoiCliProvider(config.provider)) {
+  if (isAoiCliProvider(config.provider) || isAoiManagedAuthProvider(config.provider)) {
     return callAoiCliTextModel(config, serverOrigin, prompt);
   }
   if (isAoiOpenCodeProvider(config.provider)) {

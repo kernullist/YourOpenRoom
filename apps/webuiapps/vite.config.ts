@@ -49,11 +49,14 @@ const SESSIONS_DIR = resolve(os.homedir(), '.openroom', 'sessions');
 const CHARACTERS_FILE = resolve(os.homedir(), '.openroom', 'characters.json');
 const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
 const OPENROOM_ROOT = resolve(__dirname, '../..');
-const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.3-codex';
+const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.5';
 const DEFAULT_TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
 const CLI_CHAT_TIMEOUT_MS = 180_000;
 const CLI_HEALTH_TIMEOUT_MS = 15_000;
 const CLAUDE_CLI_SMOKE_TIMEOUT_MS = 60_000;
+const CODEX_AUTH_LOGIN_OUTPUT_LIMIT = 12_000;
+const MODEL_USAGE_CACHE_TTL_MS = 10 * 60 * 1000;
+const CODEX_AUTH_COMMAND = 'codex';
 
 function readPersistedConfigFile(): Record<string, unknown> {
   try {
@@ -2302,7 +2305,9 @@ function runClaudeCliChatProcess(command: string, args: string[], input: string)
 
 function isCodexCliModelUpgradeError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /requires a newer version of Codex/i.test(message);
+  return /requires a newer version of Codex|model .* is not supported|not supported when using Codex with a ChatGPT account/i.test(
+    message,
+  );
 }
 
 function buildCodexCliConfigOverrideArg(key: string, value: string): string {
@@ -2503,6 +2508,635 @@ function claudeCliConnectionCheckPlugin(): Plugin {
             error: error instanceof Error ? error.message : String(error),
             durationMs: Date.now() - startedAt,
           });
+        }
+      });
+    },
+  };
+}
+
+interface CodexAuthStatus {
+  loggedIn?: boolean;
+  authMethod?: string;
+  summary: string;
+}
+
+type ModelUsageStatusKind = 'available' | 'unavailable' | 'error';
+
+interface ModelUsageStatusResponse {
+  ok: boolean;
+  provider: string;
+  model: string;
+  period: 'week';
+  status: ModelUsageStatusKind;
+  source: string;
+  refreshedAt: number;
+  nextRefreshAt: number;
+  account?: {
+    label?: string;
+    authMethod?: string;
+  };
+  usage?: {
+    used?: number;
+    limit?: number;
+    remaining?: number;
+    percent?: number;
+    unit?: string;
+    resetAt?: string;
+  };
+  message?: string;
+  error?: string;
+}
+
+const modelUsageStatusCache = new Map<
+  string,
+  {
+    expiresAt: number;
+    result: ModelUsageStatusResponse;
+  }
+>();
+
+interface CodexAuthDeviceLoginSession {
+  id: string;
+  provider: 'codex-auth';
+  state: 'running' | 'completed' | 'error';
+  startedAt: number;
+  updatedAt: number;
+  output: string;
+  authorizationUrl?: string;
+  userCode?: string;
+  browserOpened?: boolean;
+  error?: string;
+  exitCode?: number | null;
+}
+
+let codexAuthLoginSession:
+  | (CodexAuthDeviceLoginSession & { child?: ReturnType<typeof spawn> })
+  | null = null;
+
+function stripAnsi(output: string): string {
+  return output.replace(/\u001b\[[0-?]*[ -/]*[@-~]/g, '');
+}
+
+function limitCodexLoginOutput(output: string): string {
+  if (output.length <= CODEX_AUTH_LOGIN_OUTPUT_LIMIT) {
+    return output;
+  }
+  return output.slice(output.length - CODEX_AUTH_LOGIN_OUTPUT_LIMIT);
+}
+
+function snapshotCodexAuthLoginSession(
+  session: CodexAuthDeviceLoginSession & { child?: ReturnType<typeof spawn> },
+): CodexAuthDeviceLoginSession {
+  return {
+    id: session.id,
+    provider: session.provider,
+    state: session.state,
+    startedAt: session.startedAt,
+    updatedAt: session.updatedAt,
+    output: stripAnsi(session.output).trim(),
+    ...(session.authorizationUrl ? { authorizationUrl: session.authorizationUrl } : {}),
+    ...(session.userCode ? { userCode: session.userCode } : {}),
+    ...(session.browserOpened !== undefined ? { browserOpened: session.browserOpened } : {}),
+    ...(session.error ? { error: session.error } : {}),
+    ...(session.exitCode !== undefined ? { exitCode: session.exitCode } : {}),
+  };
+}
+
+function parseCodexAuthStatus(output: string): CodexAuthStatus {
+  const cleanOutput = stripAnsi(output).trim();
+  try {
+    const parsed = JSON.parse(cleanOutput) as Record<string, unknown>;
+    const loggedIn = typeof parsed.loggedIn === 'boolean' ? parsed.loggedIn : undefined;
+    const authMethod =
+      typeof parsed.authMethod === 'string'
+        ? parsed.authMethod
+        : typeof parsed.method === 'string'
+          ? parsed.method
+          : undefined;
+    const summaryParts = [
+      loggedIn === undefined ? null : `loggedIn=${loggedIn ? 'true' : 'false'}`,
+      authMethod ? `auth=${authMethod}` : null,
+    ].filter((part): part is string => Boolean(part));
+    return {
+      ...(loggedIn === undefined ? {} : { loggedIn }),
+      ...(authMethod ? { authMethod } : {}),
+      summary: summaryParts.join(', ') || cleanOutput || 'Codex auth status returned no output.',
+    };
+  } catch {
+    // Current Codex CLI uses short human-readable status output.
+  }
+
+  const loggedInMatch = cleanOutput.match(/^Logged in(?:\s+using\s+(.+))?$/i);
+  if (loggedInMatch) {
+    const authMethod = loggedInMatch[1]?.trim();
+    return {
+      loggedIn: true,
+      ...(authMethod ? { authMethod } : {}),
+      summary: cleanOutput,
+    };
+  }
+  if (/not\s+(?:logged|authenticated)|login\s+required|no\s+auth/i.test(cleanOutput)) {
+    return {
+      loggedIn: false,
+      summary: cleanOutput || 'Codex Auth is not logged in.',
+    };
+  }
+  return {
+    summary: cleanOutput || 'Codex auth status returned no output.',
+  };
+}
+
+function buildModelUsageStatus(
+  input: {
+    provider: string;
+    model: string;
+    status: ModelUsageStatusKind;
+    source: string;
+    ok?: boolean;
+    account?: ModelUsageStatusResponse['account'];
+    usage?: ModelUsageStatusResponse['usage'];
+    message?: string;
+    error?: string;
+  },
+  now = Date.now(),
+): ModelUsageStatusResponse {
+  return {
+    ok: input.ok ?? input.status !== 'error',
+    provider: input.provider,
+    model: input.model,
+    period: 'week',
+    status: input.status,
+    source: input.source,
+    refreshedAt: now,
+    nextRefreshAt: now + MODEL_USAGE_CACHE_TTL_MS,
+    ...(input.account ? { account: input.account } : {}),
+    ...(input.usage ? { usage: input.usage } : {}),
+    ...(input.message ? { message: input.message } : {}),
+    ...(input.error ? { error: input.error } : {}),
+  };
+}
+
+function normalizeUsageProvider(payload: Record<string, unknown>): string {
+  return typeof payload.provider === 'string' ? payload.provider.trim() : '';
+}
+
+function normalizeUsageModel(payload: Record<string, unknown>): string {
+  return typeof payload.model === 'string' && payload.model.trim()
+    ? payload.model.trim()
+    : 'unknown-model';
+}
+
+function normalizeUsageCommand(payload: Record<string, unknown>, fallback: string): string {
+  return typeof payload.command === 'string' && payload.command.trim()
+    ? payload.command.trim()
+    : fallback;
+}
+
+function getModelUsageCacheKey(provider: string, model: string, command?: string): string {
+  return [provider, model, command ?? ''].join('\u0000');
+}
+
+async function resolveCodexModelUsageStatus(
+  provider: string,
+  model: string,
+  command: string,
+): Promise<ModelUsageStatusResponse> {
+  try {
+    let auth: CodexAuthStatus;
+    try {
+      const authOutput = await runCliProcess(
+        command,
+        ['login', 'status'],
+        '',
+        `${provider} auth status`,
+        CLI_HEALTH_TIMEOUT_MS,
+        { useStderrWhenStdoutEmpty: true },
+      );
+      auth = parseCodexAuthStatus(authOutput);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      auth = parseCodexAuthStatus(message);
+      if (auth.loggedIn !== false) {
+        throw error;
+      }
+    }
+
+    if (auth.loggedIn === false) {
+      return buildModelUsageStatus({
+        provider,
+        model,
+        status: 'unavailable',
+        source: 'codex-cli-login-status',
+        ok: false,
+        account: {
+          ...(auth.authMethod ? { authMethod: auth.authMethod } : {}),
+          label: auth.summary,
+        },
+        message: 'Codex account auth is not logged in.',
+      });
+    }
+
+    return buildModelUsageStatus({
+      provider,
+      model,
+      status: 'unavailable',
+      source: 'codex-cli-login-status',
+      account: {
+        ...(auth.authMethod ? { authMethod: auth.authMethod } : {}),
+        label: auth.summary,
+      },
+      message: 'Weekly account usage is not exposed by Codex CLI for this auth session.',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return buildModelUsageStatus({
+      provider,
+      model,
+      status: 'error',
+      source: 'codex-cli-login-status',
+      ok: false,
+      error: message,
+      message: 'Unable to check weekly model usage.',
+    });
+  }
+}
+
+async function resolveClaudeCliModelUsageStatus(
+  provider: string,
+  model: string,
+  command: string,
+): Promise<ModelUsageStatusResponse> {
+  try {
+    const authOutput = await runCliProcess(
+      command,
+      ['auth', 'status'],
+      '',
+      'Claude CLI auth status',
+      CLI_HEALTH_TIMEOUT_MS,
+      { useStderrWhenStdoutEmpty: true },
+    );
+    const auth = parseClaudeCliAuthStatus(authOutput);
+    return buildModelUsageStatus({
+      provider,
+      model,
+      status: 'unavailable',
+      source: 'claude-cli-auth-status',
+      ok: auth.loggedIn !== false,
+      account: {
+        ...(auth.authMethod ? { authMethod: auth.authMethod } : {}),
+        label: auth.summary,
+      },
+      message:
+        auth.loggedIn === false
+          ? 'Claude CLI is not logged in.'
+          : 'Weekly account usage is not exposed by Claude CLI for this auth session.',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return buildModelUsageStatus({
+      provider,
+      model,
+      status: 'error',
+      source: 'claude-cli-auth-status',
+      ok: false,
+      error: message,
+      message: 'Unable to check weekly model usage.',
+    });
+  }
+}
+
+async function resolveModelUsageStatus(
+  payload: Record<string, unknown>,
+): Promise<ModelUsageStatusResponse> {
+  const provider = normalizeUsageProvider(payload);
+  const model = normalizeUsageModel(payload);
+  if (!provider) {
+    throw new Error('Missing provider.');
+  }
+
+  const command =
+    provider === 'claude-cli'
+      ? normalizeUsageCommand(payload, 'claude')
+      : provider === 'codex-cli'
+        ? normalizeUsageCommand(payload, 'codex')
+        : provider === 'codex-auth'
+          ? CODEX_AUTH_COMMAND
+          : undefined;
+  const cacheKey = getModelUsageCacheKey(provider, model, command);
+  const cached = modelUsageStatusCache.get(cacheKey);
+  if (cached && cached.expiresAt > Date.now()) {
+    return cached.result;
+  }
+
+  let result: ModelUsageStatusResponse;
+  if (provider === 'codex-auth' || provider === 'codex-cli') {
+    result = await resolveCodexModelUsageStatus(provider, model, command ?? CODEX_AUTH_COMMAND);
+  } else if (provider === 'claude-cli') {
+    result = await resolveClaudeCliModelUsageStatus(provider, model, command ?? 'claude');
+  } else {
+    result = buildModelUsageStatus({
+      provider,
+      model,
+      status: 'unavailable',
+      source: 'provider-configuration',
+      message: 'Weekly account usage is not exposed by this provider configuration.',
+    });
+  }
+
+  modelUsageStatusCache.set(cacheKey, {
+    expiresAt: result.nextRefreshAt,
+    result,
+  });
+  return result;
+}
+
+function modelUsageStatusPlugin(): Plugin {
+  return {
+    name: 'llm-usage-status',
+    configureServer(server) {
+      server.middlewares.use('/api/llm-usage-status', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        try {
+          const payload = await readJsonBody(req);
+          const result = await resolveModelUsageStatus(payload);
+          writeJsonResponse(res, 200, result);
+        } catch (error) {
+          writeJsonResponse(res, 400, {
+            ok: false,
+            provider: 'unknown',
+            model: 'unknown-model',
+            period: 'week',
+            status: 'error',
+            source: 'provider-configuration',
+            refreshedAt: Date.now(),
+            nextRefreshAt: Date.now() + MODEL_USAGE_CACHE_TTL_MS,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+    },
+  };
+}
+
+function extractCodexAuthAuthorizationUrl(output: string): string | undefined {
+  const match = stripAnsi(output).match(/https:\/\/[^\s"'<>]+/i);
+  return match?.[0]?.replace(/[),.;]+$/g, '');
+}
+
+function isCodexAuthDeviceCode(value: string): boolean {
+  const token = value.trim().replace(/[.,:;]+$/g, '');
+  if (!/^[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+$/.test(token)) {
+    return false;
+  }
+  const compact = token.replace(/-/g, '');
+  return compact.length >= 8 && /[A-Z]/.test(compact);
+}
+
+function extractCodexAuthUserCode(output: string): string | undefined {
+  const cleanOutput = stripAnsi(output);
+
+  const explicit = cleanOutput.match(
+    /(?:enter\s+this\s+one-time\s+code|one-time\s+code|device\s+code)[^\n\r]*[\n\r]+\s*([A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+)/i,
+  );
+  if (explicit?.[1] && isCodexAuthDeviceCode(explicit[1])) {
+    return explicit[1].trim().replace(/[.,:;]+$/g, '');
+  }
+
+  const standaloneMatches = cleanOutput.match(/\b[A-Z0-9]{4,}(?:-[A-Z0-9]{4,})+\b/g) ?? [];
+  for (const candidate of standaloneMatches) {
+    if (isCodexAuthDeviceCode(candidate)) {
+      return candidate;
+    }
+  }
+  return undefined;
+}
+
+function openCodexAuthUrlInBrowser(url: string): boolean {
+  try {
+    if (process.platform === 'win32') {
+      spawn('rundll32.exe', ['url.dll,FileProtocolHandler', url], {
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true,
+      }).unref();
+    } else if (process.platform === 'darwin') {
+      spawn('open', [url], { detached: true, stdio: 'ignore' }).unref();
+    } else {
+      spawn('xdg-open', [url], { detached: true, stdio: 'ignore' }).unref();
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function startCodexAuthDeviceLoginSession(): CodexAuthDeviceLoginSession {
+  if (codexAuthLoginSession?.state === 'running') {
+    return snapshotCodexAuthLoginSession(codexAuthLoginSession);
+  }
+
+  const now = Date.now();
+  const session: CodexAuthDeviceLoginSession & { child?: ReturnType<typeof spawn> } = {
+    id: `codex-login-${now.toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+    provider: 'codex-auth',
+    state: 'running',
+    startedAt: now,
+    updatedAt: now,
+    output: '',
+  };
+  const child = spawn(CODEX_AUTH_COMMAND, ['login', '--device-auth'], {
+    cwd: OPENROOM_ROOT,
+    shell: process.platform === 'win32',
+    windowsHide: true,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  session.child = child;
+  codexAuthLoginSession = session;
+
+  const appendOutput = (chunk: Buffer) => {
+    session.output = limitCodexLoginOutput(stripAnsi(session.output + chunk.toString()));
+    session.authorizationUrl =
+      session.authorizationUrl ?? extractCodexAuthAuthorizationUrl(session.output);
+    session.userCode = session.userCode ?? extractCodexAuthUserCode(session.output);
+    if (session.authorizationUrl && session.browserOpened !== true) {
+      session.browserOpened = openCodexAuthUrlInBrowser(session.authorizationUrl);
+    }
+    session.updatedAt = Date.now();
+  };
+
+  child.stdout?.on('data', appendOutput);
+  child.stderr?.on('data', appendOutput);
+  child.on('error', (error) => {
+    session.state = 'error';
+    session.error = error.message;
+    session.updatedAt = Date.now();
+    delete session.child;
+  });
+  child.on('close', (code) => {
+    session.state = code === 0 ? 'completed' : 'error';
+    session.exitCode = code;
+    if (code !== 0 && !session.error) {
+      session.error =
+        stripAnsi(session.output).trim() || `Codex device login exited with code ${code}.`;
+    }
+    session.updatedAt = Date.now();
+    delete session.child;
+  });
+
+  return snapshotCodexAuthLoginSession(session);
+}
+
+function codexAuthPlugin(): Plugin {
+  return {
+    name: 'codex-auth',
+    configureServer(server) {
+      server.middlewares.use('/api/codex-auth-status', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const startedAt = Date.now();
+        try {
+          const version = await runCliProcess(
+            CODEX_AUTH_COMMAND,
+            ['--version'],
+            '',
+            'Codex Auth version check',
+            CLI_HEALTH_TIMEOUT_MS,
+          );
+          let auth: CodexAuthStatus;
+          try {
+            const authOutput = await runCliProcess(
+              CODEX_AUTH_COMMAND,
+              ['login', 'status'],
+              '',
+              'Codex Auth status',
+              CLI_HEALTH_TIMEOUT_MS,
+              { useStderrWhenStdoutEmpty: true },
+            );
+            auth = parseCodexAuthStatus(authOutput);
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            auth = parseCodexAuthStatus(message);
+            if (auth.loggedIn !== false) {
+              throw error;
+            }
+          }
+
+          writeJsonResponse(res, 200, {
+            ok: auth.loggedIn !== false,
+            provider: 'codex-auth',
+            version,
+            auth,
+            ...(auth.loggedIn === false ? { error: 'Codex Auth is not logged in.' } : {}),
+            durationMs: Date.now() - startedAt,
+          });
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            ok: false,
+            provider: 'codex-auth',
+            error: error instanceof Error ? error.message : String(error),
+            durationMs: Date.now() - startedAt,
+          });
+        }
+      });
+
+      server.middlewares.use('/api/codex-auth-login', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        try {
+          await readJsonBody(req);
+          writeJsonResponse(res, 200, startCodexAuthDeviceLoginSession());
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            provider: 'codex-auth',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      });
+
+      server.middlewares.use('/api/codex-auth-login-status', (req, res) => {
+        if (req.method !== 'GET') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const url = new URL(req.url || '', 'http://localhost');
+        const sessionId = url.searchParams.get('id') || '';
+        if (!codexAuthLoginSession || codexAuthLoginSession.id !== sessionId) {
+          writeJsonResponse(res, 404, {
+            provider: 'codex-auth',
+            error: 'Codex Auth device login session was not found.',
+          });
+          return;
+        }
+
+        writeJsonResponse(res, 200, snapshotCodexAuthLoginSession(codexAuthLoginSession));
+      });
+
+      server.middlewares.use('/api/codex-auth-chat', async (req, res) => {
+        if (req.method !== 'POST') {
+          writeJsonResponse(res, 405, { error: 'Method not allowed' });
+          return;
+        }
+
+        const tempDir = fs.mkdtempSync(join(os.tmpdir(), 'openroom-codex-auth-chat-'));
+        const outputFile = join(tempDir, 'last-message.txt');
+        try {
+          const payload = await readJsonBody(req);
+          const model = typeof payload.model === 'string' ? payload.model.trim() : '';
+          const args = [
+            'exec',
+            '--cd',
+            OPENROOM_ROOT,
+            '--skip-git-repo-check',
+            '--sandbox',
+            'read-only',
+            '--output-last-message',
+            outputFile,
+            '--color',
+            'never',
+          ];
+          if (model) args.push('--model', model);
+          appendCodexCliRuntimeArgs(args, payload);
+          args.push('-');
+          const prompt = buildCodexCliChatPrompt(payload);
+          let content: string;
+          try {
+            content = await runCodexCliChatProcess(CODEX_AUTH_COMMAND, args, prompt, outputFile);
+          } catch (error) {
+            if (model && model !== CODEX_CLI_FALLBACK_MODEL && isCodexCliModelUpgradeError(error)) {
+              const fallbackArgs = args.filter((arg, index) => {
+                if (arg === '--model') return false;
+                return args[index - 1] !== '--model';
+              });
+              fallbackArgs.splice(fallbackArgs.length - 1, 0, '--model', CODEX_CLI_FALLBACK_MODEL);
+              content = await runCodexCliChatProcess(
+                CODEX_AUTH_COMMAND,
+                fallbackArgs,
+                prompt,
+                outputFile,
+              );
+            } else {
+              throw error;
+            }
+          }
+          writeJsonResponse(res, 200, { content });
+        } catch (error) {
+          writeJsonResponse(res, 500, {
+            provider: 'codex-auth',
+            error: error instanceof Error ? error.message : String(error),
+          });
+        } finally {
+          fs.rmSync(tempDir, { recursive: true, force: true });
         }
       });
     },
@@ -3298,8 +3932,10 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     openVscodeManagerPlugin(),
     openroomResetPlugin(),
     logServerPlugin(),
+    modelUsageStatusPlugin(),
     claudeCliConnectionCheckPlugin(),
     claudeCliChatPlugin(),
+    codexAuthPlugin(),
     codexCliChatPlugin(),
     openRouterModelsPlugin(),
     llmProxyPlugin(),
