@@ -6,6 +6,8 @@ import {
   RotateCcw,
   Minus,
   Maximize2,
+  ZoomIn,
+  ZoomOut,
   ChevronDown,
   ChevronRight,
   Pencil,
@@ -6303,6 +6305,18 @@ const ChatPanel: React.FC<{
     setChatFontSize((prev) => clampChatFontSize(prev + direction * CHAT_FONT_SIZE_STEP));
   }, []);
 
+  const decreaseChatFontSize = useCallback(() => {
+    setChatFontSize((prev) => clampChatFontSize(prev - CHAT_FONT_SIZE_STEP));
+  }, []);
+
+  const increaseChatFontSize = useCallback(() => {
+    setChatFontSize((prev) => clampChatFontSize(prev + CHAT_FONT_SIZE_STEP));
+  }, []);
+
+  const resetChatFontSize = useCallback(() => {
+    setChatFontSize(CHAT_FONT_SIZE_DEFAULT);
+  }, []);
+
   const openAoiAutonomySettings = useCallback(() => {
     setSettingsInitialTab('advanced');
     setShowSettings(true);
@@ -6575,6 +6589,41 @@ const ChatPanel: React.FC<{
               <ChevronRight size={14} style={{ color: 'rgba(255,255,255,0.4)' }} />
             </div>
             <div className={styles.headerActions}>
+              <div
+                className={styles.fontSizeControls}
+                aria-label="Chat text size"
+                data-testid="chat-font-size-controls"
+              >
+                <button
+                  className={styles.fontSizeBtn}
+                  onClick={decreaseChatFontSize}
+                  disabled={chatFontSize <= CHAT_FONT_SIZE_MIN}
+                  title="Decrease chat text size"
+                  data-testid="chat-font-decrease"
+                  type="button"
+                >
+                  <ZoomOut size={14} />
+                </button>
+                <button
+                  className={styles.fontSizeValue}
+                  onClick={resetChatFontSize}
+                  title="Reset chat text size"
+                  data-testid="chat-font-reset"
+                  type="button"
+                >
+                  {chatFontSize}px
+                </button>
+                <button
+                  className={styles.fontSizeBtn}
+                  onClick={increaseChatFontSize}
+                  disabled={chatFontSize >= CHAT_FONT_SIZE_MAX}
+                  title="Increase chat text size"
+                  data-testid="chat-font-increase"
+                  type="button"
+                >
+                  <ZoomIn size={14} />
+                </button>
+              </div>
               <button
                 className={styles.iconBtn}
                 onClick={handleResetSession}
