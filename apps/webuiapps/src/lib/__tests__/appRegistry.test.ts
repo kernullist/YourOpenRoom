@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   describeAppActionResultForModel,
@@ -7,8 +7,15 @@ import {
   getAppIdentityByReference,
   getAppIdentityById,
   getOsActionTargetApp,
+  loadActionsFromMeta,
+  resetActionsCache,
   resolveAppAction,
 } from '../appRegistry';
+
+afterEach(() => {
+  resetActionsCache();
+  vi.unstubAllGlobals();
+});
 
 describe('appRegistry app identity helpers', () => {
   it('lists newly added in-apps with app names and speaking guidance', () => {
@@ -84,5 +91,33 @@ describe('appRegistry app identity helpers', () => {
       actionType: 'OPEN_APP',
       params: { app_id: '24' },
     });
+  });
+
+  it('rejects unsupported app actions after metadata has loaded', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+      })),
+    );
+
+    await loadActionsFromMeta();
+
+    const unknown = resolveAppAction('Aoi Research', 'NOT_A_REAL_ACTION');
+    expect(typeof unknown).toBe('string');
+
+    const parsed = JSON.parse(unknown as string) as {
+      ok: boolean;
+      error: string;
+      app: { app_name: string };
+      requested_action: string;
+      supported_actions: string[];
+    };
+
+    expect(parsed.ok).toBe(false);
+    expect(parsed.error).toBe('unsupported_app_action');
+    expect(parsed.app.app_name).toBe('aoiresearch');
+    expect(parsed.requested_action).toBe('NOT_A_REAL_ACTION');
+    expect(parsed.supported_actions).toContain('OPEN_APP_WINDOW');
   });
 });

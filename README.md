@@ -125,6 +125,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     in-app surface before using app-specific actions
   - app-operation requests and setting/apply-style follow-ups stay on the main tool route so Aoi can
     dispatch the app action instead of only describing manual steps
+  - `app_action` resolution preflights action names after app metadata loads; unsupported actions
+    return a structured error with supported actions and next steps instead of timing out in the app
+    bridge
   - contextual follow-ups such as "apply that", "run it", "그렇게 설정해줘", "거기에 붙여줘", and
     "실행해줘" keep tools exposed when recent chat context points to an app, browser page, current
     file, or command

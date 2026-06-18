@@ -242,6 +242,9 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - App-operation requests, including Kira setting changes and "apply it like that" follow-ups that
   reference recent app context, bypass the dialog-model shortcut and keep app tools exposed to the
   main model route.
+- `app_action` resolution now preflights action names after metadata loading. Unsupported actions
+  return a structured `unsupported_app_action` result with supported actions and next steps instead
+  of waiting for an app timeout.
 - The contextual routing scenarios cover app setting changes, current-file edits, browser opens,
   command execution, and research/app handoffs. Social/descriptive mentions such as "Kira looks
   good" or "I use Kira daily" still stay on the dialog route without app tools.

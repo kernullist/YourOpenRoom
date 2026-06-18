@@ -580,11 +580,15 @@ export function getSourceDirToAppId(): Record<string, number> {
 
 // ============ Full Registry After Dynamic Loading ============
 
+function buildDefaultAppRegistry(): AppDef[] {
+  return APP_STATIC_REGISTRY.map((app) => ({
+    ...app,
+    actions: app.appName === 'os' ? OS_ACTIONS : COMMON_APP_ACTIONS,
+  }));
+}
+
 /** Full APP_REGISTRY, including dynamically loaded actions */
-export let APP_REGISTRY: AppDef[] = APP_STATIC_REGISTRY.map((app) => ({
-  ...app,
-  actions: app.appName === 'os' ? OS_ACTIONS : COMMON_APP_ACTIONS,
-}));
+export let APP_REGISTRY: AppDef[] = buildDefaultAppRegistry();
 
 function withCommonAppActions(app: AppStaticDef, actions: AppActionDef[]): AppActionDef[] {
   if (app.appName === 'os') {
@@ -776,7 +780,39 @@ export async function loadActionsFromMeta(): Promise<void> {
  * Reset loading state, forcing a reload on next call to loadActionsFromMeta
  */
 export function resetActionsCache(): void {
+  APP_REGISTRY = buildDefaultAppRegistry();
   _loaded = false;
+}
+
+function findDeclaredAction(app: AppDef | AppStaticDef, actionType: string): AppActionDef | null {
+  if (!('actions' in app) || !Array.isArray(app.actions)) {
+    return null;
+  }
+
+  const normalized = actionType.trim().toUpperCase();
+  return app.actions.find((action) => action.name.toUpperCase() === normalized) ?? null;
+}
+
+function buildUnsupportedActionError(app: AppDef | AppStaticDef, actionType: string): string {
+  const capabilities = buildAppControlCapabilities(app);
+  const supportedActions = capabilities.actions.names;
+  return JSON.stringify({
+    ok: false,
+    error: 'unsupported_app_action',
+    app: {
+      app_id: app.appId,
+      app_name: app.appName,
+      display_name: app.displayName,
+    },
+    requested_action: actionType,
+    actions_loaded: _loaded,
+    supported_actions: supportedActions,
+    next_steps: [
+      `Call list_apps or get_app_state(app_name="${app.appName}") to inspect current app capabilities.`,
+      `Read apps/${app.appName}/meta.yaml for exact app-specific action parameters.`,
+      'Use file/schema tools for data mutations when no app-owned action exists.',
+    ],
+  });
 }
 
 // ============ Tool Definition Generation ============
@@ -836,19 +872,28 @@ export function resolveAppAction(
   const app = findAppByReference(appName);
   if (!app) return `error: unknown app "${appName}". Call list_apps to see available apps.`;
 
+  const declaredAction = findDeclaredAction(app, actionType);
+
   if (app.appName !== 'os') {
-    if (actionType === 'OPEN_APP_WINDOW') {
+    if (declaredAction?.name === 'OPEN_APP_WINDOW') {
       return { appId: 1, actionType: 'OPEN_APP', params: { app_id: String(app.appId) } };
     }
-    if (actionType === 'FOCUS_APP_WINDOW') {
+    if (declaredAction?.name === 'FOCUS_APP_WINDOW') {
       return { appId: 1, actionType: 'FOCUS_APP', params: { app_id: String(app.appId) } };
     }
-    if (actionType === 'CLOSE_APP_WINDOW') {
+    if (declaredAction?.name === 'CLOSE_APP_WINDOW') {
       return { appId: 1, actionType: 'CLOSE_APP', params: { app_id: String(app.appId) } };
     }
   }
 
-  return { appId: app.appId, actionType };
+  if (!declaredAction) {
+    if (!_loaded) {
+      return { appId: app.appId, actionType };
+    }
+    return buildUnsupportedActionError(app, actionType);
+  }
+
+  return { appId: app.appId, actionType: declaredAction.name };
 }
 
 // ============ list_apps Tool ============
