@@ -79,6 +79,13 @@ const MOCK_TOOLS: ToolDef[] = [
     },
   },
 ];
+const MOCK_INLINE_RESPOND_TOOL_CONTENT = `<tool_call>
+respond_to_user
+<arg_key>character_expression</arg_key>
+<arg_value>{"content":"Done.","emotion":"peaceful"}</arg_value>
+<arg_key>user_interaction</arg_key>
+<arg_value>{"suggested_replies":["Thanks","Show me","Undo"]}</arg_value>
+</tool_call>`;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -1410,6 +1417,27 @@ respond_to_user
       expect(body.tools).toHaveLength(1);
     });
 
+    it('converts inline tool call content from Codex CLI into structured tool calls', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: MOCK_INLINE_RESPOND_TOOL_CONTENT }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'codex-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.3-codex',
+      });
+
+      expect(result.content).toBe('');
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0].function.name).toBe('respond_to_user');
+      expect(result.toolCalls[0].function.arguments).toContain('"content":"Done."');
+    });
+
     it('passes Codex runtime options to the local codex cli endpoint', async () => {
       const mockFetch = vi.fn().mockResolvedValueOnce({
         ok: true,
@@ -1485,6 +1513,26 @@ respond_to_user
       expect(body.model).toBe('gpt-5.5');
       expect(body.command).toBeUndefined();
       expect(body.tools).toHaveLength(1);
+    });
+
+    it('converts inline tool call content from Codex Auth into structured tool calls', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: MOCK_INLINE_RESPOND_TOOL_CONTENT }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'codex-auth',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      });
+
+      expect(result.content).toBe('');
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0].function.name).toBe('respond_to_user');
     });
 
     it('checks Codex account OAuth status through the local endpoint', async () => {
@@ -1635,6 +1683,26 @@ respond_to_user
       expect(body.model).toBe('claude-sonnet-4-6');
       expect(body.command).toBe('claude');
       expect(body.tools).toHaveLength(1);
+    });
+
+    it('converts inline tool call content from Claude CLI into structured tool calls', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({ content: MOCK_INLINE_RESPOND_TOOL_CONTENT }),
+      } as unknown as Response);
+      globalThis.fetch = mockFetch;
+
+      const result = await chat(MOCK_MESSAGES, MOCK_TOOLS, {
+        provider: 'claude-cli',
+        apiKey: '',
+        baseUrl: '',
+        model: 'claude-sonnet-4-6',
+      });
+
+      expect(result.content).toBe('');
+      expect(result.toolCalls).toHaveLength(1);
+      expect(result.toolCalls[0].function.name).toBe('respond_to_user');
     });
 
     it('passes Claude CLI reasoning effort when explicitly configured', async () => {

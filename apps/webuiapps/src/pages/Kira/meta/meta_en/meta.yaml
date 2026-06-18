@@ -103,3 +103,233 @@ actions:
         description: Focus task type after refresh
         required: false
         enum: [work]
+
+  - type: OPEN_MODEL_SETTINGS
+    name: Open Kira Model Settings
+    description: >
+      Open the app settings panel on the Kira model/default settings tab. Use this when the user
+      asks to inspect or manually review Kira worker/reviewer settings.
+    params: []
+
+  - type: APPLY_MODEL_SETTINGS
+    name: Apply Kira Model Settings
+    description: >
+      Persist Kira worker/reviewer model runtime settings and global Kira project defaults through
+      OpenRoom's validated config persistence path. This action preserves existing credentials and
+      only patches explicit non-secret fields.
+    params:
+      - name: provider
+        type: string
+        description: Optional shared provider for worker and reviewer roles
+        required: false
+        enum: [openai, anthropic, deepseek, llama.cpp, minimax, z.ai, kimi, openrouter, opencode, opencode-go, codex-auth, claude-cli, codex-cli]
+      - name: model
+        type: string
+        description: Optional shared model for worker and reviewer roles
+        required: false
+      - name: reasoningEffort
+        type: string
+        description: Optional shared reasoning effort; use high for a deep review/coding posture
+        required: false
+        enum: [none, minimal, low, medium, high, xhigh]
+      - name: reasoningSummary
+        type: string
+        description: Optional shared reasoning summary mode
+        required: false
+        enum: [none, auto, concise, detailed]
+      - name: verbosity
+        type: string
+        description: Optional shared response verbosity
+        required: false
+        enum: [low, medium, high]
+      - name: apiStyle
+        type: string
+        description: Optional shared API style override
+        required: false
+        enum: [openai-chat, openai-responses, anthropic-messages]
+      - name: serviceTier
+        type: string
+        description: Optional shared service tier such as priority or flex
+        required: false
+      - name: parallelToolCalls
+        type: string
+        description: Optional shared boolean string for parallel tool calls
+        required: false
+      - name: workerProvider
+        type: string
+        description: Optional worker provider override
+        required: false
+        enum: [openai, anthropic, deepseek, llama.cpp, minimax, z.ai, kimi, openrouter, opencode, opencode-go, codex-auth, claude-cli, codex-cli]
+      - name: workerModel
+        type: string
+        description: Optional worker model override
+        required: false
+      - name: reviewerProvider
+        type: string
+        description: Optional reviewer provider override
+        required: false
+        enum: [openai, anthropic, deepseek, llama.cpp, minimax, z.ai, kimi, openrouter, opencode, opencode-go, codex-auth, claude-cli, codex-cli]
+      - name: reviewerModel
+        type: string
+        description: Optional reviewer model override
+        required: false
+      - name: workerReasoningEffort
+        type: string
+        description: Optional worker reasoning effort override; use high for deep work
+        required: false
+        enum: [none, minimal, low, medium, high, xhigh]
+      - name: reviewerReasoningEffort
+        type: string
+        description: Optional reviewer reasoning effort override; use high for deep review
+        required: false
+        enum: [none, minimal, low, medium, high, xhigh]
+      - name: workerReasoningSummary
+        type: string
+        description: Optional worker reasoning summary override
+        required: false
+        enum: [none, auto, concise, detailed]
+      - name: reviewerReasoningSummary
+        type: string
+        description: Optional reviewer reasoning summary override
+        required: false
+        enum: [none, auto, concise, detailed]
+      - name: workerVerbosity
+        type: string
+        description: Optional worker verbosity override
+        required: false
+        enum: [low, medium, high]
+      - name: reviewerVerbosity
+        type: string
+        description: Optional reviewer verbosity override
+        required: false
+        enum: [low, medium, high]
+      - name: workerApiStyle
+        type: string
+        description: Optional worker API style override
+        required: false
+        enum: [openai-chat, openai-responses, anthropic-messages]
+      - name: reviewerApiStyle
+        type: string
+        description: Optional reviewer API style override
+        required: false
+        enum: [openai-chat, openai-responses, anthropic-messages]
+      - name: workerServiceTier
+        type: string
+        description: Optional worker service tier override
+        required: false
+      - name: reviewerServiceTier
+        type: string
+        description: Optional reviewer service tier override
+        required: false
+      - name: workerParallelToolCalls
+        type: string
+        description: Optional worker boolean string for parallel tool calls
+        required: false
+      - name: reviewerParallelToolCalls
+        type: string
+        description: Optional reviewer boolean string for parallel tool calls
+        required: false
+      - name: workerCount
+        type: string
+        description: Optional worker count from 1 to 3
+        required: false
+      - name: runMode
+        type: string
+        description: Alias for defaultRunMode when applying global Kira project defaults
+        required: false
+        enum: [quick, standard, deep]
+      - name: defaultRunMode
+        type: string
+        description: Optional global default run mode for projects without local settings
+        required: false
+        enum: [quick, standard, deep]
+      - name: rulePacks
+        type: string
+        description: Alias for defaultRulePacks when applying global Kira project defaults
+        required: false
+      - name: defaultRulePacks
+        type: string
+        description: Optional comma-separated or JSON array rule pack IDs for global defaults
+        required: false
+      - name: rulePackMode
+        type: string
+        description: Alias for defaultRulePackMode
+        required: false
+        enum: [merge, replace]
+      - name: defaultRulePackMode
+        type: string
+        description: merge preserves existing defaults; replace disables unspecified packs
+        required: false
+        enum: [merge, replace]
+      - name: autoCommit
+        type: string
+        description: Alias for defaultAutoCommit when applying global Kira project defaults
+        required: false
+      - name: defaultAutoCommit
+        type: string
+        description: Optional boolean string for default Kira auto commit
+        required: false
+      - name: requiredInstructions
+        type: string
+        description: Alias for defaultRequiredInstructions
+        required: false
+      - name: defaultRequiredInstructions
+        type: string
+        description: Optional default project instructions to append or replace
+        required: false
+      - name: instructionsMode
+        type: string
+        description: Alias for defaultInstructionsMode
+        required: false
+        enum: [append, replace, preserve]
+      - name: defaultInstructionsMode
+        type: string
+        description: append, replace, or preserve default project instructions
+        required: false
+        enum: [append, replace, preserve]
+      - name: openSettings
+        type: string
+        description: Optional boolean string; false keeps the settings panel closed
+        required: false
+
+  - type: APPLY_PROJECT_SETTINGS
+    name: Apply Project Settings
+    description: >
+      Persist settings for a selected local project through Kira's validated project settings API.
+      Use this when the user asks Aoi to apply Kira's project-specific recommendation.
+    params:
+      - name: projectName
+        type: string
+        description: Project name under kira.workRootDirectory; falls back to the active project
+        required: false
+      - name: runMode
+        type: string
+        description: Project run mode
+        required: false
+        enum: [quick, standard, deep]
+      - name: rulePacks
+        type: string
+        description: Comma-separated or JSON array rule pack IDs
+        required: false
+      - name: rulePackMode
+        type: string
+        description: merge preserves existing selections; replace disables unspecified packs
+        required: false
+        enum: [merge, replace]
+      - name: autoCommit
+        type: string
+        description: Optional boolean string for project auto commit
+        required: false
+      - name: requiredInstructions
+        type: string
+        description: Project instructions to append or replace
+        required: false
+      - name: requiredInstructionsMode
+        type: string
+        description: append, replace, or preserve project instructions
+        required: false
+        enum: [append, replace, preserve]
+      - name: openSettings
+        type: string
+        description: Optional boolean string; false keeps the project settings panel closed
+        required: false

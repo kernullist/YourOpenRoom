@@ -348,6 +348,61 @@ Available rule pack IDs:
 - `safe-refactor`
 - `docs-safe`
 
+## Settings App Actions
+
+Kira exposes settings actions so Aoi can apply an explicit user-approved recommendation instead of
+only describing manual steps.
+
+Use `OPEN_MODEL_SETTINGS` when the user only wants to inspect the Kira model/default settings UI.
+
+Use `APPLY_MODEL_SETTINGS` for global Kira automation settings stored in `~/.openroom/config.json`.
+This action preserves existing credentials and patches only explicit non-secret fields such as
+worker/reviewer model names, reasoning effort, worker count, and global project defaults. Do not
+invent a model name. If the user or current settings do not provide an exact model, preserve the
+existing model and only apply explicit fields such as `reasoningEffort`, `defaultRunMode`, or
+`defaultRulePacks`.
+
+When applying a recommendation written in natural language, normalize provider and effort terms
+before calling the action. Examples: `Codex CLI` -> `codex-cli`, `Claude CLI` -> `claude-cli`, and a
+"deep" reasoning recommendation should normally be sent as `reasoningEffort: "high"` unless the user
+explicitly asks for `xhigh`. For global project defaults, `runMode`, `rulePacks`, `rulePackMode`,
+`autoCommit`, `requiredInstructions`, and `instructionsMode` are accepted aliases for the matching
+`default*` params.
+
+Example `APPLY_MODEL_SETTINGS` params for a conservative coding/review posture:
+
+```json
+{
+  "reasoningEffort": "high",
+  "reviewerReasoningEffort": "high",
+  "workerCount": "1",
+  "defaultRunMode": "deep",
+  "defaultRulePacks": "small-patch,validation-first",
+  "defaultRulePackMode": "merge",
+  "defaultAutoCommit": "false",
+  "defaultRequiredInstructions": "Use project-wide read for context. Keep writes minimal and targeted. Require review evidence before integration.",
+  "defaultInstructionsMode": "append"
+}
+```
+
+Use `APPLY_PROJECT_SETTINGS` for a specific local project. It writes only through
+`/api/kira-project-settings`, so Kira validates the project root and orchestration contract before
+anything is persisted. Prefer this action over direct file writes for `.kira/project-settings.json`.
+
+Example `APPLY_PROJECT_SETTINGS` params for a small-patch anti-cheat client:
+
+```json
+{
+  "projectName": "im-tavern-client",
+  "runMode": "deep",
+  "rulePacks": "small-patch,validation-first",
+  "rulePackMode": "merge",
+  "autoCommit": "false",
+  "requiredInstructions": "Read project-wide context before planning. Keep writes minimal and targeted. Do not apply broad refactors without explicit approval.",
+  "requiredInstructionsMode": "append"
+}
+```
+
 ## Project Intelligence Profile
 
 Kira can generate a project-local intelligence profile:

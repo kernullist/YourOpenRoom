@@ -127,7 +127,11 @@ workers/reviewers can be configured with `provider: "codex-cli"` after `codex lo
 workers/reviewers can be configured with `provider: "claude-cli"` after the Claude Code auth flow;
 DeepSeek API workers/reviewers can be configured with `provider: "deepseek"`,
 `baseUrl: "https://api.deepseek.com"`, and a DeepSeek API key; OpenCode Zen/Go workers/reviewers can
-be configured with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key. When
+be configured with `provider: "opencode"` or `"opencode-go"` and an OpenCode API key. When Aoi
+inspects Kira with `get_app_state("kira")`, the app state summary includes sanitized effective
+worker/reviewer settings, including legacy and main-LLM fallback routes, without API keys or custom
+headers. User-approved Kira setting recommendations can be applied through Kira-owned
+`APPLY_MODEL_SETTINGS` and `APPLY_PROJECT_SETTINGS` app actions instead of manual UI clicks. When
 Primary/Alternative workers share the same provider/baseUrl/model route, Kira throttles concurrent
 model calls to one for local routes (`llama.cpp`, localhost, or private-network base URLs) and two
 for all other routes. Each model call sets the response output token cap to 8192 tokens. Kira does

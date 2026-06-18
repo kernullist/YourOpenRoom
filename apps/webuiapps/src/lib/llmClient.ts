@@ -409,6 +409,14 @@ function extractInlineToolCalls(rawContent: string): InlineToolParseResult {
   };
 }
 
+function buildTextProviderResponse(rawContent: string | undefined): LLMResponse {
+  const parsedInline = extractInlineToolCalls(rawContent?.trim() || '');
+  return {
+    content: parsedInline.content,
+    toolCalls: parsedInline.toolCalls,
+  };
+}
+
 function hasVersionSuffix(url: string): boolean {
   return /\/v\d+\/?$/.test(url);
 }
@@ -725,10 +733,7 @@ async function chatClaudeCli(
   if (!res.ok) {
     throw new Error(data.error || `Claude CLI error ${res.status}`);
   }
-  return {
-    content: data.content?.trim() || '',
-    toolCalls: [],
-  };
+  return buildTextProviderResponse(data.content);
 }
 
 export async function checkClaudeCliConnection(
@@ -849,10 +854,7 @@ async function chatCodexCli(
   if (!res.ok) {
     throw new Error(data.error || `Codex CLI error ${res.status}`);
   }
-  return {
-    content: data.content?.trim() || '',
-    toolCalls: [],
-  };
+  return buildTextProviderResponse(data.content);
 }
 
 async function chatCodexAuth(
@@ -880,10 +882,7 @@ async function chatCodexAuth(
   if (!res.ok) {
     throw new Error(data.error || `Codex Auth error ${res.status}`);
   }
-  return {
-    content: data.content?.trim() || '',
-    toolCalls: [],
-  };
+  return buildTextProviderResponse(data.content);
 }
 
 async function chatOpenAI(

@@ -128,7 +128,8 @@ const AOI_CAPABILITY_REGISTRY = {
     sandboxEligible: true,
     approval: 'policy-gated',
     promptVisible: true,
-    policyNotes: 'Data mutations must be persisted through storage tools before refresh actions.',
+    policyNotes:
+      'Storage data mutations use storage tools; declared app-owned operation/settings actions may persist through app validation paths.',
   },
   get_app_state: {
     name: 'get_app_state',

@@ -2151,6 +2151,56 @@ function logServerPlugin(): Plugin {
   };
 }
 
+const CLI_TOOL_MANIFEST_MAX_CHARS = 24_000;
+const CLI_TOOL_SCHEMA_MAX_CHARS = 1_600;
+
+function truncateCliPromptText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  return `${value.slice(0, Math.max(0, maxChars - 18)).trimEnd()}...[truncated]`;
+}
+
+function buildCliToolBridgePrompt(payload: Record<string, unknown>): string {
+  const tools = Array.isArray(payload.tools) ? payload.tools : [];
+  if (tools.length === 0) {
+    return 'No OpenRoom tools are exposed for this turn. Reply directly in plain text.';
+  }
+
+  const entries: string[] = [];
+  for (const tool of tools) {
+    if (!tool || typeof tool !== 'object') continue;
+    const record = tool as Record<string, unknown>;
+    const fn =
+      record.function && typeof record.function === 'object'
+        ? (record.function as Record<string, unknown>)
+        : null;
+    const name = typeof fn?.name === 'string' ? fn.name.trim() : '';
+    if (!name) continue;
+    const description = typeof fn?.description === 'string' ? fn.description.trim() : '';
+    const schema = truncateCliPromptText(
+      JSON.stringify(fn?.parameters ?? { type: 'object', properties: {}, required: [] }),
+      CLI_TOOL_SCHEMA_MAX_CHARS,
+    );
+    entries.push(`- ${name}: ${description}\n  parameters: ${schema}`);
+  }
+
+  const manifest = truncateCliPromptText(entries.join('\n'), CLI_TOOL_MANIFEST_MAX_CHARS);
+  return [
+    'OpenRoom tools are available through an inline tool-call bridge.',
+    'When the user request requires an app action, app state read, file operation, workspace operation, browser/URL read, command, memory, research, image, or final character reply, call the appropriate tool instead of saying tools are unavailable.',
+    'To call a tool, output one or more blocks using exactly this shape and no Markdown fence:',
+    '<tool_call>',
+    'tool_name',
+    '<arg_key>param_name</arg_key>',
+    '<arg_value>JSON value or string value</arg_value>',
+    '</tool_call>',
+    'Use JSON inside <arg_value> for objects, arrays, booleans, and numbers. Use one block per tool call.',
+    'Do not claim a tool result until the conversation contains a TOOL message for that tool call.',
+    'After tool results are available, continue with the next needed tool call or finish with respond_to_user when it is exposed.',
+    'Available OpenRoom tools:',
+    manifest,
+  ].join('\n');
+}
+
 function buildCodexCliChatPrompt(payload: Record<string, unknown>): string {
   const messages = Array.isArray(payload.messages) ? payload.messages : [];
   const renderedMessages = messages
@@ -2166,7 +2216,7 @@ function buildCodexCliChatPrompt(payload: Record<string, unknown>): string {
 
   return [
     'You are running as the configured Codex CLI model for OpenRoom.',
-    'Reply directly to the latest user request. Tool calls are not available through this provider in the chat UI.',
+    buildCliToolBridgePrompt(payload),
     'Preserve the active character/system instructions from the conversation when they are present.',
     '',
     renderedMessages,
@@ -2190,7 +2240,7 @@ function buildClaudeCliChatPrompt(payload: Record<string, unknown>): string {
 
   return [
     'You are running as the configured Claude CLI model for OpenRoom.',
-    'Reply directly to the latest user request. Tool calls are not available through this provider in the chat UI.',
+    buildCliToolBridgePrompt(payload),
     'Preserve the active character/system instructions from the conversation when they are present.',
     '',
     renderedMessages,

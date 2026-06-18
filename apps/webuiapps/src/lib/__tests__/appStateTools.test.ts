@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../appRegistry', () => ({
   APP_REGISTRY: [
     { appId: 16, appName: 'notes', displayName: 'Notes', route: '/notes' },
+    { appId: 18, appName: 'kira', displayName: 'Kira', route: '/kira' },
     { appId: 19, appName: 'openvscode', displayName: "Aoi's IDE", route: '/ide' },
   ],
 }));
@@ -13,6 +14,7 @@ vi.mock('../windowManager', () => ({
 
 vi.mock('../diskStorage', () => ({
   getFile: vi.fn(),
+  listFiles: vi.fn(),
 }));
 
 vi.mock('../configPersistence', () => ({
@@ -26,12 +28,15 @@ import { executeAppStateTool } from '../appStateTools';
 
 const mockedGetWindows = vi.mocked(getWindows);
 const mockedGetFile = vi.mocked(diskStorage.getFile);
+const mockedListFiles = vi.mocked(diskStorage.listFiles);
 const mockedLoadPersistedConfig = vi.mocked(configPersistence.loadPersistedConfig);
 
 describe('executeAppStateTool()', () => {
   beforeEach(() => {
     mockedGetWindows.mockReset();
     mockedGetFile.mockReset();
+    mockedListFiles.mockReset();
+    mockedListFiles.mockResolvedValue({ files: [], not_exists: false });
     mockedLoadPersistedConfig.mockReset();
   });
 
@@ -190,5 +195,188 @@ describe('executeAppStateTool()', () => {
       host: '127.0.0.1',
       port: 3001,
     });
+  });
+
+  it('returns sanitized Kira model settings in the app state summary', async () => {
+    mockedGetWindows.mockReturnValue([
+      {
+        appId: 18,
+        title: 'Kira',
+        x: 0,
+        y: 0,
+        width: 1200,
+        height: 760,
+        zIndex: 130,
+        minimized: false,
+      },
+    ]);
+    mockedGetFile.mockResolvedValue({
+      activeProjectName: 'im-tavern-client',
+      selectedTaskId: 'task-1',
+      previewMode: 'markdown',
+    });
+    mockedListFiles.mockResolvedValue({ files: [{ path: 'a.json', type: 0 }], not_exists: false });
+    mockedLoadPersistedConfig.mockResolvedValue({
+      kira: {
+        workRootDirectory: 'F:/work',
+        workers: [
+          {
+            provider: 'codex-cli',
+            model: 'gpt-5.5',
+            reasoningEffort: 'high',
+            apiKey: 'secret-worker-key',
+          },
+        ],
+        reviewerLlm: {
+          provider: 'codex-cli',
+          model: 'gpt-5.5',
+          reasoningEffort: 'high',
+          apiKey: 'secret-reviewer-key',
+        },
+        projectDefaults: {
+          runMode: 'deep',
+          autoCommit: false,
+        },
+      },
+    });
+
+    const result = await executeAppStateTool({ app_name: 'kira' });
+    const parsed = JSON.parse(result) as {
+      state_summary: {
+        active_project_name: string;
+        model_settings: {
+          workers: Array<{ provider: string; model: string; apiKey?: string }>;
+          reviewer: { provider: string; model: string; apiKey?: string };
+          project_defaults: { runMode: string; autoCommit: boolean };
+        };
+      };
+    };
+
+    expect(parsed.state_summary.active_project_name).toBe('im-tavern-client');
+    expect(parsed.state_summary.model_settings.workers[0]).toEqual({
+      name: null,
+      provider: 'codex-cli',
+      model: 'gpt-5.5',
+      reasoning_effort: 'high',
+      reasoning_summary: null,
+      verbosity: null,
+      service_tier: null,
+    });
+    expect(parsed.state_summary.model_settings.workers[0].apiKey).toBeUndefined();
+    expect(parsed.state_summary.model_settings.reviewer.apiKey).toBeUndefined();
+    expect(parsed.state_summary.model_settings.project_defaults).toEqual({
+      runMode: 'deep',
+      autoCommit: false,
+    });
+  });
+
+  it('summarizes legacy Kira worker/reviewer settings without exposing secrets', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile.mockResolvedValue({});
+    mockedLoadPersistedConfig.mockResolvedValue({
+      kira: {
+        workerModel: 'legacy-worker-model',
+        workerLlm: {
+          provider: 'anthropic',
+          reasoningEffort: 'high',
+          apiKey: 'secret-worker-key',
+          customHeaders: 'x-secret: yes',
+        },
+        reviewerModel: 'legacy-reviewer-model',
+        reviewerLlm: {
+          provider: 'codex-cli',
+          reasoningEffort: 'xhigh',
+          apiKey: 'secret-reviewer-key',
+        },
+      },
+    });
+
+    const result = await executeAppStateTool({ app_name: 'kira' });
+    const parsed = JSON.parse(result) as {
+      state_summary: {
+        model_settings: {
+          worker_count: number;
+          workers: Array<{
+            provider: string;
+            model: string;
+            apiKey?: string;
+            customHeaders?: string;
+          }>;
+          reviewer: { provider: string; model: string; apiKey?: string };
+        };
+      };
+    };
+
+    expect(parsed.state_summary.model_settings.worker_count).toBe(1);
+    expect(parsed.state_summary.model_settings.workers[0]).toEqual({
+      name: null,
+      provider: 'anthropic',
+      model: 'legacy-worker-model',
+      reasoning_effort: 'high',
+      reasoning_summary: null,
+      verbosity: null,
+      service_tier: null,
+    });
+    expect(parsed.state_summary.model_settings.workers[0].apiKey).toBeUndefined();
+    expect(parsed.state_summary.model_settings.workers[0].customHeaders).toBeUndefined();
+    expect(parsed.state_summary.model_settings.reviewer).toEqual({
+      name: null,
+      provider: 'codex-cli',
+      model: 'legacy-reviewer-model',
+      reasoning_effort: 'xhigh',
+      reasoning_summary: null,
+      verbosity: null,
+      service_tier: null,
+    });
+    expect(parsed.state_summary.model_settings.reviewer.apiKey).toBeUndefined();
+  });
+
+  it('includes sanitized base LLM fallback when Kira has no role-specific settings', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile.mockResolvedValue({});
+    mockedLoadPersistedConfig.mockResolvedValue({
+      llm: {
+        provider: 'codex-cli',
+        model: 'gpt-5.5',
+        apiKey: 'secret-base-key',
+        baseUrl: '',
+        reasoningEffort: 'high',
+        reasoningSummary: 'auto',
+        verbosity: 'medium',
+      },
+    });
+
+    const result = await executeAppStateTool({ app_name: 'kira' });
+    const parsed = JSON.parse(result) as {
+      state_summary: {
+        model_settings: {
+          worker_count: number;
+          workers: Array<{ provider: string; model: string; apiKey?: string }>;
+          reviewer: { provider: string; model: string; apiKey?: string };
+        };
+      };
+    };
+
+    expect(parsed.state_summary.model_settings.worker_count).toBe(1);
+    expect(parsed.state_summary.model_settings.workers[0]).toEqual({
+      name: null,
+      provider: 'codex-cli',
+      model: 'gpt-5.5',
+      reasoning_effort: 'high',
+      reasoning_summary: 'auto',
+      verbosity: 'medium',
+      service_tier: null,
+    });
+    expect(parsed.state_summary.model_settings.workers[0].apiKey).toBeUndefined();
+    expect(parsed.state_summary.model_settings.reviewer).toEqual({
+      name: null,
+      provider: 'codex-cli',
+      model: 'gpt-5.5',
+      reasoning_effort: 'high',
+      reasoning_summary: 'auto',
+      verbosity: 'medium',
+      service_tier: null,
+    });
+    expect(parsed.state_summary.model_settings.reviewer.apiKey).toBeUndefined();
   });
 });

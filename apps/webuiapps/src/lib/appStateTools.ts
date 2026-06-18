@@ -2,10 +2,86 @@ import type { ToolDef } from './llmClient';
 
 import * as idb from './diskStorage';
 import { APP_REGISTRY } from './appRegistry';
-import { loadPersistedConfig } from './configPersistence';
+import {
+  loadPersistedConfig,
+  type KiraConfig,
+  type KiraRoleLlmConfig,
+  type PersistedConfig,
+} from './configPersistence';
 import { getWindows } from './windowManager';
 
 const TOOL_NAME = 'get_app_state';
+
+function sanitizeKiraRole(role: KiraRoleLlmConfig | null | undefined) {
+  if (!role) {
+    return null;
+  }
+
+  return {
+    name: role.name ?? null,
+    provider: role.provider ?? null,
+    model: role.model ?? null,
+    reasoning_effort: role.reasoningEffort ?? null,
+    reasoning_summary: role.reasoningSummary ?? null,
+    verbosity: role.verbosity ?? null,
+    service_tier: role.serviceTier ?? null,
+  };
+}
+
+function buildKiraFallbackRole(config: PersistedConfig | null): KiraRoleLlmConfig | null {
+  const llm = config?.llm;
+  if (!llm?.model?.trim()) {
+    return null;
+  }
+
+  return {
+    provider: llm.provider,
+    model: llm.model,
+    ...(llm.reasoningEffort ? { reasoningEffort: llm.reasoningEffort } : {}),
+    ...(llm.reasoningSummary ? { reasoningSummary: llm.reasoningSummary } : {}),
+    ...(llm.verbosity ? { verbosity: llm.verbosity } : {}),
+    ...(llm.serviceTier ? { serviceTier: llm.serviceTier } : {}),
+  };
+}
+
+function resolveKiraStateWorkers(
+  kira: KiraConfig | undefined,
+  fallbackRole: KiraRoleLlmConfig | null,
+): KiraRoleLlmConfig[] {
+  if (!kira) {
+    return fallbackRole ? [fallbackRole] : [];
+  }
+  if (Array.isArray(kira.workers) && kira.workers.length > 0) {
+    return kira.workers.slice(0, 3);
+  }
+
+  const legacyWorker: KiraRoleLlmConfig = {
+    ...(kira.workerLlm ?? {}),
+    ...(kira.workerModel ? { model: kira.workerModel } : {}),
+  };
+  return legacyWorker.model || legacyWorker.provider
+    ? [{ ...(fallbackRole ?? {}), ...legacyWorker }]
+    : fallbackRole
+      ? [fallbackRole]
+      : [];
+}
+
+function resolveKiraStateReviewer(
+  kira: KiraConfig | undefined,
+  fallbackRole: KiraRoleLlmConfig | null,
+): KiraRoleLlmConfig | null {
+  if (!kira) {
+    return fallbackRole;
+  }
+
+  const reviewer: KiraRoleLlmConfig = {
+    ...(kira.reviewerLlm ?? {}),
+    ...(kira.reviewerModel ? { model: kira.reviewerModel } : {}),
+  };
+  return reviewer.model || reviewer.provider
+    ? { ...(fallbackRole ?? {}), ...reviewer }
+    : fallbackRole;
+}
 
 async function countFiles(directory: string): Promise<number> {
   const result = await idb.listFiles(directory);
@@ -43,14 +119,30 @@ async function buildStateSummary(
         selected_event_id: normalizedState?.selectedEventId ?? null,
         event_count: await countFiles('apps/calendar/data/events'),
       };
-    case 'kira':
+    case 'kira': {
+      const persisted = await loadPersistedConfig().catch(() => null);
+      const kira = persisted?.kira;
+      const fallbackRole = buildKiraFallbackRole(persisted);
+      const workers = resolveKiraStateWorkers(kira, fallbackRole);
+      const reviewer = resolveKiraStateReviewer(kira, fallbackRole);
       return {
         selected_task_id: normalizedState?.selectedTaskId ?? null,
         active_project_name: normalizedState?.activeProjectName ?? null,
         preview_mode: normalizedState?.previewMode ?? null,
         work_count: await countFiles('apps/kira/data/works'),
         comment_count: await countFiles('apps/kira/data/comments'),
+        model_settings:
+          kira || fallbackRole
+            ? {
+                work_root_directory: kira?.workRootDirectory ?? null,
+                worker_count: workers.length,
+                workers: workers.map(sanitizeKiraRole),
+                reviewer: sanitizeKiraRole(reviewer),
+                project_defaults: kira?.projectDefaults ?? null,
+              }
+            : null,
       };
+    }
     case 'youtube':
       return {
         search_query: normalizedState?.searchQuery ?? '',

@@ -19,10 +19,16 @@ import { getSessionPath } from '@/lib/sessionPath';
 import {
   loadPersistedConfig,
   savePersistedConfig,
+  type KiraAgentProvider,
+  type KiraConfig,
   type KiraRoleLlmConfig,
   type PersistedConfig,
 } from '@/lib/configPersistence';
-import { APP_SETTINGS_SAVED_EVENT, dispatchOpenAppSettings } from '@/lib/settingsEvents';
+import {
+  APP_SETTINGS_SAVED_EVENT,
+  dispatchAppSettingsSaved,
+  dispatchOpenAppSettings,
+} from '@/lib/settingsEvents';
 import './i18n';
 import styles from './index.module.scss';
 import {
@@ -81,6 +87,41 @@ const EDITOR_WIDTH_DEFAULT = 420;
 const EDITOR_WIDTH_MIN = 360;
 const EDITOR_WIDTH_MAX = 760;
 const BOARD_WIDTH_MIN_WHEN_RESIZING = 360;
+const KIRA_PROJECT_INSTRUCTIONS_LIMIT = 12_000;
+const KIRA_AGENT_PROVIDER_VALUES: KiraAgentProvider[] = [
+  'openai',
+  'anthropic',
+  'deepseek',
+  'llama.cpp',
+  'minimax',
+  'z.ai',
+  'kimi',
+  'openrouter',
+  'opencode',
+  'opencode-go',
+  'codex-auth',
+  'claude-cli',
+  'codex-cli',
+];
+const KIRA_AGENT_PROVIDER_ALIASES: Record<string, KiraAgentProvider> = {
+  gpt: 'openai',
+  chatgpt: 'openai',
+  claude: 'anthropic',
+  'llama-cpp': 'llama.cpp',
+  llamacpp: 'llama.cpp',
+  'z-ai': 'z.ai',
+  zai: 'z.ai',
+  'open-code': 'opencode',
+  'open-code-go': 'opencode-go',
+  'codex-login': 'codex-auth',
+  'codex-oauth': 'codex-auth',
+  codex: 'codex-cli',
+  'claude-code': 'claude-cli',
+};
+const KIRA_REASONING_EFFORT_VALUES = ['none', 'minimal', 'low', 'medium', 'high', 'xhigh'] as const;
+const KIRA_REASONING_SUMMARY_VALUES = ['none', 'auto', 'concise', 'detailed'] as const;
+const KIRA_VERBOSITY_VALUES = ['low', 'medium', 'high'] as const;
+const KIRA_API_STYLE_VALUES = ['openai-chat', 'openai-responses', 'anthropic-messages'] as const;
 const RUN_MODES: Array<{ value: KiraRunMode; label: string; description: string }> = [
   {
     value: 'quick',
@@ -983,6 +1024,248 @@ function normalizeProjectSettingsResponse(
   };
 }
 
+function normalizeActionText(
+  value: string | undefined,
+  maxChars = KIRA_PROJECT_INSTRUCTIONS_LIMIT,
+): string | undefined {
+  const normalized = value?.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+  return normalized ? normalized.slice(0, maxChars) : undefined;
+}
+
+function parseKiraActionBoolean(value: string | undefined): boolean | undefined {
+  const normalized = value?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (['1', 'true', 'yes', 'y', 'on', 'enable', 'enabled'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'n', 'off', 'disable', 'disabled'].includes(normalized)) return false;
+  return undefined;
+}
+
+function parseKiraActionNumber(value: string | undefined): number | undefined {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeKiraActionRunMode(value: string | undefined): KiraRunMode | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === 'quick' || normalized === 'standard' || normalized === 'deep'
+    ? normalized
+    : undefined;
+}
+
+function normalizeKiraActionToken(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[._\s]+/g, '-')
+    .replace(/-+/g, '-');
+}
+
+function normalizeKiraActionProvider(value: string | undefined): KiraAgentProvider | undefined {
+  const normalized = value?.trim();
+  if (!normalized) return undefined;
+  const exact = normalized.toLowerCase();
+  if (KIRA_AGENT_PROVIDER_VALUES.includes(exact as KiraAgentProvider)) {
+    return exact as KiraAgentProvider;
+  }
+  const token = normalizeKiraActionToken(normalized);
+  if (KIRA_AGENT_PROVIDER_VALUES.includes(token as KiraAgentProvider)) {
+    return token as KiraAgentProvider;
+  }
+  return KIRA_AGENT_PROVIDER_ALIASES[token] ?? undefined;
+}
+
+function normalizeKiraActionEnum<T extends string>(
+  value: string | undefined,
+  allowed: readonly T[],
+): T | undefined {
+  const normalized = value?.trim().toLowerCase();
+  return normalized && allowed.includes(normalized as T) ? (normalized as T) : undefined;
+}
+
+function normalizeKiraActionReasoningEffort(
+  value: string | undefined,
+): (typeof KIRA_REASONING_EFFORT_VALUES)[number] | undefined {
+  const token = value ? normalizeKiraActionToken(value) : '';
+  const aliased =
+    token.includes('xhigh') || token === 'max' || token === 'maximum' || token === 'extra-high'
+      ? 'xhigh'
+      : token.includes('deep') || token.includes('high') || token === 'strong' || token === 'review'
+        ? 'high'
+        : token;
+  return normalizeKiraActionEnum(aliased, KIRA_REASONING_EFFORT_VALUES);
+}
+
+function normalizeKiraActionRulePackId(value: string): string {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[_\s]+/g, '-');
+}
+
+function parseKiraActionRulePackItems(
+  value: string | undefined,
+): Array<{ id: string; enabled: boolean }> | null {
+  const trimmed = value?.trim();
+  if (!trimmed) return null;
+
+  try {
+    const parsed = JSON.parse(trimmed) as unknown;
+    if (Array.isArray(parsed)) {
+      return parsed
+        .map((item) => {
+          if (typeof item === 'string') {
+            return { id: normalizeKiraActionRulePackId(item), enabled: true };
+          }
+          if (!item || typeof item !== 'object') return null;
+          const record = item as Record<string, unknown>;
+          const id = typeof record.id === 'string' ? normalizeKiraActionRulePackId(record.id) : '';
+          if (!id) return null;
+          return { id, enabled: record.enabled !== false };
+        })
+        .filter((item): item is { id: string; enabled: boolean } => Boolean(item));
+    }
+    if (parsed && typeof parsed === 'object') {
+      return Object.entries(parsed as Record<string, unknown>)
+        .map(([id, enabled]) => ({
+          id: normalizeKiraActionRulePackId(id),
+          enabled: enabled !== false,
+        }))
+        .filter((item) => Boolean(item.id));
+    }
+  } catch {
+    // Fall through to comma/newline parsing.
+  }
+
+  return trimmed
+    .split(/[,\n]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const disabled = item.startsWith('!') || item.startsWith('-');
+      const id = normalizeKiraActionRulePackId(disabled ? item.slice(1) : item);
+      return { id, enabled: !disabled };
+    })
+    .filter((item) => Boolean(item.id));
+}
+
+function buildKiraActionRulePacks(
+  value: string | undefined,
+  current: KiraRulePackSelection[],
+  presets: KiraRulePackPreset[],
+  modeValue: string | undefined,
+): KiraRulePackSelection[] | null {
+  const items = parseKiraActionRulePackItems(value);
+  if (!items) return null;
+
+  const mode = modeValue?.trim().toLowerCase() === 'replace' ? 'replace' : 'merge';
+  const enabled = new Map<string, boolean>();
+  if (mode === 'merge') {
+    current.forEach((item) => enabled.set(item.id, item.enabled));
+  }
+  items.forEach((item) => enabled.set(item.id, item.enabled));
+
+  return presets.map((preset) => ({
+    id: preset.id,
+    enabled: Boolean(enabled.get(preset.id)),
+  }));
+}
+
+function buildKiraActionInstructions(
+  current: string,
+  value: string | undefined,
+  modeValue: string | undefined,
+): string | undefined {
+  const next = normalizeActionText(value);
+  if (next === undefined) return undefined;
+
+  const mode = modeValue?.trim().toLowerCase();
+  if (mode === 'replace') return next;
+  if (mode === 'preserve') return current;
+  if (!current.trim()) return next;
+  if (current.includes(next)) return current;
+  return `${current.trim()}\n\n${next}`.slice(0, KIRA_PROJECT_INSTRUCTIONS_LIMIT);
+}
+
+function getKiraActionParam(
+  params: Record<string, string> | undefined,
+  names: string[],
+): string | undefined {
+  if (!params) return undefined;
+  for (const name of names) {
+    const value = params[name];
+    if (typeof value === 'string' && value.trim()) return value;
+  }
+  return undefined;
+}
+
+function buildKiraRoleConfigFromAction(
+  params: Record<string, string> | undefined,
+  prefix: 'worker' | 'reviewer',
+  existing: KiraRoleLlmConfig | undefined,
+  fallback: KiraRoleLlmConfig | undefined,
+): KiraRoleLlmConfig {
+  const next: KiraRoleLlmConfig = {
+    ...(fallback ?? {}),
+    ...(existing ?? {}),
+  };
+  const provider = normalizeKiraActionProvider(
+    getKiraActionParam(params, [`${prefix}Provider`, 'provider']),
+  );
+  const model = normalizeActionText(getKiraActionParam(params, [`${prefix}Model`, 'model']), 240);
+  const reasoningEffort = normalizeKiraActionReasoningEffort(
+    getKiraActionParam(params, [`${prefix}ReasoningEffort`, 'reasoningEffort']),
+  );
+  const reasoningSummary = normalizeKiraActionEnum(
+    getKiraActionParam(params, [`${prefix}ReasoningSummary`, 'reasoningSummary']),
+    KIRA_REASONING_SUMMARY_VALUES,
+  );
+  const verbosity = normalizeKiraActionEnum(
+    getKiraActionParam(params, [`${prefix}Verbosity`, 'verbosity']),
+    KIRA_VERBOSITY_VALUES,
+  );
+  const apiStyle = normalizeKiraActionEnum(
+    getKiraActionParam(params, [`${prefix}ApiStyle`, 'apiStyle']),
+    KIRA_API_STYLE_VALUES,
+  );
+  const serviceTier = normalizeActionText(
+    getKiraActionParam(params, [`${prefix}ServiceTier`, 'serviceTier']),
+    80,
+  );
+  const parallelToolCalls = parseKiraActionBoolean(
+    getKiraActionParam(params, [`${prefix}ParallelToolCalls`, 'parallelToolCalls']),
+  );
+
+  if (provider) next.provider = provider;
+  if (model) next.model = model;
+  if (reasoningEffort) next.reasoningEffort = reasoningEffort;
+  if (reasoningSummary) next.reasoningSummary = reasoningSummary;
+  if (verbosity) next.verbosity = verbosity;
+  if (apiStyle) next.apiStyle = apiStyle;
+  if (serviceTier) next.serviceTier = serviceTier;
+  if (parallelToolCalls !== undefined) next.parallelToolCalls = parallelToolCalls;
+
+  return next;
+}
+
+function buildKiraFallbackRoleConfig(
+  config: PersistedConfig | null,
+): KiraRoleLlmConfig | undefined {
+  const llm = config?.llm;
+  if (!llm) return undefined;
+  return {
+    provider: llm.provider,
+    model: llm.model,
+    ...(llm.baseUrl ? { baseUrl: llm.baseUrl } : {}),
+    ...(llm.command ? { command: llm.command } : {}),
+    ...(llm.reasoningEffort ? { reasoningEffort: llm.reasoningEffort } : {}),
+    ...(llm.reasoningSummary ? { reasoningSummary: llm.reasoningSummary } : {}),
+    ...(llm.verbosity ? { verbosity: llm.verbosity } : {}),
+    ...(llm.serviceTier ? { serviceTier: llm.serviceTier } : {}),
+    ...(llm.parallelToolCalls !== undefined ? { parallelToolCalls: llm.parallelToolCalls } : {}),
+    ...(llm.apiStyle ? { apiStyle: llm.apiStyle } : {}),
+  };
+}
+
 function loadStoredEditorWidth(): number {
   if (typeof window === 'undefined') return EDITOR_WIDTH_DEFAULT;
   const stored = Number(window.localStorage.getItem(EDITOR_WIDTH_STORAGE_KEY));
@@ -1478,6 +1761,287 @@ const KiraPage: React.FC = () => {
     ],
   );
 
+  const applyProjectSettingsFromAgentAction = useCallback(
+    async (action: CharacterAppAction): Promise<string> => {
+      const params = action.params ?? {};
+      const projectName =
+        getKiraActionParam(params, ['projectName', 'project', 'project_name'])?.trim() ||
+        activeProjectName ||
+        '';
+      if (!projectName) return 'error: missing projectName and no active Kira project is selected';
+
+      try {
+        setProjectSettingsSaving(true);
+        setErrorText(null);
+        const current = await loadProjectSettings(projectName);
+        if (!current) return `error: unable to load Kira project settings for ${projectName}`;
+
+        const presets = current.rulePackPresets?.length
+          ? current.rulePackPresets
+          : DEFAULT_RULE_PACK_PRESETS;
+        const payload: Record<string, unknown> = { projectName };
+        const runMode = normalizeKiraActionRunMode(
+          getKiraActionParam(params, ['runMode', 'projectRunMode', 'mode']),
+        );
+        const autoCommit = parseKiraActionBoolean(
+          getKiraActionParam(params, ['autoCommit', 'projectAutoCommit']),
+        );
+        const rulePacks = buildKiraActionRulePacks(
+          getKiraActionParam(params, ['rulePacks', 'projectRulePacks']),
+          current.settings.rulePacks,
+          presets,
+          getKiraActionParam(params, ['rulePackMode', 'projectRulePackMode']),
+        );
+        const requiredInstructions = buildKiraActionInstructions(
+          current.settings.requiredInstructions,
+          getKiraActionParam(params, [
+            'requiredInstructions',
+            'projectRequiredInstructions',
+            'instructions',
+          ]),
+          getKiraActionParam(params, ['requiredInstructionsMode', 'projectInstructionsMode']),
+        );
+
+        if (runMode) payload.runMode = runMode;
+        if (autoCommit !== undefined) payload.autoCommit = autoCommit;
+        if (rulePacks) payload.rulePacks = rulePacks;
+        if (requiredInstructions !== undefined) {
+          payload.requiredInstructions = requiredInstructions;
+        }
+
+        if (Object.keys(payload).length === 1) {
+          return 'error: no project settings fields were provided';
+        }
+
+        const res = await fetch('/api/kira-project-settings', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = (await res.json()) as KiraProjectSettingsResponse & { error?: string };
+        if (!res.ok) {
+          throw new Error(data.error || `Kira project settings API error ${res.status}`);
+        }
+
+        const normalized = normalizeProjectSettingsResponse(data);
+        setActiveProjectName(normalized.projectName);
+        setProjectSettings(normalized);
+        setProjectInstructionsDraft(normalized.settings.requiredInstructions);
+        setProjectRunModeDraft(normalized.settings.runMode);
+        setProjectRulePackDrafts(normalized.settings.rulePacks);
+        setProjectOrchestrationDraft(buildOrchestrationDraft(normalized.settings));
+        if (parseKiraActionBoolean(getKiraActionParam(params, ['openSettings'])) !== false) {
+          setProjectSettingsOpen(true);
+        }
+        reportAction(APP_ID, 'APPLY_PROJECT_SETTINGS', {
+          projectName: normalized.projectName,
+          runMode: normalized.settings.runMode,
+          autoCommit: String(normalized.settings.autoCommit),
+          enabledRulePacks: normalized.settings.rulePacks
+            .filter((item) => item.enabled)
+            .map((item) => item.id)
+            .join(','),
+        });
+        return `success: applied Kira project settings for ${normalized.projectName} (runMode=${normalized.settings.runMode}, rulePacks=${
+          normalized.settings.rulePacks
+            .filter((item) => item.enabled)
+            .map((item) => item.id)
+            .join(',') || 'none'
+        })`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setErrorText(message);
+        return `error: ${message}`;
+      } finally {
+        setProjectSettingsSaving(false);
+      }
+    },
+    [activeProjectName, loadProjectSettings],
+  );
+
+  const applyModelSettingsFromAgentAction = useCallback(
+    async (action: CharacterAppAction): Promise<string> => {
+      const params = action.params ?? {};
+      const rolePatchKeys = [
+        'provider',
+        'model',
+        'reasoningEffort',
+        'reasoningSummary',
+        'verbosity',
+        'apiStyle',
+        'serviceTier',
+        'parallelToolCalls',
+        'workerProvider',
+        'workerModel',
+        'workerReasoningEffort',
+        'workerReasoningSummary',
+        'workerVerbosity',
+        'workerApiStyle',
+        'workerServiceTier',
+        'workerParallelToolCalls',
+        'reviewerProvider',
+        'reviewerModel',
+        'reviewerReasoningEffort',
+        'reviewerReasoningSummary',
+        'reviewerVerbosity',
+        'reviewerApiStyle',
+        'reviewerServiceTier',
+        'reviewerParallelToolCalls',
+        'workerCount',
+      ];
+      const defaultPatchKeys = [
+        'runMode',
+        'rulePacks',
+        'rulePackMode',
+        'autoCommit',
+        'requiredInstructions',
+        'instructions',
+        'instructionsMode',
+        'defaultRunMode',
+        'projectDefaultRunMode',
+        'defaultRulePacks',
+        'projectDefaultRulePacks',
+        'defaultRulePackMode',
+        'projectDefaultRulePackMode',
+        'defaultAutoCommit',
+        'projectDefaultAutoCommit',
+        'defaultRequiredInstructions',
+        'projectDefaultRequiredInstructions',
+        'defaultInstructionsMode',
+        'projectDefaultInstructionsMode',
+      ];
+      const hasRolePatch = rolePatchKeys.some((key) => Boolean(getKiraActionParam(params, [key])));
+      const hasDefaultPatch = defaultPatchKeys.some((key) =>
+        Boolean(getKiraActionParam(params, [key])),
+      );
+      if (!hasRolePatch && !hasDefaultPatch) {
+        return 'error: no Kira model/default settings fields were provided';
+      }
+
+      try {
+        setErrorText(null);
+        const existing = await loadPersistedConfig().catch(() => null);
+        const currentKira = existing?.kira ?? {};
+        const nextKira: KiraConfig = { ...currentKira };
+        const fallbackRole = buildKiraFallbackRoleConfig(existing);
+
+        if (hasRolePatch) {
+          const rawWorkers =
+            Array.isArray(currentKira.workers) && currentKira.workers.length > 0
+              ? currentKira.workers.slice(0, 3)
+              : [
+                  {
+                    ...(currentKira.workerLlm ?? {}),
+                    ...(currentKira.workerModel ? { model: currentKira.workerModel } : {}),
+                  },
+                ];
+          const requestedWorkerCount = parseKiraActionNumber(
+            getKiraActionParam(params, ['workerCount']),
+          );
+          const workerCount = Math.min(
+            3,
+            Math.max(1, requestedWorkerCount ?? rawWorkers.length ?? 1),
+          );
+          const workers = Array.from({ length: workerCount }, (_, index) =>
+            buildKiraRoleConfigFromAction(
+              params,
+              'worker',
+              rawWorkers[index] ?? rawWorkers[0],
+              fallbackRole,
+            ),
+          );
+          const reviewerSeed = {
+            ...(currentKira.reviewerLlm ?? {}),
+            ...(currentKira.reviewerModel ? { model: currentKira.reviewerModel } : {}),
+          };
+          nextKira.workers = workers;
+          nextKira.reviewerLlm = buildKiraRoleConfigFromAction(
+            params,
+            'reviewer',
+            reviewerSeed,
+            fallbackRole,
+          );
+          delete nextKira.workerLlm;
+          delete nextKira.workerModel;
+          delete nextKira.reviewerModel;
+        }
+
+        if (hasDefaultPatch) {
+          const currentDefaults = currentKira.projectDefaults ?? {};
+          const nextDefaults: NonNullable<KiraConfig['projectDefaults']> = {
+            ...currentDefaults,
+          };
+          const runMode = normalizeKiraActionRunMode(
+            getKiraActionParam(params, ['defaultRunMode', 'projectDefaultRunMode', 'runMode']),
+          );
+          const autoCommit = parseKiraActionBoolean(
+            getKiraActionParam(params, [
+              'defaultAutoCommit',
+              'projectDefaultAutoCommit',
+              'autoCommit',
+            ]),
+          );
+          const rulePacks = buildKiraActionRulePacks(
+            getKiraActionParam(params, [
+              'defaultRulePacks',
+              'projectDefaultRulePacks',
+              'rulePacks',
+            ]),
+            normalizeRulePackSelections(currentDefaults.rulePacks),
+            DEFAULT_RULE_PACK_PRESETS,
+            getKiraActionParam(params, [
+              'defaultRulePackMode',
+              'projectDefaultRulePackMode',
+              'rulePackMode',
+            ]),
+          );
+          const requiredInstructions = buildKiraActionInstructions(
+            currentDefaults.requiredInstructions ?? '',
+            getKiraActionParam(params, [
+              'defaultRequiredInstructions',
+              'projectDefaultRequiredInstructions',
+              'requiredInstructions',
+              'instructions',
+            ]),
+            getKiraActionParam(params, [
+              'defaultInstructionsMode',
+              'projectDefaultInstructionsMode',
+              'instructionsMode',
+            ]),
+          );
+          if (runMode) nextDefaults.runMode = runMode;
+          if (autoCommit !== undefined) nextDefaults.autoCommit = autoCommit;
+          if (rulePacks) nextDefaults.rulePacks = rulePacks;
+          if (requiredInstructions !== undefined) {
+            nextDefaults.requiredInstructions = requiredInstructions;
+          }
+          nextKira.projectDefaults = nextDefaults;
+        }
+
+        await savePersistedConfig({
+          ...(existing ?? {}),
+          kira: nextKira,
+        });
+        await loadKiraModelReadiness();
+        dispatchAppSettingsSaved('kira');
+        if (parseKiraActionBoolean(getKiraActionParam(params, ['openSettings'])) !== false) {
+          dispatchOpenAppSettings('kira');
+        }
+        reportAction(APP_ID, 'APPLY_MODEL_SETTINGS', {
+          workerCount: String(nextKira.workers?.length ?? 0),
+          reviewerModel: nextKira.reviewerLlm?.model ?? '',
+          defaultRunMode: nextKira.projectDefaults?.runMode ?? '',
+        });
+        return `success: applied Kira model/default settings (workers=${nextKira.workers?.length ?? 0}, reviewer=${nextKira.reviewerLlm?.model ?? 'preserved'}, defaultRunMode=${nextKira.projectDefaults?.runMode ?? 'preserved'})`;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        setErrorText(message);
+        return `error: ${message}`;
+      }
+    },
+    [loadKiraModelReadiness],
+  );
+
   const handleAgentAction = useCallback(
     async (action: CharacterAppAction): Promise<string> => {
       switch (action.action_type) {
@@ -1494,11 +2058,19 @@ const KiraPage: React.FC = () => {
             id: action.params?.focusId ?? action.params?.workId ?? action.params?.taskId ?? null,
           });
           return 'success';
+        case 'OPEN_MODEL_SETTINGS':
+          dispatchOpenAppSettings('kira');
+          reportAction(APP_ID, 'OPEN_KIRA_MODEL_SETTINGS', {});
+          return 'success';
+        case 'APPLY_MODEL_SETTINGS':
+          return applyModelSettingsFromAgentAction(action);
+        case 'APPLY_PROJECT_SETTINGS':
+          return applyProjectSettingsFromAgentAction(action);
         default:
           return `error: unknown action_type ${action.action_type}`;
       }
     },
-    [refreshFromCloud],
+    [applyModelSettingsFromAgentAction, applyProjectSettingsFromAgentAction, refreshFromCloud],
   );
 
   useAgentActionListener(APP_ID, handleAgentAction);
