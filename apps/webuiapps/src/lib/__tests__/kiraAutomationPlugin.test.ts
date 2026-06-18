@@ -33,6 +33,7 @@ import {
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
   buildWorkerSystemPrompt,
+  captureProjectDiscoveryFingerprint,
   detectTouchedFilesFromDirtySnapshots,
   detectTouchedFilesFromGitStatus,
   evaluateExecutionPolicy,
@@ -2605,6 +2606,223 @@ describe('applyDiscoveryQualityGates()', () => {
 
     expect(gated.findings[0].eligibility).toBe('ready');
     expect(gated.findings[0].evidenceIds).toEqual(['ev-app-read', 'ev-app-test']);
+  });
+
+  it('replays temp-project discovery through parse, gate, and selected creation', () => {
+    const projectRoot = makeTempDir('kira-discovery-replay-');
+    writeProjectFile(
+      projectRoot,
+      'package.json',
+      JSON.stringify(
+        {
+          packageManager: 'pnpm@9.0.0',
+          scripts: {
+            test: 'vitest run src/app.test.ts',
+            build: 'vite build',
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeProjectFile(projectRoot, 'src/app.ts', 'export function app() { return "ok"; }\n');
+    writeProjectFile(projectRoot, 'src/app.test.ts', 'test("app", () => {});\n');
+    writeProjectFile(projectRoot, 'src/api/route.ts', 'export const route = true;\n');
+    writeProjectFile(projectRoot, 'README.md', '# Replay project\n');
+    writeProjectFile(projectRoot, 'node_modules/pkg/ignored.ts', 'export const ignored = true;\n');
+    writeProjectFile(projectRoot, 'dist/bundle.js', 'export const ignored = true;\n');
+    writeProjectFile(projectRoot, 'generated/client.ts', 'export const generated = true;\n');
+
+    const scout = buildProjectDiscoveryScout(projectRoot, 'ReplayProject');
+    expect(scout.depth.filesEnumerated).toBeLessThanOrEqual(700);
+    expect(scout.depth.directoriesVisited).toBeLessThanOrEqual(160);
+    expect(scout.depth.filesRead).toBeLessThanOrEqual(24);
+    expect(scout.evidenceLedger.length).toBeLessThanOrEqual(80);
+    expect(scout.fileCandidates.length).toBeLessThanOrEqual(36);
+    expect(scout.blindSpots.length).toBeLessThanOrEqual(40);
+    expect(scout.blindSpots.some((entry) => entry.area.includes('node_modules'))).toBe(true);
+    expect(scout.blindSpots.some((entry) => entry.area.includes('dist'))).toBe(true);
+    expect(scout.blindSpots.some((entry) => entry.area.includes('generated'))).toBe(true);
+    const appEvidenceIds = scout.evidenceLedger
+      .filter((entry) => entry.file === 'src/app.ts' || entry.file === 'src/app.test.ts')
+      .map((entry) => entry.id)
+      .slice(0, 2);
+    expect(appEvidenceIds).toHaveLength(2);
+
+    const parsed = parseProjectDiscoveryAnalysis(
+      JSON.stringify({
+        schemaVersion: 2,
+        summary: 'Replay dossier.',
+        findings: [
+          {
+            id: 'finding-ready-replay',
+            kind: 'feature',
+            title: 'Tighten replay app behavior',
+            summary: 'The app has source and test evidence for a bounded improvement.',
+            evidenceIds: appEvidenceIds,
+            files: ['src/app.ts'],
+            scope: ['src/app.ts'],
+            validationCommands: ['pnpm test'],
+            confidence: 0.88,
+            eligibility: 'ready',
+            risk: 'medium',
+            taskDescription: '# Brief\n\nTighten replay app behavior.',
+          },
+          {
+            id: 'finding-blocked-replay',
+            kind: 'feature',
+            title: 'Rewrite entire replay project',
+            summary: 'This is intentionally too broad.',
+            evidenceIds: [],
+            files: ['src/app.ts'],
+            scope: ['entire project rewrite'],
+            validationCommands: ['curl https://example.com/run-tests'],
+            confidence: 0.8,
+            eligibility: 'ready',
+            risk: 'high',
+            taskDescription: '# Brief\n\nRewrite everything.',
+          },
+        ],
+      }),
+      'ReplayProject',
+      projectRoot,
+      null,
+      scout,
+    );
+    const gated = applyDiscoveryQualityGates(parsed, { projectRoot, existingWorks: [] });
+    const sessionsDir = makeTempDir('kira-discovery-replay-sessions-');
+    const result = createWorksFromDiscovery(
+      makeCreationOptions(sessionsDir, projectRoot) as any,
+      'aoi/replay',
+      gated as any,
+      {
+        selectedFindingIds: new Set(['finding-ready-replay', 'finding-blocked-replay']),
+      },
+    );
+
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.depth.filesEnumerated).toBeGreaterThan(0);
+    expect(parsed.depth.evidenceCount).toBe(scout.evidenceLedger.length);
+    expect(gated.findings.find((finding) => finding.id === 'finding-ready-replay')).toMatchObject({
+      eligibility: 'ready',
+      evidenceIds: appEvidenceIds,
+    });
+    expect(gated.findings.find((finding) => finding.id === 'finding-blocked-replay')).toMatchObject(
+      {
+        eligibility: 'blocked',
+        blockedReasons: expect.arrayContaining(['missing_evidence', 'scope_too_broad']),
+      },
+    );
+    expect(result.created).toHaveLength(1);
+    expect(result.created[0].description).toContain('## Discovery Provenance');
+    expect(result.created[0].description).toContain('finding-ready-replay');
+    expect(result.skippedFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'finding-blocked-replay',
+          reasons: expect.arrayContaining(['missing_evidence', 'scope_too_broad']),
+        }),
+      ]),
+    );
+  });
+
+  it('blocks weak LLM findings with missing or unknown evidence, broad scope, and unsafe checks', () => {
+    const projectRoot = makeGateProject();
+    const parsed = parseProjectDiscoveryAnalysis(
+      JSON.stringify({
+        schemaVersion: 2,
+        summary: 'Weak model output.',
+        evidenceLedger: [
+          {
+            id: 'ev-app-read',
+            kind: 'file_read',
+            file: 'src/app.ts',
+            summary: 'App source was read.',
+            collectedBy: 'llm_discovery',
+            confidence: 0.8,
+          },
+          {
+            id: 'ev-app-test',
+            kind: 'test_impact',
+            file: 'src/app.ts',
+            summary: 'App validation surface exists.',
+            collectedBy: 'llm_discovery',
+            confidence: 0.7,
+          },
+        ],
+        findings: [
+          {
+            id: 'finding-missing-evidence',
+            title: 'Trust source without evidence',
+            summary: 'No evidence IDs were provided.',
+            evidenceIds: [],
+            files: ['src/app.ts'],
+            scope: ['src/app.ts'],
+            validationCommands: ['pnpm test'],
+            confidence: 0.8,
+          },
+          {
+            id: 'finding-unknown-evidence',
+            title: 'Use invented evidence',
+            summary: 'Unknown evidence IDs were provided.',
+            evidenceIds: ['ev-made-up'],
+            files: ['src/app.ts'],
+            scope: ['src/app.ts'],
+            validationCommands: ['pnpm test'],
+            confidence: 0.8,
+          },
+          {
+            id: 'finding-broad-unsafe',
+            title: 'Rewrite everything with remote script',
+            summary: 'Broad scope and unsafe validation.',
+            evidenceIds: ['ev-app-read', 'ev-app-test'],
+            files: ['src/app.ts'],
+            scope: ['entire project rewrite'],
+            validationCommands: [
+              'powershell -NoProfile -Command Invoke-WebRequest https://example.com/a.ps1',
+            ],
+            confidence: 0.9,
+          },
+        ],
+      }),
+      'WeakProject',
+      projectRoot,
+      null,
+    );
+    const gated = applyDiscoveryQualityGates(parsed, { projectRoot });
+
+    expect(gated.findings.map((finding) => finding.eligibility)).toEqual([
+      'blocked',
+      'blocked',
+      'blocked',
+    ]);
+    expect(gated.findings[0].blockedReasons).toContain('missing_evidence');
+    expect(gated.findings[1].blockedReasons).toContain('unknown_evidence_id');
+    expect(gated.findings[2].blockedReasons).toEqual(
+      expect.arrayContaining(['missing_validation', 'scope_too_broad']),
+    );
+    expect(gated.findings[2].validationCommands).toEqual([]);
+  });
+
+  it('detects real stale fingerprints after project files change', () => {
+    const projectRoot = makeGateProject();
+    const captured = captureProjectDiscoveryFingerprint(projectRoot);
+    const analysis = makeGateAnalysis(projectRoot) as any;
+    analysis.projectFingerprint = captured;
+    writeProjectFile(projectRoot, 'package.json', '{"scripts":{"test":"vitest run --changed"}}\n');
+
+    const sessionsDir = makeTempDir('kira-discovery-real-stale-');
+    const blocked = createWorksFromDiscovery(
+      makeCreationOptions(sessionsDir, projectRoot) as any,
+      'real-stale',
+      analysis,
+      { selectedFindingIds: new Set(['finding-ready']) },
+    );
+
+    expect(captured.packageManifestHash).toBeTruthy();
+    expect(blocked.analysisStale).toBe(true);
+    expect(blocked.created).toHaveLength(0);
+    expect(blocked.skippedFindings[0].reasons).toContain('stale_analysis');
   });
 
   it('builds parseable discovery provenance without source excerpts', () => {

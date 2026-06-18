@@ -12112,7 +12112,11 @@ function normalizeProjectDiscoveryFinding(
   const title = normalizeNullableString(record.title) || `Discovery item ${index + 1}`;
   const summary = normalizeNullableString(record.summary) || 'No summary provided.';
   const files = normalizeDiscoveryFileList(record.files, [], 20);
-  const evidence = normalizeDiscoveryStringList(record.evidence, files.length > 0 ? files : [], 20);
+  const evidence = normalizeDiscoveryStringList(
+    record.evidence,
+    sourceHasV2Fields ? [] : files.length > 0 ? files : [],
+    20,
+  );
   const evidenceIds = sourceHasV2Fields
     ? normalizeDiscoveryStringList(record.evidenceIds, [], 20)
     : [];
