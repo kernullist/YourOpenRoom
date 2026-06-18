@@ -628,6 +628,11 @@ export interface KiraDiscoveryEligibilityCounts {
   needsDeeperAnalysis: number;
 }
 
+export interface KiraDiscoveryFingerprintDetail {
+  label: string;
+  value: string;
+}
+
 export const STATUS_ORDER: KiraTaskStatus[] = [
   'todo',
   'in_progress',
@@ -746,6 +751,95 @@ export function getDiscoveryEvidenceForFinding(
   return finding.evidenceIds
     .map((id) => byId.get(id))
     .filter((entry): entry is KiraProjectDiscoveryEvidence => Boolean(entry));
+}
+
+const DISCOVERY_BLOCKED_REASON_LABELS: Record<string, string> = {
+  missing_evidence: 'Missing evidence',
+  unknown_evidence_id: 'Unknown evidence reference',
+  missing_candidate_files: 'Missing candidate file',
+  missing_validation: 'Missing validation command',
+  scope_too_broad: 'Scope too broad',
+  stale_analysis: 'Stale project fingerprint',
+  blind_spot_overlap: 'Overlaps blind spot',
+  duplicate_existing_work: 'Duplicate existing work',
+  not_selected: 'Not selected',
+  missing_title: 'Missing title',
+};
+
+function formatDiscoveryCodeLabel(value: string): string {
+  if (value.includes(',')) {
+    return value
+      .split(',')
+      .map((part) => formatDiscoveryCodeLabel(part))
+      .join(', ');
+  }
+  const normalized = value.trim().replace(/[_-]+/g, ' ');
+  if (!normalized) return 'Unknown';
+  return normalized.replace(/\b[a-z]/g, (letter) => letter.toUpperCase());
+}
+
+export function formatDiscoveryBlockedReason(reason: string): string {
+  const normalized = reason.trim().toLowerCase();
+  if (!normalized) return 'Unknown reason';
+  return DISCOVERY_BLOCKED_REASON_LABELS[normalized] ?? formatDiscoveryCodeLabel(normalized);
+}
+
+function formatDiscoveryFingerprintValue(value: string | null | undefined): string {
+  if (!value) return 'unavailable';
+  return value.length > 16 ? value.slice(0, 16) : value;
+}
+
+export function getDiscoveryFingerprintStatusText(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'fingerprintStatus' | 'stale'> | null | undefined,
+): string {
+  if (!analysis) return 'Status unknown';
+  const status = analysis.fingerprintStatus;
+  if (typeof status === 'string') return `Status ${status}`;
+  if (status?.status) {
+    const reason = status.reason ? `: ${formatDiscoveryCodeLabel(status.reason)}` : '';
+    return `Status ${status.status}${reason}`;
+  }
+  return analysis.stale ? 'Status stale' : 'Status unknown';
+}
+
+export function getDiscoveryFingerprintDetails(
+  analysis:
+    | Pick<KiraProjectDiscoveryAnalysis, 'fingerprintStatus' | 'projectFingerprint' | 'stale'>
+    | null
+    | undefined,
+): KiraDiscoveryFingerprintDetail[] {
+  if (!analysis) return [];
+  const fingerprint = analysis.projectFingerprint;
+  const details: KiraDiscoveryFingerprintDetail[] = [
+    { label: 'status', value: getDiscoveryFingerprintStatusText(analysis) },
+  ];
+  if (!fingerprint) return details;
+  details.push(
+    {
+      label: 'captured',
+      value: fingerprint.capturedAt
+        ? new Date(fingerprint.capturedAt).toISOString()
+        : 'unavailable',
+    },
+    { label: 'branch', value: fingerprint.gitBranch ?? 'unavailable' },
+    { label: 'head', value: formatDiscoveryFingerprintValue(fingerprint.gitHead) },
+    {
+      label: 'git status',
+      value: formatDiscoveryFingerprintValue(fingerprint.gitStatusHash),
+    },
+    {
+      label: 'workspace',
+      value: formatDiscoveryFingerprintValue(fingerprint.workspaceFileHash),
+    },
+    {
+      label: 'package',
+      value: formatDiscoveryFingerprintValue(fingerprint.packageManifestHash),
+    },
+  );
+  if (fingerprint.unavailable?.length) {
+    details.push({ label: 'unavailable', value: fingerprint.unavailable.join(', ') });
+  }
+  return details;
 }
 
 function normalizeRequirementTrace(value: unknown): KiraRequirementTraceItem[] {

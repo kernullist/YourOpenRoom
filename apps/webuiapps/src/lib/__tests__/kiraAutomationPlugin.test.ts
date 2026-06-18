@@ -74,6 +74,7 @@ import {
   resolveRoleLlmConfig,
   resolveKiraProjectRoot,
   resolveWorkerLlmConfigs,
+  sanitizeSessionPath,
   recommendWorkDecomposition,
   refreshProjectIntelligenceProfile,
   runWithKiraModelRouteLimit,
@@ -3753,6 +3754,13 @@ describe('evaluateExecutionPolicy()', () => {
 });
 
 describe('resolveKiraProjectRoot()', () => {
+  it('normalizes session storage paths without parent traversal segments', () => {
+    expect(sanitizeSessionPath('aoi/space_adventure')).toBe('aoi/space_adventure');
+    expect(sanitizeSessionPath('../outside/../../evil')).toBe('outside/evil');
+    expect(sanitizeSessionPath('..\\..\\AppData\\OpenRoom')).toBe('AppData/OpenRoom');
+    expect(sanitizeSessionPath('')).toBe('default');
+  });
+
   it('treats the configured work root itself as the project when it has project markers', () => {
     const projectRoot = fs.mkdtempSync(join(os.tmpdir(), 'briefwave-cast-'));
     try {
@@ -3770,6 +3778,17 @@ describe('resolveKiraProjectRoot()', () => {
     const workRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-work-root-'));
     try {
       expect(resolveKiraProjectRoot(workRoot, 'templates')).toBe(join(workRoot, 'templates'));
+    } finally {
+      fs.rmSync(workRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('rejects project names that would escape the configured work root', () => {
+    const workRoot = fs.mkdtempSync(join(os.tmpdir(), 'kira-work-root-'));
+    try {
+      expect(resolveKiraProjectRoot(workRoot, '../outside')).toBe('');
+      expect(resolveKiraProjectRoot(workRoot, '..\\outside')).toBe('');
+      expect(resolveKiraProjectRoot(workRoot, join(os.tmpdir(), 'outside'))).toBe('');
     } finally {
       fs.rmSync(workRoot, { recursive: true, force: true });
     }

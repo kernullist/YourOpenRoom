@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, CircleStop, Send, Settings } from 'lucide-react';
+import { ChevronDown, CircleStop, Copy, ExternalLink, Send, Settings } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
 import {
   useFileSystem,
@@ -14,6 +14,7 @@ import {
   generateId,
   type CharacterAppAction,
 } from '@/lib';
+import { dispatchAgentAction } from '@/lib/vibeContainerMock';
 import { getSessionPath } from '@/lib/sessionPath';
 import {
   loadPersistedConfig,
@@ -42,11 +43,13 @@ import {
   DEFAULT_VIEW_STATE,
   STATUS_ORDER,
   findLatestRetryFeedback,
+  formatDiscoveryBlockedReason,
   formatDiscoveryDepthScore,
   formatTimestamp,
   getDiscoveryDepthLevel,
   getDiscoveryEligibilityCounts,
   getDiscoveryEvidenceForFinding,
+  getDiscoveryFingerprintDetails,
   getInitialDiscoverySelection,
   getCommentFilePath,
   getWorkFilePath,
@@ -70,6 +73,7 @@ const COMMENTS_DIR = '/comments';
 const ATTEMPTS_DIR = '/attempts';
 const REVIEWS_DIR = '/reviews';
 const STATE_FILE = '/state.json';
+const IDE_APP_ID = 19;
 const KIRA_LIVE_REFRESH_INTERVAL_MS = 4_000;
 const KIRA_STEER_TEXT_LIMIT = 6000;
 const EDITOR_WIDTH_STORAGE_KEY = 'kira.editorPanelWidth';
@@ -210,6 +214,84 @@ function formatDiscoveryEvidenceLocation(evidence: KiraProjectDiscoveryEvidence)
         }`
       : '';
   return evidence.file ? `${evidence.file}${range}` : evidence.kind;
+}
+
+function getDiscoveryEvidenceOpenPath(evidence: KiraProjectDiscoveryEvidence): string | null {
+  const normalized = evidence.file?.replace(/\\/g, '/').trim() ?? '';
+  if (!normalized || normalized.startsWith('/') || /^[a-zA-Z]:/.test(normalized)) return null;
+  const segments = normalized.split('/');
+  if (segments.some((segment) => !segment || segment === '.' || segment === '..')) return null;
+  return normalized;
+}
+
+function buildDiscoveryEvidenceReference(evidence: KiraProjectDiscoveryEvidence): string {
+  return [
+    `${evidence.id} [${evidence.kind}]`,
+    formatDiscoveryEvidenceLocation(evidence),
+    evidence.summary,
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+function buildDiscoveryExportPayload(
+  analysis: KiraProjectDiscoveryAnalysis,
+  selectedFindingIds: string[],
+): string {
+  return JSON.stringify(
+    {
+      schemaVersion: analysis.schemaVersion ?? 2,
+      exportedAt: new Date().toISOString(),
+      selectedFindingIds,
+      analysis,
+    },
+    null,
+    2,
+  );
+}
+
+function buildDiscoveryFindingExportPayload(
+  analysis: KiraProjectDiscoveryAnalysis,
+  finding: KiraDiscoveryFinding,
+): string {
+  return JSON.stringify(
+    {
+      schemaVersion: analysis.schemaVersion ?? 2,
+      exportedAt: new Date().toISOString(),
+      analysisId: analysis.id,
+      projectName: analysis.projectName,
+      finding,
+      evidenceLedger: getDiscoveryEvidenceForFinding(analysis, finding),
+    },
+    null,
+    2,
+  );
+}
+
+async function copyTextToClipboard(value: string): Promise<boolean> {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {
+    // Fall back to the textarea path below.
+  }
+
+  try {
+    const textArea = document.createElement('textarea');
+    textArea.value = value;
+    textArea.setAttribute('readonly', 'true');
+    textArea.style.position = 'fixed';
+    textArea.style.left = '-9999px';
+    document.body.appendChild(textArea);
+    textArea.select();
+    const copied = document.execCommand('copy');
+    document.body.removeChild(textArea);
+    return copied;
+  } catch {
+    return false;
+  }
 }
 const DEFAULT_RULE_PACK_PRESETS: KiraRulePackPreset[] = [
   {
@@ -1160,6 +1242,7 @@ const KiraPage: React.FC = () => {
     null,
   );
   const [selectedDiscoveryFindingIds, setSelectedDiscoveryFindingIds] = useState<string[]>([]);
+  const [discoveryClipboardMessage, setDiscoveryClipboardMessage] = useState<string | null>(null);
   const [editorPanelWidth, setEditorPanelWidth] = useState(loadStoredEditorWidth);
   const [isEditorResizing, setIsEditorResizing] = useState(false);
   const appRef = useRef<HTMLDivElement | null>(null);
@@ -2098,6 +2181,7 @@ const KiraPage: React.FC = () => {
     setDiscoveryLogs([]);
     setDiscoveryAnalysis(null);
     setSelectedDiscoveryFindingIds([]);
+    setDiscoveryClipboardMessage(null);
   }, []);
 
   const runFreshDiscovery = useCallback(
@@ -2107,6 +2191,7 @@ const KiraPage: React.FC = () => {
       setDiscoveryLogs([t('messages.discoveryRunning')]);
       setDiscoveryAnalysis(null);
       setSelectedDiscoveryFindingIds([]);
+      setDiscoveryClipboardMessage(null);
       reportAction(APP_ID, 'START_DISCOVERY', { projectName, discoveryMode });
 
       const controller = new AbortController();
@@ -2179,6 +2264,7 @@ const KiraPage: React.FC = () => {
     setDiscoveryLogs([]);
     setDiscoveryAnalysis(null);
     setSelectedDiscoveryFindingIds([]);
+    setDiscoveryClipboardMessage(null);
 
     if (!projectName) {
       setDiscoveryStage('error');
@@ -2243,6 +2329,68 @@ const KiraPage: React.FC = () => {
       return exists ? prev.filter((id) => id !== finding.id) : [...prev, finding.id];
     });
   }, []);
+
+  const handleCopyDiscoveryText = useCallback(
+    async (value: string, successMessage: string) => {
+      const copied = await copyTextToClipboard(value);
+      setDiscoveryClipboardMessage(copied ? successMessage : t('messages.discoveryCopyFailed'));
+    },
+    [t],
+  );
+
+  const handleCopyDiscoveryDossier = useCallback(async () => {
+    if (!discoveryAnalysis) return;
+    await handleCopyDiscoveryText(
+      buildDiscoveryExportPayload(
+        discoveryAnalysis,
+        sanitizeDiscoverySelection(discoveryAnalysis, selectedDiscoveryFindingIds),
+      ),
+      t('messages.discoveryDossierCopied'),
+    );
+  }, [discoveryAnalysis, handleCopyDiscoveryText, selectedDiscoveryFindingIds, t]);
+
+  const handleCopyDiscoveryFinding = useCallback(
+    async (finding: KiraDiscoveryFinding) => {
+      if (!discoveryAnalysis) return;
+      await handleCopyDiscoveryText(
+        buildDiscoveryFindingExportPayload(discoveryAnalysis, finding),
+        t('messages.discoveryFindingCopied'),
+      );
+    },
+    [discoveryAnalysis, handleCopyDiscoveryText, t],
+  );
+
+  const handleCopyDiscoveryEvidence = useCallback(
+    async (evidence: KiraProjectDiscoveryEvidence) => {
+      await handleCopyDiscoveryText(
+        buildDiscoveryEvidenceReference(evidence),
+        t('messages.discoveryEvidenceCopied'),
+      );
+    },
+    [handleCopyDiscoveryText, t],
+  );
+
+  const handleOpenDiscoveryEvidence = useCallback(
+    async (evidence: KiraProjectDiscoveryEvidence) => {
+      const path = getDiscoveryEvidenceOpenPath(evidence);
+      if (!path) {
+        setDiscoveryClipboardMessage(t('messages.discoveryEvidenceOpenUnavailable'));
+        return;
+      }
+
+      const result = await dispatchAgentAction({
+        app_id: IDE_APP_ID,
+        action_type: 'OPEN_FILE',
+        params: { path },
+      });
+      setDiscoveryClipboardMessage(
+        result === 'success'
+          ? t('messages.discoveryEvidenceOpened', { path })
+          : t('messages.discoveryEvidenceOpenFailed', { result }),
+      );
+    },
+    [t],
+  );
 
   const handleContinueDiscovery = useCallback(async () => {
     const projectName = activeProjectName?.trim() ?? '';
@@ -2879,6 +3027,7 @@ const KiraPage: React.FC = () => {
     : '--';
   const discoveryTopology = discoveryAnalysis?.topology;
   const discoveryBlindSpots = discoveryAnalysis?.blindSpots ?? [];
+  const discoveryFingerprintDetails = getDiscoveryFingerprintDetails(discoveryAnalysis);
   const discoveryEvidenceCount =
     discoveryAnalysis?.depth?.evidenceCount ?? discoveryAnalysis?.evidenceLedger?.length ?? 0;
   const selectedDiscoveryIdSet = new Set(selectedEligibleDiscoveryFindingIds);
@@ -2936,9 +3085,30 @@ const KiraPage: React.FC = () => {
             <span>
               {entry.id} | {entry.kind}
             </span>
-            <strong title={formatDiscoveryEvidenceLocation(entry)}>
-              {formatDiscoveryEvidenceLocation(entry)}
-            </strong>
+            <div className={styles.discoveryEvidenceLocation}>
+              <strong title={formatDiscoveryEvidenceLocation(entry)}>
+                {formatDiscoveryEvidenceLocation(entry)}
+              </strong>
+              <div className={styles.discoveryEvidenceActions}>
+                <button
+                  type="button"
+                  className={styles.discoveryTinyButton}
+                  disabled={!getDiscoveryEvidenceOpenPath(entry)}
+                  onClick={() => void handleOpenDiscoveryEvidence(entry)}
+                >
+                  <ExternalLink size={13} aria-hidden="true" />
+                  {t('discovery.openEvidence')}
+                </button>
+                <button
+                  type="button"
+                  className={styles.discoveryTinyButton}
+                  onClick={() => void handleCopyDiscoveryEvidence(entry)}
+                >
+                  <Copy size={13} aria-hidden="true" />
+                  {t('discovery.copyEvidence')}
+                </button>
+              </div>
+            </div>
             <p>{truncateDiscoveryText(entry.summary, 150)}</p>
           </div>
         ))}
@@ -3005,6 +3175,14 @@ const KiraPage: React.FC = () => {
               {t('discovery.evidenceValue', { count: evidenceCount })}
             </span>
           </div>
+          <button
+            type="button"
+            className={styles.discoveryTinyButton}
+            onClick={() => void handleCopyDiscoveryFinding(finding)}
+          >
+            <Copy size={13} aria-hidden="true" />
+            {t('discovery.copyFinding')}
+          </button>
         </div>
 
         <div className={styles.discoveryFindingTitleRow}>
@@ -3028,7 +3206,9 @@ const KiraPage: React.FC = () => {
           <div className={styles.discoveryReasonList}>
             <span>{t('discovery.blockedReasons')}</span>
             {finding.blockedReasons.map((reason) => (
-              <strong key={reason}>{reason}</strong>
+              <strong key={reason} title={reason}>
+                {formatDiscoveryBlockedReason(reason)}
+              </strong>
             ))}
           </div>
         ) : null}
@@ -4513,9 +4693,20 @@ const KiraPage: React.FC = () => {
                 <h2>{t('sections.discoveryTitle')}</h2>
                 <p className={styles.discoverySubtitle}>{t('sections.discoverySubtitle')}</p>
               </div>
-              <button className={styles.secondaryButton} onClick={handleCloseDiscovery}>
-                {t('actions.close')}
-              </button>
+              <div className={styles.discoveryHeaderActions}>
+                <button
+                  type="button"
+                  className={styles.secondaryButton}
+                  disabled={!discoveryAnalysis}
+                  onClick={() => void handleCopyDiscoveryDossier()}
+                >
+                  <Copy size={15} aria-hidden="true" />
+                  {t('discovery.copyDossier')}
+                </button>
+                <button className={styles.secondaryButton} onClick={handleCloseDiscovery}>
+                  {t('actions.close')}
+                </button>
+              </div>
             </div>
 
             <div className={styles.discoveryStatus}>
@@ -4667,6 +4858,36 @@ const KiraPage: React.FC = () => {
                   {discoveryIsStale ? (
                     <div className={styles.discoveryWarning}>
                       {t('messages.discoveryStaleWarning')}
+                    </div>
+                  ) : null}
+                  {discoveryAnalysis && discoveryFingerprintDetails.length > 0 ? (
+                    <div className={styles.discoveryFingerprintPanel}>
+                      <div className={styles.discoveryFingerprintHeader}>
+                        <span>{t('discovery.fingerprint')}</span>
+                        {discoveryAnalysis.basedOnPreviousAnalysis ? (
+                          <strong>
+                            {t('discovery.previousDossierValue', {
+                              current: discoveryAnalysis.id,
+                              previous: discoveryAnalysis.previousAnalysisId ?? '--',
+                            })}
+                          </strong>
+                        ) : (
+                          <strong>{discoveryAnalysis.id}</strong>
+                        )}
+                      </div>
+                      <div className={styles.discoveryFingerprintGrid}>
+                        {discoveryFingerprintDetails.map((detail) => (
+                          <div key={detail.label}>
+                            <span>{detail.label}</span>
+                            <strong title={detail.value}>{detail.value}</strong>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
+                  {discoveryClipboardMessage ? (
+                    <div className={styles.discoveryClipboardStatus}>
+                      {discoveryClipboardMessage}
                     </div>
                   ) : null}
                   {discoveryAnalysis?.depth?.notes?.length ? (

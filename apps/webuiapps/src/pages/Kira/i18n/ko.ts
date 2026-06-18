@@ -216,6 +216,14 @@ const ko = {
     discoveryCreatedSelected:
       'todo 작업 {{created}}개를 만들고 후보 {{skipped}}개를 건너뛰었습니다.',
     discoveryStaleWarning: 'Fingerprint가 stale 상태입니다. 작업을 신뢰하기 전에 다시 분석하세요.',
+    discoveryDossierCopied: 'Discovery dossier를 JSON으로 복사했습니다.',
+    discoveryFindingCopied: 'Discovery finding을 JSON으로 복사했습니다.',
+    discoveryEvidenceCopied: 'Evidence 참조를 복사했습니다.',
+    discoveryCopyFailed: '클립보드 복사에 실패했습니다.',
+    discoveryEvidenceOpened: 'Aoi’s IDE에서 {{path}} 파일을 열었습니다.',
+    discoveryEvidenceOpenFailed: 'Aoi’s IDE가 evidence 파일을 열지 못했습니다: {{result}}',
+    discoveryEvidenceOpenUnavailable:
+      '이 evidence 항목은 안전한 워크스페이스 파일을 가리키지 않습니다.',
     discoveryAnalyzingTitle: '활성 프로젝트 분석 중',
     discoveryAnalyzingHint:
       'Aoi가 구조를 파악하고 위험 경로를 추적하며 구체적인 구현 작업으로 다듬는 중입니다.',
@@ -257,6 +265,12 @@ const ko = {
     validation: '검증',
     blockedReasons: '차단 사유',
     evidenceLedger: 'Evidence ledger',
+    fingerprint: 'Fingerprint',
+    previousDossierValue: '현재 {{current}} / 이전 {{previous}}',
+    copyDossier: 'Dossier 복사',
+    copyFinding: 'Finding 복사',
+    copyEvidence: '참조 복사',
+    openEvidence: '열기',
     riskValue: 'Risk {{risk}}',
     confidenceValue: 'Conf {{confidence}}',
     evidenceValue: 'Ev {{count}}',

@@ -215,6 +215,20 @@ discovery flow against a configured local work root. The Vite plugin in
 6. rerun validation
 7. block, retry, or auto-commit based on project settings
 
+The **Aoi Will Take Care of It** discovery flow now saves a project discovery dossier before it
+creates any todo work. The dossier includes a deterministic scout pass, depth score, topology map,
+blind spots, project fingerprint, evidence ledger, and candidate findings. Kira shows the saved
+dossier in-app so the operator can inspect how much of the project Aoi actually read, copy the
+dossier or individual findings as JSON, open/copy linked evidence references, and see whether the
+saved fingerprint is fresh, stale, or unavailable.
+
+Discovery findings are not automatically trusted just because an LLM suggested them. Each finding is
+quality-gated against linked evidence, existing files, safe validation commands, scope size, stale
+fingerprints, blind-spot overlap, and duplicate open work. Only `ready` findings can be selected for
+todo creation; blocked findings keep human-readable reasons and raw reason codes in the UI. Created
+work items receive a Discovery Provenance section so the worker and reviewer can re-check the source
+analysis before editing files.
+
 Clarification runs before workers receive a task. If Kira determines that the title/description
 leave a material product or implementation choice open, the work is moved to `blocked` with
 multiple-choice questions when possible. User answers are saved back onto the work item and appended

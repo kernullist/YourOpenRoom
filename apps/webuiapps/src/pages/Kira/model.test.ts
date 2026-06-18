@@ -1,6 +1,9 @@
 import {
   buildExcerpt,
+  formatDiscoveryBlockedReason,
   formatDiscoveryDepthScore,
+  getDiscoveryFingerprintDetails,
+  getDiscoveryFingerprintStatusText,
   getDiscoveryDepthLevel,
   getDiscoveryEligibilityCounts,
   getDiscoveryEvidenceForFinding,
@@ -315,6 +318,53 @@ describe('Kira model helpers', () => {
         summary: 'Matched discovery term.',
       },
     ]);
+  });
+
+  it('formats discovery blocked reasons for operator review', () => {
+    expect(formatDiscoveryBlockedReason('missing_validation')).toBe('Missing validation command');
+    expect(formatDiscoveryBlockedReason('custom_gate_failed')).toBe('Custom Gate Failed');
+    expect(formatDiscoveryBlockedReason('')).toBe('Unknown reason');
+  });
+
+  it('summarizes discovery fingerprint status and captured signals', () => {
+    const analysis = {
+      stale: true,
+      fingerprintStatus: { status: 'stale', reason: 'workspace_file_hash_changed' },
+      projectFingerprint: {
+        capturedAt: Date.UTC(2026, 0, 1),
+        gitHead: '1234567890abcdef1234',
+        gitBranch: 'main',
+        gitStatusHash: 'abcdef1234567890',
+        workspaceFileHash: 'fedcba9876543210',
+        packageManifestHash: null,
+        unavailable: ['git_head'],
+      },
+    };
+
+    expect(getDiscoveryFingerprintStatusText(analysis)).toBe(
+      'Status stale: Workspace File Hash Changed',
+    );
+    expect(getDiscoveryFingerprintDetails(analysis)).toEqual([
+      { label: 'status', value: 'Status stale: Workspace File Hash Changed' },
+      { label: 'captured', value: '2026-01-01T00:00:00.000Z' },
+      { label: 'branch', value: 'main' },
+      { label: 'head', value: '1234567890abcdef' },
+      { label: 'git status', value: 'abcdef1234567890' },
+      { label: 'workspace', value: 'fedcba9876543210' },
+      { label: 'package', value: 'unavailable' },
+      { label: 'unavailable', value: 'git_head' },
+    ]);
+  });
+
+  it('formats multiple discovery fingerprint change reasons', () => {
+    expect(
+      getDiscoveryFingerprintStatusText({
+        fingerprintStatus: {
+          status: 'stale',
+          reason: 'workspace_file_hash_changed,package_manifest_hash_changed',
+        },
+      }),
+    ).toBe('Status stale: Workspace File Hash Changed, Package Manifest Hash Changed');
   });
 
   it('normalizes Kira attempt records for the Attempts panel', () => {

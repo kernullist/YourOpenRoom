@@ -219,6 +219,20 @@ Kira 는 앱 저장소에 work item 과 comment 를 저장하고, 설정된 로�
 6. 검증 재실행
 7. 프로젝트 설정에 따라 block, retry, auto-commit
 
+**Aoi Will Take Care of It** discovery 는 todo 작업을 만들기 전에 프로젝트 discovery dossier 를 먼저
+저장합니다. 이 dossier 에는 deterministic scout, 깊이 점수, topology map, blind spot, 프로젝트
+fingerprint, evidence ledger, 후보 finding 이 들어갑니다. Kira 는 저장된 dossier 를 인앱에서 보여주므로
+사용자는 Aoi 가 실제로 얼마나 읽었는지 확인하고, 전체 dossier 또는 개별 finding 을 JSON 으로 복사하며,
+연결된 evidence 참조를 Aoi's IDE 에서 열거나 복사하고, 저장된 fingerprint 가 fresh/stale/unavailable 인지
+확인할 수 있습니다.
+
+Discovery finding 은 LLM 이 제안했다는 이유만으로 바로 신뢰하지 않습니다. 각 finding 은 연결된 evidence,
+실제 존재하는 파일, 안전한 validation command, scope 크기, stale fingerprint, blind spot overlap,
+중복된 열린 작업 여부를 기준으로 quality gate 를 통과해야 합니다. `ready` finding 만 todo 생성 대상으로
+선택할 수 있고, blocked finding 은 사람이 읽을 수 있는 차단 사유와 raw reason code 를 함께 UI에
+남깁니다. 생성된 work item 에는 Discovery Provenance 섹션이 들어가 worker 와 reviewer 가 파일을
+수정하기 전에 원본 분석을 다시 확인할 수 있습니다.
+
 Clarification 은 worker 에게 일감이 넘어가기 전에 실행됩니다. 제목/설명에 제품 결정이나 구현 방향을
 바꿀 수 있는 모호함이 있으면 Kira 는 가능한 한 객관식 질문으로 사용자에게 확인하고, 답변은 work item
 상태와 Markdown brief 에 함께 저장한 뒤 작업을 다시 `todo` 로 돌려 자동화를 재개합니다.

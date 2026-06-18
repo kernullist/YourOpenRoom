@@ -961,6 +961,10 @@
 .aoiButton,
 .secondaryButton,
 .dangerButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   min-height: 44px;
   min-width: 0;
   overflow: hidden;
@@ -2058,15 +2062,19 @@
     min-width: 0;
   }
 
-  > button {
-    flex: 0 0 auto;
-    min-width: 68px;
-  }
-
   h2,
   p {
     margin: 0;
   }
+}
+
+.discoveryHeaderActions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: min(360px, 45%);
 }
 
 .discoverySubtitle,
@@ -2463,6 +2471,83 @@
   line-height: 1.45;
 }
 
+.discoveryFingerprintPanel,
+.discoveryClipboardStatus {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.07);
+  background: rgba(255, 255, 255, 0.035);
+}
+
+.discoveryFingerprintPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.discoveryFingerprintHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+
+  span {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  strong {
+    min-width: 0;
+    color: var(--text-main);
+    font-size: 11px;
+    overflow-wrap: anywhere;
+    text-align: right;
+  }
+}
+
+.discoveryFingerprintGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+
+  div {
+    min-width: 0;
+    padding: 7px 8px;
+    border-radius: 9px;
+    background: rgba(6, 10, 14, 0.32);
+  }
+
+  span,
+  strong {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  span {
+    color: var(--text-muted);
+    font-size: 10px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  strong {
+    margin-top: 3px;
+    color: var(--text-main);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+}
+
+.discoveryClipboardStatus {
+  border-color: rgba(125, 211, 252, 0.16);
+  color: #c8f3ff;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
 .discoveryTopologyGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2539,6 +2624,10 @@
 .discoveryFindingHeader {
   justify-content: space-between;
   align-items: flex-start;
+}
+
+.discoveryFindingBadges {
+  flex: 1 1 auto;
 }
 
 .discoveryFindingSelect {
@@ -2630,6 +2719,31 @@
   }
 }
 
+.discoveryTinyButton {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 26px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 8px;
+  border-radius: 9px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-main);
+  font-size: 11px;
+  font-weight: 800;
+  cursor: pointer;
+  line-height: 1;
+  white-space: nowrap;
+
+  &:disabled {
+    cursor: not-allowed;
+    opacity: 0.48;
+  }
+}
+
 .discoveryEvidenceDetails {
   border-radius: 12px;
   border: 1px solid rgba(255, 255, 255, 0.06);
@@ -2685,6 +2799,20 @@
     font-size: 12px;
     line-height: 1.4;
   }
+}
+
+.discoveryEvidenceLocation {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.discoveryEvidenceActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
 }
 
 .discoverySkeletonCard {

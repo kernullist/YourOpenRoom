@@ -4,7 +4,7 @@ import { execFile as execFileCallback, spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
-import { basename, dirname, join, resolve } from 'path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'path';
 import type { Plugin } from 'vite';
 import {
   applyDeepSeekChatRuntimeOptions,
@@ -998,6 +998,14 @@ type ProjectDiscoveryEvidenceCollectedBy =
   | 'llm_discovery'
   | 'reviewer_gate';
 type ProjectDiscoveryRunMode = 'analyze' | 'deepen';
+type ProjectDiscoveryFingerprintStatus =
+  | 'fresh'
+  | 'stale'
+  | 'unknown'
+  | {
+      status?: string;
+      reason?: string;
+    };
 
 interface ProjectDiscoveryFingerprint {
   capturedAt: number;
@@ -1079,6 +1087,8 @@ interface ProjectDiscoveryAnalysis {
   projectName: string;
   projectRoot: string;
   projectFingerprint: ProjectDiscoveryFingerprint;
+  fingerprintStatus?: ProjectDiscoveryFingerprintStatus;
+  stale?: boolean;
   summary: string;
   depth: ProjectDiscoveryDepthReport;
   topology: ProjectDiscoveryTopology;
@@ -2008,8 +2018,16 @@ interface GitStatusEntry {
   status: string;
 }
 
-function sanitizeSessionPath(sessionPath: string): string {
-  return sessionPath.replace(/[^a-zA-Z0-9_\-./]/g, '_').replace(/\.\./g, '');
+export function sanitizeSessionPath(sessionPath: string): string {
+  const segments = sessionPath
+    .replace(/\\/g, '/')
+    .split('/')
+    .map((segment) => segment.trim())
+    .filter((segment) => segment && segment !== '.' && segment !== '..')
+    .map((segment) => segment.replace(/[^a-zA-Z0-9_.-]/g, '_'))
+    .filter(Boolean)
+    .slice(0, 24);
+  return segments.join('/') || 'default';
 }
 
 function makeId(prefix: string): string {
@@ -3913,6 +3931,16 @@ export function resolveKiraProjectRoot(
   if (!root || !project) return '';
 
   const resolvedRoot = resolve(root);
+  const normalizedProject = project.replace(/\\/g, '/');
+  const projectSegments = normalizedProject.split('/').filter(Boolean);
+  if (
+    isAbsolute(project) ||
+    projectSegments.length === 0 ||
+    projectSegments.some((segment) => segment === '.' || segment === '..')
+  ) {
+    return '';
+  }
+
   if (
     isKiraProjectRoot(resolvedRoot) &&
     basename(resolvedRoot).toLowerCase() === project.toLowerCase()
@@ -3920,7 +3948,13 @@ export function resolveKiraProjectRoot(
     return resolvedRoot;
   }
 
-  return resolve(join(resolvedRoot, project));
+  const resolvedProject = resolve(join(resolvedRoot, normalizedProject));
+  const relativeProject = relative(resolvedRoot, resolvedProject);
+  if (relativeProject === '' || relativeProject.startsWith('..') || isAbsolute(relativeProject)) {
+    return '';
+  }
+
+  return resolvedProject;
 }
 
 function getProjectSettingsPath(projectRoot: string): string {
@@ -11447,6 +11481,58 @@ function isDiscoveryFingerprintStale(
   });
 }
 
+function formatDiscoveryFingerprintChangeReason(field: keyof ProjectDiscoveryFingerprint): string {
+  return `${String(field).replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}_changed`;
+}
+
+function compareDiscoveryFingerprint(
+  projectRoot: string | undefined,
+  fingerprint: ProjectDiscoveryFingerprint,
+): { status: 'fresh' | 'stale' | 'unknown'; reason?: string } {
+  if (!projectRoot || !fs.existsSync(projectRoot)) {
+    return { status: 'unknown', reason: 'project_root_unavailable' };
+  }
+
+  const current = captureProjectDiscoveryFingerprint(projectRoot);
+  const comparableFields: Array<keyof ProjectDiscoveryFingerprint> = [
+    'gitHead',
+    'gitBranch',
+    'gitStatusHash',
+    'workspaceFileHash',
+    'packageManifestHash',
+  ];
+  const changedFields = comparableFields.filter((field) => {
+    const previousValue = fingerprint[field];
+    const currentValue = current[field];
+    return Boolean(previousValue && currentValue && previousValue !== currentValue);
+  });
+  if (changedFields.length === 0) {
+    return { status: 'fresh' };
+  }
+  return {
+    status: 'stale',
+    reason: changedFields.map(formatDiscoveryFingerprintChangeReason).join(','),
+  };
+}
+
+function withDiscoveryFingerprintStatus(
+  analysis: ProjectDiscoveryAnalysis,
+  projectRoot?: string,
+): ProjectDiscoveryAnalysis {
+  const comparison = compareDiscoveryFingerprint(
+    projectRoot || analysis.projectRoot,
+    analysis.projectFingerprint,
+  );
+  return {
+    ...analysis,
+    fingerprintStatus:
+      comparison.reason || comparison.status === 'unknown'
+        ? { status: comparison.status, ...(comparison.reason ? { reason: comparison.reason } : {}) }
+        : comparison.status,
+    stale: comparison.status === 'stale',
+  };
+}
+
 function recoveryEvidenceIdsForLegacyFinding(
   finding: ProjectDiscoveryFinding,
   evidenceLedger: ProjectDiscoveryEvidence[],
@@ -12240,6 +12326,18 @@ function normalizeProjectDiscoveryAnalysisRecord(
     projectName: options.projectName,
     projectRoot,
     projectFingerprint,
+    fingerprintStatus:
+      record.fingerprintStatus === 'fresh' ||
+      record.fingerprintStatus === 'stale' ||
+      record.fingerprintStatus === 'unknown'
+        ? record.fingerprintStatus
+        : isRecord(record.fingerprintStatus)
+          ? {
+              status: normalizeNullableString(record.fingerprintStatus.status) ?? undefined,
+              reason: normalizeNullableString(record.fingerprintStatus.reason) ?? undefined,
+            }
+          : undefined,
+    stale: normalizeBoolean(record.stale, false),
     summary:
       normalizeNullableString(record.summary) ||
       options.fallbackSummary ||
@@ -19388,10 +19486,13 @@ async function analyzeProjectForDiscovery(
     scout,
   );
   const existingWorks = loadProjectWorks(options.sessionsDir, sessionPath, projectName);
-  const analysis = applyDiscoveryQualityGates(parsedAnalysis, {
+  const analysis = withDiscoveryFingerprintStatus(
+    applyDiscoveryQualityGates(parsedAnalysis, {
+      projectRoot,
+      existingWorks,
+    }),
     projectRoot,
-    existingWorks,
-  });
+  );
   sendSseEvent(res, {
     type: 'log',
     message: `Quality gate complete: ${analysis.findings.filter((finding) => finding.eligibility === 'ready').length} ready, ${analysis.findings.filter((finding) => finding.eligibility === 'blocked').length} blocked, ${analysis.findings.filter((finding) => finding.eligibility === 'needs_deeper_analysis').length} need deeper analysis.`,
@@ -22043,8 +22144,18 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
             sessionPath,
             projectName,
           );
+          const runtime = getKiraRuntimeSettings(
+            options.configFile,
+            options.getWorkRootDirectory(),
+          );
+          const projectRoot = runtime.workRootDirectory
+            ? resolveKiraProjectRoot(runtime.workRootDirectory, projectName)
+            : analysis?.projectRoot;
+          const analysisWithFingerprintStatus = analysis
+            ? withDiscoveryFingerprintStatus(analysis, projectRoot)
+            : null;
           res.writeHead(200);
-          res.end(JSON.stringify({ analysis: analysis ?? null }));
+          res.end(JSON.stringify({ analysis: analysisWithFingerprintStatus }));
         } catch (error) {
           res.writeHead(500);
           res.end(
