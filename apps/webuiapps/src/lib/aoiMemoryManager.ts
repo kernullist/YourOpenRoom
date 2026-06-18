@@ -22,7 +22,7 @@ const MAX_PROMPT_MEMORY_CHARS = 1800;
 const MIN_PROMPT_CONFIDENCE = 0.45;
 const MAX_DISTILLER_INPUT_CHARS = 1800;
 const MAX_DISTILLER_CANDIDATES = 5;
-const DISTILLER_TIMEOUT_MS = 25_000;
+const DISTILLER_TIMEOUT_MS = 8_000;
 const MAX_CONVERSATION_CONTEXT_PROMPT_BOOST = 0.1;
 const PERMANENT_MEMORY_SCORE_BOOST = 0.1;
 
@@ -841,7 +841,7 @@ function hasUsableDistillerConfig(config: LLMConfig | null | undefined): config 
     config.provider === 'codex-cli' ||
     config.provider === 'claude-cli'
   ) {
-    return true;
+    return false;
   }
   return Boolean(config.baseUrl.trim());
 }
@@ -931,12 +931,19 @@ export async function distillAoiMemoryCandidatesWithLlm(
   if (!hasUsableDistillerConfig(params.llmConfig)) return [];
 
   const distillerChat = params.distillerChat ?? chat;
-  const response = await withTimeout(
-    distillerChat(buildDistillerMessages(params), [], makeDistillerConfig(params.llmConfig)),
-    DISTILLER_TIMEOUT_MS,
-    'Aoi memory distiller',
-  );
-  return parseAoiMemoryDistillerResponse(response.content);
+  const abortController = new AbortController();
+  try {
+    const response = await withTimeout(
+      distillerChat(buildDistillerMessages(params), [], makeDistillerConfig(params.llmConfig), {
+        signal: abortController.signal,
+      }),
+      DISTILLER_TIMEOUT_MS,
+      'Aoi memory distiller',
+    );
+    return parseAoiMemoryDistillerResponse(response.content);
+  } finally {
+    abortController.abort();
+  }
 }
 
 export async function loadAoiMemories(): Promise<AoiMemoryEntry[]> {

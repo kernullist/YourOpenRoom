@@ -113,6 +113,14 @@ const DESKTOP_APPS = getDesktopApps().map((app) => ({
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+const CHAT_PANEL_WIDTH_KEY = 'openroom-chat-panel-width';
+const CHAT_PANEL_WIDTH_EVENT = 'openroom-chat-panel-width-changed';
+const CHAT_PANEL_FULL_WIDTH_DEFAULT = 960;
+const CHAT_PANEL_FULL_WIDTH_MIN = 780;
+const CHAT_PANEL_FULL_WIDTH_MAX = 1320;
+const CHAT_PANEL_COMPACT_WIDTH_DEFAULT = 420;
+const CHAT_PANEL_COMPACT_WIDTH_MIN = 360;
+const CHAT_PANEL_COMPACT_WIDTH_MAX = 760;
 const DESKTOP_ICON_ORDER_KEY = 'openroom-desktop-icon-order-v1';
 const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
 const KIRA_APP_ID = 18;
@@ -130,6 +138,46 @@ interface KiraAutomationEvent {
 
 interface KiraAutomationNotice extends KiraAutomationEvent {
   localId: string;
+}
+
+function getChatPanelWidthStorageKey(compact: boolean): string {
+  return `${CHAT_PANEL_WIDTH_KEY}:${compact ? 'compact' : 'full'}`;
+}
+
+function getChatPanelWidthBounds(
+  compact: boolean,
+  viewportWidth = typeof window !== 'undefined'
+    ? window.innerWidth || document.documentElement.clientWidth
+    : 1024,
+): { min: number; max: number } {
+  const configuredMin = compact ? CHAT_PANEL_COMPACT_WIDTH_MIN : CHAT_PANEL_FULL_WIDTH_MIN;
+  const configuredMax = compact ? CHAT_PANEL_COMPACT_WIDTH_MAX : CHAT_PANEL_FULL_WIDTH_MAX;
+  const viewportMax = Math.max(280, viewportWidth - 32);
+  const min = Math.min(configuredMin, viewportMax);
+  const max = Math.max(min, Math.min(configuredMax, viewportMax));
+  return { min, max };
+}
+
+function clampChatPanelWidth(width: number, compact: boolean): number {
+  const { min, max } = getChatPanelWidthBounds(compact);
+  return Math.round(Math.min(max, Math.max(min, width)));
+}
+
+function loadChatPanelWidth(compact: boolean): number {
+  const fallback = compact ? CHAT_PANEL_COMPACT_WIDTH_DEFAULT : CHAT_PANEL_FULL_WIDTH_DEFAULT;
+  try {
+    const raw = localStorage.getItem(getChatPanelWidthStorageKey(compact));
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return clampChatPanelWidth(parsed, compact);
+      }
+    }
+  } catch {
+    // ignore persistence failures
+  }
+
+  return clampChatPanelWidth(fallback, compact);
 }
 
 function normalizeDesktopIconOrder(value: unknown): number[] {
@@ -474,6 +522,18 @@ const Shell: React.FC = () => {
   const showVideo = liveWallpaper && wallpaperIsVideo;
   const bgWallpaper = wallpaperIsVideo ? roomThemeSnapshot.staticFallback : wallpaper;
   const chatPanelCompact = chatDockSide === 'left' || showVideo;
+  const [chatPanelWidth, setChatPanelWidth] = useState(() => loadChatPanelWidth(chatPanelCompact));
+  const shellStyle = useMemo(
+    () =>
+      ({
+        ...roomThemeCssVars,
+        '--chat-panel-width': `${chatPanelWidth}px`,
+        backgroundImage: getWallpaperBackgroundImage(bgWallpaper),
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+      }) as React.CSSProperties,
+    [bgWallpaper, chatPanelWidth, roomThemeCssVars],
+  );
 
   useEffect(() => {
     const syncMaximizedWindows = () => {
@@ -487,7 +547,7 @@ const Shell: React.FC = () => {
       window.cancelAnimationFrame(frame);
       window.removeEventListener('resize', syncMaximizedWindows);
     };
-  }, [chatOpen, chatDockSide, chatPanelCompact]);
+  }, [chatOpen, chatDockSide, chatPanelCompact, chatPanelWidth]);
 
   useEffect(() => {
     const handleOpenSettings = () => {
@@ -582,6 +642,29 @@ const Shell: React.FC = () => {
   }, []);
 
   useEffect(() => {
+    const syncChatPanelWidth = () => {
+      setChatPanelWidth(loadChatPanelWidth(chatPanelCompact));
+    };
+
+    const handleWidthEvent = (event: Event) => {
+      const detail = (event as CustomEvent<{ width?: number; compact?: boolean }>).detail;
+      if (detail?.compact === chatPanelCompact && Number.isFinite(detail.width)) {
+        setChatPanelWidth(clampChatPanelWidth(Number(detail.width), chatPanelCompact));
+        return;
+      }
+      syncChatPanelWidth();
+    };
+
+    syncChatPanelWidth();
+    window.addEventListener(CHAT_PANEL_WIDTH_EVENT, handleWidthEvent);
+    window.addEventListener('storage', syncChatPanelWidth);
+    return () => {
+      window.removeEventListener(CHAT_PANEL_WIDTH_EVENT, handleWidthEvent);
+      window.removeEventListener('storage', syncChatPanelWidth);
+    };
+  }, [chatPanelCompact]);
+
+  useEffect(() => {
     const handleKiraNotice = (event: Event) => {
       const detail = (event as CustomEvent<KiraAutomationEvent>).detail;
       if (!detail?.id) return;
@@ -609,16 +692,7 @@ const Shell: React.FC = () => {
   }, []);
 
   return (
-    <div
-      className={styles.shell}
-      data-testid="shell"
-      style={{
-        ...roomThemeCssVars,
-        backgroundImage: getWallpaperBackgroundImage(bgWallpaper),
-        backgroundSize: 'cover',
-        backgroundPosition: 'center',
-      }}
-    >
+    <div className={styles.shell} data-testid="shell" style={shellStyle}>
       {showVideo && (
         <div className={styles.liveWallpaperLayer} data-testid="video-pip">
           <video
@@ -778,7 +852,7 @@ const Shell: React.FC = () => {
         <div
           className={`${styles.kiraToastStack} ${
             chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
-          }`}
+          } ${chatOpen ? styles.controlsBehindChat : ''}`}
         >
           {kiraNotices.map((notice) => (
             <div
@@ -836,7 +910,7 @@ const Shell: React.FC = () => {
       <button
         className={`${styles.addBtn} ${
           chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
-        }`}
+        } ${chatOpen ? styles.controlsBehindChat : ''}`}
         onClick={() => setUploadOpen(true)}
         title="Upload files"
         data-testid="upload-toggle"
@@ -847,7 +921,7 @@ const Shell: React.FC = () => {
       <div
         className={`${styles.bottomBar} ${
           chatDockSide === 'left' ? styles.dockRight : styles.dockLeft
-        }`}
+        } ${chatOpen ? styles.controlsBehindChat : ''}`}
       >
         <button
           className={`${styles.barBtn} ${liveWallpaper ? styles.liveOn : styles.liveOff}`}

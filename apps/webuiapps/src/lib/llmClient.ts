@@ -338,6 +338,10 @@ interface LLMResponse {
   reasoningContent?: string;
 }
 
+export interface ChatRequestOptions {
+  signal?: AbortSignal;
+}
+
 interface InlineToolParseResult {
   content: string;
   toolCalls: ToolCall[];
@@ -652,6 +656,7 @@ export async function chat(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions = {},
 ): Promise<LLMResponse> {
   ensureImageInputSupport(messages, config);
   console.info('[LLM] chat() start', {
@@ -670,37 +675,38 @@ export async function chat(
     messages.length,
   );
   if (config.provider === 'codex-cli') {
-    return chatCodexCli(messages, tools, config);
+    return chatCodexCli(messages, tools, config, options);
   }
   if (config.provider === 'codex-auth') {
-    return chatCodexAuth(messages, tools, config);
+    return chatCodexAuth(messages, tools, config, options);
   }
   if (config.provider === 'claude-cli') {
-    return chatClaudeCli(messages, tools, config);
+    return chatClaudeCli(messages, tools, config, options);
   }
   if (isOpenCodeProvider(config.provider)) {
     const apiStyle = resolveOpenCodeApiStyle(config);
     if (apiStyle === 'openai-responses') {
-      return chatOpenAIResponses(messages, tools, config);
+      return chatOpenAIResponses(messages, tools, config, options);
     }
     if (apiStyle === 'anthropic-messages') {
-      return chatAnthropic(messages, tools, config);
+      return chatAnthropic(messages, tools, config, options);
     }
-    return chatOpenAI(messages, tools, config);
+    return chatOpenAI(messages, tools, config, options);
   }
   if (config.provider === 'anthropic' || config.provider === 'minimax') {
-    return chatAnthropic(messages, tools, config);
+    return chatAnthropic(messages, tools, config, options);
   }
   if (shouldUseOpenAIResponses(config)) {
-    return chatOpenAIResponses(messages, tools, config);
+    return chatOpenAIResponses(messages, tools, config, options);
   }
-  return chatOpenAI(messages, tools, config);
+  return chatOpenAI(messages, tools, config, options);
 }
 
 async function chatClaudeCli(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const runtimeOptions = getExplicitModelRuntimeOptions(config);
   const res = await fetch('/api/claude-cli-chat', {
@@ -713,6 +719,7 @@ async function chatClaudeCli(
       command: config.command?.trim() || 'claude',
       reasoningEffort: runtimeOptions.reasoningEffort,
     }),
+    signal: options.signal,
   });
   const data = (await res.json()) as { content?: string; error?: string };
   if (!res.ok) {
@@ -820,6 +827,7 @@ async function chatCodexCli(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const runtimeOptions = getExplicitModelRuntimeOptions(config);
   const res = await fetch('/api/codex-cli-chat', {
@@ -835,6 +843,7 @@ async function chatCodexCli(
       verbosity: runtimeOptions.verbosity,
       serviceTier: runtimeOptions.serviceTier,
     }),
+    signal: options.signal,
   });
   const data = (await res.json()) as { content?: string; error?: string };
   if (!res.ok) {
@@ -850,6 +859,7 @@ async function chatCodexAuth(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const runtimeOptions = getExplicitModelRuntimeOptions(config);
   const res = await fetch('/api/codex-auth-chat', {
@@ -864,6 +874,7 @@ async function chatCodexAuth(
       verbosity: runtimeOptions.verbosity,
       serviceTier: runtimeOptions.serviceTier,
     }),
+    signal: options.signal,
   });
   const data = (await res.json()) as { content?: string; error?: string };
   if (!res.ok) {
@@ -879,6 +890,7 @@ async function chatOpenAI(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const requestMessages = messages.map((message) => {
     if (message.role !== 'assistant') {
@@ -940,6 +952,7 @@ async function chatOpenAI(
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: options.signal,
     });
   } catch (err) {
     console.error('[LLM] OpenAI-compatible request failed before response', err);
@@ -998,6 +1011,7 @@ async function chatOpenAIResponses(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const input: Array<Record<string, unknown>> = [];
   let instructions = '';
@@ -1061,6 +1075,7 @@ async function chatOpenAIResponses(
     method: 'POST',
     headers,
     body: JSON.stringify(body),
+    signal: options.signal,
   });
   const text = await res.text();
   if (!res.ok) {
@@ -1115,6 +1130,7 @@ async function chatAnthropic(
   messages: ChatMessage[],
   tools: ToolDef[],
   config: LLMConfig,
+  options: ChatRequestOptions,
 ): Promise<LLMResponse> {
   const systemMsg = messages.find((m) => m.role === 'system')?.content || '';
   const nonSystemMessages = messages.filter((m) => m.role !== 'system');
@@ -1202,6 +1218,7 @@ async function chatAnthropic(
       method: 'POST',
       headers,
       body: JSON.stringify(body),
+      signal: options.signal,
     });
   } catch (err) {
     console.error('[LLM] Anthropic-compatible request failed before response', err);

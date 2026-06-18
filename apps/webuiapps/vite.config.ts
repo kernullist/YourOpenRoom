@@ -2218,19 +2218,31 @@ function terminateCliProcessTree(child: ReturnType<typeof spawn>): void {
   child.kill();
 }
 
+function createAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
+interface CliProcessOptions {
+  useStderrWhenStdoutEmpty?: boolean;
+  signal?: AbortSignal;
+}
+
 function runCliProcess(
   command: string,
   args: string[],
   input: string,
   label: string,
   timeoutMs = CLI_CHAT_TIMEOUT_MS,
-  options: { useStderrWhenStdoutEmpty?: boolean } = {},
+  options: CliProcessOptions = {},
 ): Promise<string> {
   return new Promise((resolvePromise, rejectPromise) => {
     let stdout = '';
     let stderr = '';
     let settled = false;
     let timeout: ReturnType<typeof setTimeout> | null = null;
+    let removeAbortListener: (() => void) | null = null;
     const child = spawn(command, args, {
       cwd: OPENROOM_ROOT,
       shell: process.platform === 'win32',
@@ -2244,12 +2256,19 @@ function runCliProcess(
         timeout = null;
       }
     };
+    const clearAbortListener = () => {
+      if (removeAbortListener) {
+        removeAbortListener();
+        removeAbortListener = null;
+      }
+    };
     const fail = (error: Error) => {
       if (settled) {
         return;
       }
       settled = true;
       clearProcessTimeout();
+      clearAbortListener();
       rejectPromise(error);
     };
     const succeed = (output: string) => {
@@ -2258,8 +2277,22 @@ function runCliProcess(
       }
       settled = true;
       clearProcessTimeout();
+      clearAbortListener();
       resolvePromise(output.trim());
     };
+    const abortProcess = () => {
+      terminateCliProcessTree(child);
+      fail(createAbortError(`${label} cancelled.`));
+    };
+
+    if (options.signal?.aborted) {
+      abortProcess();
+      return;
+    }
+    if (options.signal) {
+      options.signal.addEventListener('abort', abortProcess, { once: true });
+      removeAbortListener = () => options.signal?.removeEventListener('abort', abortProcess);
+    }
 
     timeout = setTimeout(() => {
       terminateCliProcessTree(child);
@@ -2291,16 +2324,24 @@ async function runCodexCliChatProcess(
   args: string[],
   input: string,
   outputFile: string,
+  signal?: AbortSignal,
 ): Promise<string> {
-  const stdout = await runCliProcess(command, args, input, 'Codex CLI');
+  const stdout = await runCliProcess(command, args, input, 'Codex CLI', CLI_CHAT_TIMEOUT_MS, {
+    signal,
+  });
   if (fs.existsSync(outputFile)) {
     return fs.readFileSync(outputFile, 'utf-8').trim();
   }
   return stdout;
 }
 
-function runClaudeCliChatProcess(command: string, args: string[], input: string): Promise<string> {
-  return runCliProcess(command, args, input, 'Claude CLI');
+function runClaudeCliChatProcess(
+  command: string,
+  args: string[],
+  input: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  return runCliProcess(command, args, input, 'Claude CLI', CLI_CHAT_TIMEOUT_MS, { signal });
 }
 
 function isCodexCliModelUpgradeError(error: unknown): boolean {
@@ -3090,6 +3131,13 @@ function codexAuthPlugin(): Plugin {
           return;
         }
 
+        const abortController = new AbortController();
+        const abortOnClientClose = () => {
+          if (!res.writableEnded) {
+            abortController.abort();
+          }
+        };
+        res.on('close', abortOnClientClose);
         const tempDir = fs.mkdtempSync(join(os.tmpdir(), 'openroom-codex-auth-chat-'));
         const outputFile = join(tempDir, 'last-message.txt');
         try {
@@ -3113,7 +3161,13 @@ function codexAuthPlugin(): Plugin {
           const prompt = buildCodexCliChatPrompt(payload);
           let content: string;
           try {
-            content = await runCodexCliChatProcess(CODEX_AUTH_COMMAND, args, prompt, outputFile);
+            content = await runCodexCliChatProcess(
+              CODEX_AUTH_COMMAND,
+              args,
+              prompt,
+              outputFile,
+              abortController.signal,
+            );
           } catch (error) {
             if (model && model !== CODEX_CLI_FALLBACK_MODEL && isCodexCliModelUpgradeError(error)) {
               const fallbackArgs = args.filter((arg, index) => {
@@ -3126,6 +3180,7 @@ function codexAuthPlugin(): Plugin {
                 fallbackArgs,
                 prompt,
                 outputFile,
+                abortController.signal,
               );
             } else {
               throw error;
@@ -3133,11 +3188,15 @@ function codexAuthPlugin(): Plugin {
           }
           writeJsonResponse(res, 200, { content });
         } catch (error) {
+          if (abortController.signal.aborted) {
+            return;
+          }
           writeJsonResponse(res, 500, {
             provider: 'codex-auth',
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {
+          res.removeListener('close', abortOnClientClose);
           fs.rmSync(tempDir, { recursive: true, force: true });
         }
       });
@@ -3155,6 +3214,14 @@ function claudeCliChatPlugin(): Plugin {
           return;
         }
 
+        const abortController = new AbortController();
+        const abortOnClientClose = () => {
+          if (!res.writableEnded) {
+            abortController.abort();
+          }
+        };
+        res.on('close', abortOnClientClose);
+
         try {
           const payload = await readJsonBody(req);
           const command =
@@ -3165,12 +3232,22 @@ function claudeCliChatPlugin(): Plugin {
           const args = buildClaudeCliChatArgs(model, payload);
 
           const prompt = buildClaudeCliChatPrompt(payload);
-          const content = await runClaudeCliChatProcess(command, args, prompt);
+          const content = await runClaudeCliChatProcess(
+            command,
+            args,
+            prompt,
+            abortController.signal,
+          );
           writeJsonResponse(res, 200, { content });
         } catch (error) {
+          if (abortController.signal.aborted) {
+            return;
+          }
           writeJsonResponse(res, 500, {
             error: error instanceof Error ? error.message : String(error),
           });
+        } finally {
+          res.removeListener('close', abortOnClientClose);
         }
       });
     },
@@ -3187,6 +3264,13 @@ function codexCliChatPlugin(): Plugin {
           return;
         }
 
+        const abortController = new AbortController();
+        const abortOnClientClose = () => {
+          if (!res.writableEnded) {
+            abortController.abort();
+          }
+        };
+        res.on('close', abortOnClientClose);
         const tempDir = fs.mkdtempSync(join(os.tmpdir(), 'openroom-codex-chat-'));
         const outputFile = join(tempDir, 'last-message.txt');
         try {
@@ -3215,7 +3299,13 @@ function codexCliChatPlugin(): Plugin {
           const prompt = buildCodexCliChatPrompt(payload);
           let content: string;
           try {
-            content = await runCodexCliChatProcess(command, args, prompt, outputFile);
+            content = await runCodexCliChatProcess(
+              command,
+              args,
+              prompt,
+              outputFile,
+              abortController.signal,
+            );
           } catch (error) {
             if (model && model !== CODEX_CLI_FALLBACK_MODEL && isCodexCliModelUpgradeError(error)) {
               const fallbackArgs = args.filter((arg, index) => {
@@ -3223,17 +3313,27 @@ function codexCliChatPlugin(): Plugin {
                 return args[index - 1] !== '--model';
               });
               fallbackArgs.splice(fallbackArgs.length - 1, 0, '--model', CODEX_CLI_FALLBACK_MODEL);
-              content = await runCodexCliChatProcess(command, fallbackArgs, prompt, outputFile);
+              content = await runCodexCliChatProcess(
+                command,
+                fallbackArgs,
+                prompt,
+                outputFile,
+                abortController.signal,
+              );
             } else {
               throw error;
             }
           }
           writeJsonResponse(res, 200, { content });
         } catch (error) {
+          if (abortController.signal.aborted) {
+            return;
+          }
           writeJsonResponse(res, 500, {
             error: error instanceof Error ? error.message : String(error),
           });
         } finally {
+          res.removeListener('close', abortOnClientClose);
           fs.rmSync(tempDir, { recursive: true, force: true });
         }
       });

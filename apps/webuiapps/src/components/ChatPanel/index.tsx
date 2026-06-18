@@ -12,6 +12,7 @@ import {
   List,
   PanelLeft,
   PanelRight,
+  GripVertical,
   Plus,
   ImagePlus,
   Square,
@@ -39,6 +40,7 @@ import {
   type ChatMessage,
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
+import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
 import {
   LLM_REASONING_EFFORTS,
   LLM_REASONING_SUMMARIES,
@@ -419,14 +421,35 @@ interface CharacterDisplayMessage extends DisplayMessage {
   toolCalls?: string[]; // collapsed tool call summaries
 }
 
+interface ChatLoadingInfo {
+  startedAt: number;
+  status: string;
+  cancellable: boolean;
+  provider?: LLMProvider;
+  model?: string;
+}
+
+interface ConversationRunOptions {
+  signal?: AbortSignal;
+  onStatus?: (status: string) => void;
+}
+
 const MAX_PROMPT_BUDGET_ENTRIES = 10;
 
 type ChatDockSide = 'left' | 'right';
 
 const CHAT_DOCK_SIDE_KEY = 'openroom-chat-dock-side';
 const CHAT_DOCK_SIDE_EVENT = 'openroom-chat-dock-side-changed';
+const CHAT_PANEL_WIDTH_KEY = 'openroom-chat-panel-width';
+const CHAT_PANEL_WIDTH_EVENT = 'openroom-chat-panel-width-changed';
 const CHAT_FONT_SIZE_KEY = 'openroom-chat-font-size';
 const AOI_OPERATOR_LAST_SEEN_STORAGE_PREFIX = 'openroom-aoi-operator-last-seen:';
+const CHAT_PANEL_FULL_WIDTH_DEFAULT = 960;
+const CHAT_PANEL_FULL_WIDTH_MIN = 780;
+const CHAT_PANEL_FULL_WIDTH_MAX = 1320;
+const CHAT_PANEL_COMPACT_WIDTH_DEFAULT = 420;
+const CHAT_PANEL_COMPACT_WIDTH_MIN = 360;
+const CHAT_PANEL_COMPACT_WIDTH_MAX = 760;
 const CHAT_FONT_SIZE_DEFAULT = 13;
 const CHAT_FONT_SIZE_MIN = 11;
 const CHAT_FONT_SIZE_MAX = 22;
@@ -434,6 +457,7 @@ const CHAT_FONT_SIZE_STEP = 1;
 const MAX_CHAT_IMAGE_ATTACHMENTS = 4;
 const MAX_CHAT_IMAGE_BYTES = 8 * 1024 * 1024;
 const MODEL_USAGE_REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const ACTION_QUEUE_CONVERSATION_TIMEOUT_MS = 45_000;
 
 interface CalendarReminderEvent {
   id: string;
@@ -525,6 +549,46 @@ function loadChatFontSize(): number {
   }
 
   return CHAT_FONT_SIZE_DEFAULT;
+}
+
+function getChatPanelWidthStorageKey(compact: boolean): string {
+  return `${CHAT_PANEL_WIDTH_KEY}:${compact ? 'compact' : 'full'}`;
+}
+
+function getChatPanelWidthBounds(
+  compact: boolean,
+  viewportWidth = typeof window !== 'undefined'
+    ? window.innerWidth || document.documentElement.clientWidth
+    : 1024,
+): { min: number; max: number } {
+  const configuredMin = compact ? CHAT_PANEL_COMPACT_WIDTH_MIN : CHAT_PANEL_FULL_WIDTH_MIN;
+  const configuredMax = compact ? CHAT_PANEL_COMPACT_WIDTH_MAX : CHAT_PANEL_FULL_WIDTH_MAX;
+  const viewportMax = Math.max(280, viewportWidth - 32);
+  const min = Math.min(configuredMin, viewportMax);
+  const max = Math.max(min, Math.min(configuredMax, viewportMax));
+  return { min, max };
+}
+
+function clampChatPanelWidth(width: number, compact: boolean): number {
+  const { min, max } = getChatPanelWidthBounds(compact);
+  return Math.round(Math.min(max, Math.max(min, width)));
+}
+
+function loadChatPanelWidth(compact: boolean): number {
+  const fallback = compact ? CHAT_PANEL_COMPACT_WIDTH_DEFAULT : CHAT_PANEL_FULL_WIDTH_DEFAULT;
+  try {
+    const raw = localStorage.getItem(getChatPanelWidthStorageKey(compact));
+    if (raw !== null) {
+      const parsed = Number(raw);
+      if (Number.isFinite(parsed)) {
+        return clampChatPanelWidth(parsed, compact);
+      }
+    }
+  } catch {
+    // ignore persistence failures
+  }
+
+  return clampChatPanelWidth(fallback, compact);
 }
 
 function formatAttachmentSize(bytes: number): string {
@@ -954,6 +1018,58 @@ function buildMemoryAckMessage(
   }
 }
 
+function buildChatCancelledAck(responseLanguageMode: ResponseLanguageMode = 'match-user'): string {
+  const lang = detectPreferredLanguage('', responseLanguageMode);
+  switch (lang) {
+    case 'ko':
+      return '중지했어.';
+    case 'ja':
+      return '停止したよ。';
+    case 'zh':
+      return '已停止。';
+    default:
+      return 'Stopped.';
+  }
+}
+
+function createChatAbortError(): Error {
+  const error = new Error('Conversation cancelled.');
+  error.name = 'AbortError';
+  return error;
+}
+
+function isChatAbortError(error: unknown): boolean {
+  return (
+    (error instanceof Error && error.name === 'AbortError') ||
+    (typeof DOMException !== 'undefined' &&
+      error instanceof DOMException &&
+      error.name === 'AbortError')
+  );
+}
+
+function throwIfConversationAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw createChatAbortError();
+  }
+}
+
+function formatLoadingElapsed(seconds: number): string {
+  if (seconds < 60) {
+    return `${seconds}s`;
+  }
+  const minutes = Math.floor(seconds / 60);
+  const remainder = seconds % 60;
+  return `${minutes}m ${remainder.toString().padStart(2, '0')}s`;
+}
+
+function buildLoadingStatus(info: ChatLoadingInfo | null, elapsedSeconds: number): string {
+  const base = info?.status || 'Thinking';
+  if (!info?.provider || elapsedSeconds < 20) {
+    return base;
+  }
+  return `${base} · ${getProviderDisplayName(info.provider)} / ${info.model || 'model'}`;
+}
+
 function buildDefaultImagePrompt(
   responseLanguageMode: ResponseLanguageMode = 'match-user',
 ): string {
@@ -1003,44 +1119,6 @@ function mapMemoryCategoryToAoiType(category: string | undefined): AoiMemoryType
     default:
       return 'fact';
   }
-}
-
-function parseDirectMusicIntent(text: string): { query: string } | null {
-  const trimmed = text.trim();
-  if (!trimmed) return null;
-
-  const suffixPatterns = [
-    /^(?<query>.+?)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/,
-    /^(?<query>.+?)\s*(?:듣고 싶어|듣고싶어|듣고싶다|듣고 싶다)$/,
-    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
-    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-  ];
-
-  for (const pattern of suffixPatterns) {
-    const match = trimmed.match(pattern);
-    const query = match?.groups?.query?.trim();
-    if (query) {
-      return { query };
-    }
-  }
-
-  const prefixPatterns = [
-    /^(?:틀어줘|재생해줘|재생해|들려줘|틀어)\s+(?<query>.+)$/,
-    /^(?:play|listen to|put on)\s+(?<query>.+)$/i,
-    /^(?:let'?s|lets)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-    /^(?:we should|can we|could we)\s+listen(?:\s+to)?\s+(?<query>.+)$/i,
-  ];
-
-  for (const pattern of prefixPatterns) {
-    const match = trimmed.match(pattern);
-    const query = match?.groups?.query?.trim();
-    if (query) {
-      return { query };
-    }
-  }
-
-  return null;
 }
 
 function isDirectPlaylistPlaybackIntent(text: string): boolean {
@@ -1224,6 +1302,13 @@ function hasUsableLLMConfig(config: LLMConfig | null | undefined): config is LLM
   return !!config?.baseUrl.trim() && !!config.model.trim();
 }
 
+function supportsStructuredConversationTools(config: LLMConfig | null | undefined): boolean {
+  if (!config) {
+    return false;
+  }
+  return !['codex-auth', 'codex-cli', 'claude-cli'].includes(config.provider);
+}
+
 function selectConversationModel(
   history: ChatMessage[],
   primaryConfig: LLMConfig | null | undefined,
@@ -1371,6 +1456,7 @@ function buildSystemPrompt(
   runGoalPrompt = '',
   skillsPrompt = '',
   mcpPluginPrompt = '',
+  toolCallRuntimeAvailable = true,
 ): string {
   let prompt = getCharacterPromptContext(character);
   const preferredName = normalizeUserProfileDisplayName(userProfile?.displayName);
@@ -1391,7 +1477,8 @@ Persistent user profile:
 - If older memories conflict with this name, prefer this configured profile.`;
   }
 
-  prompt += `
+  if (toolCallRuntimeAvailable) {
+    prompt += `
 You can interact with apps on the user's device using tools.
 
 When the user wants to interact with an app, first identify the target app from the user's intent, then:
@@ -1460,7 +1547,16 @@ Music follow-up rule:
 
 When you receive "[User performed action in ... (appName: xxx)]", the appName is already provided. Read its meta.yaml to understand available actions, then respond accordingly. For games, respond with your own move — think strategically.
 
-IMPORTANT: You MUST use the respond_to_user tool to send all messages to the user. Do NOT output plain text responses. Include your emotion and 3 suggested replies.${hasImageGen ? '\n\nYou can use generate_image to create images from text prompts. The generated image will be displayed in chat.' : ''}`;
+IMPORTANT: You MUST use the respond_to_user tool to send all messages to the user. Do NOT output plain text responses. Include your emotion and 3 suggested replies. respond_to_user is terminal and must be the final tool call in the assistant turn.${hasImageGen ? '\n\nYou can use generate_image to create images from text prompts. The generated image will be displayed in chat.' : ''}`;
+  } else {
+    prompt += `
+
+Tool availability:
+- The current model provider cannot return structured OpenRoom tool calls in this chat UI.
+- Reply in plain text instead of claiming that you called tools.
+- Do not claim that you opened apps, edited files, searched live web, ran commands, or saved memory unless the user-visible context already proves it.
+- If the request requires an app action or workspace mutation, say what is missing and give the next safe manual step.`;
+  }
 
   if (hasTavily) {
     prompt += `
@@ -1500,11 +1596,14 @@ Language rule:
 - If the user switches languages, immediately switch with them.
 - Keep suggested replies in that same language as well.`;
 
-  prompt += `
+  if (toolCallRuntimeAvailable) {
+    prompt += `
 
 Tool rule:
 - If you call save_memory, you must also call respond_to_user in the same assistant turn.
+- Call save_memory before respond_to_user. respond_to_user must be the last tool call because the runtime treats it as the end of the visible chat turn.
 - Never call save_memory by itself and stop there.`;
+  }
 
   prompt += runGoalPrompt;
   prompt += missionPrompt;
@@ -2015,6 +2114,8 @@ const ChatPanel: React.FC<{
   const [attachmentError, setAttachmentError] = useState('');
   const [imageDropActive, setImageDropActive] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [loadingInfo, setLoadingInfo] = useState<ChatLoadingInfo | null>(null);
+  const [loadingElapsedSeconds, setLoadingElapsedSeconds] = useState(0);
   const [showSettings, setShowSettings] = useState(false);
   const [settingsInitialTab, setSettingsInitialTab] = useState<AppSettingsTabKey>('chat');
   const [config, setConfig] = useState<LLMConfig | null>(loadConfigSync);
@@ -2055,7 +2156,25 @@ const ChatPanel: React.FC<{
       return 'right';
     }
   });
+  const [chatPanelWidth, setChatPanelWidth] = useState(() => loadChatPanelWidth(compact));
   const [chatFontSize, setChatFontSize] = useState(loadChatFontSize);
+  const panelResizeRef = useRef<{
+    startX: number;
+    width: number;
+    dockSide: ChatDockSide;
+    compact: boolean;
+  } | null>(null);
+  const panelResizeFrameRef = useRef<number | null>(null);
+  const pendingPanelWidthRef = useRef<number | null>(null);
+  const panelStyle = useMemo(() => {
+    const style = {
+      '--chat-panel-width': `${chatPanelWidth}px`,
+    } as React.CSSProperties;
+    if (zIndex !== null && zIndex !== undefined) {
+      style.zIndex = zIndex;
+    }
+    return style;
+  }, [chatPanelWidth, zIndex]);
   const chatFontStyle = useMemo(
     () =>
       ({
@@ -2072,6 +2191,108 @@ const ChatPanel: React.FC<{
       // ignore persistence failures
     }
   }, [dockSide]);
+
+  useEffect(() => {
+    setChatPanelWidth(loadChatPanelWidth(compact));
+  }, [compact]);
+
+  useEffect(() => {
+    const nextWidth = clampChatPanelWidth(chatPanelWidth, compact);
+    if (nextWidth !== chatPanelWidth) {
+      setChatPanelWidth(nextWidth);
+      return;
+    }
+
+    try {
+      localStorage.setItem(getChatPanelWidthStorageKey(compact), String(nextWidth));
+      window.dispatchEvent(
+        new CustomEvent(CHAT_PANEL_WIDTH_EVENT, {
+          detail: { width: nextWidth, compact },
+        }),
+      );
+    } catch {
+      // ignore persistence failures
+    }
+  }, [chatPanelWidth, compact]);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setChatPanelWidth((prev) => clampChatPanelWidth(prev, compact));
+    };
+
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [compact]);
+
+  const handlePanelResizeMouseDown = useCallback(
+    (event: React.MouseEvent<HTMLButtonElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      onFocus?.();
+
+      panelResizeRef.current = {
+        startX: event.clientX,
+        width: chatPanelWidth,
+        dockSide,
+        compact,
+      };
+
+      const previousCursor = document.body.style.cursor;
+      const previousUserSelect = document.body.style.userSelect;
+      document.body.style.cursor = 'ew-resize';
+      document.body.style.userSelect = 'none';
+
+      const handleMouseMove = (moveEvent: MouseEvent) => {
+        const resizeState = panelResizeRef.current;
+        if (!resizeState) {
+          return;
+        }
+
+        const delta =
+          resizeState.dockSide === 'right'
+            ? resizeState.startX - moveEvent.clientX
+            : moveEvent.clientX - resizeState.startX;
+        pendingPanelWidthRef.current = clampChatPanelWidth(
+          resizeState.width + delta,
+          resizeState.compact,
+        );
+
+        if (panelResizeFrameRef.current !== null) {
+          return;
+        }
+
+        panelResizeFrameRef.current = window.requestAnimationFrame(() => {
+          panelResizeFrameRef.current = null;
+          const pendingWidth = pendingPanelWidthRef.current;
+          if (pendingWidth !== null) {
+            setChatPanelWidth(pendingWidth);
+          }
+        });
+      };
+
+      const finishResize = () => {
+        if (panelResizeFrameRef.current !== null) {
+          window.cancelAnimationFrame(panelResizeFrameRef.current);
+          panelResizeFrameRef.current = null;
+        }
+
+        const pendingWidth = pendingPanelWidthRef.current;
+        if (pendingWidth !== null) {
+          setChatPanelWidth(pendingWidth);
+        }
+        pendingPanelWidthRef.current = null;
+        panelResizeRef.current = null;
+        document.body.style.cursor = previousCursor;
+        document.body.style.userSelect = previousUserSelect;
+        document.removeEventListener('mousemove', handleMouseMove);
+        document.removeEventListener('mouseup', finishResize);
+      };
+
+      document.addEventListener('mousemove', handleMouseMove);
+      document.addEventListener('mouseup', finishResize);
+    },
+    [chatPanelWidth, compact, dockSide, onFocus],
+  );
 
   useEffect(() => {
     try {
@@ -2596,6 +2817,84 @@ const ChatPanel: React.FC<{
     setMessages((prev) => [...prev, msg]);
   }, []);
 
+  useEffect(() => {
+    if (!loadingInfo) {
+      return;
+    }
+
+    const updateElapsed = () => {
+      setLoadingElapsedSeconds(
+        Math.max(0, Math.floor((Date.now() - loadingInfo.startedAt) / 1000)),
+      );
+    };
+
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 1000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [loadingInfo]);
+
+  const beginChatLoading = useCallback(
+    (
+      status: string,
+      options: {
+        cancellable?: boolean;
+        provider?: LLMProvider;
+        model?: string;
+      } = {},
+    ): number => {
+      const runId = loadingRunIdRef.current + 1;
+      loadingRunIdRef.current = runId;
+      setLoading(true);
+      setLoadingElapsedSeconds(0);
+      setLoadingInfo({
+        startedAt: Date.now(),
+        status,
+        cancellable: options.cancellable !== false,
+        provider: options.provider,
+        model: options.model,
+      });
+      return runId;
+    },
+    [],
+  );
+
+  const updateChatLoadingStatus = useCallback((status: string) => {
+    setLoadingInfo((prev) => (prev ? { ...prev, status } : prev));
+  }, []);
+
+  const finishChatLoading = useCallback((runId?: number) => {
+    if (runId !== undefined && runId !== loadingRunIdRef.current) {
+      return;
+    }
+    conversationAbortRef.current = null;
+    setLoading(false);
+    setLoadingInfo(null);
+    setLoadingElapsedSeconds(0);
+  }, []);
+
+  const handleCancelChatRun = useCallback(() => {
+    const controller = conversationAbortRef.current;
+    if (!controller) {
+      return;
+    }
+
+    controller.abort();
+    loadingRunIdRef.current += 1;
+    conversationAbortRef.current = null;
+    setLoading(false);
+    setLoadingInfo(null);
+    setLoadingElapsedSeconds(0);
+    addMessage({
+      id: String(Date.now()),
+      role: 'assistant',
+      content: buildChatCancelledAck(
+        normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+      ),
+    });
+  }, [addMessage]);
+
   const refreshConversationConfigs = useCallback(async () => {
     const [latestMainConfig, persisted] = await Promise.all([
       loadConfig().catch(() => null),
@@ -2659,6 +2958,8 @@ const ChatPanel: React.FC<{
   const aoiMcpPluginsRef = useRef(aoiMcpPlugins);
   aoiMcpPluginsRef.current = aoiMcpPlugins;
   const toolCacheRef = useRef(createToolResultCache());
+  const conversationAbortRef = useRef<AbortController | null>(null);
+  const loadingRunIdRef = useRef(0);
 
   const clearToolCache = useCallback(() => {
     toolCacheRef.current.clear();
@@ -3703,17 +4004,43 @@ const ChatPanel: React.FC<{
         { role: 'user', content: actionMsg },
       ];
       setChatHistory(newHistory);
-      setLoading(true);
+      const abortController = new AbortController();
+      conversationAbortRef.current = abortController;
+      let didTimeout = false;
+      const timeoutId = window.setTimeout(() => {
+        didTimeout = true;
+        abortController.abort();
+      }, ACTION_QUEUE_CONVERSATION_TIMEOUT_MS);
+      const loadingRunId = beginChatLoading('Responding to app action', {
+        provider: cfg.provider,
+        model: cfg.model,
+      });
       try {
-        await runConversation(newHistory, cfg, dialogConfig);
+        await runConversation(newHistory, cfg, dialogConfig, {
+          signal: abortController.signal,
+          onStatus: updateChatLoadingStatus,
+        });
       } catch (err) {
+        if (isChatAbortError(err) && didTimeout) {
+          logger.warn(
+            'ChatPanel',
+            `App action conversation timed out after ${ACTION_QUEUE_CONVERSATION_TIMEOUT_MS}ms.`,
+            { actionMsg },
+          );
+          continue;
+        }
+        if (isChatAbortError(err)) {
+          logger.info('ChatPanel', 'App action conversation cancelled.');
+          continue;
+        }
         logger.error('ChatPanel', 'User action error:', err);
       } finally {
-        setLoading(false);
+        window.clearTimeout(timeoutId);
+        finishChatLoading(loadingRunId);
       }
     }
     processingRef.current = false;
-  }, [refreshConversationConfigs]);
+  }, [beginChatLoading, finishChatLoading, refreshConversationConfigs, updateChatLoadingStatus]);
 
   // Listen for user actions from apps
   useEffect(() => {
@@ -4152,7 +4479,7 @@ const ChatPanel: React.FC<{
         }
       }
 
-      const directMusicIntent = parseDirectMusicIntent(text);
+      const directMusicIntent = parseDirectMusicIntent(text, chatHistory);
       if (!hasImageAttachments && directMusicIntent) {
         try {
           await dispatchAgentAction({
@@ -4183,10 +4510,22 @@ const ChatPanel: React.FC<{
         }
       }
 
-      setLoading(true);
+      const abortController = new AbortController();
+      conversationAbortRef.current = abortController;
+      const loadingRunId = beginChatLoading('Preparing Aoi context', {
+        provider: selectedConfig.provider,
+        model: selectedConfig.model,
+      });
       try {
-        await runConversation(newHistory, selectedConfig, liveDialogConfig);
+        await runConversation(newHistory, selectedConfig, liveDialogConfig, {
+          signal: abortController.signal,
+          onStatus: updateChatLoadingStatus,
+        });
       } catch (err) {
+        if (isChatAbortError(err)) {
+          console.info('[ChatPanel] runConversation cancelled');
+          return;
+        }
         console.error('[ChatPanel] runConversation failed', err);
         logger.error('ChatPanel', 'Error:', err);
         addMessage({
@@ -4195,7 +4534,7 @@ const ChatPanel: React.FC<{
           content: `Error: ${err instanceof Error ? err.message : String(err)}`,
         });
       } finally {
-        setLoading(false);
+        finishChatLoading(loadingRunId);
       }
     },
     [
@@ -4204,12 +4543,15 @@ const ChatPanel: React.FC<{
       config,
       chatHistory,
       addMessage,
+      beginChatLoading,
       clearPendingImages,
       emitAssistantMessage,
+      finishChatLoading,
       publishAoiRunLedgerEntry,
       recordAoiMemoryTurn,
       refreshAoiMemories,
       refreshConversationConfigs,
+      updateChatLoadingStatus,
     ],
   );
 
@@ -4218,14 +4560,20 @@ const ChatPanel: React.FC<{
     history: ChatMessage[],
     cfg: LLMConfig,
     dialogCfg?: DialogLlmConfig | null,
+    options: ConversationRunOptions = {},
   ) => {
+    const updateStatus = options.onStatus ?? (() => undefined);
+    throwIfConversationAborted(options.signal);
+    updateStatus('Preparing Aoi context');
     console.info('[ChatPanel] runConversation start', {
       historyLength: history.length,
       provider: cfg.provider,
       model: cfg.model,
     });
     await seedMetaFiles();
+    throwIfConversationAborted(options.signal);
     await loadActionsFromMeta();
+    throwIfConversationAborted(options.signal);
     const hasImageGen = !!imageGenConfigRef.current?.apiKey;
     const hasTavily = !!tavilyConfigRef.current?.apiKey;
     const mm = modManagerRef.current;
@@ -4241,10 +4589,14 @@ const ChatPanel: React.FC<{
     if (!hasUsableLLMConfig(activeCfg)) {
       throw new Error('No usable LLM config was found for this conversation turn.');
     }
+    const toolCallRuntimeAvailable = supportsStructuredConversationTools(activeCfg);
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
-    const includeAppTools = !useDialogModel && shouldEnableAppTools(latestUserMessage, history);
-    const hasResearchTools = !useDialogModel && hasTavily;
+    const includeAppTools =
+      toolCallRuntimeAvailable &&
+      !useDialogModel &&
+      shouldEnableAppTools(latestUserMessage, history);
+    const hasResearchTools = toolCallRuntimeAvailable && !useDialogModel && hasTavily;
     const confirmedResearchRequest = resolveAoiResearchConfirmationRequest(
       latestUserMessage,
       history,
@@ -4258,39 +4610,43 @@ const ChatPanel: React.FC<{
       shouldUseWebSearch(latestUserMessage);
     const condensedHistory = condenseConversationHistory(history);
 
-    const tools = useDialogModel
-      ? [getRespondToUserToolDef(), getFinishTargetToolDef()]
-      : [
-          getRespondToUserToolDef(),
-          getFinishTargetToolDef(),
-          ...getMemoryToolDefinitions(),
-          ...(hasTavily ? getTavilyToolDefinitions() : []),
-          ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
-          ...(hasImageGen ? getImageGenToolDefinitions() : []),
-          ...(includeAppTools
-            ? [
-                getListAppsToolDefinition(),
-                getAppActionToolDefinition(),
-                ...getFileToolDefinitions(),
-                ...getAppSchemaToolDefinitions(),
-                ...getWorkspaceToolDefinitions(),
-                ...getIdeToolDefinitions(),
-                ...getSymbolToolDefinitions(),
-                ...getSemanticToolDefinitions(),
-                ...getAppStateToolDefinitions(),
-                ...getUrlToolDefinitions(),
-                ...getCommandToolDefinitions(),
-                ...getDiagnosticsToolDefinitions(),
-                ...getCheckpointToolDefinitions(),
-                ...getAutofixMacroToolDefinitions(),
-                ...getPreviewToolDefinitions(),
-                ...getUndoToolDefinitions(),
-                ...getBackgroundWatchToolDefinitions(),
-              ]
-            : []),
-        ];
+    const tools = toolCallRuntimeAvailable
+      ? useDialogModel
+        ? [getRespondToUserToolDef(), getFinishTargetToolDef()]
+        : [
+            getRespondToUserToolDef(),
+            getFinishTargetToolDef(),
+            ...getMemoryToolDefinitions(),
+            ...(hasTavily ? getTavilyToolDefinitions() : []),
+            ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
+            ...(hasImageGen ? getImageGenToolDefinitions() : []),
+            ...(includeAppTools
+              ? [
+                  getListAppsToolDefinition(),
+                  getAppActionToolDefinition(),
+                  ...getFileToolDefinitions(),
+                  ...getAppSchemaToolDefinitions(),
+                  ...getWorkspaceToolDefinitions(),
+                  ...getIdeToolDefinitions(),
+                  ...getSymbolToolDefinitions(),
+                  ...getSemanticToolDefinitions(),
+                  ...getAppStateToolDefinitions(),
+                  ...getUrlToolDefinitions(),
+                  ...getCommandToolDefinitions(),
+                  ...getDiagnosticsToolDefinitions(),
+                  ...getCheckpointToolDefinitions(),
+                  ...getAutofixMacroToolDefinitions(),
+                  ...getPreviewToolDefinitions(),
+                  ...getUndoToolDefinitions(),
+                  ...getBackgroundWatchToolDefinitions(),
+                ]
+              : []),
+          ]
+      : [];
     const selectedToolNames = tools.map((tool) => tool.function.name);
-    const capabilityPrompt = buildAoiCapabilityPrompt(selectedToolNames);
+    const capabilityPrompt = toolCallRuntimeAvailable
+      ? buildAoiCapabilityPrompt(selectedToolNames)
+      : '';
     const runGoal = createAoiRunGoalFromMessage(latestUserMessage);
     const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
     const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
@@ -4300,6 +4656,7 @@ const ChatPanel: React.FC<{
       latestUserMessage,
       useDialogModel,
       activeModel: activeCfg.model,
+      toolCallRuntimeAvailable,
       includeAppTools,
       hasResearchTools,
       shouldPreferResearchRun,
@@ -4316,29 +4673,44 @@ const ChatPanel: React.FC<{
     const currentMemories = memoriesRef.current;
     let latestAoiMemories = aoiMemoriesRef.current;
     try {
+      updateStatus('Refreshing Aoi memory');
       latestAoiMemories = await loadAoiMemories();
+      throwIfConversationAborted(options.signal);
       aoiMemoriesRef.current = latestAoiMemories;
       setAoiMemories(latestAoiMemories);
     } catch (error) {
+      if (isChatAbortError(error)) {
+        throw error;
+      }
       console.warn('[ChatPanel] Failed to refresh Aoi memories before prompt build', error);
     }
     const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage);
     let currentAoiMissionPrompt = '';
     try {
+      updateStatus('Refreshing mission state');
       const missionResponse = await fetchAoiMissionState(sessionPathRef.current);
+      throwIfConversationAborted(options.signal);
       setAoiMissionState(missionResponse.mission);
       currentAoiMissionPrompt = buildAoiMissionResumePrompt(missionResponse.mission);
     } catch (error) {
+      if (isChatAbortError(error)) {
+        throw error;
+      }
       console.warn('[ChatPanel] Failed to refresh Aoi mission state before prompt build', error);
     }
     let currentAoiContextPrompt = '';
     try {
+      updateStatus('Checking current context');
       const contextResponse = await fetchAoiContextRouter(sessionPathRef.current, {
         latestUserMessage,
       });
+      throwIfConversationAborted(options.signal);
       setAoiContextRouter(contextResponse.context);
       currentAoiContextPrompt = contextResponse.context?.promptBlock ?? '';
     } catch (error) {
+      if (isChatAbortError(error)) {
+        throw error;
+      }
       console.warn('[ChatPanel] Failed to refresh Aoi context router before prompt build', error);
     }
     const systemPrompt = buildSystemPrompt(
@@ -4348,7 +4720,7 @@ const ChatPanel: React.FC<{
       userProfileRef.current,
       conversationPreferencesRef.current,
       currentMemories,
-      hasTavily,
+      hasTavily && toolCallRuntimeAvailable,
       hasResearchTools,
       currentAoiMemoryPrompt,
       currentAoiMissionPrompt,
@@ -4357,6 +4729,7 @@ const ChatPanel: React.FC<{
       runGoalPrompt,
       skillsPrompt,
       mcpPluginPrompt,
+      toolCallRuntimeAvailable,
     );
     const fullMessages: ChatMessage[] = [
       {
@@ -4389,7 +4762,9 @@ const ChatPanel: React.FC<{
                 "The latest user message is a short affirmative reply confirming Aoi's previous actionable proposal.",
                 `Previous Aoi proposal: ${confirmedActionRequest}`,
                 'Treat the latest user message as an instruction to carry out that previous proposal now.',
-                'Use the available tools when the proposal requires app, file, workspace, browser, URL, command, memory, image, or web capabilities.',
+                toolCallRuntimeAvailable
+                  ? 'Use the available tools when the proposal requires app, file, workspace, browser, URL, command, memory, image, or web capabilities.'
+                  : 'Tool calls are unavailable in the current provider route, so do not claim execution; give a concise manual fallback or say which configured provider is needed.',
                 'If the required tool or configuration is unavailable, say what is missing instead of silently doing nothing.',
               ].join('\n'),
             },
@@ -4463,11 +4838,14 @@ const ChatPanel: React.FC<{
     };
 
     if (shouldPreSearchWeb) {
+      throwIfConversationAborted(options.signal);
+      updateStatus('Searching web evidence');
       const preSearchParams = buildTavilyPreSearchParams(latestUserMessage);
       const pendingSummary = `search_web(${String(preSearchParams.query || '').slice(0, 48)})`;
       pendingToolCallsRef.current.push(pendingSummary);
       try {
         const result = await executeTavilyTool(preSearchParams, tavilyConfigRef.current);
+        throwIfConversationAborted(options.signal);
         const summarizedResult = summarizeToolResultForModel('search_web', result);
         console.info('[ChatPanel] Tavily pre-search result', {
           resultPreview: result.slice(0, 200),
@@ -4486,6 +4864,9 @@ const ChatPanel: React.FC<{
           },
         ];
       } catch (err) {
+        if (isChatAbortError(err)) {
+          throw err;
+        }
         const message = err instanceof Error ? err.message : String(err);
         console.error('[ChatPanel] Tavily pre-search failed', err);
         currentMessages = [
@@ -4519,7 +4900,11 @@ const ChatPanel: React.FC<{
     };
 
     while (iterations < maxIterations) {
+      throwIfConversationAborted(options.signal);
       iterations++;
+      updateStatus(
+        `Waiting for ${getProviderDisplayName(activeCfg.provider)} / ${activeCfg.model}`,
+      );
       console.info('[ChatPanel] LLM iteration start', {
         iteration: iterations,
         messageCount: currentMessages.length,
@@ -4551,7 +4936,8 @@ const ChatPanel: React.FC<{
       );
       let response: Awaited<ReturnType<typeof chat>>;
       try {
-        response = await chat(currentMessages, tools, activeCfg);
+        response = await chat(currentMessages, tools, activeCfg, { signal: options.signal });
+        throwIfConversationAborted(options.signal);
       } catch (error) {
         finalizeRunLedger(
           'failed',
@@ -4617,8 +5003,11 @@ const ChatPanel: React.FC<{
       currentMessages = [...currentMessages, assistantMsg];
 
       if (canParallelizeToolBatch(response.toolCalls)) {
+        throwIfConversationAborted(options.signal);
+        updateStatus('Running tool actions');
         const parallelResults = await Promise.allSettled(
           response.toolCalls.map(async (tc) => {
+            throwIfConversationAborted(options.signal);
             let params: Record<string, unknown> = {};
             try {
               params = JSON.parse(tc.function.arguments);
@@ -4794,6 +5183,7 @@ const ChatPanel: React.FC<{
           }),
         );
 
+        throwIfConversationAborted(options.signal);
         for (let index = 0; index < parallelResults.length; index++) {
           const settled = parallelResults[index];
           const toolCall = response.toolCalls[index];
@@ -4819,6 +5209,8 @@ const ChatPanel: React.FC<{
       // Execute each tool call
       let shouldStopAfterToolBatch = false;
       for (const tc of response.toolCalls) {
+        throwIfConversationAborted(options.signal);
+        updateStatus(`Running ${tc.function.name}`);
         let params: Record<string, unknown> = {};
         try {
           params = JSON.parse(tc.function.arguments);
@@ -4938,7 +5330,7 @@ const ChatPanel: React.FC<{
             { role: 'tool', content: 'Message delivered.', tool_call_id: tc.id },
           ];
           shouldStopAfterToolBatch = true;
-          continue;
+          break;
         }
 
         // ---- finish_target ----
@@ -6131,9 +6523,22 @@ const ChatPanel: React.FC<{
           dockSide === 'left' ? styles.dockLeft : styles.dockRight
         }`}
         data-testid="chat-panel"
-        style={zIndex !== null && zIndex !== undefined ? { zIndex } : undefined}
+        style={panelStyle}
         onMouseDown={onFocus}
       >
+        <button
+          type="button"
+          className={`${styles.resizeHandle} ${
+            dockSide === 'left' ? styles.resizeHandleRight : styles.resizeHandleLeft
+          }`}
+          onMouseDown={handlePanelResizeMouseDown}
+          aria-label="Resize chat panel width"
+          title="Resize chat panel"
+          data-testid="chat-panel-resize-handle"
+        >
+          <GripVertical size={14} />
+        </button>
+
         {/* Left: Character Avatar */}
         {!compact && (
           <div className={styles.avatarSide}>
@@ -6263,7 +6668,30 @@ const ChatPanel: React.FC<{
                 )}
               </React.Fragment>
             ))}
-            {loading && <div className={styles.loading}>Thinking...</div>}
+            {loading && (
+              <div className={styles.loading} data-testid="chat-loading">
+                <div className={styles.loadingMain}>
+                  <span>Thinking...</span>
+                  <span className={styles.loadingElapsed}>
+                    {formatLoadingElapsed(loadingElapsedSeconds)}
+                  </span>
+                </div>
+                <div className={styles.loadingDetail}>
+                  {buildLoadingStatus(loadingInfo, loadingElapsedSeconds)}
+                </div>
+                {loadingInfo?.cancellable && (
+                  <button
+                    type="button"
+                    className={styles.loadingCancelBtn}
+                    onClick={handleCancelChatRun}
+                    title="Stop"
+                  >
+                    <Square size={11} />
+                    Stop
+                  </button>
+                )}
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 

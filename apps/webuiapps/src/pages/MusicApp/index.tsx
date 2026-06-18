@@ -28,6 +28,7 @@ import {
   reportLifecycle,
   fetchVibeInfo,
   createAppFileApi,
+  ActionTriggerBy,
   type CharacterAppAction,
 } from '@/lib';
 import './i18n';
@@ -414,7 +415,7 @@ const YouTubeApp: React.FC = () => {
   );
 
   const submitSearch = useCallback(
-    async (rawQuery?: string) => {
+    async (rawQuery?: string, triggerBy: ActionTriggerBy = ActionTriggerBy.User) => {
       const query = (rawQuery ?? searchQuery).trim();
       if (!query) return;
 
@@ -434,7 +435,7 @@ const YouTubeApp: React.FC = () => {
         ].slice(0, MAX_RECENT_SEARCHES),
       }));
 
-      reportAction(APP_ID, 'OPEN_SEARCH', { query });
+      reportAction(APP_ID, 'OPEN_SEARCH', { query }, triggerBy);
       setResultsOpen(true);
       setActivePlayback(null);
       setCurrentPlayingVideoId(null);
@@ -827,7 +828,7 @@ const YouTubeApp: React.FC = () => {
           case 'OPEN_SEARCH': {
             const query = action.params?.query?.trim();
             if (!query) return 'error: missing query';
-            await submitSearch(query);
+            await submitSearch(query, ActionTriggerBy.Agent);
             return 'success';
           }
           case 'PLAY_LAST_PLAYLIST': {

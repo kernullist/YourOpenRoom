@@ -111,6 +111,25 @@
   width: 16px;
   height: 16px;
   z-index: 20;
+  touch-action: none;
+}
+
+.resizeHandleTop {
+  top: 0;
+  left: 16px;
+  right: 16px;
+  width: auto;
+  height: 8px;
+  cursor: ns-resize;
+}
+
+.resizeHandleLeft {
+  top: 16px;
+  bottom: 16px;
+  left: 0;
+  width: 8px;
+  height: auto;
+  cursor: ew-resize;
 }
 
 .resizeHandleBottomRight {

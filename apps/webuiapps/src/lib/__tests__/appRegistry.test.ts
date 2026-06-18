@@ -15,6 +15,7 @@ describe('appRegistry app identity helpers', () => {
     expect(result).toContain('Dewdrop Canvas (appName: dewdropcanvas, appId: 22');
     expect(result).toContain('Written By Me (appName: writtenbyme, appId: 23');
     expect(result).toContain('Aoi Research (appName: aoiresearch, appId: 24');
+    expect(result).toContain('Aoi Memory (appName: aoimemory, appId: 25');
   });
 
   it('resolves OS app_id params back to the target app identity', () => {
@@ -41,9 +42,9 @@ describe('appRegistry app identity helpers', () => {
   });
 
   it('keeps direct app identities available without loading meta.yaml', () => {
-    const app = getAppIdentityById(20);
+    const app = getAppIdentityById(25);
 
-    expect(app?.displayName).toBe('PE Analyst');
-    expect(app?.aliases).toContain('PE Analyzer');
+    expect(app?.displayName).toBe('Aoi Memory');
+    expect(app?.aliases).toContain('memory dashboard');
   });
 });

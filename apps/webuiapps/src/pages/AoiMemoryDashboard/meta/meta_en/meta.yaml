@@ -1,0 +1,35 @@
+app_id: 25
+app_name: aoimemory
+app_display_name: Aoi Memory
+version: '1.0.0'
+description: >
+  Aoi Memory shows what Aoi currently remembers about the user, how reliable those memories are,
+  which memories are likely to enter the current prompt, and which memories need review.
+displayDesc: >
+  Inspect, filter, promote, demote, archive, or delete Aoi's local durable memories.
+
+actions:
+  - type: REFRESH_AOI_MEMORY_DASHBOARD
+    name: Refresh Aoi Memory Dashboard
+    description: Reload the local Aoi memory-v2 dashboard and refresh memory counts.
+    params: []
+
+  - type: FILTER_AOI_MEMORY
+    name: Filter Aoi Memory
+    description: Set a search query in the memory dashboard.
+    params:
+      - name: query
+        type: string
+        description: Search text to apply to memory content, tags, or entities.
+        required: true
+
+  - type: ARCHIVE_AOI_MEMORY
+    name: Archive Aoi Memory
+    description:
+      Archive one durable Aoi memory by id after the user explicitly asks for that memory to be
+      archived.
+    params:
+      - name: memoryId
+        type: string
+        description: Exact Aoi memory id from the dashboard.
+        required: true

@@ -35,7 +35,7 @@ interface Props {
   win: WindowState;
 }
 
-type ResizeCorner = 'top-right' | 'bottom-right';
+type ResizeHandle = 'top' | 'left' | 'top-right' | 'bottom-right';
 
 const WindowContent = memo(({ appId }: { appId: number }) => {
   const AppComp = APP_COMPONENTS[appId];
@@ -61,7 +61,7 @@ const AppWindow: React.FC<Props> = ({ win }) => {
     winY: number;
     winW: number;
     winH: number;
-    corner: ResizeCorner;
+    handle: ResizeHandle;
   } | null>(null);
   const dragFrameRef = useRef<number | null>(null);
   const pendingMoveRef = useRef<{ x: number; y: number } | null>(null);
@@ -72,28 +72,47 @@ const AppWindow: React.FC<Props> = ({ win }) => {
     const resizeState = resizeRef.current;
     if (!resizeState) return null;
 
-    const nextWidth = Math.max(MIN_WINDOW_WIDTH, resizeState.winW + dx);
+    const growRightWidth = Math.max(MIN_WINDOW_WIDTH, resizeState.winW + dx);
+    const growLeftWidth = Math.max(MIN_WINDOW_WIDTH, resizeState.winW - dx);
+    const growDownHeight = Math.max(MIN_WINDOW_HEIGHT, resizeState.winH + dy);
+    const growUpHeight = Math.max(MIN_WINDOW_HEIGHT, resizeState.winH - dy);
 
-    if (resizeState.corner === 'top-right') {
-      const nextHeight = Math.max(MIN_WINDOW_HEIGHT, resizeState.winH - dy);
-      return {
-        x: resizeState.winX,
-        y: resizeState.winY + resizeState.winH - nextHeight,
-        width: nextWidth,
-        height: nextHeight,
-      };
+    switch (resizeState.handle) {
+      case 'top':
+        return {
+          x: resizeState.winX,
+          y: resizeState.winY + resizeState.winH - growUpHeight,
+          width: resizeState.winW,
+          height: growUpHeight,
+        };
+      case 'left':
+        return {
+          x: resizeState.winX + resizeState.winW - growLeftWidth,
+          y: resizeState.winY,
+          width: growLeftWidth,
+          height: resizeState.winH,
+        };
+      case 'top-right':
+        return {
+          x: resizeState.winX,
+          y: resizeState.winY + resizeState.winH - growUpHeight,
+          width: growRightWidth,
+          height: growUpHeight,
+        };
+      case 'bottom-right':
+        return {
+          x: resizeState.winX,
+          y: resizeState.winY,
+          width: growRightWidth,
+          height: growDownHeight,
+        };
     }
 
-    return {
-      x: resizeState.winX,
-      y: resizeState.winY,
-      width: nextWidth,
-      height: Math.max(MIN_WINDOW_HEIGHT, resizeState.winH + dy),
-    };
+    return null;
   }, []);
 
   const handleResizeMouseDown = useCallback(
-    (corner: ResizeCorner, e: React.MouseEvent) => {
+    (handle: ResizeHandle, e: React.MouseEvent) => {
       if (win.maximized) return;
       e.stopPropagation();
       e.preventDefault();
@@ -105,7 +124,7 @@ const AppWindow: React.FC<Props> = ({ win }) => {
         winY: win.y,
         winW: win.width,
         winH: win.height,
-        corner,
+        handle,
       };
 
       const handleMouseMove = (ev: MouseEvent) => {
@@ -248,6 +267,16 @@ const AppWindow: React.FC<Props> = ({ win }) => {
           <WindowContent appId={win.appId} />
         </div>
       </div>
+      <div
+        className={`${styles.resizeHandle} ${styles.resizeHandleTop}`}
+        onMouseDown={(event) => handleResizeMouseDown('top', event)}
+        data-testid={`window-resize-top-${win.appId}`}
+      />
+      <div
+        className={`${styles.resizeHandle} ${styles.resizeHandleLeft}`}
+        onMouseDown={(event) => handleResizeMouseDown('left', event)}
+        data-testid={`window-resize-left-${win.appId}`}
+      />
       <div
         className={`${styles.resizeHandle} ${styles.resizeHandleTopRight}`}
         onMouseDown={(event) => handleResizeMouseDown('top-right', event)}

@@ -92,11 +92,11 @@
 }
 
 .desktopChatLeft {
-  padding-left: 992px;
+  padding-left: calc(var(--chat-panel-width, 960px) + 32px);
 }
 
 .desktopChatLeftCompact {
-  padding-left: 452px;
+  padding-left: calc(var(--chat-panel-width, 420px) + 32px);
 }
 
 .iconGrid {
@@ -473,6 +473,10 @@
   .desktopChatLeft,
   .desktopChatLeftCompact {
     padding-left: 32px;
+  }
+
+  .controlsBehindChat {
+    display: none;
   }
 
   .bottomBar.dockLeft {

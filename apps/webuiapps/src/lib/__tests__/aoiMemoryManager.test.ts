@@ -503,4 +503,31 @@ describe('Aoi LLM memory distiller', () => {
     expect(candidates[0].scope).toBe('project');
     expect(candidates[0].type).toBe('decision');
   });
+
+  it('does not run hidden distillation through interactive CLI/OAuth providers', async () => {
+    let calls = 0;
+    const distillerChat = async () => {
+      calls += 1;
+      return {
+        content: JSON.stringify({ memories: [] }),
+        toolCalls: [],
+      };
+    };
+
+    const candidates = await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '내 다음 답변 선호를 기억해줘.',
+      assistantMessage: '알겠어. 다음부터 그 선호를 반영할게.',
+      llmConfig: {
+        provider: 'codex-auth',
+        apiKey: '',
+        baseUrl: '',
+        model: 'gpt-5.5',
+      },
+      distillerChat,
+    });
+
+    expect(candidates).toEqual([]);
+    expect(calls).toBe(0);
+  });
 });

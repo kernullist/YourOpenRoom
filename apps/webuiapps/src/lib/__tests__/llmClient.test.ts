@@ -1457,7 +1457,6 @@ respond_to_user
       expect(body.verbosity).toBeUndefined();
       expect(body.serviceTier).toBeUndefined();
     });
-
   });
 
   describe('Codex Auth provider', () => {

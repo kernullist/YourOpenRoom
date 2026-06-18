@@ -301,6 +301,25 @@ const APP_STATIC_REGISTRY: AppStaticDef[] = [
     color: '#4cc3a5',
     defaultSize: { width: 1240, height: 760 },
   },
+  {
+    appId: 25,
+    appName: 'aoimemory',
+    route: '/aoi-memory',
+    displayName: 'Aoi Memory',
+    aliases: [
+      'Aoi Memory Dashboard',
+      'memory dashboard',
+      'memory inspector',
+      'what Aoi knows',
+      '아오이 메모리',
+      '메모리 대시보드',
+      '기억 대시보드',
+    ],
+    sourceDir: 'AoiMemoryDashboard',
+    icon: 'MessageCircle',
+    color: '#7dd3fc',
+    defaultSize: { width: 1280, height: 760 },
+  },
 ];
 
 // OS actions are built-in system actions, not from meta.yaml
