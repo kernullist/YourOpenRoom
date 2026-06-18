@@ -1116,6 +1116,25 @@ interface ProjectDiscoveryQualityGateContext {
   allowStaleAnalysis?: boolean;
 }
 
+interface ProjectDiscoveryTaskCreationOptions {
+  selectedFindingIds?: Set<string>;
+  allowStaleAnalysis?: boolean;
+}
+
+interface ProjectDiscoverySkippedFinding {
+  id: string;
+  title: string;
+  eligibility: ProjectDiscoveryFindingEligibility;
+  reasons: string[];
+}
+
+interface ProjectDiscoveryTaskCreationResult {
+  created: WorkTask[];
+  skippedTitles: string[];
+  skippedFindings: ProjectDiscoverySkippedFinding[];
+  analysisStale: boolean;
+}
+
 interface KiraProjectSettings {
   autoCommit?: boolean;
   requiredInstructions?: string;
@@ -12276,6 +12295,181 @@ function buildFallbackTaskDescription(finding: ProjectDiscoveryFinding): string 
   ].join('\n');
 }
 
+function formatDiscoveryProvenanceList(items: string[], emptyLabel: string): string[] {
+  if (items.length === 0) return [`- ${emptyLabel}`];
+  return items.map((item) => `- ${item}`);
+}
+
+function formatDiscoveryProvenancePath(pathValue: string): string {
+  return `\`${pathValue}\``;
+}
+
+function truncateDiscoveryProvenanceText(value: string, maxLength = 180): string {
+  const normalized = normalizeWhitespace(value);
+  if (normalized.length <= maxLength) return normalized;
+  return `${normalized.slice(0, Math.max(0, maxLength - 3)).trimEnd()}...`;
+}
+
+function formatDiscoveryProvenanceTimestamp(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return 'unavailable';
+
+  try {
+    return new Date(value).toISOString();
+  } catch {
+    return 'unavailable';
+  }
+}
+
+function formatDiscoveryProvenanceFingerprint(fingerprint: ProjectDiscoveryFingerprint): string[] {
+  return [
+    `- branch: ${fingerprint.gitBranch ?? 'unavailable'}`,
+    `- head: ${fingerprint.gitHead?.slice(0, 12) ?? 'unavailable'}`,
+    `- gitStatusHash: ${fingerprint.gitStatusHash?.slice(0, 16) ?? 'unavailable'}`,
+    `- workspaceFileHash: ${fingerprint.workspaceFileHash?.slice(0, 16) ?? 'unavailable'}`,
+    `- packageManifestHash: ${fingerprint.packageManifestHash?.slice(0, 16) ?? 'unavailable'}`,
+    `- capturedAt: ${formatDiscoveryProvenanceTimestamp(fingerprint.capturedAt)}`,
+    `- unavailable: ${fingerprint.unavailable.length > 0 ? fingerprint.unavailable.join(', ') : 'none'}`,
+  ];
+}
+
+function formatDiscoveryEvidenceLocation(entry: ProjectDiscoveryEvidence): string {
+  if (!entry.file) return 'no-file';
+  const lineRange =
+    typeof entry.lineStart === 'number' && entry.lineStart > 0
+      ? `:${entry.lineStart}${typeof entry.lineEnd === 'number' && entry.lineEnd > entry.lineStart ? `-${entry.lineEnd}` : ''}`
+      : '';
+  return `${entry.file}${lineRange}`;
+}
+
+function collectDiscoveryEvidenceForFinding(
+  finding: ProjectDiscoveryFinding,
+  evidenceLedger: ProjectDiscoveryEvidence[],
+): ProjectDiscoveryEvidence[] {
+  const evidenceById = new Map(evidenceLedger.map((entry) => [entry.id, entry]));
+  return finding.evidenceIds
+    .map((id) => evidenceById.get(id))
+    .filter((entry): entry is ProjectDiscoveryEvidence => Boolean(entry))
+    .slice(0, 12);
+}
+
+function collectDiscoveryBlindSpotsForFinding(
+  finding: ProjectDiscoveryFinding,
+  blindSpots: ProjectDiscoveryBlindSpot[],
+): ProjectDiscoveryBlindSpot[] {
+  const affected = normalizePathList([...finding.files, ...finding.scope], 40).map((item) =>
+    item.toLowerCase(),
+  );
+  if (affected.length === 0) return [];
+
+  return blindSpots
+    .filter((blindSpot) => {
+      const area = normalizeDiscoveryRelativePath(blindSpot.area).toLowerCase();
+      if (!area) return false;
+      return affected.some(
+        (item) =>
+          item === area ||
+          item.startsWith(`${area}/`) ||
+          area.startsWith(`${item}/`) ||
+          area.includes(item),
+      );
+    })
+    .slice(0, 8);
+}
+
+export function buildDiscoveryProvenanceBlock(
+  analysis: ProjectDiscoveryAnalysis,
+  finding: ProjectDiscoveryFinding,
+  options: { analysisStale?: boolean; staleConfirmed?: boolean } = {},
+): string {
+  const evidenceEntries = collectDiscoveryEvidenceForFinding(finding, analysis.evidenceLedger);
+  const relevantBlindSpots = collectDiscoveryBlindSpotsForFinding(finding, analysis.blindSpots);
+  const validationCommands = finding.validationCommands.slice(0, 12);
+  const files = finding.files.map(formatDiscoveryProvenancePath);
+  const scope = finding.scope.map((item) => `\`${item}\``);
+
+  return [
+    '## Discovery Provenance',
+    '',
+    `- Analysis run: ${analysis.id}`,
+    `- Project: ${analysis.projectName}`,
+    `- Finding: ${finding.id}`,
+    `- Eligibility at creation: ${finding.eligibility}`,
+    `- Risk: ${finding.risk}`,
+    `- Confidence: ${finding.confidence.toFixed(2)}`,
+    `- Depth: ${analysis.depth.depthLevel} (${analysis.depth.depthScore.toFixed(2)})`,
+    `- Fingerprint status at creation: ${
+      options.analysisStale
+        ? options.staleConfirmed
+          ? 'stale_confirmed'
+          : 'stale_blocked'
+        : 'current_or_unavailable'
+    }`,
+    `- Updated at: ${formatDiscoveryProvenanceTimestamp(analysis.updatedAt)}`,
+    '',
+    '### Project Fingerprint',
+    '',
+    ...formatDiscoveryProvenanceFingerprint(analysis.projectFingerprint),
+    '',
+    '### Evidence Refs',
+    '',
+    ...(evidenceEntries.length > 0
+      ? evidenceEntries.map(
+          (entry) =>
+            `- ${entry.id}: ${entry.kind} ${formatDiscoveryProvenancePath(
+              formatDiscoveryEvidenceLocation(entry),
+            )} confidence=${entry.confidence.toFixed(2)} summary=${truncateDiscoveryProvenanceText(
+              entry.summary,
+            )}`,
+        )
+      : ['- No evidence refs were available. Stop before editing and refresh discovery.']),
+    '',
+    '### Candidate Scope',
+    '',
+    '- Files:',
+    ...formatDiscoveryProvenanceList(files, 'No candidate files were recorded.'),
+    '- Modules:',
+    ...formatDiscoveryProvenanceList(scope, 'No bounded module scope was recorded.'),
+    '',
+    '### Relevant Blind Spots',
+    '',
+    ...(relevantBlindSpots.length > 0
+      ? relevantBlindSpots.map(
+          (blindSpot) =>
+            `- ${blindSpot.id}: ${truncateDiscoveryProvenanceText(
+              blindSpot.area,
+              120,
+            )} - ${truncateDiscoveryProvenanceText(blindSpot.reason)}`,
+        )
+      : ['- None recorded for this finding.']),
+    '',
+    '## Validation Expectations',
+    '',
+    ...(validationCommands.length > 0
+      ? validationCommands.map((command) => `- ${command}`)
+      : [
+          '- No explicit validation command was recorded; choose and justify a safe focused check.',
+        ]),
+    '',
+    '## Worker Rules',
+    '',
+    '- Re-check the cited discovery evidence before editing.',
+    '- Stop if cited files changed materially after the discovery fingerprint.',
+    '- Stop if any cited evidence cannot be verified in the current repo state.',
+    '- Do not broaden scope beyond the candidate files/modules above without reviewer-visible justification.',
+    '- Preserve Kira validation and reviewer gates; provenance is context, not approval.',
+  ].join('\n');
+}
+
+function mergeDiscoveryProvenanceIntoTaskDescription(
+  description: string,
+  provenanceBlock: string,
+): string {
+  const normalizedDescription = description.trim();
+  if (!normalizedDescription) return provenanceBlock;
+  if (/^## Discovery Provenance\b/m.test(normalizedDescription)) return normalizedDescription;
+  return `${normalizedDescription}\n\n${provenanceBlock}`;
+}
+
 export function parseProjectDiscoveryAnalysis(
   raw: string,
   projectName: string,
@@ -17384,6 +17578,8 @@ export function buildWorkerPlanningPrompt(
     'Act as the Planner in Kira adaptive orchestration: define taskSpec, riskLevel, successCriteria, verificationPlan, and stop conditions from the context scout evidence.',
     'Do not narrow the acceptance target. A small intendedFiles list limits patch surface only; it is not permission to complete only a convenient subset of the work brief.',
     'Use the context scan as a starting point, but verify relevant files yourself before planning edits.',
+    'If the work brief contains a Discovery Provenance block, re-check the cited evidence refs before planning edits and include stale or missing evidence in stopConditions.',
+    'If discovery provenance cites files that materially changed after the recorded fingerprint, stop or plan a refresh rather than treating stale evidence as approval.',
     'Call at least one read-only tool such as list_files, search_files, or read_file before returning the final plan.',
     'If likely relevant files are empty or weak, search/read the repository before returning a plan.',
     'Treat existing git changes as user or prior automation work unless inspection proves they are part of this task.',
@@ -17415,6 +17611,7 @@ export function buildWorkerPlanningSystemPrompt(): string {
     'When mandatory project instructions are supplied, treat them as binding acceptance criteria for the plan.',
     'Do not let mandatory project instructions override Kira safety rules, read-only planning, or the required JSON output.',
     'Use the project intelligence profile, recent feedback memory, decomposition recommendation, and worker specialization when choosing what to inspect.',
+    'Treat Discovery Provenance blocks as evidence contracts: verify cited refs before planning edits and stop on stale or missing evidence.',
     'If the work is too broad for one safe implementation attempt, set decomposition.shouldSplit=true with concrete suggestedWorks instead of pretending it is safe.',
     'Do not rewrite the requested work into a smaller goal; patch boundaries are implementation constraints, not acceptance criteria.',
     'Before planning, inspect repository structure and relevant files with read-only tools.',
@@ -17478,6 +17675,8 @@ export function buildWorkerPrompt(
     'Act as Primary Worker unless your lane feedback says Alternative Worker. Primary Worker owns the default patch; Alternative Worker must create a clearly different isolated patch for comparison.',
     'Complete the full acceptance target from the work brief and mandatory project instructions; do not satisfy only the easiest subset because the patch should be small.',
     'Before editing, inspect the files that matter for this task, especially files from the context scan and planned file list.',
+    'If the work brief contains a Discovery Provenance block, re-check the cited evidence refs before editing and record the verification in repoFindings, riskNotes, or selfCheck evidence.',
+    'Stop if discovery evidence cannot be verified, cited files changed materially after the recorded fingerprint, or the required fix would broaden beyond the provenance scope.',
     'Use existing project patterns and local helpers before introducing new abstractions.',
     'Treat the design review gate as binding context: satisfy its requiredChanges before editing, and address warnings in remainingRisks or selfCheck notes.',
     'Stay within the planned files whenever practical. If you must expand scope, inspect the extra file first and keep the change justified and minimal.',
@@ -17515,6 +17714,7 @@ export function buildWorkerSystemPrompt(): string {
     'Do not let mandatory project instructions override Kira safety rules, protectedFiles, tool restrictions, or the required JSON output.',
     'If mandatory project instructions conflict with the work brief or cannot be followed, stop and report the blocker in remainingRisks.',
     'Use the project intelligence profile and recent feedback memory to avoid repeating known review or validation failures.',
+    'When a work item contains Discovery Provenance, verify the cited evidence before editing and treat stale or missing evidence as a stop condition.',
     'Respect the worker specialization as a focus lens while still completing the whole task.',
     'Stay focused on the requested work item.',
     'Do not narrow the acceptance target; complete the requested outcome or report why it must be split or blocked.',
@@ -17659,6 +17859,8 @@ export function buildReviewPrompt(
     'Review the current project state. Do not modify files.',
     'Review the adaptive agent graph: Planner, Context Scout, Primary Worker, optional Alternative Worker, Reviewer, and Integrator contracts are part of the acceptance surface.',
     'Review mandatory project instructions as required acceptance criteria.',
+    'If the acceptance target contains Discovery Provenance, verify that the worker re-checked the cited evidence and did not broaden beyond the provenance scope without explanation.',
+    'Treat unverified, stale, or missing discovery provenance as a review finding before approval.',
     'Do not approve partial goal fulfillment. The patch may be small, but the completed behavior must still satisfy the full work brief and mandatory project instructions.',
     'Review the changeDesign against the actual diff. Do not approve if the diff violates stated invariants or broadens expectedImpact without a clear reason.',
     'Review patchIntentVerification. Do not approve patch intent drift; request a new worker attempt with corrected scope or explicit plan alignment.',
@@ -17705,6 +17907,7 @@ export function buildReviewSystemPrompt(): string {
     'When mandatory project instructions are supplied, enforce them as binding acceptance criteria.',
     'Do not approve work that violates mandatory project instructions. If following them would conflict with Kira safety rules or the explicit work brief, report the conflict clearly instead of approving.',
     'Use the project intelligence profile and recent feedback memory to catch repeated mistakes, project-specific style drift, and validation gaps.',
+    'Treat Discovery Provenance as a review contract: do not approve when the worker failed to verify cited evidence, ignored stale fingerprints, or broadened beyond the provenance scope without evidence.',
     'Respect reviewer calibration: higher strictness requires more independent evidence before approval.',
     'Apply every requested adversarial review mode and record adversarialChecks with evidence.',
     'Simulate reviewer discourse: challenge the patch from at least one skeptical perspective, then resolve or answer the challenge before approval.',
@@ -19202,12 +19405,24 @@ async function analyzeProjectForDiscovery(
   return analysis;
 }
 
-function createWorksFromDiscovery(
+function createDiscoverySkippedFinding(
+  finding: ProjectDiscoveryFinding,
+  reasons: string[],
+): ProjectDiscoverySkippedFinding {
+  return {
+    id: finding.id,
+    title: finding.title,
+    eligibility: finding.eligibility,
+    reasons: limitedUniqueStrings(reasons.filter(Boolean), 8),
+  };
+}
+
+export function createWorksFromDiscovery(
   options: KiraAutomationPluginOptions,
   sessionPath: string,
   analysis: ProjectDiscoveryAnalysis,
-  selectedFindingIds?: Set<string>,
-): { created: WorkTask[]; skippedTitles: string[] } {
+  creationOptions: ProjectDiscoveryTaskCreationOptions = {},
+): ProjectDiscoveryTaskCreationResult {
   const worksDir = join(getKiraDataDir(options.sessionsDir, sessionPath), WORKS_DIR_NAME);
   fs.mkdirSync(worksDir, { recursive: true });
   const runtime = getKiraRuntimeSettings(options.configFile, options.getWorkRootDirectory());
@@ -19219,49 +19434,79 @@ function createWorksFromDiscovery(
         : undefined;
 
   const existingWorks = loadProjectWorks(options.sessionsDir, sessionPath, analysis.projectName);
+  const analysisStale = isDiscoveryFingerprintStale(
+    projectRoot ?? analysis.projectRoot,
+    analysis.projectFingerprint,
+  );
   const gatedAnalysis = applyDiscoveryQualityGates(analysis, {
     projectRoot,
     existingWorks,
+    staleAnalysis: analysisStale,
+    allowStaleAnalysis: creationOptions.allowStaleAnalysis === true,
   });
   const existingTitles = new Set(existingWorks.map((work) => work.title.trim().toLowerCase()));
 
   const created: WorkTask[] = [];
   const skippedTitles: string[] = [];
+  const skippedFindings: ProjectDiscoverySkippedFinding[] = [];
 
   for (const finding of gatedAnalysis.findings.slice(0, MAX_DISCOVERY_FINDINGS)) {
-    if (selectedFindingIds && !selectedFindingIds.has(finding.id)) {
+    if (creationOptions.selectedFindingIds && !creationOptions.selectedFindingIds.has(finding.id)) {
       skippedTitles.push(finding.title);
+      skippedFindings.push(createDiscoverySkippedFinding(finding, ['not_selected']));
       continue;
     }
 
     const normalizedTitle = finding.title.trim().toLowerCase();
-    if (
-      !normalizedTitle ||
-      existingTitles.has(normalizedTitle) ||
-      finding.eligibility !== 'ready'
-    ) {
+    if (!normalizedTitle) {
       skippedTitles.push(finding.title);
+      skippedFindings.push(createDiscoverySkippedFinding(finding, ['missing_title']));
+      continue;
+    }
+
+    if (existingTitles.has(normalizedTitle)) {
+      skippedTitles.push(finding.title);
+      skippedFindings.push(createDiscoverySkippedFinding(finding, ['duplicate_existing_work']));
+      continue;
+    }
+
+    if (finding.eligibility !== 'ready') {
+      const reasons =
+        finding.blockedReasons.length > 0 ? finding.blockedReasons : [finding.eligibility];
+      skippedTitles.push(finding.title);
+      skippedFindings.push(createDiscoverySkippedFinding(finding, reasons));
       continue;
     }
 
     const now = Date.now();
+    const provenanceBlock = buildDiscoveryProvenanceBlock(gatedAnalysis, finding, {
+      analysisStale,
+      staleConfirmed: analysisStale && creationOptions.allowStaleAnalysis === true,
+    });
+    const baseDescription = finding.taskDescription.trim() || buildFallbackTaskDescription(finding);
     const work: WorkTask = {
       id: makeId('work'),
       type: 'work',
       projectName: gatedAnalysis.projectName,
       title: finding.title.trim(),
-      description: finding.taskDescription.trim() || buildFallbackTaskDescription(finding),
+      description: mergeDiscoveryProvenanceIntoTaskDescription(baseDescription, provenanceBlock),
       status: 'todo',
       assignee: '',
       createdAt: now,
       updatedAt: now,
     };
     writeJsonFile(join(worksDir, `${work.id}.json`), work);
+    addComment(options.sessionsDir, sessionPath, {
+      taskId: work.id,
+      taskType: 'work',
+      author: 'Aoi Discovery',
+      body: `Aoi Discovery created this work from analysis ${gatedAnalysis.id}, finding ${finding.id}. Re-check the Discovery Provenance block before editing.`,
+    });
     created.push(work);
     existingTitles.add(normalizedTitle);
   }
 
-  return { created, skippedTitles };
+  return { created, skippedTitles, skippedFindings, analysisStale };
 }
 
 function shouldAutoDecomposeWork(recommendation: WorkDecompositionRecommendation): boolean {
@@ -21804,79 +22049,101 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
         }
       });
 
-      server.middlewares.use('/api/kira-discovery/create-tasks', (req, res) => {
-        res.setHeader('Content-Type', 'application/json');
-        if (req.method !== 'POST') {
-          res.writeHead(405);
-          res.end(JSON.stringify({ error: 'Method not allowed' }));
-          return;
-        }
+      const registerDiscoveryTaskCreationEndpoint = (route: string, requireSelection: boolean) => {
+        server.middlewares.use(route, (req, res) => {
+          res.setHeader('Content-Type', 'application/json');
+          if (req.method !== 'POST') {
+            res.writeHead(405);
+            res.end(JSON.stringify({ error: 'Method not allowed' }));
+            return;
+          }
 
-        readRequestBody(
-          req,
-          async (body) => {
-            try {
-              const sessionPath =
-                typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
-              const projectName =
-                typeof body.projectName === 'string' ? body.projectName.trim() : '';
-              if (!sessionPath || !projectName) {
-                res.writeHead(400);
-                res.end(JSON.stringify({ error: 'Missing sessionPath or projectName' }));
-                return;
-              }
+          readRequestBody(
+            req,
+            async (body) => {
+              try {
+                const sessionPath =
+                  typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
+                const projectName =
+                  typeof body.projectName === 'string' ? body.projectName.trim() : '';
+                if (!sessionPath || !projectName) {
+                  res.writeHead(400);
+                  res.end(JSON.stringify({ error: 'Missing sessionPath or projectName' }));
+                  return;
+                }
 
-              const analysis = loadProjectDiscoveryAnalysis(
-                options.sessionsDir,
-                sessionPath,
-                projectName,
-              );
-              if (!analysis) {
-                res.writeHead(404);
-                res.end(
-                  JSON.stringify({ error: 'No saved discovery analysis found for this project' }),
+                const rawFindingIds = Array.isArray(body.findingIds)
+                  ? body.findingIds
+                  : body.selectedFindingIds;
+                const selectedFindingIds = Array.isArray(rawFindingIds)
+                  ? new Set(
+                      rawFindingIds
+                        .map((item) => (typeof item === 'string' ? item.trim() : ''))
+                        .filter(Boolean),
+                    )
+                  : undefined;
+
+                if (requireSelection && (!selectedFindingIds || selectedFindingIds.size === 0)) {
+                  res.writeHead(400);
+                  res.end(JSON.stringify({ error: 'Missing findingIds' }));
+                  return;
+                }
+
+                const analysis = loadProjectDiscoveryAnalysis(
+                  options.sessionsDir,
+                  sessionPath,
+                  projectName,
                 );
-                return;
-              }
+                if (!analysis) {
+                  res.writeHead(404);
+                  res.end(
+                    JSON.stringify({ error: 'No saved discovery analysis found for this project' }),
+                  );
+                  return;
+                }
 
-              const selectedFindingIds = Array.isArray(body.selectedFindingIds)
-                ? new Set(
-                    body.selectedFindingIds
-                      .map((item) => (typeof item === 'string' ? item.trim() : ''))
-                      .filter(Boolean),
-                  )
-                : undefined;
-              const { created, skippedTitles } = createWorksFromDiscovery(
-                options,
-                sessionPath,
-                analysis,
-                selectedFindingIds && selectedFindingIds.size > 0 ? selectedFindingIds : undefined,
-              );
-              scanActionableWorks(options, sessionPath);
-              res.writeHead(200);
-              res.end(
-                JSON.stringify({
-                  createdCount: created.length,
-                  skippedCount: skippedTitles.length,
-                  createdWorks: created,
-                  skippedTitles,
-                }),
-              );
-            } catch (error) {
-              res.writeHead(500);
+                const { created, skippedTitles, skippedFindings, analysisStale } =
+                  createWorksFromDiscovery(options, sessionPath, analysis, {
+                    selectedFindingIds:
+                      selectedFindingIds && selectedFindingIds.size > 0
+                        ? selectedFindingIds
+                        : undefined,
+                    allowStaleAnalysis:
+                      body.allowStaleAnalysis === true ||
+                      body.confirmStaleAnalysis === true ||
+                      body.explicitStaleConfirmation === true,
+                  });
+                scanActionableWorks(options, sessionPath);
+                res.writeHead(200);
+                res.end(
+                  JSON.stringify({
+                    createdCount: created.length,
+                    skippedCount: skippedFindings.length,
+                    createdWorks: created,
+                    skippedTitles,
+                    skippedFindings,
+                    analysisStale,
+                  }),
+                );
+              } catch (error) {
+                res.writeHead(500);
+                res.end(
+                  JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
+                );
+              }
+            },
+            (error) => {
+              res.writeHead(400);
               res.end(
                 JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
               );
-            }
-          },
-          (error) => {
-            res.writeHead(400);
-            res.end(
-              JSON.stringify({ error: error instanceof Error ? error.message : String(error) }),
-            );
-          },
-        );
-      });
+            },
+          );
+        });
+      };
+
+      registerDiscoveryTaskCreationEndpoint('/api/kira-discovery/create-tasks', false);
+      registerDiscoveryTaskCreationEndpoint('/api/kira-discovery/create-selected-tasks', true);
 
       server.middlewares.use('/api/kira-automation/scan', (req, res) => {
         res.setHeader('Content-Type', 'application/json');

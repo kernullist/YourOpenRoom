@@ -8,6 +8,7 @@ import {
   buildDesignReviewGate,
   buildClaudeCliArgs,
   buildCodexCliArgs,
+  buildDiscoveryProvenanceBlock,
   buildKiraPromptCacheKey,
   buildProjectDiscoveryScout,
   buildOperatorInterruptComment,
@@ -25,6 +26,7 @@ import {
   collectGitDiffStats,
   collectReviewerDiffExcerpts,
   collectWorkerSelfCheckIssues,
+  createWorksFromDiscovery,
   enforceReviewDecision,
   applyDiscoveryQualityGates,
   buildWorkerPlanningPrompt,
@@ -329,6 +331,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(planner).toContain('stopConditions');
     expect(planner).toContain('Do not invent inspected files');
     expect(planner).toContain('Do not rewrite the requested work into a smaller goal');
+    expect(planner).toContain('Treat Discovery Provenance blocks as evidence contracts');
     expect(worker).toContain('You are Kira Worker, a careful implementation agent.');
     expect(worker).toContain('Kira prompt contract version: 3.');
     expect(worker).toContain('Identify existing user changes and avoid overwriting them.');
@@ -342,6 +345,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(worker).toContain(
       'Never claim a check passed unless you ran it or Kira provided the result.',
     );
+    expect(worker).toContain('When a work item contains Discovery Provenance');
   });
 
   it('locks worker planning and execution prompts to structured JSON contracts', () => {
@@ -372,6 +376,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(planningPrompt).toContain('"escalation"');
     expect(planningPrompt).toContain('"stopConditions":["..."]');
     expect(planningPrompt).toContain('Call at least one read-only tool');
+    expect(planningPrompt).toContain('re-check the cited evidence refs before planning edits');
     expect(planningPrompt).toContain('Do not narrow the acceptance target');
     expect(planningPrompt).toContain('keep suggestedWorks collectively covering the original goal');
     expect(workerPrompt).toContain('Mandatory project instructions:');
@@ -382,6 +387,7 @@ describe('Kira Codex-grade prompts', () => {
     expect(workerPrompt).toContain('Patch alternatives:');
     expect(workerPrompt).toContain('Never edit protectedFiles.');
     expect(workerPrompt).toContain('Run the planned validation commands when practical');
+    expect(workerPrompt).toContain('re-check the cited evidence refs before editing');
     expect(workerPrompt).toContain('complete final file content');
     expect(workerPrompt).toContain(
       'Never mark brief or mandatory project-instruction requirements not_applicable',
@@ -506,6 +512,7 @@ describe('Kira Codex-grade prompts', () => {
     );
     expect(reviewerSystem).not.toContain('unless following them would conflict');
     expect(reviewerSystem).toContain('Prioritize correctness and requirement coverage.');
+    expect(reviewerSystem).toContain('Treat Discovery Provenance as a review contract');
     expect(reviewerSystem).toContain('concurrent-agent integration risks');
     expect(reviewerSystem).toContain('Do not approve if validation failed.');
     expect(reviewerSystem).toContain(
@@ -522,6 +529,8 @@ describe('Kira Codex-grade prompts', () => {
     expect(buildAttemptComparisonReviewSystemPrompt()).toContain('Do not select a smaller attempt');
     expect(reviewPrompt).toContain('Only the Kira-passed validation reruns count');
     expect(reviewPrompt).toContain('Mandatory project instructions:');
+    expect(reviewPrompt).toContain('If the acceptance target contains Discovery Provenance');
+    expect(reviewPrompt).toContain('Treat unverified, stale, or missing discovery provenance');
     expect(reviewPrompt).toContain('Do not approve partial goal fulfillment');
     expect(reviewPrompt).toContain('Review the changeDesign against the actual diff');
     expect(reviewPrompt).toContain('Do not approve patch intent drift');
@@ -2307,10 +2316,30 @@ describe('buildProjectDiscoveryScout()', () => {
 describe('applyDiscoveryQualityGates()', () => {
   function makeGateProject(): string {
     const projectRoot = makeTempDir('kira-discovery-gate-');
+    writeProjectFile(projectRoot, 'package.json', '{"scripts":{"test":"vitest run"}}\n');
     writeProjectFile(projectRoot, 'src/app.ts', 'export const app = true;\n');
     writeProjectFile(projectRoot, 'src/other.ts', 'export const other = true;\n');
     writeProjectFile(projectRoot, 'docs/guide.md', '# Guide\n');
     return projectRoot;
+  }
+
+  function makeCreationOptions(sessionsDir: string, projectRoot: string) {
+    const configFile = join(sessionsDir, 'config.json');
+    fs.writeFileSync(configFile, '{}\n', 'utf-8');
+    return {
+      configFile,
+      sessionsDir,
+      getWorkRootDirectory: () => projectRoot,
+    };
+  }
+
+  function listStoredSessionJson<T>(sessionsDir: string, sessionPath: string, storeName: string) {
+    const storeDir = join(sessionsDir, sessionPath, 'apps', 'kira', 'data', storeName);
+    if (!fs.existsSync(storeDir)) return [];
+    return fs
+      .readdirSync(storeDir)
+      .filter((fileName) => fileName.endsWith('.json'))
+      .map((fileName) => JSON.parse(fs.readFileSync(join(storeDir, fileName), 'utf-8')) as T);
   }
 
   function makeGateAnalysis(projectRoot: string, findingOverrides: Record<string, unknown> = {}) {
@@ -2576,6 +2605,176 @@ describe('applyDiscoveryQualityGates()', () => {
 
     expect(gated.findings[0].eligibility).toBe('ready');
     expect(gated.findings[0].evidenceIds).toEqual(['ev-app-read', 'ev-app-test']);
+  });
+
+  it('builds parseable discovery provenance without source excerpts', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(makeGateAnalysis(projectRoot) as any, {
+      projectRoot,
+    });
+    const block = buildDiscoveryProvenanceBlock(gated as any, gated.findings[0] as any);
+
+    expect(block).toContain('## Discovery Provenance');
+    expect(block).toContain('- Analysis run: project-discovery-gate');
+    expect(block).toContain('### Evidence Refs');
+    expect(block).toContain('ev-app-read');
+    expect(block).toContain('`src/app.ts`');
+    expect(block).toContain('## Validation Expectations');
+    expect(block).toContain('- pnpm test');
+    expect(block).toContain('- Re-check the cited discovery evidence before editing.');
+    expect(block).not.toContain('export const app = true');
+  });
+
+  it('creates selected ready discovery works with provenance and a comment trail', () => {
+    const projectRoot = makeGateProject();
+    const sessionsDir = makeTempDir('kira-discovery-create-');
+    const sessionPath = 'manual-check';
+    const result = createWorksFromDiscovery(
+      makeCreationOptions(sessionsDir, projectRoot) as any,
+      sessionPath,
+      makeGateAnalysis(projectRoot) as any,
+      { selectedFindingIds: new Set(['finding-ready']) },
+    );
+
+    expect(result.created).toHaveLength(1);
+    expect(result.skippedFindings).toHaveLength(0);
+    expect(result.created[0].description).toContain('# Brief');
+    expect(result.created[0].description).toContain('Improve app behavior.');
+    expect(result.created[0].description).toContain('## Discovery Provenance');
+    expect(result.created[0].description).toContain('ev-app-read');
+    expect(result.created[0].description).toContain('## Worker Rules');
+
+    const storedWorks = listStoredSessionJson<any>(sessionsDir, sessionPath, 'works');
+    expect(storedWorks).toHaveLength(1);
+    expect(storedWorks[0].description).toContain('## Discovery Provenance');
+
+    const comments = listStoredSessionJson<any>(sessionsDir, sessionPath, 'comments');
+    expect(comments).toHaveLength(1);
+    expect(comments[0].author).toBe('Aoi Discovery');
+    expect(comments[0].body).toContain('project-discovery-gate');
+  });
+
+  it('creates only selected eligible findings and returns skip reasons', () => {
+    const projectRoot = makeGateProject();
+    const sessionsDir = makeTempDir('kira-discovery-selected-');
+    const sessionPath = 'selected-check';
+    const analysis = makeGateAnalysis(projectRoot) as any;
+    const readyFinding = analysis.findings[0];
+    analysis.findings = [
+      readyFinding,
+      {
+        ...readyFinding,
+        id: 'finding-second-ready',
+        title: 'Improve second app behavior',
+        files: ['src/other.ts'],
+        scope: ['src/other.ts'],
+      },
+      {
+        ...readyFinding,
+        id: 'finding-blocked',
+        title: 'Blocked app behavior',
+        blockedReasons: ['operator_blocked'],
+      },
+      {
+        ...readyFinding,
+        id: 'finding-needs-deeper',
+        title: 'Needs deeper app behavior',
+        confidence: 0.3,
+      },
+    ];
+
+    const result = createWorksFromDiscovery(
+      makeCreationOptions(sessionsDir, projectRoot) as any,
+      sessionPath,
+      analysis,
+      {
+        selectedFindingIds: new Set([
+          'finding-second-ready',
+          'finding-blocked',
+          'finding-needs-deeper',
+        ]),
+      },
+    );
+
+    expect(result.created.map((work) => work.title)).toEqual(['Improve second app behavior']);
+    expect(result.skippedFindings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'finding-ready', reasons: ['not_selected'] }),
+        expect.objectContaining({ id: 'finding-blocked', reasons: ['operator_blocked'] }),
+        expect.objectContaining({
+          id: 'finding-needs-deeper',
+          reasons: ['needs_deeper_analysis'],
+        }),
+      ]),
+    );
+  });
+
+  it('requires explicit stale confirmation before creating discovery work', () => {
+    const projectRoot = makeGateProject();
+    const staleAnalysis = makeGateAnalysis(projectRoot, {
+      taskDescription: '# Brief\n\nModel-authored description must survive.',
+    }) as any;
+    staleAnalysis.projectFingerprint = {
+      ...staleAnalysis.projectFingerprint,
+      workspaceFileHash: 'old-workspace-hash',
+      packageManifestHash: 'old-package-hash',
+    };
+
+    const blockedSessionsDir = makeTempDir('kira-discovery-stale-blocked-');
+    const blocked = createWorksFromDiscovery(
+      makeCreationOptions(blockedSessionsDir, projectRoot) as any,
+      'stale-blocked',
+      staleAnalysis,
+      { selectedFindingIds: new Set(['finding-ready']) },
+    );
+
+    expect(blocked.analysisStale).toBe(true);
+    expect(blocked.created).toHaveLength(0);
+    expect(blocked.skippedFindings[0]).toMatchObject({
+      id: 'finding-ready',
+      reasons: expect.arrayContaining(['stale_analysis']),
+    });
+
+    const confirmedSessionsDir = makeTempDir('kira-discovery-stale-confirmed-');
+    const confirmed = createWorksFromDiscovery(
+      makeCreationOptions(confirmedSessionsDir, projectRoot) as any,
+      'stale-confirmed',
+      staleAnalysis,
+      {
+        selectedFindingIds: new Set(['finding-ready']),
+        allowStaleAnalysis: true,
+      },
+    );
+
+    expect(confirmed.analysisStale).toBe(true);
+    expect(confirmed.created).toHaveLength(1);
+    expect(confirmed.created[0].description).toContain('Model-authored description must survive.');
+    expect(confirmed.created[0].description).toContain('## Discovery Provenance');
+    expect(confirmed.created[0].description).toContain(
+      '- Fingerprint status at creation: stale_confirmed',
+    );
+  });
+
+  it('keeps duplicate-title discovery skipping after provenance generation', () => {
+    const projectRoot = makeGateProject();
+    const sessionsDir = makeTempDir('kira-discovery-duplicate-');
+    const sessionPath = 'duplicate-check';
+    const options = makeCreationOptions(sessionsDir, projectRoot) as any;
+    const analysis = makeGateAnalysis(projectRoot) as any;
+
+    const first = createWorksFromDiscovery(options, sessionPath, analysis, {
+      selectedFindingIds: new Set(['finding-ready']),
+    });
+    const second = createWorksFromDiscovery(options, sessionPath, analysis, {
+      selectedFindingIds: new Set(['finding-ready']),
+    });
+
+    expect(first.created).toHaveLength(1);
+    expect(second.created).toHaveLength(0);
+    expect(second.skippedFindings[0]).toMatchObject({
+      id: 'finding-ready',
+      reasons: expect.arrayContaining(['duplicate_existing_work']),
+    });
   });
 });
 

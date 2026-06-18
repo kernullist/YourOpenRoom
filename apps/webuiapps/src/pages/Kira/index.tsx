@@ -2271,10 +2271,10 @@ const KiraPage: React.FC = () => {
       setDiscoveryStage('creating');
       appendDiscoveryLog(t('messages.discoveryCreatingSelected'));
 
-      const response = await fetch('/api/kira-discovery/create-tasks', {
+      const response = await fetch('/api/kira-discovery/create-selected-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionPath, projectName, selectedFindingIds }),
+        body: JSON.stringify({ sessionPath, projectName, findingIds: selectedFindingIds }),
       });
       const data = (await response.json()) as {
         error?: string;
