@@ -10,6 +10,7 @@ const PARALLEL_SAFE_TOOLS = new Set([
   'ide_read_file',
   'get_app_schema',
   'get_app_state',
+  'get_app_intents',
   'open_symbol',
   'find_references',
   'list_exports',

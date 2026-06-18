@@ -353,6 +353,10 @@ function summarizeAppStateToolResult(result: string): string {
       state?: unknown;
       state_summary?: unknown;
       workspace?: unknown;
+      intent_contract_summary?: unknown;
+      intent_contracts_preview?: unknown;
+      control_surface_summary?: unknown;
+      control_surfaces_preview?: unknown;
     };
 
     return JSON.stringify({
@@ -361,11 +365,74 @@ function summarizeAppStateToolResult(result: string): string {
       app: parsed.app ?? null,
       windows: (parsed.windows || []).slice(0, MAX_APP_STATE_WINDOWS),
       workspace: parsed.workspace ?? null,
+      intent_contract_summary: parsed.intent_contract_summary ?? null,
+      intent_contracts_preview: parsed.intent_contracts_preview ?? null,
+      control_surface_summary: parsed.control_surface_summary ?? null,
+      control_surfaces_preview: parsed.control_surfaces_preview ?? null,
       state_summary: parsed.state_summary ?? null,
       state:
         parsed.state === undefined
           ? null
           : truncateForTokenBudget(JSON.stringify(parsed.state), MAX_APP_STATE_CHARS, '…'),
+    });
+  } catch {
+    return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
+  }
+}
+
+function summarizeAppIntentToolResult(result: string): string {
+  try {
+    const parsed = JSON.parse(result) as {
+      ok?: boolean;
+      error?: string;
+      app?: Record<string, unknown>;
+      requested_intent?: string;
+      summary?: unknown;
+      control_surface_summary?: unknown;
+      guidance?: string[];
+      next_steps?: string[];
+      contract?: {
+        id?: string;
+        intent?: string;
+        title?: string;
+        execution?: unknown;
+        required_tools?: unknown;
+        risk?: string;
+        gaps?: unknown;
+      };
+      contract_line?: string;
+      intents?: Array<Record<string, unknown>>;
+      available_intents?: Array<Record<string, unknown>>;
+      contract_lines?: string[];
+      control_surfaces?: Array<Record<string, unknown>>;
+      control_surface_lines?: string[];
+    };
+
+    return JSON.stringify({
+      ok: parsed.ok,
+      error: parsed.error,
+      app: parsed.app ?? null,
+      requested_intent: parsed.requested_intent ?? null,
+      summary: parsed.summary ?? null,
+      control_surface_summary: parsed.control_surface_summary ?? null,
+      guidance: (parsed.guidance || []).slice(0, 4),
+      next_steps: (parsed.next_steps || []).slice(0, 4),
+      contract: parsed.contract
+        ? {
+            id: parsed.contract.id ?? '',
+            intent: parsed.contract.intent ?? '',
+            title: parsed.contract.title ?? '',
+            execution: parsed.contract.execution ?? null,
+            required_tools: parsed.contract.required_tools ?? [],
+            risk: parsed.contract.risk ?? '',
+            gaps: parsed.contract.gaps ?? [],
+          }
+        : null,
+      contract_line: parsed.contract_line ?? null,
+      intents: (parsed.intents || parsed.available_intents || []).slice(0, 12),
+      contract_lines: (parsed.contract_lines || []).slice(0, 12),
+      control_surfaces: (parsed.control_surfaces || []).slice(0, 12),
+      control_surface_lines: (parsed.control_surface_lines || []).slice(0, 12),
     });
   } catch {
     return truncateForTokenBudget(result, MAX_GENERIC_TOOL_RESULT_CHARS);
@@ -536,6 +603,8 @@ export function summarizeToolResultForModel(toolName: string, result: string): s
       return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
     case 'get_app_schema':
       return truncateForTokenBudget(trimmed, MAX_GENERIC_TOOL_RESULT_CHARS);
+    case 'get_app_intents':
+      return summarizeAppIntentToolResult(trimmed);
     case 'read_url':
       return summarizeUrlToolResult(trimmed);
     case 'start_research':

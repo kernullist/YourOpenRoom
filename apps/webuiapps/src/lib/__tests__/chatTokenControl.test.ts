@@ -98,6 +98,39 @@ describe('summarizeToolResultForModel()', () => {
     expect(parsed.user_facing_name).toBe('Dewdrop Canvas');
   });
 
+  it('preserves app intent control surface gaps in compact summaries', () => {
+    const summarized = summarizeToolResultForModel(
+      'get_app_intents',
+      JSON.stringify({
+        ok: false,
+        error: 'unsupported_app_intent',
+        app: { app_id: 25, app_name: 'aoimemory', display_name: 'Aoi Memory' },
+        requested_intent: 'delete memory',
+        available_intents: Array.from({ length: 20 }, (_, index) => ({
+          intent: `intent-${index}`,
+        })),
+        control_surface_summary: { surface_count: 4, partial_count: 1, gap_count: 1 },
+        control_surfaces: [
+          {
+            surface: 'memory_records',
+            coverage: 'partial',
+            gaps: ['Missing action: DELETE_AOI_MEMORY', 'Missing schema: aoimemory-memory'],
+          },
+        ],
+      }),
+    );
+    const parsed = JSON.parse(summarized) as {
+      control_surface_summary: { surface_count: number };
+      control_surfaces: Array<{ surface: string; gaps: string[] }>;
+      intents: Array<{ intent: string }>;
+    };
+
+    expect(parsed.control_surface_summary.surface_count).toBe(4);
+    expect(parsed.control_surfaces[0].surface).toBe('memory_records');
+    expect(parsed.control_surfaces[0].gaps).toContain('Missing action: DELETE_AOI_MEMORY');
+    expect(parsed.intents).toHaveLength(12);
+  });
+
   it('keeps workspace search payloads compact', () => {
     const raw = JSON.stringify({
       query: 'notes',

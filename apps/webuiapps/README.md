@@ -33,6 +33,9 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 
 - `src/lib/appRegistry.ts`
   - app registry, app metadata loading, action discovery
+- `src/lib/appIntentContracts.ts` and `src/lib/appIntentTools.ts`
+  - machine-readable intent contracts that map app requests to `app_action`, schema file
+    write/delete, state-file update, window-control, or inspect-only execution paths
 - `src/lib/fileTools.ts`
   - schema-aware app-storage read/write/patch/delete tools
 - `src/lib/workspaceTools.ts`
@@ -255,8 +258,19 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   `get_app_state(app_name=...)`. Each app reports window control, readable state, declared actions,
   schema-backed storage, destructive/external action flags, and gaps that still require manual
   implementation.
+- Aoi can resolve a natural app request through `get_app_intents(app_name=..., intent=...)` before
+  acting. Intent contracts make the expected execution path explicit: common window control,
+  declared app-owned action, schema-backed app-storage write/delete, state-file update, or
+  inspect-only read.
+- `get_app_intents(app_name=..., include_surfaces=true)` adds the next-level app control audit: each
+  registered in-app receives named UI control surfaces with `covered`, `partial`, or `gap` coverage,
+  backing intent/action/schema/tool references, and concrete missing-contract messages.
+- `get_app_state(app_name=...)` includes compact intent-contract and control-surface summary/preview
+  lines. This prevents Aoi from saying an app cannot be controlled when a supported schema or action
+  route exists, and makes unsupported surfaces explainable by exact gaps.
 - `src/lib/appControlCapabilities.ts` is the shared contract for that inventory, while
-  `appStateTools.ts` adds the per-app capability block to state reads. Every non-OS app receives
+  `src/lib/appControlSurfaceContracts.ts` maps app-specific surfaces to the live intent contracts,
+  and `appStateTools.ts` adds the per-app capability block to state reads. Every non-OS app receives
   common `OPEN_APP_WINDOW`, `FOCUS_APP_WINDOW`, and `CLOSE_APP_WINDOW` controls, and the registry
   maps those to real OS window actions instead of dispatching a no-op app handler.
 - Aoi Research ships an English `meta.yaml` so its refresh/open-report actions are discoverable

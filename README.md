@@ -116,7 +116,17 @@ The desktop now includes an **optional Aoi TTS layer** for assistant messages.
 The chat panel is not limited to `app_action`. It currently exposes several tool families:
 
 - **App runtime tools**
-  - `list_apps`, `app_action`, `get_app_state`, `get_app_schema`
+  - `list_apps`, `app_action`, `get_app_state`, `get_app_intents`, `get_app_schema`
+  - `get_app_intents` exposes an intent contract layer that maps natural app requests to concrete
+    execution paths: common window controls, declared `app_action` operations, schema-backed file
+    writes/deletes, state-file updates, and inspect-only flows
+  - `get_app_intents(app_name=..., include_surfaces=true)` also returns a per-app control-surface
+    audit. Aoi can see whether each UI surface is `covered`, `partial`, or `gap`, plus the exact
+    missing action, schema, or tool when a surface is not fully backed.
+  - the chat prompt instructs Aoi to call `get_app_intents` before claiming an in-app surface cannot
+    be controlled, so supported schema or action paths are used instead of manual UI instructions,
+    and partial surfaces are explained by their concrete missing contract rather than a generic
+    refusal
   - declared app-owned operation/settings actions, such as Kira `APPLY_MODEL_SETTINGS` and
     `APPLY_PROJECT_SETTINGS`, run through the app's validation and persistence paths instead of raw
     storage writes
@@ -139,6 +149,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - `get_app_state(app_name=...)` includes the same per-app control capability block next to the
     current window/state summary, so Aoi can tell whether an app can be inspected, dispatched,
     schema-edited, or only opened
+  - `get_app_state(app_name=...)` also includes intent-contract and control-surface summary/preview
+    lines, while the full `get_app_intents(app_name=...)` response returns the machine-readable
+    contract for choosing the correct tool sequence before acting.
   - app schema/state coverage includes the legacy game/news surfaces and newer Aoi Research, Aoi
     Memory, Dewdrop Canvas, Written By Me, PE Analyst, and Room Shop state surfaces, reducing false
     "I cannot control this" answers when an app has a readable state or app-owned operation

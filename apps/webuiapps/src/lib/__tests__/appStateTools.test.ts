@@ -281,10 +281,21 @@ describe('executeAppStateTool()', () => {
     const parsed = JSON.parse(result) as {
       app: { app_name: string };
       state_summary: { selected_note_id: string };
+      intent_contract_summary: { intent_count: number; schema_write_count: number };
+      intent_contracts_preview: string[];
+      control_surface_summary: { surface_count: number; partial_count: number };
+      control_surfaces_preview: string[];
     };
 
     expect(parsed.app.app_name).toBe('notes');
     expect(parsed.state_summary.selected_note_id).toBe('note-1');
+    expect(parsed.intent_contract_summary.schema_write_count).toBeGreaterThan(0);
+    expect(parsed.intent_contracts_preview.some((line) => line.includes('create_note'))).toBe(true);
+    expect(parsed.control_surface_summary.surface_count).toBeGreaterThan(0);
+    expect(parsed.control_surface_summary.partial_count).toBeGreaterThan(0);
+    expect(parsed.control_surfaces_preview.some((line) => line.includes('surface notes'))).toBe(
+      true,
+    );
   });
 
   it('summarizes Room Shop state and PE Analyst workspace state', async () => {

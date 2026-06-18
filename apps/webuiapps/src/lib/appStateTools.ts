@@ -7,6 +7,16 @@ import {
   summarizeAppControlCapabilities,
 } from './appControlCapabilities';
 import {
+  buildAppControlSurfaceContracts,
+  formatAppControlSurfaceLine,
+  summarizeAppControlSurfaceContracts,
+} from './appControlSurfaceContracts';
+import {
+  buildAppIntentContracts,
+  formatAppIntentContractLine,
+  summarizeAppIntentContracts,
+} from './appIntentContracts';
+import {
   loadPersistedConfig,
   type KiraConfig,
   type KiraRoleLlmConfig,
@@ -464,6 +474,14 @@ export async function executeAppStateTool(params: Record<string, unknown>): Prom
     windows: buildWindowSummary(app.appId),
     capabilities: buildAppControlCapabilities(app),
   };
+  const intentContracts = buildAppIntentContracts(app);
+  result.intent_contract_summary = summarizeAppIntentContracts(intentContracts);
+  result.intent_contracts_preview = intentContracts.slice(0, 12).map(formatAppIntentContractLine);
+  const controlSurfaceContracts = buildAppControlSurfaceContracts(app);
+  result.control_surface_summary = summarizeAppControlSurfaceContracts(controlSurfaceContracts);
+  result.control_surfaces_preview = controlSurfaceContracts
+    .slice(0, 12)
+    .map(formatAppControlSurfaceLine);
 
   if (includeState && app.appName !== 'os') {
     const stateFilePath = `apps/${app.appName}/data/state.json`;

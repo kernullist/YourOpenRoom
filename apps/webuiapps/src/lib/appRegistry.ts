@@ -930,6 +930,7 @@ export function executeListApps(): string {
   return (
     'Available apps:\n' +
     'Use displayName or appName when speaking to the user. Use appId only as an OS OPEN_APP/CLOSE_APP parameter.\n' +
+    'Use get_app_intents(app_name=..., include_surfaces=true) to map natural requests to exact app_action, schema write, state write, inspect-only paths, and per-surface coverage.\n' +
     `${apps.join('\n')}\n\n` +
     'Capability inventory:\n' +
     `- summary: ${summary.tool_backed_count}/${summary.app_count} apps have tool-backed controls, ${summary.apps_with_actions} have declared app actions, ${summary.apps_with_schemas} have machine-readable schemas, ${summary.apps_with_bespoke_state_summary} have bespoke state summaries.\n` +

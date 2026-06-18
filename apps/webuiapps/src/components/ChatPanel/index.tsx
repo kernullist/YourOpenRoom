@@ -156,6 +156,12 @@ import {
   isAppSchemaTool,
 } from '@/lib/appSchemaTools';
 import {
+  executeAppIntentTool,
+  getAppIntentToolDefinitions,
+  getAppIntentToolPendingSummary,
+  isAppIntentTool,
+} from '@/lib/appIntentTools';
+import {
   executeIdeTool,
   getIdeToolDefinitions,
   getIdeToolPendingSummary,
@@ -1483,6 +1489,7 @@ You can interact with apps on the user's device using tools.
 When the user wants to interact with an app, first identify the target app from the user's intent, then:
 1. list_apps — discover available apps and their capability inventory
 1a. get_app_state(app_name="{appName}") — inspect the target app's windows, state summary, and control capabilities when current context matters.
+1b. get_app_intents(app_name="{appName}", intent="{requested operation}", include_surfaces=true) — map the user's natural request to an exact app_action, schema file mutation, state mutation, or inspect-only execution contract, and inspect per-surface covered/partial/gap status.
 2. file_read("apps/{appName}/meta.yaml") — learn the target app's exact available actions and parameters
 2a. get_app_schema — if available, use the machine-readable schema for the target app's data files.
 3. If you do not know the exact file path yet, use workspace_search to find candidate paths before file_read.
@@ -1504,7 +1511,9 @@ When the user wants to interact with an app, first identify the target app from 
 Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
 - For basic app window control, every non-OS app supports OPEN_APP_WINDOW, FOCUS_APP_WINDOW, and CLOSE_APP_WINDOW through app_action.
-- Treat list_apps/get_app_state capability inventory as the source of truth for which app surfaces are actually exposed. If an app has no declared action for the requested operation, explain the gap or use the documented file/schema path when the task is a data mutation.
+- Treat list_apps/get_app_state capability inventory, get_app_intents contracts, and get_app_intents control_surfaces as the source of truth for which app surfaces are actually exposed. If a surface is partial or gap, name the exact missing action/schema/tool from control_surfaces.gaps instead of saying the whole app cannot be controlled.
+- Before saying you cannot control an in-app surface, call get_app_intents for that app with include_surfaces=true. If a matching schema_file_write, schema_file_delete, state_file_write, window_action, app_action, or covered/partial control surface exists, use that contract or explain only the specific remaining gap.
+- For data mutation requests, prefer a get_app_intents schema-backed contract over a bare app_action that only refreshes the UI after files are changed.
 - When talking to the user about an app, use the app's displayName or appName from list_apps/event context. Do not call known apps by raw numeric app_id such as "app 22"; app_id is only a tool parameter.
 - Data mutations MUST go through file_patch/file_write/file_delete unless the target app's meta.yaml declares an app-owned operation or settings action that explicitly persists state through that app's validation path. app_action normally notifies the app to reload, but declared operation/settings actions may write when the user explicitly asks for that app operation. Exception examples: Kira APPLY_PROJECT_SETTINGS persists project settings through Kira's settings API; Aoi's IDE workspace actions such as CREATE_FILE and CREATE_FOLDER write inside the configured IDE workspace, active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested, and SWITCH_WORKSPACE_ROOT persists the IDE workspace setting when the user explicitly asks to change roots.
 - Operation actions do NOT require file_write when the app action itself performs the interaction.
@@ -4633,6 +4642,7 @@ const ChatPanel: React.FC<{
                   ...getSymbolToolDefinitions(),
                   ...getSemanticToolDefinitions(),
                   ...getAppStateToolDefinitions(),
+                  ...getAppIntentToolDefinitions(),
                   ...getUrlToolDefinitions(),
                   ...getCommandToolDefinitions(),
                   ...getDiagnosticsToolDefinitions(),
@@ -5101,6 +5111,17 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: `get_app_state(${String(params.app_name || 'all').slice(0, 48)})`,
+                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+              };
+            }
+
+            if (isAppIntentTool(tc.function.name)) {
+              const result = await runCachedTool(tc.function.name, params, () =>
+                executeAppIntentTool(params),
+              );
+              return {
+                toolCallId: tc.id,
+                pendingSummary: getAppIntentToolPendingSummary(params),
                 summarizedResult: summarizeToolResultForModel(tc.function.name, result),
               };
             }
@@ -5721,6 +5742,35 @@ const ChatPanel: React.FC<{
             ];
           } catch (err) {
             console.error('[ChatPanel] App state tool failed', err);
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                tool_call_id: tc.id,
+              },
+            ];
+          }
+          continue;
+        }
+
+        // ---- App intent contracts ----
+        if (isAppIntentTool(tc.function.name)) {
+          pendingToolCallsRef.current.push(getAppIntentToolPendingSummary(params));
+          try {
+            const result = await runCachedTool(tc.function.name, params, () =>
+              executeAppIntentTool(params),
+            );
+            console.info('[ChatPanel] App intent tool result', {
+              resultPreview: result.slice(0, 200),
+            });
+            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          } catch (err) {
+            console.error('[ChatPanel] App intent tool failed', err);
             currentMessages = [
               ...currentMessages,
               {

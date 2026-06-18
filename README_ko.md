@@ -122,7 +122,15 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 현재 채팅 패널은 `app_action` 하나로 끝나지 않습니다.
 
 - **앱 런타임 툴**
-  - `list_apps`, `app_action`, `get_app_state`, `get_app_schema`
+  - `list_apps`, `app_action`, `get_app_state`, `get_app_intents`, `get_app_schema`
+  - `get_app_intents`는 자연어 앱 요청을 창 제어, 선언된 `app_action`, 스키마 기반 파일
+    쓰기/삭제, state 파일 수정, inspect-only 흐름 중 하나의 실행 계약으로 매핑합니다.
+  - `get_app_intents(app_name=..., include_surfaces=true)`는 앱별 control surface 감사도 함께
+    반환합니다. Aoi는 각 UI 표면이 `covered`, `partial`, `gap` 중 어디인지와, 빠진 action,
+    schema, tool 이 무엇인지 확인할 수 있습니다.
+  - Aoi는 인앱 표면을 제어할 수 없다고 답하기 전에 `get_app_intents`로 해당 앱의 실행
+    계약과 surface coverage 를 확인하도록 프롬프트됩니다. 부분 지원 표면은 일반적인 거절 대신
+    정확히 빠진 계약을 설명합니다.
   - `file_read`, `file_write`, `file_patch`, `file_list`, `file_delete`
 - **웹/콘텐츠 툴**
   - `search_web`
