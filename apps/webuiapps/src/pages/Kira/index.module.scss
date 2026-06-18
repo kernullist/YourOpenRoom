@@ -2026,12 +2026,14 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  width: min(820px, 100%);
+  width: min(1120px, 100%);
+  height: min(860px, 100%);
   max-height: 100%;
   padding: 20px;
   border-radius: 26px;
   border: 1px solid var(--line-soft);
   background: rgba(10, 16, 22, 0.96);
+  overflow: hidden;
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.05),
     0 24px 60px rgba(0, 0, 0, 0.3);
@@ -2049,7 +2051,17 @@
 }
 
 .discoveryHeader {
+  flex: 0 0 auto;
   align-items: flex-start;
+
+  > div {
+    min-width: 0;
+  }
+
+  > button {
+    flex: 0 0 auto;
+    min-width: 68px;
+  }
 
   h2,
   p {
@@ -2067,11 +2079,12 @@
 
 .discoveryStatus {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  min-height: 48px;
-  padding: 12px 14px;
+  min-height: 42px;
+  padding: 9px 12px;
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.04);
@@ -2088,9 +2101,10 @@
 
 .discoveryHero {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
-  gap: 16px;
-  padding: 16px 18px;
+  gap: 10px;
+  padding: 12px 14px;
   border-radius: 22px;
   border: 1px solid rgba(255, 255, 255, 0.08);
   background:
@@ -2119,9 +2133,9 @@
 
 .discoverySignal {
   position: relative;
-  width: 46px;
-  height: 46px;
-  flex: 0 0 46px;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
 }
 
 .discoverySignalPulse,
@@ -2137,7 +2151,7 @@
 }
 
 .discoverySignalCore {
-  inset: 10px;
+  inset: 8px;
   background:
     radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.9), transparent 26%),
     linear-gradient(180deg, #8be0ff 0%, #4aa9ff 100%);
@@ -2158,7 +2172,7 @@
   }
 
   strong {
-    font-size: 16px;
+    font-size: 14px;
     letter-spacing: -0.02em;
   }
 
@@ -2188,17 +2202,17 @@
 
 .discoveryStepRow {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 10px;
 }
 
 .discoveryStep {
   display: flex;
   align-items: center;
-  gap: 10px;
-  min-height: 54px;
-  padding: 10px 12px;
-  border-radius: 16px;
+  gap: 8px;
+  min-height: 42px;
+  padding: 8px 10px;
+  border-radius: 14px;
   border: 1px solid rgba(255, 255, 255, 0.06);
   background: rgba(255, 255, 255, 0.03);
 
@@ -2221,7 +2235,7 @@
   }
 
   strong {
-    font-size: 13px;
+    font-size: 12px;
     line-height: 1.35;
     color: var(--text-muted);
     letter-spacing: -0.01em;
@@ -2260,14 +2274,26 @@
 }
 
 .discoveryBody {
+  flex: 1 1 auto;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  grid-template-columns: minmax(280px, 0.75fr) minmax(440px, 1.25fr);
   gap: 14px;
   min-height: 0;
+  overflow: hidden;
+}
+
+.discoverySideStack,
+.discoveryMainStack {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-height: 0;
+  overflow: auto;
 }
 
 .discoveryPanel {
   display: flex;
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 12px;
   min-height: 0;
@@ -2279,12 +2305,26 @@
 
 .discoveryLogList,
 .discoveryFindingList {
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  min-height: 220px;
-  max-height: 320px;
+  min-height: 0;
+  max-height: 420px;
   overflow: auto;
+}
+
+.discoveryFindingList {
+  max-height: none;
+}
+
+.discoveryMainStack > .discoveryPanel:last-child {
+  flex: 1 1 auto;
+  min-height: 320px;
+}
+
+.discoveryLogList {
+  max-height: 180px;
 }
 
 .discoverySkeletonList {
@@ -2327,6 +2367,323 @@
 
   p {
     line-height: 1.55;
+  }
+}
+
+.discoveryFindingBlocked {
+  border-color: rgba(248, 113, 113, 0.12);
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.discoveryMetricGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.discoveryMetric {
+  min-width: 0;
+  padding: 9px 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.035);
+
+  span,
+  strong {
+    display: block;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  span {
+    color: var(--text-muted);
+    font-size: 11px;
+  }
+
+  strong {
+    margin-top: 4px;
+    font-size: 13px;
+    line-height: 1.35;
+  }
+}
+
+.discoveryEligibilityStrip,
+.discoveryFindingBadges,
+.discoveryPathList,
+.discoveryReasonList,
+.discoveryNoteList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+.discoveryEligibilityStrip span,
+.discoveryBadge,
+.discoveryPathList span,
+.discoveryReasonList strong,
+.discoveryNoteList span,
+.discoveryMore {
+  max-width: 100%;
+  min-height: 24px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.045);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.3;
+  overflow-wrap: anywhere;
+}
+
+.discoveryPathList span {
+  border-radius: 8px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+}
+
+.discoveryMore {
+  color: var(--text-main);
+}
+
+.discoveryMuted {
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.discoveryWarning {
+  padding: 10px 12px;
+  border-radius: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.18);
+  background: rgba(248, 113, 113, 0.08);
+  color: #fecaca;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.discoveryTopologyGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.discoveryTopologyGroup,
+.discoveryFindingGrid > div {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.03);
+
+  > span:first-child {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+}
+
+.discoveryBlindSpotList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+}
+
+.discoveryBlindSpotItem {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 5px;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid rgba(248, 113, 113, 0.12);
+  background: rgba(248, 113, 113, 0.055);
+
+  strong,
+  p,
+  span {
+    margin: 0;
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+
+  strong {
+    color: var(--text-main);
+    font-size: 13px;
+  }
+
+  p,
+  span {
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+}
+
+.discoveryFindingHeader,
+.discoveryFindingTitleRow,
+.discoveryFindingSelect {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.discoveryFindingHeader {
+  justify-content: space-between;
+  align-items: flex-start;
+}
+
+.discoveryFindingSelect {
+  flex: 0 0 auto;
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 700;
+
+  input {
+    width: 16px;
+    height: 16px;
+    accent-color: #8fbf9f;
+  }
+}
+
+.discoveryBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: fit-content;
+  text-transform: uppercase;
+}
+
+.discoveryEligibilityReady {
+  border-color: rgba(143, 191, 159, 0.24) !important;
+  background: rgba(143, 191, 159, 0.12) !important;
+  color: #dcebd7 !important;
+}
+
+.discoveryEligibilityBlocked,
+.discoveryRiskHigh {
+  border-color: rgba(248, 113, 113, 0.22) !important;
+  background: rgba(248, 113, 113, 0.1) !important;
+  color: #fecaca !important;
+}
+
+.discoveryEligibilityDeeper,
+.discoveryRiskMedium {
+  border-color: rgba(250, 204, 21, 0.22) !important;
+  background: rgba(250, 204, 21, 0.1) !important;
+  color: #fef3c7 !important;
+}
+
+.discoveryRiskLow {
+  border-color: rgba(125, 211, 252, 0.22) !important;
+  background: rgba(125, 211, 252, 0.1) !important;
+  color: #c8f3ff !important;
+}
+
+.discoveryKind {
+  flex: 0 0 auto;
+  padding: 3px 7px;
+  border-radius: 7px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--text-muted);
+  font-size: 11px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.discoveryFindingTitleRow strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.discoveryFindingGrid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+}
+
+.discoveryReasonList {
+  flex-direction: row;
+  align-items: center;
+
+  > span {
+    flex: 0 0 auto;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 800;
+    text-transform: uppercase;
+  }
+
+  strong {
+    border-color: rgba(248, 113, 113, 0.16);
+    background: rgba(248, 113, 113, 0.08);
+    color: #fecaca;
+  }
+}
+
+.discoveryEvidenceDetails {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  background: rgba(255, 255, 255, 0.025);
+
+  summary {
+    cursor: pointer;
+    padding: 9px 10px;
+    color: var(--text-main);
+    font-size: 12px;
+    font-weight: 800;
+  }
+}
+
+.discoveryEvidenceList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 0 10px 10px;
+}
+
+.discoveryEvidenceItem {
+  display: grid;
+  grid-template-columns: minmax(92px, 0.7fr) minmax(120px, 1fr);
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 8px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.035);
+
+  span,
+  strong,
+  p {
+    min-width: 0;
+    margin: 0;
+    overflow-wrap: anywhere;
+  }
+
+  span {
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 800;
+  }
+
+  strong {
+    color: var(--text-main);
+    font-size: 12px;
+  }
+
+  p {
+    grid-column: 1 / -1;
+    color: var(--text-muted);
+    font-size: 12px;
+    line-height: 1.4;
   }
 }
 
@@ -2385,6 +2742,7 @@
 }
 
 .discoveryFooter {
+  flex: 0 0 auto;
   align-items: flex-start;
 
   p {
@@ -2504,6 +2862,10 @@
     padding: 10px;
   }
 
+  .discoveryModal {
+    overflow: auto;
+  }
+
   .projectSettingsOverlay {
     inset: 10px;
     padding: 10px;
@@ -2518,10 +2880,43 @@
   }
 
   .discoveryBody {
+    flex: 0 0 auto;
+    grid-template-columns: 1fr;
+    overflow: visible;
+  }
+
+  .discoverySideStack,
+  .discoveryMainStack {
+    overflow: visible;
+  }
+
+  .discoveryMainStack > .discoveryPanel:last-child {
+    min-height: 0;
+  }
+
+  .discoveryLogList,
+  .discoveryFindingList,
+  .discoveryBlindSpotList {
+    max-height: none;
+  }
+
+  .discoveryMetricGrid,
+  .discoveryTopologyGrid,
+  .discoveryFindingGrid,
+  .discoveryEvidenceItem {
     grid-template-columns: 1fr;
   }
 
+  .discoveryFindingHeader {
+    flex-direction: column;
+  }
+
   .discoveryStepRow {
-    grid-template-columns: 1fr;
+    grid-template-columns: repeat(5, minmax(72px, 1fr));
+    overflow-x: auto;
+  }
+
+  .discoveryStep {
+    min-width: 72px;
   }
 }

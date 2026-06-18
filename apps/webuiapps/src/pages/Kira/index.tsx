@@ -27,8 +27,11 @@ import styles from './index.module.scss';
 import {
   type KiraTaskStatus,
   type KiraAttemptRecord,
+  type KiraDiscoveryFinding,
   type KiraFileChangeEvent,
   type KiraLlmRateLimitSnapshot,
+  type KiraProjectDiscoveryAnalysis,
+  type KiraProjectDiscoveryEvidence,
   type KiraReviewRecord,
   type KiraValidationCommandEvent,
   type KiraViewState,
@@ -39,15 +42,23 @@ import {
   DEFAULT_VIEW_STATE,
   STATUS_ORDER,
   findLatestRetryFeedback,
+  formatDiscoveryDepthScore,
   formatTimestamp,
+  getDiscoveryDepthLevel,
+  getDiscoveryEligibilityCounts,
+  getDiscoveryEvidenceForFinding,
+  getInitialDiscoverySelection,
   getCommentFilePath,
   getWorkFilePath,
   groupWorksByStatus,
+  isDiscoveryAnalysisStale,
+  isDiscoveryFindingTaskCreatable,
   matchesProjectName,
   normalizeTaskComment,
   normalizeKiraAttempt,
   normalizeKiraReview,
   normalizeWorkTask,
+  sanitizeDiscoverySelection,
   sortByCreatedAtDesc,
   sortByUpdatedAtDesc,
 } from './model';
@@ -172,6 +183,33 @@ function formatLatestFileChangeIssue(events?: KiraFileChangeEvent[]): string | n
   return `${issue.changeType ?? 'unknown'}: ${issue.file} (${hashPair})${
     flags ? ` | ${flags}` : ''
   }`;
+}
+
+function formatDiscoveryNumber(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value) ? String(value) : '--';
+}
+
+function formatDiscoveryConfidence(value: unknown): string {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? `${Math.round(Math.max(0, Math.min(1, value)) * 100)}%`
+    : '--';
+}
+
+function truncateDiscoveryText(value: string, limit = 180): string {
+  const normalized = value.replace(/\s+/g, ' ').trim();
+  return normalized.length > limit ? `${normalized.slice(0, limit - 3)}...` : normalized;
+}
+
+function formatDiscoveryEvidenceLocation(evidence: KiraProjectDiscoveryEvidence): string {
+  const range =
+    typeof evidence.lineStart === 'number'
+      ? `:${evidence.lineStart}${
+          typeof evidence.lineEnd === 'number' && evidence.lineEnd !== evidence.lineStart
+            ? `-${evidence.lineEnd}`
+            : ''
+        }`
+      : '';
+  return evidence.file ? `${evidence.file}${range}` : evidence.kind;
 }
 const DEFAULT_RULE_PACK_PRESETS: KiraRulePackPreset[] = [
   {
@@ -475,88 +513,6 @@ interface KiraConfigResponse {
   exists?: boolean;
   workRootDirectory?: string;
   projects?: KiraProjectEntry[];
-}
-
-interface KiraDiscoveryFinding {
-  id: string;
-  kind: 'feature' | 'bug';
-  title: string;
-  summary: string;
-  evidence: string[];
-  evidenceIds?: string[];
-  files: string[];
-  scope?: string[];
-  validationCommands?: string[];
-  confidence?: number;
-  eligibility?: 'ready' | 'blocked' | 'needs_deeper_analysis';
-  blockedReasons?: string[];
-  risk?: 'low' | 'medium' | 'high';
-  taskDescription: string;
-}
-
-interface KiraProjectDiscoveryAnalysis {
-  schemaVersion?: number;
-  id: string;
-  projectName: string;
-  projectRoot?: string;
-  projectFingerprint?: {
-    capturedAt?: number;
-    gitHead?: string | null;
-    gitBranch?: string | null;
-    gitStatusHash?: string | null;
-    workspaceFileHash?: string | null;
-    packageManifestHash?: string | null;
-    unavailable?: string[];
-  };
-  summary: string;
-  depth?: {
-    filesEnumerated?: number;
-    filesRead?: number;
-    directoriesVisited?: number;
-    searchQueries?: number;
-    searchMatches?: number;
-    likelyFilesCount?: number;
-    evidenceCount?: number;
-    findingsWithEvidence?: number;
-    findingsWithValidation?: number;
-    blindSpotCount?: number;
-    depthScore?: number;
-    depthLevel?: 'shallow' | 'moderate' | 'deep' | 'stale';
-    notes?: string[];
-  };
-  topology?: {
-    entrypoints?: string[];
-    uiSurfaces?: string[];
-    apiSurfaces?: string[];
-    testSurfaces?: string[];
-    configFiles?: string[];
-    storage?: string[];
-    notes?: string[];
-  };
-  evidenceLedger?: Array<{
-    id: string;
-    kind: string;
-    file?: string;
-    lineStart?: number;
-    lineEnd?: number;
-    symbol?: string;
-    summary: string;
-    snippetHash?: string;
-    collectedBy?: string;
-    confidence?: number;
-  }>;
-  blindSpots?: Array<{
-    id: string;
-    area: string;
-    reason: string;
-    impact?: string;
-    recommendation?: string;
-  }>;
-  findings: KiraDiscoveryFinding[];
-  basedOnPreviousAnalysis: boolean;
-  previousAnalysisId?: string;
-  createdAt: number;
-  updatedAt: number;
 }
 
 type KiraDiscoveryStage =
@@ -1203,6 +1159,7 @@ const KiraPage: React.FC = () => {
   const [discoveryAnalysis, setDiscoveryAnalysis] = useState<KiraProjectDiscoveryAnalysis | null>(
     null,
   );
+  const [selectedDiscoveryFindingIds, setSelectedDiscoveryFindingIds] = useState<string[]>([]);
   const [editorPanelWidth, setEditorPanelWidth] = useState(loadStoredEditorWidth);
   const [isEditorResizing, setIsEditorResizing] = useState(false);
   const appRef = useRef<HTMLDivElement | null>(null);
@@ -2140,15 +2097,17 @@ const KiraPage: React.FC = () => {
     setDiscoveryStage('idle');
     setDiscoveryLogs([]);
     setDiscoveryAnalysis(null);
+    setSelectedDiscoveryFindingIds([]);
   }, []);
 
   const runFreshDiscovery = useCallback(
-    (projectName: string, sessionPath: string) => {
+    (projectName: string, sessionPath: string, discoveryMode: 'analyze' | 'deepen' = 'analyze') => {
       discoveryAbortRef.current?.abort();
       setDiscoveryStage('analyzing');
       setDiscoveryLogs([t('messages.discoveryRunning')]);
       setDiscoveryAnalysis(null);
-      reportAction(APP_ID, 'START_DISCOVERY', { projectName });
+      setSelectedDiscoveryFindingIds([]);
+      reportAction(APP_ID, 'START_DISCOVERY', { projectName, discoveryMode });
 
       const controller = new AbortController();
       discoveryAbortRef.current = controller;
@@ -2158,7 +2117,7 @@ const KiraPage: React.FC = () => {
           const response = await fetch('/api/kira-discovery/analyze', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ sessionPath, projectName }),
+            body: JSON.stringify({ sessionPath, projectName, mode: discoveryMode }),
             signal: controller.signal,
           });
 
@@ -2170,6 +2129,7 @@ const KiraPage: React.FC = () => {
 
             if (event.type === 'analysis_complete') {
               setDiscoveryAnalysis(event.analysis);
+              setSelectedDiscoveryFindingIds(getInitialDiscoverySelection(event.analysis));
               setDiscoveryStage(event.analysis.findings.length > 0 ? 'ready' : 'done');
               if (event.message) appendDiscoveryLog(event.message);
               appendDiscoveryLog(t('messages.discoveryStored'));
@@ -2218,6 +2178,7 @@ const KiraPage: React.FC = () => {
     setErrorText(null);
     setDiscoveryLogs([]);
     setDiscoveryAnalysis(null);
+    setSelectedDiscoveryFindingIds([]);
 
     if (!projectName) {
       setDiscoveryStage('error');
@@ -2235,6 +2196,7 @@ const KiraPage: React.FC = () => {
       const existingAnalysis = await fetchExistingDiscoveryAnalysis(sessionPath, projectName);
       if (existingAnalysis) {
         setDiscoveryAnalysis(existingAnalysis);
+        setSelectedDiscoveryFindingIds(getInitialDiscoverySelection(existingAnalysis));
         setDiscoveryStage('chooseExisting');
         setDiscoveryLogs([t('messages.discoveryExistingFound')]);
         return;
@@ -2256,6 +2218,7 @@ const KiraPage: React.FC = () => {
   const handleUseSavedDiscovery = useCallback(() => {
     if (!discoveryAnalysis) return;
     setDiscoveryStage(discoveryAnalysis.findings.length > 0 ? 'ready' : 'done');
+    setSelectedDiscoveryFindingIds(getInitialDiscoverySelection(discoveryAnalysis));
     appendDiscoveryLog(t('messages.discoveryUsingSaved'));
   }, [appendDiscoveryLog, discoveryAnalysis, t]);
 
@@ -2263,8 +2226,23 @@ const KiraPage: React.FC = () => {
     const projectName = activeProjectName?.trim() ?? '';
     const sessionPath = getSessionPath().trim();
     if (!projectName || !sessionPath) return;
-    runFreshDiscovery(projectName, sessionPath);
+    runFreshDiscovery(projectName, sessionPath, 'analyze');
   }, [activeProjectName, runFreshDiscovery]);
+
+  const handleDeepenDiscovery = useCallback(() => {
+    const projectName = activeProjectName?.trim() ?? '';
+    const sessionPath = getSessionPath().trim();
+    if (!projectName || !sessionPath) return;
+    runFreshDiscovery(projectName, sessionPath, 'deepen');
+  }, [activeProjectName, runFreshDiscovery]);
+
+  const handleToggleDiscoveryFinding = useCallback((finding: KiraDiscoveryFinding) => {
+    if (!isDiscoveryFindingTaskCreatable(finding)) return;
+    setSelectedDiscoveryFindingIds((prev) => {
+      const exists = prev.includes(finding.id);
+      return exists ? prev.filter((id) => id !== finding.id) : [...prev, finding.id];
+    });
+  }, []);
 
   const handleContinueDiscovery = useCallback(async () => {
     const projectName = activeProjectName?.trim() ?? '';
@@ -2280,15 +2258,23 @@ const KiraPage: React.FC = () => {
       return;
     }
     if (!projectName || !sessionPath || !discoveryAnalysis) return;
+    const selectedFindingIds = sanitizeDiscoverySelection(
+      discoveryAnalysis,
+      selectedDiscoveryFindingIds,
+    );
+    if (selectedFindingIds.length === 0) {
+      appendDiscoveryLog(t('messages.discoveryNoEligibleSelection'));
+      return;
+    }
 
     try {
       setDiscoveryStage('creating');
-      appendDiscoveryLog('Creating todo works from the saved discovery findings...');
+      appendDiscoveryLog(t('messages.discoveryCreatingSelected'));
 
       const response = await fetch('/api/kira-discovery/create-tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ sessionPath, projectName }),
+        body: JSON.stringify({ sessionPath, projectName, selectedFindingIds }),
       });
       const data = (await response.json()) as {
         error?: string;
@@ -2302,7 +2288,10 @@ const KiraPage: React.FC = () => {
       }
 
       appendDiscoveryLog(
-        `Created ${data.createdCount ?? 0} todo works${(data.skippedCount ?? 0) > 0 ? ` and skipped ${data.skippedCount} duplicates` : ''}.`,
+        t('messages.discoveryCreatedSelected', {
+          created: data.createdCount ?? 0,
+          skipped: data.skippedCount ?? 0,
+        }),
       );
       await refreshFromCloud({ id: data.createdWorks?.[0]?.id ?? null });
       await fetch('/api/kira-automation/scan', {
@@ -2322,6 +2311,7 @@ const KiraPage: React.FC = () => {
     modelConfigRequiredMessage,
     modelReadiness.ready,
     refreshFromCloud,
+    selectedDiscoveryFindingIds,
     t,
     workRootReady,
   ]);
@@ -2860,9 +2850,11 @@ const KiraPage: React.FC = () => {
   const discoveryBusy = discoveryStage === 'analyzing' || discoveryStage === 'creating';
   const discoveryLatestLog = discoveryLogs[discoveryLogs.length - 1] ?? null;
   const discoveryStepLabels = [
-    t('messages.discoveryStepMap'),
-    t('messages.discoveryStepInspect'),
-    t('messages.discoveryStepShape'),
+    t('messages.discoveryStepFingerprint'),
+    t('messages.discoveryStepScout'),
+    t('messages.discoveryStepLlm'),
+    t('messages.discoveryStepQuality'),
+    t('messages.discoveryStepSave'),
   ];
   const discoveryActiveStepIndex =
     discoveryStage === 'analyzing'
@@ -2872,6 +2864,182 @@ const KiraPage: React.FC = () => {
         : discoveryStage === 'error'
           ? 0
           : discoveryStepLabels.length - 1;
+  const discoveryEligibilityCounts = getDiscoveryEligibilityCounts(
+    discoveryAnalysis?.findings ?? [],
+  );
+  const selectedEligibleDiscoveryFindingIds = sanitizeDiscoverySelection(
+    discoveryAnalysis,
+    selectedDiscoveryFindingIds,
+  );
+  const selectedEligibleDiscoveryCount = selectedEligibleDiscoveryFindingIds.length;
+  const discoveryDepthLevel = getDiscoveryDepthLevel(discoveryAnalysis);
+  const discoveryIsStale = isDiscoveryAnalysisStale(discoveryAnalysis);
+  const discoveryUpdatedAt = discoveryAnalysis?.updatedAt
+    ? formatTimestamp(discoveryAnalysis.updatedAt, i18n.language)
+    : '--';
+  const discoveryTopology = discoveryAnalysis?.topology;
+  const discoveryBlindSpots = discoveryAnalysis?.blindSpots ?? [];
+  const discoveryEvidenceCount =
+    discoveryAnalysis?.depth?.evidenceCount ?? discoveryAnalysis?.evidenceLedger?.length ?? 0;
+  const selectedDiscoveryIdSet = new Set(selectedEligibleDiscoveryFindingIds);
+  const createDiscoveryDisabled =
+    !automationReady || selectedEligibleDiscoveryCount === 0 || discoveryStage !== 'ready';
+
+  const renderDiscoveryPathList = (items: string[] | undefined, limit = 5) => {
+    const normalized = [...new Set((items ?? []).map((item) => item.trim()).filter(Boolean))];
+    const visible = normalized.slice(0, limit);
+    if (visible.length === 0) {
+      return <span className={styles.discoveryMuted}>{t('discovery.none')}</span>;
+    }
+    return (
+      <div className={styles.discoveryPathList}>
+        {visible.map((item) => (
+          <span key={item} title={item}>
+            {item}
+          </span>
+        ))}
+        {normalized.length > visible.length ? (
+          <span className={styles.discoveryMore}>
+            {t('discovery.moreCount', { count: normalized.length - visible.length })}
+          </span>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderDiscoveryMetric = (label: string, value: React.ReactNode) => (
+    <div className={styles.discoveryMetric}>
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+
+  const renderDiscoveryTopologyGroup = (label: string, items: string[] | undefined) => (
+    <div className={styles.discoveryTopologyGroup}>
+      <span>{label}</span>
+      {renderDiscoveryPathList(items, 6)}
+    </div>
+  );
+
+  const renderDiscoveryEvidence = (
+    finding: KiraDiscoveryFinding,
+    evidence: KiraProjectDiscoveryEvidence[],
+  ) => {
+    if (evidence.length === 0) {
+      return <div className={styles.discoveryMuted}>{t('discovery.noEvidenceLedger')}</div>;
+    }
+
+    return (
+      <div className={styles.discoveryEvidenceList}>
+        {evidence.slice(0, 4).map((entry) => (
+          <div key={entry.id} className={styles.discoveryEvidenceItem}>
+            <span>
+              {entry.id} | {entry.kind}
+            </span>
+            <strong title={formatDiscoveryEvidenceLocation(entry)}>
+              {formatDiscoveryEvidenceLocation(entry)}
+            </strong>
+            <p>{truncateDiscoveryText(entry.summary, 150)}</p>
+          </div>
+        ))}
+        {evidence.length > 4 ? (
+          <div className={styles.discoveryMuted}>
+            {t('discovery.moreCount', { count: evidence.length - 4 })}
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
+  const renderDiscoveryFinding = (finding: KiraDiscoveryFinding) => {
+    const eligibility = finding.eligibility ?? 'ready';
+    const creatable = isDiscoveryFindingTaskCreatable(finding);
+    const selected = selectedDiscoveryIdSet.has(finding.id);
+    const evidence = getDiscoveryEvidenceForFinding(discoveryAnalysis, finding);
+    const findingEvidence = finding.evidence ?? [];
+    const findingFiles = finding.files ?? [];
+    const evidenceCount = finding.evidenceIds?.length ?? findingEvidence.length;
+    const validationCommands = finding.validationCommands ?? [];
+    const candidateFiles = findingFiles.length > 0 ? findingFiles : (finding.scope ?? []);
+    const eligibilityClass =
+      eligibility === 'blocked'
+        ? styles.discoveryEligibilityBlocked
+        : eligibility === 'needs_deeper_analysis'
+          ? styles.discoveryEligibilityDeeper
+          : styles.discoveryEligibilityReady;
+    const riskClass =
+      finding.risk === 'high'
+        ? styles.discoveryRiskHigh
+        : finding.risk === 'medium'
+          ? styles.discoveryRiskMedium
+          : styles.discoveryRiskLow;
+
+    return (
+      <article
+        key={finding.id}
+        className={`${styles.discoveryFindingCard} ${!creatable ? styles.discoveryFindingBlocked : ''}`}
+      >
+        <div className={styles.discoveryFindingHeader}>
+          <label className={styles.discoveryFindingSelect}>
+            <input
+              type="checkbox"
+              checked={selected}
+              disabled={!creatable}
+              onChange={() => handleToggleDiscoveryFinding(finding)}
+            />
+            <span>{t('discovery.select')}</span>
+          </label>
+          <div className={styles.discoveryFindingBadges}>
+            <span className={`${styles.discoveryBadge} ${eligibilityClass}`}>
+              {t(`discovery.eligibility.${eligibility}`)}
+            </span>
+            <span className={`${styles.discoveryBadge} ${riskClass}`}>
+              {t('discovery.riskValue', { risk: finding.risk ?? 'low' })}
+            </span>
+            <span className={styles.discoveryBadge}>
+              {t('discovery.confidenceValue', {
+                confidence: formatDiscoveryConfidence(finding.confidence),
+              })}
+            </span>
+            <span className={styles.discoveryBadge}>
+              {t('discovery.evidenceValue', { count: evidenceCount })}
+            </span>
+          </div>
+        </div>
+
+        <div className={styles.discoveryFindingTitleRow}>
+          <span className={styles.discoveryKind}>{finding.kind}</span>
+          <strong>{finding.title}</strong>
+        </div>
+        <p>{truncateDiscoveryText(finding.summary, 220)}</p>
+
+        <div className={styles.discoveryFindingGrid}>
+          <div>
+            <span>{t('discovery.files')}</span>
+            {renderDiscoveryPathList(candidateFiles, 4)}
+          </div>
+          <div>
+            <span>{t('discovery.validation')}</span>
+            {renderDiscoveryPathList(validationCommands, 3)}
+          </div>
+        </div>
+
+        {finding.blockedReasons?.length ? (
+          <div className={styles.discoveryReasonList}>
+            <span>{t('discovery.blockedReasons')}</span>
+            {finding.blockedReasons.map((reason) => (
+              <strong key={reason}>{reason}</strong>
+            ))}
+          </div>
+        ) : null}
+
+        <details className={styles.discoveryEvidenceDetails}>
+          <summary>{t('discovery.evidenceLedger')}</summary>
+          {renderDiscoveryEvidence(finding, evidence)}
+        </details>
+      </article>
+    );
+  };
 
   return (
     <div
@@ -4448,67 +4616,182 @@ const KiraPage: React.FC = () => {
             </div>
 
             <div className={styles.discoveryBody}>
-              <section className={styles.discoveryPanel}>
-                <div className={styles.sectionHeader}>
-                  <h3>{t('sections.discoveryLog')}</h3>
-                  <span className={discoveryBusy ? styles.discoveryLiveBadge : ''}>
-                    {discoveryBusy ? t('messages.discoveryLiveLabel') : discoveryLogs.length}
-                  </span>
-                </div>
-                <div className={styles.discoveryLogList}>
-                  {discoveryLogs.length > 0 ? (
-                    discoveryLogs.map((entry, index) => (
-                      <div key={`${entry}-${index}`} className={styles.discoveryLogItem}>
-                        {entry}
-                      </div>
-                    ))
-                  ) : (
-                    <div className={styles.discoveryEmpty}>{t('messages.discoveryIdle')}</div>
-                  )}
-                </div>
-              </section>
+              <div className={styles.discoverySideStack}>
+                <section className={styles.discoveryPanel}>
+                  <div className={styles.sectionHeader}>
+                    <h3>{t('sections.discoveryRunSummary')}</h3>
+                    <span>
+                      {discoveryAnalysis?.schemaVersion
+                        ? `v${discoveryAnalysis.schemaVersion}`
+                        : '--'}
+                    </span>
+                  </div>
+                  <div className={styles.discoveryMetricGrid}>
+                    {renderDiscoveryMetric(
+                      t('discovery.project'),
+                      discoveryAnalysis?.projectName ?? activeProjectName ?? '--',
+                    )}
+                    {renderDiscoveryMetric(
+                      t('discovery.depthLevel'),
+                      t(`discovery.depth.${discoveryDepthLevel}`),
+                    )}
+                    {renderDiscoveryMetric(
+                      t('discovery.depthScore'),
+                      formatDiscoveryDepthScore(discoveryAnalysis?.depth?.depthScore),
+                    )}
+                    {renderDiscoveryMetric(
+                      t('discovery.filesRead'),
+                      `${formatDiscoveryNumber(discoveryAnalysis?.depth?.filesRead)} / ${formatDiscoveryNumber(
+                        discoveryAnalysis?.depth?.filesEnumerated,
+                      )}`,
+                    )}
+                    {renderDiscoveryMetric(
+                      t('discovery.evidenceCount'),
+                      formatDiscoveryNumber(discoveryEvidenceCount),
+                    )}
+                    {renderDiscoveryMetric(t('discovery.updated'), discoveryUpdatedAt)}
+                  </div>
+                  <div className={styles.discoveryEligibilityStrip}>
+                    <span className={styles.discoveryEligibilityReady}>
+                      {t('discovery.readyCount', { count: discoveryEligibilityCounts.ready })}
+                    </span>
+                    <span className={styles.discoveryEligibilityBlocked}>
+                      {t('discovery.blockedCount', { count: discoveryEligibilityCounts.blocked })}
+                    </span>
+                    <span className={styles.discoveryEligibilityDeeper}>
+                      {t('discovery.needsDeeperCount', {
+                        count: discoveryEligibilityCounts.needsDeeperAnalysis,
+                      })}
+                    </span>
+                  </div>
+                  {discoveryIsStale ? (
+                    <div className={styles.discoveryWarning}>
+                      {t('messages.discoveryStaleWarning')}
+                    </div>
+                  ) : null}
+                  {discoveryAnalysis?.depth?.notes?.length ? (
+                    <div className={styles.discoveryNoteList}>
+                      {discoveryAnalysis.depth.notes.slice(0, 3).map((note) => (
+                        <span key={note}>{truncateDiscoveryText(note, 120)}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
 
-              <section className={styles.discoveryPanel}>
-                <div className={styles.sectionHeader}>
-                  <h3>{t('sections.discoveryFindings')}</h3>
-                  <span>{discoveryAnalysis?.findings.length ?? 0}</span>
-                </div>
-                {discoveryAnalysis?.findings.length ? (
-                  <div className={styles.discoveryFindingList}>
-                    {discoveryAnalysis.findings.map((finding) => (
-                      <article key={finding.id} className={styles.discoveryFindingCard}>
-                        <div className={styles.discoveryFindingTop}>
-                          <span
-                            className={`${styles.statusPill} ${
-                              finding.kind === 'bug' ? styles.statusblocked : styles.statustodo
-                            }`}
-                          >
-                            {finding.kind === 'bug' ? 'Bug' : 'Feature'}
-                          </span>
-                          <span>
-                            {finding.files[0] || finding.evidence[0] || activeProjectName}
-                          </span>
+                <section className={styles.discoveryPanel}>
+                  <div className={styles.sectionHeader}>
+                    <h3>{t('sections.discoveryLog')}</h3>
+                    <span className={discoveryBusy ? styles.discoveryLiveBadge : ''}>
+                      {discoveryBusy ? t('messages.discoveryLiveLabel') : discoveryLogs.length}
+                    </span>
+                  </div>
+                  <div className={styles.discoveryLogList}>
+                    {discoveryLogs.length > 0 ? (
+                      discoveryLogs.map((entry, index) => (
+                        <div key={`${entry}-${index}`} className={styles.discoveryLogItem}>
+                          {entry}
                         </div>
-                        <strong>{finding.title}</strong>
-                        <p>{finding.summary}</p>
-                      </article>
-                    ))}
+                      ))
+                    ) : (
+                      <div className={styles.discoveryEmpty}>{t('messages.discoveryIdle')}</div>
+                    )}
                   </div>
-                ) : discoveryBusy ? (
-                  <div className={styles.discoverySkeletonList}>
-                    {[0, 1, 2].map((entry) => (
-                      <div key={entry} className={styles.discoverySkeletonCard}>
-                        <span className={styles.discoverySkeletonTag} />
-                        <strong className={styles.discoverySkeletonTitle} />
-                        <p className={styles.discoverySkeletonBody} />
-                        <p className={styles.discoverySkeletonBodyShort} />
-                      </div>
-                    ))}
+                </section>
+
+                <section className={styles.discoveryPanel}>
+                  <div className={styles.sectionHeader}>
+                    <h3>{t('sections.discoveryBlindSpots')}</h3>
+                    <span>{discoveryBlindSpots.length}</span>
                   </div>
-                ) : (
-                  <div className={styles.discoveryEmpty}>{t('messages.discoveryNoFindings')}</div>
-                )}
-              </section>
+                  {discoveryBlindSpots.length ? (
+                    <div className={styles.discoveryBlindSpotList}>
+                      {discoveryBlindSpots.slice(0, 8).map((spot) => (
+                        <div key={spot.id} className={styles.discoveryBlindSpotItem}>
+                          <strong title={spot.area}>{spot.area}</strong>
+                          <p>{truncateDiscoveryText(spot.reason, 140)}</p>
+                          {spot.impact ? (
+                            <span>{truncateDiscoveryText(spot.impact, 120)}</span>
+                          ) : null}
+                          {spot.recommendation ? (
+                            <span>{truncateDiscoveryText(spot.recommendation, 120)}</span>
+                          ) : null}
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={styles.discoveryEmpty}>{t('discovery.noBlindSpots')}</div>
+                  )}
+                </section>
+              </div>
+
+              <div className={styles.discoveryMainStack}>
+                <section className={styles.discoveryPanel}>
+                  <div className={styles.sectionHeader}>
+                    <h3>{t('sections.discoveryTopology')}</h3>
+                    <span>{t('discovery.surfaceMap')}</span>
+                  </div>
+                  <div className={styles.discoveryTopologyGrid}>
+                    {renderDiscoveryTopologyGroup(
+                      t('discovery.entrypoints'),
+                      discoveryTopology?.entrypoints,
+                    )}
+                    {renderDiscoveryTopologyGroup(
+                      t('discovery.uiRoutes'),
+                      discoveryTopology?.uiSurfaces,
+                    )}
+                    {renderDiscoveryTopologyGroup(
+                      t('discovery.apiSurfaces'),
+                      discoveryTopology?.apiSurfaces,
+                    )}
+                    {renderDiscoveryTopologyGroup(
+                      t('discovery.tests'),
+                      discoveryTopology?.testSurfaces,
+                    )}
+                    {renderDiscoveryTopologyGroup(t('discovery.configStorage'), [
+                      ...(discoveryTopology?.configFiles ?? []),
+                      ...(discoveryTopology?.storage ?? []),
+                    ])}
+                  </div>
+                  {discoveryTopology?.notes?.length ? (
+                    <div className={styles.discoveryNoteList}>
+                      {discoveryTopology.notes.slice(0, 3).map((note) => (
+                        <span key={note}>{truncateDiscoveryText(note, 140)}</span>
+                      ))}
+                    </div>
+                  ) : null}
+                </section>
+
+                <section className={styles.discoveryPanel}>
+                  <div className={styles.sectionHeader}>
+                    <h3>{t('sections.discoveryFindings')}</h3>
+                    <span>
+                      {t('discovery.selectionSummary', {
+                        selected: selectedEligibleDiscoveryCount,
+                        ready: discoveryEligibilityCounts.ready,
+                        total: discoveryEligibilityCounts.total,
+                      })}
+                    </span>
+                  </div>
+                  {discoveryAnalysis?.findings.length ? (
+                    <div className={styles.discoveryFindingList}>
+                      {discoveryAnalysis.findings.map(renderDiscoveryFinding)}
+                    </div>
+                  ) : discoveryBusy ? (
+                    <div className={styles.discoverySkeletonList}>
+                      {[0, 1, 2].map((entry) => (
+                        <div key={entry} className={styles.discoverySkeletonCard}>
+                          <span className={styles.discoverySkeletonTag} />
+                          <strong className={styles.discoverySkeletonTitle} />
+                          <p className={styles.discoverySkeletonBody} />
+                          <p className={styles.discoverySkeletonBodyShort} />
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <div className={styles.discoveryEmpty}>{t('messages.discoveryNoFindings')}</div>
+                  )}
+                </section>
+              </div>
             </div>
 
             <div className={styles.discoveryFooter}>
@@ -4523,6 +4806,9 @@ const KiraPage: React.FC = () => {
                     <button className={styles.secondaryButton} onClick={handleAnalyzeAgain}>
                       {t('actions.analyzeAgain')}
                     </button>
+                    <button className={styles.secondaryButton} onClick={handleDeepenDiscovery}>
+                      {t('actions.deepenAnalysis')}
+                    </button>
                     <button className={styles.primaryButton} onClick={handleUseSavedDiscovery}>
                       {t('actions.useSavedAnalysis')}
                     </button>
@@ -4531,21 +4817,50 @@ const KiraPage: React.FC = () => {
               ) : discoveryStage === 'ready' ? (
                 <>
                   <p>
-                    {t('messages.discoveryContinuePrompt', {
-                      count: discoveryAnalysis?.findings.length ?? 0,
-                    })}
+                    {selectedEligibleDiscoveryCount > 0
+                      ? t('messages.discoverySelectedPrompt', {
+                          selected: selectedEligibleDiscoveryCount,
+                          ready: discoveryEligibilityCounts.ready,
+                        })
+                      : t('messages.discoveryNoEligibleSelection')}
                   </p>
                   <div className={styles.discoveryFooterActions}>
                     <button className={styles.secondaryButton} onClick={handleCloseDiscovery}>
                       {t('actions.notNow')}
                     </button>
+                    <button className={styles.secondaryButton} onClick={handleAnalyzeAgain}>
+                      {t('actions.analyzeAgain')}
+                    </button>
+                    <button className={styles.secondaryButton} onClick={handleDeepenDiscovery}>
+                      {t('actions.deepenAnalysis')}
+                    </button>
                     <button
                       className={styles.primaryButton}
                       onClick={() => void handleContinueDiscovery()}
-                      disabled={!automationReady}
-                      title={actionBlockedHint ?? undefined}
+                      disabled={createDiscoveryDisabled}
+                      title={
+                        actionBlockedHint ??
+                        (selectedEligibleDiscoveryCount === 0
+                          ? t('messages.discoveryNoEligibleSelection')
+                          : undefined)
+                      }
                     >
-                      {t('actions.continue')}
+                      {t('actions.createSelectedTasks', {
+                        count: selectedEligibleDiscoveryCount,
+                      })}
+                    </button>
+                  </div>
+                </>
+              ) : discoveryStage === 'created' ? (
+                <>
+                  <p>
+                    {t('messages.discoveryCreatedHint', {
+                      count: selectedEligibleDiscoveryCount,
+                    })}
+                  </p>
+                  <div className={styles.discoveryFooterActions}>
+                    <button className={styles.secondaryButton} onClick={handleCloseDiscovery}>
+                      {t('actions.close')}
                     </button>
                   </div>
                 </>

@@ -1,10 +1,18 @@
 import {
   buildExcerpt,
+  formatDiscoveryDepthScore,
+  getDiscoveryDepthLevel,
+  getDiscoveryEligibilityCounts,
+  getDiscoveryEvidenceForFinding,
+  getInitialDiscoverySelection,
   groupWorksByStatus,
+  isDiscoveryAnalysisStale,
+  isDiscoveryFindingTaskCreatable,
   matchesProjectName,
   normalizeKiraAttempt,
   normalizeKiraReview,
   normalizeTaskComment,
+  sanitizeDiscoverySelection,
   extractRetryFeedbackFromCommentBody,
   findLatestRetryFeedback,
   normalizeWorkTask,
@@ -207,6 +215,106 @@ describe('Kira model helpers', () => {
     expect(matchesProjectName('YourOpenRoom', 'YourOpenRoom')).toBe(true);
     expect(matchesProjectName('', 'AnotherProject')).toBe(true);
     expect(matchesProjectName('YourOpenRoom', 'AnotherProject')).toBe(false);
+  });
+
+  it('counts discovery finding eligibility with legacy ready fallback', () => {
+    expect(
+      getDiscoveryEligibilityCounts([
+        { eligibility: 'ready' },
+        { eligibility: 'blocked' },
+        { eligibility: 'needs_deeper_analysis' },
+        {},
+      ]),
+    ).toEqual({
+      total: 4,
+      ready: 2,
+      blocked: 1,
+      needsDeeperAnalysis: 1,
+    });
+  });
+
+  it('keeps blocked discovery findings out of task selection', () => {
+    const analysis = {
+      findings: [
+        {
+          id: 'ready-1',
+          kind: 'feature' as const,
+          title: 'Ready',
+          summary: '',
+          evidence: [],
+          files: ['src/app.ts'],
+          eligibility: 'ready' as const,
+          taskDescription: '',
+        },
+        {
+          id: 'blocked-1',
+          kind: 'bug' as const,
+          title: 'Blocked',
+          summary: '',
+          evidence: [],
+          files: ['src/missing.ts'],
+          eligibility: 'blocked' as const,
+          taskDescription: '',
+        },
+      ],
+    };
+
+    expect(isDiscoveryFindingTaskCreatable(analysis.findings[0])).toBe(true);
+    expect(isDiscoveryFindingTaskCreatable(analysis.findings[1])).toBe(false);
+    expect(getInitialDiscoverySelection(analysis)).toEqual(['ready-1']);
+    expect(sanitizeDiscoverySelection(analysis, ['ready-1', 'blocked-1'])).toEqual(['ready-1']);
+  });
+
+  it('formats discovery depth labels without trusting missing fields', () => {
+    expect(formatDiscoveryDepthScore(0.734)).toBe('73%');
+    expect(formatDiscoveryDepthScore(2)).toBe('100%');
+    expect(formatDiscoveryDepthScore(undefined)).toBe('--');
+    expect(getDiscoveryDepthLevel({ depth: { depthLevel: 'deep' } })).toBe('deep');
+    expect(getDiscoveryDepthLevel({ depth: {} })).toBe('unknown');
+  });
+
+  it('detects stale discovery analyses from depth and fingerprint status', () => {
+    expect(isDiscoveryAnalysisStale({ depth: { depthLevel: 'stale' } })).toBe(true);
+    expect(
+      isDiscoveryAnalysisStale({ depth: { depthLevel: 'deep' }, fingerprintStatus: 'stale' }),
+    ).toBe(true);
+    expect(
+      isDiscoveryAnalysisStale({
+        depth: { depthLevel: 'moderate' },
+        fingerprintStatus: { status: 'fresh' },
+      }),
+    ).toBe(false);
+  });
+
+  it('maps discovery evidence IDs to compact ledger entries', () => {
+    const evidence = getDiscoveryEvidenceForFinding(
+      {
+        evidenceLedger: [
+          {
+            id: 'ev-1',
+            kind: 'file_read',
+            file: 'src/app.ts',
+            lineStart: 1,
+            lineEnd: 10,
+            summary: 'Read app surface.',
+          },
+          {
+            id: 'ev-2',
+            kind: 'search_match',
+            summary: 'Matched discovery term.',
+          },
+        ],
+      },
+      { evidenceIds: ['ev-2', 'missing'] },
+    );
+
+    expect(evidence).toEqual([
+      {
+        id: 'ev-2',
+        kind: 'search_match',
+        summary: 'Matched discovery term.',
+      },
+    ]);
   });
 
   it('normalizes Kira attempt records for the Attempts panel', () => {

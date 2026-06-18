@@ -19206,6 +19206,7 @@ function createWorksFromDiscovery(
   options: KiraAutomationPluginOptions,
   sessionPath: string,
   analysis: ProjectDiscoveryAnalysis,
+  selectedFindingIds?: Set<string>,
 ): { created: WorkTask[]; skippedTitles: string[] } {
   const worksDir = join(getKiraDataDir(options.sessionsDir, sessionPath), WORKS_DIR_NAME);
   fs.mkdirSync(worksDir, { recursive: true });
@@ -19228,6 +19229,11 @@ function createWorksFromDiscovery(
   const skippedTitles: string[] = [];
 
   for (const finding of gatedAnalysis.findings.slice(0, MAX_DISCOVERY_FINDINGS)) {
+    if (selectedFindingIds && !selectedFindingIds.has(finding.id)) {
+      skippedTitles.push(finding.title);
+      continue;
+    }
+
     const normalizedTitle = finding.title.trim().toLowerCase();
     if (
       !normalizedTitle ||
@@ -21833,10 +21839,18 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
                 return;
               }
 
+              const selectedFindingIds = Array.isArray(body.selectedFindingIds)
+                ? new Set(
+                    body.selectedFindingIds
+                      .map((item) => (typeof item === 'string' ? item.trim() : ''))
+                      .filter(Boolean),
+                  )
+                : undefined;
               const { created, skippedTitles } = createWorksFromDiscovery(
                 options,
                 sessionPath,
                 analysis,
+                selectedFindingIds && selectedFindingIds.size > 0 ? selectedFindingIds : undefined,
               );
               scanActionableWorks(options, sessionPath);
               res.writeHead(200);

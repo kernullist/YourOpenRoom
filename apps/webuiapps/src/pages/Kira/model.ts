@@ -516,6 +516,118 @@ export interface KiraViewState {
   previewMode: boolean;
 }
 
+export type KiraDiscoveryFindingEligibility = 'ready' | 'blocked' | 'needs_deeper_analysis';
+export type KiraDiscoveryDepthLevel = 'shallow' | 'moderate' | 'deep' | 'stale';
+export type KiraDiscoveryFindingRisk = 'low' | 'medium' | 'high';
+
+export interface KiraDiscoveryFinding {
+  id: string;
+  kind: 'feature' | 'bug';
+  title: string;
+  summary: string;
+  evidence: string[];
+  evidenceIds?: string[];
+  files: string[];
+  scope?: string[];
+  validationCommands?: string[];
+  confidence?: number;
+  eligibility?: KiraDiscoveryFindingEligibility;
+  blockedReasons?: string[];
+  risk?: KiraDiscoveryFindingRisk;
+  taskDescription: string;
+}
+
+export interface KiraProjectDiscoveryFingerprint {
+  capturedAt?: number;
+  gitHead?: string | null;
+  gitBranch?: string | null;
+  gitStatusHash?: string | null;
+  workspaceFileHash?: string | null;
+  packageManifestHash?: string | null;
+  unavailable?: string[];
+}
+
+export interface KiraProjectDiscoveryDepth {
+  filesEnumerated?: number;
+  filesRead?: number;
+  directoriesVisited?: number;
+  searchQueries?: number;
+  searchMatches?: number;
+  likelyFilesCount?: number;
+  evidenceCount?: number;
+  findingsWithEvidence?: number;
+  findingsWithValidation?: number;
+  blindSpotCount?: number;
+  depthScore?: number;
+  depthLevel?: KiraDiscoveryDepthLevel;
+  notes?: string[];
+}
+
+export interface KiraProjectDiscoveryTopology {
+  entrypoints?: string[];
+  uiSurfaces?: string[];
+  apiSurfaces?: string[];
+  testSurfaces?: string[];
+  configFiles?: string[];
+  storage?: string[];
+  notes?: string[];
+}
+
+export interface KiraProjectDiscoveryEvidence {
+  id: string;
+  kind: string;
+  file?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  symbol?: string;
+  summary: string;
+  snippetHash?: string;
+  collectedBy?: string;
+  confidence?: number;
+}
+
+export interface KiraProjectDiscoveryBlindSpot {
+  id: string;
+  area: string;
+  reason: string;
+  impact?: string;
+  recommendation?: string;
+}
+
+export interface KiraProjectDiscoveryAnalysis {
+  schemaVersion?: number;
+  id: string;
+  projectName: string;
+  projectRoot?: string;
+  projectFingerprint?: KiraProjectDiscoveryFingerprint;
+  fingerprintStatus?:
+    | 'fresh'
+    | 'stale'
+    | 'unknown'
+    | {
+        status?: string;
+        reason?: string;
+      };
+  stale?: boolean;
+  summary: string;
+  depth?: KiraProjectDiscoveryDepth;
+  topology?: KiraProjectDiscoveryTopology;
+  evidenceLedger?: KiraProjectDiscoveryEvidence[];
+  blindSpots?: KiraProjectDiscoveryBlindSpot[];
+  findings: KiraDiscoveryFinding[];
+  basedOnPreviousAnalysis: boolean;
+  previousAnalysisId?: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface KiraDiscoveryEligibilityCounts {
+  total: number;
+  ready: number;
+  blocked: number;
+  needsDeeperAnalysis: number;
+}
+
 export const STATUS_ORDER: KiraTaskStatus[] = [
   'todo',
   'in_progress',
@@ -544,6 +656,96 @@ function parseRecord<T>(raw: unknown): T | null {
 
 function normalizeStringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+}
+
+export function getDiscoveryFindingEligibility(
+  finding: Pick<KiraDiscoveryFinding, 'eligibility'>,
+): KiraDiscoveryFindingEligibility {
+  return finding.eligibility === 'blocked' || finding.eligibility === 'needs_deeper_analysis'
+    ? finding.eligibility
+    : 'ready';
+}
+
+export function isDiscoveryFindingTaskCreatable(
+  finding: Pick<KiraDiscoveryFinding, 'eligibility'>,
+): boolean {
+  return getDiscoveryFindingEligibility(finding) === 'ready';
+}
+
+export function getDiscoveryEligibilityCounts(
+  findings: Array<Pick<KiraDiscoveryFinding, 'eligibility'>>,
+): KiraDiscoveryEligibilityCounts {
+  return findings.reduce(
+    (counts, finding) => {
+      const eligibility = getDiscoveryFindingEligibility(finding);
+      counts.total += 1;
+      if (eligibility === 'ready') {
+        counts.ready += 1;
+      } else if (eligibility === 'blocked') {
+        counts.blocked += 1;
+      } else {
+        counts.needsDeeperAnalysis += 1;
+      }
+      return counts;
+    },
+    { total: 0, ready: 0, blocked: 0, needsDeeperAnalysis: 0 },
+  );
+}
+
+export function getInitialDiscoverySelection(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'findings'> | null | undefined,
+): string[] {
+  return (
+    analysis?.findings
+      .filter((finding) => finding.id && isDiscoveryFindingTaskCreatable(finding))
+      .map((finding) => finding.id) ?? []
+  );
+}
+
+export function sanitizeDiscoverySelection(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'findings'> | null | undefined,
+  selectedIds: Iterable<string>,
+): string[] {
+  const selected = new Set(selectedIds);
+  return getInitialDiscoverySelection(analysis).filter((id) => selected.has(id));
+}
+
+export function formatDiscoveryDepthScore(score: unknown): string {
+  return typeof score === 'number' && Number.isFinite(score)
+    ? `${Math.round(Math.max(0, Math.min(1, score)) * 100)}%`
+    : '--';
+}
+
+export function getDiscoveryDepthLevel(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'depth'> | null | undefined,
+): KiraDiscoveryDepthLevel | 'unknown' {
+  const level = analysis?.depth?.depthLevel;
+  return level === 'shallow' || level === 'moderate' || level === 'deep' || level === 'stale'
+    ? level
+    : 'unknown';
+}
+
+export function isDiscoveryAnalysisStale(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'depth' | 'fingerprintStatus' | 'stale'> | null,
+): boolean {
+  if (!analysis) return false;
+  if (analysis.stale === true) return true;
+  if (analysis.depth?.depthLevel === 'stale') return true;
+  const status = analysis.fingerprintStatus;
+  if (typeof status === 'string') return status === 'stale';
+  return typeof status?.status === 'string' && status.status.toLowerCase() === 'stale';
+}
+
+export function getDiscoveryEvidenceForFinding(
+  analysis: Pick<KiraProjectDiscoveryAnalysis, 'evidenceLedger'> | null | undefined,
+  finding: Pick<KiraDiscoveryFinding, 'evidenceIds'>,
+): KiraProjectDiscoveryEvidence[] {
+  const ledger = analysis?.evidenceLedger ?? [];
+  if (ledger.length === 0 || !finding.evidenceIds?.length) return [];
+  const byId = new Map(ledger.map((entry) => [entry.id, entry]));
+  return finding.evidenceIds
+    .map((id) => byId.get(id))
+    .filter((entry): entry is KiraProjectDiscoveryEvidence => Boolean(entry));
 }
 
 function normalizeRequirementTrace(value: unknown): KiraRequirementTraceItem[] {
