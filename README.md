@@ -120,6 +120,13 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - declared app-owned operation/settings actions, such as Kira `APPLY_MODEL_SETTINGS` and
     `APPLY_PROJECT_SETTINGS`, run through the app's validation and persistence paths instead of raw
     storage writes
+  - app-operation requests and setting/apply-style follow-ups stay on the main tool route so Aoi can
+    dispatch the app action instead of only describing manual steps
+  - contextual follow-ups such as "apply that", "run it", "그렇게 설정해줘", "거기에 붙여줘", and
+    "실행해줘" keep tools exposed when recent chat context points to an app, browser page, current
+    file, or command
+  - descriptive app mentions such as "Kira looks good", "Kira 설정 좋네", or "I use Kira daily" stay
+    on the dialog route without exposing app tools
   - schema-aware app storage tools: `file_read`, `file_write`, `file_patch`, `file_list`,
     `file_delete`
 - **Web/content tools**
@@ -446,13 +453,13 @@ Notes:
 - `kira.workRootDirectory` can point either to a project folder itself or to a parent folder that
   contains multiple project folders. If the root has project markers such as `.git`, `package.json`,
   or `requirements.txt`, Kira treats that root as one project.
-- `kira.workers` is optional. When omitted, Kira uses the legacy `workerLlm` / `workerModel`
-  setting as one worker, then falls back to the main `llm` route when no Kira-specific role setting
-  exists. When present, Kira uses the first three entries and each worker can choose a different
-  provider or model.
-- Aoi can inspect Kira's sanitized effective model/default settings with `get_app_state("kira")`
-  and can apply user-approved Kira model/project settings through Kira-owned app actions. Secrets
-  such as API keys and custom headers are not exposed in that state summary.
+- `kira.workers` is optional. When omitted, Kira uses the legacy `workerLlm` / `workerModel` setting
+  as one worker, then falls back to the main `llm` route when no Kira-specific role setting exists.
+  When present, Kira uses the first three entries and each worker can choose a different provider or
+  model.
+- Aoi can inspect Kira's sanitized effective model/default settings with `get_app_state("kira")` and
+  can apply user-approved Kira model/project settings through Kira-owned app actions. Secrets such
+  as API keys and custom headers are not exposed in that state summary.
 - `provider: "codex-cli"` runs the local Codex CLI with your existing ChatGPT login. Run
   `codex login` once outside Kira before using it.
 - `provider: "claude-cli"` runs the local Claude CLI with your existing Claude Code auth session.

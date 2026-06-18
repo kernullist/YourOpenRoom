@@ -243,6 +243,95 @@ describe('shouldEnableAppTools()', () => {
       ]),
     ).toBe(true);
   });
+
+  it('enables tools for Kira settings changes and apply-style follow-ups', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: 'Kira 모델 설정은 reasoning을 high로 두고 run mode는 deep으로 맞추는 걸 추천해.',
+      },
+    ];
+
+    expect(shouldEnableAppTools('Kira 모델 설정을 직접하게 변경해줘')).toBe(true);
+    expect(shouldEnableAppTools('그렇게 설정해줘', history)).toBe(true);
+    expect(shouldEnableAppTools('그대로 적용해줘', history)).toBe(true);
+  });
+
+  it('does not enable tools for descriptive app mentions', () => {
+    expect(shouldEnableAppTools('Kira 설정 좋네')).toBe(false);
+    expect(shouldEnableAppTools('Kira 좋네')).toBe(false);
+    expect(shouldEnableAppTools('I use Kira daily')).toBe(false);
+  });
+
+  it('enables tools for app setting inspection requests', () => {
+    expect(shouldEnableAppTools('Kira 모델 설정 뭐야?')).toBe(true);
+    expect(shouldEnableAppTools('What are Kira model settings?')).toBe(true);
+    expect(shouldEnableAppTools('Please use Kira for this')).toBe(true);
+  });
+
+  it('enables tools for common contextual execution follow-ups', () => {
+    const scenarios: Array<{
+      latest: string;
+      history: Array<{ role: 'user' | 'assistant'; content: string }>;
+    }> = [
+      {
+        latest: '좋아 진행해줘',
+        history: [
+          {
+            role: 'assistant',
+            content: 'Kira 모델 설정을 high/deep으로 맞추는 작업을 진행할 수 있어.',
+          },
+        ],
+      },
+      {
+        latest: '거기에 방금 내용 붙여줘',
+        history: [
+          { role: 'user', content: '현재 파일에 새 섹션을 추가하고 싶어.' },
+          { role: 'assistant', content: '현재 파일 위치를 확인했고 편집 준비가 됐어.' },
+        ],
+      },
+      {
+        latest: '실행해줘',
+        history: [
+          {
+            role: 'assistant',
+            content: '검증 명령은 pnpm --dir apps/webuiapps test -- chatTokenControl 이야.',
+          },
+        ],
+      },
+      {
+        latest: '응, 열어줘',
+        history: [
+          {
+            role: 'assistant',
+            content: '브라우저에서 https://example.com 페이지를 열어볼까?',
+          },
+        ],
+      },
+      {
+        latest: 'run it',
+        history: [
+          {
+            role: 'assistant',
+            content: 'The command to verify this is pnpm --dir apps/webuiapps test.',
+          },
+        ],
+      },
+      {
+        latest: 'apply that',
+        history: [
+          {
+            role: 'assistant',
+            content: 'Aoi Research can record this as a cited research run.',
+          },
+        ],
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      expect(shouldEnableAppTools(scenario.latest, scenario.history)).toBe(true);
+    }
+  });
 });
 
 describe('shouldUseDialogModel()', () => {
@@ -250,6 +339,8 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('That sounds nice')).toBe(true);
     expect(shouldUseDialogModel('고마워, 그럼 그렇게 하자')).toBe(true);
     expect(shouldUseDialogModel('Kira 좋네')).toBe(true);
+    expect(shouldUseDialogModel('Kira 설정 좋네')).toBe(true);
+    expect(shouldUseDialogModel('I use Kira daily')).toBe(true);
     expect(shouldUseDialogModel("Aoi's IDE 꽤 마음에 들어")).toBe(true);
   });
 
@@ -264,6 +355,76 @@ describe('shouldUseDialogModel()', () => {
     expect(shouldUseDialogModel('Find the ChatPanel component in the codebase')).toBe(false);
     expect(shouldUseDialogModel('현재 파일에 TODO 내용을 추가해줘')).toBe(false);
     expect(shouldUseDialogModel('방금 말한 내용을 현재 파일어 써줘')).toBe(false);
+    expect(shouldUseDialogModel('Kira 모델 설정 뭐야?')).toBe(false);
+    expect(shouldUseDialogModel('What are Kira model settings?')).toBe(false);
+    expect(shouldUseDialogModel('Please use Kira for this')).toBe(false);
+  });
+
+  it('keeps Kira settings execution requests on the main model with app tools', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: 'Kira 모델 설정은 reasoning을 high로 두고 run mode는 deep으로 맞추는 걸 추천해.',
+      },
+    ];
+
+    expect(shouldUseDialogModel('Kira 모델 설정을 직접하게 변경해줘')).toBe(false);
+    expect(shouldUseDialogModel('그렇게 설정해줘', history)).toBe(false);
+  });
+
+  it('keeps contextual execution follow-ups on the main model', () => {
+    const scenarios: Array<{
+      latest: string;
+      history: Array<{ role: 'user' | 'assistant'; content: string }>;
+    }> = [
+      {
+        latest: '좋아 진행해줘',
+        history: [
+          {
+            role: 'assistant',
+            content: 'Kira 모델 설정을 high/deep으로 맞추는 작업을 진행할 수 있어.',
+          },
+        ],
+      },
+      {
+        latest: '거기에 방금 내용 붙여줘',
+        history: [
+          { role: 'user', content: '현재 파일에 새 섹션을 추가하고 싶어.' },
+          { role: 'assistant', content: '현재 파일 위치를 확인했고 편집 준비가 됐어.' },
+        ],
+      },
+      {
+        latest: '실행해줘',
+        history: [
+          {
+            role: 'assistant',
+            content: '검증 명령은 pnpm --dir apps/webuiapps test -- chatTokenControl 이야.',
+          },
+        ],
+      },
+      {
+        latest: '응, 열어줘',
+        history: [
+          {
+            role: 'assistant',
+            content: '브라우저에서 https://example.com 페이지를 열어볼까?',
+          },
+        ],
+      },
+      {
+        latest: 'run it',
+        history: [
+          {
+            role: 'assistant',
+            content: 'The command to verify this is pnpm --dir apps/webuiapps test.',
+          },
+        ],
+      },
+    ];
+
+    for (const scenario of scenarios) {
+      expect(shouldUseDialogModel(scenario.latest, scenario.history)).toBe(false);
+    }
   });
 
   it('keeps affirmative research confirmations on the main model', () => {
@@ -327,6 +488,19 @@ describe('shouldUseDialogModel()', () => {
     expect(resolveAoiActionConfirmationRequest('응', history)).toBeNull();
     expect(resolveAoiResearchConfirmationRequest('응', history)).toBeNull();
     expect(shouldUseDialogModel('응', history)).toBe(true);
+  });
+
+  it('keeps social follow-ups on the dialog model even when recent text mentions apps', () => {
+    const history = [
+      {
+        role: 'assistant' as const,
+        content: 'Kira 보드가 열려 있고 Aoi Research도 사용할 수 있어.',
+      },
+    ];
+
+    expect(shouldEnableAppTools('좋네', history)).toBe(false);
+    expect(shouldUseDialogModel('좋네', history)).toBe(true);
+    expect(shouldUseDialogModel('고마워, 그럼 그렇게 하자', history)).toBe(true);
   });
 });
 

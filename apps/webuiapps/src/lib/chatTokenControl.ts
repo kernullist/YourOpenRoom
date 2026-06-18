@@ -682,33 +682,71 @@ function hasPlaybackIntent(text: string): boolean {
 
 function hasCommandIntent(text: string): boolean {
   return [
-    /\b(commit|push|pull|merge|rebase|test|build|lint|typecheck|install|deploy|terminal|shell|command|execute|run command)\b/i,
-    /(커밋|푸시|풀|머지|리베이스|테스트|빌드|린트|타입\s*체크|설치|배포|터미널|셸|쉘|명령|실행)/,
+    /\b(commit|push|pull|merge|rebase|test|build|lint|typecheck|install|deploy|terminal|shell|command|execute|run command|rerun)\b/i,
+    /(커밋|푸시|풀|머지|리베이스|테스트|빌드|린트|타입\s*체크|설치|배포|터미널|셸|쉘|명령|실행|다시\s*실행)/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function hasAppInformationIntent(text: string): boolean {
+  return [
+    /\b(what|which|where|how|show|tell me|inspect|check|review|read|list)\b.*\b(settings?|configuration|state|status|model|provider|defaults?|preferences?)\b/i,
+    /\b(settings?|configuration|state|status|model|provider|defaults?|preferences?)\b.*\b(what|which|where|how|show|tell me|inspect|check|review|read|list)\b/i,
+    /(설정|상태|정보|모델|프로바이더|provider|기본값|값).*(뭐|무엇|어디|어떻게|알려줘|보여줘|확인해|읽어줘|조회해|검토해)/,
+    /(뭐|무엇|어디|어떻게|알려줘|보여줘|확인해|읽어줘|조회해|검토해).*(설정|상태|정보|모델|프로바이더|provider|기본값|값)/,
   ].some((pattern) => pattern.test(text));
 }
 
 function isShortFollowUpAction(text: string): boolean {
   return [
-    /\b(open|show|save|delete|remove|play|refresh|close)\b.*\b(it|that|this|there)\b/i,
-    /\b(it|that|this|there)\b.*\b(open|show|save|delete|remove|play|refresh|close)\b/i,
-    /(그거|이거|저거|그 앱|이 앱).*(열어줘|보여줘|저장해|삭제해|틀어줘|재생해|새로고침)/,
-    /(열어줘|보여줘|저장해|삭제해|틀어줘|재생해|새로고침).*(그거|이거|저거|그 앱|이 앱)/,
+    /\b(open|show|save|delete|remove|play|refresh|close|set|configure|apply|change|use|run|execute|test|build|commit|push|continue|proceed|approve)\b.*\b(it|that|this|there|the same|your suggestion|the recommendation)\b/i,
+    /\b(it|that|this|there|the same|your suggestion|the recommendation)\b.*\b(open|show|save|delete|remove|play|refresh|close|set|configure|apply|change|use|run|execute|test|build|commit|push|continue|proceed|approve)\b/i,
+    /(그거|이거|저거|그 앱|이 앱|그렇게|그대로|그걸로|이걸로|위처럼|방금\s*(?:말한|추천한|보여준)?\s*(?:내용|것)?|아까\s*(?:말한|추천한|보여준)?\s*(?:내용|것)?|추천한\s*대로|여기(?:에|로)?|거기(?:에|로)?).*(열어줘|보여줘|저장해|삭제해|틀어줘|재생해|새로고침|설정해|적용해|변경해|바꿔|맞춰|사용해|실행해|테스트해|빌드해|커밋해|푸시해|진행해|이어가|계속해|처리해|승인해|써줘|작성해|추가해|붙여|반영해)/,
+    /(열어줘|보여줘|저장해|삭제해|틀어줘|재생해|새로고침|설정해|적용해|변경해|바꿔|맞춰|사용해|실행해|테스트해|빌드해|커밋해|푸시해|진행해|이어가|계속해|처리해|승인해|써줘|작성해|추가해|붙여|반영해).*(그거|이거|저거|그 앱|이 앱|그렇게|그대로|그걸로|이걸로|위처럼|방금\s*(?:말한|추천한|보여준)?\s*(?:내용|것)?|아까\s*(?:말한|추천한|보여준)?\s*(?:내용|것)?|추천한\s*대로|여기(?:에|로)?|거기(?:에|로)?)/,
   ].some((pattern) => pattern.test(text));
 }
 
 function isShortAffirmativeFollowUp(text: string): boolean {
   const normalized = normalizeWhitespace(text).toLowerCase();
-  if (!normalized || normalized.length > 32) return false;
+  if (!normalized || normalized.length > 48) return false;
   return [
-    /^(yes|yep|yeah|sure|ok|okay|go ahead|do it|please do|sounds good|let'?s do it)$/i,
-    /^(응|어|엉|ㅇㅇ|그래|좋아|해줘|해보자|진행해|진행하자|응 해줘|좋아 해줘|그렇게 해줘|한번 해봐|시작해|시작하자)[.!?\s]*$/u,
+    /^(yes|yep|yeah|sure|ok|okay|go ahead|do it|please do|sounds good|let'?s do it|make it so|apply it|use that|run it|ship it)$/i,
+    /^(?:yes|yep|yeah|sure|ok|okay|sounds good)[,\s]+(?:go ahead|do it|please do|let'?s do it|make it so|apply it|use that|run it|ship it|proceed|continue)$/i,
+    /^(응|어|엉|ㅇㅇ|ㅇㅋ|오케이|오키|그래|좋아|좋음|가자|해줘|해보자|진행해|진행해줘|진행하자|응 해줘|좋아 해줘|그렇게 해줘|그대로 해줘|그걸로 해줘|그걸로 가자|이걸로 해줘|이걸로 가자|바로 해줘|바로 진행해|바로 진행해줘|적용해줘|맞춰줘|한번 해봐|시작해|시작하자)[.!?\s]*$/u,
+    /^(?:응|어|엉|ㅇㅇ|ㅇㅋ|오케이|오키|그래|좋아)[,\s]*(?:그렇게|그대로|그걸로|이걸로|추천한\s*대로|바로)?\s*(?:해줘|해보자|진행해|진행해줘|진행하자|적용해줘|맞춰줘|시작해|시작하자|가자)[.!?\s]*$/u,
   ].some((pattern) => pattern.test(normalized));
 }
 
 function hasDirectOperationalIntent(text: string): boolean {
   return [
-    /\b(open|launch|run|start|show|close|reload|refresh|search|look up|play|listen|save|delete|remove|create|update|edit|bookmark|visit|read|summarize|extract|analyze|inspect|check|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute)\b/i,
-    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|조사해|틀어줘|재생해|저장해|삭제해|만들어줘|생성해|수정해|편집해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해|기억해|기록해|커밋|푸시|테스트|빌드|설치|배포|실행)/,
+    /\b(open|launch|run|start|show|close|reload|refresh|search|look up|play|listen|save|delete|remove|create|update|edit|set|configure|apply|change|enable|disable|continue|proceed|approve|bookmark|visit|read|summarize|extract|analyze|inspect|check|write|generate|prepare|remember|record|store|commit|push|test|build|install|deploy|execute)\b/i,
+    /(?:^|[.!?]\s*)(?:please\s+)?use\b/i,
+    /\b(?:can you|could you|would you|please)\s+use\b/i,
+    /(열어줘|띄워줘|켜줘|보여줘|닫아줘|새로고침|검색해|찾아줘|조사해|틀어줘|재생해|저장해|삭제해|만들어줘|생성해|수정해|편집해|설정해|설정하자|적용해|적용하자|변경해|바꿔|맞춰|사용해|진행해|진행하자|계속해|이어가|처리해|승인해|읽어줘|요약해|추출해|분석해|확인해|써줘|작성해|추가해|붙여넣어|반영해|기억해|기록해|커밋|푸시|테스트|빌드|설치|배포|실행)/,
+  ].some((pattern) => pattern.test(text));
+}
+
+function hasActionableAppIntent(text: string): boolean {
+  return (
+    hasExplicitAppMention(text) &&
+    (hasBrowserIntent(text) ||
+      hasAppStateIntent(text) ||
+      hasCodebaseIntent(text) ||
+      hasCommandIntent(text) ||
+      hasPlaybackIntent(text) ||
+      hasAppInformationIntent(text) ||
+      hasDirectOperationalIntent(text))
+  );
+}
+
+function isAppOnlySocialTurn(text: string): boolean {
+  if (!hasExplicitAppMention(text)) return false;
+  if (hasActionableAppIntent(text) || isShortFollowUpAction(text)) return false;
+
+  return [
+    /\b(?:looks?|sounds?|seems?|feels?)\s+(?:good|nice|great|cool|neat|fine|solid)\b/i,
+    /\b(?:i|we)\s+(?:like|love|enjoy|prefer|use|used)\b/i,
+    /\b(?:i'?m|we'?re)\s+using\b/i,
+    /(좋네|괜찮네|마음에\s*들|좋아\s*보|멋지|쓸만|유용|편하|사용하고\s*있|쓰고\s*있|쓰는\s*중|자주\s*써|매일\s*써|써왔)/,
   ].some((pattern) => pattern.test(text));
 }
 
@@ -733,6 +771,17 @@ function actionContextNeedsAppTools(text: string): boolean {
   return hasDirectOperationalIntent(text);
 }
 
+function recentContextNeedsAppTools(text: string): boolean {
+  return (
+    hasExplicitAppMention(text) ||
+    hasBrowserIntent(text) ||
+    hasAppStateIntent(text) ||
+    hasCodebaseIntent(text) ||
+    hasCommandIntent(text) ||
+    hasPlaybackIntent(text)
+  );
+}
+
 export function shouldEnableAppTools(
   latestUserMessage: string,
   history: ChatMessage[] = [],
@@ -752,7 +801,8 @@ export function shouldEnableAppTools(
   const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
   if (confirmedActionRequest && actionContextNeedsAppTools(confirmedActionRequest)) return true;
 
-  if (hasExplicitAppMention(latestUserMessage)) return true;
+  if (isAppOnlySocialTurn(latestUserMessage)) return false;
+  if (hasActionableAppIntent(latestUserMessage)) return true;
   if (hasBrowserIntent(latestUserMessage)) return true;
   if (hasAppStateIntent(latestUserMessage)) return true;
   if (hasCodebaseIntent(latestUserMessage)) return true;
@@ -765,11 +815,16 @@ export function shouldEnableAppTools(
   }
 
   if (
-    isShortFollowUpAction(latestUserMessage) &&
-    (hasExplicitAppMention(recentContext) ||
-      hasBrowserIntent(recentContext) ||
-      hasPlaybackIntent(recentContext))
+    (isShortFollowUpAction(latestUserMessage) ||
+      (isShortAffirmativeFollowUp(latestUserMessage) &&
+        (hasDirectOperationalIntent(latestUserMessage) ||
+          hasDirectOperationalIntent(recentContext)))) &&
+    recentContextNeedsAppTools(recentContext)
   ) {
+    return true;
+  }
+
+  if (hasDirectOperationalIntent(latestUserMessage) && recentContextNeedsAppTools(recentContext)) {
     return true;
   }
 
@@ -787,6 +842,7 @@ export function shouldUseDialogModel(
   if (shouldUseAoiResearchRun(latestUserMessage, history)) return false;
   if (resolveAoiActionConfirmationRequest(latestUserMessage, history)) return false;
   if (shouldUseWebSearch(latestUserMessage)) return false;
+  if (isAppOnlySocialTurn(latestUserMessage)) return true;
 
   const heavyIntentPatterns = [
     /\b(search|look up|verify|compare|latest|current|recent|news)\b/i,
@@ -800,6 +856,7 @@ export function shouldUseDialogModel(
   if (heavyIntentPatterns.some((pattern) => pattern.test(latestUserMessage))) return false;
   if (hasAppStateIntent(latestUserMessage)) return false;
   if (hasCodebaseIntent(latestUserMessage)) return false;
+  if (hasActionableAppIntent(latestUserMessage)) return false;
 
   const recentContext = normalizeWhitespace(
     history
@@ -807,10 +864,15 @@ export function shouldUseDialogModel(
       .map((m) => m.content)
       .join('\n'),
   );
+  const affirmativeContextNeedsTooling =
+    isShortAffirmativeFollowUp(latestUserMessage) &&
+    recentContextNeedsAppTools(recentContext) &&
+    (hasDirectOperationalIntent(latestUserMessage) || hasDirectOperationalIntent(recentContext));
+  if (affirmativeContextNeedsTooling) return false;
 
   const requiresToolingNow =
     hasDirectOperationalIntent(latestUserMessage) &&
-    (hasExplicitAppMention(latestUserMessage) ||
+    (hasActionableAppIntent(latestUserMessage) ||
       hasBrowserIntent(latestUserMessage) ||
       hasAppStateIntent(latestUserMessage) ||
       hasCodebaseIntent(latestUserMessage) ||
@@ -821,15 +883,7 @@ export function shouldUseDialogModel(
 
   if (requiresToolingNow) return false;
 
-  if (
-    isShortFollowUpAction(latestUserMessage) &&
-    (hasExplicitAppMention(recentContext) ||
-      hasBrowserIntent(recentContext) ||
-      hasAppStateIntent(recentContext) ||
-      hasCodebaseIntent(recentContext) ||
-      hasCommandIntent(recentContext) ||
-      hasPlaybackIntent(recentContext))
-  ) {
+  if (isShortFollowUpAction(latestUserMessage) && recentContextNeedsAppTools(recentContext)) {
     return false;
   }
 

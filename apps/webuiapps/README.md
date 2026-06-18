@@ -239,6 +239,12 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   destructive patterns, approval fingerprint freshness, timeout, and audit logging before spawn.
   `aoiOperatorReplay.ts` keeps representative operator scenarios deterministic without invoking
   shell, network, or workspace mutations.
+- App-operation requests, including Kira setting changes and "apply it like that" follow-ups that
+  reference recent app context, bypass the dialog-model shortcut and keep app tools exposed to the
+  main model route.
+- The contextual routing scenarios cover app setting changes, current-file edits, browser opens,
+  command execution, and research/app handoffs. Social/descriptive mentions such as "Kira looks
+  good" or "I use Kira daily" still stay on the dialog route without app tools.
 - Chat image input accepts pasted, dropped, or selected PNG, JPEG, WebP, and GIF files. Images stay
   on the main LLM route, bypass the dialog model, and are stored in session chat history as data
   URLs. Aoi memory sync records only attachment metadata instead of raw image payloads.
