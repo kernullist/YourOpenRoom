@@ -3,6 +3,9 @@ const LOW_SIGNAL_APP_ACTIONS = new Set([
   'REFRESH_AOI_RESEARCH_RUNS',
   'REFRESH_DEWDROP_CANVAS',
   'REFRESH_WRITTEN_BY_ME',
+  'REFRESH_EVIDENCE',
+  'OPEN_EVIDENCE_FILE',
+  'FILTER_EVIDENCE',
 ]);
 
 export interface UserActionConversationApp {
@@ -21,7 +24,11 @@ export function shouldSuppressUserActionConversation(
   action: UserActionConversationAction,
 ): boolean {
   if (app.appName === 'os') {
-    if (action.action_type === 'OPEN_APP' || action.action_type === 'CLOSE_APP') {
+    if (
+      action.action_type === 'OPEN_APP' ||
+      action.action_type === 'FOCUS_APP' ||
+      action.action_type === 'CLOSE_APP'
+    ) {
       return true;
     }
   }

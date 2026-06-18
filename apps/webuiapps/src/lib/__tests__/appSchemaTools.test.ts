@@ -11,6 +11,19 @@ describe('executeAppSchemaTool()', () => {
     expect(parsed.schemas.some((schema) => schema.id === 'notes-note')).toBe(true);
   });
 
+  it('accepts app display names and returns expanded state schemas', async () => {
+    const result = await executeAppSchemaTool({ app_name: 'PE Analyst' });
+    const parsed = JSON.parse(result) as {
+      app_name: string;
+      display_name: string;
+      schemas: Array<{ id: string }>;
+    };
+
+    expect(parsed.app_name).toBe('peanalyzer');
+    expect(parsed.display_name).toBe('PE Analyst');
+    expect(parsed.schemas.some((schema) => schema.id === 'peanalyzer-state')).toBe(true);
+  });
+
   it('finds a schema by file path', async () => {
     const result = await executeAppSchemaTool({
       file_path: 'apps/browser/data/bookmarks/bookmark-1.json',

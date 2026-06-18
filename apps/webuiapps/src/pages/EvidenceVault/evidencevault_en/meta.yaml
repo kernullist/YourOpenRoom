@@ -1,17 +1,79 @@
 app_id: 13
 app_name: evidencevault
 app_display_name: Evidence Vault
-version: "1.0.0"
+version: '1.0.0'
 description: >
-  Evidence Vault app, purely read-only mode. All archive data is pre-stored on cloud, pulled once on startup.
-  Neither users nor Agent perform write operations; data is static and read-only. No Agent actions defined.
+  Evidence Vault app for browsing evidence records by category, search query, and detailed file
+  view. Agent actions can refresh, filter, and open files. Data mutations are performed through app
+  data files first, then notification actions refresh the UI.
 displayDesc: >
-  A digital evidence vault — browse and search archived documents by category with detailed views for quick reference.
+  A digital evidence vault — browse and search archived documents by category with detailed views
+  for quick reference.
 
-# ============================================================
-# This application is purely static and read-only.
-# No Agent → Frontend action instructions are provided.
-# Data is pre-prepared on the cloud and pulled once on startup.
-# ============================================================
+actions:
+  - type: REFRESH_EVIDENCE
+    name: Refresh Evidence
+    description: >
+      Reload evidence files from storage. Use after reading or changing
+      apps/evidencevault/data/files.
+    params:
+      - name: focusId
+        type: string
+        description: Optional evidence file ID to focus after refresh.
+        required: false
 
-actions: []
+  - type: OPEN_EVIDENCE_FILE
+    name: Open Evidence File
+    description: >
+      Open an evidence file detail panel by file ID.
+    params:
+      - name: fileId
+        type: string
+        description: Evidence file ID.
+        required: true
+
+  - type: FILTER_EVIDENCE
+    name: Filter Evidence
+    description: >
+      Filter the evidence list by category and optional search query.
+    params:
+      - name: category
+        type: string
+        description: Evidence category or all.
+        required: false
+        enum: [all, identity, family, money, reputation, incident, secret, other]
+      - name: query
+        type: string
+        description: Optional search text.
+        required: false
+
+  - type: CREATE_EVIDENCE
+    name: Create Evidence
+    description: >
+      After the Agent writes a new JSON file to /files/{id}.json, dispatch this action so the
+      frontend refreshes and can focus the new file.
+    params:
+      - name: fileId
+        type: string
+        description: Evidence file ID that was created.
+        required: true
+
+  - type: UPDATE_EVIDENCE
+    name: Update Evidence
+    description: >
+      After the Agent updates an evidence JSON file, dispatch this action so the frontend refreshes.
+    params:
+      - name: fileId
+        type: string
+        description: Evidence file ID that was updated.
+        required: true
+
+  - type: DELETE_EVIDENCE
+    name: Delete Evidence
+    description: >
+      After the Agent deletes an evidence JSON file, dispatch this action so the frontend refreshes.
+    params:
+      - name: fileId
+        type: string
+        description: Evidence file ID that was deleted.
+        required: true

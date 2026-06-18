@@ -3,8 +3,11 @@ import { describe, expect, it } from 'vitest';
 import {
   describeAppActionResultForModel,
   executeListApps,
+  getAppControlInventory,
+  getAppIdentityByReference,
   getAppIdentityById,
   getOsActionTargetApp,
+  resolveAppAction,
 } from '../appRegistry';
 
 describe('appRegistry app identity helpers', () => {
@@ -16,6 +19,24 @@ describe('appRegistry app identity helpers', () => {
     expect(result).toContain('Written By Me (appName: writtenbyme, appId: 23');
     expect(result).toContain('Aoi Research (appName: aoiresearch, appId: 24');
     expect(result).toContain('Aoi Memory (appName: aoimemory, appId: 25');
+    expect(result).toContain('Capability inventory:');
+    expect(result).toContain('Aoi Research controls:');
+    expect(result).toContain('schemas=');
+  });
+
+  it('builds a capability inventory for every registered app', () => {
+    const inventory = getAppControlInventory();
+    const visibleInventory = inventory.filter((entry) => entry.app_name !== 'os');
+
+    expect(visibleInventory.length).toBeGreaterThan(0);
+    expect(visibleInventory.every((entry) => entry.windows.can_open)).toBe(true);
+    expect(visibleInventory.every((entry) => entry.state.can_read_state_file)).toBe(true);
+    expect(visibleInventory.every((entry) => entry.actions.names.includes('OPEN_APP_WINDOW'))).toBe(
+      true,
+    );
+    expect(visibleInventory.every((entry) => entry.control_status === 'tool-backed')).toBe(true);
+    expect(visibleInventory.map((entry) => entry.app_name)).toContain('kira');
+    expect(visibleInventory.map((entry) => entry.app_name)).toContain('aoiresearch');
   });
 
   it('resolves OS app_id params back to the target app identity', () => {
@@ -23,6 +44,8 @@ describe('appRegistry app identity helpers', () => {
 
     expect(target?.displayName).toBe('Dewdrop Canvas');
     expect(target?.appName).toBe('dewdropcanvas');
+
+    expect(getOsActionTargetApp('FOCUS_APP', { app_id: '25' })?.displayName).toBe('Aoi Memory');
   });
 
   it('describes app action results with a user-facing app name', () => {
@@ -46,5 +69,20 @@ describe('appRegistry app identity helpers', () => {
 
     expect(app?.displayName).toBe('Aoi Memory');
     expect(app?.aliases).toContain('memory dashboard');
+  });
+
+  it('resolves app references by appName, displayName, alias, or appId', () => {
+    expect(getAppIdentityByReference('Aoi Research')?.appName).toBe('aoiresearch');
+    expect(getAppIdentityByReference('키라')?.appName).toBe('kira');
+    expect(getAppIdentityByReference('22')?.appName).toBe('dewdropcanvas');
+    expect(resolveAppAction('Aoi Research', 'REFRESH_AOI_RESEARCH_RUNS')).toEqual({
+      appId: 24,
+      actionType: 'REFRESH_AOI_RESEARCH_RUNS',
+    });
+    expect(resolveAppAction('Aoi Research', 'OPEN_APP_WINDOW')).toEqual({
+      appId: 1,
+      actionType: 'OPEN_APP',
+      params: { app_id: '24' },
+    });
   });
 });

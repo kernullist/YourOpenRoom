@@ -1,7 +1,15 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
-import { useFileSystem, reportLifecycle, createAppFileApi, fetchVibeInfo } from '@/lib';
+import {
+  useFileSystem,
+  useAgentActionListener,
+  reportAction,
+  reportLifecycle,
+  createAppFileApi,
+  fetchVibeInfo,
+  type CharacterAppAction,
+} from '@/lib';
 import {
   Folder,
   FileText,
@@ -434,6 +442,7 @@ const EvidenceVault: React.FC = () => {
   // --- Event handlers ---
   const handleOpenFile = useCallback((file: EvidenceFile) => {
     setSelectedFile(file);
+    reportAction(APP_ID, 'OPEN_EVIDENCE_FILE', { fileId: file.id });
   }, []);
 
   const handleCloseDetail = useCallback(() => {
@@ -442,7 +451,68 @@ const EvidenceVault: React.FC = () => {
 
   const handleCategoryChange = useCallback((category: EvidenceCategory | 'all') => {
     setSelectedCategory(category);
+    reportAction(APP_ID, 'FILTER_EVIDENCE', { category });
   }, []);
+
+  const refreshFilesFromCloud = useCallback(
+    async (focusId?: string | null): Promise<EvidenceFile[]> => {
+      await initFromCloud();
+      const loaded = loadFilesFromFS();
+      setFiles(loaded);
+      if (focusId) {
+        const target = loaded.find((file) => file.id === focusId) ?? null;
+        setSelectedFile(target);
+      }
+      return loaded;
+    },
+    [initFromCloud, loadFilesFromFS],
+  );
+
+  const handleAgentAction = useCallback(
+    async (action: CharacterAppAction): Promise<string> => {
+      const params = action.params ?? {};
+      const focusId = params.fileId ?? params.evidenceId ?? params.focusId ?? null;
+
+      switch (action.action_type) {
+        case 'REFRESH_EVIDENCE':
+        case 'CREATE_EVIDENCE':
+        case 'UPDATE_EVIDENCE': {
+          const loaded = await refreshFilesFromCloud(focusId);
+          return `success: loaded ${loaded.length} evidence file(s)`;
+        }
+        case 'DELETE_EVIDENCE': {
+          const loaded = await refreshFilesFromCloud(null);
+          if (focusId && selectedFile?.id === focusId) {
+            setSelectedFile(null);
+          }
+          return `success: loaded ${loaded.length} evidence file(s)`;
+        }
+        case 'OPEN_EVIDENCE_FILE': {
+          const loaded = await refreshFilesFromCloud(null);
+          const target = focusId ? loaded.find((file) => file.id === focusId) : null;
+          if (!target) {
+            return `error: evidence file not found "${focusId ?? ''}"`;
+          }
+          setSelectedFile(target);
+          return `success: opened ${target.id}`;
+        }
+        case 'FILTER_EVIDENCE': {
+          const category = params.category ?? 'all';
+          if (category !== 'all' && !(category in CATEGORY_INFO)) {
+            return `error: unknown category "${category}"`;
+          }
+          setSelectedCategory(category as EvidenceCategory | 'all');
+          setSearchQuery(params.query ?? '');
+          return 'success';
+        }
+        default:
+          return `error: unknown action_type ${action.action_type}`;
+      }
+    },
+    [refreshFilesFromCloud, selectedFile?.id],
+  );
+
+  useAgentActionListener(APP_ID, handleAgentAction);
 
   // --- Initialization ---
   useEffect(() => {

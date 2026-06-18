@@ -1,5 +1,6 @@
 import type { ToolDef } from './llmClient';
 
+import { getAppIdentityByReference } from './appRegistry';
 import { findAppSchemaByFilePath, listAppSchemas, listSchemasForApp } from './appSchemaRegistry';
 
 const TOOL_NAME = 'get_app_schema';
@@ -17,7 +18,8 @@ export function getAppSchemaToolDefinitions(): ToolDef[] {
           properties: {
             app_name: {
               type: 'string',
-              description: 'Optional appName, for example "notes" or "calendar".',
+              description:
+                'Optional appName, displayName, alias, or appId, for example "notes", "Notes", or "calendar".',
             },
             file_path: {
               type: 'string',
@@ -48,10 +50,16 @@ export async function executeAppSchemaTool(params: Record<string, unknown>): Pro
 
   const appName = String(params.app_name || '').trim();
   if (appName) {
-    const schemas = listSchemasForApp(appName);
+    const appIdentity = getAppIdentityByReference(appName);
+    const resolvedAppName = appIdentity?.appName ?? appName;
+    const schemas = listSchemasForApp(resolvedAppName);
     if (schemas.length === 0)
       return `error: no machine-readable schemas found for app "${appName}"`;
-    return JSON.stringify({ app_name: appName, schemas });
+    return JSON.stringify({
+      app_name: resolvedAppName,
+      display_name: appIdentity?.displayName,
+      schemas,
+    });
   }
 
   return JSON.stringify({

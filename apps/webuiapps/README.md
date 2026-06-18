@@ -245,6 +245,18 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - The contextual routing scenarios cover app setting changes, current-file edits, browser opens,
   command execution, and research/app handoffs. Social/descriptive mentions such as "Kira looks
   good" or "I use Kira daily" still stay on the dialog route without app tools.
+- Aoi discovers app control breadth through the capability inventory returned by `list_apps` and
+  `get_app_state(app_name=...)`. Each app reports window control, readable state, declared actions,
+  schema-backed storage, destructive/external action flags, and gaps that still require manual
+  implementation.
+- `src/lib/appControlCapabilities.ts` is the shared contract for that inventory, while
+  `appStateTools.ts` adds the per-app capability block to state reads. Every non-OS app receives
+  common `OPEN_APP_WINDOW`, `FOCUS_APP_WINDOW`, and `CLOSE_APP_WINDOW` controls, and the registry
+  maps those to real OS window actions instead of dispatching a no-op app handler.
+- Aoi Research ships an English `meta.yaml` so its refresh/open-report actions are discoverable
+  through the same path as the other in-apps. Evidence Vault now exposes refresh/open/filter actions
+  plus post-file-write create/update/delete notifications, while `get_app_schema` includes the
+  legacy chess/gomoku/freecell/cybernews surfaces and newer Aoi state summaries.
 - Chat image input accepts pasted, dropped, or selected PNG, JPEG, WebP, and GIF files. Images stay
   on the main LLM route, bypass the dialog model, and are stored in session chat history as data
   URLs. Aoi memory sync records only attachment metadata instead of raw image payloads.

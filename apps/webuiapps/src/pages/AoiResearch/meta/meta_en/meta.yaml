@@ -1,0 +1,20 @@
+app_id: 24
+app_name: aoiresearch
+app_display_name: Aoi Research
+version: '1.0.0'
+description: >
+  Aoi Research shows local structured research runs, their reports, source lists, evidence claims,
+  warnings, and run status for the current YourOpenRoom session.
+displayDesc: >
+  Browse Aoi's cited research runs, open generated reports, and refresh the local research library.
+
+actions:
+  - type: REFRESH_AOI_RESEARCH_RUNS
+    name: Refresh Aoi Research Runs
+    description: Reload the Aoi Research run list for the current session.
+    params: []
+
+  - type: OPEN_AOI_RESEARCH_REPORT
+    name: Open Aoi Research Report
+    description: Open the currently selected Aoi Research report in a new browser tab.
+    params: []

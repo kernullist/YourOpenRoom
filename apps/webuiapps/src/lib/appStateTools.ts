@@ -1,7 +1,11 @@
 import type { ToolDef } from './llmClient';
 
 import * as idb from './diskStorage';
-import { APP_REGISTRY } from './appRegistry';
+import { APP_REGISTRY, getAppIdentityByReference } from './appRegistry';
+import {
+  buildAppControlCapabilities,
+  summarizeAppControlCapabilities,
+} from './appControlCapabilities';
 import {
   loadPersistedConfig,
   type KiraConfig,
@@ -279,6 +283,57 @@ async function buildStateSummary(
         updated_at: normalizedState?.updatedAt ?? null,
       };
     }
+    case 'roomshop':
+      return {
+        active_wallpaper_id: normalizedState?.activeWallpaperId ?? null,
+        active_mood_id: normalizedState?.activeMoodId ?? null,
+        preview_item_id: normalizedState?.previewItemId ?? null,
+        live_wallpaper: normalizedState?.liveWallpaper ?? null,
+        updated_at: normalizedState?.updatedAt ?? null,
+      };
+    case 'peanalyzer':
+      return {
+        active_sample_id: normalizedState?.activeSampleId ?? null,
+        active_analysis_id: normalizedState?.activeAnalysisId ?? null,
+        selected_finding_id: normalizedState?.selectedFindingId ?? null,
+        selected_function_ea: normalizedState?.selectedFunctionEa ?? null,
+        active_view: normalizedState?.activeView ?? null,
+        sample_count: await countFiles('apps/peanalyzer/data/samples'),
+        analysis_count: await countFiles('apps/peanalyzer/data/analyses'),
+      };
+    case 'dewdropcanvas':
+      return {
+        active_document_id: normalizedState?.activeDocumentId ?? null,
+        selected_node_id: normalizedState?.selectedNodeId ?? null,
+        selected_edge_id: normalizedState?.selectedEdgeId ?? null,
+        active_tool: normalizedState?.activeTool ?? null,
+        node_count: await countFiles('apps/dewdropcanvas/data/nodes'),
+        document_count: await countFiles('apps/dewdropcanvas/data/documents'),
+      };
+    case 'writtenbyme':
+      return {
+        active_profile_id: normalizedState?.activeProfileId ?? null,
+        selected_sample_id: normalizedState?.selectedSampleId ?? null,
+        last_analysis_id: normalizedState?.lastAnalysisId ?? null,
+        active_view: normalizedState?.activeView ?? null,
+        sample_count: await countFiles('apps/writtenbyme/data/samples'),
+        profile_count: await countFiles('apps/writtenbyme/data/profiles'),
+      };
+    case 'aoiresearch':
+      return {
+        selected_run_id: normalizedState?.selectedRunId ?? null,
+        detail_tab: normalizedState?.detailTab ?? null,
+        run_count: await countFiles('apps/aoiresearch/data/runs'),
+        report_count: await countFiles('apps/aoiresearch/data/reports'),
+      };
+    case 'aoimemory':
+      return {
+        selected_memory_id: normalizedState?.selectedMemoryId ?? null,
+        type_filter: normalizedState?.typeFilter ?? null,
+        trust_filter: normalizedState?.trustFilter ?? null,
+        query: normalizedState?.query ?? '',
+        memory_count: await countFiles('apps/aoimemory/data/memories'),
+      };
     case 'freecell':
       return {
         game_id: normalizedState?.gameId ?? null,
@@ -323,6 +378,9 @@ function buildWindowSummary(appId: number) {
 function buildAllWindowSummaries() {
   const windows = getWindows();
   const activeWindow = [...windows].sort((a, b) => b.zIndex - a.zIndex)[0];
+  const capabilities = APP_REGISTRY.filter((item) => item.appName !== 'os').map(
+    buildAppControlCapabilities,
+  );
 
   return {
     open_window_count: windows.length,
@@ -346,6 +404,7 @@ function buildAllWindowSummaries() {
         };
       })
       .sort((a, b) => b.z_index - a.z_index),
+    app_control_summary: summarizeAppControlCapabilities(capabilities),
   };
 }
 
@@ -363,7 +422,7 @@ export function getAppStateToolDefinitions(): ToolDef[] {
             app_name: {
               type: 'string',
               description:
-                'Optional target appName from list_apps, for example "notes" or "browser".',
+                'Optional target appName, displayName, alias, or appId from list_apps, for example "notes", "Notes", or "browser".',
             },
             include_state: {
               type: 'boolean',
@@ -389,7 +448,10 @@ export async function executeAppStateTool(params: Record<string, unknown>): Prom
     return JSON.stringify(buildAllWindowSummaries());
   }
 
-  const app = APP_REGISTRY.find((item) => item.appName === appName);
+  const appIdentity = getAppIdentityByReference(appName);
+  const app = appIdentity
+    ? APP_REGISTRY.find((item) => item.appId === appIdentity.appId)
+    : APP_REGISTRY.find((item) => item.appName === appName);
   if (!app) return `error: unknown app "${appName}"`;
 
   const result: Record<string, unknown> = {
@@ -400,6 +462,7 @@ export async function executeAppStateTool(params: Record<string, unknown>): Prom
       route: app.route,
     },
     windows: buildWindowSummary(app.appId),
+    capabilities: buildAppControlCapabilities(app),
   };
 
   if (includeState && app.appName !== 'os') {

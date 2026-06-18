@@ -1,12 +1,67 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../appRegistry', () => ({
-  APP_REGISTRY: [
-    { appId: 16, appName: 'notes', displayName: 'Notes', route: '/notes' },
-    { appId: 18, appName: 'kira', displayName: 'Kira', route: '/kira' },
-    { appId: 19, appName: 'openvscode', displayName: "Aoi's IDE", route: '/ide' },
-  ],
-}));
+vi.mock('../appRegistry', () => {
+  const apps = [
+    { appId: 16, appName: 'notes', displayName: 'Notes', route: '/notes', actions: [] },
+    { appId: 18, appName: 'kira', displayName: 'Kira', route: '/kira', actions: [] },
+    {
+      appId: 19,
+      appName: 'openvscode',
+      displayName: "Aoi's IDE",
+      route: '/ide',
+      actions: [{ name: 'APPEND_ACTIVE_FILE', description: 'Append active file', params: [] }],
+    },
+    {
+      appId: 20,
+      appName: 'peanalyzer',
+      displayName: 'PE Analyst',
+      route: '/peanalyzer',
+      actions: [],
+    },
+    { appId: 21, appName: 'roomshop', displayName: 'Room Shop', route: '/roomshop', actions: [] },
+    {
+      appId: 22,
+      appName: 'dewdropcanvas',
+      displayName: 'Dewdrop Canvas',
+      route: '/dewdrop-canvas',
+      actions: [],
+    },
+    {
+      appId: 23,
+      appName: 'writtenbyme',
+      displayName: 'Written By Me',
+      route: '/written-by-me',
+      actions: [],
+    },
+    {
+      appId: 24,
+      appName: 'aoiresearch',
+      displayName: 'Aoi Research',
+      route: '/aoi-research',
+      actions: [],
+    },
+    {
+      appId: 25,
+      appName: 'aoimemory',
+      displayName: 'Aoi Memory',
+      route: '/aoi-memory',
+      actions: [],
+    },
+  ];
+  return {
+    APP_REGISTRY: apps,
+    getAppIdentityByReference: (appReference: string) => {
+      const normalized = appReference.trim().toLowerCase();
+      const app = apps.find(
+        (entry) =>
+          entry.appName.toLowerCase() === normalized ||
+          entry.displayName.toLowerCase() === normalized ||
+          String(entry.appId) === normalized,
+      );
+      return app ? { ...app, aliases: [] } : null;
+    },
+  };
+});
 
 vi.mock('../windowManager', () => ({
   getWindows: vi.fn(),
@@ -151,6 +206,10 @@ describe('executeAppStateTool()', () => {
         workspace_history: string[];
         port: number | null;
       } | null;
+      capabilities: {
+        actions: { names: string[] };
+        state: { has_bespoke_summary: boolean };
+      };
     };
 
     expect(parsed.app.app_name).toBe('openvscode');
@@ -194,6 +253,158 @@ describe('executeAppStateTool()', () => {
       base_url: null,
       host: '127.0.0.1',
       port: 3001,
+    });
+    expect(parsed.capabilities.actions.names).toEqual(['APPEND_ACTIVE_FILE']);
+    expect(parsed.capabilities.state.has_bespoke_summary).toBe(true);
+  });
+
+  it('returns app control inventory in the global window overview', async () => {
+    mockedGetWindows.mockReturnValue([]);
+
+    const result = await executeAppStateTool({});
+    const parsed = JSON.parse(result) as {
+      app_control_summary: {
+        app_count: number;
+        apps_with_bespoke_state_summary: number;
+      };
+    };
+
+    expect(parsed.app_control_summary.app_count).toBe(9);
+    expect(parsed.app_control_summary.apps_with_bespoke_state_summary).toBeGreaterThan(0);
+  });
+
+  it('accepts display names when resolving app state', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile.mockResolvedValue({ selectedNoteId: 'note-1' });
+
+    const result = await executeAppStateTool({ app_name: 'Notes' });
+    const parsed = JSON.parse(result) as {
+      app: { app_name: string };
+      state_summary: { selected_note_id: string };
+    };
+
+    expect(parsed.app.app_name).toBe('notes');
+    expect(parsed.state_summary.selected_note_id).toBe('note-1');
+  });
+
+  it('summarizes Room Shop state and PE Analyst workspace state', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile
+      .mockResolvedValueOnce({
+        activeWallpaperId: 'lofi-cafe-night',
+        activeMoodId: 'rainy-window-desk',
+        previewItemId: 'sunlit-library',
+        liveWallpaper: true,
+        updatedAt: 123,
+      })
+      .mockResolvedValueOnce({
+        activeSampleId: 'sample-1',
+        activeAnalysisId: 'analysis-1',
+        selectedFindingId: 'finding-1',
+        selectedFunctionEa: '401000',
+        activeView: 'functions',
+      });
+    mockedListFiles.mockImplementation(async (directory: string) => {
+      if (directory.endsWith('/samples')) {
+        return { files: [{ path: 'sample-1.json', type: 0 }], not_exists: false };
+      }
+      if (directory.endsWith('/analyses')) {
+        return { files: [{ path: 'analysis-1.json', type: 0 }], not_exists: false };
+      }
+      return { files: [], not_exists: false };
+    });
+
+    const roomShopResult = await executeAppStateTool({ app_name: 'roomshop' });
+    const peResult = await executeAppStateTool({ app_name: 'peanalyzer' });
+    const roomShopParsed = JSON.parse(roomShopResult) as {
+      state_summary: {
+        active_wallpaper_id: string;
+        active_mood_id: string;
+        live_wallpaper: boolean;
+      };
+    };
+    const peParsed = JSON.parse(peResult) as {
+      state_summary: {
+        active_sample_id: string;
+        active_analysis_id: string;
+        active_view: string;
+        sample_count: number;
+        analysis_count: number;
+      };
+    };
+
+    expect(roomShopParsed.state_summary).toMatchObject({
+      active_wallpaper_id: 'lofi-cafe-night',
+      active_mood_id: 'rainy-window-desk',
+      live_wallpaper: true,
+    });
+    expect(peParsed.state_summary).toMatchObject({
+      active_sample_id: 'sample-1',
+      active_analysis_id: 'analysis-1',
+      active_view: 'functions',
+      sample_count: 1,
+      analysis_count: 1,
+    });
+  });
+
+  it('summarizes Aoi Research and Aoi Memory state', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile
+      .mockResolvedValueOnce({
+        selectedRunId: 'run-1',
+        detailTab: 'evidence',
+      })
+      .mockResolvedValueOnce({
+        selectedMemoryId: 'memory-1',
+        typeFilter: 'preference',
+        trustFilter: 'needs_review',
+        query: 'kira',
+      });
+    mockedListFiles.mockImplementation(async (directory: string) => {
+      if (directory.endsWith('/runs')) {
+        return { files: [{ path: 'run-1.json', type: 0 }], not_exists: false };
+      }
+      if (directory.endsWith('/reports')) {
+        return { files: [{ path: 'run-1.md', type: 0 }], not_exists: false };
+      }
+      if (directory.endsWith('/memories')) {
+        return { files: [{ path: 'memory-1.json', type: 0 }], not_exists: false };
+      }
+      return { files: [], not_exists: false };
+    });
+
+    const researchResult = await executeAppStateTool({ app_name: 'Aoi Research' });
+    const memoryResult = await executeAppStateTool({ app_name: 'Aoi Memory' });
+    const researchParsed = JSON.parse(researchResult) as {
+      state_summary: {
+        selected_run_id: string;
+        detail_tab: string;
+        run_count: number;
+        report_count: number;
+      };
+    };
+    const memoryParsed = JSON.parse(memoryResult) as {
+      state_summary: {
+        selected_memory_id: string;
+        type_filter: string;
+        trust_filter: string;
+        query: string;
+        memory_count: number;
+      };
+    };
+
+    expect(researchParsed.state_summary).toMatchObject({
+      selected_run_id: 'run-1',
+      detail_tab: 'evidence',
+      run_count: 1,
+      report_count: 1,
+    });
+    expect(memoryParsed.state_summary).toMatchObject({
+      selected_memory_id: 'memory-1',
+      type_filter: 'preference',
+      trust_filter: 'needs_review',
+      query: 'kira',
+      memory_count: 1,
     });
   });
 

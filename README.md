@@ -120,6 +120,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - declared app-owned operation/settings actions, such as Kira `APPLY_MODEL_SETTINGS` and
     `APPLY_PROJECT_SETTINGS`, run through the app's validation and persistence paths instead of raw
     storage writes
+  - every non-OS app exposes common `OPEN_APP_WINDOW`, `FOCUS_APP_WINDOW`, and `CLOSE_APP_WINDOW`
+    controls that route through OS window actions, so Aoi can always open, restore, or close an
+    in-app surface before using app-specific actions
   - app-operation requests and setting/apply-style follow-ups stay on the main tool route so Aoi can
     dispatch the app action instead of only describing manual steps
   - contextual follow-ups such as "apply that", "run it", "그렇게 설정해줘", "거기에 붙여줘", and
@@ -127,6 +130,15 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     file, or command
   - descriptive app mentions such as "Kira looks good", "Kira 설정 좋네", or "I use Kira daily" stay
     on the dialog route without exposing app tools
+  - `list_apps` now returns a capability inventory for every in-app surface: window open/close
+    control, state readability, declared `app_action` count, schema coverage, destructive actions,
+    and remaining gaps
+  - `get_app_state(app_name=...)` includes the same per-app control capability block next to the
+    current window/state summary, so Aoi can tell whether an app can be inspected, dispatched,
+    schema-edited, or only opened
+  - app schema/state coverage includes the legacy game/news surfaces and newer Aoi Research, Aoi
+    Memory, Dewdrop Canvas, Written By Me, PE Analyst, and Room Shop state surfaces, reducing false
+    "I cannot control this" answers when an app has a readable state or app-owned operation
   - schema-aware app storage tools: `file_read`, `file_write`, `file_patch`, `file_list`,
     `file_delete`
 - **Web/content tools**

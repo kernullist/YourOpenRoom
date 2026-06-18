@@ -69,7 +69,7 @@ export function onOSEvent(callback: OSEventCallback): () => void {
 
 // ============ OS Window Manager ============
 
-import { openWindow, closeWindow, getWindows as getWins } from './windowManager';
+import { openWindow, closeWindow, focusWindow, getWindows as getWins } from './windowManager';
 
 // ============ Listener-Ready Notification ============
 // Tracks callback count at the moment each window was opened so we can detect
@@ -142,6 +142,17 @@ export async function dispatchAgentAction(action: {
       const targetAppId = Number(action.params?.app_id);
       closeWindow(targetAppId);
       windowOpenSnapshots.delete(targetAppId);
+      return 'success';
+    }
+    if (action.action_type === 'FOCUS_APP') {
+      const targetAppId = Number(action.params?.app_id);
+      const isOpen = getWins().some((w) => w.appId === targetAppId);
+      if (!isOpen) {
+        openWindow(targetAppId);
+        windowOpenSnapshots.set(targetAppId, { callbackCount: agentMessageCallbacks.size });
+      } else {
+        focusWindow(targetAppId);
+      }
       return 'success';
     }
     if (action.action_type === 'SET_WALLPAPER') {

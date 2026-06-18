@@ -6,6 +6,12 @@
  */
 
 import * as idb from './diskStorage';
+import {
+  buildAppControlCapabilities,
+  formatAppCapabilityLine,
+  summarizeAppControlCapabilities,
+  type AppControlCapabilities,
+} from './appControlCapabilities';
 
 // ============ Type Definitions ============
 
@@ -355,6 +361,21 @@ const OS_ACTIONS: AppActionDef[] = [
     ],
   },
   {
+    name: 'FOCUS_APP',
+    description:
+      'Focus or restore a specified app window. Pass app_id as the application ID. When speaking to the user, use the app display name rather than the numeric app_id.',
+    params: [
+      {
+        name: 'app_id',
+        type: 'string',
+        description: `Application ID (${APP_STATIC_REGISTRY.filter((a) => a.appName !== 'os')
+          .map((a) => `${a.appId}=${a.displayName} appName=${a.appName}`)
+          .join(', ')})`,
+        required: true,
+      },
+    ],
+  },
+  {
     name: 'SET_WALLPAPER',
     description:
       'Change the desktop wallpaper. wallpaper_url must be a https URL or a data URL (data:image/...). ' +
@@ -367,6 +388,27 @@ const OS_ACTIONS: AppActionDef[] = [
         required: true,
       },
     ],
+  },
+];
+
+const COMMON_APP_ACTIONS: AppActionDef[] = [
+  {
+    name: 'OPEN_APP_WINDOW',
+    description:
+      'Open this app window. This is a common app control routed through the OS OPEN_APP action.',
+    params: [],
+  },
+  {
+    name: 'FOCUS_APP_WINDOW',
+    description:
+      'Focus or restore this app window. This is a common app control routed through the OS FOCUS_APP action.',
+    params: [],
+  },
+  {
+    name: 'CLOSE_APP_WINDOW',
+    description:
+      'Close this app window. This is a common app control routed through the OS CLOSE_APP action.',
+    params: [],
   },
 ];
 
@@ -401,8 +443,45 @@ export function getAppIdentityByName(appName: string): AppIdentity | null {
   return app ? toAppIdentity(app) : null;
 }
 
+function normalizeAppReference(value: string): string {
+  return value.trim().toLowerCase();
+}
+
+function appReferenceMatches(app: AppStaticDef | AppDef, appReference: string): boolean {
+  const normalized = normalizeAppReference(appReference);
+  if (!normalized) {
+    return false;
+  }
+  if (app.appName.toLowerCase() === normalized) return true;
+  if (app.displayName.toLowerCase() === normalized) return true;
+  if (String(app.appId) === normalized) return true;
+  return (app.aliases ?? []).some((alias) => alias.toLowerCase() === normalized);
+}
+
+function findAppByReference(appReference: string): AppDef | AppStaticDef | null {
+  return (
+    APP_REGISTRY.find((app) => appReferenceMatches(app, appReference)) ??
+    APP_STATIC_REGISTRY.find((app) => appReferenceMatches(app, appReference)) ??
+    null
+  );
+}
+
+export function getAppIdentityByReference(appReference: string): AppIdentity | null {
+  const app = findAppByReference(appReference);
+  return app ? toAppIdentity(app) : null;
+}
+
 export function getAppRecognitionEntries(): AppIdentity[] {
   return APP_REGISTRY.filter((a) => a.appName !== 'os').map(toAppIdentity);
+}
+
+export function getAppControlInventory(): AppControlCapabilities[] {
+  return APP_REGISTRY.map(buildAppControlCapabilities);
+}
+
+export function getAppControlCapabilitiesByName(appName: string): AppControlCapabilities | null {
+  const app = findAppByReference(appName);
+  return app ? buildAppControlCapabilities(app) : null;
 }
 
 export function formatAppReference(app: AppIdentity): string {
@@ -413,7 +492,7 @@ export function getOsActionTargetApp(
   actionType: string,
   params?: Record<string, string>,
 ): AppIdentity | null {
-  if (actionType !== 'OPEN_APP' && actionType !== 'CLOSE_APP') {
+  if (actionType !== 'OPEN_APP' && actionType !== 'CLOSE_APP' && actionType !== 'FOCUS_APP') {
     return null;
   }
 
@@ -504,8 +583,20 @@ export function getSourceDirToAppId(): Record<string, number> {
 /** Full APP_REGISTRY, including dynamically loaded actions */
 export let APP_REGISTRY: AppDef[] = APP_STATIC_REGISTRY.map((app) => ({
   ...app,
-  actions: app.appName === 'os' ? OS_ACTIONS : [],
+  actions: app.appName === 'os' ? OS_ACTIONS : COMMON_APP_ACTIONS,
 }));
+
+function withCommonAppActions(app: AppStaticDef, actions: AppActionDef[]): AppActionDef[] {
+  if (app.appName === 'os') {
+    return actions;
+  }
+
+  const existingNames = new Set(actions.map((action) => action.name));
+  const missingCommonActions = COMMON_APP_ACTIONS.filter(
+    (action) => !existingNames.has(action.name),
+  );
+  return [...missingCommonActions, ...actions];
+}
 
 // ============ Meta.yaml Parsing ============
 
@@ -668,12 +759,12 @@ export async function loadActionsFromMeta(): Promise<void> {
       const content = await idb.getFile(metaPath);
       if (content && typeof content === 'string') {
         const actions = parseMetaYamlActions(content);
-        loaded.push({ ...app, actions });
+        loaded.push({ ...app, actions: withCommonAppActions(app, actions) });
       } else {
-        loaded.push({ ...app, actions: [] });
+        loaded.push({ ...app, actions: withCommonAppActions(app, []) });
       }
     } catch {
-      loaded.push({ ...app, actions: [] });
+      loaded.push({ ...app, actions: withCommonAppActions(app, []) });
     }
   }
 
@@ -708,6 +799,7 @@ export function getAppActionToolDefinition(): {
       name: 'app_action',
       description:
         "Trigger an action on an app. Read the app's meta.yaml first to discover available action types and their parameters. " +
+        'Every non-OS app also supports common window actions: OPEN_APP_WINDOW, FOCUS_APP_WINDOW, CLOSE_APP_WINDOW. ' +
         'OS-level actions (OPEN_APP, CLOSE_APP, SET_WALLPAPER) MUST use app_name="os". ' +
         'Use appName/app display names when speaking to the user; numeric app_id values are only tool parameters.',
       parameters: {
@@ -715,7 +807,8 @@ export function getAppActionToolDefinition(): {
         properties: {
           app_name: {
             type: 'string',
-            description: 'The appName of the target app (from list_apps)',
+            description:
+              'The appName, displayName, alias, or numeric appId of the target app (from list_apps)',
           },
           action_type: {
             type: 'string',
@@ -739,9 +832,22 @@ export function getAppActionToolDefinition(): {
 export function resolveAppAction(
   appName: string,
   actionType: string,
-): { appId: number; actionType: string } | string {
-  const app = APP_REGISTRY.find((a) => a.appName === appName);
+): { appId: number; actionType: string; params?: Record<string, string> } | string {
+  const app = findAppByReference(appName);
   if (!app) return `error: unknown app "${appName}". Call list_apps to see available apps.`;
+
+  if (app.appName !== 'os') {
+    if (actionType === 'OPEN_APP_WINDOW') {
+      return { appId: 1, actionType: 'OPEN_APP', params: { app_id: String(app.appId) } };
+    }
+    if (actionType === 'FOCUS_APP_WINDOW') {
+      return { appId: 1, actionType: 'FOCUS_APP', params: { app_id: String(app.appId) } };
+    }
+    if (actionType === 'CLOSE_APP_WINDOW') {
+      return { appId: 1, actionType: 'CLOSE_APP', params: { app_id: String(app.appId) } };
+    }
+  }
+
   return { appId: app.appId, actionType };
 }
 
@@ -767,17 +873,26 @@ export function getListAppsToolDefinition(): {
 }
 
 export function executeListApps(): string {
-  const apps = APP_REGISTRY.filter((a) => a.appName !== 'os').map((a) => {
+  const visibleApps = APP_REGISTRY.filter((a) => a.appName !== 'os');
+  const apps = visibleApps.map((a) => {
     const aliases = a.aliases?.length ? `, aliases: ${a.aliases.join(', ')}` : '';
     return `- ${a.displayName} (appName: ${a.appName}, appId: ${a.appId}, route: ${a.route}${aliases})`;
   });
+  const capabilities = visibleApps.map(buildAppControlCapabilities);
+  const summary = summarizeAppControlCapabilities(capabilities);
+  const capabilityLines = capabilities.map((entry) => `- ${formatAppCapabilityLine(entry)}`);
+
   return (
     'Available apps:\n' +
     'Use displayName or appName when speaking to the user. Use appId only as an OS OPEN_APP/CLOSE_APP parameter.\n' +
     `${apps.join('\n')}\n\n` +
+    'Capability inventory:\n' +
+    `- summary: ${summary.tool_backed_count}/${summary.app_count} apps have tool-backed controls, ${summary.apps_with_actions} have declared app actions, ${summary.apps_with_schemas} have machine-readable schemas, ${summary.apps_with_bespoke_state_summary} have bespoke state summaries.\n` +
+    `${capabilityLines.join('\n')}\n\n` +
     'OS-level actions (use app_name="os"):\n' +
     '- OPEN_APP: open an app (params: app_id; speak using the target app displayName)\n' +
     '- CLOSE_APP: close an app (params: app_id; speak using the target app displayName)\n' +
+    '- FOCUS_APP: focus or restore an app (params: app_id; speak using the target app displayName)\n' +
     '- SET_WALLPAPER: change wallpaper (params: wallpaper_url)'
   );
 }
