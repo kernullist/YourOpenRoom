@@ -434,6 +434,156 @@ describe('Aoi autonomy evaluation', () => {
     });
   });
 
+  it('warns when active field shadow records have no real-session labels', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-readiness-unlabeled',
+        kind: 'mission_status',
+        lane: 'mission_update',
+        title: 'Validation drift detected',
+        summary: 'Workspace validation is stale and needs review.',
+        nextSafeAction: 'Prepare validation evidence for operator review.',
+        risk: 'low',
+        relevance: 0.8,
+        createdAt: 6000,
+        dedupeKey: 'readiness:unlabeled-field',
+        sourceRefs: ['workspace:validation'],
+        evidenceRefs: ['workspace:validation-drift'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6100,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      evidenceRefs: ['field-session:readiness-unlabeled'],
+      now: 6200,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 6300,
+    });
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 6400,
+      fieldShadowReport: fieldReport,
+      feedbackInbox: inbox,
+    });
+
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.active_record_count'),
+    ).toMatchObject({
+      value: fieldReport.activeRecordCount,
+      passed: true,
+    });
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.operator_label_count'),
+    ).toMatchObject({
+      value: 0,
+      passed: false,
+    });
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.field_shadow_labels_present'),
+    ).toMatchObject({
+      status: 'warning',
+    });
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.collect_field_labels',
+    );
+  });
+
+  it('folds real-session wrong-source labels into the readiness gate', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-readiness-browser',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Browser source selected',
+        summary: 'Browser metadata looked relevant to the current mission.',
+        nextSafeAction: 'Ask whether browser context is relevant before speaking.',
+        risk: 'medium',
+        relevance: 0.72,
+        createdAt: 6000,
+        dedupeKey: 'readiness:wrong-source-browser',
+        sourceRefs: ['browser-context'],
+        evidenceRefs: ['environment-source:browser-context'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6100,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      evidenceRefs: ['field-session:readiness-wrong-source'],
+      now: 6200,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 6300,
+    });
+    const browserItem = inbox.items.find((item) => item.sourceKinds.includes('browser_context'));
+    if (!browserItem) {
+      throw new Error('Expected browser field feedback item.');
+    }
+    const wrongSource = createAoiOperatorFeedbackLabelActionForItem({
+      item: browserItem,
+      label: 'wrong_source',
+      now: 6400,
+    });
+    const labeledInbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [wrongSource],
+      now: 6500,
+    });
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 6600,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 6600 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        totalDecisions: 1,
+        labeledDecisionCount: 1,
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+    });
+
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.operator_label_count'),
+    ).toMatchObject({
+      value: 1,
+      passed: true,
+    });
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'shadow.wrong_source_rate'),
+    ).toMatchObject({
+      value: 0.5,
+      passed: false,
+    });
+    expect(scorecard.gates.find((gate) => gate.id === 'gate.wrong_source_rate')).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.source_calibration',
+    );
+  });
+
   it('evaluates metadata-only personal source reality without body inference', () => {
     const registry = makePersonalRealityRegistry();
     const workspaceSnapshot = makePersonalRealityWorkspaceSnapshot();

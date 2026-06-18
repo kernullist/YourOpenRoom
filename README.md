@@ -183,6 +183,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     quiet-mode suppression
   - read-only research artifact/status actions can run after policy checks; research start,
     procedure saving, Kira handoff, and command execution use preview and approval boundaries
+  - field shadow dogfooding records and operator labels feed the JARVIS readiness scorecard, so
+    real-session wrong-source, too-much, unsafe, and should-have-spoken feedback can block or warn
+    before any higher-trust mode is considered
   - `aoiOperatorReplay` replays representative operator scenarios to regression-test source
     selection, approval boundaries, evidence refs, non-interruption, blocked reasons, and preference
     conflicts without shell, network, or workspace mutation

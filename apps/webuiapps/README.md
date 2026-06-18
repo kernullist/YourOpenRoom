@@ -77,6 +77,9 @@ This package is **not** a stock Vite starter anymore. It is the app that current
     goal state, workspace/context signals, attention routing, approval-aware action previews,
     approved-command audit paths, operator digest, evaluation metrics, and deterministic replay
     fixtures
+  - Field shadow dogfooding reports and operator feedback labels are folded into the JARVIS
+    readiness scorecard so real-session labels can warn or block higher-trust recommendations before
+    synthetic replay success is treated as operational evidence.
 - `src/lib/llmClient.ts`
   - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
     API, and Anthropic-compatible model routes

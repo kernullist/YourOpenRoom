@@ -23,6 +23,7 @@ import {
   type AoiJarvisReadinessScorecard,
 } from './aoiJarvisReadinessScorecard';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
@@ -483,6 +484,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   builtInReplayReports?: AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
+  fieldShadowReport?: AoiFieldShadowRecordReport | null;
   shadowReport?: AoiShadowDecisionReport | null;
   promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
   feedbackInbox?: AoiOperatorFeedbackInbox | null;
@@ -2607,6 +2609,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.jarvisReadinessScorecard ||
     input.shadowReport ||
     input.feedbackInbox ||
+    input.fieldShadowReport ||
     input.jarvisAcceptanceReport ||
     input.personalSourceRealityCheck ||
     input.missionControl ||
@@ -2657,6 +2660,7 @@ function buildAoiJarvisReadinessPanel(
       now: input.now,
       shadowReport: input.shadowReport,
       feedbackInbox: input.feedbackInbox,
+      fieldShadowReport: input.fieldShadowReport,
       builtInReplayReports: input.builtInReplayReports,
       jarvisAcceptanceReport: input.jarvisAcceptanceReport,
       personalSourceRealityCheck: input.personalSourceRealityCheck,
