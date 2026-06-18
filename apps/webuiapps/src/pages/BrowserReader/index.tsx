@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PanelLeft } from 'lucide-react';
 import { initVibeApp, AppLifecycle } from '@gui/vibe-container';
@@ -20,6 +20,13 @@ import {
   stripCollapsedText,
   type ReadablePageSnapshot,
 } from '@/lib/readerExtraction';
+import {
+  DEFAULT_BROWSER_STATE as DEFAULT_STATE,
+  resolveBrowserStateAfterCloudRefresh,
+  type BrowserInitialNavigation,
+  type BrowserState,
+  type ViewMode,
+} from './browserState';
 import './i18n';
 import styles from './index.module.scss';
 
@@ -50,13 +57,6 @@ interface HistoryItem {
   visitedAt: number;
 }
 
-interface BrowserState {
-  currentUrl: string;
-  inputUrl: string;
-  viewMode: ViewMode;
-  sidebarOpen: boolean;
-}
-
 type PageSnapshot = ReadablePageSnapshot;
 
 interface GoogleSearchResult {
@@ -67,13 +67,6 @@ interface GoogleSearchResult {
 }
 
 type SearchResultSource = 'google' | 'fallback';
-
-const DEFAULT_STATE: BrowserState = {
-  currentUrl: 'https://www.notion.com/notes',
-  inputUrl: 'https://www.notion.com/notes',
-  viewMode: 'browse',
-  sidebarOpen: false,
-};
 
 function isGoogleUrl(url: string): boolean {
   try {
@@ -322,6 +315,8 @@ const BrowserReaderPage: React.FC = () => {
   const [googleLoading, setGoogleLoading] = useState(false);
   const [googleError, setGoogleError] = useState<string | null>(null);
   const [googleResultSource, setGoogleResultSource] = useState<SearchResultSource | null>(null);
+  const isInitializedRef = useRef(false);
+  const pendingInitialNavigationRef = useRef<BrowserInitialNavigation | null>(null);
 
   const { saveFile, syncToCloud, deleteFromCloud, initFromCloud, getChildrenByPath, getByPath } =
     useFileSystem({ fileApi: browserFileApi });
@@ -352,23 +347,34 @@ const BrowserReaderPage: React.FC = () => {
     [saveFile, syncToCloud],
   );
 
-  const refreshFromCloud = useCallback(async () => {
-    await initFromCloud();
-    const nextBookmarks = loadItems<BookmarkItem>(BOOKMARKS_DIR).sort(
-      (a, b) => b.createdAt - a.createdAt,
-    );
-    const nextHistory = loadItems<HistoryItem>(HISTORY_DIR).sort(
-      (a, b) => b.visitedAt - a.visitedAt,
-    );
-    const state = (getByPath(STATE_FILE)?.content as BrowserState | undefined) ?? DEFAULT_STATE;
+  const refreshFromCloud = useCallback(
+    async (options?: { preservePendingInitialNavigation?: boolean }) => {
+      await initFromCloud();
+      const nextBookmarks = loadItems<BookmarkItem>(BOOKMARKS_DIR).sort(
+        (a, b) => b.createdAt - a.createdAt,
+      );
+      const nextHistory = loadItems<HistoryItem>(HISTORY_DIR).sort(
+        (a, b) => b.visitedAt - a.visitedAt,
+      );
+      const state = resolveBrowserStateAfterCloudRefresh({
+        cloudState: getByPath(STATE_FILE)?.content as Partial<BrowserState> | undefined,
+        pendingInitialNavigation: options?.preservePendingInitialNavigation
+          ? pendingInitialNavigationRef.current
+          : null,
+      });
 
-    setBookmarks(nextBookmarks);
-    setHistory(nextHistory);
-    setCurrentUrl(state.currentUrl || DEFAULT_STATE.currentUrl);
-    setInputUrl(state.inputUrl || state.currentUrl || DEFAULT_STATE.inputUrl);
-    setViewMode(state.viewMode || 'browse');
-    setSidebarOpen(Boolean(state.sidebarOpen));
-  }, [getByPath, initFromCloud, loadItems]);
+      setBookmarks(nextBookmarks);
+      setHistory(nextHistory);
+      setCurrentUrl(state.currentUrl);
+      setInputUrl(state.inputUrl);
+      setViewMode(state.viewMode);
+      setSidebarOpen(state.sidebarOpen);
+      if (options?.preservePendingInitialNavigation) {
+        pendingInitialNavigationRef.current = null;
+      }
+    },
+    [getByPath, initFromCloud, loadItems],
+  );
 
   const persistHistoryEntry = useCallback(
     async (url: string, title: string) => {
@@ -403,6 +409,12 @@ const BrowserReaderPage: React.FC = () => {
       const normalized = normalizeUrlInput(rawUrl);
       if (!normalized) return;
 
+      if (!isInitializedRef.current) {
+        pendingInitialNavigationRef.current = {
+          currentUrl: normalized,
+          inputUrl: normalized,
+        };
+      }
       setErrorText(null);
       setInputUrl(normalized);
       setCurrentUrl(normalized);
@@ -467,7 +479,8 @@ const BrowserReaderPage: React.FC = () => {
 
         reportLifecycle(AppLifecycle.DOM_READY);
         await fetchVibeInfo().catch(() => undefined);
-        await refreshFromCloud();
+        await refreshFromCloud({ preservePendingInitialNavigation: true });
+        isInitializedRef.current = true;
         setIsInitialized(true);
         setIsLoading(false);
         reportLifecycle(AppLifecycle.LOADED);
