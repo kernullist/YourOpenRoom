@@ -9,6 +9,7 @@ import {
   buildClaudeCliArgs,
   buildCodexCliArgs,
   buildKiraPromptCacheKey,
+  buildProjectDiscoveryScout,
   buildOperatorInterruptComment,
   buildIssueSignature,
   buildProjectContextScan,
@@ -18,6 +19,7 @@ import {
   buildAdaptiveAgentPlan,
   canUseFullFileRewrite,
   captureDirtyFileSnapshots,
+  calculateDiscoveryDepthReport,
   collectAttemptReviewabilityIssues,
   collectDesignReviewGateIssues,
   collectGitDiffStats,
@@ -85,6 +87,12 @@ const GIT_BACKED_TEST_TIMEOUT_MS = 15_000;
 
 function makeTempDir(prefix: string): string {
   return fs.mkdtempSync(join(os.tmpdir(), prefix));
+}
+
+function writeProjectFile(projectRoot: string, relativePath: string, content: string): void {
+  const absolutePath = join(projectRoot, relativePath);
+  fs.mkdirSync(dirname(absolutePath), { recursive: true });
+  fs.writeFileSync(absolutePath, content, 'utf-8');
 }
 
 function makeWork() {
@@ -2123,6 +2131,175 @@ describe('parseProjectDiscoveryAnalysis()', () => {
       eligibility: 'ready',
       files: ['app.py'],
     });
+  });
+});
+
+describe('buildProjectDiscoveryScout()', () => {
+  it('produces topology, evidence seeds, and deterministic depth on a temp project', () => {
+    const projectRoot = makeTempDir('kira-discovery-scout-');
+    writeProjectFile(
+      projectRoot,
+      'package.json',
+      JSON.stringify(
+        {
+          packageManager: 'pnpm@9.0.0',
+          scripts: {
+            test: 'vitest run',
+            build: 'vite build',
+            typecheck: 'tsc --noEmit',
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeProjectFile(projectRoot, 'pnpm-lock.yaml', 'lockfileVersion: 9\n');
+    writeProjectFile(projectRoot, 'vite.config.ts', 'export default {};\n');
+    writeProjectFile(projectRoot, 'src/main.tsx', 'import "./pages/Kira";\n');
+    writeProjectFile(
+      projectRoot,
+      'src/lib/apiPlugin.ts',
+      'export function createApiPlugin() { return { name: "api-plugin" }; }\n',
+    );
+    writeProjectFile(
+      projectRoot,
+      'src/pages/Kira/index.tsx',
+      'export function KiraPage() { return <div>Kira</div>; }\n',
+    );
+    writeProjectFile(projectRoot, 'src/pages/Kira/index.test.tsx', 'test("kira", () => {});\n');
+    writeProjectFile(
+      projectRoot,
+      'src/components/DiscoveryDialog.tsx',
+      'export function DiscoveryDialog() { return null; }\n',
+    );
+    writeProjectFile(projectRoot, 'README.md', '# Demo Kira project\n');
+
+    const scout = buildProjectDiscoveryScout(projectRoot, 'DemoKira');
+
+    expect(scout.projectFingerprint.packageManifestHash).toBeTruthy();
+    expect(scout.topology.configFiles).toContain('package.json');
+    expect(scout.topology.entrypoints.some((entry) => entry.includes('package script test'))).toBe(
+      true,
+    );
+    expect(scout.topology.apiSurfaces).toContain('src/lib/apiPlugin.ts');
+    expect(scout.topology.uiSurfaces).toContain('src/pages/Kira/index.tsx');
+    expect(scout.topology.testSurfaces).toContain('src/pages/Kira/index.test.tsx');
+    expect(scout.fileCandidates).toContain('src/lib/apiPlugin.ts');
+    expect(scout.evidenceLedger.some((entry) => entry.kind === 'package_script')).toBe(true);
+    expect(scout.evidenceLedger.some((entry) => entry.kind === 'file_read')).toBe(true);
+    expect(scout.evidenceLedger.some((entry) => entry.kind === 'test_impact')).toBe(true);
+    expect(scout.depth.filesEnumerated).toBeGreaterThan(0);
+    expect(scout.depth.filesRead).toBeGreaterThan(0);
+    expect(scout.depth.searchQueries).toBeGreaterThan(0);
+    expect(scout.depth.evidenceCount).toBe(scout.evidenceLedger.length);
+    expect(scout.depth.depthScore).toBeGreaterThan(0);
+  });
+
+  it('calculates a higher depth score when deterministic coverage increases', () => {
+    const shallow = calculateDiscoveryDepthReport({
+      filesEnumerated: 1,
+      filesRead: 0,
+      directoriesVisited: 1,
+      searchQueries: 0,
+      searchMatches: 0,
+      likelyFilesCount: 0,
+      evidenceLedger: [],
+      blindSpots: [],
+      findings: [],
+    });
+    const evidenceLedger = Array.from({ length: 16 }, (_, index) => ({
+      id: `ev-${index}`,
+      kind: 'file_read',
+      file: `src/file-${index}.ts`,
+      summary: `Evidence ${index}`,
+      collectedBy: 'deterministic_scout',
+      confidence: 0.7,
+    }));
+    const rich = calculateDiscoveryDepthReport({
+      projectFingerprint: {
+        capturedAt: 1,
+        gitHead: 'abc',
+        gitBranch: 'main',
+        gitStatusHash: 'status',
+        workspaceFileHash: 'workspace',
+        packageManifestHash: 'package',
+        unavailable: [],
+      },
+      filesEnumerated: 120,
+      filesRead: 12,
+      directoriesVisited: 18,
+      searchQueries: 6,
+      searchMatches: 24,
+      likelyFilesCount: 18,
+      evidenceLedger: evidenceLedger as any,
+      blindSpots: [],
+      findings: [
+        {
+          id: 'finding-1',
+          kind: 'feature',
+          title: 'Improve discovery',
+          summary: 'Use evidence.',
+          evidence: ['ev-1'],
+          evidenceIds: ['ev-1'],
+          files: ['src/file-1.ts'],
+          scope: ['src/file-1.ts'],
+          validationCommands: ['pnpm test'],
+          confidence: 0.7,
+          eligibility: 'ready',
+          blockedReasons: [],
+          risk: 'low',
+          taskDescription: '# Brief',
+        },
+      ] as any,
+    });
+
+    expect(rich.depthScore).toBeGreaterThan(shallow.depthScore);
+    expect(rich.depthLevel).toBe('deep');
+  });
+
+  it('does not throw when git and package manager metadata are unavailable', () => {
+    const projectRoot = makeTempDir('kira-discovery-empty-');
+
+    const scout = buildProjectDiscoveryScout(projectRoot, 'EmptyProject');
+
+    expect(scout.projectFingerprint.unavailable).toContain('git_head');
+    expect(scout.blindSpots.some((entry) => entry.area.includes('package manager'))).toBe(true);
+    expect(scout.blindSpots.some((entry) => entry.area.includes('package test script'))).toBe(true);
+    expect(scout.depth.depthScore).toBeGreaterThanOrEqual(0);
+  });
+
+  it('records vendor, generated, binary, and oversized candidates as blind spots', () => {
+    const projectRoot = makeTempDir('kira-discovery-blind-');
+    writeProjectFile(
+      projectRoot,
+      'package.json',
+      JSON.stringify(
+        {
+          packageManager: 'pnpm@9.0.0',
+          scripts: {
+            test: 'vitest run',
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    writeProjectFile(
+      projectRoot,
+      'src/lib/largePlugin.ts',
+      `export const large = "${'x'.repeat(82_000)}";\n`,
+    );
+    writeProjectFile(projectRoot, 'src/assets/logo.png', 'not really a png');
+    writeProjectFile(projectRoot, 'vendor/third-party.ts', 'export const vendor = true;\n');
+    writeProjectFile(projectRoot, 'generated/client.ts', 'export const generated = true;\n');
+
+    const scout = buildProjectDiscoveryScout(projectRoot, 'BlindSpotProject');
+    const areas = scout.blindSpots.map((entry) => entry.area);
+
+    expect(areas.some((area) => area.includes('vendor'))).toBe(true);
+    expect(areas.some((area) => area.includes('generated'))).toBe(true);
+    expect(areas.some((area) => area.includes('largePlugin.ts'))).toBe(true);
+    expect(areas.some((area) => area.includes('logo.png'))).toBe(true);
   });
 });
 

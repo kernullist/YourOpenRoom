@@ -1090,6 +1090,24 @@ interface ProjectDiscoveryAnalysis {
   updatedAt: number;
 }
 
+interface ProjectDiscoveryScout {
+  projectFingerprint: ProjectDiscoveryFingerprint;
+  topology: ProjectDiscoveryTopology;
+  evidenceLedger: ProjectDiscoveryEvidence[];
+  blindSpots: ProjectDiscoveryBlindSpot[];
+  depth: ProjectDiscoveryDepthReport;
+  searchTerms: string[];
+  fileCandidates: string[];
+}
+
+interface ProjectDiscoveryTraversalSummary {
+  filesEnumerated: number;
+  directoriesVisited: number;
+  skippedDirectories: string[];
+  largeFiles: string[];
+  binaryFiles: string[];
+}
+
 interface KiraProjectSettings {
   autoCommit?: boolean;
   requiredInstructions?: string;
@@ -1888,6 +1906,12 @@ const PROJECT_DISCOVERY_PACKAGE_MANIFEST_FILES = [
   'Cargo.toml',
   'go.mod',
 ];
+const MAX_DISCOVERY_SCOUT_FILES = 700;
+const MAX_DISCOVERY_SCOUT_DIRECTORIES = 160;
+const MAX_DISCOVERY_SCOUT_CANDIDATES = 36;
+const MAX_DISCOVERY_SCOUT_FILE_READS = 24;
+const MAX_DISCOVERY_SCOUT_BLIND_SPOTS = 40;
+const MAX_DISCOVERY_SCOUT_EVIDENCE = 80;
 const SAFE_SCRIPT_NAME = String.raw`(?:test|lint|build|check|typecheck)(?::[A-Za-z0-9_-]+)?`;
 const SAFE_PNPM_DIR = String.raw`(?:(?!\.\.(?:[\\/]|$))(?!.*[\\/]\.\.(?:[\\/]|$))[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)`;
 const SAFE_COMMAND_PATTERNS = [
@@ -1928,10 +1952,13 @@ const SKIPPED_TOOL_TRAVERSAL_DIRECTORIES = new Set([
   'build',
   'coverage',
   'dist',
+  'generated',
   'node_modules',
   'out',
   'playwright-report',
   'test-results',
+  'vendor',
+  'vendors',
   'venv',
 ]);
 
@@ -10769,6 +10796,881 @@ export function captureProjectDiscoveryFingerprint(
   };
 }
 
+function makeStableDiscoveryId(
+  prefix: string,
+  parts: Array<string | number | null | undefined>,
+): string {
+  return `${prefix}-${hashDiscoveryText(parts.map((part) => String(part ?? '')).join('\n')).slice(
+    0,
+    14,
+  )}`;
+}
+
+function createScoutEvidence(params: {
+  kind: ProjectDiscoveryEvidenceKind;
+  summary: string;
+  file?: string;
+  symbol?: string;
+  snippetHash?: string;
+  confidence?: number;
+}): ProjectDiscoveryEvidence {
+  const file = params.file ? normalizeDiscoveryRelativePath(params.file) : '';
+  const summary = normalizeWhitespace(params.summary).slice(0, 320);
+  return {
+    id: makeStableDiscoveryId('ev', [params.kind, file, params.symbol, summary]),
+    kind: params.kind,
+    ...(file ? { file } : {}),
+    ...(params.symbol ? { symbol: normalizeWhitespace(params.symbol).slice(0, 120) } : {}),
+    summary,
+    ...(params.snippetHash ? { snippetHash: params.snippetHash.slice(0, 128) } : {}),
+    collectedBy: 'deterministic_scout',
+    confidence: clampConfidence(params.confidence, 0.68),
+  };
+}
+
+function createScoutBlindSpot(params: {
+  area: string;
+  reason: string;
+  impact?: string;
+  recommendation?: string;
+}): ProjectDiscoveryBlindSpot {
+  const area = normalizeWhitespace(params.area).slice(0, 180);
+  const reason = normalizeWhitespace(params.reason).slice(0, 260);
+  return {
+    id: makeStableDiscoveryId('blind', [area, reason]),
+    area,
+    reason,
+    ...(params.impact ? { impact: normalizeWhitespace(params.impact).slice(0, 260) } : {}),
+    ...(params.recommendation
+      ? { recommendation: normalizeWhitespace(params.recommendation).slice(0, 260) }
+      : {}),
+  };
+}
+
+function pushUniqueScoutEvidence(
+  target: ProjectDiscoveryEvidence[],
+  entry: ProjectDiscoveryEvidence,
+): void {
+  if (target.length >= MAX_DISCOVERY_SCOUT_EVIDENCE) return;
+  if (target.some((item) => item.id === entry.id)) return;
+  target.push(entry);
+}
+
+function pushUniqueScoutBlindSpot(
+  target: ProjectDiscoveryBlindSpot[],
+  entry: ProjectDiscoveryBlindSpot,
+): void {
+  if (target.length >= MAX_DISCOVERY_SCOUT_BLIND_SPOTS) return;
+  if (target.some((item) => item.id === entry.id)) return;
+  target.push(entry);
+}
+
+function isLikelyBinaryDiscoveryPath(relativePath: string): boolean {
+  return /\.(?:png|jpe?g|gif|webp|ico|pdf|zip|7z|tar|gz|rar|exe|dll|pdb|so|dylib|bin|dat|db|sqlite|mp4|mov|avi|webm|mp3|wav|ogg|ttf|otf|woff2?)$/i.test(
+    relativePath,
+  );
+}
+
+function normalizeDiscoveryCandidatePath(value: unknown): string {
+  const normalized = normalizeDiscoveryRelativePath(value);
+  if (!normalized || normalized.includes(':')) return '';
+  return normalized;
+}
+
+function isExistingDiscoveryFile(projectRoot: string, relativePath: string): boolean {
+  try {
+    const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+    return fs.existsSync(absolutePath) && fs.statSync(absolutePath).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function collectDiscoveryPaths(
+  root: string,
+  predicate: (relativePath: string, dirent: fs.Dirent) => boolean,
+  limit: number,
+): string[] {
+  const results: string[] = [];
+  let directoriesVisited = 0;
+  const walk = (currentDir: string): void => {
+    if (results.length >= limit) return;
+    if (directoriesVisited >= MAX_DISCOVERY_SCOUT_DIRECTORIES) return;
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+      directoriesVisited += 1;
+    } catch {
+      return;
+    }
+
+    for (const dirent of dirents) {
+      if (results.length >= limit) return;
+      if (dirent.isDirectory() && shouldSkipToolTraversalDirectory(dirent.name)) {
+        continue;
+      }
+      const absolutePath = join(currentDir, dirent.name);
+      const relativePath = absolutePath
+        .slice(root.length)
+        .replace(/^[\\/]+/, '')
+        .replace(/\\/g, '/');
+      if (predicate(relativePath, dirent)) {
+        results.push(relativePath);
+      }
+      if (dirent.isDirectory()) {
+        walk(absolutePath);
+      }
+    }
+  };
+
+  walk(root);
+  return limitedUniqueStrings(results, limit);
+}
+
+function summarizeProjectDiscoveryTraversal(projectRoot: string): ProjectDiscoveryTraversalSummary {
+  const skippedDirectories: string[] = [];
+  const largeFiles: string[] = [];
+  const binaryFiles: string[] = [];
+  let filesEnumerated = 0;
+  let directoriesVisited = 0;
+
+  const walk = (currentDir: string): void => {
+    if (
+      filesEnumerated >= MAX_DISCOVERY_SCOUT_FILES ||
+      directoriesVisited >= MAX_DISCOVERY_SCOUT_DIRECTORIES
+    ) {
+      return;
+    }
+
+    let dirents: fs.Dirent[];
+    try {
+      dirents = fs.readdirSync(currentDir, { withFileTypes: true });
+      directoriesVisited += 1;
+    } catch {
+      return;
+    }
+
+    for (const dirent of dirents) {
+      if (
+        filesEnumerated >= MAX_DISCOVERY_SCOUT_FILES ||
+        directoriesVisited >= MAX_DISCOVERY_SCOUT_DIRECTORIES
+      ) {
+        return;
+      }
+
+      const absolutePath = join(currentDir, dirent.name);
+      const relativePath = absolutePath
+        .slice(projectRoot.length)
+        .replace(/^[\\/]+/, '')
+        .replace(/\\/g, '/');
+      if (dirent.isDirectory()) {
+        if (shouldSkipToolTraversalDirectory(dirent.name)) {
+          skippedDirectories.push(relativePath);
+          continue;
+        }
+        walk(absolutePath);
+        continue;
+      }
+
+      if (!dirent.isFile()) continue;
+      filesEnumerated += 1;
+      try {
+        const stat = fs.statSync(absolutePath);
+        if (stat.size > MAX_FILE_BYTES) {
+          largeFiles.push(relativePath);
+        }
+      } catch {
+        // Unreadable file metadata is reported through the bounded traversal counts only.
+      }
+      if (isLikelyBinaryDiscoveryPath(relativePath)) {
+        binaryFiles.push(relativePath);
+      }
+    }
+  };
+
+  if (projectRoot && fs.existsSync(projectRoot)) {
+    walk(projectRoot);
+  }
+
+  return {
+    filesEnumerated,
+    directoriesVisited,
+    skippedDirectories: limitedUniqueStrings(skippedDirectories, 30),
+    largeFiles: limitedUniqueStrings(largeFiles, 20),
+    binaryFiles: limitedUniqueStrings(binaryFiles, 20),
+  };
+}
+
+function collectProjectDiscoveryConfigFiles(projectRoot: string): string[] {
+  const configCandidates = [
+    ...PROJECT_DISCOVERY_WORKSPACE_MANIFEST_FILES,
+    ...PROJECT_DISCOVERY_PACKAGE_MANIFEST_FILES,
+    'next.config.js',
+    'next.config.mjs',
+    'next.config.ts',
+    'vite.config.js',
+    'vite.config.mjs',
+    'webpack.config.js',
+    'eslint.config.js',
+    '.eslintrc',
+    '.eslintrc.json',
+    '.prettierrc',
+    '.env.example',
+    'tsconfig.app.json',
+    'src/config.ts',
+    'src/config.tsx',
+    'src/config.js',
+  ];
+  return limitedUniqueStrings(
+    configCandidates.filter((candidate) => projectHasFile(projectRoot, candidate)),
+    24,
+  );
+}
+
+function buildProjectDiscoveryTopology(
+  projectRoot: string,
+  scripts: Record<string, string>,
+): ProjectDiscoveryTopology {
+  const packageScripts = formatPackageScripts(scripts).map((script) => `package script ${script}`);
+  const configFiles = collectProjectDiscoveryConfigFiles(projectRoot);
+  const routeFolders = collectDiscoveryPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isDirectory() &&
+      /(^|\/)(app|pages|routes|src\/pages|src\/routes)(\/|$)/i.test(relativePath),
+    16,
+  ).map((entry) => `${entry}/`);
+  const entrypointFiles = collectDiscoveryPaths(
+    projectRoot,
+    (relativePath, dirent) =>
+      dirent.isFile() &&
+      (/(^|\/)(main|index|app|server)\.(ts|tsx|js|jsx|mjs|cjs|py)$/i.test(relativePath) ||
+        /(^|\/)(vite|next|webpack)\.config\.(ts|js|mjs|cjs)$/i.test(relativePath)),
+    20,
+  );
+  const apiSurfaces = collectDiscoveryPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      return (
+        /(^|\/)(api|server|routes?)\//i.test(relativePath) ||
+        /(?:route|router|server|api|plugin|tool|registry|capabilit(?:y|ies))\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(
+          relativePath,
+        ) ||
+        /(?:Plugin|Tools?|Registry|Route)\.(ts|tsx|js|jsx|mjs|cjs)$/i.test(relativePath)
+      );
+    },
+    24,
+  );
+  const uiSurfaces = collectDiscoveryPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      return (
+        /(^|\/)(pages|app|src\/pages|src\/app|components|src\/components)\//i.test(relativePath) ||
+        /(?:modal|dialog|panel|page|view|component)\.(tsx|jsx|ts|js)$/i.test(relativePath) ||
+        /(^|\/)(i18n|locales?)\//i.test(relativePath)
+      );
+    },
+    24,
+  );
+  const testFiles = collectDiscoveryPaths(
+    projectRoot,
+    (relativePath, dirent) => {
+      if (!dirent.isFile()) return false;
+      const lowerPath = relativePath.toLowerCase();
+      return (
+        lowerPath.includes('/__tests__/') ||
+        lowerPath.includes('/tests/') ||
+        /\.(test|spec)\.[a-z0-9]+$/.test(lowerPath) ||
+        /^tests?\//.test(lowerPath)
+      );
+    },
+    24,
+  );
+  const storage = limitedUniqueStrings(
+    [
+      ...(projectHasDirectory(projectRoot, '.kira') ? ['.kira/ (project settings reference)'] : []),
+      ...(projectHasDirectory(projectRoot, 'sessions')
+        ? ['sessions/ (runtime session storage reference)']
+        : []),
+      ...(projectHasDirectory(projectRoot, 'data') ? ['data/ (project data reference)'] : []),
+      'sessions/<session>/apps/kira/data (Kira runtime storage reference)',
+    ],
+    12,
+  );
+
+  return {
+    entrypoints: limitedUniqueStrings(
+      [...packageScripts, ...configFiles, ...entrypointFiles, ...routeFolders],
+      24,
+    ),
+    uiSurfaces: limitedUniqueStrings(uiSurfaces, 24),
+    apiSurfaces: limitedUniqueStrings(apiSurfaces, 24),
+    testSurfaces: limitedUniqueStrings(
+      [...(scripts.test ? [`package script test: ${scripts.test}`] : []), ...testFiles],
+      24,
+    ),
+    configFiles,
+    storage,
+    notes: limitedUniqueStrings(
+      [
+        'Topology was extracted by the deterministic scout before LLM discovery.',
+        'Runtime session/data directories are referenced without traversal.',
+      ],
+      12,
+    ),
+  };
+}
+
+function collectProjectDiscoveryFileCandidates(params: {
+  projectRoot: string;
+  topology: ProjectDiscoveryTopology;
+  likelyFiles: string[];
+  relatedDocs: string[];
+  relatedTests: string[];
+}): string[] {
+  const rawCandidates = [
+    ...params.topology.apiSurfaces,
+    ...params.topology.uiSurfaces,
+    ...params.topology.testSurfaces,
+    ...params.topology.configFiles,
+    ...params.topology.entrypoints,
+    ...params.likelyFiles,
+    ...params.relatedDocs,
+    ...params.relatedTests,
+  ];
+
+  return limitedUniqueStrings(
+    rawCandidates
+      .map((candidate) => normalizeDiscoveryCandidatePath(candidate))
+      .filter((candidate) => candidate && isExistingDiscoveryFile(params.projectRoot, candidate)),
+    MAX_DISCOVERY_SCOUT_CANDIDATES,
+  );
+}
+
+function summarizeDiscoveryCandidateFiles(
+  projectRoot: string,
+  fileCandidates: string[],
+): {
+  evidence: ProjectDiscoveryEvidence[];
+  filesRead: number;
+  readableFiles: string[];
+  largeFiles: string[];
+  binaryFiles: string[];
+  capped: boolean;
+} {
+  const evidence: ProjectDiscoveryEvidence[] = [];
+  const readableFiles: string[] = [];
+  const largeFiles: string[] = [];
+  const binaryFiles: string[] = [];
+  let filesRead = 0;
+
+  for (const file of fileCandidates) {
+    if (filesRead >= MAX_DISCOVERY_SCOUT_FILE_READS) {
+      break;
+    }
+
+    try {
+      const absolutePath = ensureInsideRoot(projectRoot, file);
+      if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+      const stat = fs.statSync(absolutePath);
+      if (isLikelyBinaryDiscoveryPath(file)) {
+        binaryFiles.push(file);
+        continue;
+      }
+      if (stat.size > MAX_FILE_BYTES) {
+        largeFiles.push(file);
+        continue;
+      }
+      const content = fs.readFileSync(absolutePath);
+      const snippetHash = createHash('sha256').update(content).digest('hex');
+      filesRead += 1;
+      readableFiles.push(file);
+      pushUniqueScoutEvidence(
+        evidence,
+        createScoutEvidence({
+          kind: 'file_read',
+          file,
+          summary: `Summarized ${file} (${stat.size} bytes) during deterministic discovery scout.`,
+          snippetHash,
+          confidence: 0.72,
+        }),
+      );
+    } catch {
+      largeFiles.push(file);
+    }
+  }
+
+  return {
+    evidence,
+    filesRead,
+    readableFiles: limitedUniqueStrings(readableFiles, MAX_DISCOVERY_SCOUT_FILE_READS),
+    largeFiles: limitedUniqueStrings(largeFiles, 20),
+    binaryFiles: limitedUniqueStrings(binaryFiles, 20),
+    capped: fileCandidates.length > MAX_DISCOVERY_SCOUT_FILE_READS,
+  };
+}
+
+function buildDiscoveryScoutWork(projectName: string, now: number): WorkTask {
+  return {
+    id: 'discovery-scout',
+    type: 'work',
+    projectName,
+    title: `Discover ${projectName} project surfaces`,
+    description: [
+      `Map ${projectName} entrypoints routes plugins tools registries UI components modals dialogs tests config package scripts Aoi Kira discovery evidence validation.`,
+      'Find likely files for a project discovery dossier without modifying files.',
+    ].join('\n'),
+    status: 'todo',
+    assignee: '',
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function calculateDiscoveryDepthReport(params: {
+  projectFingerprint?: ProjectDiscoveryFingerprint | null;
+  filesEnumerated?: number;
+  filesRead?: number;
+  directoriesVisited?: number;
+  searchQueries?: number;
+  searchMatches?: number;
+  likelyFilesCount?: number;
+  evidenceLedger?: ProjectDiscoveryEvidence[];
+  blindSpots?: ProjectDiscoveryBlindSpot[];
+  findings?: ProjectDiscoveryFinding[];
+  notes?: string[];
+}): ProjectDiscoveryDepthReport {
+  const findings = params.findings ?? [];
+  const evidenceLedger = params.evidenceLedger ?? [];
+  const blindSpots = params.blindSpots ?? [];
+  const filesEnumerated = Math.max(0, Math.floor(params.filesEnumerated ?? 0));
+  const filesRead = Math.max(0, Math.floor(params.filesRead ?? 0));
+  const directoriesVisited = Math.max(0, Math.floor(params.directoriesVisited ?? 0));
+  const searchQueries = Math.max(0, Math.floor(params.searchQueries ?? 0));
+  const searchMatches = Math.max(0, Math.floor(params.searchMatches ?? 0));
+  const likelyFilesCount = Math.max(0, Math.floor(params.likelyFilesCount ?? 0));
+  const findingsWithEvidence = findings.filter((finding) => finding.evidenceIds.length > 0).length;
+  const findingsWithValidation = findings.filter(
+    (finding) => finding.validationCommands.length > 0,
+  ).length;
+  const hasProjectFingerprint =
+    params.projectFingerprint &&
+    (params.projectFingerprint.gitHead ||
+      params.projectFingerprint.workspaceFileHash ||
+      params.projectFingerprint.packageManifestHash)
+      ? 1
+      : 0;
+  const findingsWithEvidenceRatio =
+    findings.length > 0 ? findingsWithEvidence / Math.max(1, findings.length) : 0;
+  const findingsWithValidationRatio =
+    findings.length > 0 ? findingsWithValidation / Math.max(1, findings.length) : 0;
+  const hasBlindSpotReport = params.blindSpots ? 1 : 0;
+  const rawScore =
+    0.2 * hasProjectFingerprint +
+    0.15 * Math.min(filesRead / 12, 1) +
+    0.15 * Math.min(searchQueries / 6, 1) +
+    0.15 * Math.min(evidenceLedger.length / 16, 1) +
+    0.15 * findingsWithEvidenceRatio +
+    0.1 * findingsWithValidationRatio +
+    0.1 * hasBlindSpotReport;
+  const depthScore = Math.min(1, Math.round(rawScore * 100) / 100);
+  const depthLevel: ProjectDiscoveryDepthLevel =
+    depthScore >= 0.75 ? 'deep' : depthScore >= 0.45 ? 'moderate' : 'shallow';
+
+  return {
+    filesEnumerated,
+    filesRead,
+    directoriesVisited,
+    searchQueries,
+    searchMatches,
+    likelyFilesCount,
+    evidenceCount: evidenceLedger.length,
+    findingsWithEvidence,
+    findingsWithValidation,
+    blindSpotCount: blindSpots.length,
+    depthScore,
+    depthLevel,
+    notes: limitedUniqueStrings(
+      [
+        ...(params.notes ?? []),
+        'Depth score is deterministic and does not use LLM self-confidence.',
+      ],
+      12,
+    ),
+  };
+}
+
+function mergeProjectDiscoveryTopology(
+  primary: ProjectDiscoveryTopology,
+  secondary: ProjectDiscoveryTopology,
+): ProjectDiscoveryTopology {
+  return {
+    entrypoints: limitedUniqueStrings([...primary.entrypoints, ...secondary.entrypoints], 24),
+    uiSurfaces: limitedUniqueStrings([...primary.uiSurfaces, ...secondary.uiSurfaces], 24),
+    apiSurfaces: limitedUniqueStrings([...primary.apiSurfaces, ...secondary.apiSurfaces], 24),
+    testSurfaces: limitedUniqueStrings([...primary.testSurfaces, ...secondary.testSurfaces], 24),
+    configFiles: limitedUniqueStrings([...primary.configFiles, ...secondary.configFiles], 24),
+    storage: limitedUniqueStrings([...primary.storage, ...secondary.storage], 12),
+    notes: limitedUniqueStrings([...primary.notes, ...secondary.notes], 12),
+  };
+}
+
+function mergeProjectDiscoveryEvidence(
+  primary: ProjectDiscoveryEvidence[],
+  secondary: ProjectDiscoveryEvidence[],
+): ProjectDiscoveryEvidence[] {
+  const merged: ProjectDiscoveryEvidence[] = [];
+  for (const entry of [...primary, ...secondary]) {
+    if (merged.length >= MAX_DISCOVERY_SCOUT_EVIDENCE) break;
+    if (!merged.some((item) => item.id === entry.id)) {
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+function mergeProjectDiscoveryBlindSpots(
+  primary: ProjectDiscoveryBlindSpot[],
+  secondary: ProjectDiscoveryBlindSpot[],
+): ProjectDiscoveryBlindSpot[] {
+  const merged: ProjectDiscoveryBlindSpot[] = [];
+  for (const entry of [...primary, ...secondary]) {
+    if (merged.length >= MAX_DISCOVERY_SCOUT_BLIND_SPOTS) break;
+    if (!merged.some((item) => item.id === entry.id)) {
+      merged.push(entry);
+    }
+  }
+  return merged;
+}
+
+function applyProjectDiscoveryScout(
+  analysis: ProjectDiscoveryAnalysis,
+  scout: ProjectDiscoveryScout | null | undefined,
+): ProjectDiscoveryAnalysis {
+  if (!scout) return analysis;
+
+  const evidenceLedger = mergeProjectDiscoveryEvidence(
+    scout.evidenceLedger,
+    analysis.evidenceLedger,
+  );
+  const blindSpots = mergeProjectDiscoveryBlindSpots(scout.blindSpots, analysis.blindSpots);
+  return {
+    ...analysis,
+    projectFingerprint: scout.projectFingerprint,
+    topology: mergeProjectDiscoveryTopology(scout.topology, analysis.topology),
+    evidenceLedger,
+    blindSpots,
+    depth: calculateDiscoveryDepthReport({
+      projectFingerprint: scout.projectFingerprint,
+      filesEnumerated: Math.max(scout.depth.filesEnumerated, analysis.depth.filesEnumerated),
+      filesRead: Math.max(scout.depth.filesRead, analysis.depth.filesRead),
+      directoriesVisited: Math.max(
+        scout.depth.directoriesVisited,
+        analysis.depth.directoriesVisited,
+      ),
+      searchQueries: Math.max(scout.depth.searchQueries, analysis.depth.searchQueries),
+      searchMatches: Math.max(scout.depth.searchMatches, analysis.depth.searchMatches),
+      likelyFilesCount: Math.max(scout.depth.likelyFilesCount, analysis.depth.likelyFilesCount),
+      evidenceLedger,
+      blindSpots,
+      findings: analysis.findings,
+      notes: limitedUniqueStrings([...scout.depth.notes, ...analysis.depth.notes], 12),
+    }),
+  };
+}
+
+export function buildProjectDiscoveryScout(
+  projectRoot: string,
+  projectName: string,
+  previousAnalysis: ProjectDiscoveryAnalysis | null = null,
+): ProjectDiscoveryScout {
+  const now = Date.now();
+  const projectFingerprint = captureProjectDiscoveryFingerprint(projectRoot, now);
+  const scripts = loadPackageScripts(projectRoot);
+  const packageManager = detectNodePackageManager(projectRoot);
+  const topology = buildProjectDiscoveryTopology(projectRoot, scripts);
+  const traversal = summarizeProjectDiscoveryTraversal(projectRoot);
+  const scoutWork = buildDiscoveryScoutWork(projectName, now);
+  const searchTerms = limitedUniqueStrings(
+    [...extractWorkSearchTerms(scoutWork), projectName, 'aoi', 'kira', 'discovery'],
+    12,
+  );
+  const likelyFiles = collectLikelyFilesForWork(projectRoot, scoutWork);
+  const likelyFilePaths = extractSearchResultPaths(likelyFiles);
+  const relatedDocs = collectRelatedDocs(projectRoot, scoutWork);
+  const relatedTests = collectRelatedTests(projectRoot, scoutWork);
+  const fileCandidates = collectProjectDiscoveryFileCandidates({
+    projectRoot,
+    topology,
+    likelyFiles: likelyFilePaths,
+    relatedDocs,
+    relatedTests,
+  });
+  const fileSummary = summarizeDiscoveryCandidateFiles(projectRoot, fileCandidates);
+  const dependencyMap = collectDependencyInsights(
+    projectRoot,
+    fileSummary.readableFiles.slice(0, 8),
+  );
+  const semanticGraph = collectSemanticCodeGraph(
+    projectRoot,
+    fileSummary.readableFiles.slice(0, 8),
+  );
+  const testImpact = buildTestImpactAnalysis(
+    projectRoot,
+    fileSummary.readableFiles.slice(0, 8),
+    packageManager,
+  );
+  const evidenceLedger: ProjectDiscoveryEvidence[] = [];
+  const blindSpots: ProjectDiscoveryBlindSpot[] = [];
+
+  for (const entry of fileSummary.evidence) {
+    pushUniqueScoutEvidence(evidenceLedger, entry);
+  }
+
+  const formattedScripts = formatPackageScripts(scripts);
+  if (formattedScripts.length > 0) {
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'package_script',
+        file: 'package.json',
+        summary: `Detected package scripts for validation or entrypoint hints: ${formattedScripts.join('; ')}`,
+        confidence: 0.78,
+      }),
+    );
+  }
+
+  const gitStatus = runGitCommandSync(projectRoot, ['status', '--short']);
+  if (gitStatus === null) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: 'git status',
+        reason: 'Git status was unavailable during deterministic discovery scout.',
+        impact: 'Dirty-state evidence cannot be shown for this analysis run.',
+        recommendation: 'Re-run discovery from a valid git worktree when possible.',
+      }),
+    );
+  } else {
+    const dirtyEntries = gitStatus
+      .split(/\r?\n/)
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'git_status',
+        summary:
+          dirtyEntries.length > 0
+            ? `Git status reported ${dirtyEntries.length} changed path(s): ${dirtyEntries
+                .slice(0, 6)
+                .join('; ')}`
+            : 'Git status was clean during deterministic discovery scout.',
+        confidence: 0.82,
+      }),
+    );
+  }
+
+  if (previousAnalysis) {
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'previous_analysis',
+        summary: `Previous analysis ${previousAnalysis.id} was available and updated at ${new Date(
+          previousAnalysis.updatedAt,
+        ).toISOString()}.`,
+        confidence: 0.7,
+      }),
+    );
+  }
+
+  for (const file of limitedUniqueStrings([...likelyFilePaths, ...topology.apiSurfaces], 12)) {
+    if (!isExistingDiscoveryFile(projectRoot, normalizeDiscoveryCandidatePath(file))) continue;
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'search_match',
+        file,
+        summary: `Likely route/plugin candidate surfaced by deterministic discovery search: ${file}`,
+        confidence: 0.66,
+      }),
+    );
+  }
+
+  for (const file of limitedUniqueStrings([...relatedTests, ...topology.testSurfaces], 12)) {
+    if (!isExistingDiscoveryFile(projectRoot, normalizeDiscoveryCandidatePath(file))) continue;
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'test_impact',
+        file,
+        summary: `Likely validation surface found during deterministic discovery scout: ${file}`,
+        confidence: 0.68,
+      }),
+    );
+  }
+
+  for (const insight of dependencyMap.slice(0, 6)) {
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'dependency',
+        file: insight.file,
+        summary: `Dependency scan found ${insight.imports.length} import(s), ${insight.importedBy.length} dependent(s), and ${insight.nearbyTests.length} nearby test(s).`,
+        confidence: insight.importedBy.length > 0 || insight.nearbyTests.length > 0 ? 0.72 : 0.56,
+      }),
+    );
+  }
+
+  for (const node of semanticGraph.slice(0, 6)) {
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'semantic_graph',
+        file: node.file,
+        summary: `Semantic scan classified ${node.file} as ${node.role} with ${node.symbols.length} symbol(s), ${node.dependents.length} dependent(s), and ${node.tests.length} test link(s).`,
+        confidence: 0.68,
+      }),
+    );
+  }
+
+  for (const target of testImpact.slice(0, 6)) {
+    pushUniqueScoutEvidence(
+      evidenceLedger,
+      createScoutEvidence({
+        kind: 'test_impact',
+        file: target.file,
+        summary: `${target.rationale} Suggested command count: ${target.commands.length}.`,
+        confidence: target.confidence,
+      }),
+    );
+  }
+
+  for (const unavailable of projectFingerprint.unavailable) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: `project fingerprint: ${unavailable}`,
+        reason: `The ${unavailable} signal was unavailable while capturing the project fingerprint.`,
+        impact: 'Fingerprint comparison may be less precise for this analysis run.',
+        recommendation:
+          'Re-run discovery after restoring the missing project metadata if stale-state checks matter.',
+      }),
+    );
+  }
+
+  if (!packageManager) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: 'package manager',
+        reason: 'No Node package manager could be inferred from package.json or lockfiles.',
+        impact: 'Aoi cannot seed package-manager-specific validation hints.',
+        recommendation: 'Add package metadata or document validation commands in project settings.',
+      }),
+    );
+  }
+
+  if (!scripts.test) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: 'package test script',
+        reason: 'No package.json test script was detected.',
+        impact: 'Discovery findings may need a manual validation command before task creation.',
+        recommendation:
+          'Add a focused test script or require validation commands in generated tasks.',
+      }),
+    );
+  }
+
+  for (const skippedDirectory of traversal.skippedDirectories.slice(0, 16)) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: skippedDirectory,
+        reason: 'Directory was intentionally skipped by bounded deterministic discovery traversal.',
+        impact:
+          'Generated, vendor, dependency, or build-output files are not counted as inspected source evidence.',
+        recommendation:
+          'Inspect this path manually only if the candidate task explicitly depends on it.',
+      }),
+    );
+  }
+
+  for (const file of limitedUniqueStrings(
+    [...traversal.largeFiles, ...fileSummary.largeFiles],
+    12,
+  )) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: file,
+        reason: `File is larger than the ${MAX_FILE_BYTES} byte scout read limit.`,
+        impact: 'The scout did not parse this file fully.',
+        recommendation:
+          'Use a targeted read or smaller symbol-level inspection before editing this file.',
+      }),
+    );
+  }
+
+  for (const file of limitedUniqueStrings(
+    [...traversal.binaryFiles, ...fileSummary.binaryFiles],
+    12,
+  )) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: file,
+        reason: 'Binary or non-source file was excluded from source evidence collection.',
+        impact: 'The file can be referenced as an asset, but not as source-code evidence.',
+        recommendation: 'Use a media/asset-specific inspection path if this file becomes relevant.',
+      }),
+    );
+  }
+
+  if (fileSummary.capped) {
+    pushUniqueScoutBlindSpot(
+      blindSpots,
+      createScoutBlindSpot({
+        area: 'candidate file read cap',
+        reason: `Scout candidate summaries were capped at ${MAX_DISCOVERY_SCOUT_FILE_READS} files.`,
+        impact: 'Lower-ranked candidate files were enumerated but not summarized.',
+        recommendation: 'Run a deeper targeted analysis for any skipped candidate area.',
+      }),
+    );
+  }
+
+  const depth = calculateDiscoveryDepthReport({
+    projectFingerprint,
+    filesEnumerated: traversal.filesEnumerated,
+    filesRead: fileSummary.filesRead,
+    directoriesVisited: traversal.directoriesVisited,
+    searchQueries: searchTerms.length,
+    searchMatches: likelyFilePaths.length,
+    likelyFilesCount: fileCandidates.length,
+    evidenceLedger,
+    blindSpots,
+    findings: [],
+    notes: [
+      `Scout read or summarized ${fileSummary.filesRead} of ${fileCandidates.length} candidate file(s).`,
+      `Skipped ${traversal.skippedDirectories.length} bounded traversal directorie(s).`,
+    ],
+  });
+
+  return {
+    projectFingerprint,
+    topology,
+    evidenceLedger,
+    blindSpots,
+    depth,
+    searchTerms,
+    fileCandidates,
+  };
+}
+
 function normalizeSavedProjectDiscoveryFingerprint(
   value: unknown,
   capturedAt: number,
@@ -11045,36 +11947,43 @@ export function parseProjectDiscoveryAnalysis(
   projectName: string,
   projectRoot: string,
   previousAnalysis: ProjectDiscoveryAnalysis | null,
+  scout?: ProjectDiscoveryScout | null,
 ): ProjectDiscoveryAnalysis {
   const now = Date.now();
 
   try {
     const parsed = JSON.parse(extractJson(raw)) as unknown;
-    return normalizeProjectDiscoveryAnalysisRecord(parsed, {
-      projectName,
-      projectRoot,
-      previousAnalysis,
-      now,
-      captureFingerprint: true,
-      updatedAt: now,
-    });
-  } catch {
-    return normalizeProjectDiscoveryAnalysisRecord(
-      {
-        id: makeId('project-discovery'),
-        summary: raw.trim() || 'Project discovery parsing failed.',
-        findings: [],
-        createdAt: now,
-      },
-      {
+    return applyProjectDiscoveryScout(
+      normalizeProjectDiscoveryAnalysisRecord(parsed, {
         projectName,
         projectRoot,
         previousAnalysis,
         now,
-        captureFingerprint: true,
+        captureFingerprint: !scout,
         updatedAt: now,
-        fallbackSummary: raw.trim() || 'Project discovery parsing failed.',
-      },
+      }),
+      scout,
+    );
+  } catch {
+    return applyProjectDiscoveryScout(
+      normalizeProjectDiscoveryAnalysisRecord(
+        {
+          id: makeId('project-discovery'),
+          summary: raw.trim() || 'Project discovery parsing failed.',
+          findings: [],
+          createdAt: now,
+        },
+        {
+          projectName,
+          projectRoot,
+          previousAnalysis,
+          now,
+          captureFingerprint: !scout,
+          updatedAt: now,
+          fallbackSummary: raw.trim() || 'Project discovery parsing failed.',
+        },
+      ),
+      scout,
     );
   }
 }
@@ -16006,14 +16915,40 @@ function saveProjectDiscoveryAnalysis(
   );
 }
 
+function formatProjectDiscoveryScoutForPrompt(scout: ProjectDiscoveryScout | null): string {
+  if (!scout) return '';
+
+  const formatEvidence = (entry: ProjectDiscoveryEvidence) =>
+    `- ${entry.id} [${entry.kind}] ${entry.file ? `${entry.file}: ` : ''}${entry.summary}`;
+  const formatBlindSpot = (entry: ProjectDiscoveryBlindSpot) => `- ${entry.area}: ${entry.reason}`;
+
+  return [
+    'Deterministic discovery scout:',
+    `- Fingerprint: branch=${scout.projectFingerprint.gitBranch ?? 'unavailable'}, head=${scout.projectFingerprint.gitHead?.slice(0, 12) ?? 'unavailable'}, unavailable=${scout.projectFingerprint.unavailable.join(', ') || 'none'}`,
+    `- Depth seed: level=${scout.depth.depthLevel}, score=${scout.depth.depthScore}, filesRead=${scout.depth.filesRead}, evidence=${scout.depth.evidenceCount}, blindSpots=${scout.depth.blindSpotCount}`,
+    `- Search terms: ${scout.searchTerms.join(', ') || 'none'}`,
+    `- File candidates: ${scout.fileCandidates.slice(0, 20).join(', ') || 'none'}`,
+    `- Entrypoints: ${scout.topology.entrypoints.slice(0, 12).join(', ') || 'none'}`,
+    `- API/plugin surfaces: ${scout.topology.apiSurfaces.slice(0, 12).join(', ') || 'none'}`,
+    `- UI surfaces: ${scout.topology.uiSurfaces.slice(0, 12).join(', ') || 'none'}`,
+    `- Test surfaces: ${scout.topology.testSurfaces.slice(0, 12).join(', ') || 'none'}`,
+    `- Config/storage: ${[...scout.topology.configFiles, ...scout.topology.storage].slice(0, 12).join(', ') || 'none'}`,
+    `Evidence seed:\n${scout.evidenceLedger.slice(0, 18).map(formatEvidence).join('\n') || '- none'}`,
+    `Blind spots:\n${scout.blindSpots.slice(0, 12).map(formatBlindSpot).join('\n') || '- none'}`,
+    'Use these scout facts as starting evidence. Prefer findings that can cite scout evidence ids in the evidence strings, and avoid proposing tasks whose affected area is listed as a blind spot unless the task is explicitly to investigate that blind spot.',
+  ].join('\n');
+}
+
 function buildProjectDiscoveryPrompt(
   projectName: string,
   projectOverview: string,
   previousAnalysis: ProjectDiscoveryAnalysis | null,
+  scout: ProjectDiscoveryScout | null = null,
 ): string {
   return [
     `Project: ${projectName}`,
     `Project overview:\n${projectOverview}`,
+    formatProjectDiscoveryScoutForPrompt(scout),
     previousAnalysis
       ? [
           `Previous discovery summary:\n${previousAnalysis.summary}`,
@@ -17842,14 +18777,25 @@ async function analyzeProjectForDiscovery(
   sendSseEvent(res, { type: 'log', message: 'Scanning the project overview and source map...' });
   const projectOverview = buildProjectOverview(projectRoot);
 
+  sendSseEvent(res, { type: 'log', message: 'Capturing project fingerprint...' });
+  sendSseEvent(res, { type: 'log', message: 'Running deterministic discovery scout...' });
+  const scout = buildProjectDiscoveryScout(projectRoot, projectName, previousAnalysis);
   sendSseEvent(res, {
     type: 'log',
-    message: 'Aoi is reviewing the codebase and collecting candidate tasks...',
+    message: `Topology extracted: ${scout.topology.entrypoints.length} entrypoint(s), ${scout.topology.apiSurfaces.length} API/plugin surface(s), ${scout.topology.uiSurfaces.length} UI surface(s), ${scout.topology.testSurfaces.length} test surface(s).`,
+  });
+  sendSseEvent(res, {
+    type: 'log',
+    message: `Evidence seed created: ${scout.evidenceLedger.length} evidence item(s), ${scout.blindSpots.length} blind spot(s), depth=${scout.depth.depthLevel} (${scout.depth.depthScore}).`,
+  });
+  sendSseEvent(res, {
+    type: 'log',
+    message: 'Starting LLM discovery pass with deterministic scout context...',
   });
   const raw = await runToolAgent(
     runtime.reviewerConfig,
     projectRoot,
-    buildProjectDiscoveryPrompt(projectName, projectOverview, previousAnalysis),
+    buildProjectDiscoveryPrompt(projectName, projectOverview, previousAnalysis, scout),
     buildProjectDiscoverySystemPrompt(),
     false,
     undefined,
@@ -17870,7 +18816,13 @@ async function analyzeProjectForDiscovery(
     type: 'log',
     message: 'Normalizing the findings and saving them for later reuse...',
   });
-  const analysis = parseProjectDiscoveryAnalysis(raw, projectName, projectRoot, previousAnalysis);
+  const analysis = parseProjectDiscoveryAnalysis(
+    raw,
+    projectName,
+    projectRoot,
+    previousAnalysis,
+    scout,
+  );
   saveProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, analysis);
 
   sendSseEvent(res, {
