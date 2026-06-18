@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { execFileSync } from 'child_process';
-import { join } from 'path';
+import { dirname, join } from 'path';
 import { describe, expect, it } from 'vitest';
 import {
   buildDefaultValidationCommands,
@@ -54,6 +54,7 @@ import {
   isRecoverableAutomationLockMessage,
   isRecoverableLockError,
   isSafeCommandAllowed,
+  loadProjectDiscoveryAnalysis,
   parseGitStatusPorcelain,
   parseProjectDiscoveryAnalysis,
   parseAttemptSelectionSummary,
@@ -1901,13 +1902,21 @@ describe('parseProjectDiscoveryAnalysis()', () => {
     );
 
     expect(parsed.projectName).toBe('BriefWave-Cast');
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.depth.depthLevel).toBe('shallow');
+    expect(parsed.evidenceLedger).toEqual([]);
+    expect(parsed.blindSpots).toEqual([]);
     expect(parsed.findings).toHaveLength(2);
     expect(parsed.findings[0]).toMatchObject({
       kind: 'bug',
       title: 'Fix duplicate footer copy',
       files: ['templates/index.html'],
+      evidenceIds: [],
+      eligibility: 'ready',
+      risk: 'medium',
     });
     expect(parsed.findings[1].kind).toBe('feature');
+    expect(parsed.findings[1].evidenceIds).toEqual([]);
     expect(parsed.findings[1].taskDescription).toContain('# Brief');
   });
 
@@ -1920,7 +1929,200 @@ describe('parseProjectDiscoveryAnalysis()', () => {
     );
 
     expect(parsed.summary).toBe('not json');
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.depth.depthLevel).toBe('shallow');
     expect(parsed.findings).toEqual([]);
+    expect(parsed.projectFingerprint.unavailable.length).toBeGreaterThan(0);
+  });
+
+  it('accepts future v2 dossier fields while keeping server-owned metadata', () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      summary: 'V2 analysis.',
+      depth: {
+        filesEnumerated: 10,
+        filesRead: 4,
+        directoriesVisited: 3,
+        searchQueries: 2,
+        searchMatches: 7,
+        likelyFilesCount: 1,
+        evidenceCount: 1,
+        findingsWithEvidence: 1,
+        findingsWithValidation: 1,
+        blindSpotCount: 1,
+        depthScore: 0.72,
+        depthLevel: 'moderate',
+        notes: ['Static scan only.'],
+      },
+      topology: {
+        entrypoints: ['package.json'],
+        apiSurfaces: ['apps/webuiapps/src/lib/kiraAutomationPlugin.ts'],
+        configFiles: ['package.json'],
+      },
+      evidenceLedger: [
+        {
+          id: 'ev-kira-plugin',
+          kind: 'file_read',
+          file: 'apps/webuiapps/src/lib/kiraAutomationPlugin.ts',
+          lineStart: 100,
+          lineEnd: 140,
+          summary: 'Kira discovery routes are implemented in the automation plugin.',
+          collectedBy: 'llm_discovery',
+          confidence: 0.8,
+        },
+      ],
+      blindSpots: [
+        {
+          id: 'blind-runtime',
+          area: 'runtime browser verification',
+          reason: 'Discovery mode is read-only.',
+          impact: 'UI behavior still needs manual verification later.',
+        },
+      ],
+      findings: [
+        {
+          id: 'finding-dossier-ui',
+          kind: 'feature',
+          title: 'Show discovery dossier status',
+          summary: 'The modal can expose analysis depth and evidence.',
+          evidence: ['ev-kira-plugin describes current discovery API.'],
+          evidenceIds: ['ev-kira-plugin'],
+          files: ['apps/webuiapps/src/pages/Kira/index.tsx'],
+          scope: ['Kira discovery modal'],
+          validationCommands: ['pnpm --filter @openroom/webuiapps build:test'],
+          confidence: 0.7,
+          eligibility: 'ready',
+          risk: 'medium',
+          taskDescription: '# Brief\n\nExpose dossier status.',
+        },
+      ],
+    });
+
+    const parsed = parseProjectDiscoveryAnalysis(
+      raw,
+      'YourOpenRoom',
+      'F:/kernullist/YourOpenRoom',
+      null,
+    );
+
+    expect(parsed.schemaVersion).toBe(2);
+    expect(parsed.projectName).toBe('YourOpenRoom');
+    expect(parsed.depth).toMatchObject({
+      filesEnumerated: 10,
+      depthLevel: 'moderate',
+      depthScore: 0.72,
+    });
+    expect(parsed.topology.apiSurfaces).toEqual(['apps/webuiapps/src/lib/kiraAutomationPlugin.ts']);
+    expect(parsed.evidenceLedger[0]).toMatchObject({
+      id: 'ev-kira-plugin',
+      kind: 'file_read',
+      file: 'apps/webuiapps/src/lib/kiraAutomationPlugin.ts',
+    });
+    expect(parsed.blindSpots[0]).toMatchObject({
+      id: 'blind-runtime',
+      area: 'runtime browser verification',
+    });
+    expect(parsed.findings[0]).toMatchObject({
+      id: 'finding-dossier-ui',
+      evidenceIds: ['ev-kira-plugin'],
+      validationCommands: ['pnpm --filter @openroom/webuiapps build:test'],
+      eligibility: 'ready',
+      risk: 'medium',
+    });
+  });
+
+  it('overwrites model-owned root and fingerprint fields with server values', () => {
+    const raw = JSON.stringify({
+      schemaVersion: 2,
+      projectName: 'Injected',
+      projectRoot: 'C:/evil',
+      projectFingerprint: {
+        capturedAt: 1,
+        gitHead: 'attacker-head',
+        gitBranch: 'attacker-branch',
+        gitStatusHash: 'attacker-status',
+        workspaceFileHash: 'attacker-workspace',
+        packageManifestHash: 'attacker-package',
+        unavailable: [],
+      },
+      summary: 'Spoofed project metadata.',
+      findings: [],
+    });
+
+    const parsed = parseProjectDiscoveryAnalysis(
+      raw,
+      'BriefWave-Cast',
+      'F:/root/BriefWave-Cast',
+      null,
+    );
+
+    expect(parsed.projectName).toBe('BriefWave-Cast');
+    expect(parsed.projectRoot).toBe('F:/root/BriefWave-Cast');
+    expect(parsed.projectFingerprint.gitHead).not.toBe('attacker-head');
+    expect(parsed.projectFingerprint.gitStatusHash).not.toBe('attacker-status');
+    expect(parsed.projectFingerprint.unavailable).toContain('git_head');
+  });
+
+  it('normalizes saved legacy discovery analysis when loaded for the existing endpoint', () => {
+    const sessionsDir = fs.mkdtempSync(join(os.tmpdir(), 'kira-discovery-load-'));
+    const sessionPath = 'aoi/default';
+    const projectName = 'BriefWave';
+    const analysisPath = join(
+      sessionsDir,
+      'aoi',
+      'default',
+      'apps',
+      'kira',
+      'data',
+      'analysis',
+      'project-discovery-briefwave.json',
+    );
+    fs.mkdirSync(dirname(analysisPath), { recursive: true });
+    fs.writeFileSync(
+      analysisPath,
+      JSON.stringify({
+        id: 'legacy-analysis',
+        projectName: 'BriefWave',
+        projectRoot: 'F:/root/BriefWave',
+        summary: 'Legacy saved analysis.',
+        findings: [
+          {
+            id: 'legacy-finding',
+            kind: 'feature',
+            title: 'Add RSS export',
+            summary: 'The project can publish feed data.',
+            evidence: ['app.py builds episode pages'],
+            files: ['app.py'],
+            taskDescription: '',
+          },
+        ],
+        basedOnPreviousAnalysis: false,
+        createdAt: 123,
+        updatedAt: 456,
+      }),
+      'utf-8',
+    );
+
+    const loaded = loadProjectDiscoveryAnalysis(sessionsDir, sessionPath, projectName);
+
+    expect(loaded).toMatchObject({
+      schemaVersion: 2,
+      id: 'legacy-analysis',
+      projectName,
+      projectRoot: 'F:/root/BriefWave',
+      summary: 'Legacy saved analysis.',
+      createdAt: 123,
+      updatedAt: 456,
+    });
+    expect(loaded?.evidenceLedger).toEqual([]);
+    expect(loaded?.blindSpots).toEqual([]);
+    expect(loaded?.depth.depthLevel).toBe('shallow');
+    expect(loaded?.findings[0]).toMatchObject({
+      id: 'legacy-finding',
+      evidenceIds: [],
+      eligibility: 'ready',
+      files: ['app.py'],
+    });
   });
 });
 

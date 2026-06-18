@@ -483,14 +483,75 @@ interface KiraDiscoveryFinding {
   title: string;
   summary: string;
   evidence: string[];
+  evidenceIds?: string[];
   files: string[];
+  scope?: string[];
+  validationCommands?: string[];
+  confidence?: number;
+  eligibility?: 'ready' | 'blocked' | 'needs_deeper_analysis';
+  blockedReasons?: string[];
+  risk?: 'low' | 'medium' | 'high';
   taskDescription: string;
 }
 
 interface KiraProjectDiscoveryAnalysis {
+  schemaVersion?: number;
   id: string;
   projectName: string;
+  projectRoot?: string;
+  projectFingerprint?: {
+    capturedAt?: number;
+    gitHead?: string | null;
+    gitBranch?: string | null;
+    gitStatusHash?: string | null;
+    workspaceFileHash?: string | null;
+    packageManifestHash?: string | null;
+    unavailable?: string[];
+  };
   summary: string;
+  depth?: {
+    filesEnumerated?: number;
+    filesRead?: number;
+    directoriesVisited?: number;
+    searchQueries?: number;
+    searchMatches?: number;
+    likelyFilesCount?: number;
+    evidenceCount?: number;
+    findingsWithEvidence?: number;
+    findingsWithValidation?: number;
+    blindSpotCount?: number;
+    depthScore?: number;
+    depthLevel?: 'shallow' | 'moderate' | 'deep' | 'stale';
+    notes?: string[];
+  };
+  topology?: {
+    entrypoints?: string[];
+    uiSurfaces?: string[];
+    apiSurfaces?: string[];
+    testSurfaces?: string[];
+    configFiles?: string[];
+    storage?: string[];
+    notes?: string[];
+  };
+  evidenceLedger?: Array<{
+    id: string;
+    kind: string;
+    file?: string;
+    lineStart?: number;
+    lineEnd?: number;
+    symbol?: string;
+    summary: string;
+    snippetHash?: string;
+    collectedBy?: string;
+    confidence?: number;
+  }>;
+  blindSpots?: Array<{
+    id: string;
+    area: string;
+    reason: string;
+    impact?: string;
+    recommendation?: string;
+  }>;
   findings: KiraDiscoveryFinding[];
   basedOnPreviousAnalysis: boolean;
   previousAnalysisId?: string;

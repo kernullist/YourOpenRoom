@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as net from 'net';
-import { execFile as execFileCallback, spawn } from 'child_process';
+import { execFile as execFileCallback, spawn, spawnSync } from 'child_process';
 import { createHash } from 'crypto';
 import { tmpdir } from 'os';
 import { promisify } from 'util';
@@ -981,21 +981,108 @@ interface AutomationFailureResolution {
   userMessage: string;
 }
 
+type ProjectDiscoveryEvidenceKind =
+  | 'file_read'
+  | 'search_match'
+  | 'dependency'
+  | 'semantic_graph'
+  | 'test_impact'
+  | 'package_script'
+  | 'git_status'
+  | 'previous_analysis';
+type ProjectDiscoveryFindingEligibility = 'ready' | 'blocked' | 'needs_deeper_analysis';
+type ProjectDiscoveryDepthLevel = 'shallow' | 'moderate' | 'deep' | 'stale';
+type ProjectDiscoveryFindingRisk = 'low' | 'medium' | 'high';
+type ProjectDiscoveryEvidenceCollectedBy =
+  | 'deterministic_scout'
+  | 'llm_discovery'
+  | 'reviewer_gate';
+
+interface ProjectDiscoveryFingerprint {
+  capturedAt: number;
+  gitHead: string | null;
+  gitBranch: string | null;
+  gitStatusHash: string | null;
+  workspaceFileHash: string | null;
+  packageManifestHash: string | null;
+  unavailable: string[];
+}
+
+interface ProjectDiscoveryDepthReport {
+  filesEnumerated: number;
+  filesRead: number;
+  directoriesVisited: number;
+  searchQueries: number;
+  searchMatches: number;
+  likelyFilesCount: number;
+  evidenceCount: number;
+  findingsWithEvidence: number;
+  findingsWithValidation: number;
+  blindSpotCount: number;
+  depthScore: number;
+  depthLevel: ProjectDiscoveryDepthLevel;
+  notes: string[];
+}
+
+interface ProjectDiscoveryTopology {
+  entrypoints: string[];
+  uiSurfaces: string[];
+  apiSurfaces: string[];
+  testSurfaces: string[];
+  configFiles: string[];
+  storage: string[];
+  notes: string[];
+}
+
+interface ProjectDiscoveryEvidence {
+  id: string;
+  kind: ProjectDiscoveryEvidenceKind;
+  file?: string;
+  lineStart?: number;
+  lineEnd?: number;
+  symbol?: string;
+  summary: string;
+  snippetHash?: string;
+  collectedBy: ProjectDiscoveryEvidenceCollectedBy;
+  confidence: number;
+}
+
+interface ProjectDiscoveryBlindSpot {
+  id: string;
+  area: string;
+  reason: string;
+  impact?: string;
+  recommendation?: string;
+}
+
 interface ProjectDiscoveryFinding {
   id: string;
   kind: 'feature' | 'bug';
   title: string;
   summary: string;
   evidence: string[];
+  evidenceIds: string[];
   files: string[];
+  scope: string[];
+  validationCommands: string[];
+  confidence: number;
+  eligibility: ProjectDiscoveryFindingEligibility;
+  blockedReasons: string[];
+  risk: ProjectDiscoveryFindingRisk;
   taskDescription: string;
 }
 
 interface ProjectDiscoveryAnalysis {
+  schemaVersion: 2;
   id: string;
   projectName: string;
   projectRoot: string;
+  projectFingerprint: ProjectDiscoveryFingerprint;
   summary: string;
+  depth: ProjectDiscoveryDepthReport;
+  topology: ProjectDiscoveryTopology;
+  evidenceLedger: ProjectDiscoveryEvidence[];
+  blindSpots: ProjectDiscoveryBlindSpot[];
   findings: ProjectDiscoveryFinding[];
   basedOnPreviousAnalysis: boolean;
   previousAnalysisId?: string;
@@ -1538,6 +1625,7 @@ const PROJECT_PROFILE_SCHEMA_VERSION = 1;
 const KIRA_ATTEMPT_RECORD_VERSION = 2;
 const KIRA_REVIEW_RECORD_VERSION = 2;
 const KIRA_PROMPT_CONTRACT_VERSION = 3;
+const PROJECT_DISCOVERY_SCHEMA_VERSION = 2;
 const MAX_REVIEW_CYCLES = 5;
 const MAX_DISCOVERY_FINDINGS = 10;
 const MAX_CLARIFICATION_QUESTIONS = 3;
@@ -1773,6 +1861,32 @@ const KIRA_PROJECT_ROOT_MARKERS = [
   'build.gradle',
   'settings.gradle',
   'deno.json',
+];
+const PROJECT_DISCOVERY_WORKSPACE_MANIFEST_FILES = [
+  'package.json',
+  'pnpm-workspace.yaml',
+  'turbo.json',
+  'vite.config.ts',
+  'vitest.config.ts',
+  'jest.config.js',
+  'tsconfig.json',
+  'pyproject.toml',
+  'pytest.ini',
+  'requirements.txt',
+  'go.mod',
+  'Cargo.toml',
+  'deno.json',
+];
+const PROJECT_DISCOVERY_PACKAGE_MANIFEST_FILES = [
+  'package.json',
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  'bun.lockb',
+  'requirements.txt',
+  'pyproject.toml',
+  'Cargo.toml',
+  'go.mod',
 ];
 const SAFE_SCRIPT_NAME = String.raw`(?:test|lint|build|check|typecheck)(?::[A-Za-z0-9_-]+)?`;
 const SAFE_PNPM_DIR = String.raw`(?:(?!\.\.(?:[\\/]|$))(?!.*[\\/]\.\.(?:[\\/]|$))[A-Za-z0-9_.-]+(?:[\\/][A-Za-z0-9_.-]+)*)`;
@@ -10430,6 +10544,474 @@ function normalizeFindingKind(value: unknown, title: string, summary: string): '
   return /bug|fix|error|issue|broken|regression|버그|수정|오류/.test(haystack) ? 'bug' : 'feature';
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeTimestamp(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : fallback;
+}
+
+function normalizeNonNegativeInteger(value: unknown, fallback = 0): number {
+  const numeric =
+    typeof value === 'number'
+      ? value
+      : typeof value === 'string'
+        ? Number.parseInt(value, 10)
+        : Number.NaN;
+  if (!Number.isFinite(numeric) || numeric < 0) return fallback;
+  return Math.floor(numeric);
+}
+
+function normalizeNullableString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim() ? normalizeWhitespace(value) : null;
+}
+
+function normalizeDiscoveryId(value: unknown, fallback: string): string {
+  return sanitizeLockKey(typeof value === 'string' && value.trim() ? value : fallback);
+}
+
+function normalizeDiscoveryStringList(
+  value: unknown,
+  fallback: string[] = [],
+  limit = 20,
+): string[] {
+  const values = Array.isArray(value) ? value.map(String) : fallback;
+  return limitedUniqueStrings(
+    values.map((item) => normalizeWhitespace(item)).filter(Boolean),
+    limit,
+  );
+}
+
+function normalizeDiscoveryRelativePath(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : String(value ?? '').trim();
+  if (!raw || raw.includes('\0') || raw.startsWith('~')) return '';
+  if (/^(?:[A-Za-z]:[\\/]|\\\\|\/)/.test(raw)) return '';
+
+  const normalized = normalizeRelativePath(raw);
+  if (
+    !normalized ||
+    normalized.includes('\0') ||
+    normalized.includes('..') ||
+    /^[A-Za-z]:/.test(normalized)
+  ) {
+    return '';
+  }
+  return normalized;
+}
+
+function normalizeDiscoveryFileList(value: unknown, fallback: string[] = [], limit = 20): string[] {
+  const values = Array.isArray(value) ? value : fallback;
+  return limitedUniqueStrings(
+    values.map((item) => normalizeDiscoveryRelativePath(item)).filter(Boolean),
+    limit,
+  );
+}
+
+function normalizeDiscoveryEvidenceKind(value: unknown): ProjectDiscoveryEvidenceKind {
+  return [
+    'file_read',
+    'search_match',
+    'dependency',
+    'semantic_graph',
+    'test_impact',
+    'package_script',
+    'git_status',
+    'previous_analysis',
+  ].includes(String(value))
+    ? (value as ProjectDiscoveryEvidenceKind)
+    : 'file_read';
+}
+
+function normalizeDiscoveryEvidenceCollectedBy(
+  value: unknown,
+): ProjectDiscoveryEvidenceCollectedBy {
+  return ['deterministic_scout', 'llm_discovery', 'reviewer_gate'].includes(String(value))
+    ? (value as ProjectDiscoveryEvidenceCollectedBy)
+    : 'llm_discovery';
+}
+
+function normalizeDiscoveryFindingRisk(
+  value: unknown,
+  kind: ProjectDiscoveryFinding['kind'],
+): ProjectDiscoveryFindingRisk {
+  if (value === 'low' || value === 'medium' || value === 'high') return value;
+  return kind === 'bug' ? 'medium' : 'low';
+}
+
+function normalizeDiscoveryFindingEligibility(params: {
+  value: unknown;
+  evidence: string[];
+  files: string[];
+  blockedReasons: string[];
+}): ProjectDiscoveryFindingEligibility {
+  if (
+    params.value === 'ready' ||
+    params.value === 'blocked' ||
+    params.value === 'needs_deeper_analysis'
+  ) {
+    return params.value;
+  }
+  if (params.blockedReasons.length > 0) return 'blocked';
+  return params.evidence.length > 0 && params.files.length > 0 ? 'ready' : 'needs_deeper_analysis';
+}
+
+function normalizeDiscoveryDepthLevel(
+  value: unknown,
+  fallback: ProjectDiscoveryDepthLevel = 'shallow',
+): ProjectDiscoveryDepthLevel {
+  return value === 'shallow' || value === 'moderate' || value === 'deep' || value === 'stale'
+    ? value
+    : fallback;
+}
+
+function hashDiscoveryText(value: string): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function hashProjectManifestFiles(projectRoot: string, candidates: string[]): string | null {
+  const entries: string[] = [];
+  if (!projectRoot || !fs.existsSync(projectRoot)) return null;
+
+  for (const candidate of candidates) {
+    const relativePath = normalizeDiscoveryRelativePath(candidate);
+    if (!relativePath) continue;
+
+    try {
+      const absolutePath = ensureInsideRoot(projectRoot, relativePath);
+      if (!fs.existsSync(absolutePath) || !fs.statSync(absolutePath).isFile()) continue;
+      const content = fs.readFileSync(absolutePath);
+      entries.push(`${relativePath}:${createHash('sha256').update(content).digest('hex')}`);
+    } catch {
+      // Ignore unreadable files and let the caller record the hash as unavailable if needed.
+    }
+  }
+
+  return entries.length > 0 ? hashDiscoveryText(entries.sort().join('\n')) : null;
+}
+
+function runGitCommandSync(projectRoot: string, args: string[]): string | null {
+  if (!projectRoot || !fs.existsSync(projectRoot)) return null;
+
+  try {
+    const safeDirectory = projectRoot.replace(/\\/g, '/');
+    const result = spawnSync(
+      'git',
+      ['-c', `safe.directory=${safeDirectory}`, '-C', projectRoot, ...args],
+      {
+        cwd: projectRoot,
+        encoding: 'utf-8',
+        timeout: 3_000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      },
+    );
+    if (result.status !== 0 || result.error) return null;
+    return String(result.stdout ?? '').trim();
+  } catch {
+    return null;
+  }
+}
+
+function createUnavailableProjectDiscoveryFingerprint(
+  reason: string,
+  capturedAt: number,
+): ProjectDiscoveryFingerprint {
+  return {
+    capturedAt,
+    gitHead: null,
+    gitBranch: null,
+    gitStatusHash: null,
+    workspaceFileHash: null,
+    packageManifestHash: null,
+    unavailable: [
+      reason,
+      'git_head',
+      'git_branch',
+      'git_status_hash',
+      'workspace_file_hash',
+      'package_manifest_hash',
+    ],
+  };
+}
+
+export function captureProjectDiscoveryFingerprint(
+  projectRoot: string,
+  capturedAt = Date.now(),
+): ProjectDiscoveryFingerprint {
+  const unavailable: string[] = [];
+  const gitHead = runGitCommandSync(projectRoot, ['rev-parse', 'HEAD']);
+  const gitBranch = runGitCommandSync(projectRoot, ['rev-parse', '--abbrev-ref', 'HEAD']);
+  const gitStatus = runGitCommandSync(projectRoot, ['status', '--short']);
+  const workspaceFileHash = hashProjectManifestFiles(
+    projectRoot,
+    PROJECT_DISCOVERY_WORKSPACE_MANIFEST_FILES,
+  );
+  const packageManifestHash = hashProjectManifestFiles(
+    projectRoot,
+    PROJECT_DISCOVERY_PACKAGE_MANIFEST_FILES,
+  );
+
+  if (!gitHead) unavailable.push('git_head');
+  if (!gitBranch) unavailable.push('git_branch');
+  if (gitStatus === null) unavailable.push('git_status_hash');
+  if (!workspaceFileHash) unavailable.push('workspace_file_hash');
+  if (!packageManifestHash) unavailable.push('package_manifest_hash');
+
+  return {
+    capturedAt,
+    gitHead: gitHead || null,
+    gitBranch: gitBranch || null,
+    gitStatusHash: gitStatus === null ? null : hashDiscoveryText(gitStatus),
+    workspaceFileHash,
+    packageManifestHash,
+    unavailable,
+  };
+}
+
+function normalizeSavedProjectDiscoveryFingerprint(
+  value: unknown,
+  capturedAt: number,
+): ProjectDiscoveryFingerprint {
+  if (!isRecord(value)) {
+    return createUnavailableProjectDiscoveryFingerprint('not_captured', capturedAt);
+  }
+
+  return {
+    capturedAt: normalizeTimestamp(value.capturedAt, capturedAt),
+    gitHead: normalizeNullableString(value.gitHead),
+    gitBranch: normalizeNullableString(value.gitBranch),
+    gitStatusHash: normalizeNullableString(value.gitStatusHash),
+    workspaceFileHash: normalizeNullableString(value.workspaceFileHash),
+    packageManifestHash: normalizeNullableString(value.packageManifestHash),
+    unavailable: normalizeDiscoveryStringList(value.unavailable, [], 12),
+  };
+}
+
+function normalizeProjectDiscoveryTopology(value: unknown): ProjectDiscoveryTopology {
+  const record = isRecord(value) ? value : {};
+  return {
+    entrypoints: normalizeDiscoveryStringList(record.entrypoints, [], 20),
+    uiSurfaces: normalizeDiscoveryStringList(record.uiSurfaces, [], 20),
+    apiSurfaces: normalizeDiscoveryStringList(record.apiSurfaces, [], 20),
+    testSurfaces: normalizeDiscoveryStringList(record.testSurfaces, [], 20),
+    configFiles: normalizeDiscoveryFileList(record.configFiles, [], 20),
+    storage: normalizeDiscoveryStringList(record.storage, [], 20),
+    notes: normalizeDiscoveryStringList(record.notes, [], 12),
+  };
+}
+
+function normalizeProjectDiscoveryEvidenceLedger(value: unknown): ProjectDiscoveryEvidence[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .slice(0, 80)
+    .map((entry, index): ProjectDiscoveryEvidence | null => {
+      if (!isRecord(entry)) return null;
+      const file = normalizeDiscoveryRelativePath(entry.file);
+      const summary =
+        normalizeNullableString(entry.summary) ||
+        (file ? `Evidence captured for ${file}.` : `Discovery evidence ${index + 1}.`);
+      const lineStart = normalizeNonNegativeInteger(entry.lineStart, 0);
+      const lineEnd = normalizeNonNegativeInteger(entry.lineEnd, 0);
+      const symbol = normalizeNullableString(entry.symbol);
+      const snippetHash = normalizeNullableString(entry.snippetHash);
+      return {
+        id: normalizeDiscoveryId(entry.id, `evidence-${index + 1}`),
+        kind: normalizeDiscoveryEvidenceKind(entry.kind),
+        ...(file ? { file } : {}),
+        ...(lineStart > 0 ? { lineStart } : {}),
+        ...(lineEnd > 0 ? { lineEnd } : {}),
+        ...(symbol ? { symbol } : {}),
+        summary,
+        ...(snippetHash ? { snippetHash: snippetHash.slice(0, 128) } : {}),
+        collectedBy: normalizeDiscoveryEvidenceCollectedBy(entry.collectedBy),
+        confidence: clampConfidence(entry.confidence, 0.5),
+      };
+    })
+    .filter((entry): entry is ProjectDiscoveryEvidence => Boolean(entry));
+}
+
+function normalizeProjectDiscoveryBlindSpots(value: unknown): ProjectDiscoveryBlindSpot[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .slice(0, 40)
+    .map((entry, index): ProjectDiscoveryBlindSpot | null => {
+      if (!isRecord(entry)) return null;
+      const area = normalizeNullableString(entry.area);
+      const reason = normalizeNullableString(entry.reason);
+      if (!area || !reason) return null;
+      const impact = normalizeNullableString(entry.impact);
+      const recommendation = normalizeNullableString(entry.recommendation);
+      return {
+        id: normalizeDiscoveryId(entry.id, `blind-spot-${index + 1}`),
+        area,
+        reason,
+        ...(impact ? { impact } : {}),
+        ...(recommendation ? { recommendation } : {}),
+      };
+    })
+    .filter((entry): entry is ProjectDiscoveryBlindSpot => Boolean(entry));
+}
+
+function normalizeProjectDiscoveryFinding(
+  value: unknown,
+  index: number,
+  sourceHasV2Fields: boolean,
+): ProjectDiscoveryFinding {
+  const record = isRecord(value) ? value : {};
+  const title = normalizeNullableString(record.title) || `Discovery item ${index + 1}`;
+  const summary = normalizeNullableString(record.summary) || 'No summary provided.';
+  const files = normalizeDiscoveryFileList(record.files, [], 20);
+  const evidence = normalizeDiscoveryStringList(record.evidence, files.length > 0 ? files : [], 20);
+  const evidenceIds = sourceHasV2Fields
+    ? normalizeDiscoveryStringList(record.evidenceIds, [], 20)
+    : [];
+  const validationCommands = sourceHasV2Fields
+    ? normalizeDiscoveryStringList(record.validationCommands, [], 12)
+    : [];
+  const blockedReasons = sourceHasV2Fields
+    ? normalizeDiscoveryStringList(record.blockedReasons, [], 12)
+    : [];
+  const kind = normalizeFindingKind(record.kind, title, summary);
+  const scope = sourceHasV2Fields ? normalizeDiscoveryStringList(record.scope, files, 12) : files;
+  const normalized: ProjectDiscoveryFinding = {
+    id: normalizeDiscoveryId(record.id, `finding-${index + 1}`),
+    kind,
+    title,
+    summary,
+    evidence,
+    evidenceIds,
+    files,
+    scope,
+    validationCommands,
+    confidence: sourceHasV2Fields ? clampConfidence(record.confidence, 0.5) : 0.5,
+    eligibility: normalizeDiscoveryFindingEligibility({
+      value: sourceHasV2Fields ? record.eligibility : undefined,
+      evidence,
+      files,
+      blockedReasons,
+    }),
+    blockedReasons,
+    risk: normalizeDiscoveryFindingRisk(sourceHasV2Fields ? record.risk : undefined, kind),
+    taskDescription: normalizeNullableString(record.taskDescription) || '',
+  };
+
+  return {
+    ...normalized,
+    taskDescription: normalized.taskDescription || buildFallbackTaskDescription(normalized),
+  };
+}
+
+function normalizeProjectDiscoveryDepthReport(params: {
+  value: unknown;
+  findings: ProjectDiscoveryFinding[];
+  evidenceLedger: ProjectDiscoveryEvidence[];
+  blindSpots: ProjectDiscoveryBlindSpot[];
+  sourceHasV2Fields: boolean;
+}): ProjectDiscoveryDepthReport {
+  const record = params.sourceHasV2Fields && isRecord(params.value) ? params.value : {};
+  const findingsWithEvidence = params.findings.filter(
+    (finding) => finding.evidenceIds.length > 0,
+  ).length;
+  const findingsWithValidation = params.findings.filter(
+    (finding) => finding.validationCommands.length > 0,
+  ).length;
+  const depthScore = params.sourceHasV2Fields ? clampConfidence(record.depthScore, 0) : 0;
+  return {
+    filesEnumerated: normalizeNonNegativeInteger(record.filesEnumerated, 0),
+    filesRead: normalizeNonNegativeInteger(record.filesRead, 0),
+    directoriesVisited: normalizeNonNegativeInteger(record.directoriesVisited, 0),
+    searchQueries: normalizeNonNegativeInteger(record.searchQueries, 0),
+    searchMatches: normalizeNonNegativeInteger(record.searchMatches, 0),
+    likelyFilesCount: normalizeNonNegativeInteger(
+      record.likelyFilesCount,
+      params.findings.reduce((total, finding) => total + finding.files.length, 0),
+    ),
+    evidenceCount: normalizeNonNegativeInteger(record.evidenceCount, params.evidenceLedger.length),
+    findingsWithEvidence: normalizeNonNegativeInteger(
+      record.findingsWithEvidence,
+      findingsWithEvidence,
+    ),
+    findingsWithValidation: normalizeNonNegativeInteger(
+      record.findingsWithValidation,
+      findingsWithValidation,
+    ),
+    blindSpotCount: normalizeNonNegativeInteger(record.blindSpotCount, params.blindSpots.length),
+    depthScore,
+    depthLevel: normalizeDiscoveryDepthLevel(record.depthLevel, 'shallow'),
+    notes: normalizeDiscoveryStringList(record.notes, [], 12),
+  };
+}
+
+function normalizeProjectDiscoveryAnalysisRecord(
+  value: unknown,
+  options: {
+    projectName: string;
+    projectRoot?: string;
+    previousAnalysis?: ProjectDiscoveryAnalysis | null;
+    now?: number;
+    captureFingerprint?: boolean;
+    updatedAt?: number;
+    fallbackSummary?: string;
+  },
+): ProjectDiscoveryAnalysis {
+  const now = options.now ?? Date.now();
+  const record = isRecord(value) ? value : {};
+  const sourceHasV2Fields = record.schemaVersion === PROJECT_DISCOVERY_SCHEMA_VERSION;
+  const projectRoot = options.projectRoot ?? normalizeNullableString(record.projectRoot) ?? '';
+  const evidenceLedger = sourceHasV2Fields
+    ? normalizeProjectDiscoveryEvidenceLedger(record.evidenceLedger)
+    : [];
+  const blindSpots = sourceHasV2Fields
+    ? normalizeProjectDiscoveryBlindSpots(record.blindSpots)
+    : [];
+  const findings = Array.isArray(record.findings)
+    ? record.findings
+        .slice(0, MAX_DISCOVERY_FINDINGS)
+        .map((finding, index) =>
+          normalizeProjectDiscoveryFinding(finding, index, sourceHasV2Fields),
+        )
+    : [];
+  const projectFingerprint = options.captureFingerprint
+    ? captureProjectDiscoveryFingerprint(projectRoot, now)
+    : normalizeSavedProjectDiscoveryFingerprint(record.projectFingerprint, now);
+
+  return {
+    schemaVersion: PROJECT_DISCOVERY_SCHEMA_VERSION,
+    id: normalizeDiscoveryId(record.id, makeId('project-discovery')),
+    projectName: options.projectName,
+    projectRoot,
+    projectFingerprint,
+    summary:
+      normalizeNullableString(record.summary) ||
+      options.fallbackSummary ||
+      'No discovery summary provided.',
+    depth: normalizeProjectDiscoveryDepthReport({
+      value: record.depth,
+      findings,
+      evidenceLedger,
+      blindSpots,
+      sourceHasV2Fields,
+    }),
+    topology: sourceHasV2Fields
+      ? normalizeProjectDiscoveryTopology(record.topology)
+      : normalizeProjectDiscoveryTopology(null),
+    evidenceLedger,
+    blindSpots,
+    findings,
+    basedOnPreviousAnalysis:
+      Boolean(options.previousAnalysis) || normalizeBoolean(record.basedOnPreviousAnalysis, false),
+    previousAnalysisId:
+      options.previousAnalysis?.id ??
+      normalizeNullableString(record.previousAnalysisId) ??
+      undefined,
+    createdAt: normalizeTimestamp(record.createdAt, now),
+    updatedAt: options.updatedAt ?? normalizeTimestamp(record.updatedAt, now),
+  };
+}
+
 function buildFallbackTaskDescription(finding: ProjectDiscoveryFinding): string {
   return [
     `# Brief`,
@@ -10467,61 +11049,33 @@ export function parseProjectDiscoveryAnalysis(
   const now = Date.now();
 
   try {
-    const parsed = JSON.parse(extractJson(raw)) as Partial<ProjectDiscoveryAnalysis> & {
-      findings?: Array<Partial<ProjectDiscoveryFinding>>;
-    };
-    const findings = Array.isArray(parsed.findings)
-      ? parsed.findings.slice(0, MAX_DISCOVERY_FINDINGS).map((finding, index) => {
-          const title = finding.title?.trim() || `Discovery item ${index + 1}`;
-          const summary = finding.summary?.trim() || 'No summary provided.';
-          const files = Array.isArray(finding.files)
-            ? finding.files.map(String).filter(Boolean)
-            : [];
-          const evidence = Array.isArray(finding.evidence)
-            ? finding.evidence.map(String).filter(Boolean)
-            : files;
-          const normalized: ProjectDiscoveryFinding = {
-            id: finding.id?.trim() || `finding-${index + 1}`,
-            kind: normalizeFindingKind(finding.kind, title, summary),
-            title,
-            summary,
-            evidence,
-            files,
-            taskDescription: finding.taskDescription?.trim() || '',
-          };
-          return {
-            ...normalized,
-            taskDescription: normalized.taskDescription || buildFallbackTaskDescription(normalized),
-          };
-        })
-      : [];
-
-    return {
-      id: parsed.id?.trim() || makeId('project-discovery'),
+    const parsed = JSON.parse(extractJson(raw)) as unknown;
+    return normalizeProjectDiscoveryAnalysisRecord(parsed, {
       projectName,
       projectRoot,
-      summary: parsed.summary?.trim() || 'No discovery summary provided.',
-      findings,
-      basedOnPreviousAnalysis: Boolean(previousAnalysis),
-      previousAnalysisId: previousAnalysis?.id,
-      createdAt:
-        typeof parsed.createdAt === 'number' && Number.isFinite(parsed.createdAt)
-          ? parsed.createdAt
-          : now,
+      previousAnalysis,
+      now,
+      captureFingerprint: true,
       updatedAt: now,
-    };
+    });
   } catch {
-    return {
-      id: makeId('project-discovery'),
-      projectName,
-      projectRoot,
-      summary: raw.trim() || 'Project discovery parsing failed.',
-      findings: [],
-      basedOnPreviousAnalysis: Boolean(previousAnalysis),
-      previousAnalysisId: previousAnalysis?.id,
-      createdAt: now,
-      updatedAt: now,
-    };
+    return normalizeProjectDiscoveryAnalysisRecord(
+      {
+        id: makeId('project-discovery'),
+        summary: raw.trim() || 'Project discovery parsing failed.',
+        findings: [],
+        createdAt: now,
+      },
+      {
+        projectName,
+        projectRoot,
+        previousAnalysis,
+        now,
+        captureFingerprint: true,
+        updatedAt: now,
+        fallbackSummary: raw.trim() || 'Project discovery parsing failed.',
+      },
+    );
   }
 }
 
@@ -15429,14 +15983,16 @@ async function collectProjectSafetyIssues(
   return issues;
 }
 
-function loadProjectDiscoveryAnalysis(
+export function loadProjectDiscoveryAnalysis(
   sessionsDir: string,
   sessionPath: string,
   projectName: string,
 ): ProjectDiscoveryAnalysis | null {
-  return readJsonFile<ProjectDiscoveryAnalysis>(
+  const raw = readJsonFile<unknown>(
     getProjectDiscoveryFilePath(sessionsDir, sessionPath, projectName),
   );
+  if (!raw) return null;
+  return normalizeProjectDiscoveryAnalysisRecord(raw, { projectName });
 }
 
 function saveProjectDiscoveryAnalysis(
@@ -17347,7 +17903,11 @@ function createWorksFromDiscovery(
 
   for (const finding of analysis.findings.slice(0, MAX_DISCOVERY_FINDINGS)) {
     const normalizedTitle = finding.title.trim().toLowerCase();
-    if (!normalizedTitle || existingTitles.has(normalizedTitle)) {
+    if (
+      !normalizedTitle ||
+      existingTitles.has(normalizedTitle) ||
+      finding.eligibility === 'blocked'
+    ) {
       skippedTitles.push(finding.title);
       continue;
     }
