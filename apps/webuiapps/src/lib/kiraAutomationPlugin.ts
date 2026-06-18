@@ -997,6 +997,7 @@ type ProjectDiscoveryEvidenceCollectedBy =
   | 'deterministic_scout'
   | 'llm_discovery'
   | 'reviewer_gate';
+type ProjectDiscoveryRunMode = 'analyze' | 'deepen';
 
 interface ProjectDiscoveryFingerprint {
   capturedAt: number;
@@ -1106,6 +1107,13 @@ interface ProjectDiscoveryTraversalSummary {
   skippedDirectories: string[];
   largeFiles: string[];
   binaryFiles: string[];
+}
+
+interface ProjectDiscoveryQualityGateContext {
+  projectRoot?: string;
+  existingWorks?: WorkTask[];
+  staleAnalysis?: boolean;
+  allowStaleAnalysis?: boolean;
 }
 
 interface KiraProjectSettings {
@@ -1500,9 +1508,21 @@ const PROJECT_DISCOVERY_FINDING_OUTPUT_SCHEMA = jsonObjectSchema({
   kind: jsonEnumSchema(['feature', 'bug']),
   title: jsonStringSchema(),
   summary: jsonStringSchema(),
-  evidence: jsonStringArraySchema(),
+  evidenceIds: jsonStringArraySchema(),
   files: jsonStringArraySchema(),
+  scope: jsonStringArraySchema(),
+  validationCommands: jsonStringArraySchema(),
+  risk: jsonEnumSchema(['low', 'medium', 'high']),
+  confidence: jsonNumberSchema(),
   taskDescription: jsonStringSchema(),
+});
+
+const PROJECT_DISCOVERY_BLIND_SPOT_OUTPUT_SCHEMA = jsonObjectSchema({
+  id: jsonStringSchema(),
+  area: jsonStringSchema(),
+  reason: jsonStringSchema(),
+  impact: jsonStringSchema(),
+  recommendation: jsonStringSchema(),
 });
 
 const KIRA_STRUCTURED_OUTPUT_SCHEMAS: Record<KiraStructuredOutputKind, JsonSchemaDefinition> = {
@@ -1514,6 +1534,8 @@ const KIRA_STRUCTURED_OUTPUT_SCHEMAS: Record<KiraStructuredOutputKind, JsonSchem
   }),
   'project-discovery': jsonObjectSchema({
     summary: jsonStringSchema(),
+    topologySummary: jsonStringSchema(),
+    blindSpots: jsonArraySchema(PROJECT_DISCOVERY_BLIND_SPOT_OUTPUT_SCHEMA),
     findings: jsonArraySchema(PROJECT_DISCOVERY_FINDING_OUTPUT_SCHEMA),
   }),
   'worker-plan': jsonObjectSchema({
@@ -11381,6 +11403,283 @@ function applyProjectDiscoveryScout(
   };
 }
 
+function normalizeDiscoveryTitleKey(value: string): string {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function isDiscoveryFingerprintStale(
+  projectRoot: string | undefined,
+  fingerprint: ProjectDiscoveryFingerprint,
+): boolean {
+  if (!projectRoot || !fs.existsSync(projectRoot)) return false;
+
+  const current = captureProjectDiscoveryFingerprint(projectRoot);
+  const comparableFields: Array<keyof ProjectDiscoveryFingerprint> = [
+    'gitHead',
+    'gitBranch',
+    'gitStatusHash',
+    'workspaceFileHash',
+    'packageManifestHash',
+  ];
+  return comparableFields.some((field) => {
+    const previousValue = fingerprint[field];
+    const currentValue = current[field];
+    return Boolean(previousValue && currentValue && previousValue !== currentValue);
+  });
+}
+
+function recoveryEvidenceIdsForLegacyFinding(
+  finding: ProjectDiscoveryFinding,
+  evidenceLedger: ProjectDiscoveryEvidence[],
+): string[] {
+  if (finding.evidenceIds.length > 0 || finding.evidence.length === 0) return [];
+
+  const evidenceText = finding.evidence.join('\n').toLowerCase();
+  const findingFiles = new Set(finding.files.map((file) => file.toLowerCase()));
+  return limitedUniqueStrings(
+    evidenceLedger
+      .filter((entry) => {
+        const file = entry.file?.toLowerCase() ?? '';
+        return (
+          findingFiles.has(file) ||
+          (file.length > 0 && evidenceText.includes(file)) ||
+          evidenceText.includes(entry.id.toLowerCase())
+        );
+      })
+      .map((entry) => entry.id),
+    6,
+  );
+}
+
+function filterExistingDiscoveryFiles(projectRoot: string | undefined, files: string[]): string[] {
+  const normalizedFiles = normalizeDiscoveryFileList(files, [], 20);
+  if (!projectRoot || !fs.existsSync(projectRoot)) return normalizedFiles;
+
+  return normalizedFiles.filter((file) => {
+    try {
+      const absolutePath = ensureInsideRoot(projectRoot, file);
+      if (!fs.existsSync(absolutePath)) return false;
+      const stat = fs.statSync(absolutePath);
+      return stat.isFile() || stat.isDirectory();
+    } catch {
+      return false;
+    }
+  });
+}
+
+function validationCommandReferencesExistingFiles(
+  projectRoot: string | undefined,
+  command: string,
+): boolean {
+  if (!projectRoot || !fs.existsSync(projectRoot)) return true;
+
+  const referencedFiles =
+    command.match(
+      /[A-Za-z0-9_.@/-]+\.(?:test|spec)?\.?(?:ts|tsx|js|jsx|mjs|cjs|py|go|rs|cs|md|mdx|json|ya?ml)/g,
+    ) ?? [];
+  if (referencedFiles.length === 0) return true;
+
+  return referencedFiles.every((file) => {
+    const relativePath = normalizeDiscoveryRelativePath(file);
+    if (!relativePath) return false;
+    return isExistingDiscoveryFile(projectRoot, relativePath);
+  });
+}
+
+function isDiscoveryScopeTooBroad(scope: string[], files: string[]): boolean {
+  const combined = [...scope, ...files].map((item) => item.toLowerCase());
+  if (scope.length > 6 || files.length > 8) return true;
+  return combined.some((item) =>
+    /\b(all|entire|whole|everything|rewrite|rebuild|refactor\s+all)\b|전체|전부|모든|리라이트|재작성/.test(
+      item,
+    ),
+  );
+}
+
+function blindSpotOverlapsDiscoveryFinding(
+  finding: ProjectDiscoveryFinding,
+  blindSpots: ProjectDiscoveryBlindSpot[],
+): boolean {
+  const affected = normalizePathList([...finding.files, ...finding.scope], 40).map((item) =>
+    item.toLowerCase(),
+  );
+  if (affected.length === 0) return false;
+
+  return blindSpots.some((blindSpot) => {
+    const normalizedArea = normalizeDiscoveryRelativePath(blindSpot.area).toLowerCase();
+    if (!normalizedArea) return false;
+    return affected.some(
+      (item) =>
+        item === normalizedArea ||
+        item.startsWith(`${normalizedArea}/`) ||
+        normalizedArea.startsWith(`${item}/`) ||
+        normalizedArea.includes(item),
+    );
+  });
+}
+
+function buildDiscoveryQualityGateDepthNotes(params: {
+  analysis: ProjectDiscoveryAnalysis;
+  removedUnsafeValidationCount: number;
+  recoveredEvidenceCount: number;
+}): string[] {
+  return limitedUniqueStrings(
+    [
+      ...params.analysis.depth.notes,
+      ...(params.analysis.depth.depthScore < 0.65
+        ? ['Discovery quality gate warning: depth_score_below_0_65.']
+        : []),
+      ...(params.analysis.depth.filesRead < 8
+        ? ['Discovery quality gate warning: files_read_below_8.']
+        : []),
+      ...(params.analysis.basedOnPreviousAnalysis
+        ? ['Discovery quality gate warning: previous_analysis_reused.']
+        : []),
+      ...(params.removedUnsafeValidationCount > 0
+        ? [
+            `Discovery quality gate removed ${params.removedUnsafeValidationCount} unsafe validation command(s).`,
+          ]
+        : []),
+      ...(params.recoveredEvidenceCount > 0
+        ? [
+            `Discovery quality gate recovered ${params.recoveredEvidenceCount} legacy evidence reference(s) from known scout evidence.`,
+          ]
+        : []),
+    ],
+    12,
+  );
+}
+
+export function applyDiscoveryQualityGates(
+  analysis: ProjectDiscoveryAnalysis,
+  context: ProjectDiscoveryQualityGateContext = {},
+): ProjectDiscoveryAnalysis {
+  const knownEvidenceIds = new Set(analysis.evidenceLedger.map((entry) => entry.id));
+  const existingOpenTitles = new Set(
+    (context.existingWorks ?? [])
+      .filter((work) => work.status !== 'done')
+      .map((work) => normalizeDiscoveryTitleKey(work.title)),
+  );
+  const staleAnalysis =
+    !context.allowStaleAnalysis &&
+    (context.staleAnalysis ??
+      isDiscoveryFingerprintStale(
+        context.projectRoot ?? analysis.projectRoot,
+        analysis.projectFingerprint,
+      ));
+  let removedUnsafeValidationCount = 0;
+  let recoveredEvidenceCount = 0;
+
+  const findings = analysis.findings.map((finding): ProjectDiscoveryFinding => {
+    const recoveredEvidenceIds = recoveryEvidenceIdsForLegacyFinding(
+      finding,
+      analysis.evidenceLedger,
+    );
+    recoveredEvidenceCount += recoveredEvidenceIds.length;
+    const candidateEvidenceIds =
+      finding.evidenceIds.length > 0 ? finding.evidenceIds : recoveredEvidenceIds;
+    const unknownEvidenceIds = candidateEvidenceIds.filter((id) => !knownEvidenceIds.has(id));
+    const evidenceIds = candidateEvidenceIds.filter((id) => knownEvidenceIds.has(id));
+    const files = filterExistingDiscoveryFiles(
+      context.projectRoot ?? analysis.projectRoot,
+      finding.files,
+    );
+    const scope = normalizeDiscoveryStringList(finding.scope, files, 12);
+    const projectRoot = context.projectRoot ?? analysis.projectRoot;
+    const safeValidationCommands = limitedUniqueStrings(
+      finding.validationCommands.filter(
+        (command) =>
+          isSafeCommandAllowed(command) &&
+          validationCommandReferencesExistingFiles(projectRoot, command),
+      ),
+      12,
+    );
+    removedUnsafeValidationCount += Math.max(
+      0,
+      finding.validationCommands.length - safeValidationCommands.length,
+    );
+    const blockedReasons = new Set(finding.blockedReasons);
+
+    if (evidenceIds.length < 2) {
+      blockedReasons.add('missing_evidence');
+    }
+    if (unknownEvidenceIds.length > 0) {
+      blockedReasons.add('unknown_evidence_id');
+    }
+    if (files.length === 0) {
+      blockedReasons.add('missing_candidate_files');
+    }
+    if (
+      files.length > 0 &&
+      !isDocumentationOnlyChange(files) &&
+      safeValidationCommands.length === 0
+    ) {
+      blockedReasons.add('missing_validation');
+    }
+    if (isDiscoveryScopeTooBroad(scope, files)) {
+      blockedReasons.add('scope_too_broad');
+    }
+    if (staleAnalysis) {
+      blockedReasons.add('stale_analysis');
+    }
+    if (blindSpotOverlapsDiscoveryFinding({ ...finding, files, scope }, analysis.blindSpots)) {
+      blockedReasons.add('blind_spot_overlap');
+    }
+    if (existingOpenTitles.has(normalizeDiscoveryTitleKey(finding.title))) {
+      blockedReasons.add('duplicate_existing_work');
+    }
+
+    const blockedReasonList = [...blockedReasons];
+    const eligibility: ProjectDiscoveryFindingEligibility =
+      blockedReasonList.length > 0
+        ? 'blocked'
+        : finding.confidence < 0.45
+          ? 'needs_deeper_analysis'
+          : 'ready';
+    const risk: ProjectDiscoveryFindingRisk = blockedReasonList.some((reason) =>
+      ['scope_too_broad', 'stale_analysis', 'blind_spot_overlap'].includes(reason),
+    )
+      ? 'high'
+      : finding.risk;
+
+    return {
+      ...finding,
+      evidenceIds,
+      files,
+      scope,
+      validationCommands: safeValidationCommands,
+      confidence: clampConfidence(finding.confidence, 0.5),
+      eligibility,
+      blockedReasons: blockedReasonList,
+      risk,
+    };
+  });
+  const evidenceLedger = analysis.evidenceLedger;
+  const blindSpots = analysis.blindSpots;
+
+  return {
+    ...analysis,
+    findings,
+    depth: calculateDiscoveryDepthReport({
+      projectFingerprint: analysis.projectFingerprint,
+      filesEnumerated: analysis.depth.filesEnumerated,
+      filesRead: analysis.depth.filesRead,
+      directoriesVisited: analysis.depth.directoriesVisited,
+      searchQueries: analysis.depth.searchQueries,
+      searchMatches: analysis.depth.searchMatches,
+      likelyFilesCount: analysis.depth.likelyFilesCount,
+      evidenceLedger,
+      blindSpots,
+      findings,
+      notes: buildDiscoveryQualityGateDepthNotes({
+        analysis,
+        removedUnsafeValidationCount,
+        recoveredEvidenceCount,
+      }),
+    }),
+  };
+}
+
 export function buildProjectDiscoveryScout(
   projectRoot: string,
   projectName: string,
@@ -11740,6 +12039,15 @@ function normalizeProjectDiscoveryBlindSpots(value: unknown): ProjectDiscoveryBl
   return value
     .slice(0, 40)
     .map((entry, index): ProjectDiscoveryBlindSpot | null => {
+      if (typeof entry === 'string') {
+        const reason = normalizeNullableString(entry);
+        if (!reason) return null;
+        return {
+          id: normalizeDiscoveryId(undefined, `blind-spot-${index + 1}`),
+          area: 'llm reported blind spot',
+          reason,
+        };
+      }
       if (!isRecord(entry)) return null;
       const area = normalizeNullableString(entry.area);
       const reason = normalizeNullableString(entry.reason);
@@ -11755,6 +12063,25 @@ function normalizeProjectDiscoveryBlindSpots(value: unknown): ProjectDiscoveryBl
       };
     })
     .filter((entry): entry is ProjectDiscoveryBlindSpot => Boolean(entry));
+}
+
+function recordHasProjectDiscoveryDossierFields(record: Record<string, unknown>): boolean {
+  if (record.schemaVersion === PROJECT_DISCOVERY_SCHEMA_VERSION) return true;
+  if (typeof record.topologySummary === 'string') return true;
+  if (Array.isArray(record.blindSpots)) return true;
+  if (Array.isArray(record.evidenceLedger)) return true;
+  if (isRecord(record.topology)) return true;
+  if (isRecord(record.depth)) return true;
+  if (!Array.isArray(record.findings)) return false;
+  return record.findings.some(
+    (finding) =>
+      isRecord(finding) &&
+      (Array.isArray(finding.evidenceIds) ||
+        Array.isArray(finding.validationCommands) ||
+        Array.isArray(finding.scope) ||
+        typeof finding.risk === 'string' ||
+        typeof finding.confidence === 'number'),
+  );
 }
 
 function normalizeProjectDiscoveryFinding(
@@ -11861,8 +12188,9 @@ function normalizeProjectDiscoveryAnalysisRecord(
 ): ProjectDiscoveryAnalysis {
   const now = options.now ?? Date.now();
   const record = isRecord(value) ? value : {};
-  const sourceHasV2Fields = record.schemaVersion === PROJECT_DISCOVERY_SCHEMA_VERSION;
+  const sourceHasV2Fields = recordHasProjectDiscoveryDossierFields(record);
   const projectRoot = options.projectRoot ?? normalizeNullableString(record.projectRoot) ?? '';
+  const topologySummary = normalizeNullableString(record.topologySummary);
   const evidenceLedger = sourceHasV2Fields
     ? normalizeProjectDiscoveryEvidenceLedger(record.evidenceLedger)
     : [];
@@ -11879,6 +12207,9 @@ function normalizeProjectDiscoveryAnalysisRecord(
   const projectFingerprint = options.captureFingerprint
     ? captureProjectDiscoveryFingerprint(projectRoot, now)
     : normalizeSavedProjectDiscoveryFingerprint(record.projectFingerprint, now);
+  const topology = sourceHasV2Fields
+    ? normalizeProjectDiscoveryTopology(record.topology)
+    : normalizeProjectDiscoveryTopology(null);
 
   return {
     schemaVersion: PROJECT_DISCOVERY_SCHEMA_VERSION,
@@ -11897,9 +12228,12 @@ function normalizeProjectDiscoveryAnalysisRecord(
       blindSpots,
       sourceHasV2Fields,
     }),
-    topology: sourceHasV2Fields
-      ? normalizeProjectDiscoveryTopology(record.topology)
-      : normalizeProjectDiscoveryTopology(null),
+    topology: topologySummary
+      ? {
+          ...topology,
+          notes: limitedUniqueStrings([topologySummary, ...topology.notes], 12),
+        }
+      : topology,
     evidenceLedger,
     blindSpots,
     findings,
@@ -16935,8 +17269,12 @@ function formatProjectDiscoveryScoutForPrompt(scout: ProjectDiscoveryScout | nul
     `- Config/storage: ${[...scout.topology.configFiles, ...scout.topology.storage].slice(0, 12).join(', ') || 'none'}`,
     `Evidence seed:\n${scout.evidenceLedger.slice(0, 18).map(formatEvidence).join('\n') || '- none'}`,
     `Blind spots:\n${scout.blindSpots.slice(0, 12).map(formatBlindSpot).join('\n') || '- none'}`,
-    'Use these scout facts as starting evidence. Prefer findings that can cite scout evidence ids in the evidence strings, and avoid proposing tasks whose affected area is listed as a blind spot unless the task is explicitly to investigate that blind spot.',
+    'Use these scout facts as starting evidence. Every finding must cite at least two evidenceIds from the evidence seed. Avoid proposing tasks whose affected area is listed as a blind spot unless the task is explicitly to investigate that blind spot.',
   ].join('\n');
+}
+
+function normalizeProjectDiscoveryRunMode(value: unknown): ProjectDiscoveryRunMode {
+  return value === 'deepen' ? 'deepen' : 'analyze';
 }
 
 function buildProjectDiscoveryPrompt(
@@ -16944,9 +17282,11 @@ function buildProjectDiscoveryPrompt(
   projectOverview: string,
   previousAnalysis: ProjectDiscoveryAnalysis | null,
   scout: ProjectDiscoveryScout | null = null,
+  runMode: ProjectDiscoveryRunMode = 'analyze',
 ): string {
   return [
     `Project: ${projectName}`,
+    `Discovery mode: ${runMode}`,
     `Project overview:\n${projectOverview}`,
     formatProjectDiscoveryScoutForPrompt(scout),
     previousAnalysis
@@ -16957,12 +17297,18 @@ function buildProjectDiscoveryPrompt(
             .join('\n')}`,
         ].join('\n\n')
       : '',
+    runMode === 'deepen'
+      ? 'Deepen mode: focus on blocked or shallow findings, add missing evidence references, validation expectations, and narrower scopes. Keep useful blocked candidates visible if evidence remains insufficient.'
+      : '',
     `Inspect the current source code and identify up to ${MAX_DISCOVERY_FINDINGS} valuable next tasks.`,
     `Tasks may be either new feature opportunities or bug fixes.`,
     `Prefer concrete, implementation-sized work items that a coding agent can pick up directly.`,
+    `Every finding must cite evidenceIds from the deterministic scout evidence seed. Do not cite ids that were not provided.`,
+    `Every non-documentation finding must include safe validationCommands using existing package/test/build/lint/typecheck style commands. Do not invent unavailable test files.`,
+    `Use files and scope only for paths or modules present in the scout context or project overview. Broad project-wide rewrites should be represented as blocked or split candidates, not ready tasks.`,
     `Avoid duplicate findings. If a previous finding still matters, refresh it instead of duplicating it with a new title.`,
     `Return only JSON with this shape:`,
-    `{"summary":"string","findings":[{"id":"string","kind":"feature|bug","title":"string","summary":"string","evidence":["..."],"files":["..."],"taskDescription":"markdown brief"}]}`,
+    `{"summary":"string","topologySummary":"string","blindSpots":[{"id":"string","area":"string","reason":"string","impact":"string","recommendation":"string"}],"findings":[{"id":"string","kind":"feature|bug","title":"string","summary":"string","evidenceIds":["ev-...","ev-..."],"files":["path"],"scope":["module or bounded area"],"validationCommands":["safe command"],"risk":"low|medium|high","confidence":0.0,"taskDescription":"markdown brief"}]}`,
   ]
     .filter(Boolean)
     .join('\n\n');
@@ -16970,10 +17316,14 @@ function buildProjectDiscoveryPrompt(
 
 function buildProjectDiscoverySystemPrompt(): string {
   return [
-    'You are Aoi, the main Kira project analyst.',
+    'You are Aoi, the main Kira read-only project analyst.',
     'Inspect the project in read-only mode and decide what should be built or fixed next.',
-    'Favor concrete, high-signal findings over generic product advice.',
-    'Base every finding on the current source code.',
+    'Every finding must cite evidence ids from the provided deterministic scout ledger.',
+    'Do not invent files, evidence ids, tests, validation commands, or repository facts.',
+    'Identify blind spots explicitly instead of pretending uninspected areas were analyzed.',
+    'Favor concrete, implementation-sized tasks over generic product advice.',
+    'Mark broad, project-wide, rewrite-sized, or under-evidenced ideas as split/block candidates in the finding summary and scope.',
+    'Base every finding on the current source code and provided scout evidence.',
     'Do not modify files.',
     'Do not wrap the final JSON in markdown fences.',
   ].join('\n');
@@ -18744,8 +19094,15 @@ async function analyzeProjectForDiscovery(
   sessionPath: string,
   projectName: string,
   res: { write: (chunk: string) => unknown },
+  runMode: ProjectDiscoveryRunMode = 'analyze',
 ): Promise<ProjectDiscoveryAnalysis> {
-  sendSseEvent(res, { type: 'log', message: `Preparing discovery run for ${projectName}...` });
+  sendSseEvent(res, {
+    type: 'log',
+    message:
+      runMode === 'deepen'
+        ? `Preparing deepen discovery run for ${projectName}...`
+        : `Preparing discovery run for ${projectName}...`,
+  });
 
   const runtime = getKiraRuntimeSettings(options.configFile, options.getWorkRootDirectory());
   if (!runtime.reviewerConfig) {
@@ -18795,7 +19152,7 @@ async function analyzeProjectForDiscovery(
   const raw = await runToolAgent(
     runtime.reviewerConfig,
     projectRoot,
-    buildProjectDiscoveryPrompt(projectName, projectOverview, previousAnalysis, scout),
+    buildProjectDiscoveryPrompt(projectName, projectOverview, previousAnalysis, scout, runMode),
     buildProjectDiscoverySystemPrompt(),
     false,
     undefined,
@@ -18814,15 +19171,24 @@ async function analyzeProjectForDiscovery(
 
   sendSseEvent(res, {
     type: 'log',
-    message: 'Normalizing the findings and saving them for later reuse...',
+    message: 'Normalizing the findings and applying discovery quality gates...',
   });
-  const analysis = parseProjectDiscoveryAnalysis(
+  const parsedAnalysis = parseProjectDiscoveryAnalysis(
     raw,
     projectName,
     projectRoot,
     previousAnalysis,
     scout,
   );
+  const existingWorks = loadProjectWorks(options.sessionsDir, sessionPath, projectName);
+  const analysis = applyDiscoveryQualityGates(parsedAnalysis, {
+    projectRoot,
+    existingWorks,
+  });
+  sendSseEvent(res, {
+    type: 'log',
+    message: `Quality gate complete: ${analysis.findings.filter((finding) => finding.eligibility === 'ready').length} ready, ${analysis.findings.filter((finding) => finding.eligibility === 'blocked').length} blocked, ${analysis.findings.filter((finding) => finding.eligibility === 'needs_deeper_analysis').length} need deeper analysis.`,
+  });
   saveProjectDiscoveryAnalysis(options.sessionsDir, sessionPath, analysis);
 
   sendSseEvent(res, {
@@ -18843,22 +19209,30 @@ function createWorksFromDiscovery(
 ): { created: WorkTask[]; skippedTitles: string[] } {
   const worksDir = join(getKiraDataDir(options.sessionsDir, sessionPath), WORKS_DIR_NAME);
   fs.mkdirSync(worksDir, { recursive: true });
+  const runtime = getKiraRuntimeSettings(options.configFile, options.getWorkRootDirectory());
+  const projectRoot =
+    analysis.projectRoot && fs.existsSync(analysis.projectRoot)
+      ? analysis.projectRoot
+      : runtime.workRootDirectory
+        ? resolveKiraProjectRoot(runtime.workRootDirectory, analysis.projectName)
+        : undefined;
 
-  const existingTitles = new Set(
-    loadProjectWorks(options.sessionsDir, sessionPath, analysis.projectName).map((work) =>
-      work.title.trim().toLowerCase(),
-    ),
-  );
+  const existingWorks = loadProjectWorks(options.sessionsDir, sessionPath, analysis.projectName);
+  const gatedAnalysis = applyDiscoveryQualityGates(analysis, {
+    projectRoot,
+    existingWorks,
+  });
+  const existingTitles = new Set(existingWorks.map((work) => work.title.trim().toLowerCase()));
 
   const created: WorkTask[] = [];
   const skippedTitles: string[] = [];
 
-  for (const finding of analysis.findings.slice(0, MAX_DISCOVERY_FINDINGS)) {
+  for (const finding of gatedAnalysis.findings.slice(0, MAX_DISCOVERY_FINDINGS)) {
     const normalizedTitle = finding.title.trim().toLowerCase();
     if (
       !normalizedTitle ||
       existingTitles.has(normalizedTitle) ||
-      finding.eligibility === 'blocked'
+      finding.eligibility !== 'ready'
     ) {
       skippedTitles.push(finding.title);
       continue;
@@ -18868,7 +19242,7 @@ function createWorksFromDiscovery(
     const work: WorkTask = {
       id: makeId('work'),
       type: 'work',
-      projectName: analysis.projectName,
+      projectName: gatedAnalysis.projectName,
       title: finding.title.trim(),
       description: finding.taskDescription.trim() || buildFallbackTaskDescription(finding),
       status: 'todo',
@@ -21345,6 +21719,13 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
                 typeof body.sessionPath === 'string' ? body.sessionPath.trim() : '';
               const projectName =
                 typeof body.projectName === 'string' ? body.projectName.trim() : '';
+              const runMode = normalizeProjectDiscoveryRunMode(
+                typeof body.mode === 'string'
+                  ? body.mode
+                  : typeof body.discoveryMode === 'string'
+                    ? body.discoveryMode
+                    : undefined,
+              );
               if (!sessionPath || !projectName) {
                 throw new Error('Missing sessionPath or projectName.');
               }
@@ -21354,10 +21735,12 @@ export function kiraAutomationPlugin(options: KiraAutomationPluginOptions): Plug
                 sessionPath,
                 projectName,
                 res,
+                runMode,
               );
               sendSseEvent(res, {
                 type: 'analysis_complete',
                 analysis,
+                mode: runMode,
                 message: `Aoi found ${analysis.findings.length} candidate tasks for ${projectName}.`,
               });
               sendSseEvent(res, { type: 'done' });

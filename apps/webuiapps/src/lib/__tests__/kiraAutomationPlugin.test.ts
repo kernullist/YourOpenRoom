@@ -26,6 +26,7 @@ import {
   collectReviewerDiffExcerpts,
   collectWorkerSelfCheckIssues,
   enforceReviewDecision,
+  applyDiscoveryQualityGates,
   buildWorkerPlanningPrompt,
   buildWorkerPlanningSystemPrompt,
   buildWorkerPrompt,
@@ -2300,6 +2301,281 @@ describe('buildProjectDiscoveryScout()', () => {
     expect(areas.some((area) => area.includes('generated'))).toBe(true);
     expect(areas.some((area) => area.includes('largePlugin.ts'))).toBe(true);
     expect(areas.some((area) => area.includes('logo.png'))).toBe(true);
+  });
+});
+
+describe('applyDiscoveryQualityGates()', () => {
+  function makeGateProject(): string {
+    const projectRoot = makeTempDir('kira-discovery-gate-');
+    writeProjectFile(projectRoot, 'src/app.ts', 'export const app = true;\n');
+    writeProjectFile(projectRoot, 'src/other.ts', 'export const other = true;\n');
+    writeProjectFile(projectRoot, 'docs/guide.md', '# Guide\n');
+    return projectRoot;
+  }
+
+  function makeGateAnalysis(projectRoot: string, findingOverrides: Record<string, unknown> = {}) {
+    return {
+      schemaVersion: 2,
+      id: 'project-discovery-gate',
+      projectName: 'GateProject',
+      projectRoot,
+      projectFingerprint: {
+        capturedAt: 1,
+        gitHead: null,
+        gitBranch: null,
+        gitStatusHash: null,
+        workspaceFileHash: null,
+        packageManifestHash: null,
+        unavailable: ['git_head'],
+      },
+      summary: 'Gate analysis.',
+      depth: {
+        filesEnumerated: 10,
+        filesRead: 3,
+        directoriesVisited: 4,
+        searchQueries: 2,
+        searchMatches: 4,
+        likelyFilesCount: 2,
+        evidenceCount: 2,
+        findingsWithEvidence: 1,
+        findingsWithValidation: 1,
+        blindSpotCount: 0,
+        depthScore: 0.7,
+        depthLevel: 'moderate',
+        notes: [],
+      },
+      topology: {
+        entrypoints: [],
+        uiSurfaces: [],
+        apiSurfaces: ['src/app.ts'],
+        testSurfaces: [],
+        configFiles: [],
+        storage: [],
+        notes: [],
+      },
+      evidenceLedger: [
+        {
+          id: 'ev-app-read',
+          kind: 'file_read',
+          file: 'src/app.ts',
+          summary: 'App source was read.',
+          collectedBy: 'deterministic_scout',
+          confidence: 0.8,
+        },
+        {
+          id: 'ev-app-test',
+          kind: 'test_impact',
+          file: 'src/app.ts',
+          summary: 'App validation surface was inferred.',
+          collectedBy: 'deterministic_scout',
+          confidence: 0.7,
+        },
+      ],
+      blindSpots: [],
+      findings: [
+        {
+          id: 'finding-ready',
+          kind: 'feature',
+          title: 'Improve app behavior',
+          summary: 'The app has a bounded improvement opportunity.',
+          evidence: [],
+          evidenceIds: ['ev-app-read', 'ev-app-test'],
+          files: ['src/app.ts'],
+          scope: ['src/app.ts'],
+          validationCommands: ['pnpm test'],
+          confidence: 0.82,
+          eligibility: 'needs_deeper_analysis',
+          blockedReasons: [],
+          risk: 'medium',
+          taskDescription: '# Brief\n\nImprove app behavior.',
+          ...findingOverrides,
+        },
+      ],
+      basedOnPreviousAnalysis: false,
+      createdAt: 1,
+      updatedAt: 1,
+    };
+  }
+
+  it('keeps a finding ready when evidence ids, files, and validation are valid', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(makeGateAnalysis(projectRoot) as any, {
+      projectRoot,
+      existingWorks: [],
+    });
+
+    expect(gated.findings[0]).toMatchObject({
+      eligibility: 'ready',
+      blockedReasons: [],
+      evidenceIds: ['ev-app-read', 'ev-app-test'],
+      files: ['src/app.ts'],
+      validationCommands: ['pnpm test'],
+    });
+  });
+
+  it('blocks findings with missing evidence ids', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        evidenceIds: [],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].blockedReasons).toContain('missing_evidence');
+  });
+
+  it('blocks unknown evidence ids without trusting free text evidence', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        evidence: ['Trust me, src/app.ts was inspected.'],
+        evidenceIds: ['ev-app-read', 'ev-made-up'],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].evidenceIds).toEqual(['ev-app-read']);
+    expect(gated.findings[0].blockedReasons).toContain('unknown_evidence_id');
+  });
+
+  it('blocks findings whose candidate files do not exist under the project root', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        files: ['src/missing.ts'],
+        scope: ['src/missing.ts'],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].files).toEqual([]);
+    expect(gated.findings[0].blockedReasons).toContain('missing_candidate_files');
+  });
+
+  it('blocks broad project-wide scopes', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        scope: ['entire project rewrite'],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].blockedReasons).toContain('scope_too_broad');
+    expect(gated.findings[0].risk).toBe('high');
+  });
+
+  it('blocks non-documentation findings without safe validation commands', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        validationCommands: ['curl https://example.com/run-tests'],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].validationCommands).toEqual([]);
+    expect(gated.findings[0].blockedReasons).toContain('missing_validation');
+  });
+
+  it('blocks safe-looking validation commands that reference invented test files', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        validationCommands: ['pnpm exec vitest src/missing.test.ts'],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].validationCommands).toEqual([]);
+    expect(gated.findings[0].blockedReasons).toContain('missing_validation');
+  });
+
+  it('allows documentation-only findings without validation commands', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        files: ['docs/guide.md'],
+        scope: ['docs/guide.md'],
+        validationCommands: [],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('ready');
+    expect(gated.findings[0].blockedReasons).not.toContain('missing_validation');
+  });
+
+  it('blocks findings that overlap blind spots', () => {
+    const projectRoot = makeGateProject();
+    const analysis = makeGateAnalysis(projectRoot) as any;
+    analysis.blindSpots = [
+      {
+        id: 'blind-app',
+        area: 'src/app.ts',
+        reason: 'The app file was too large to inspect.',
+      },
+    ];
+
+    const gated = applyDiscoveryQualityGates(analysis, { projectRoot });
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].blockedReasons).toContain('blind_spot_overlap');
+  });
+
+  it('blocks findings that duplicate existing non-done work items', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(makeGateAnalysis(projectRoot) as any, {
+      projectRoot,
+      existingWorks: [
+        {
+          id: 'work-existing',
+          type: 'work',
+          projectName: 'GateProject',
+          title: 'Improve app behavior',
+          description: 'Existing work.',
+          status: 'todo',
+          assignee: '',
+          createdAt: 1,
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].blockedReasons).toContain('duplicate_existing_work');
+  });
+
+  it('blocks stale analyses when stale confirmation is not allowed', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(makeGateAnalysis(projectRoot) as any, {
+      projectRoot,
+      staleAnalysis: true,
+    });
+
+    expect(gated.findings[0].eligibility).toBe('blocked');
+    expect(gated.findings[0].blockedReasons).toContain('stale_analysis');
+  });
+
+  it('recovers legacy evidence only when it matches known scout evidence files', () => {
+    const projectRoot = makeGateProject();
+    const gated = applyDiscoveryQualityGates(
+      makeGateAnalysis(projectRoot, {
+        evidence: ['src/app.ts shows the current app behavior.'],
+        evidenceIds: [],
+      }) as any,
+      { projectRoot },
+    );
+
+    expect(gated.findings[0].eligibility).toBe('ready');
+    expect(gated.findings[0].evidenceIds).toEqual(['ev-app-read', 'ev-app-test']);
   });
 });
 
