@@ -70,6 +70,7 @@ import {
 import { AOI_PROACTIVE_BRIEF_GLOBAL_COOLDOWN_KEY } from './aoiProactiveBriefPlanner';
 import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
+import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
@@ -307,6 +308,17 @@ function buildAoiProactiveBriefResponse(params: {
     calibrationTuning,
     context: deliveryContext,
   });
+  const trendAdvisor = buildAoiProactiveTrendAdvisorState({
+    sessionsDir: params.sessionsDir,
+    sessionPath: params.sessionPath,
+    policy,
+    profile,
+    candidates,
+    feedback,
+    fieldMetrics,
+    calibrationTuning,
+    now,
+  });
   return {
     ok: true,
     sessionPath: params.sessionPath,
@@ -318,6 +330,7 @@ function buildAoiProactiveBriefResponse(params: {
     calibrationInbox,
     calibrationTuning,
     panel,
+    trendAdvisor,
   };
 }
 

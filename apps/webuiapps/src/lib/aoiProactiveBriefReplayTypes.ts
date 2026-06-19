@@ -70,7 +70,13 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'scout_direct_chat_disabled'
   | 'scout_unsafe_label_blocker'
   | 'scout_stale_source_blocker'
-  | 'scout_no_candidate';
+  | 'scout_no_candidate'
+  | 'trend_watch_profile_empty'
+  | 'trend_provider_missing'
+  | 'trend_snapshot_stale'
+  | 'trend_weak_evidence'
+  | 'trend_opinion_cards_ready'
+  | 'trend_direct_chat_not_ready';
 
 export interface AoiProactiveBriefReplayMetric {
   name: AoiProactiveBriefReplayMetricName;

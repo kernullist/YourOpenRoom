@@ -317,6 +317,7 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiProactiveBriefFeedbackCategory,
+  AoiProactiveTrendAdvisorState,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
@@ -7311,6 +7312,7 @@ const ChatPanel: React.FC<{
           aoiOperatorDigest={aoiOperatorDigest}
           aoiOperatorHealth={aoiOperatorHealth}
           aoiProactiveBriefPanel={aoiProactiveBriefPanel}
+          aoiProactiveTrendAdvisor={aoiProactiveBriefs?.trendAdvisor ?? null}
           expandedAoiProactiveBriefId={expandedAoiProactiveBriefId}
           aoiOperatorVoicePolicy={aoiOperatorVoicePolicy}
           aoiOperatorVoiceMuted={aoiOperatorVoiceMuted}
@@ -7892,6 +7894,7 @@ const SettingsModal: React.FC<{
   aoiOperatorDigest: AoiOperatorDigest | null;
   aoiOperatorHealth: AoiOperatorHealthState | null;
   aoiProactiveBriefPanel: AoiProactiveBriefPanelModel;
+  aoiProactiveTrendAdvisor: AoiProactiveTrendAdvisorState | null;
   expandedAoiProactiveBriefId: string | null;
   aoiOperatorVoicePolicy: AoiOperatorVoicePolicy;
   aoiOperatorVoiceMuted: boolean;
@@ -8003,6 +8006,7 @@ const SettingsModal: React.FC<{
   aoiOperatorDigest,
   aoiOperatorHealth,
   aoiProactiveBriefPanel,
+  aoiProactiveTrendAdvisor,
   expandedAoiProactiveBriefId,
   aoiOperatorVoicePolicy,
   aoiOperatorVoiceMuted,
@@ -10707,6 +10711,100 @@ const SettingsModal: React.FC<{
                         </p>
                       )}
                     </div>
+
+                    {aoiProactiveTrendAdvisor && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Proactive trend advisor
+                        </div>
+                        <div className={styles.aoiAutonomyProposalList}>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>
+                              Readiness:{' '}
+                              {sanitizeAoiProposalDisplayText(
+                                `${aoiProactiveTrendAdvisor.readiness.status}; ${aoiProactiveTrendAdvisor.readiness.summary}`,
+                                320,
+                              )}
+                            </div>
+                            <div>
+                              Watches: {aoiProactiveTrendAdvisor.watchProfile.topicWatches.length} /
+                              snapshots {aoiProactiveTrendAdvisor.snapshots.length}
+                            </div>
+                            {aoiProactiveTrendAdvisor.readiness.directChatBlockedReasons
+                              .slice(0, 4)
+                              .map((reason, index) => (
+                                <div key={`trend-readiness-block-${index}`}>
+                                  Direct chat block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                                </div>
+                              ))}
+                          </div>
+                          {aoiProactiveTrendAdvisor.opinionCards.length > 0 ? (
+                            aoiProactiveTrendAdvisor.opinionCards.map((card) => (
+                              <div
+                                className={styles.aoiAutonomyProposalItem}
+                                key={`proactive-trend-${card.id}`}
+                                data-testid="aoi-proactive-trend-card"
+                              >
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>{sanitizeAoiProposalDisplayText(card.topicLabel, 80)}</span>
+                                  <span>{card.freshnessLabel}</span>
+                                  <span>{card.confidenceLabel}</span>
+                                  <span>
+                                    {card.directChatAllowed
+                                      ? 'direct chat ready'
+                                      : 'dashboard only'}
+                                  </span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(card.title, 140)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>
+                                    What changed:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.whatChanged, 320)}
+                                  </div>
+                                  <div>
+                                    Why it matters:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.whyItMatters, 320)}
+                                  </div>
+                                  <div>
+                                    My take: {sanitizeAoiProposalDisplayText(card.myTake, 320)}
+                                  </div>
+                                  <div>
+                                    Suggested next action:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.suggestedNextAction, 240)}
+                                  </div>
+                                  <div>
+                                    Evidence:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      card.sourceHosts.join(', ') || 'source-backed snapshot',
+                                      180,
+                                    )}
+                                  </div>
+                                  {card.directChatBlockedReasons
+                                    .slice(0, 4)
+                                    .map((reason, index) => (
+                                      <div key={`trend-${card.id}-block-${index}`}>
+                                        Direct chat block:{' '}
+                                        {sanitizeAoiProposalDisplayText(reason, 120)}
+                                      </div>
+                                    ))}
+                                  {card.evidenceRefs.slice(0, 4).map((ref, index) => (
+                                    <div key={`trend-${card.id}-evidence-${index}`}>
+                                      Evidence ref: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            ))
+                          ) : (
+                            <p className={styles.modelHint}>
+                              No source-backed trend opinion cards are ready.
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                    )}
 
                     <div className={styles.aoiAutonomyProposalSection}>
                       <div className={styles.promptBudgetSectionTitle}>

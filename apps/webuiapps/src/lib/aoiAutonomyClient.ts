@@ -40,6 +40,7 @@ import type {
   AoiProactiveBriefFieldMetrics,
   AoiProactiveBriefFeedback,
   AoiProactiveBriefFeedbackCategory,
+  AoiProactiveTrendAdvisorState,
   AoiReflection,
   AoiTrustCalibrationReset,
   AoiVoiceRenderDecision,
@@ -182,6 +183,7 @@ export interface AoiProactiveBriefListResponse {
   calibrationInbox?: AoiProactiveBriefCalibrationInbox;
   calibrationTuning?: AoiProactiveBriefCalibrationTuning;
   panel?: AoiProactiveBriefPanelModel;
+  trendAdvisor?: AoiProactiveTrendAdvisorState;
 }
 
 export interface AoiProactiveBriefFeedbackInput {
@@ -592,6 +594,9 @@ function parseAoiProactiveBriefListPayload(
       ? { calibrationTuning: payload.calibrationTuning as AoiProactiveBriefCalibrationTuning }
       : {}),
     ...(isRecord(payload.panel) ? { panel: payload.panel as AoiProactiveBriefPanelModel } : {}),
+    ...(isRecord(payload.trendAdvisor)
+      ? { trendAdvisor: payload.trendAdvisor as AoiProactiveTrendAdvisorState }
+      : {}),
   };
 }
 

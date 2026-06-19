@@ -32,6 +32,11 @@ import {
   buildAoiProactiveBriefReplayPromotionDrafts,
   buildAoiProactiveBriefSchedulerDiagnostics,
 } from './aoiProactiveBriefReplay';
+import {
+  buildAoiProactiveTrendAdvisorDiagnostics,
+  buildAoiProactiveTrendAdvisorState,
+  resolveAoiProactiveTrendPaths,
+} from './aoiProactiveTrendAdvisor';
 import type { PersistedConfig } from './configPersistence';
 import type {
   AoiAutonomySchedulerState,
@@ -139,6 +144,10 @@ export function buildAoiOperatorHealthState(params: {
     () => resolveAoiProactiveBriefPaths(params.sessionsDir, sessionPath),
     null,
   );
+  const proactiveTrendPaths = tryLoad(
+    () => resolveAoiProactiveTrendPaths(params.sessionsDir, sessionPath),
+    null,
+  );
   const proactiveProfile = tryLoad(
     () => loadAoiInterestProfile(params.sessionsDir, sessionPath, now),
     null,
@@ -188,7 +197,10 @@ export function buildAoiOperatorHealthState(params: {
         fs.existsSync(proactivePaths.fieldMetrics) ||
         fs.existsSync(proactivePaths.fieldEventIndex) ||
         fs.existsSync(proactivePaths.calibrationTuning) ||
-        fs.existsSync(proactivePaths.calibrationLabelIndex))),
+        fs.existsSync(proactivePaths.calibrationLabelIndex))) ||
+    (proactiveTrendPaths &&
+      (fs.existsSync(proactiveTrendPaths.watchProfile) ||
+        fs.existsSync(proactiveTrendPaths.snapshotIndex))),
   );
   const proactiveScoutWarnings =
     hasProactiveArtifacts &&
@@ -221,6 +233,19 @@ export function buildAoiOperatorHealthState(params: {
         now,
       })
     : null;
+  const proactiveTrendAdvisor = hasProactiveArtifacts
+    ? buildAoiProactiveTrendAdvisorState({
+        sessionPath,
+        policy,
+        profile: proactiveProfile,
+        candidates: proactiveCandidates,
+        feedback: proactiveFeedback,
+        fieldMetrics: proactiveFieldMetrics,
+        calibrationTuning: proactiveCalibrationTuning,
+        now,
+        persist: false,
+      })
+    : null;
   const proactiveBriefDiagnostics = hasProactiveArtifacts
     ? [
         ...buildAoiProactiveBriefDiagnostics({
@@ -237,6 +262,11 @@ export function buildAoiOperatorHealthState(params: {
         ...buildAoiProactiveBriefSchedulerDiagnostics({
           policy,
           scheduler,
+          tavilyConfigured: config.tavilyConfigured,
+          now,
+        }),
+        ...buildAoiProactiveTrendAdvisorDiagnostics({
+          state: proactiveTrendAdvisor,
           tavilyConfigured: config.tavilyConfigured,
           now,
         }),

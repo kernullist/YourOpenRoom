@@ -819,6 +819,22 @@ function proactiveBriefRecommendation(
   if (diagnostic.code === 'scout_provider_missing' || diagnostic.code === 'scout_provider_failed') {
     return recommendation('configure_tavily', 'Configure current provider', 'research');
   }
+  if (diagnostic.code === 'trend_provider_missing') {
+    return recommendation('configure_tavily', 'Configure trend research', 'research');
+  }
+  if (
+    diagnostic.code === 'trend_watch_profile_empty' ||
+    diagnostic.code === 'trend_direct_chat_not_ready'
+  ) {
+    return recommendation('inspect_memory', 'Review trend readiness', 'memory');
+  }
+  if (
+    diagnostic.code === 'trend_snapshot_stale' ||
+    diagnostic.code === 'trend_weak_evidence' ||
+    diagnostic.code === 'trend_opinion_cards_ready'
+  ) {
+    return recommendation('review_replay', 'Review trend evidence', 'replay_evaluation');
+  }
   if (
     diagnostic.code === 'scout_budget_exhausted' ||
     diagnostic.code === 'scout_network_disabled' ||
@@ -915,6 +931,18 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Stale labels constrain proactive scout';
     case 'scout_no_candidate':
       return 'Proactive scout found no candidate';
+    case 'trend_watch_profile_empty':
+      return 'Trend advisor watch profile empty';
+    case 'trend_provider_missing':
+      return 'Trend advisor provider missing';
+    case 'trend_snapshot_stale':
+      return 'Trend advisor snapshot stale';
+    case 'trend_weak_evidence':
+      return 'Trend advisor evidence weak';
+    case 'trend_opinion_cards_ready':
+      return 'Trend advisor opinion cards ready';
+    case 'trend_direct_chat_not_ready':
+      return 'Trend advisor direct chat not ready';
     default:
       return 'Proactive brief diagnostic';
   }

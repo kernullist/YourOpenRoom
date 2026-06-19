@@ -134,6 +134,133 @@ export interface AoiInterestProfile {
   warnings: string[];
 }
 
+export type AoiProactiveTrendWatchCadence = 'manual' | 'daily' | 'weekly';
+
+export interface AoiProactiveTrendWatchTopic {
+  version: 1;
+  id: string;
+  topicId: string;
+  topicLabel: string;
+  normalizedLabel: string;
+  aliases: string[];
+  watchQueries: string[];
+  preferredSourceHosts: string[];
+  cadence: AoiProactiveTrendWatchCadence;
+  noveltyThreshold: number;
+  directChatSensitivity: number;
+  muted: boolean;
+  pinned: boolean;
+  confidence: number;
+  evidenceRefs: string[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AoiProactiveTrendWatchProfile {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  sourceTopicCount: number;
+  topicWatches: AoiProactiveTrendWatchTopic[];
+  evidenceRefs: string[];
+}
+
+export type AoiProactiveTrendSnapshotFreshness = 'fresh' | 'unknown' | 'stale';
+
+export interface AoiProactiveTrendSnapshot {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  topicId: string;
+  topicLabel: string;
+  candidateId?: string;
+  title: string;
+  whatChanged: string;
+  whyItMatters: string;
+  myTake: string;
+  suggestedNextAction: string;
+  confidence: number;
+  noveltyScore: number;
+  risk: AoiAutonomyRisk;
+  freshness: AoiProactiveTrendSnapshotFreshness;
+  sources: AoiProactiveBriefSource[];
+  delivery: {
+    directChatAllowed: boolean;
+    directChatBlockedReasons: string[];
+  };
+  evidenceRefs: string[];
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface AoiProactiveTrendSnapshotIndexEntry {
+  id: string;
+  topicId: string;
+  topicLabel: string;
+  title: string;
+  candidateId?: string;
+  freshness: AoiProactiveTrendSnapshotFreshness;
+  confidence: number;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface AoiProactiveTrendSnapshotIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiProactiveTrendSnapshotIndexEntry[];
+}
+
+export type AoiProactiveTrendAdvisorReadinessStatus =
+  | 'not_configured'
+  | 'measuring'
+  | 'ready'
+  | 'blocked';
+
+export interface AoiProactiveTrendAdvisorReadiness {
+  version: 1;
+  status: AoiProactiveTrendAdvisorReadinessStatus;
+  sampleCount: number;
+  directChatReady: boolean;
+  directChatBlockedReasons: string[];
+  summary: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiProactiveTrendOpinionCard {
+  version: 1;
+  id: string;
+  snapshotId: string;
+  topicId: string;
+  topicLabel: string;
+  title: string;
+  whatChanged: string;
+  whyItMatters: string;
+  myTake: string;
+  suggestedNextAction: string;
+  confidenceLabel: string;
+  freshnessLabel: string;
+  sourceHosts: string[];
+  directChatAllowed: boolean;
+  directChatBlockedReasons: string[];
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiProactiveTrendAdvisorState {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  watchProfile: AoiProactiveTrendWatchProfile;
+  snapshots: AoiProactiveTrendSnapshot[];
+  opinionCards: AoiProactiveTrendOpinionCard[];
+  readiness: AoiProactiveTrendAdvisorReadiness;
+  evidenceRefs: string[];
+}
+
 export type AoiProactiveBriefStatus =
   | 'candidate'
   | 'shown'
