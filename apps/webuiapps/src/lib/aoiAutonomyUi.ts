@@ -141,6 +141,20 @@ export interface AoiAgendaNudgeCalibrationGate {
   evidenceRefs: string[];
 }
 
+export type AoiAgendaNudgeReadinessActionId =
+  | 'enable_notifications'
+  | 'disable_quiet_mode'
+  | 'raise_session_cap'
+  | 'reset_feedback_mute'
+  | 'refresh_autonomy'
+  | 'run_check';
+
+export interface AoiAgendaNudgeReadinessAction {
+  id: AoiAgendaNudgeReadinessActionId;
+  label: string;
+  title: string;
+}
+
 export interface AoiAgendaNudgeReadinessPanelSummary {
   visible: boolean;
   statusLabel: string;
@@ -148,6 +162,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   candidateLabel: string;
   reasonLabels: string[];
   nextActionLabels: string[];
+  actions: AoiAgendaNudgeReadinessAction[];
   evidenceRefs: string[];
   tone: 'ready' | 'waiting' | 'blocked';
 }
@@ -2503,6 +2518,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     reasonLabels: string[],
     nextActionLabels: string[],
     evidenceRefs: string[] = [],
+    actions: AoiAgendaNudgeReadinessAction[] = [],
   ): AoiAgendaNudgeReadinessPanelSummary => ({
     visible: true,
     statusLabel,
@@ -2510,6 +2526,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     candidateLabel: summaryCountLabel,
     reasonLabels,
     nextActionLabels,
+    actions,
     evidenceRefs,
     tone: 'blocked',
   });
@@ -2520,6 +2537,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi has no autonomy status snapshot for direct agenda nudges yet.',
       ['Autonomy status has not loaded.'],
       ['Refresh Aoi autonomy status before expecting a direct agenda chat nudge.'],
+      [],
+      [
+        {
+          id: 'refresh_autonomy',
+          label: 'Refresh',
+          title: 'Refresh Aoi autonomy state before checking agenda nudge readiness',
+        },
+      ],
     );
   }
 
@@ -2529,6 +2554,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi is already processing an autonomy tick.',
       ['Direct agenda nudges wait while an active tick is running.'],
       ['Let the current tick finish before Aoi speaks proactively.'],
+      [],
+      [
+        {
+          id: 'refresh_autonomy',
+          label: 'Refresh',
+          title: 'Refresh Aoi autonomy state after the active tick finishes',
+        },
+      ],
     );
   }
 
@@ -2556,6 +2589,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi agenda nudges are paused by panel quiet mode.',
       ['Quiet mode blocks direct agenda chat nudges but keeps observation active.'],
       ['Turn off quiet mode when you want Aoi to speak proactively again.'],
+      [],
+      [
+        {
+          id: 'disable_quiet_mode',
+          label: 'Leave quiet mode',
+          title: 'Turn off only the local Aoi panel quiet mode',
+        },
+      ],
     );
   }
 
@@ -2565,6 +2606,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi agenda nudges are waiting for notification permission.',
       ['Panel notifications are off, so direct agenda chat nudges stay silent.'],
       ['Turn on Aoi panel notifications to allow compact direct chat nudges.'],
+      [],
+      [
+        {
+          id: 'enable_notifications',
+          label: 'Enable notifications',
+          title: 'Allow Aoi to show compact direct agenda chat nudges in this panel',
+        },
+      ],
     );
   }
 
@@ -2581,6 +2630,13 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         : ['Recent feedback temporarily muted direct agenda chat nudges.'],
       ['Reset agenda nudge feedback or wait for the mute window to expire.'],
       calibrationGate.evidenceRefs,
+      [
+        {
+          id: 'reset_feedback_mute',
+          label: 'Reset nudge feedback',
+          title: 'Clear only local agenda nudge feedback calibration',
+        },
+      ],
     );
   }
 
@@ -2592,6 +2648,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi agenda nudges are disabled by the per-session cap.',
       ['The maximum direct suggestions per session is set to 0.'],
       ['Raise the Aoi max suggestions setting above 0.'],
+      [],
+      [
+        {
+          id: 'raise_session_cap',
+          label: 'Raise cap',
+          title: 'Increase the local per-session suggestion cap without running tools',
+        },
+      ],
     );
   }
 
@@ -2601,6 +2665,14 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       'Aoi already used the direct suggestion budget for this session.',
       [`Shown ${shownCount} of ${maxPerSession} allowed direct suggestion(s).`],
       ['Dismiss or reset the session budget by starting a fresh panel session.'],
+      [],
+      [
+        {
+          id: 'raise_session_cap',
+          label: 'Raise cap',
+          title: 'Increase the local per-session suggestion cap without running tools',
+        },
+      ],
     );
   }
 
@@ -2634,6 +2706,13 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
         reasonLabels: [`Cooldown remaining: ${formatAoiAgendaNudgeWait(waitMs)}.`],
         nextActionLabels: ['Aoi can speak again after the cooldown window expires.'],
+        actions: [
+          {
+            id: 'refresh_autonomy',
+            label: 'Refresh',
+            title: 'Refresh Aoi autonomy state after waiting for cooldown',
+          },
+        ],
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -2648,6 +2727,13 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         reasonLabels: ['Duplicate protection blocks repeating the same direct agenda nudge.'],
         nextActionLabels: [
           'A new proposal, approval gate, or blocked gate can produce a fresh nudge.',
+        ],
+        actions: [
+          {
+            id: 'run_check',
+            label: 'Run check',
+            title: 'Run a bounded manual Aoi check for fresh agenda candidates',
+          },
         ],
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
@@ -2665,6 +2751,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       nextActionLabels: [
         'Aoi can surface the nudge as a compact chat message without running tools or app actions.',
       ],
+      actions: [],
       evidenceRefs: candidate.evidenceRefs,
       tone: 'ready',
     };
@@ -2680,6 +2767,18 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     ],
     nextActionLabels: [
       'Aoi will wait for stronger evidence, an approval-gated action, or a blocked safety gate.',
+    ],
+    actions: [
+      {
+        id: 'run_check',
+        label: 'Run check',
+        title: 'Run a bounded manual Aoi check for fresh agenda candidates',
+      },
+      {
+        id: 'refresh_autonomy',
+        label: 'Refresh',
+        title: 'Refresh Aoi autonomy state before checking again',
+      },
     ],
     evidenceRefs: [],
     tone: 'waiting',

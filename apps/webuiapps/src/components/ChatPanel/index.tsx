@@ -293,6 +293,7 @@ import {
   summarizeAoiAutonomyProposalCounts,
   type AoiAgendaChatFollowUpContext,
   type AoiAgendaChatNudge,
+  type AoiAgendaNudgeReadinessActionId,
   type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
@@ -9120,6 +9121,75 @@ const SettingsModal: React.FC<{
       aoiOperatorDigest,
     ],
   );
+  const runAoiAgendaNudgeReadinessAction = useCallback(
+    (actionId: AoiAgendaNudgeReadinessActionId) => {
+      if (actionId === 'enable_notifications') {
+        onUpdateAoiAutonomyPanelSettings({ notificationsEnabled: true });
+      } else if (actionId === 'disable_quiet_mode') {
+        onUpdateAoiAutonomyPanelSettings({ quietMode: false });
+      } else if (actionId === 'raise_session_cap') {
+        onUpdateAoiAutonomyPanelSettings({
+          maxSuggestionsPerSession: Math.min(
+            12,
+            Math.max(
+              aoiAutonomyPanelSettings.maxSuggestionsPerSession + 1,
+              aoiInlineShownCount + 1,
+              1,
+            ),
+          ),
+        });
+      } else if (actionId === 'reset_feedback_mute') {
+        onUpdateAoiAutonomyPanelSettings({ agendaNudgeCalibration: null });
+      } else if (actionId === 'refresh_autonomy') {
+        void onRefreshAoiAutonomy();
+      } else if (actionId === 'run_check') {
+        void onRunAoiAutonomyCheck();
+      }
+    },
+    [
+      aoiAutonomyPanelSettings.maxSuggestionsPerSession,
+      aoiInlineShownCount,
+      onRefreshAoiAutonomy,
+      onRunAoiAutonomyCheck,
+      onUpdateAoiAutonomyPanelSettings,
+    ],
+  );
+  const isAoiAgendaNudgeReadinessActionDisabled = useCallback(
+    (actionId: AoiAgendaNudgeReadinessActionId) => {
+      if (actionId === 'enable_notifications') {
+        return aoiAutonomyPanelSettings.notificationsEnabled;
+      }
+      if (actionId === 'disable_quiet_mode') {
+        return !aoiAutonomyPanelSettings.quietMode;
+      }
+      if (actionId === 'raise_session_cap') {
+        return aoiAutonomyPanelSettings.maxSuggestionsPerSession >= 12;
+      }
+      if (actionId === 'reset_feedback_mute') {
+        return !aoiAutonomyPanelSettings.agendaNudgeCalibration;
+      }
+      if (actionId === 'refresh_autonomy') {
+        return aoiAutonomyLoading;
+      }
+      if (actionId === 'run_check') {
+        return (
+          aoiAutonomyActionId === 'tick' ||
+          aoiAutonomyLoading ||
+          Boolean(aoiAutonomyStatus?.activeTick)
+        );
+      }
+      return false;
+    },
+    [
+      aoiAutonomyActionId,
+      aoiAutonomyLoading,
+      aoiAutonomyPanelSettings.agendaNudgeCalibration,
+      aoiAutonomyPanelSettings.maxSuggestionsPerSession,
+      aoiAutonomyPanelSettings.notificationsEnabled,
+      aoiAutonomyPanelSettings.quietMode,
+      aoiAutonomyStatus?.activeTick,
+    ],
+  );
   const aoiOperatorHealthSummary = useMemo(
     () =>
       buildAoiOperatorHealthPanelSummary(
@@ -11126,6 +11196,22 @@ const SettingsModal: React.FC<{
                               <div key={`agenda-readiness-evidence-${index}`}>Evidence: {ref}</div>
                             ))}
                           </div>
+                          {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (
+                            <div className={styles.aoiInlineSuggestionActions}>
+                              {aoiAgendaNudgeReadinessSummary.actions.map((action) => (
+                                <button
+                                  key={action.id}
+                                  type="button"
+                                  className={styles.inlineActionBtn}
+                                  onClick={() => runAoiAgendaNudgeReadinessAction(action.id)}
+                                  disabled={isAoiAgendaNudgeReadinessActionDisabled(action.id)}
+                                  title={action.title}
+                                >
+                                  {action.label}
+                                </button>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}

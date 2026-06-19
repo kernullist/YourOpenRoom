@@ -1127,6 +1127,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(readySummary.candidateLabel).toContain('high-signal proposal');
     expect(readySummary.reasonLabels.join(' ')).toContain('gates all allow');
     expect(readySummary.evidenceRefs).toContain('memory:re-interest');
+    expect(readySummary.actions).toEqual([]);
 
     const notificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1144,6 +1145,66 @@ describe('Aoi autonomy UI helpers', () => {
       tone: 'blocked',
     });
     expect(notificationSummary.nextActionLabels.join(' ')).toContain('Turn on');
+    expect(notificationSummary.actions.map((action) => action.id)).toEqual([
+      'enable_notifications',
+    ]);
+
+    const quietSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        quietMode: true,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+    expect(quietSummary).toMatchObject({
+      statusLabel: 'quiet mode',
+      tone: 'blocked',
+    });
+    expect(quietSummary.actions.map((action) => action.id)).toEqual(['disable_quiet_mode']);
+
+    const capSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        maxSuggestionsPerSession: 0,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+    expect(capSummary).toMatchObject({
+      statusLabel: 'session cap',
+      tone: 'blocked',
+    });
+    expect(capSummary.actions.map((action) => action.id)).toEqual(['raise_session_cap']);
+
+    const quieted = recordAoiAgendaNudgeFeedback(null, {
+      kind: 'quieted',
+      now: 5000,
+      reason: 'enable_quiet_mode',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+    const mutedSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        agendaNudgeCalibration: quieted,
+      },
+      options: {
+        now: 6000,
+      },
+    });
+    expect(mutedSummary).toMatchObject({
+      statusLabel: 'muted',
+      tone: 'blocked',
+    });
+    expect(mutedSummary.actions.map((action) => action.id)).toEqual(['reset_feedback_mute']);
 
     const cooldownSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1160,6 +1221,7 @@ describe('Aoi autonomy UI helpers', () => {
     });
     expect(cooldownSummary.candidateLabel).toContain('high-signal proposal');
     expect(cooldownSummary.reasonLabels.join(' ')).toContain('Cooldown remaining');
+    expect(cooldownSummary.actions.map((action) => action.id)).toEqual(['refresh_autonomy']);
 
     const noCandidateDuringCooldown = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1174,6 +1236,10 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'no candidate',
       tone: 'waiting',
     });
+    expect(noCandidateDuringCooldown.actions.map((action) => action.id)).toEqual([
+      'run_check',
+      'refresh_autonomy',
+    ]);
 
     const dedupeSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1189,6 +1255,7 @@ describe('Aoi autonomy UI helpers', () => {
       tone: 'waiting',
     });
     expect(dedupeSummary.reasonLabels.join(' ')).toContain('Duplicate protection');
+    expect(dedupeSummary.actions.map((action) => action.id)).toEqual(['run_check']);
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {
