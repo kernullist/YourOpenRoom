@@ -54,6 +54,7 @@ import {
   loadAoiAutonomySchedulerState,
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
+import { runAoiProactiveBriefScout } from './aoiProactiveBriefScout';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
@@ -771,6 +772,52 @@ async function handleAoiAutonomyRequest(
         budget: getWakeupBudgetFromBody(body.budget),
         quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
+      });
+      writeJson(res, 200, result);
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/proactive-briefs/scout') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (body.mode !== undefined && body.mode !== 'quick') {
+        writeJson(res, 400, {
+          error: 'mode must be quick when provided.',
+          code: 'invalid_mode',
+        });
+        return true;
+      }
+      if (
+        body.topicId !== undefined &&
+        (typeof body.topicId !== 'string' || body.topicId.trim().length > 120)
+      ) {
+        writeJson(res, 400, {
+          error: 'topicId must be a string no longer than 120 characters when provided.',
+          code: 'invalid_topic_id',
+        });
+        return true;
+      }
+      const topicId =
+        typeof body.topicId === 'string' && body.topicId.trim() ? body.topicId.trim() : undefined;
+      const result = await runAoiProactiveBriefScout({
+        sessionsDir,
+        sessionPath,
+        configFile,
+        topicId,
+        mode: 'quick',
+        budget: {
+          allowNetwork: true,
+          quietMode: true,
+          maxTopicsPerWakeup: 1,
+          maxNetworkCallsPerWakeup: 1,
+        },
       });
       writeJson(res, 200, result);
       return true;
