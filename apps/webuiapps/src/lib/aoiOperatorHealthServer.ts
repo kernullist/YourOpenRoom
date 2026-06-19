@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import {
+  loadAoiAutonomyPolicy,
   loadAoiAutonomyTickState,
   loadAoiCommandAuditRecords,
   loadAoiEnvironmentSourceRegistry,
@@ -11,6 +12,14 @@ import {
   evaluateAoiOperatorHealth,
   type AoiOperatorHealthConfigSnapshot,
 } from './aoiOperatorHealth';
+import {
+  loadAoiInterestProfile,
+  loadAoiProactiveBriefCandidates,
+  loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFeedback,
+  resolveAoiProactiveBriefPaths,
+} from './aoiProactiveBriefStore';
+import { buildAoiProactiveBriefDiagnostics } from './aoiProactiveBriefReplay';
 import type { PersistedConfig } from './configPersistence';
 import type {
   AoiAutonomySchedulerState,
@@ -112,6 +121,57 @@ export function buildAoiOperatorHealthState(params: {
     () => loadAoiCommandAuditRecords(params.sessionsDir, sessionPath),
     [],
   );
+  const config = buildConfigSnapshot(params.configFile);
+  const policy = tryLoad(() => loadAoiAutonomyPolicy(params.sessionsDir, sessionPath), null);
+  const proactivePaths = tryLoad(
+    () => resolveAoiProactiveBriefPaths(params.sessionsDir, sessionPath),
+    null,
+  );
+  const proactiveProfile = tryLoad(
+    () => loadAoiInterestProfile(params.sessionsDir, sessionPath, now),
+    null,
+  );
+  const proactiveCandidates = tryLoad(
+    () => loadAoiProactiveBriefCandidates(params.sessionsDir, sessionPath, now),
+    [],
+  );
+  const proactiveFeedback = tryLoad(
+    () => loadAoiProactiveBriefFeedback(params.sessionsDir, sessionPath),
+    [],
+  );
+  const proactiveCooldownState = tryLoad(
+    () => loadAoiProactiveBriefCooldownState(params.sessionsDir, sessionPath, now),
+    null,
+  );
+  const hasProactiveArtifacts = Boolean(
+    proactiveProfile?.topics.length ||
+    proactiveCandidates.length ||
+    proactiveFeedback.length ||
+    Object.keys(proactiveCooldownState?.cooldowns ?? {}).length ||
+    (proactivePaths &&
+      (fs.existsSync(proactivePaths.profile) ||
+        fs.existsSync(proactivePaths.index) ||
+        fs.existsSync(proactivePaths.cooldowns))),
+  );
+  const proactiveScoutWarnings =
+    hasProactiveArtifacts &&
+    proactiveProfile &&
+    proactiveProfile.topics.some((topic) => !topic.muted) &&
+    policy?.enabled === true &&
+    policy.proactiveSuggestionsEnabled === true &&
+    config.tavilyConfigured !== true
+      ? ['tavily_not_configured:cannot_refresh_current_info']
+      : [];
+  const proactiveBriefDiagnostics = hasProactiveArtifacts
+    ? buildAoiProactiveBriefDiagnostics({
+        profile: proactiveProfile,
+        candidates: proactiveCandidates,
+        feedback: proactiveFeedback,
+        cooldownState: proactiveCooldownState,
+        scoutWarnings: proactiveScoutWarnings,
+        now,
+      })
+    : [];
 
   return evaluateAoiOperatorHealth({
     sessionPath,
@@ -120,7 +180,8 @@ export function buildAoiOperatorHealthState(params: {
     tickState,
     workspaceSnapshot,
     commandAudits,
-    config: buildConfigSnapshot(params.configFile),
+    config,
+    proactiveBriefDiagnostics,
     now,
   });
 }

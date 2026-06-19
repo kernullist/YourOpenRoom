@@ -19,6 +19,7 @@ import {
   type AoiSourceFreshnessContract,
   type AoiSourceFreshnessFailureHint,
 } from './aoiSourceFreshnessContract';
+import type { AoiProactiveBriefDiagnostic } from './aoiProactiveBriefReplay';
 
 const MAX_HEALTH_ISSUES = 12;
 const MAX_EVIDENCE_REFS = 16;
@@ -95,6 +96,7 @@ export interface AoiOperatorHealthInput {
   commandAudits?: AoiCommandAuditRecord[];
   config?: AoiOperatorHealthConfigSnapshot;
   replayScenarios?: AoiOperatorHealthReplayScenario[];
+  proactiveBriefDiagnostics?: AoiProactiveBriefDiagnostic[];
   sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   now?: number;
 }
@@ -808,6 +810,65 @@ function addReplayIssues(
   }
 }
 
+function proactiveBriefRecommendation(
+  diagnostic: AoiProactiveBriefDiagnostic,
+): AoiOperatorHealthRecommendation {
+  if (diagnostic.code === 'tavily_unavailable') {
+    return recommendation('configure_tavily', 'Configure Tavily', 'research');
+  }
+  if (diagnostic.code === 'source_freshness_stale') {
+    return recommendation('review_scheduler', 'Review freshness', 'replay_evaluation');
+  }
+  if (diagnostic.code === 'no_eligible_topics' || diagnostic.code === 'all_topics_muted') {
+    return recommendation('inspect_memory', 'Inspect interest profile', 'memory');
+  }
+  return recommendation('review_replay', 'Review proactive brief replay', 'replay_evaluation');
+}
+
+function proactiveBriefIssueTitle(code: string): string {
+  switch (code) {
+    case 'tavily_unavailable':
+      return 'Proactive brief Tavily unavailable';
+    case 'source_freshness_stale':
+      return 'Proactive brief source stale';
+    case 'no_eligible_topics':
+      return 'No eligible proactive topics';
+    case 'all_topics_muted':
+      return 'All proactive topics muted';
+    case 'cooldown_suppressed_all_candidates':
+      return 'Proactive brief cooldown active';
+    case 'direct_chat_disabled_by_policy':
+      return 'Direct proactive chat disabled';
+    default:
+      return 'Proactive brief diagnostic';
+  }
+}
+
+function addProactiveBriefIssues(
+  issues: AoiOperatorHealthIssue[],
+  input: AoiOperatorHealthInput,
+  now: number,
+): void {
+  for (const diagnostic of input.proactiveBriefDiagnostics ?? []) {
+    issues.push(
+      makeIssue({
+        capability: diagnostic.capability,
+        severity: diagnostic.severity,
+        code: `proactive_brief_${diagnostic.code}`,
+        title: proactiveBriefIssueTitle(diagnostic.code),
+        summary: diagnostic.summary,
+        cannotKnow: diagnostic.cannotKnow,
+        observedAt: diagnostic.observedAt || now,
+        evidenceRefs: dedupeRefs([
+          `proactive-brief-diagnostic:${diagnostic.code}`,
+          ...diagnostic.evidenceRefs,
+        ]),
+        recommendation: proactiveBriefRecommendation(diagnostic),
+      }),
+    );
+  }
+}
+
 function addApprovedCommandIssues(
   issues: AoiOperatorHealthIssue[],
   input: AoiOperatorHealthInput,
@@ -945,6 +1006,7 @@ export function evaluateAoiOperatorHealth(input: AoiOperatorHealthInput): AoiOpe
   addConfigIssues(issues, input, now);
   addWorkspaceIssues(issues, input, now);
   addTickIssues(issues, input, now);
+  addProactiveBriefIssues(issues, input, now);
   addReplayIssues(issues, input, now);
   addApprovedCommandIssues(issues, input);
 

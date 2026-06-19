@@ -83,6 +83,11 @@ This package is **not** a stock Vite starter anymore. It is the app that current
   - Field shadow dogfooding reports and operator feedback labels are folded into the JARVIS
     readiness scorecard so real-session labels can warn or block higher-trust recommendations before
     synthetic replay success is treated as operational evidence.
+- `src/lib/aoiInterestProfile.ts`, `src/lib/aoiProactiveBrief*.ts`
+  - local-first proactive interest briefings: eligible Aoi memories become compact interest topics,
+    public current-info scout results become source-backed candidates, policy keeps delivery quiet
+    by default, feedback adjusts future relevance/cooldowns, and deterministic replay fixtures
+    validate freshness, interruption, feedback, and privacy gates without real network calls
 - `src/lib/llmClient.ts`
   - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
     API, and Anthropic-compatible model routes
@@ -204,6 +209,9 @@ This app reads and writes to `~/.openroom/` in standalone mode:
   - Aoi autonomy state lives under `sessions/<character>/<mod>/aoi-autonomy/`, including policy,
     observations, reflections, proposals, decisions, goals, relation data, workspace snapshots,
     context feedback, and command audit records
+  - proactive interest profiles, source-backed brief candidates, feedback, and cooldowns are stored
+    under `sessions/<character>/<mod>/aoi-autonomy/proactive-briefs/` plus
+    `proactive-interest-profile.json`
 - `characters.json`
   - character definitions
 - `mods.json`
@@ -245,6 +253,10 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   destructive patterns, approval fingerprint freshness, timeout, and audit logging before spawn.
   `aoiOperatorReplay.ts` keeps representative operator scenarios deterministic without invoking
   shell, network, or workspace mutations.
+- Proactive interest briefings reuse that governed model. Memory-only topics cannot produce
+  fresh/current claims; Tavily-backed public scouting is required for live source evidence, and the
+  replay pack covers missing Tavily, stale sources, quiet mode, cooldown, feedback adaptation, and
+  private-memory exclusion.
 - App-operation requests, including Kira setting changes and "apply it like that" follow-ups that
   reference recent app context, bypass the dialog-model shortcut and keep app tools exposed to the
   main model route.

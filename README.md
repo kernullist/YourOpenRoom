@@ -199,9 +199,16 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - field shadow dogfooding records and operator labels feed the JARVIS readiness scorecard, so
     real-session wrong-source, too-much, unsafe, and should-have-spoken feedback can block or warn
     before any higher-trust mode is considered
+  - proactive interest briefings derive compact topics from eligible Aoi memory, create
+    source-backed candidates only through policy-gated current-info scouting, and surface them as
+    quiet dashboard/digest/inline cards with source freshness, cannot-know notes, and feedback
+    controls
   - `aoiOperatorReplay` replays representative operator scenarios to regression-test source
     selection, approval boundaries, evidence refs, non-interruption, blocked reasons, and preference
     conflicts without shell, network, or workspace mutation
+  - `aoiProactiveBriefReplay` adds deterministic scenarios for fresh RE sources, missing Tavily,
+    quiet mode, too-frequent feedback, stale sources, private-memory exclusion, and useful feedback
+    that still respects cooldowns
 - **Skills workshop**
   - built-in and user-authored skills are matched by trigger terms before a chat turn
   - only enabled and trusted skills are injected into the system prompt
@@ -237,6 +244,10 @@ These tools are guarded by the current implementation:
   from non-permanent automatic replacement; they can still be archived or deleted manually. Aoi also
   auto-records reusable interests, preferences, and technical question topics from normal chat turns
   so later replies can adapt without an explicit memory request.
+- Aoi proactive interest briefs are quiet and evidence-gated. Memory-only interests can seed a topic
+  profile, but they cannot create fresh/current claims without source-backed scouting. Live public
+  scouting requires Tavily/current-info configuration, never runs shell commands, and does not
+  mutate external systems.
 
 ## Kira + Aoi's IDE
 
@@ -466,8 +477,9 @@ A current example is also available at [`docs/config.example.json`](./docs/confi
 
 Tavily can also be configured from Aoi's Settings -> Advanced -> Tavily Web Search. When configured,
 Aoi exposes `search_web` and will use it before answering current-information requests. The same
-Tavily config is required for `start_research`; AOI main LLM settings are reused for research
-planning, evidence extraction, report synthesis, and verification.
+Tavily config is required for `start_research` and for proactive interest-brief scouting; AOI main
+LLM settings are reused for research planning, evidence extraction, report synthesis, and
+verification.
 
 Notes:
 

@@ -171,8 +171,15 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
     반영합니다
   - read-only research artifact/status 는 policy check 후 실행할 수 있고, research start, procedure
     저장, Kira handoff, command 실행은 preview/approval boundary 를 따릅니다
+  - proactive interest briefing 은 eligible Aoi memory 에서 compact topic 을 만들고, policy-gated
+    current-info scout 가 source-backed candidate 를 만들었을 때만 quiet dashboard/digest/inline
+    card 로 보여줍니다. 카드에는 source freshness, cannot-know note, feedback control 이 함께
+    표시됩니다
   - `aoiOperatorReplay` 는 대표 운영 시나리오를 fixture 로 재현해 source 선택, 승인 경계, evidence
     ref, non-interruption, blocked reason 을 회귀 테스트합니다
+  - `aoiProactiveBriefReplay` 는 fresh RE source, Tavily missing, quiet mode, too-frequent feedback,
+    stale source, private-memory exclusion, useful feedback 과 cooldown 조합을 network 없이
+    결정론적으로 검증합니다
 - **Skills Workshop**
   - built-in skill 과 사용자가 만든 skill 을 trigger term 으로 매칭합니다
   - enabled 이면서 trusted 인 skill 만 system prompt 에 주입합니다
@@ -208,6 +215,10 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
   추출 후보가 같은 사실을 덮어쓰지 못합니다. 단, 사용자가 직접 archive/delete 하는 것은 가능합니다.
   또한 Aoi 는 별도 요청이 없어도 일반 채팅에서 재사용 가치가 있는 관심사, 취향, 기술 질문 주제를
   자동으로 장기 기억해 이후 답변에 활용합니다.
+- Aoi proactive interest brief 는 quiet/evidence-gated 기능입니다. memory-only 관심사는 topic
+  profile 의 근거가 될 수 있지만, source-backed scout 없이 fresh/current claim 을 만들 수 없습니다.
+  live public scouting 에는 Tavily/current-info 설정이 필요하고, 이 경로는 shell command 를
+  실행하거나 외부 시스템을 mutation 하지 않습니다.
 
 ## Kira 와 Aoi's IDE
 
@@ -423,8 +434,8 @@ pnpm dev
 
 Tavily 는 Aoi `Settings -> Advanced -> Tavily Web Search` 에서도 설정할 수 있습니다. 설정이 저장되면
 Aoi 는 최신 정보가 필요한 질문에서 `search_web` 툴을 먼저 사용할 수 있습니다. 같은 Tavily 설정은
-`start_research` 에도 필요하며, research planning, evidence extraction, report synthesis,
-verification 은 AOI main LLM 설정을 재사용합니다.
+`start_research` 와 proactive interest-brief scouting 에도 필요하며, research planning, evidence
+extraction, report synthesis, verification 은 AOI main LLM 설정을 재사용합니다.
 
 메모:
 
