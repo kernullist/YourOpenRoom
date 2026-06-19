@@ -78,6 +78,8 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'trend_source_quality_weak'
   | 'trend_repeat_snapshot'
   | 'trend_duplicate_suppressed'
+  | 'trend_delivery_audit_ready'
+  | 'trend_delivery_audit_duplicate_suppressed'
   | 'trend_quiet_control_active'
   | 'trend_interest_drift_watch'
   | 'trend_interest_drift_detected'

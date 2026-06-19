@@ -834,6 +834,8 @@ function proactiveBriefRecommendation(
     diagnostic.code === 'trend_source_quality_weak' ||
     diagnostic.code === 'trend_repeat_snapshot' ||
     diagnostic.code === 'trend_duplicate_suppressed' ||
+    diagnostic.code === 'trend_delivery_audit_ready' ||
+    diagnostic.code === 'trend_delivery_audit_duplicate_suppressed' ||
     diagnostic.code === 'trend_quiet_control_active' ||
     diagnostic.code === 'trend_interest_drift_watch' ||
     diagnostic.code === 'trend_interest_drift_detected' ||
@@ -954,6 +956,10 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Trend advisor repeated snapshot';
     case 'trend_duplicate_suppressed':
       return 'Trend advisor duplicate suppressed';
+    case 'trend_delivery_audit_ready':
+      return 'Trend delivery audit ready';
+    case 'trend_delivery_audit_duplicate_suppressed':
+      return 'Trend delivery audit duplicate suppressed';
     case 'trend_quiet_control_active':
       return 'Trend advisor quiet control active';
     case 'trend_interest_drift_watch':

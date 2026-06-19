@@ -15,7 +15,9 @@ import {
   buildAoiProactiveTrendAdvisorDiagnostics,
   buildAoiProactiveTrendAdvisorState,
   buildAoiProactiveTrendWatchProfile,
+  loadAoiProactiveTrendDeliveryEvents,
   loadAoiProactiveTrendSnapshots,
+  recordAoiProactiveTrendDeliveryEventFromSnapshot,
   resolveAoiProactiveTrendPaths,
 } from '../aoiProactiveTrendAdvisor';
 import {
@@ -397,6 +399,73 @@ describe('Aoi proactive trend advisor', () => {
     expect(repeated.opinionCards[0].directChatBlockedReasons).toContain('duplicate_trend_delivery');
     expect(repeated.opinionCards[0].deliveryMode).toBe('dashboard');
     expect(repeated.deliveryControlBlockedReasons).toContain('duplicate_trend_delivery');
+  });
+
+  it('records delivery audit events and uses them to suppress repeated trend delivery', () => {
+    const root = tempRoot();
+    const first = buildAoiProactiveTrendAdvisorState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ dedupeKey: 'trend:reverse-engineering:audit' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: true,
+    });
+
+    expect(first.directChatCard?.snapshotId).toBe(first.snapshots[0].id);
+
+    const event = recordAoiProactiveTrendDeliveryEventFromSnapshot({
+      sessionsDir: root,
+      snapshot: first.snapshots[0],
+      kind: 'direct_chat_offered',
+      now: NOW + 1_000,
+    });
+    const repeatedEvent = recordAoiProactiveTrendDeliveryEventFromSnapshot({
+      sessionsDir: root,
+      snapshot: first.snapshots[0],
+      kind: 'direct_chat_offered',
+      now: NOW + 2_000,
+    });
+    const storedEvents = loadAoiProactiveTrendDeliveryEvents(root, SESSION_PATH, NOW + 3_000);
+
+    expect(repeatedEvent.id).toBe(event.id);
+    expect(storedEvents).toHaveLength(1);
+    expect(storedEvents[0].kind).toBe('direct_chat_offered');
+
+    const repeated = buildAoiProactiveTrendAdvisorState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ dedupeKey: 'trend:reverse-engineering:audit' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW + 60_000,
+      persist: true,
+    });
+    const diagnostics = buildAoiProactiveTrendAdvisorDiagnostics({
+      state: repeated,
+      tavilyConfigured: true,
+      now: NOW + 60_000,
+    });
+
+    expect(repeated.recentDeliveryEvents[0].id).toBe(event.id);
+    expect(repeated.deliveryAuditSummary.directChatOfferedCount).toBe(1);
+    expect(repeated.snapshots[0].delivery.controls.duplicateBlocked).toBe(true);
+    expect(repeated.snapshots[0].delivery.controls.reasons).toContain(
+      'delivery_event_recently_recorded',
+    );
+    expect(repeated.snapshots[0].delivery.controls.evidenceRefs).toContain(
+      `trend-delivery-event:${event.id}`,
+    );
+    expect(repeated.directChatCard).toBeUndefined();
+    expect(diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining([
+        'trend_delivery_audit_ready',
+        'trend_delivery_audit_duplicate_suppressed',
+      ]),
+    );
   });
 
   it('honors quiet and snooze feedback controls before interrupting chat', () => {

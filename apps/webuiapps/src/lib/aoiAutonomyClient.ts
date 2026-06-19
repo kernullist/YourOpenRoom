@@ -41,6 +41,8 @@ import type {
   AoiProactiveBriefFeedback,
   AoiProactiveBriefFeedbackCategory,
   AoiProactiveTrendAdvisorState,
+  AoiProactiveTrendDeliveryEvent,
+  AoiProactiveTrendDeliveryEventKind,
   AoiReflection,
   AoiTrustCalibrationReset,
   AoiVoiceRenderDecision,
@@ -199,6 +201,15 @@ export interface AoiProactiveBriefFeedbackResponse extends AoiProactiveBriefList
 
 export interface AoiProactiveBriefScoutNowResponse extends AoiAutonomyWakeupResult {
   proactiveBriefs: AoiProactiveBriefListResponse;
+}
+
+export interface AoiProactiveTrendDeliveryEventInput {
+  snapshotId: string;
+  kind: AoiProactiveTrendDeliveryEventKind;
+}
+
+export interface AoiProactiveTrendDeliveryEventResponse extends AoiProactiveBriefListResponse {
+  deliveryEvent: AoiProactiveTrendDeliveryEvent;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -634,6 +645,30 @@ export async function recordAoiProactiveBriefFeedback(
       payload,
       'candidate',
       'Aoi proactive brief candidate response was malformed.',
+    ),
+  };
+}
+
+export async function recordAoiProactiveTrendDeliveryEvent(
+  sessionPath: string,
+  input: AoiProactiveTrendDeliveryEventInput,
+): Promise<AoiProactiveTrendDeliveryEventResponse> {
+  const response = await fetch(`${API_PREFIX}/proactive-briefs/trend-delivery`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      snapshotId: input.snapshotId,
+      kind: input.kind,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi proactive trend delivery.');
+  return {
+    ...parseAoiProactiveBriefListPayload(payload, sessionPath),
+    deliveryEvent: requireRecordField<AoiProactiveTrendDeliveryEvent>(
+      payload,
+      'deliveryEvent',
+      'Aoi proactive trend delivery response was malformed.',
     ),
   };
 }

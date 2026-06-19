@@ -244,6 +244,7 @@ import {
   recordAoiContextSourceFeedback,
   recordAoiOperatorVoiceDecision,
   recordAoiProactiveBriefFeedback,
+  recordAoiProactiveTrendDeliveryEvent,
   recordAoiProposalFeedback,
   resetAoiProactiveBriefCooldown,
   resetAoiTrustCalibrationCategory,
@@ -318,6 +319,7 @@ import type {
   AoiProposalFeedbackCategory,
   AoiProactiveBriefFeedbackCategory,
   AoiProactiveTrendAdvisorState,
+  AoiProactiveTrendDeliveryEventKind,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
@@ -3610,6 +3612,25 @@ const ChatPanel: React.FC<{
     [],
   );
 
+  const recordAoiProactiveTrendDeliveryFromPanel = useCallback(
+    async (snapshotId: string, kind: AoiProactiveTrendDeliveryEventKind) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy || !snapshotId) {
+        return;
+      }
+      try {
+        const result = await recordAoiProactiveTrendDeliveryEvent(sessionPathForAutonomy, {
+          snapshotId,
+          kind,
+        });
+        setAoiProactiveBriefs(result);
+      } catch (error) {
+        console.warn('[ChatPanel] Failed to record Aoi proactive trend delivery', error);
+      }
+    },
+    [],
+  );
+
   const prepareAoiKiraHandoffFromPanel = useCallback(
     async (proposal: AoiProposal) => {
       const actionId = `proposal:${proposal.id}:preview`;
@@ -6769,7 +6790,11 @@ const ChatPanel: React.FC<{
     }
     aoiInlineShownTrendIdsRef.current.add(inlineAoiTrendCard.id);
     setAoiInlineShownCount((prev) => prev + 1);
-  }, [inlineAoiTrendCard]);
+    void recordAoiProactiveTrendDeliveryFromPanel(
+      inlineAoiTrendCard.snapshotId,
+      'inline_card_shown',
+    );
+  }, [inlineAoiTrendCard, recordAoiProactiveTrendDeliveryFromPanel]);
 
   useEffect(() => {
     if (
@@ -6797,7 +6822,11 @@ const ChatPanel: React.FC<{
     };
     addMessage(message);
     setChatHistory((prev) => [...prev, { role: 'assistant', content: message.content }]);
-  }, [addMessage, directAoiTrendCard, loading]);
+    void recordAoiProactiveTrendDeliveryFromPanel(
+      directAoiTrendCard.snapshotId,
+      'direct_chat_offered',
+    );
+  }, [addMessage, directAoiTrendCard, loading, recordAoiProactiveTrendDeliveryFromPanel]);
 
   if (!visible) return null;
 
@@ -10907,6 +10936,14 @@ const SettingsModal: React.FC<{
                               direct {aoiProactiveTrendAdvisor.directChatHookCount}
                             </div>
                             <div>
+                              Delivery audit: inline{' '}
+                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.inlineShownCount} /
+                              chat{' '}
+                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.directChatOfferedCount}{' '}
+                              / suppressed{' '}
+                              {aoiProactiveTrendAdvisor.deliveryAuditSummary.suppressedCount}
+                            </div>
+                            <div>
                               Source quality:{' '}
                               {sanitizeAoiProposalDisplayText(
                                 formatAoiStatusCounts(aoiProactiveTrendAdvisor.sourceQualityCounts),
@@ -10925,6 +10962,17 @@ const SettingsModal: React.FC<{
                               .map((reason, index) => (
                                 <div key={`trend-control-block-${index}`}>
                                   Control block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                                </div>
+                              ))}
+                            {aoiProactiveTrendAdvisor.recentDeliveryEvents
+                              .slice(0, 3)
+                              .map((event) => (
+                                <div key={`trend-delivery-event-${event.id}`}>
+                                  Delivery event:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    `${event.kind} / ${event.topicLabel} / ${event.title}`,
+                                    220,
+                                  )}
                                 </div>
                               ))}
                             {aoiProactiveTrendAdvisor.chatHook && (

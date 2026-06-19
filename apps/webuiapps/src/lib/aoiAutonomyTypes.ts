@@ -278,6 +278,58 @@ export interface AoiProactiveTrendSnapshotIndex {
   entries: AoiProactiveTrendSnapshotIndexEntry[];
 }
 
+export type AoiProactiveTrendDeliveryEventKind =
+  | 'inline_card_shown'
+  | 'direct_chat_offered'
+  | 'delivery_suppressed';
+
+export interface AoiProactiveTrendDeliveryEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  kind: AoiProactiveTrendDeliveryEventKind;
+  snapshotId: string;
+  candidateId?: string;
+  topicId: string;
+  topicLabel: string;
+  deliveryMode: AoiProactiveTrendDeliveryMode;
+  dedupeKey: string;
+  title: string;
+  sourceQualityStatus: AoiProactiveTrendSourceQualityStatus;
+  interestDriftStatus: AoiProactiveTrendInterestDriftStatus;
+  suppressionReasons: string[];
+  sourceHosts: string[];
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiProactiveTrendDeliveryEventIndexEntry {
+  id: string;
+  kind: AoiProactiveTrendDeliveryEventKind;
+  snapshotId: string;
+  candidateId?: string;
+  topicId: string;
+  deliveryMode: AoiProactiveTrendDeliveryMode;
+  dedupeKey: string;
+  createdAt: number;
+}
+
+export interface AoiProactiveTrendDeliveryEventIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiProactiveTrendDeliveryEventIndexEntry[];
+}
+
+export interface AoiProactiveTrendDeliveryAuditSummary {
+  version: 1;
+  inlineShownCount: number;
+  directChatOfferedCount: number;
+  suppressedCount: number;
+  latestEventAt?: number;
+  evidenceRefs: string[];
+}
+
 export type AoiProactiveTrendAdvisorReadinessStatus =
   | 'not_configured'
   | 'measuring'
@@ -336,6 +388,8 @@ export interface AoiProactiveTrendAdvisorState {
   sourceQualityCounts: Partial<Record<AoiProactiveTrendSourceQualityStatus, number>>;
   interestDriftCounts: Partial<Record<AoiProactiveTrendInterestDriftStatus, number>>;
   deliveryControlBlockedReasons: string[];
+  recentDeliveryEvents: AoiProactiveTrendDeliveryEvent[];
+  deliveryAuditSummary: AoiProactiveTrendDeliveryAuditSummary;
   inlineCard?: AoiProactiveTrendOpinionCard;
   directChatCard?: AoiProactiveTrendOpinionCard;
   chatHook?: string;

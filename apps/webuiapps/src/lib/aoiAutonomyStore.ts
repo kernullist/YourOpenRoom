@@ -96,6 +96,9 @@ export interface AoiAutonomyPaths {
   proactiveTrendWatchProfile: string;
   proactiveTrendSnapshotsDir: string;
   proactiveTrendSnapshotIndex: string;
+  proactiveTrendDeliveryEventsDir: string;
+  proactiveTrendDeliveryEventIndex: string;
+  proactiveTrendDeliveryEventRecordsDir: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -376,6 +379,7 @@ export function resolveAoiAutonomyPaths(
   const proactiveBriefFieldEventsDir = join(proactiveBriefsDir, 'field-events');
   const proactiveBriefCalibrationLabelsDir = join(proactiveBriefsDir, 'calibration-labels');
   const proactiveTrendsDir = join(root, 'proactive-trends');
+  const proactiveTrendDeliveryEventsDir = join(proactiveTrendsDir, 'delivery-events');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -418,6 +422,9 @@ export function resolveAoiAutonomyPaths(
     proactiveTrendWatchProfile: join(proactiveTrendsDir, 'watch-profile.json'),
     proactiveTrendSnapshotsDir: join(proactiveTrendsDir, 'snapshots'),
     proactiveTrendSnapshotIndex: join(proactiveTrendsDir, 'snapshot-index.json'),
+    proactiveTrendDeliveryEventsDir,
+    proactiveTrendDeliveryEventIndex: join(proactiveTrendDeliveryEventsDir, 'index.json'),
+    proactiveTrendDeliveryEventRecordsDir: join(proactiveTrendDeliveryEventsDir, 'events'),
   };
 }
 

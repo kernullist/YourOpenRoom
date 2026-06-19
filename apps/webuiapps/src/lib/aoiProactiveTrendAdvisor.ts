@@ -22,8 +22,13 @@ import type {
   AoiProactiveBriefSource,
   AoiProactiveTrendAdvisorReadiness,
   AoiProactiveTrendAdvisorState,
+  AoiProactiveTrendDeliveryAuditSummary,
   AoiProactiveTrendDeliveryMode,
   AoiProactiveTrendDeliveryControls,
+  AoiProactiveTrendDeliveryEvent,
+  AoiProactiveTrendDeliveryEventIndex,
+  AoiProactiveTrendDeliveryEventIndexEntry,
+  AoiProactiveTrendDeliveryEventKind,
   AoiProactiveTrendInterestDrift,
   AoiProactiveTrendInterestDriftStatus,
   AoiProactiveTrendNovelty,
@@ -47,12 +52,15 @@ import type {
 const MAX_WATCH_TOPICS = 32;
 const MAX_WATCH_QUERIES = 6;
 const MAX_TREND_SNAPSHOT_INDEX_ITEMS = 120;
+const MAX_TREND_DELIVERY_EVENT_INDEX_ITEMS = 240;
 const MAX_TREND_STATE_SNAPSHOTS = 24;
+const MAX_TREND_STATE_DELIVERY_EVENTS = 12;
 const MAX_TREND_OPINION_CARDS = 6;
 const DEFAULT_TREND_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_SOURCE_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_DIRECT_CHAT_FIELD_SAMPLE_COUNT = 3;
 const RECENT_TREND_REPEAT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+const TREND_DELIVERY_EVENT_RETENTION_MS = 45 * 24 * 60 * 60 * 1000;
 
 export interface AoiProactiveTrendPaths {
   root: string;
@@ -60,6 +68,9 @@ export interface AoiProactiveTrendPaths {
   watchProfile: string;
   snapshotsDir: string;
   snapshotIndex: string;
+  deliveryEventsDir: string;
+  deliveryEventIndex: string;
+  deliveryEventRecordsDir: string;
 }
 
 export interface BuildAoiProactiveTrendAdvisorStateInput {
@@ -69,6 +80,7 @@ export interface BuildAoiProactiveTrendAdvisorStateInput {
   profile?: AoiInterestProfile | null;
   candidates?: AoiProactiveBriefCandidate[];
   existingSnapshots?: AoiProactiveTrendSnapshot[];
+  existingDeliveryEvents?: AoiProactiveTrendDeliveryEvent[];
   feedback?: AoiProactiveBriefFeedback[];
   fieldMetrics?: AoiProactiveBriefFieldMetrics | null;
   calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
@@ -196,12 +208,18 @@ export function resolveAoiProactiveTrendPaths(
     watchProfile: autonomyPaths.proactiveTrendWatchProfile,
     snapshotsDir: autonomyPaths.proactiveTrendSnapshotsDir,
     snapshotIndex: autonomyPaths.proactiveTrendSnapshotIndex,
+    deliveryEventsDir: autonomyPaths.proactiveTrendDeliveryEventsDir,
+    deliveryEventIndex: autonomyPaths.proactiveTrendDeliveryEventIndex,
+    deliveryEventRecordsDir: autonomyPaths.proactiveTrendDeliveryEventRecordsDir,
   };
   for (const target of [
     paths.trendsDir,
     paths.watchProfile,
     paths.snapshotsDir,
     paths.snapshotIndex,
+    paths.deliveryEventsDir,
+    paths.deliveryEventIndex,
+    paths.deliveryEventRecordsDir,
   ]) {
     if (!isPathInsideRoot(paths.root, target)) {
       throw new Error('Resolved proactive trend path escaped the autonomy root.');
@@ -305,6 +323,20 @@ function normalizeDeliveryMode(value: unknown): AoiProactiveTrendDeliveryMode {
     return value;
   }
   return 'dashboard';
+}
+
+export function isAoiProactiveTrendDeliveryEventKind(
+  value: unknown,
+): value is AoiProactiveTrendDeliveryEventKind {
+  return (
+    value === 'inline_card_shown' ||
+    value === 'direct_chat_offered' ||
+    value === 'delivery_suppressed'
+  );
+}
+
+function normalizeDeliveryEventKind(value: unknown): AoiProactiveTrendDeliveryEventKind {
+  return isAoiProactiveTrendDeliveryEventKind(value) ? value : 'delivery_suppressed';
 }
 
 function normalizeSourceQualityStatus(value: unknown): AoiProactiveTrendSourceQualityStatus {
@@ -918,6 +950,22 @@ function matchingDedupeSnapshots(params: {
   });
 }
 
+function matchingDeliveryEvents(params: {
+  existingDeliveryEvents: AoiProactiveTrendDeliveryEvent[];
+  dedupeKey: string;
+  now: number;
+}): AoiProactiveTrendDeliveryEvent[] {
+  return params.existingDeliveryEvents.filter((event) => {
+    if (
+      event.dedupeKey !== params.dedupeKey ||
+      params.now - event.createdAt > RECENT_TREND_REPEAT_WINDOW_MS
+    ) {
+      return false;
+    }
+    return event.kind === 'inline_card_shown' || event.kind === 'direct_chat_offered';
+  });
+}
+
 function recentFeedback(
   feedback: AoiProactiveBriefFeedback[],
   candidate: AoiProactiveBriefCandidate,
@@ -936,6 +984,7 @@ function buildDeliveryControls(params: {
   sources: AoiProactiveBriefSource[];
   topicId: string;
   existingSnapshots: AoiProactiveTrendSnapshot[];
+  existingDeliveryEvents: AoiProactiveTrendDeliveryEvent[];
   feedback: AoiProactiveBriefFeedback[];
   now: number;
 }): AoiProactiveTrendDeliveryControls {
@@ -950,6 +999,11 @@ function buildDeliveryControls(params: {
     dedupeKey,
     now: params.now,
   });
+  const deliveryEvents = matchingDeliveryEvents({
+    existingDeliveryEvents: params.existingDeliveryEvents,
+    dedupeKey,
+    now: params.now,
+  });
   const feedback = recentFeedback(params.feedback, params.candidate, params.now);
   let quietUntil = 0;
   let snoozedUntil = 0;
@@ -958,6 +1012,11 @@ function buildDeliveryControls(params: {
   if (duplicates.length > 0) {
     reasons.push('duplicate_trend_delivery');
     evidenceRefs.push(...duplicates.map((snapshot) => `trend-duplicate:${snapshot.id}`));
+  }
+  if (deliveryEvents.length > 0) {
+    reasons.push('duplicate_trend_delivery');
+    reasons.push('delivery_event_recently_recorded');
+    evidenceRefs.push(...deliveryEvents.map((event) => `trend-delivery-event:${event.id}`));
   }
   for (const item of feedback) {
     evidenceRefs.push(`feedback:${item.id}`);
@@ -991,7 +1050,7 @@ function buildDeliveryControls(params: {
   return {
     version: 1,
     dedupeKey,
-    duplicateBlocked: duplicates.length > 0,
+    duplicateBlocked: duplicates.length > 0 || deliveryEvents.length > 0,
     ...(quietUntil > params.now ? { quietUntil } : {}),
     ...(snoozedUntil > params.now ? { snoozedUntil } : {}),
     reasons: unique(reasons).slice(0, 12),
@@ -1557,6 +1616,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   feedback?: AoiProactiveBriefFeedback[];
   policy?: AoiAutonomyPolicy | null;
   existingSnapshots?: AoiProactiveTrendSnapshot[];
+  existingDeliveryEvents?: AoiProactiveTrendDeliveryEvent[];
   now?: number;
   sourceStaleAfterMs?: number;
 }): AoiProactiveTrendSnapshot | null {
@@ -1600,6 +1660,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     sources,
     topicId,
     existingSnapshots: params.existingSnapshots ?? [],
+    existingDeliveryEvents: params.existingDeliveryEvents ?? [],
     feedback: params.feedback ?? [],
     now,
   });
@@ -1941,6 +2002,271 @@ export function loadAoiProactiveTrendSnapshots(
     .slice(0, MAX_TREND_STATE_SNAPSHOTS);
 }
 
+function trendDeliveryEventFilePath(paths: AoiProactiveTrendPaths, eventId: string): string {
+  if (!isValidAoiAutonomyId(eventId)) {
+    throw new Error('Invalid proactive trend delivery event id.');
+  }
+  return join(paths.deliveryEventRecordsDir, `${eventId}.json`);
+}
+
+function snapshotSourceHosts(snapshot: AoiProactiveTrendSnapshot): string[] {
+  return unique(snapshot.sources.map((source) => sanitizeText(source.host, 120)).filter(Boolean));
+}
+
+function deliveryEventIndexEntry(
+  event: AoiProactiveTrendDeliveryEvent,
+): AoiProactiveTrendDeliveryEventIndexEntry {
+  return {
+    id: event.id,
+    kind: event.kind,
+    snapshotId: event.snapshotId,
+    ...(event.candidateId ? { candidateId: event.candidateId } : {}),
+    topicId: event.topicId,
+    deliveryMode: event.deliveryMode,
+    dedupeKey: event.dedupeKey,
+    createdAt: event.createdAt,
+  };
+}
+
+function normalizeDeliveryEvent(
+  value: unknown,
+  sessionPath: string,
+  now: number,
+): AoiProactiveTrendDeliveryEvent | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveTrendDeliveryEvent>;
+  if (!isValidAoiAutonomyId(raw.id)) {
+    return null;
+  }
+  const snapshotId = sanitizeText(raw.snapshotId, 120);
+  const topicId = sanitizeText(raw.topicId, 120);
+  const dedupeKey = sanitizeText(raw.dedupeKey, 240);
+  if (!snapshotId || !topicId || !dedupeKey) {
+    return null;
+  }
+  const createdAt = normalizeTimestamp(raw.createdAt, now);
+  return {
+    version: 1,
+    id: raw.id,
+    sessionPath: resolveSessionPath(raw.sessionPath || sessionPath),
+    kind: normalizeDeliveryEventKind(raw.kind),
+    snapshotId,
+    ...(sanitizeText(raw.candidateId, 120)
+      ? { candidateId: sanitizeText(raw.candidateId, 120) }
+      : {}),
+    topicId,
+    topicLabel: sanitizeText(raw.topicLabel, 80) || 'Interest topic',
+    deliveryMode: normalizeDeliveryMode(raw.deliveryMode),
+    dedupeKey,
+    title: sanitizeText(raw.title, 160) || 'Source-backed trend item',
+    sourceQualityStatus: normalizeSourceQualityStatus(raw.sourceQualityStatus),
+    interestDriftStatus: normalizeInterestDriftStatus(raw.interestDriftStatus),
+    suppressionReasons: normalizeStringList(raw.suppressionReasons, 12, 120),
+    sourceHosts: normalizeStringList(raw.sourceHosts, 8, 120),
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 16, 180),
+    createdAt,
+  };
+}
+
+function normalizeDeliveryEventIndexEntry(
+  value: unknown,
+  now: number,
+): AoiProactiveTrendDeliveryEventIndexEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveTrendDeliveryEventIndexEntry>;
+  if (!isValidAoiAutonomyId(raw.id)) {
+    return null;
+  }
+  const snapshotId = sanitizeText(raw.snapshotId, 120);
+  const topicId = sanitizeText(raw.topicId, 120);
+  const dedupeKey = sanitizeText(raw.dedupeKey, 240);
+  if (!snapshotId || !topicId || !dedupeKey) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    kind: normalizeDeliveryEventKind(raw.kind),
+    snapshotId,
+    ...(sanitizeText(raw.candidateId, 120)
+      ? { candidateId: sanitizeText(raw.candidateId, 120) }
+      : {}),
+    topicId,
+    deliveryMode: normalizeDeliveryMode(raw.deliveryMode),
+    dedupeKey,
+    createdAt: normalizeTimestamp(raw.createdAt, now),
+  };
+}
+
+export function loadAoiProactiveTrendDeliveryEventIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveTrendDeliveryEventIndex {
+  const paths = resolveAoiProactiveTrendPaths(sessionsDir, sessionPath);
+  const parsed = readJson<Partial<AoiProactiveTrendDeliveryEventIndex>>(paths.deliveryEventIndex);
+  const retentionThreshold = now - TREND_DELIVERY_EVENT_RETENTION_MS;
+  const entries =
+    parsed?.version === 1 && Array.isArray(parsed.entries)
+      ? parsed.entries
+          .map((entry) => normalizeDeliveryEventIndexEntry(entry, now))
+          .filter((entry): entry is AoiProactiveTrendDeliveryEventIndexEntry => entry !== null)
+          .filter((entry) => entry.createdAt >= retentionThreshold)
+          .sort((left, right) => right.createdAt - left.createdAt)
+          .slice(0, MAX_TREND_DELIVERY_EVENT_INDEX_ITEMS)
+      : [];
+  return {
+    version: 1,
+    sessionPath: resolveSessionPath(sessionPath),
+    updatedAt: normalizeTimestamp(parsed?.updatedAt, 0),
+    entries,
+  };
+}
+
+function saveDeliveryEventIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  index: AoiProactiveTrendDeliveryEventIndex,
+): AoiProactiveTrendDeliveryEventIndex {
+  const paths = resolveAoiProactiveTrendPaths(sessionsDir, sessionPath);
+  const retentionThreshold = index.updatedAt - TREND_DELIVERY_EVENT_RETENTION_MS;
+  const normalized: AoiProactiveTrendDeliveryEventIndex = {
+    version: 1,
+    sessionPath: resolveSessionPath(sessionPath),
+    updatedAt: index.updatedAt,
+    entries: index.entries
+      .map((entry) => normalizeDeliveryEventIndexEntry(entry, index.updatedAt))
+      .filter((entry): entry is AoiProactiveTrendDeliveryEventIndexEntry => entry !== null)
+      .filter((entry) => entry.createdAt >= retentionThreshold)
+      .sort((left, right) => right.createdAt - left.createdAt)
+      .slice(0, MAX_TREND_DELIVERY_EVENT_INDEX_ITEMS),
+  };
+  writeJsonAtomic(paths.root, paths.deliveryEventIndex, normalized);
+  return normalized;
+}
+
+function loadDeliveryEventById(
+  sessionsDir: string,
+  sessionPath: string,
+  eventId: string,
+  now: number,
+): AoiProactiveTrendDeliveryEvent | null {
+  const paths = resolveAoiProactiveTrendPaths(sessionsDir, sessionPath);
+  if (!isValidAoiAutonomyId(eventId)) {
+    return null;
+  }
+  return normalizeDeliveryEvent(
+    readJson<Partial<AoiProactiveTrendDeliveryEvent>>(trendDeliveryEventFilePath(paths, eventId)),
+    sessionPath,
+    now,
+  );
+}
+
+export function loadAoiProactiveTrendDeliveryEvents(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveTrendDeliveryEvent[] {
+  const index = loadAoiProactiveTrendDeliveryEventIndex(sessionsDir, sessionPath, now);
+  const retentionThreshold = now - TREND_DELIVERY_EVENT_RETENTION_MS;
+  return index.entries
+    .map((entry) => loadDeliveryEventById(sessionsDir, sessionPath, entry.id, now))
+    .filter((event): event is AoiProactiveTrendDeliveryEvent => event !== null)
+    .filter((event) => event.createdAt >= retentionThreshold)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, MAX_TREND_STATE_DELIVERY_EVENTS);
+}
+
+export function recordAoiProactiveTrendDeliveryEventFromSnapshot(params: {
+  sessionsDir: string;
+  snapshot: AoiProactiveTrendSnapshot;
+  kind: AoiProactiveTrendDeliveryEventKind;
+  suppressionReasons?: string[];
+  now?: number;
+}): AoiProactiveTrendDeliveryEvent {
+  const now = params.now ?? Date.now();
+  const normalized = normalizeSnapshot(params.snapshot, params.snapshot.sessionPath, now);
+  if (!normalized) {
+    throw new Error('Invalid proactive trend snapshot.');
+  }
+  const kind = normalizeDeliveryEventKind(params.kind);
+  const eventId = makeStableId(
+    'aoi-trend-delivery',
+    `${normalized.sessionPath}:${kind}:${normalized.delivery.controls.dedupeKey}`,
+  );
+  const existing = loadDeliveryEventById(params.sessionsDir, normalized.sessionPath, eventId, now);
+  if (existing) {
+    return existing;
+  }
+  const paths = resolveAoiProactiveTrendPaths(params.sessionsDir, normalized.sessionPath);
+  const event = normalizeDeliveryEvent(
+    {
+      version: 1,
+      id: eventId,
+      sessionPath: normalized.sessionPath,
+      kind,
+      snapshotId: normalized.id,
+      ...(normalized.candidateId ? { candidateId: normalized.candidateId } : {}),
+      topicId: normalized.topicId,
+      topicLabel: normalized.topicLabel,
+      deliveryMode: normalized.delivery.mode,
+      dedupeKey: normalized.delivery.controls.dedupeKey,
+      title: normalized.title,
+      sourceQualityStatus: normalized.sourceQuality.status,
+      interestDriftStatus: normalized.interestDrift.status,
+      suppressionReasons:
+        params.suppressionReasons ??
+        normalized.delivery.directChatBlockedReasons.concat(normalized.delivery.controls.reasons),
+      sourceHosts: snapshotSourceHosts(normalized),
+      evidenceRefs: unique([
+        `trend-snapshot:${normalized.id}`,
+        ...normalized.delivery.evidenceRefs,
+        ...normalized.evidenceRefs.slice(0, 8),
+      ]),
+      createdAt: now,
+    },
+    normalized.sessionPath,
+    now,
+  );
+  if (!event) {
+    throw new Error('Invalid proactive trend delivery event.');
+  }
+  writeJsonAtomic(paths.root, trendDeliveryEventFilePath(paths, event.id), event);
+  const index = loadAoiProactiveTrendDeliveryEventIndex(
+    params.sessionsDir,
+    normalized.sessionPath,
+    now,
+  );
+  saveDeliveryEventIndex(params.sessionsDir, normalized.sessionPath, {
+    version: 1,
+    sessionPath: normalized.sessionPath,
+    updatedAt: now,
+    entries: [
+      deliveryEventIndexEntry(event),
+      ...index.entries.filter((entry) => entry.id !== event.id),
+    ],
+  });
+  return event;
+}
+
+export function buildAoiProactiveTrendDeliveryAuditSummary(
+  events: AoiProactiveTrendDeliveryEvent[],
+): AoiProactiveTrendDeliveryAuditSummary {
+  return {
+    version: 1,
+    inlineShownCount: events.filter((event) => event.kind === 'inline_card_shown').length,
+    directChatOfferedCount: events.filter((event) => event.kind === 'direct_chat_offered').length,
+    suppressedCount: events.filter((event) => event.kind === 'delivery_suppressed').length,
+    ...(events[0]?.createdAt ? { latestEventAt: events[0].createdAt } : {}),
+    evidenceRefs: events
+      .flatMap((event) => [`trend-delivery-event:${event.id}`, ...event.evidenceRefs.slice(0, 2)])
+      .slice(0, 12),
+  };
+}
+
 function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTrendOpinionCard {
   const sourceHosts = unique(snapshot.sources.map((source) => source.host)).slice(0, 6);
   return {
@@ -2018,6 +2344,11 @@ export function buildAoiProactiveTrendAdvisorState(
     (persist && input.sessionsDir
       ? loadAoiProactiveTrendSnapshots(input.sessionsDir, sessionPath, now)
       : []);
+  const existingDeliveryEvents =
+    input.existingDeliveryEvents ??
+    (persist && input.sessionsDir
+      ? loadAoiProactiveTrendDeliveryEvents(input.sessionsDir, sessionPath, now)
+      : []);
 
   const snapshotsFromCandidates = (input.candidates ?? [])
     .map((candidate) =>
@@ -2029,6 +2360,7 @@ export function buildAoiProactiveTrendAdvisorState(
         feedback: input.feedback,
         policy: input.policy,
         existingSnapshots,
+        existingDeliveryEvents,
         now,
         sourceStaleAfterMs: input.sourceStaleAfterMs,
       }),
@@ -2069,10 +2401,12 @@ export function buildAoiProactiveTrendAdvisorState(
   const deliveryControlBlockedReasons = unique(
     snapshots.flatMap((snapshot) =>
       snapshot.delivery.controls.reasons.filter((reason) =>
-        /duplicate|quiet_control_active|snoozed/.test(reason),
+        /duplicate|delivery_event_recently_recorded|quiet_control_active|snoozed/.test(reason),
       ),
     ),
   ).slice(0, 16);
+  const recentDeliveryEvents = existingDeliveryEvents.slice(0, MAX_TREND_STATE_DELIVERY_EVENTS);
+  const deliveryAuditSummary = buildAoiProactiveTrendDeliveryAuditSummary(recentDeliveryEvents);
 
   return {
     version: 1,
@@ -2088,6 +2422,8 @@ export function buildAoiProactiveTrendAdvisorState(
     sourceQualityCounts: countByStatus(snapshots.map((snapshot) => snapshot.sourceQuality.status)),
     interestDriftCounts: countByStatus(snapshots.map((snapshot) => snapshot.interestDrift.status)),
     deliveryControlBlockedReasons,
+    recentDeliveryEvents,
+    deliveryAuditSummary,
     ...(inlineCard ? { inlineCard } : {}),
     ...(directChatCard && chatHook ? { directChatCard, chatHook } : {}),
     readiness,
@@ -2250,6 +2586,42 @@ export function buildAoiProactiveTrendAdvisorDiagnostics(
           'Aoi cannot assume the operator wants repeated delivery of the same trend without fresh evidence or feedback.',
         evidenceRefs: state.snapshots
           .filter((snapshot) => snapshot.delivery.controls.duplicateBlocked)
+          .flatMap((snapshot) => snapshot.delivery.controls.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
+  if (state.recentDeliveryEvents.length > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_delivery_audit_ready',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Trend delivery audit trail is recording actual inline and chat exposure.',
+        cannotKnow:
+          'Aoi cannot prove a trend was surfaced across app restarts unless delivery events are recorded at the UI boundary.',
+        evidenceRefs: state.deliveryAuditSummary.evidenceRefs,
+        observedAt: state.deliveryAuditSummary.latestEventAt ?? now,
+      }),
+    );
+  }
+  if (
+    state.snapshots.some((snapshot) =>
+      snapshot.delivery.controls.reasons.includes('delivery_event_recently_recorded'),
+    )
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_delivery_audit_duplicate_suppressed',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'A previously recorded trend delivery suppressed a repeated chat or card offer.',
+        cannotKnow:
+          'Aoi cannot repeat the same trend just because the app restarted when a delivery event already proves it was surfaced.',
+        evidenceRefs: state.snapshots
+          .filter((snapshot) =>
+            snapshot.delivery.controls.reasons.includes('delivery_event_recently_recorded'),
+          )
           .flatMap((snapshot) => snapshot.delivery.controls.evidenceRefs.slice(0, 3)),
         observedAt: now,
       }),

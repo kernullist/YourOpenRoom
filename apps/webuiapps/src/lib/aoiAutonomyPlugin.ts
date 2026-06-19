@@ -64,13 +64,19 @@ import {
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefFeedback,
+  recordAoiProactiveBriefFieldEvent,
   recordAoiProactiveBriefDeliveryFieldEvents,
   upsertAoiProactiveBriefCooldown,
 } from './aoiProactiveBriefStore';
 import { AOI_PROACTIVE_BRIEF_GLOBAL_COOLDOWN_KEY } from './aoiProactiveBriefPlanner';
 import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
-import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
+import {
+  buildAoiProactiveTrendAdvisorState,
+  isAoiProactiveTrendDeliveryEventKind,
+  loadAoiProactiveTrendSnapshots,
+  recordAoiProactiveTrendDeliveryEventFromSnapshot,
+} from './aoiProactiveTrendAdvisor';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
@@ -979,6 +985,93 @@ async function handleAoiAutonomyRequest(
         }),
         feedbackRecord: mutation.feedback,
         candidate: mutation.candidate,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/proactive-briefs/trend-delivery') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const snapshotId = typeof body.snapshotId === 'string' ? body.snapshotId.trim() : '';
+      if (!snapshotId || snapshotId.length > 127) {
+        writeJson(res, 400, {
+          error: 'snapshotId must be a non-empty string no longer than 127 characters.',
+          code: 'invalid_snapshot_id',
+        });
+        return true;
+      }
+      if (!isAoiProactiveTrendDeliveryEventKind(body.kind)) {
+        writeJson(res, 400, {
+          error: 'Invalid proactive trend delivery event kind.',
+          code: 'invalid_trend_delivery_event_kind',
+        });
+        return true;
+      }
+      const now = Date.now();
+      const snapshot =
+        loadAoiProactiveTrendSnapshots(sessionsDir, sessionPath, now).find(
+          (item) => item.id === snapshotId,
+        ) ?? null;
+      if (!snapshot) {
+        writeJson(res, 404, {
+          error: 'Proactive trend snapshot was not found.',
+          code: 'trend_snapshot_not_found',
+        });
+        return true;
+      }
+      const deliveryEvent = recordAoiProactiveTrendDeliveryEventFromSnapshot({
+        sessionsDir,
+        snapshot,
+        kind: body.kind,
+        now,
+      });
+      if (snapshot.candidateId && body.kind !== 'delivery_suppressed') {
+        try {
+          recordAoiProactiveBriefFieldEvent(sessionsDir, {
+            sessionPath,
+            kind: body.kind === 'direct_chat_offered' ? 'chat_hook_offered' : 'shown_inline',
+            briefId: snapshot.candidateId,
+            topicId: snapshot.topicId,
+            deliveryMode: body.kind === 'direct_chat_offered' ? 'chat_hook' : 'inline_card',
+            title: snapshot.title,
+            summary: snapshot.delivery.summary,
+            sourceRefs: snapshot.sources.map((source) => source.url),
+            sourceHosts: snapshot.sources.map((source) => source.host),
+            evidenceRefs: [
+              `trend-delivery-event:${deliveryEvent.id}`,
+              ...snapshot.evidenceRefs.slice(0, 8),
+            ],
+            freshness: {
+              searchedAt: now,
+              newestSourceAt:
+                snapshot.sources
+                  .map((source) => source.publishedAt)
+                  .filter((value): value is string => Boolean(value))
+                  .sort()
+                  .slice(-1)[0] ?? undefined,
+              cannotKnow: ['Aoi cannot prove the operator read the surfaced trend.'],
+              stale: snapshot.freshness === 'stale',
+            },
+            dedupeKey: `trend-field:${deliveryEvent.id}`,
+            createdAt: now,
+          });
+        } catch (error) {
+          console.warn('[AoiAutonomyPlugin] Failed to record trend field event', error);
+        }
+      }
+      writeJson(res, 200, {
+        ...buildAoiProactiveBriefResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+        deliveryEvent,
       });
       return true;
     }
