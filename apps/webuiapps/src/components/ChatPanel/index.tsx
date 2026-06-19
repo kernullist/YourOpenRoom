@@ -565,18 +565,22 @@ function buildAoiTrendSourceOpenAck(params: {
   result: string;
 }): string {
   const sourceTitle = params.source.title || params.source.host || params.source.url;
+  const sourceIndex = params.context.sources.findIndex(
+    (source) => source.url === params.source.url,
+  );
+  const sourceLabel = sourceIndex >= 0 ? `${sourceIndex + 1}번째` : '선택한';
   const opened = params.result && !params.result.toLowerCase().startsWith('error:');
   if (!opened) {
     return [
       `꿀보, "${params.context.title}" 근거 URL을 Browser로 열려고 했는데 아직 완료되지 않았어.`,
-      `대상: ${sourceTitle}`,
+      `대상: ${sourceLabel} 근거 - ${sourceTitle}`,
       `URL: ${params.source.url}`,
       `결과: ${params.result || 'no result'}`,
     ].join('\n');
   }
   const extraCount = Math.max(0, params.context.sources.length - 1);
   return [
-    `꿀보, "${params.context.title}"의 첫 번째 근거를 Browser에서 열었어.`,
+    `꿀보, "${params.context.title}"의 ${sourceLabel} 근거를 Browser에서 열었어.`,
     `Source: ${sourceTitle}`,
     `URL: ${params.source.url}`,
     extraCount > 0 ? `추가 저장 근거 ${extraCount}개는 follow-up context에 같이 남겨뒀어.` : '',

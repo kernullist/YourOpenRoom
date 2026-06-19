@@ -196,7 +196,7 @@ describe('Aoi proactive trend follow-up context', () => {
     ).toBe(false);
   });
 
-  it('selects the first sanitized source URL for direct Browser opening', () => {
+  it('selects requested source URLs for direct Browser opening', () => {
     const context = buildAoiProactiveTrendFollowUpContext(
       makeTrendCard(),
       'Aoi, open the source evidence.',
@@ -204,6 +204,48 @@ describe('Aoi proactive trend follow-up context', () => {
     );
 
     expect(selectAoiProactiveTrendSourceToOpen(context)).toEqual(
+      expect.objectContaining({
+        title: 'Fresh reversing writeup',
+        url: 'https://research.example.com/re/writeup',
+      }),
+    );
+    expect(selectAoiProactiveTrendSourceToOpen(context, 'Aoi, 두 번째 근거 링크 열어줘.')).toEqual(
+      expect.objectContaining({
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+      }),
+    );
+    expect(
+      selectAoiProactiveTrendSourceToOpen(
+        context,
+        'Aoi, open the source evidence from security.example.net.',
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+      }),
+    );
+    expect(
+      selectAoiProactiveTrendSourceToOpen(
+        context,
+        'Aoi, open the source evidence for "Fresh reversing writeup trend" from security.example.net.',
+      ),
+    ).toEqual(
+      expect.objectContaining({
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+      }),
+    );
+    expect(
+      selectAoiProactiveTrendSourceToOpen(context, 'Aoi, open Second reversing source.'),
+    ).toEqual(
+      expect.objectContaining({
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+      }),
+    );
+    expect(selectAoiProactiveTrendSourceToOpen(context, 'Aoi, 이번 근거 링크 열어줘.')).toEqual(
       expect.objectContaining({
         title: 'Fresh reversing writeup',
         url: 'https://research.example.com/re/writeup',
