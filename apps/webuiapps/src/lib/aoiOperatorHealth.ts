@@ -831,6 +831,9 @@ function proactiveBriefRecommendation(
   if (
     diagnostic.code === 'trend_snapshot_stale' ||
     diagnostic.code === 'trend_weak_evidence' ||
+    diagnostic.code === 'trend_repeat_snapshot' ||
+    diagnostic.code === 'trend_quiet_notification_ready' ||
+    diagnostic.code === 'trend_direct_chat_ready' ||
     diagnostic.code === 'trend_opinion_cards_ready'
   ) {
     return recommendation('review_replay', 'Review trend evidence', 'replay_evaluation');
@@ -939,8 +942,14 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Trend advisor snapshot stale';
     case 'trend_weak_evidence':
       return 'Trend advisor evidence weak';
+    case 'trend_repeat_snapshot':
+      return 'Trend advisor repeated snapshot';
+    case 'trend_quiet_notification_ready':
+      return 'Trend advisor quiet notification ready';
     case 'trend_opinion_cards_ready':
       return 'Trend advisor opinion cards ready';
+    case 'trend_direct_chat_ready':
+      return 'Trend advisor direct chat ready';
     case 'trend_direct_chat_not_ready':
       return 'Trend advisor direct chat not ready';
     default:

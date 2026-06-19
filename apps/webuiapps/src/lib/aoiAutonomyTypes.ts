@@ -167,6 +167,24 @@ export interface AoiProactiveTrendWatchProfile {
 
 export type AoiProactiveTrendSnapshotFreshness = 'fresh' | 'unknown' | 'stale';
 
+export type AoiProactiveTrendNoveltyStatus = 'new' | 'repeat' | 'weak' | 'stale';
+
+export interface AoiProactiveTrendNovelty {
+  version: 1;
+  status: AoiProactiveTrendNoveltyStatus;
+  score: number;
+  reason: string;
+  matchedSnapshotIds: string[];
+  sourceOverlapCount: number;
+}
+
+export type AoiProactiveTrendDeliveryMode =
+  | 'dashboard'
+  | 'quiet_notification'
+  | 'inline_card'
+  | 'direct_chat'
+  | 'blocked';
+
 export interface AoiProactiveTrendSnapshot {
   version: 1;
   id: string;
@@ -181,12 +199,17 @@ export interface AoiProactiveTrendSnapshot {
   suggestedNextAction: string;
   confidence: number;
   noveltyScore: number;
+  novelty: AoiProactiveTrendNovelty;
   risk: AoiAutonomyRisk;
   freshness: AoiProactiveTrendSnapshotFreshness;
   sources: AoiProactiveBriefSource[];
   delivery: {
+    mode: AoiProactiveTrendDeliveryMode;
+    summary: string;
     directChatAllowed: boolean;
     directChatBlockedReasons: string[];
+    chatHookText?: string;
+    evidenceRefs: string[];
   };
   evidenceRefs: string[];
   createdAt: number;
@@ -202,6 +225,8 @@ export interface AoiProactiveTrendSnapshotIndexEntry {
   candidateId?: string;
   freshness: AoiProactiveTrendSnapshotFreshness;
   confidence: number;
+  noveltyStatus: AoiProactiveTrendNoveltyStatus;
+  deliveryMode: AoiProactiveTrendDeliveryMode;
   createdAt: number;
   updatedAt: number;
   expiresAt: number;
@@ -234,6 +259,7 @@ export interface AoiProactiveTrendOpinionCard {
   version: 1;
   id: string;
   snapshotId: string;
+  candidateId?: string;
   topicId: string;
   topicLabel: string;
   title: string;
@@ -243,9 +269,13 @@ export interface AoiProactiveTrendOpinionCard {
   suggestedNextAction: string;
   confidenceLabel: string;
   freshnessLabel: string;
+  noveltyLabel: string;
+  deliveryMode: AoiProactiveTrendDeliveryMode;
+  deliverySummary: string;
   sourceHosts: string[];
   directChatAllowed: boolean;
   directChatBlockedReasons: string[];
+  chatHookText?: string;
   evidenceRefs: string[];
   createdAt: number;
 }
@@ -257,6 +287,11 @@ export interface AoiProactiveTrendAdvisorState {
   watchProfile: AoiProactiveTrendWatchProfile;
   snapshots: AoiProactiveTrendSnapshot[];
   opinionCards: AoiProactiveTrendOpinionCard[];
+  quietNotificationCount: number;
+  directChatHookCount: number;
+  inlineCard?: AoiProactiveTrendOpinionCard;
+  directChatCard?: AoiProactiveTrendOpinionCard;
+  chatHook?: string;
   readiness: AoiProactiveTrendAdvisorReadiness;
   evidenceRefs: string[];
 }
@@ -683,6 +718,11 @@ export interface AoiProactiveBriefSchedulerRunRecord {
   createdCandidateCount: number;
   skippedTopicCount: number;
   sourceFreshnessCount: number;
+  trendSnapshotCount?: number;
+  trendOpinionCardCount?: number;
+  trendDirectChatReadyCount?: number;
+  trendDeliveryModes?: Partial<Record<AoiProactiveTrendDeliveryMode, number>>;
+  trendBlockedReasons?: string[];
   topicIds: string[];
   blockedReasons: string[];
   warnings: string[];

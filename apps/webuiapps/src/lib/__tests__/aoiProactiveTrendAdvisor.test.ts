@@ -8,6 +8,7 @@ import type {
   AoiInterestProfile,
   AoiInterestTopic,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefFeedback,
   AoiProactiveBriefFieldMetrics,
 } from '../aoiAutonomyTypes';
 import {
@@ -183,6 +184,36 @@ describe('Aoi proactive trend advisor', () => {
     expect(trendProfile.topicWatches[0].cadence).toBe('daily');
   });
 
+  it('calibrates trend watch cadence and direct-chat sensitivity from feedback', () => {
+    const profile = makeProfile(
+      makeTopic({
+        pinned: false,
+        currentInfoPreference: 0.52,
+      }),
+    );
+    const positiveFeedback: AoiProactiveBriefFeedback = {
+      version: 1,
+      id: 'aoi-feedback-useful-trend',
+      briefId: 'aoi-brief-trend-re',
+      topicId: 'aoi-interest-re',
+      sessionPath: SESSION_PATH,
+      category: 'useful',
+      createdAt: NOW,
+    };
+    const trendProfile = buildAoiProactiveTrendWatchProfile({
+      sessionPath: SESSION_PATH,
+      profile,
+      feedback: [positiveFeedback],
+      now: NOW,
+    });
+
+    expect(trendProfile.topicWatches[0].cadence).toBe('daily');
+    expect(trendProfile.topicWatches[0].directChatSensitivity).toBeGreaterThan(0.5);
+    expect(trendProfile.topicWatches[0].evidenceRefs).toContain(
+      'feedback:aoi-feedback-useful-trend',
+    );
+  });
+
   it('stores redacted source-backed trend snapshots under the session autonomy directory', () => {
     const root = tempRoot();
     const state = buildAoiProactiveTrendAdvisorState({
@@ -232,6 +263,8 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.opinionCards).toHaveLength(1);
     expect(state.opinionCards[0].directChatAllowed).toBe(false);
     expect(state.opinionCards[0].directChatBlockedReasons).toContain('direct_chat_not_opted_in');
+    expect(state.inlineCard?.deliveryMode).toBe('inline_card');
+    expect(state.quietNotificationCount).toBe(1);
   });
 
   it('marks direct chat ready only when opt-in, field evidence, and source gates pass', () => {
@@ -247,6 +280,36 @@ describe('Aoi proactive trend advisor', () => {
 
     expect(state.readiness.status).toBe('ready');
     expect(state.opinionCards[0].directChatAllowed).toBe(true);
+    expect(state.opinionCards[0].deliveryMode).toBe('direct_chat');
+    expect(state.chatHook).toContain('Aoi trend signal');
+    expect(state.directChatHookCount).toBe(1);
+  });
+
+  it('suppresses repeated snapshots from direct chat with novelty evidence', () => {
+    const first = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+    const repeated = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      existingSnapshots: first.snapshots,
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW + 60_000,
+      persist: false,
+    });
+
+    expect(repeated.opinionCards[0].directChatAllowed).toBe(false);
+    expect(repeated.opinionCards[0].directChatBlockedReasons).toContain('repeat_trend_snapshot');
+    expect(repeated.snapshots[0].novelty.status).toBe('repeat');
+    expect(repeated.snapshots[0].novelty.matchedSnapshotIds).toContain(first.snapshots[0].id);
   });
 
   it('uses normalized public sources before allowing direct chat', () => {

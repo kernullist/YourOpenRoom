@@ -2432,6 +2432,8 @@ const ChatPanel: React.FC<{
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
   const aoiInlineShownProactiveBriefIdsRef = useRef(new Set<string>());
+  const aoiInlineShownTrendIdsRef = useRef(new Set<string>());
+  const aoiDirectTrendChatIdsRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
 
@@ -2572,6 +2574,9 @@ const ChatPanel: React.FC<{
     setAoiInlineHiddenAt(null);
     setAoiInlineShownCount(0);
     aoiInlineShownProposalIdsRef.current = new Set();
+    aoiInlineShownProactiveBriefIdsRef.current = new Set();
+    aoiInlineShownTrendIdsRef.current = new Set();
+    aoiDirectTrendChatIdsRef.current = new Set();
     loadChatHistory(sessionPath).then(async (data) => {
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
@@ -6717,6 +6722,11 @@ const ChatPanel: React.FC<{
   );
   const inlineAoiProactiveBrief =
     !inlineAoiProposal && !showAoiResumeBrief ? (aoiProactiveBriefPanel.inlineCard ?? null) : null;
+  const inlineAoiTrendCard =
+    !inlineAoiProposal && !showAoiResumeBrief && !inlineAoiProactiveBrief
+      ? (aoiProactiveBriefs?.trendAdvisor?.inlineCard ?? null)
+      : null;
+  const directAoiTrendCard = aoiProactiveBriefs?.trendAdvisor?.directChatCard ?? null;
 
   useEffect(() => {
     if (!inlineAoiProposal) {
@@ -6739,6 +6749,39 @@ const ChatPanel: React.FC<{
     aoiInlineShownProactiveBriefIdsRef.current.add(inlineAoiProactiveBrief.id);
     setAoiInlineShownCount((prev) => prev + 1);
   }, [inlineAoiProactiveBrief]);
+
+  useEffect(() => {
+    if (!inlineAoiTrendCard) {
+      return;
+    }
+    if (aoiInlineShownTrendIdsRef.current.has(inlineAoiTrendCard.id)) {
+      return;
+    }
+    aoiInlineShownTrendIdsRef.current.add(inlineAoiTrendCard.id);
+    setAoiInlineShownCount((prev) => prev + 1);
+  }, [inlineAoiTrendCard]);
+
+  useEffect(() => {
+    if (!directAoiTrendCard?.chatHookText || loading) {
+      return;
+    }
+    const messageId = `aoi-trend-direct-${directAoiTrendCard.snapshotId}`;
+    if (aoiDirectTrendChatIdsRef.current.has(messageId)) {
+      return;
+    }
+    if (messagesRef.current.some((message) => message.id === messageId)) {
+      aoiDirectTrendChatIdsRef.current.add(messageId);
+      return;
+    }
+    aoiDirectTrendChatIdsRef.current.add(messageId);
+    const message: CharacterDisplayMessage = {
+      id: messageId,
+      role: 'assistant',
+      content: directAoiTrendCard.chatHookText,
+    };
+    addMessage(message);
+    setChatHistory((prev) => [...prev, { role: 'assistant', content: message.content }]);
+  }, [addMessage, directAoiTrendCard, loading]);
 
   if (!visible) return null;
 
@@ -7066,6 +7109,85 @@ const ChatPanel: React.FC<{
                   title="Open sources, freshness, and evidence"
                 >
                   Details
+                </button>
+              </div>
+            </div>
+          )}
+
+          {inlineAoiTrendCard && !loading && (
+            <div
+              className={styles.aoiInlineSuggestion}
+              data-testid="aoi-proactive-trend-inline-card"
+            >
+              <div className={styles.aoiInlineSuggestionMain}>
+                <div className={styles.aoiInlineSuggestionMeta}>
+                  <span>Aoi trend signal</span>
+                  <span>{inlineAoiTrendCard.noveltyLabel}</span>
+                  <span>{inlineAoiTrendCard.deliveryMode}</span>
+                </div>
+                <div className={styles.aoiInlineSuggestionTitle}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiTrendCard.title, 120)}
+                </div>
+                <div className={styles.aoiInlineSuggestionBody}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiTrendCard.myTake, 260)}
+                </div>
+                <div className={styles.aoiInlineSuggestionHint}>
+                  {sanitizeAoiProposalDisplayText(
+                    `${inlineAoiTrendCard.topicLabel}; ${inlineAoiTrendCard.sourceHosts.join(', ') || 'source-backed'}; ${inlineAoiTrendCard.deliverySummary}`,
+                    360,
+                  )}
+                </div>
+              </div>
+              <div className={styles.aoiInlineSuggestionActions}>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    inlineAoiTrendCard.candidateId
+                      ? void recordAoiProactiveBriefFeedbackFromPanel(
+                          inlineAoiTrendCard.candidateId,
+                          'useful',
+                        )
+                      : undefined
+                  }
+                  disabled={aoiAutonomyActionId !== null || !inlineAoiTrendCard.candidateId}
+                  title="Tell Aoi this trend signal was useful"
+                >
+                  Useful
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    inlineAoiTrendCard.candidateId
+                      ? void recordAoiProactiveBriefFeedbackFromPanel(
+                          inlineAoiTrendCard.candidateId,
+                          'too_frequent',
+                        )
+                      : undefined
+                  }
+                  disabled={aoiAutonomyActionId !== null || !inlineAoiTrendCard.candidateId}
+                  title="Tell Aoi this trend signal was too noisy"
+                >
+                  Less
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => {
+                    if (inlineAoiTrendCard.candidateId) {
+                      setExpandedAoiProactiveBriefId(inlineAoiTrendCard.candidateId);
+                      void recordAoiProactiveBriefFeedbackFromPanel(
+                        inlineAoiTrendCard.candidateId,
+                        'open_sources',
+                      );
+                    }
+                    openAoiAutonomySettings();
+                  }}
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Open trend evidence and source details"
+                >
+                  Sources
                 </button>
               </div>
             </div>
@@ -10730,6 +10852,19 @@ const SettingsModal: React.FC<{
                               Watches: {aoiProactiveTrendAdvisor.watchProfile.topicWatches.length} /
                               snapshots {aoiProactiveTrendAdvisor.snapshots.length}
                             </div>
+                            <div>
+                              Delivery: quiet {aoiProactiveTrendAdvisor.quietNotificationCount} /
+                              direct {aoiProactiveTrendAdvisor.directChatHookCount}
+                            </div>
+                            {aoiProactiveTrendAdvisor.chatHook && (
+                              <div>
+                                Direct hook:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiProactiveTrendAdvisor.chatHook,
+                                  320,
+                                )}
+                              </div>
+                            )}
                             {aoiProactiveTrendAdvisor.readiness.directChatBlockedReasons
                               .slice(0, 4)
                               .map((reason, index) => (
@@ -10749,6 +10884,8 @@ const SettingsModal: React.FC<{
                                   <span>{sanitizeAoiProposalDisplayText(card.topicLabel, 80)}</span>
                                   <span>{card.freshnessLabel}</span>
                                   <span>{card.confidenceLabel}</span>
+                                  <span>{card.noveltyLabel}</span>
+                                  <span>{card.deliveryMode}</span>
                                   <span>
                                     {card.directChatAllowed
                                       ? 'direct chat ready'
@@ -10773,6 +10910,10 @@ const SettingsModal: React.FC<{
                                   <div>
                                     Suggested next action:{' '}
                                     {sanitizeAoiProposalDisplayText(card.suggestedNextAction, 240)}
+                                  </div>
+                                  <div>
+                                    Delivery:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.deliverySummary, 260)}
                                   </div>
                                   <div>
                                     Evidence:{' '}

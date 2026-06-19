@@ -75,7 +75,10 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'trend_provider_missing'
   | 'trend_snapshot_stale'
   | 'trend_weak_evidence'
+  | 'trend_repeat_snapshot'
+  | 'trend_quiet_notification_ready'
   | 'trend_opinion_cards_ready'
+  | 'trend_direct_chat_ready'
   | 'trend_direct_chat_not_ready';
 
 export interface AoiProactiveBriefReplayMetric {

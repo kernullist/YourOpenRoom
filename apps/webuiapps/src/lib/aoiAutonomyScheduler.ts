@@ -32,12 +32,14 @@ import {
   runAoiProactiveBriefScout,
   type AoiProactiveBriefScoutResult,
 } from './aoiProactiveBriefScout';
+import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
 import { planAoiProactiveBriefTopics } from './aoiProactiveBriefPlanner';
 import {
   loadAoiInterestProfile,
   loadAoiProactiveBriefCalibrationTuning,
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFeedback,
+  loadAoiProactiveBriefFieldMetrics,
   recordAoiProactiveBriefFieldEvent,
 } from './aoiProactiveBriefStore';
 import type { LLMConfig } from './llmModels';
@@ -1234,12 +1236,54 @@ async function runProactiveScoutForWakeup(params: {
     }
   }
 
+  const trendWarnings: string[] = [];
+  let trendSnapshotCount = 0;
+  let trendOpinionCardCount = 0;
+  let trendDirectChatReadyCount = 0;
+  const trendDeliveryModes: AoiProactiveBriefSchedulerRunRecord['trendDeliveryModes'] = {};
+  let trendBlockedReasons: string[] = [];
+  try {
+    const fieldMetrics = loadAoiProactiveBriefFieldMetrics(
+      params.input.sessionsDir,
+      sessionPath,
+      params.now,
+    );
+    const trendAdvisor = buildAoiProactiveTrendAdvisorState({
+      sessionsDir: params.input.sessionsDir,
+      sessionPath,
+      policy,
+      profile,
+      candidates: createdCandidates,
+      feedback,
+      fieldMetrics,
+      calibrationTuning: tuning,
+      now: params.now,
+    });
+    trendSnapshotCount = trendAdvisor.snapshots.length;
+    trendOpinionCardCount = trendAdvisor.opinionCards.length;
+    trendDirectChatReadyCount = trendAdvisor.directChatHookCount;
+    for (const card of trendAdvisor.opinionCards) {
+      trendDeliveryModes[card.deliveryMode] = (trendDeliveryModes[card.deliveryMode] ?? 0) + 1;
+    }
+    trendBlockedReasons = [
+      ...new Set(trendAdvisor.opinionCards.flatMap((card) => card.directChatBlockedReasons)),
+    ].slice(0, 16);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'trend advisor update failed';
+    trendWarnings.push(`trend_advisor_update_failed:${message.slice(0, 160)}`);
+  }
+
   const status: AoiProactiveBriefSchedulerRunRecord['status'] =
     createdCandidates.length > 0 ? 'scouted' : 'no_candidate';
   const record = makeRecord(status, [], {
     createdCandidateCount: createdCandidates.length,
     skippedTopicCount: result.skippedTopics.length,
     sourceFreshnessCount: result.sourceFreshness.length,
+    trendSnapshotCount,
+    trendOpinionCardCount,
+    trendDirectChatReadyCount,
+    trendDeliveryModes,
+    trendBlockedReasons,
     topicIds: [
       ...new Set([
         ...createdCandidates.map((candidate) => candidate.topicId),
@@ -1250,6 +1294,7 @@ async function runProactiveScoutForWakeup(params: {
     ].slice(0, 24),
     warnings: [
       ...result.warnings,
+      ...trendWarnings,
       ...(quietWindowActive ? ['quiet_window_active:direct_chat_suppressed'] : []),
       ...(controls.directChatHookOptIn ? [] : ['direct_chat_hook_opt_in_disabled']),
     ].slice(0, 24),

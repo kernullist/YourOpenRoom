@@ -39,6 +39,7 @@ import {
   loadAoiProactiveBriefFieldEvents,
   saveAoiInterestProfile,
 } from '../aoiProactiveBriefStore';
+import { loadAoiProactiveTrendSnapshots } from '../aoiProactiveTrendAdvisor';
 import type {
   AoiGoal,
   AoiAutonomyTickResult,
@@ -48,6 +49,7 @@ import type {
   AoiMissionState,
   AoiProposal,
   AoiProposalDecision,
+  AoiProactiveBriefCandidate,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 import type { LLMConfig } from '../llmModels';
@@ -195,6 +197,63 @@ function saveInterestProfile(
     },
     NOW,
   );
+}
+
+function makeProactiveBriefCandidate(
+  partial: Partial<AoiProactiveBriefCandidate> = {},
+): AoiProactiveBriefCandidate {
+  return {
+    version: 1,
+    id: partial.id ?? 'aoi-brief-scheduler-trend',
+    sessionPath: partial.sessionPath ?? SESSION_PATH,
+    topicId: partial.topicId ?? 'aoi-interest-reverse-engineering',
+    topicLabel: partial.topicLabel ?? 'Reverse Engineering',
+    status: partial.status ?? 'candidate',
+    title: partial.title ?? 'Scheduler persisted reversing trend',
+    hook: partial.hook ?? 'A current-info scout found a reversing trend.',
+    summary: partial.summary ?? 'Two public sources discuss the same reversing angle.',
+    whyForOperator:
+      partial.whyForOperator ?? 'This matches the saved reverse engineering interest.',
+    noveltyReason: partial.noveltyReason ?? 'Two public sources agree on a new technical angle.',
+    sources: partial.sources ?? [
+      {
+        title: 'Reversing trend source',
+        url: 'https://research.example.com/re/scheduler-trend',
+        host: 'research.example.com',
+        publishedAt: '2027-01-14T00:00:00.000Z',
+        retrievedAt: NOW,
+        snippet: 'Public source snippet.',
+      },
+      {
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/scheduler-trend',
+        host: 'security.example.net',
+        publishedAt: '2027-01-13T00:00:00.000Z',
+        retrievedAt: NOW,
+        snippet: 'Second public source snippet.',
+      },
+    ],
+    evidenceRefs: partial.evidenceRefs ?? [
+      'source:research.example.com',
+      'source:security.example.net',
+    ],
+    memoryIds: partial.memoryIds ?? ['memory-re-001'],
+    score: partial.score ?? 0.86,
+    confidence: partial.confidence ?? 0.86,
+    risk: partial.risk ?? 'low',
+    freshness: partial.freshness ?? {
+      searchedAt: NOW,
+      newestSourceAt: '2027-01-14T00:00:00.000Z',
+      cannotKnow: ['Aoi cannot know whether sources changed after retrieval.'],
+    },
+    delivery: partial.delivery ?? {
+      allowedModes: ['dashboard', 'digest', 'inline_card', 'chat_hook'],
+    },
+    cooldownKey: partial.cooldownKey ?? 'interest:reverse-engineering',
+    createdAt: partial.createdAt ?? NOW,
+    updatedAt: partial.updatedAt ?? NOW,
+    expiresAt: partial.expiresAt ?? NOW + 14 * 24 * 60 * 60 * 1000,
+  };
 }
 
 function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
@@ -2046,6 +2105,79 @@ describe('runAoiAutonomyWakeup()', () => {
       capability: 'research',
       severity: 'warning',
     });
+  });
+
+  it('persists trend snapshots when a run-now proactive scout creates candidates', async () => {
+    const root = makeTempRoot();
+    const candidate = makeProactiveBriefCandidate();
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [candidate],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        confidenceFloor: 0.55,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          directChatHookOptIn: false,
+          minScoutCooldownMs: 0,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 5,
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+    const snapshots = loadAoiProactiveTrendSnapshots(root, SESSION_PATH, NOW + 1_000);
+
+    expect(scout).toHaveBeenCalledTimes(1);
+    expect(result.record.proactiveScout).toMatchObject({
+      status: 'scouted',
+      createdCandidateCount: 1,
+      trendSnapshotCount: 1,
+      trendOpinionCardCount: 1,
+      trendDeliveryModes: {
+        inline_card: 1,
+      },
+    });
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0].candidateId).toBe(candidate.id);
+    expect(snapshots[0].novelty.status).toBe('new');
+    expect(snapshots[0].delivery.mode).toBe('inline_card');
   });
 
   it('enforces proactive scout session budget even for run-now requests', async () => {

@@ -21,6 +21,9 @@ import type {
   AoiProactiveBriefSource,
   AoiProactiveTrendAdvisorReadiness,
   AoiProactiveTrendAdvisorState,
+  AoiProactiveTrendDeliveryMode,
+  AoiProactiveTrendNovelty,
+  AoiProactiveTrendNoveltyStatus,
   AoiProactiveTrendOpinionCard,
   AoiProactiveTrendSnapshot,
   AoiProactiveTrendSnapshotFreshness,
@@ -43,6 +46,7 @@ const MAX_TREND_OPINION_CARDS = 6;
 const DEFAULT_TREND_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_SOURCE_STALE_AFTER_MS = 30 * 24 * 60 * 60 * 1000;
 const MIN_DIRECT_CHAT_FIELD_SAMPLE_COUNT = 3;
+const RECENT_TREND_REPEAT_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 export interface AoiProactiveTrendPaths {
   root: string;
@@ -58,6 +62,7 @@ export interface BuildAoiProactiveTrendAdvisorStateInput {
   policy?: AoiAutonomyPolicy | null;
   profile?: AoiInterestProfile | null;
   candidates?: AoiProactiveBriefCandidate[];
+  existingSnapshots?: AoiProactiveTrendSnapshot[];
   feedback?: AoiProactiveBriefFeedback[];
   fieldMetrics?: AoiProactiveBriefFieldMetrics | null;
   calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
@@ -276,6 +281,47 @@ function normalizeFreshness(value: unknown): AoiProactiveTrendSnapshotFreshness 
   return 'unknown';
 }
 
+function normalizeNoveltyStatus(value: unknown): AoiProactiveTrendNoveltyStatus {
+  if (value === 'new' || value === 'repeat' || value === 'weak' || value === 'stale') {
+    return value;
+  }
+  return 'new';
+}
+
+function normalizeDeliveryMode(value: unknown): AoiProactiveTrendDeliveryMode {
+  if (
+    value === 'dashboard' ||
+    value === 'quiet_notification' ||
+    value === 'inline_card' ||
+    value === 'direct_chat' ||
+    value === 'blocked'
+  ) {
+    return value;
+  }
+  return 'dashboard';
+}
+
+function normalizeNovelty(value: unknown, fallbackScore: number): AoiProactiveTrendNovelty {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiProactiveTrendNovelty>)
+      : {};
+  const status = normalizeNoveltyStatus(raw.status);
+  return {
+    version: 1,
+    status,
+    score: clampScore(raw.score, fallbackScore),
+    reason:
+      sanitizeText(raw.reason, 260) ||
+      (status === 'new' ? 'No recent matching trend snapshot was found.' : 'Novelty was inferred.'),
+    matchedSnapshotIds: normalizeStringList(raw.matchedSnapshotIds, 8, 120),
+    sourceOverlapCount:
+      typeof raw.sourceOverlapCount === 'number' && Number.isFinite(raw.sourceOverlapCount)
+        ? Math.max(0, Math.round(raw.sourceOverlapCount))
+        : 0,
+  };
+}
+
 function topicCadence(topic: AoiInterestTopic): AoiProactiveTrendWatchCadence {
   if (topic.currentInfoPreference >= 0.78 || topic.pinned) {
     return 'daily';
@@ -331,9 +377,93 @@ function watchFromTopic(topic: AoiInterestTopic, now: number): AoiProactiveTrend
   };
 }
 
+function feedbackForWatchTopic(
+  feedback: AoiProactiveBriefFeedback[],
+  topicId: string,
+  now: number,
+): AoiProactiveBriefFeedback[] {
+  const threshold = now - 30 * 24 * 60 * 60 * 1000;
+  return feedback.filter((item) => item.topicId === topicId && item.createdAt >= threshold);
+}
+
+function calibrateWatchFromFeedback(params: {
+  watch: AoiProactiveTrendWatchTopic;
+  feedback: AoiProactiveBriefFeedback[];
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
+  now: number;
+}): AoiProactiveTrendWatchTopic {
+  const topicFeedback = feedbackForWatchTopic(params.feedback, params.watch.topicId, params.now);
+  const positiveCount = topicFeedback.filter(
+    (item) =>
+      item.category === 'useful' ||
+      item.category === 'show_more' ||
+      item.category === 'open_sources' ||
+      item.category === 'expand_summary' ||
+      item.category === 'pin_topic',
+  ).length;
+  const negativeCount = topicFeedback.filter(
+    (item) =>
+      item.category === 'not_useful' ||
+      item.category === 'show_less' ||
+      item.category === 'too_frequent' ||
+      item.category === 'wrong_timing' ||
+      item.category === 'wrong_topic' ||
+      item.category === 'stale' ||
+      item.category === 'unsafe' ||
+      item.category === 'mute_topic' ||
+      item.category === 'archive_brief',
+  ).length;
+  const tuning = params.calibrationTuning?.topicTuning[params.watch.topicId];
+  const pinned =
+    params.watch.pinned ||
+    topicFeedback.some((item) => item.category === 'pin_topic') ||
+    tuning?.pinned === true;
+  const muted =
+    params.watch.muted ||
+    topicFeedback.some((item) => item.category === 'mute_topic') ||
+    tuning?.muted === true ||
+    tuning?.directChatBlocked === true;
+  let cadence = params.watch.cadence;
+  if (pinned || positiveCount >= Math.max(1, negativeCount + 1)) {
+    cadence = 'daily';
+  } else if (negativeCount > positiveCount && cadence === 'daily') {
+    cadence = 'weekly';
+  } else if (negativeCount >= positiveCount + 2) {
+    cadence = 'manual';
+  }
+  return {
+    ...params.watch,
+    cadence,
+    noveltyThreshold: clampScore(
+      params.watch.noveltyThreshold +
+        negativeCount * 0.08 -
+        positiveCount * 0.04 +
+        (tuning?.preferDigestOrDashboard ? 0.1 : 0),
+      params.watch.noveltyThreshold,
+    ),
+    directChatSensitivity: clampScore(
+      params.watch.directChatSensitivity +
+        positiveCount * 0.06 -
+        negativeCount * 0.1 -
+        (tuning?.directChatBlocked ? 0.25 : 0),
+      params.watch.directChatSensitivity,
+    ),
+    muted,
+    pinned,
+    evidenceRefs: unique([
+      ...params.watch.evidenceRefs,
+      ...topicFeedback.map((item) => `feedback:${item.id}`),
+      ...(tuning?.evidenceRefs ?? []),
+    ]).slice(0, 16),
+    updatedAt: params.now,
+  };
+}
+
 export function buildAoiProactiveTrendWatchProfile(params: {
   sessionPath: string;
   profile?: AoiInterestProfile | null;
+  feedback?: AoiProactiveBriefFeedback[];
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
   now?: number;
 }): AoiProactiveTrendWatchProfile {
   const now = params.now ?? Date.now();
@@ -349,7 +479,14 @@ export function buildAoiProactiveTrendWatchProfile(params: {
         left.normalizedLabel.localeCompare(right.normalizedLabel),
     )
     .slice(0, MAX_WATCH_TOPICS);
-  const topicWatches = topics.map((topic) => watchFromTopic(topic, now));
+  const topicWatches = topics.map((topic) =>
+    calibrateWatchFromFeedback({
+      watch: watchFromTopic(topic, now),
+      feedback: params.feedback ?? [],
+      calibrationTuning: params.calibrationTuning,
+      now,
+    }),
+  );
   return {
     version: 1,
     sessionPath,
@@ -477,6 +614,100 @@ function sourceEvidenceStrong(sources: AoiProactiveBriefSource[], evidenceRefs: 
   return sources.length >= 2 && evidenceRefs.length > 0;
 }
 
+function normalizedTrendTitle(value: string): string {
+  return sanitizeText(value, 180)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function sourceUrlSet(sources: AoiProactiveBriefSource[]): Set<string> {
+  return new Set(sources.map((source) => source.url.toLowerCase()).filter(Boolean));
+}
+
+function sourceOverlapCount(
+  left: AoiProactiveBriefSource[],
+  right: AoiProactiveBriefSource[],
+): number {
+  const leftUrls = sourceUrlSet(left);
+  let overlap = 0;
+  for (const source of right) {
+    if (leftUrls.has(source.url.toLowerCase())) {
+      overlap += 1;
+    }
+  }
+  return overlap;
+}
+
+function titleLooksRepeated(left: string, right: string): boolean {
+  const leftTitle = normalizedTrendTitle(left);
+  const rightTitle = normalizedTrendTitle(right);
+  if (!leftTitle || !rightTitle) {
+    return false;
+  }
+  return (
+    leftTitle === rightTitle || leftTitle.includes(rightTitle) || rightTitle.includes(leftTitle)
+  );
+}
+
+function computeTrendNovelty(params: {
+  candidate: AoiProactiveBriefCandidate;
+  sources: AoiProactiveBriefSource[];
+  existingSnapshots: AoiProactiveTrendSnapshot[];
+  freshness: AoiProactiveTrendSnapshotFreshness;
+  sourceStrong: boolean;
+  watch: AoiProactiveTrendWatchTopic | null;
+  now: number;
+}): AoiProactiveTrendNovelty {
+  const topicSnapshots = params.existingSnapshots.filter(
+    (snapshot) =>
+      snapshot.topicId === params.candidate.topicId &&
+      snapshot.expiresAt > params.now &&
+      params.now - snapshot.updatedAt <= RECENT_TREND_REPEAT_WINDOW_MS,
+  );
+  const matches = topicSnapshots.filter((snapshot) => {
+    if (snapshot.candidateId && snapshot.candidateId === params.candidate.id) {
+      return true;
+    }
+    if (sourceOverlapCount(snapshot.sources, params.sources) > 0) {
+      return true;
+    }
+    return titleLooksRepeated(snapshot.title, params.candidate.title);
+  });
+  const overlapCount = matches.reduce(
+    (total, snapshot) => total + sourceOverlapCount(snapshot.sources, params.sources),
+    0,
+  );
+  let status: AoiProactiveTrendNoveltyStatus = 'new';
+  let reason = 'No recent matching trend snapshot was found for this watch topic.';
+  let score = clampScore(params.candidate.score, 0.5);
+  if (params.freshness === 'stale') {
+    status = 'stale';
+    reason = 'Source evidence is stale, so Aoi should not treat this as a current trend.';
+    score = clampScore(score - 0.35, 0.35);
+  } else if (!params.sourceStrong) {
+    status = 'weak';
+    reason = 'The trend signal has weak source coverage and should stay low interruption.';
+    score = clampScore(score - 0.22, 0.45);
+  } else if (matches.length > 0) {
+    status = 'repeat';
+    reason = `Matches ${matches.length} recent trend snapshot(s); avoid repeating the same item.`;
+    score = clampScore(score - 0.42, 0.35);
+  } else if (params.watch && score < params.watch.noveltyThreshold) {
+    status = 'weak';
+    reason = `Novelty score ${score.toFixed(2)} is below the watch threshold ${params.watch.noveltyThreshold.toFixed(2)}.`;
+  }
+  return {
+    version: 1,
+    status,
+    score,
+    reason,
+    matchedSnapshotIds: matches.map((snapshot) => snapshot.id).slice(0, 8),
+    sourceOverlapCount: overlapCount,
+  };
+}
+
 function recentFeedback(
   feedback: AoiProactiveBriefFeedback[],
   candidate: AoiProactiveBriefCandidate,
@@ -498,6 +729,7 @@ function directChatBlockReasons(params: {
   feedback: AoiProactiveBriefFeedback[];
   freshness: AoiProactiveTrendSnapshotFreshness;
   sourceStrong: boolean;
+  novelty: AoiProactiveTrendNovelty;
   now: number;
 }): string[] {
   const reasons: string[] = [];
@@ -530,6 +762,12 @@ function directChatBlockReasons(params: {
   }
   if (!params.sourceStrong) {
     reasons.push('weak_source_evidence');
+  }
+  if (params.novelty.status === 'repeat') {
+    reasons.push('repeat_trend_snapshot');
+  }
+  if (params.novelty.status === 'weak') {
+    reasons.push('novelty_below_threshold');
   }
   if (params.candidate.confidence < Math.max(0.55, params.policy?.confidenceFloor ?? 0.55)) {
     reasons.push('confidence_below_floor');
@@ -569,6 +807,82 @@ function freshnessLabel(freshness: AoiProactiveTrendSnapshotFreshness): string {
     return 'Stale source evidence';
   }
   return 'Freshness unknown';
+}
+
+function noveltyLabel(novelty: AoiProactiveTrendNovelty): string {
+  if (novelty.status === 'new') {
+    return `New signal (${novelty.score.toFixed(2)})`;
+  }
+  if (novelty.status === 'repeat') {
+    return `Repeated signal (${novelty.score.toFixed(2)})`;
+  }
+  if (novelty.status === 'stale') {
+    return `Stale signal (${novelty.score.toFixed(2)})`;
+  }
+  return `Weak signal (${novelty.score.toFixed(2)})`;
+}
+
+function deliveryModeForTrend(params: {
+  candidate: AoiProactiveBriefCandidate;
+  novelty: AoiProactiveTrendNovelty;
+  freshness: AoiProactiveTrendSnapshotFreshness;
+  sourceStrong: boolean;
+  blockReasons: string[];
+}): AoiProactiveTrendDeliveryMode {
+  if (params.blockReasons.length === 0) {
+    return 'direct_chat';
+  }
+  if (params.freshness === 'stale' || params.novelty.status === 'stale') {
+    return 'dashboard';
+  }
+  if (!params.sourceStrong || params.novelty.status === 'weak') {
+    return 'dashboard';
+  }
+  if (params.novelty.status === 'repeat') {
+    return 'quiet_notification';
+  }
+  const hardBlock = params.blockReasons.some((reason) =>
+    /policy_disabled|proactive_briefing_disabled|topic_muted|wrong_topic|unsafe|stale_feedback|private|unauthorized|chat_hook_mode_not_allowed/.test(
+      reason,
+    ),
+  );
+  if (hardBlock) {
+    return 'dashboard';
+  }
+  if (params.candidate.delivery.allowedModes.includes('inline_card')) {
+    return 'inline_card';
+  }
+  return 'quiet_notification';
+}
+
+function deliverySummary(params: {
+  mode: AoiProactiveTrendDeliveryMode;
+  novelty: AoiProactiveTrendNovelty;
+  blockReasons: string[];
+}): string {
+  if (params.mode === 'direct_chat') {
+    return 'Ready for direct chat because opt-in, field evidence, source, and novelty gates passed.';
+  }
+  if (params.mode === 'inline_card') {
+    return 'Prepared as an inline card because the trend is new, source-backed, and direct chat is still gated.';
+  }
+  if (params.mode === 'quiet_notification') {
+    return 'Kept as a quiet notification because it is relevant but should not interrupt chat.';
+  }
+  if (params.mode === 'blocked') {
+    return `Blocked: ${params.blockReasons.slice(0, 3).join(', ') || params.novelty.reason}.`;
+  }
+  return `Dashboard only: ${params.blockReasons.slice(0, 3).join(', ') || params.novelty.reason}.`;
+}
+
+function buildChatHookText(params: {
+  topicLabel: string;
+  title: string;
+  myTake: string;
+  sourceHosts: string[];
+}): string {
+  const hosts = params.sourceHosts.slice(0, 3).join(', ') || 'public sources';
+  return `Aoi trend signal for ${params.topicLabel}: ${params.title}. My take: ${params.myTake} Sources: ${hosts}.`;
 }
 
 function findWatchForCandidate(
@@ -723,6 +1037,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   readiness: AoiProactiveTrendAdvisorReadiness;
   feedback?: AoiProactiveBriefFeedback[];
   policy?: AoiAutonomyPolicy | null;
+  existingSnapshots?: AoiProactiveTrendSnapshot[];
   now?: number;
   sourceStaleAfterMs?: number;
 }): AoiProactiveTrendSnapshot | null {
@@ -743,6 +1058,15 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     params.sourceStaleAfterMs ?? DEFAULT_SOURCE_STALE_AFTER_MS,
   );
   const sourceStrong = sourceEvidenceStrong(sources, evidenceRefs);
+  const novelty = computeTrendNovelty({
+    candidate,
+    sources,
+    existingSnapshots: params.existingSnapshots ?? [],
+    freshness,
+    sourceStrong,
+    watch: params.watch,
+    now,
+  });
   const blockReasons = directChatBlockReasons({
     candidate,
     watch: params.watch,
@@ -751,6 +1075,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     feedback: params.feedback ?? [],
     freshness,
     sourceStrong,
+    novelty,
     now,
   });
   const topicId = params.watch?.topicId ?? sanitizeText(candidate.topicId, 120);
@@ -763,6 +1088,23 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
       (params.watch ? 0.04 : -0.2),
     0.55,
   );
+  const deliveryMode = deliveryModeForTrend({
+    candidate,
+    novelty,
+    freshness,
+    sourceStrong,
+    blockReasons,
+  });
+  const sourceHosts = unique(sources.map((source) => source.host)).slice(0, 6);
+  const chatHookText =
+    deliveryMode === 'direct_chat'
+      ? buildChatHookText({
+          topicLabel: topicLabel || 'Interest topic',
+          title: sanitizeText(candidate.title, 160) || 'Source-backed trend item',
+          myTake: opinion.myTake,
+          sourceHosts,
+        })
+      : undefined;
   return {
     version: 1,
     id: makeStableId('aoi-trend', `${params.sessionPath}:${topicId}:${candidate.id}`),
@@ -774,12 +1116,21 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     ...opinion,
     confidence,
     noveltyScore: clampScore(candidate.score, 0.5),
+    novelty,
     risk: normalizeRisk(candidate.risk),
     freshness,
     sources,
     delivery: {
+      mode: deliveryMode,
+      summary: deliverySummary({ mode: deliveryMode, novelty, blockReasons }),
       directChatAllowed: blockReasons.length === 0,
       directChatBlockedReasons: blockReasons,
+      ...(chatHookText ? { chatHookText } : {}),
+      evidenceRefs: unique([
+        `trend-delivery:${deliveryMode}`,
+        `trend-novelty:${novelty.status}`,
+        ...novelty.matchedSnapshotIds.map((id) => `trend-repeat:${id}`),
+      ]).slice(0, 12),
     },
     evidenceRefs,
     createdAt: normalizeTimestamp(candidate.createdAt, now),
@@ -807,6 +1158,9 @@ function normalizeSnapshot(
   }
   const createdAt = normalizeTimestamp(raw.createdAt, now);
   const updatedAt = normalizeTimestamp(raw.updatedAt, createdAt);
+  const noveltyScore = clampScore(raw.noveltyScore, 0.5);
+  const novelty = normalizeNovelty(raw.novelty, noveltyScore);
+  const deliveryMode = normalizeDeliveryMode(raw.delivery?.mode);
   return {
     version: 1,
     id: raw.id,
@@ -822,17 +1176,30 @@ function normalizeSnapshot(
     myTake: sanitizeText(raw.myTake, 320),
     suggestedNextAction: sanitizeText(raw.suggestedNextAction, 240),
     confidence: clampScore(raw.confidence, 0.5),
-    noveltyScore: clampScore(raw.noveltyScore, 0.5),
+    noveltyScore,
+    novelty,
     risk: normalizeRisk(raw.risk),
     freshness: normalizeFreshness(raw.freshness),
     sources: normalizeSources(raw.sources, now),
     delivery: {
+      mode: deliveryMode,
+      summary:
+        sanitizeText(raw.delivery?.summary, 260) ||
+        deliverySummary({
+          mode: deliveryMode,
+          novelty,
+          blockReasons: normalizeStringList(raw.delivery?.directChatBlockedReasons, 16, 120),
+        }),
       directChatAllowed: raw.delivery?.directChatAllowed === true,
       directChatBlockedReasons: normalizeStringList(
         raw.delivery?.directChatBlockedReasons,
         16,
         120,
       ),
+      ...(sanitizeText(raw.delivery?.chatHookText, 360)
+        ? { chatHookText: sanitizeText(raw.delivery?.chatHookText, 360) }
+        : {}),
+      evidenceRefs: normalizeStringList(raw.delivery?.evidenceRefs, 12, 180),
     },
     evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
     createdAt,
@@ -852,6 +1219,8 @@ function snapshotIndexEntry(
     ...(snapshot.candidateId ? { candidateId: snapshot.candidateId } : {}),
     freshness: snapshot.freshness,
     confidence: snapshot.confidence,
+    noveltyStatus: snapshot.novelty.status,
+    deliveryMode: snapshot.delivery.mode,
     createdAt: snapshot.createdAt,
     updatedAt: snapshot.updatedAt,
     expiresAt: snapshot.expiresAt,
@@ -885,6 +1254,8 @@ function normalizeSnapshotIndexEntry(
       : {}),
     freshness: normalizeFreshness(raw.freshness),
     confidence: clampScore(raw.confidence, 0.5),
+    noveltyStatus: normalizeNoveltyStatus(raw.noveltyStatus),
+    deliveryMode: normalizeDeliveryMode(raw.deliveryMode),
     createdAt,
     updatedAt,
     expiresAt: normalizeTimestamp(raw.expiresAt, createdAt + DEFAULT_TREND_TTL_MS),
@@ -999,6 +1370,7 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     version: 1,
     id: makeStableId('aoi-trend-card', `${snapshot.id}:${snapshot.updatedAt}`),
     snapshotId: snapshot.id,
+    ...(snapshot.candidateId ? { candidateId: snapshot.candidateId } : {}),
     topicId: snapshot.topicId,
     topicLabel: snapshot.topicLabel,
     title: snapshot.title,
@@ -1008,9 +1380,13 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     suggestedNextAction: snapshot.suggestedNextAction,
     confidenceLabel: confidenceLabel(snapshot.confidence),
     freshnessLabel: freshnessLabel(snapshot.freshness),
+    noveltyLabel: noveltyLabel(snapshot.novelty),
+    deliveryMode: snapshot.delivery.mode,
+    deliverySummary: snapshot.delivery.summary,
     sourceHosts,
     directChatAllowed: snapshot.delivery.directChatAllowed,
     directChatBlockedReasons: snapshot.delivery.directChatBlockedReasons,
+    ...(snapshot.delivery.chatHookText ? { chatHookText: snapshot.delivery.chatHookText } : {}),
     evidenceRefs: snapshot.evidenceRefs.slice(0, 16),
     createdAt: snapshot.updatedAt,
   };
@@ -1025,6 +1401,8 @@ export function buildAoiProactiveTrendAdvisorState(
   const watchProfile = buildAoiProactiveTrendWatchProfile({
     sessionPath,
     profile: input.profile,
+    feedback: input.feedback,
+    calibrationTuning: input.calibrationTuning,
     now,
   });
   const readiness = buildAoiProactiveTrendAdvisorReadiness({
@@ -1041,6 +1419,12 @@ export function buildAoiProactiveTrendAdvisorState(
     saveAoiProactiveTrendWatchProfile(input.sessionsDir, sessionPath, watchProfile);
   }
 
+  const existingSnapshots =
+    input.existingSnapshots ??
+    (persist && input.sessionsDir
+      ? loadAoiProactiveTrendSnapshots(input.sessionsDir, sessionPath, now)
+      : []);
+
   const snapshotsFromCandidates = (input.candidates ?? [])
     .map((candidate) =>
       buildAoiProactiveTrendSnapshotFromCandidate({
@@ -1050,6 +1434,7 @@ export function buildAoiProactiveTrendAdvisorState(
         readiness,
         feedback: input.feedback,
         policy: input.policy,
+        existingSnapshots,
         now,
         sourceStaleAfterMs: input.sourceStaleAfterMs,
       }),
@@ -1065,7 +1450,7 @@ export function buildAoiProactiveTrendAdvisorState(
   const storedSnapshots =
     persist && input.sessionsDir
       ? loadAoiProactiveTrendSnapshots(input.sessionsDir, sessionPath, now)
-      : [];
+      : existingSnapshots;
   const byId = new Map<string, AoiProactiveTrendSnapshot>();
   for (const snapshot of [...storedSnapshots, ...snapshotsFromCandidates]) {
     if (snapshot.expiresAt > now) {
@@ -1079,6 +1464,14 @@ export function buildAoiProactiveTrendAdvisorState(
     .filter((snapshot) => snapshot.sources.length > 0 && snapshot.evidenceRefs.length > 0)
     .map(cardFromSnapshot)
     .slice(0, MAX_TREND_OPINION_CARDS);
+  const inlineCard =
+    opinionCards.find((card) => card.deliveryMode === 'inline_card') ??
+    opinionCards.find((card) => card.deliveryMode === 'quiet_notification') ??
+    undefined;
+  const directChatCard =
+    opinionCards.find((card) => card.deliveryMode === 'direct_chat' && card.chatHookText) ??
+    undefined;
+  const chatHook = directChatCard?.chatHookText;
 
   return {
     version: 1,
@@ -1087,6 +1480,12 @@ export function buildAoiProactiveTrendAdvisorState(
     watchProfile,
     snapshots,
     opinionCards,
+    quietNotificationCount: opinionCards.filter(
+      (card) => card.deliveryMode === 'quiet_notification' || card.deliveryMode === 'inline_card',
+    ).length,
+    directChatHookCount: opinionCards.filter((card) => card.deliveryMode === 'direct_chat').length,
+    ...(inlineCard ? { inlineCard } : {}),
+    ...(directChatCard && chatHook ? { directChatCard, chatHook } : {}),
     readiness,
     evidenceRefs: unique([
       ...watchProfile.evidenceRefs,
@@ -1194,6 +1593,41 @@ export function buildAoiProactiveTrendAdvisorDiagnostics(
       }),
     );
   }
+  if (state.snapshots.some((snapshot) => snapshot.novelty.status === 'repeat')) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_repeat_snapshot',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Some trend snapshots repeat recent evidence and are suppressed from direct chat.',
+        cannotKnow:
+          'Aoi cannot treat repeated source URLs or titles as new trends until fresh evidence appears.',
+        evidenceRefs: state.snapshots
+          .filter((snapshot) => snapshot.novelty.status === 'repeat')
+          .flatMap((snapshot) => snapshot.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
+  if (state.quietNotificationCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_quiet_notification_ready',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: `${state.quietNotificationCount} trend item(s) are ready for quiet notification or inline card delivery.`,
+        cannotKnow:
+          'Aoi still cannot know whether the operator wants stronger interruption without direct-chat readiness and feedback.',
+        evidenceRefs: state.opinionCards
+          .filter(
+            (card) =>
+              card.deliveryMode === 'quiet_notification' || card.deliveryMode === 'inline_card',
+          )
+          .flatMap((card) => card.evidenceRefs.slice(0, 2)),
+        observedAt: state.generatedAt || now,
+      }),
+    );
+  }
   if (state.opinionCards.length > 0) {
     diagnostics.push(
       diagnostic({
@@ -1204,6 +1638,20 @@ export function buildAoiProactiveTrendAdvisorDiagnostics(
         cannotKnow:
           'Aoi still cannot know whether the operator wants a direct interruption without opt-in and field readiness.',
         evidenceRefs: state.opinionCards.flatMap((card) => card.evidenceRefs.slice(0, 2)),
+        observedAt: state.generatedAt || now,
+      }),
+    );
+  }
+  if (state.directChatHookCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_direct_chat_ready',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: `${state.directChatHookCount} trend item(s) can be delivered through direct chat.`,
+        cannotKnow:
+          'Aoi cannot know the operator will value the interruption until feedback is recorded after delivery.',
+        evidenceRefs: state.directChatCard?.evidenceRefs ?? state.readiness.evidenceRefs,
         observedAt: state.generatedAt || now,
       }),
     );
