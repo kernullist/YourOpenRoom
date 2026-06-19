@@ -10,6 +10,7 @@ import {
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeCalibrationPanelSummary,
+  buildAoiAgendaNudgeReadinessPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiOperatorHealthPanelSummary,
   buildAoiPlaybookPanelSummary,
@@ -1097,6 +1098,97 @@ describe('Aoi autonomy UI helpers', () => {
     });
     expect(learningSummary.summaryLabel).toContain('positive local feedback');
     expect(learningSummary.reasonLabels.join(' ')).toContain('No local suppression');
+  });
+
+  it('summarizes agenda nudge readiness gates before direct chat delivery', () => {
+    const proposal = makeProposal({
+      confidence: 0.96,
+      evidenceRefs: ['research:aoi-research-ui-test/report', 'memory:re-interest'],
+    });
+    const baseSettings = {
+      panelExpanded: true,
+      notificationsEnabled: true,
+      quietMode: false,
+      maxSuggestionsPerSession: 3,
+    };
+    const readySummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: baseSettings,
+      options: {
+        now: 5000,
+      },
+    });
+
+    expect(readySummary).toMatchObject({
+      statusLabel: 'ready',
+      tone: 'ready',
+    });
+    expect(readySummary.candidateLabel).toContain('high-signal proposal');
+    expect(readySummary.reasonLabels.join(' ')).toContain('gates all allow');
+    expect(readySummary.evidenceRefs).toContain('memory:re-interest');
+
+    const notificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        notificationsEnabled: false,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+    expect(notificationSummary).toMatchObject({
+      statusLabel: 'notifications off',
+      tone: 'blocked',
+    });
+    expect(notificationSummary.nextActionLabels.join(' ')).toContain('Turn on');
+
+    const cooldownSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: baseSettings,
+      options: {
+        now: 6000,
+        lastShownAt: 5000,
+      },
+    });
+    expect(cooldownSummary).toMatchObject({
+      statusLabel: 'cooling down',
+      tone: 'waiting',
+    });
+    expect(cooldownSummary.candidateLabel).toContain('high-signal proposal');
+    expect(cooldownSummary.reasonLabels.join(' ')).toContain('Cooldown remaining');
+
+    const noCandidateDuringCooldown = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [],
+      settings: baseSettings,
+      options: {
+        now: 6000,
+        lastShownAt: 5000,
+      },
+    });
+    expect(noCandidateDuringCooldown).toMatchObject({
+      statusLabel: 'no candidate',
+      tone: 'waiting',
+    });
+
+    const dedupeSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: baseSettings,
+      options: {
+        now: 5000,
+        shownDedupeKeys: new Set(['proposal:aoi-proposal-ui-test-001']),
+      },
+    });
+    expect(dedupeSummary).toMatchObject({
+      statusLabel: 'already shown',
+      tone: 'waiting',
+    });
+    expect(dedupeSummary.reasonLabels.join(' ')).toContain('Duplicate protection');
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {

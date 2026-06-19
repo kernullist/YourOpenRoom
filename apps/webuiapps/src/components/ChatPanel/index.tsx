@@ -262,6 +262,7 @@ import {
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeCalibrationPanelSummary,
+  buildAoiAgendaNudgeReadinessPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
@@ -8044,6 +8045,9 @@ const ChatPanel: React.FC<{
           aoiAutonomyError={aoiAutonomyError}
           aoiAutonomyActionId={aoiAutonomyActionId}
           aoiAutonomyLastTickAt={aoiAutonomyLastTickAt}
+          aoiAgendaNudgeLastShownAt={aoiAgendaNudgeLastShownAt}
+          aoiAgendaNudgeShownKeys={aoiAgendaNudgeShownKeysRef.current}
+          aoiInlineShownCount={aoiInlineShownCount}
           aoiAutonomyExecutionMessages={aoiAutonomyExecutionMessages}
           aoiKiraHandoffPreviews={aoiKiraHandoffPreviews}
           aoiAutonomyPendingFeedback={aoiAutonomyPendingFeedback}
@@ -8626,6 +8630,9 @@ const SettingsModal: React.FC<{
   aoiAutonomyError: string;
   aoiAutonomyActionId: string | null;
   aoiAutonomyLastTickAt: number | null;
+  aoiAgendaNudgeLastShownAt: number | null;
+  aoiAgendaNudgeShownKeys: ReadonlySet<string>;
+  aoiInlineShownCount: number;
   aoiAutonomyExecutionMessages: Record<string, string>;
   aoiKiraHandoffPreviews: Record<string, AoiAutonomyProposalPreviewResult>;
   aoiAutonomyPendingFeedback: {
@@ -8738,6 +8745,9 @@ const SettingsModal: React.FC<{
   aoiAutonomyError,
   aoiAutonomyActionId,
   aoiAutonomyLastTickAt,
+  aoiAgendaNudgeLastShownAt,
+  aoiAgendaNudgeShownKeys,
+  aoiInlineShownCount,
   aoiAutonomyExecutionMessages,
   aoiKiraHandoffPreviews,
   aoiAutonomyPendingFeedback,
@@ -9082,6 +9092,33 @@ const SettingsModal: React.FC<{
         aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
       ),
     [aoiAutonomyLastTickAt, aoiAutonomyPanelSettings, aoiAutonomyStatus?.updatedAt],
+  );
+  const aoiAgendaNudgeReadinessSummary = useMemo(
+    () =>
+      buildAoiAgendaNudgeReadinessPanelSummary({
+        status: aoiAutonomyStatus,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        digest: aoiOperatorDigest,
+        settings: aoiAutonomyPanelSettings,
+        options: {
+          now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+          lastShownAt: aoiAgendaNudgeLastShownAt,
+          shownCount: aoiInlineShownCount,
+          shownDedupeKeys: aoiAgendaNudgeShownKeys,
+        },
+      }),
+    [
+      aoiAgendaNudgeLastShownAt,
+      aoiAgendaNudgeShownKeys,
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyStatus,
+      aoiInlineShownCount,
+      aoiOperatorDigest,
+    ],
   );
   const aoiOperatorHealthSummary = useMemo(
     () =>
@@ -11059,6 +11096,34 @@ const SettingsModal: React.FC<{
                             ))}
                             {aoiAutonomyAgendaSummary.evidenceRefs.map((ref, index) => (
                               <div key={`agenda-evidence-${index}`}>Evidence: {ref}</div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiAgendaNudgeReadinessSummary.visible && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Agenda nudge readiness
+                        </div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiAgendaNudgeReadinessSummary.statusLabel}</span>
+                            <span>{aoiAgendaNudgeReadinessSummary.candidateLabel}</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiAgendaNudgeReadinessSummary.summaryLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            {aoiAgendaNudgeReadinessSummary.reasonLabels.map((label, index) => (
+                              <div key={`agenda-readiness-reason-${index}`}>{label}</div>
+                            ))}
+                            {aoiAgendaNudgeReadinessSummary.nextActionLabels.map((label, index) => (
+                              <div key={`agenda-readiness-next-${index}`}>Next: {label}</div>
+                            ))}
+                            {aoiAgendaNudgeReadinessSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`agenda-readiness-evidence-${index}`}>Evidence: {ref}</div>
                             ))}
                           </div>
                         </div>

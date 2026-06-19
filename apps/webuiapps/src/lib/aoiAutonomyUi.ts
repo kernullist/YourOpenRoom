@@ -141,6 +141,17 @@ export interface AoiAgendaNudgeCalibrationGate {
   evidenceRefs: string[];
 }
 
+export interface AoiAgendaNudgeReadinessPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  summaryLabel: string;
+  candidateLabel: string;
+  reasonLabels: string[];
+  nextActionLabels: string[];
+  evidenceRefs: string[];
+  tone: 'ready' | 'waiting' | 'blocked';
+}
+
 export type AoiAgendaChatFollowUpIntent =
   | 'preview_prepared_action'
   | 'review_approval_gate'
@@ -2441,6 +2452,238 @@ export function selectAoiAgendaChatNudge(params: {
   }
 
   return nudge;
+}
+
+function getAoiAgendaNudgeReasonLabel(reason: AoiAgendaChatNudgeReason): string {
+  if (reason === 'accepted_action_ready') {
+    return 'accepted action ready';
+  }
+  if (reason === 'approval_waiting') {
+    return 'approval waiting';
+  }
+  if (reason === 'blocked_gate') {
+    return 'blocked gate';
+  }
+  return 'high-signal proposal';
+}
+
+function formatAoiAgendaNudgeWait(waitMs: number): string {
+  if (waitMs <= 60 * 1000) {
+    return 'less than 1 minute';
+  }
+  const minutes = Math.ceil(waitMs / (60 * 1000));
+  if (minutes < 60) {
+    return `${minutes} minute${minutes === 1 ? '' : 's'}`;
+  }
+  const hours = Math.ceil(minutes / 60);
+  return `${hours} hour${hours === 1 ? '' : 's'}`;
+}
+
+export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
+  status?: AoiAutonomyStatus | null;
+  activeProposals?: AoiProposal[];
+  blockedProposals?: AoiAutonomyBlockedProposal[];
+  digest?: AoiOperatorDigest | null;
+  settings?: AoiAutonomyPanelSettings;
+  options?: AoiAgendaChatNudgeSelectionOptions;
+}): AoiAgendaNudgeReadinessPanelSummary {
+  const status = params.status;
+  const settings = params.settings ?? DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS;
+  const options = params.options ?? {};
+  const policy = status?.policy ?? DEFAULT_AOI_AUTONOMY_POLICY;
+  const now = options.now ?? Date.now();
+  const activeProposals = params.activeProposals ?? [];
+  const blockedProposals = params.blockedProposals ?? [];
+  const approvalCount = params.digest?.approvalInbox.length ?? 0;
+  const summaryCountLabel = `${activeProposals.length} active, ${blockedProposals.length} blocked, ${approvalCount} approval`;
+
+  const blockedSummary = (
+    statusLabel: string,
+    summaryLabel: string,
+    reasonLabels: string[],
+    nextActionLabels: string[],
+    evidenceRefs: string[] = [],
+  ): AoiAgendaNudgeReadinessPanelSummary => ({
+    visible: true,
+    statusLabel,
+    summaryLabel,
+    candidateLabel: summaryCountLabel,
+    reasonLabels,
+    nextActionLabels,
+    evidenceRefs,
+    tone: 'blocked',
+  });
+
+  if (!status) {
+    return blockedSummary(
+      'unavailable',
+      'Aoi has no autonomy status snapshot for direct agenda nudges yet.',
+      ['Autonomy status has not loaded.'],
+      ['Refresh Aoi autonomy status before expecting a direct agenda chat nudge.'],
+    );
+  }
+
+  if (status.activeTick) {
+    return blockedSummary(
+      'busy',
+      'Aoi is already processing an autonomy tick.',
+      ['Direct agenda nudges wait while an active tick is running.'],
+      ['Let the current tick finish before Aoi speaks proactively.'],
+    );
+  }
+
+  if (!policy.enabled) {
+    return blockedSummary(
+      'policy off',
+      'Aoi autonomy policy is disabled.',
+      ['The global autonomy policy blocks direct agenda nudges.'],
+      ['Enable Aoi autonomy before expecting proactive agenda chat.'],
+    );
+  }
+
+  if (!policy.proactiveSuggestionsEnabled) {
+    return blockedSummary(
+      'suggestions off',
+      'Aoi proactive suggestions are disabled by policy.',
+      ['The proactive suggestion policy blocks agenda chat nudges.'],
+      ['Enable proactive suggestions in Aoi settings.'],
+    );
+  }
+
+  if (options.quietMode ?? settings.quietMode) {
+    return blockedSummary(
+      'quiet mode',
+      'Aoi agenda nudges are paused by panel quiet mode.',
+      ['Quiet mode blocks direct agenda chat nudges but keeps observation active.'],
+      ['Turn off quiet mode when you want Aoi to speak proactively again.'],
+    );
+  }
+
+  if (!(options.notificationsEnabled ?? settings.notificationsEnabled)) {
+    return blockedSummary(
+      'notifications off',
+      'Aoi agenda nudges are waiting for notification permission.',
+      ['Panel notifications are off, so direct agenda chat nudges stay silent.'],
+      ['Turn on Aoi panel notifications to allow compact direct chat nudges.'],
+    );
+  }
+
+  const calibrationGate = getAoiAgendaNudgeCalibrationGate(
+    options.calibration ?? settings.agendaNudgeCalibration,
+    now,
+  );
+  if (calibrationGate.suppressed) {
+    return blockedSummary(
+      'muted',
+      'Aoi agenda nudges are muted by recent feedback calibration.',
+      calibrationGate.reasonLabels.length > 0
+        ? calibrationGate.reasonLabels
+        : ['Recent feedback temporarily muted direct agenda chat nudges.'],
+      ['Reset agenda nudge feedback or wait for the mute window to expire.'],
+      calibrationGate.evidenceRefs,
+    );
+  }
+
+  const maxPerSession = options.maxPerSession ?? settings.maxSuggestionsPerSession;
+  const shownCount = options.shownCount ?? 0;
+  if (maxPerSession <= 0) {
+    return blockedSummary(
+      'session cap',
+      'Aoi agenda nudges are disabled by the per-session cap.',
+      ['The maximum direct suggestions per session is set to 0.'],
+      ['Raise the Aoi max suggestions setting above 0.'],
+    );
+  }
+
+  if (shownCount >= maxPerSession) {
+    return blockedSummary(
+      'session cap',
+      'Aoi already used the direct suggestion budget for this session.',
+      [`Shown ${shownCount} of ${maxPerSession} allowed direct suggestion(s).`],
+      ['Dismiss or reset the session budget by starting a fresh panel session.'],
+    );
+  }
+
+  const candidate = selectAoiAgendaChatNudge({
+    status,
+    activeProposals,
+    blockedProposals,
+    digest: params.digest,
+    settings,
+    options: {
+      ...options,
+      now,
+      lastShownAt: undefined,
+      shownDedupeKeys: undefined,
+    },
+  });
+
+  if (candidate) {
+    const reasonLabel = getAoiAgendaNudgeReasonLabel(candidate.reason);
+    const cooldownMs = options.cooldownMs ?? AOI_AGENDA_CHAT_NUDGE_COOLDOWN_MS;
+    if (
+      typeof options.lastShownAt === 'number' &&
+      options.lastShownAt > 0 &&
+      now - options.lastShownAt < cooldownMs
+    ) {
+      const waitMs = cooldownMs - (now - options.lastShownAt);
+      return {
+        visible: true,
+        statusLabel: 'cooling down',
+        summaryLabel: 'Aoi has a qualified agenda path, but direct chat nudges are cooling down.',
+        candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+        reasonLabels: [`Cooldown remaining: ${formatAoiAgendaNudgeWait(waitMs)}.`],
+        nextActionLabels: ['Aoi can speak again after the cooldown window expires.'],
+        evidenceRefs: candidate.evidenceRefs,
+        tone: 'waiting',
+      };
+    }
+
+    if (options.shownDedupeKeys?.has(candidate.dedupeKey)) {
+      return {
+        visible: true,
+        statusLabel: 'already shown',
+        summaryLabel: 'Aoi already surfaced the top agenda nudge in this session.',
+        candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+        reasonLabels: ['Duplicate protection blocks repeating the same direct agenda nudge.'],
+        nextActionLabels: [
+          'A new proposal, approval gate, or blocked gate can produce a fresh nudge.',
+        ],
+        evidenceRefs: candidate.evidenceRefs,
+        tone: 'waiting',
+      };
+    }
+
+    return {
+      visible: true,
+      statusLabel: 'ready',
+      summaryLabel: 'Aoi has a direct agenda chat nudge ready.',
+      candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+      reasonLabels: [
+        'Policy, quiet mode, notification, calibration, cooldown, and session gates all allow a nudge.',
+      ],
+      nextActionLabels: [
+        'Aoi can surface the nudge as a compact chat message without running tools or app actions.',
+      ],
+      evidenceRefs: candidate.evidenceRefs,
+      tone: 'ready',
+    };
+  }
+
+  return {
+    visible: true,
+    statusLabel: 'no candidate',
+    summaryLabel: 'Aoi is allowed to speak, but no agenda item currently qualifies.',
+    candidateLabel: summaryCountLabel,
+    reasonLabels: [
+      'No accepted action, approval gate, blocked gate, or high-signal low-risk proposal qualified.',
+    ],
+    nextActionLabels: [
+      'Aoi will wait for stronger evidence, an approval-gated action, or a blocked safety gate.',
+    ],
+    evidenceRefs: [],
+    tone: 'waiting',
+  };
 }
 
 export function buildAoiAgendaChatFollowUpContext(
