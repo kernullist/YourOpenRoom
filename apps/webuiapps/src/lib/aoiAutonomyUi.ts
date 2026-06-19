@@ -58,6 +58,7 @@ import type {
 } from './aoiAutonomyTypes';
 
 export const AOI_INLINE_SUGGESTION_COOLDOWN_MS = 30 * 60 * 1000;
+export const AOI_AGENDA_CHAT_NUDGE_COOLDOWN_MS = 45 * 60 * 1000;
 export const AOI_INLINE_SUGGESTION_MAX_PER_SESSION = 3;
 export const AOI_AUTONOMY_PANEL_SETTINGS_KEY = 'openroom-aoi-autonomy-panel-settings';
 
@@ -87,6 +88,32 @@ export interface AoiInlineProposalSelectionOptions {
   maxPerSession?: number;
   cooldownMs?: number;
   quietMode?: boolean;
+}
+
+export type AoiAgendaChatNudgeReason =
+  | 'accepted_action_ready'
+  | 'approval_waiting'
+  | 'blocked_gate'
+  | 'high_signal_proposal';
+
+export interface AoiAgendaChatNudge {
+  dedupeKey: string;
+  reason: AoiAgendaChatNudgeReason;
+  proposalId?: string;
+  chatText: string;
+  suggestedReplies: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiAgendaChatNudgeSelectionOptions {
+  now?: number;
+  lastShownAt?: number | null;
+  shownCount?: number;
+  maxPerSession?: number;
+  cooldownMs?: number;
+  quietMode?: boolean;
+  notificationsEnabled?: boolean;
+  shownDedupeKeys?: ReadonlySet<string>;
 }
 
 export interface AoiAutonomyProposalCounts {
@@ -1957,6 +1984,187 @@ export function buildAoiAutonomyAgendaPanelSummary(params: {
       params.workspaceSnapshot?.evidenceRefs,
     ),
   };
+}
+
+function buildAoiAgendaChatNudgeText(params: {
+  title: string;
+  whyNow: string;
+  safeNextAction: string;
+  boundary?: string;
+  evidenceRefs?: readonly string[];
+}): string {
+  const evidenceCount = params.evidenceRefs?.length ?? 0;
+  const evidenceLabel =
+    evidenceCount > 0
+      ? `${evidenceCount} evidence ref${evidenceCount === 1 ? '' : 's'} attached in the Aoi panel.`
+      : 'No evidence refs are attached yet, so keep this as review-only.';
+  const boundary =
+    params.boundary ||
+    'I am only surfacing this signal; no tools, app actions, file changes, commits, or pushes start from this nudge.';
+
+  return [
+    `Aoi agenda update: ${sanitizeAoiProposalDisplayText(params.title, 140)}.`,
+    `Why now: ${sanitizeAoiProposalDisplayText(params.whyNow, 220)}`,
+    `Safe next step: ${sanitizeAoiProposalDisplayText(params.safeNextAction, 220)}`,
+    `Boundary: ${sanitizeAoiProposalDisplayText(boundary, 260)}`,
+    `Evidence: ${evidenceLabel}`,
+  ].join('\n');
+}
+
+function buildAoiAgendaSuggestedReplies(reason: AoiAgendaChatNudgeReason): string[] {
+  if (reason === 'accepted_action_ready') {
+    return ['Preview the prepared action', 'Show the safety boundary', 'Keep observing quietly'];
+  }
+  if (reason === 'approval_waiting') {
+    return ['Review the approval gate', 'Explain why now', 'Keep observing quietly'];
+  }
+  if (reason === 'blocked_gate') {
+    return ['Explain the blocked gate', 'Show the safe alternative', 'Keep observing quietly'];
+  }
+  return ['Explain why this matters', 'Show the safe next step', 'Keep observing quietly'];
+}
+
+export function selectAoiAgendaChatNudge(params: {
+  status?: AoiAutonomyStatus | null;
+  activeProposals?: AoiProposal[];
+  blockedProposals?: AoiAutonomyBlockedProposal[];
+  digest?: AoiOperatorDigest | null;
+  settings?: AoiAutonomyPanelSettings;
+  options?: AoiAgendaChatNudgeSelectionOptions;
+}): AoiAgendaChatNudge | null {
+  const status = params.status;
+  const settings = params.settings ?? DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS;
+  const options = params.options ?? {};
+  const policy = status?.policy ?? DEFAULT_AOI_AUTONOMY_POLICY;
+
+  if (!status || status.activeTick) {
+    return null;
+  }
+  if (!policy.enabled || !policy.proactiveSuggestionsEnabled) {
+    return null;
+  }
+  if (options.quietMode ?? settings.quietMode) {
+    return null;
+  }
+  if (!(options.notificationsEnabled ?? settings.notificationsEnabled)) {
+    return null;
+  }
+
+  const now = options.now ?? Date.now();
+  const maxPerSession = options.maxPerSession ?? settings.maxSuggestionsPerSession;
+  const shownCount = options.shownCount ?? 0;
+  if (maxPerSession <= 0 || shownCount >= maxPerSession) {
+    return null;
+  }
+
+  const cooldownMs = options.cooldownMs ?? AOI_AGENDA_CHAT_NUDGE_COOLDOWN_MS;
+  if (
+    typeof options.lastShownAt === 'number' &&
+    options.lastShownAt > 0 &&
+    now - options.lastShownAt < cooldownMs
+  ) {
+    return null;
+  }
+
+  const activeProposals = params.activeProposals ?? [];
+  const blockedProposals = params.blockedProposals ?? [];
+  const approvalInbox = params.digest?.approvalInbox ?? [];
+  const acceptedProposal = sortAoiAgendaProposals(
+    activeProposals.filter((proposal) => proposal.status === 'accepted'),
+  )[0];
+  const topApproval = approvalInbox[0];
+  const topBlockedProposal = blockedProposals[0];
+  const highSignalProposal = sortAoiAgendaProposals(
+    activeProposals.filter((proposal) => {
+      if (!isAoiProposalInlineEligible(proposal, { now })) {
+        return false;
+      }
+      if (proposal.risk === 'high') {
+        return false;
+      }
+      return (
+        proposal.confidence >= 0.78 ||
+        proposal.evidenceRefs.length >= 3 ||
+        proposal.requiresUserApproval
+      );
+    }),
+  )[0];
+
+  let nudge: AoiAgendaChatNudge | null = null;
+  if (acceptedProposal) {
+    const evidenceRefs = collectAoiAgendaEvidenceRefs(acceptedProposal.evidenceRefs);
+    nudge = {
+      dedupeKey: `accepted:${acceptedProposal.id}`,
+      reason: 'accepted_action_ready',
+      proposalId: acceptedProposal.id,
+      chatText: buildAoiAgendaChatNudgeText({
+        title: 'An accepted action is ready for review',
+        whyNow: acceptedProposal.reason,
+        safeNextAction: `Preview or confirm ${getAoiAgendaActionLabel(acceptedProposal)} from the Aoi panel.`,
+        boundary: `${acceptedProposal.acceptAction?.kind ?? 'prepared action'} remains behind ${acceptedProposal.requiredAutonomyLevel} and the existing approval controls.`,
+        evidenceRefs,
+      }),
+      suggestedReplies: buildAoiAgendaSuggestedReplies('accepted_action_ready'),
+      evidenceRefs,
+    };
+  } else if (topApproval) {
+    const evidenceRefs = collectAoiAgendaEvidenceRefs(topApproval.evidenceRefs);
+    nudge = {
+      dedupeKey: `approval:${topApproval.dedupeKey || topApproval.proposalId}`,
+      reason: 'approval_waiting',
+      proposalId: topApproval.proposalId,
+      chatText: buildAoiAgendaChatNudgeText({
+        title: 'An approval-gated action is waiting',
+        whyNow: topApproval.title,
+        safeNextAction: topApproval.exactNextAction,
+        boundary: topApproval.boundary,
+        evidenceRefs,
+      }),
+      suggestedReplies: buildAoiAgendaSuggestedReplies('approval_waiting'),
+      evidenceRefs,
+    };
+  } else if (topBlockedProposal) {
+    const evidenceRefs = collectAoiAgendaEvidenceRefs(topBlockedProposal.evidenceRefs);
+    nudge = {
+      dedupeKey: `blocked:${topBlockedProposal.proposalId}`,
+      reason: 'blocked_gate',
+      proposalId: topBlockedProposal.proposalId,
+      chatText: buildAoiAgendaChatNudgeText({
+        title: 'A safety gate blocked proposed work',
+        whyNow:
+          topBlockedProposal.reasons.length > 0
+            ? topBlockedProposal.reasons.join(', ')
+            : topBlockedProposal.title,
+        safeNextAction:
+          topBlockedProposal.safeAlternative ||
+          'Review the blocked proposal in the Aoi panel before taking any action.',
+        evidenceRefs,
+      }),
+      suggestedReplies: buildAoiAgendaSuggestedReplies('blocked_gate'),
+      evidenceRefs,
+    };
+  } else if (highSignalProposal) {
+    const evidenceRefs = collectAoiAgendaEvidenceRefs(highSignalProposal.evidenceRefs);
+    nudge = {
+      dedupeKey: `proposal:${highSignalProposal.id}`,
+      reason: 'high_signal_proposal',
+      proposalId: highSignalProposal.id,
+      chatText: buildAoiAgendaChatNudgeText({
+        title: 'A high-signal proposal is ready',
+        whyNow: highSignalProposal.reason,
+        safeNextAction: `Review proposal: ${sanitizeAoiProposalDisplayText(highSignalProposal.title, 140)}.`,
+        evidenceRefs,
+      }),
+      suggestedReplies: buildAoiAgendaSuggestedReplies('high_signal_proposal'),
+      evidenceRefs,
+    };
+  }
+
+  if (!nudge || options.shownDedupeKeys?.has(nudge.dedupeKey)) {
+    return null;
+  }
+
+  return nudge;
 }
 
 export function buildAoiOperatorHealthPanelSummary(

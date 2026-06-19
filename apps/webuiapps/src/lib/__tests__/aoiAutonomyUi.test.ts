@@ -34,6 +34,7 @@ import {
   loadAoiAutonomyPanelSettings,
   saveAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
+  selectAoiAgendaChatNudge,
   selectAoiInlineProposal,
 } from '../aoiAutonomyUi';
 import { evaluateAoiOperatorHealth } from '../aoiOperatorHealth';
@@ -723,6 +724,159 @@ describe('Aoi autonomy UI helpers', () => {
     expect(summary.evidenceRefs).toEqual(
       expect.arrayContaining(['research:aoi-research-ui-test/report']),
     );
+  });
+
+  it('surfaces agenda chat nudges only when notification gates allow them', () => {
+    const acceptedProposal = makeProposal({
+      status: 'accepted',
+      confidence: 0.9,
+      evidenceRefs: ['research:aoi-research-ui-test/report'],
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: {
+          runId: 'aoi-research-ui-test',
+          artifact: 'report',
+        },
+      },
+      suggestedTools: ['read_research_artifact'],
+    });
+    const settings = {
+      panelExpanded: true,
+      notificationsEnabled: true,
+      quietMode: false,
+      maxSuggestionsPerSession: 3,
+    };
+
+    const nudge = selectAoiAgendaChatNudge({
+      status: makeAutonomyStatus(),
+      activeProposals: [acceptedProposal],
+      settings,
+      options: {
+        now: 5000,
+      },
+    });
+
+    expect(nudge).toMatchObject({
+      reason: 'accepted_action_ready',
+      proposalId: acceptedProposal.id,
+      evidenceRefs: ['research:aoi-research-ui-test/report'],
+    });
+    expect(nudge?.chatText).toContain('accepted action is ready');
+    expect(nudge?.chatText).toContain('Boundary:');
+    expect(nudge?.chatText).not.toMatch(/\bexecuted\b|\bexecuting\b/i);
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [acceptedProposal],
+        settings: {
+          ...settings,
+          quietMode: true,
+        },
+        options: {
+          now: 5000,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [acceptedProposal],
+        settings: {
+          ...settings,
+          notificationsEnabled: false,
+        },
+        options: {
+          now: 5000,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [acceptedProposal],
+        settings,
+        options: {
+          now: 5000,
+          lastShownAt: 4500,
+          cooldownMs: 1000,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [acceptedProposal],
+        settings,
+        options: {
+          now: 5000,
+          shownCount: 3,
+        },
+      }),
+    ).toBeNull();
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [acceptedProposal],
+        settings,
+        options: {
+          now: 5000,
+          shownDedupeKeys: new Set([`accepted:${acceptedProposal.id}`]),
+        },
+      }),
+    ).toBeNull();
+  });
+
+  it('prioritizes approval-gated agenda chat nudges over high-signal proposals', () => {
+    const highSignalProposal = makeProposal({
+      id: 'aoi-proposal-high-signal-ui-test',
+      title: 'Summarize the current RE trend',
+      confidence: 0.94,
+      evidenceRefs: ['research:re-trend-ui-test/report', 'memory:re-interest', 'source:kernel'],
+      updatedAt: 4900,
+    });
+    const approvalProposal = makeProposal({
+      id: 'aoi-proposal-approval-ui-test',
+      title: 'Refresh stale RE research',
+      reason: 'The saved RE trend research is stale for a current-info question.',
+      requiresUserApproval: true,
+      acceptAction: {
+        kind: 'start_research',
+        params: {
+          request: 'latest reverse engineering trend',
+        },
+      },
+      evidenceRefs: ['memory:stale-research-ui-test'],
+      suggestedTools: ['start_research'],
+      updatedAt: 4700,
+    });
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      activeProposals: [approvalProposal],
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+    });
+
+    const nudge = selectAoiAgendaChatNudge({
+      status: makeAutonomyStatus(),
+      activeProposals: [highSignalProposal, approvalProposal],
+      digest,
+      settings: {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+
+    expect(nudge).toMatchObject({
+      reason: 'approval_waiting',
+      proposalId: approvalProposal.id,
+    });
+    expect(nudge?.chatText).toContain('approval-gated action is waiting');
+    expect(nudge?.chatText).toContain('Safe next step:');
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {

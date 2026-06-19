@@ -283,6 +283,7 @@ import {
   loadAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
   saveAoiAutonomyPanelSettings,
+  selectAoiAgendaChatNudge,
   selectAoiInlineProposal,
   summarizeAoiAutonomyProposalCounts,
   type AoiAutonomyPanelSettings,
@@ -2548,6 +2549,7 @@ const ChatPanel: React.FC<{
   );
   const [aoiInlineHiddenAt, setAoiInlineHiddenAt] = useState<number | null>(null);
   const [aoiInlineShownCount, setAoiInlineShownCount] = useState(0);
+  const [aoiAgendaNudgeLastShownAt, setAoiAgendaNudgeLastShownAt] = useState<number | null>(null);
 
   // Pending tool calls for current response (grouped per assistant turn)
   const pendingToolCallsRef = useRef<string[]>([]);
@@ -2573,6 +2575,7 @@ const ChatPanel: React.FC<{
   const aoiInlineShownProactiveBriefIdsRef = useRef(new Set<string>());
   const aoiInlineShownTrendIdsRef = useRef(new Set<string>());
   const aoiDirectTrendChatIdsRef = useRef(new Set<string>());
+  const aoiAgendaNudgeShownKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
 
@@ -2712,10 +2715,12 @@ const ChatPanel: React.FC<{
     setAoiInlineSnoozedProposalIds(new Set());
     setAoiInlineHiddenAt(null);
     setAoiInlineShownCount(0);
+    setAoiAgendaNudgeLastShownAt(null);
     aoiInlineShownProposalIdsRef.current = new Set();
     aoiInlineShownProactiveBriefIdsRef.current = new Set();
     aoiInlineShownTrendIdsRef.current = new Set();
     aoiDirectTrendChatIdsRef.current = new Set();
+    aoiAgendaNudgeShownKeysRef.current = new Set();
     loadChatHistory(sessionPath).then(async (data) => {
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
@@ -7049,6 +7054,32 @@ const ChatPanel: React.FC<{
       ? (aoiProactiveBriefs?.trendAdvisor?.inlineCard ?? null)
       : null;
   const directAoiTrendCard = aoiProactiveBriefs?.trendAdvisor?.directChatCard ?? null;
+  const aoiAgendaChatNudge = useMemo(
+    () =>
+      selectAoiAgendaChatNudge({
+        status: aoiAutonomyStatus,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        digest: aoiOperatorDigest,
+        settings: aoiAutonomyPanelSettings,
+        options: {
+          now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+          lastShownAt: aoiAgendaNudgeLastShownAt,
+          shownCount: aoiInlineShownCount,
+          shownDedupeKeys: aoiAgendaNudgeShownKeysRef.current,
+        },
+      }),
+    [
+      aoiAgendaNudgeLastShownAt,
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyStatus,
+      aoiInlineShownCount,
+      aoiOperatorDigest,
+    ],
+  );
 
   useEffect(() => {
     if (!inlineAoiProposal) {
@@ -7086,6 +7117,51 @@ const ChatPanel: React.FC<{
       'inline_card_shown',
     );
   }, [inlineAoiTrendCard, recordAoiProactiveTrendDeliveryFromPanel]);
+
+  useEffect(() => {
+    if (!aoiAgendaChatNudge || loading || !visible) {
+      return;
+    }
+    const safeMessageIdKey = aoiAgendaChatNudge.dedupeKey.replace(/[^A-Za-z0-9_-]/g, '-');
+    const messageId = `aoi-agenda-direct-${safeMessageIdKey}`;
+    if (aoiAgendaNudgeShownKeysRef.current.has(aoiAgendaChatNudge.dedupeKey)) {
+      return;
+    }
+    if (messagesRef.current.some((message) => message.id === messageId)) {
+      aoiAgendaNudgeShownKeysRef.current.add(aoiAgendaChatNudge.dedupeKey);
+      return;
+    }
+    aoiAgendaNudgeShownKeysRef.current.add(aoiAgendaChatNudge.dedupeKey);
+    const followUpPrompts = aoiAgendaChatNudge.suggestedReplies.slice(0, 3);
+    emitAssistantMessage(
+      {
+        id: messageId,
+        role: 'assistant',
+        content: aoiAgendaChatNudge.chatText,
+        ...(followUpPrompts.length > 0 ? { suggestedReplies: followUpPrompts } : {}),
+      },
+      {
+        updateSuggestedReplies: followUpPrompts.length > 0,
+        speak: false,
+      },
+    );
+    setAoiAgendaNudgeLastShownAt(Date.now());
+    setAoiInlineShownCount((prev) => prev + 1);
+    recordAoiMemoryTurn({
+      userMessage: '[aoi-agenda-nudge]',
+      assistantMessage: aoiAgendaChatNudge.chatText,
+      toolCalls: [`direct:aoi_agenda_nudge:${aoiAgendaChatNudge.dedupeKey}`],
+      source: 'direct_action',
+      llmConfig: selectedConfig,
+    });
+  }, [
+    aoiAgendaChatNudge,
+    emitAssistantMessage,
+    loading,
+    recordAoiMemoryTurn,
+    selectedConfig,
+    visible,
+  ]);
 
   useEffect(() => {
     if (
