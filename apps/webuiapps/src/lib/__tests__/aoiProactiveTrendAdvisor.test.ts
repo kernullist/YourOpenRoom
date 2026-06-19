@@ -264,6 +264,15 @@ describe('Aoi proactive trend advisor', () => {
     expect(rawSnapshotText).not.toContain('C:\\Users\\kernulist');
     expect(rawSnapshotText).not.toContain('sk-test_secret_should_not_leak');
     expect(stored[0].sources).toHaveLength(2);
+    expect(state.opinionCards[0].sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          title: 'Fresh reversing writeup',
+          url: 'https://research.example.com/re/writeup',
+          host: 'research.example.com',
+        }),
+      ]),
+    );
     expect(state.opinionCards[0].whatChanged).toBeTruthy();
     expect(state.opinionCards[0].whyItMatters).toBeTruthy();
     expect(state.opinionCards[0].myTake).toBeTruthy();

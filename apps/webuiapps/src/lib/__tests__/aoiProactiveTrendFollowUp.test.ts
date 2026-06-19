@@ -34,6 +34,24 @@ function makeTrendCard(
     deliverySummary: partial.deliverySummary ?? 'Direct chat allowed.',
     controlSummary: partial.controlSummary ?? 'No active suppression.',
     sourceHosts: partial.sourceHosts ?? ['research.example.com', 'security.example.net'],
+    sources: partial.sources ?? [
+      {
+        title: 'Fresh reversing writeup',
+        url: 'https://research.example.com/re/writeup',
+        host: 'research.example.com',
+        publishedAt: '2026-06-18T00:00:00.000Z',
+        retrievedAt: NOW,
+        snippet: 'Public source snippet.',
+      },
+      {
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+        host: 'security.example.net',
+        publishedAt: '2026-06-17T00:00:00.000Z',
+        retrievedAt: NOW,
+        snippet: 'Second public source snippet.',
+      },
+    ],
     followUpPrompts: partial.followUpPrompts ?? [
       'Aoi, dig deeper into "Fresh reversing writeup trend" and compare the strongest evidence.',
       'Aoi, open the source evidence for "Fresh reversing writeup trend" from research.example.com.',
@@ -73,6 +91,20 @@ describe('Aoi proactive trend follow-up context', () => {
       createdAt: NOW,
     });
     expect(context?.sourceHosts).toEqual(['research.example.com', 'security.example.net']);
+    expect(context?.sources).toEqual([
+      expect.objectContaining({
+        title: 'Fresh reversing writeup',
+        url: 'https://research.example.com/re/writeup',
+        host: 'research.example.com',
+        snippet: 'Public source snippet.',
+      }),
+      expect.objectContaining({
+        title: 'Second reversing source',
+        url: 'https://security.example.net/re/case-study',
+        host: 'security.example.net',
+        snippet: 'Second public source snippet.',
+      }),
+    ]);
     expect(context?.evidenceRefs).toEqual([
       'source:research.example.com',
       'source:security.example.net',
@@ -94,9 +126,43 @@ describe('Aoi proactive trend follow-up context', () => {
     expect(block).toContain('Snapshot: trend-snapshot-re, candidate brief-re');
     expect(block).toContain('Source hosts: research.example.com, security.example.net');
     expect(block).toContain(
+      '1. Fresh reversing writeup (research.example.com): https://research.example.com/re/writeup',
+    );
+    expect(block).toContain(
+      '2. Second reversing source (security.example.net): https://security.example.net/re/case-study',
+    );
+    expect(block).toContain(
       'Evidence refs: source:research.example.com, source:security.example.net',
     );
     expect(block).toContain('Do not claim that URLs or pages were opened');
+  });
+
+  it('drops non-web source URLs before prompting Aoi to open evidence', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard({
+        sources: [
+          {
+            title: 'Local note',
+            url: 'file:///C:/Users/kernulist/private/notes.md',
+            host: 'local',
+            retrievedAt: NOW,
+            snippet: 'Private note.',
+          },
+          {
+            title: 'Public reversing source',
+            url: 'https://public.example.org/re',
+            host: 'public.example.org',
+            retrievedAt: NOW,
+            snippet: 'Public note.',
+          },
+        ],
+      }),
+      'Aoi, open the source evidence.',
+      NOW,
+    );
+
+    expect(context?.sources).toHaveLength(1);
+    expect(context?.sources[0].url).toBe('https://public.example.org/re');
   });
 
   it('classifies source-opening follow-ups separately from expansion prompts', () => {

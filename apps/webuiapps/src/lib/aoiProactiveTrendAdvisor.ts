@@ -2311,6 +2311,7 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     deliverySummary: snapshot.delivery.summary,
     controlSummary: controlSummary(snapshot.delivery.controls),
     sourceHosts,
+    sources: snapshot.sources.slice(0, 6),
     followUpPrompts: [],
     directChatAllowed: snapshot.delivery.directChatAllowed,
     directChatBlockedReasons: snapshot.delivery.directChatBlockedReasons,

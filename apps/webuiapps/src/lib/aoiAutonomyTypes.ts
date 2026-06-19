@@ -367,6 +367,7 @@ export interface AoiProactiveTrendOpinionCard {
   deliverySummary: string;
   controlSummary: string;
   sourceHosts: string[];
+  sources: AoiProactiveBriefSource[];
   followUpPrompts: string[];
   directChatAllowed: boolean;
   directChatBlockedReasons: string[];
