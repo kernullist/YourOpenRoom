@@ -261,6 +261,7 @@ import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
@@ -9074,6 +9075,14 @@ const SettingsModal: React.FC<{
       expandedAoiProposalId,
     ],
   );
+  const aoiAgendaNudgeCalibrationSummary = useMemo(
+    () =>
+      buildAoiAgendaNudgeCalibrationPanelSummary(
+        aoiAutonomyPanelSettings,
+        aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+      ),
+    [aoiAutonomyLastTickAt, aoiAutonomyPanelSettings, aoiAutonomyStatus?.updatedAt],
+  );
   const aoiOperatorHealthSummary = useMemo(
     () =>
       buildAoiOperatorHealthPanelSummary(
@@ -11051,6 +11060,50 @@ const SettingsModal: React.FC<{
                             {aoiAutonomyAgendaSummary.evidenceRefs.map((ref, index) => (
                               <div key={`agenda-evidence-${index}`}>Evidence: {ref}</div>
                             ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiAgendaNudgeCalibrationSummary.visible && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Agenda nudge calibration
+                        </div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiAgendaNudgeCalibrationSummary.statusLabel}</span>
+                            {aoiAgendaNudgeCalibrationSummary.countLabels.map((label) => (
+                              <span key={label}>{label}</span>
+                            ))}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiAgendaNudgeCalibrationSummary.summaryLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            {aoiAgendaNudgeCalibrationSummary.reasonLabels.map((label, index) => (
+                              <div key={`agenda-calibration-reason-${index}`}>{label}</div>
+                            ))}
+                            {aoiAgendaNudgeCalibrationSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`agenda-calibration-evidence-${index}`}>
+                                Evidence: {ref}
+                              </div>
+                            ))}
+                          </div>
+                          <div className={styles.aoiInlineSuggestionActions}>
+                            <button
+                              type="button"
+                              className={styles.inlineActionBtn}
+                              onClick={() =>
+                                onUpdateAoiAutonomyPanelSettings({
+                                  agendaNudgeCalibration: null,
+                                })
+                              }
+                              disabled={!aoiAutonomyPanelSettings.agendaNudgeCalibration}
+                              title="Reset only local agenda nudge feedback calibration"
+                            >
+                              {aoiAgendaNudgeCalibrationSummary.resetLabel}
+                            </button>
                           </div>
                         </div>
                       </div>

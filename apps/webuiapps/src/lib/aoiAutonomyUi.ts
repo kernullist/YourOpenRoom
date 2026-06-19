@@ -442,6 +442,17 @@ export interface AoiAutonomyAgendaPanelSummary {
   evidenceRefs: string[];
 }
 
+export interface AoiAgendaNudgeCalibrationPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  summaryLabel: string;
+  countLabels: string[];
+  reasonLabels: string[];
+  evidenceRefs: string[];
+  resetLabel: string;
+  tone: 'neutral' | 'learning' | 'suppressed';
+}
+
 export interface AoiCurrentBriefPanel {
   visible: boolean;
   statusLabel: string;
@@ -829,6 +840,63 @@ export function getAoiAgendaNudgeCalibrationGate(
     reasonLabels,
     mutedUntil,
     evidenceRefs,
+  };
+}
+
+export function buildAoiAgendaNudgeCalibrationPanelSummary(
+  settings: AoiAutonomyPanelSettings | null | undefined,
+  now = Date.now(),
+): AoiAgendaNudgeCalibrationPanelSummary {
+  const calibration = normalizeAoiAgendaNudgeCalibration(settings?.agendaNudgeCalibration);
+  const gate = getAoiAgendaNudgeCalibrationGate(calibration, now);
+
+  if (!calibration) {
+    return {
+      visible: true,
+      statusLabel: 'untrained',
+      summaryLabel: 'No direct agenda nudge feedback has been recorded yet.',
+      countLabels: ['0 useful', '0 quiet/noisy'],
+      reasonLabels: ['No local suppression is active.'],
+      evidenceRefs: [],
+      resetLabel: 'Nothing to reset',
+      tone: 'neutral',
+    };
+  }
+
+  const quietCount = calibration.noisyCount + calibration.quietedCount;
+  const countLabels = [
+    `${calibration.usefulCount} useful`,
+    `${quietCount} quiet/noisy`,
+    `${calibration.neutralCount} neutral`,
+  ];
+  const statusLabel = gate.suppressed
+    ? 'muted'
+    : calibration.usefulCount > 0
+      ? 'learning'
+      : 'watching';
+  const summaryLabel = gate.suppressed
+    ? 'Direct agenda nudges are temporarily muted by recent feedback.'
+    : calibration.usefulCount > 0
+      ? 'Direct agenda nudges are using positive local feedback.'
+      : 'Direct agenda nudges are recording local feedback.';
+  const reasonLabels = gate.suppressed
+    ? gate.reasonLabels
+    : [
+        'No local suppression is active.',
+        ...(gate.reasonLabels.length > 0
+          ? gate.reasonLabels
+          : ['Useful feedback clears temporary nudge mutes.']),
+      ];
+
+  return {
+    visible: true,
+    statusLabel,
+    summaryLabel,
+    countLabels,
+    reasonLabels,
+    evidenceRefs: gate.evidenceRefs,
+    resetLabel: 'Reset agenda nudge feedback',
+    tone: gate.suppressed ? 'suppressed' : 'learning',
   };
 }
 

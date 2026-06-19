@@ -9,6 +9,7 @@ import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiOperatorHealthPanelSummary,
   buildAoiPlaybookPanelSummary,
@@ -1037,6 +1038,65 @@ describe('Aoi autonomy UI helpers', () => {
         },
       })?.reason,
     ).toBe('high_signal_proposal');
+  });
+
+  it('summarizes agenda nudge calibration for panel visibility and reset', () => {
+    const emptySummary = buildAoiAgendaNudgeCalibrationPanelSummary(null, 5000);
+    expect(emptySummary).toMatchObject({
+      visible: true,
+      statusLabel: 'untrained',
+      tone: 'neutral',
+      resetLabel: 'Nothing to reset',
+    });
+
+    const quieted = recordAoiAgendaNudgeFeedback(null, {
+      kind: 'quieted',
+      now: 5000,
+      reason: 'enable_quiet_mode',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+    const mutedSummary = buildAoiAgendaNudgeCalibrationPanelSummary(
+      {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+        agendaNudgeCalibration: quieted,
+      },
+      6000,
+    );
+
+    expect(mutedSummary).toMatchObject({
+      statusLabel: 'muted',
+      tone: 'suppressed',
+      resetLabel: 'Reset agenda nudge feedback',
+    });
+    expect(mutedSummary.reasonLabels.join(' ')).toContain('quieted feedback');
+    expect(mutedSummary.countLabels).toContain('1 quiet/noisy');
+
+    const useful = recordAoiAgendaNudgeFeedback(quieted, {
+      kind: 'useful',
+      now: 7000,
+      reason: 'review_approval_gate',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+    const learningSummary = buildAoiAgendaNudgeCalibrationPanelSummary(
+      {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+        agendaNudgeCalibration: useful,
+      },
+      8000,
+    );
+
+    expect(learningSummary).toMatchObject({
+      statusLabel: 'learning',
+      tone: 'learning',
+    });
+    expect(learningSummary.summaryLabel).toContain('positive local feedback');
+    expect(learningSummary.reasonLabels.join(' ')).toContain('No local suppression');
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {
