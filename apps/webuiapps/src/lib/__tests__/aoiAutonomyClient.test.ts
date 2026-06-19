@@ -7,8 +7,10 @@ import {
   fetchAoiProactiveBriefs,
   prepareAoiPlaybookPreview,
   recordAoiProactiveBriefFeedback,
+  resetAoiProactiveBriefCooldown,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
+  runAoiProactiveBriefScoutNow,
   updateAoiPlaybookProgress,
   updateAoiEnvironmentSource,
 } from '../aoiAutonomyClient';
@@ -431,6 +433,91 @@ describe('Aoi autonomy client dashboard', () => {
         sessionPath: 'aoi/default',
         briefId: 'aoi-brief-client-test',
         category: 'show_less',
+      },
+    ]);
+  });
+
+  it('runs proactive brief scout and cooldown reset through explicit endpoints', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (url === '/api/aoi-autonomy/proactive-briefs/scout') {
+        return jsonResponse({
+          ok: true,
+          sessionPath: 'aoi/default',
+          record: {
+            id: 'aoi-wakeup-proactive-scout-client-test',
+            status: 'completed',
+            completedAt: 2000,
+            proactiveScout: {
+              version: 1,
+              requested: true,
+              runNow: true,
+              background: false,
+              status: 'blocked',
+              provider: 'none',
+              providerConfigured: false,
+              startedAt: 2000,
+              completedAt: 2000,
+              createdCandidateCount: 0,
+              skippedTopicCount: 0,
+              sourceFreshnessCount: 0,
+              topicIds: [],
+              blockedReasons: ['current_provider_missing'],
+              warnings: [],
+              budget: {
+                dayKey: '2027-01-15',
+                runsToday: 0,
+                maxRunsPerDay: 3,
+                runsThisSession: 0,
+                maxRunsPerSession: 5,
+              },
+              evidenceRefs: ['scheduler:proactive-scout'],
+            },
+          },
+          state: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            updatedAt: 2000,
+            wakeupCount: 1,
+            sourceSchedules: [],
+            recentWakeups: [],
+          },
+          status: makeStatus(),
+          proactiveBriefs: makeProactiveBriefPayload(),
+        });
+      }
+      if (url === '/api/aoi-autonomy/proactive-briefs/cooldown/reset') {
+        return jsonResponse(makeProactiveBriefPayload());
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const scout = await runAoiProactiveBriefScoutNow({
+      sessionPath: 'aoi/default',
+      topicId: 'aoi-interest-re',
+      quietMode: true,
+    });
+    const reset = await resetAoiProactiveBriefCooldown({
+      sessionPath: 'aoi/default',
+      topicId: 'aoi-interest-re',
+    });
+
+    expect(scout.record.proactiveScout?.blockedReasons).toContain('current_provider_missing');
+    expect(scout.proactiveBriefs.candidates[0].id).toBe('aoi-brief-client-test');
+    expect(reset.candidates[0].id).toBe('aoi-brief-client-test');
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        topicId: 'aoi-interest-re',
+        mode: 'quick',
+        quietMode: true,
+      },
+      {
+        sessionPath: 'aoi/default',
+        topicId: 'aoi-interest-re',
       },
     ]);
   });

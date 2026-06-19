@@ -816,10 +816,26 @@ function proactiveBriefRecommendation(
   if (diagnostic.code === 'tavily_unavailable') {
     return recommendation('configure_tavily', 'Configure Tavily', 'research');
   }
+  if (diagnostic.code === 'scout_provider_missing' || diagnostic.code === 'scout_provider_failed') {
+    return recommendation('configure_tavily', 'Configure current provider', 'research');
+  }
+  if (
+    diagnostic.code === 'scout_budget_exhausted' ||
+    diagnostic.code === 'scout_network_disabled' ||
+    diagnostic.code === 'scout_cooldown_active' ||
+    diagnostic.code === 'scout_quiet_window_active'
+  ) {
+    return recommendation('review_scheduler', 'Review scout controls', 'wakeup_scheduler');
+  }
   if (diagnostic.code === 'source_freshness_stale') {
     return recommendation('review_scheduler', 'Review freshness', 'replay_evaluation');
   }
-  if (diagnostic.code === 'no_eligible_topics' || diagnostic.code === 'all_topics_muted') {
+  if (
+    diagnostic.code === 'no_eligible_topics' ||
+    diagnostic.code === 'all_topics_muted' ||
+    diagnostic.code === 'scout_no_eligible_topics' ||
+    diagnostic.code === 'scout_all_topics_muted'
+  ) {
     return recommendation('inspect_memory', 'Inspect interest profile', 'memory');
   }
   if (diagnostic.code.startsWith('calibration_')) {
@@ -856,6 +872,30 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Proactive brief stale calibration active';
     case 'calibration_unsafe_label_blocker':
       return 'Proactive brief unsafe calibration active';
+    case 'scout_provider_missing':
+      return 'Proactive scout provider missing';
+    case 'scout_provider_failed':
+      return 'Proactive scout provider failed';
+    case 'scout_network_disabled':
+      return 'Proactive scout network disabled';
+    case 'scout_budget_exhausted':
+      return 'Proactive scout budget exhausted';
+    case 'scout_no_eligible_topics':
+      return 'No eligible scout topics';
+    case 'scout_all_topics_muted':
+      return 'All scout topics muted';
+    case 'scout_cooldown_active':
+      return 'Proactive scout cooldown active';
+    case 'scout_quiet_window_active':
+      return 'Proactive scout quiet window active';
+    case 'scout_direct_chat_disabled':
+      return 'Proactive direct chat disabled';
+    case 'scout_unsafe_label_blocker':
+      return 'Unsafe labels block proactive scout';
+    case 'scout_stale_source_blocker':
+      return 'Stale labels constrain proactive scout';
+    case 'scout_no_candidate':
+      return 'Proactive scout found no candidate';
     default:
       return 'Proactive brief diagnostic';
   }

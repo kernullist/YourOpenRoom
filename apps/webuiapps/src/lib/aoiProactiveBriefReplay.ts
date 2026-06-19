@@ -1,5 +1,6 @@
 import { DEFAULT_AOI_AUTONOMY_POLICY } from './aoiAutonomyPolicy';
 import type {
+  AoiAutonomySchedulerState,
   AoiAutonomyPolicy,
   AoiInterestProfile,
   AoiInterestTopic,
@@ -65,7 +66,19 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'calibration_not_labeled'
   | 'calibration_tuning_active'
   | 'calibration_stale_direct_chat_block'
-  | 'calibration_unsafe_label_blocker';
+  | 'calibration_unsafe_label_blocker'
+  | 'scout_provider_missing'
+  | 'scout_provider_failed'
+  | 'scout_network_disabled'
+  | 'scout_budget_exhausted'
+  | 'scout_no_eligible_topics'
+  | 'scout_all_topics_muted'
+  | 'scout_cooldown_active'
+  | 'scout_quiet_window_active'
+  | 'scout_direct_chat_disabled'
+  | 'scout_unsafe_label_blocker'
+  | 'scout_stale_source_blocker'
+  | 'scout_no_candidate';
 
 export interface AoiProactiveBriefReplayMetric {
   name: AoiProactiveBriefReplayMetricName;
@@ -735,6 +748,219 @@ export function buildAoiProactiveBriefCalibrationDiagnostics(
       }),
     );
   }
+  return diagnostics;
+}
+
+export function buildAoiProactiveBriefSchedulerDiagnostics(params: {
+  policy: AoiAutonomyPolicy | null | undefined;
+  scheduler: AoiAutonomySchedulerState | null | undefined;
+  tavilyConfigured: boolean;
+  now?: number;
+}): AoiProactiveBriefDiagnostic[] {
+  const now = params.now ?? Date.now();
+  const diagnostics: AoiProactiveBriefDiagnostic[] = [];
+  const controls = params.policy?.proactiveBriefing;
+  const latestScout = params.scheduler?.recentWakeups.find(
+    (record) => record.proactiveScout,
+  )?.proactiveScout;
+
+  if (
+    params.policy?.enabled &&
+    params.policy.proactiveSuggestionsEnabled &&
+    !params.tavilyConfigured
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_provider_missing',
+        severity: 'warning',
+        capability: 'research',
+        summary:
+          'Proactive scout cannot check current public sources because Tavily is not configured.',
+        cannotKnow:
+          'Aoi cannot make latest or current proactive brief claims without an approved current-information provider.',
+        evidenceRefs: ['scheduler:proactive-scout', 'config:tavily'],
+        observedAt: now,
+      }),
+    );
+  }
+
+  if (controls && !controls.directChatHookOptIn) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_direct_chat_disabled',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Proactive direct chat hooks are disabled by operator control.',
+        cannotKnow:
+          'Aoi cannot use proactive direct chat unless the operator explicitly enables direct chat hook delivery.',
+        evidenceRefs: ['policy:proactive-briefing:direct-chat'],
+        observedAt: now,
+      }),
+    );
+  }
+
+  if (!latestScout || latestScout.status === 'not_requested') {
+    return diagnostics;
+  }
+
+  const evidenceRefs = latestScout.evidenceRefs.length
+    ? latestScout.evidenceRefs
+    : ['scheduler:proactive-scout'];
+  const hasReason = (pattern: RegExp): boolean =>
+    latestScout.blockedReasons.some((reason) => pattern.test(reason)) ||
+    latestScout.warnings.some((warning) => pattern.test(warning));
+
+  if (latestScout.status === 'failed') {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_provider_failed',
+        severity: 'warning',
+        capability: 'research',
+        summary: latestScout.warnings.length
+          ? `Last proactive scout failed: ${latestScout.warnings.join(', ')}`
+          : 'Last proactive scout failed before producing source-backed candidates.',
+        cannotKnow:
+          'Aoi cannot know whether current public sources changed because the provider run failed.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/network_budget_disabled/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_network_disabled',
+        severity: 'info',
+        capability: 'research',
+        summary: 'Last proactive scout was blocked because this wakeup had no network budget.',
+        cannotKnow:
+          'Aoi cannot check current public sources during a no-network wakeup and must avoid current claims.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/budget_(?:zero|exhausted)/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_budget_exhausted',
+        severity: 'warning',
+        capability: 'research',
+        summary: 'Proactive scout budget is exhausted for the configured day or session window.',
+        cannotKnow:
+          'Aoi cannot know whether more current items exist until the scout budget resets or the operator changes it.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/profile_empty|no_eligible_topics/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_no_eligible_topics',
+        severity: 'info',
+        capability: 'memory',
+        summary: 'Proactive scout did not find any eligible interest topics to check.',
+        cannotKnow:
+          'Aoi cannot scout useful current items until an eligible, non-sensitive interest topic exists.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/all_topics_muted/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_all_topics_muted',
+        severity: 'info',
+        capability: 'memory',
+        summary: 'All proactive interest topics are muted by profile or operator control.',
+        cannotKnow: 'Aoi cannot select a proactive topic while every topic is muted or disallowed.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/cooldown/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_cooldown_active',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Proactive scout cooldown blocked a repeated scout run.',
+        cannotKnow:
+          'Aoi cannot know whether a new candidate is available until the configured cooldown expires.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/quiet_window_active/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_quiet_window_active',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Quiet window is active, so proactive direct chat is suppressed.',
+        cannotKnow:
+          'Aoi can queue dashboard-only candidates during quiet windows but cannot assume an interruption is welcome.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/unsafe_label_blocker/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_unsafe_label_blocker',
+        severity: 'warning',
+        capability: 'replay_evaluation',
+        summary: 'Unsafe calibration labels block proactive scouting escalation.',
+        cannotKnow:
+          'Aoi cannot safely scout or escalate affected proactive topics until unsafe labels are reviewed.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (hasReason(/stale_label/)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_stale_source_blocker',
+        severity: 'warning',
+        capability: 'replay_evaluation',
+        summary: 'Stale calibration labels keep proactive scout delivery conservative.',
+        cannotKnow:
+          'Aoi cannot use stale-labeled source patterns for proactive direct chat until fresh evidence is available.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
+  if (latestScout.status === 'no_candidate') {
+    diagnostics.push(
+      diagnostic({
+        code: 'scout_no_candidate',
+        severity: 'info',
+        capability: 'research',
+        summary: 'Last proactive scout checked allowed sources but did not create a candidate.',
+        cannotKnow:
+          'Aoi checked within the configured budget, but cannot infer that no relevant item exists outside the allowed provider and source controls.',
+        evidenceRefs,
+        observedAt: latestScout.completedAt || now,
+      }),
+    );
+  }
+
   return diagnostics;
 }
 

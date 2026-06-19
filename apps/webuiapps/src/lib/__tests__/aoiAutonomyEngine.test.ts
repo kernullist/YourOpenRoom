@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { dirname, join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
   checkAoiProposalPolicy,
@@ -35,10 +35,16 @@ import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
+import {
+  loadAoiProactiveBriefFieldEvents,
+  saveAoiInterestProfile,
+} from '../aoiProactiveBriefStore';
 import type {
   AoiGoal,
   AoiAutonomyTickResult,
   AoiEnvironmentSourceRegistry,
+  AoiInterestProfile,
+  AoiInterestTopic,
   AoiMissionState,
   AoiProposal,
   AoiProposalDecision,
@@ -147,6 +153,48 @@ function makeMemory(partial: Partial<AoiMemoryEntry> = {}): AoiMemoryEntry {
 
 function writeMemory(root: string, memory: AoiMemoryEntry): void {
   writeJson(join(root, 'aoi', 'memory-v2', 'memories', `${memory.id}.json`), memory);
+}
+
+function makeInterestTopic(partial: Partial<AoiInterestTopic> = {}): AoiInterestTopic {
+  return {
+    version: 1,
+    id: partial.id ?? 'aoi-interest-reverse-engineering',
+    sessionPath: partial.sessionPath ?? SESSION_PATH,
+    label: partial.label ?? 'Reverse Engineering',
+    normalizedLabel: partial.normalizedLabel ?? 'reverse engineering',
+    aliases: partial.aliases ?? ['RE', 'malware reversing'],
+    source: partial.source ?? 'memory',
+    memoryIds: partial.memoryIds ?? ['memory-re-001'],
+    evidenceRefs: partial.evidenceRefs ?? ['memory:memory-re-001'],
+    confidence: partial.confidence ?? 0.88,
+    importance: partial.importance ?? 0.86,
+    noveltyPreference: partial.noveltyPreference ?? 0.72,
+    currentInfoPreference: partial.currentInfoPreference ?? 0.94,
+    muted: partial.muted ?? false,
+    pinned: partial.pinned ?? true,
+    cooldownKey: partial.cooldownKey ?? 'interest:reverse-engineering',
+    createdAt: partial.createdAt ?? NOW - 10_000,
+    updatedAt: partial.updatedAt ?? NOW - 5_000,
+  };
+}
+
+function saveInterestProfile(
+  root: string,
+  topic: AoiInterestTopic = makeInterestTopic(),
+): AoiInterestProfile {
+  return saveAoiInterestProfile(
+    root,
+    SESSION_PATH,
+    {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      topics: [topic],
+      generatedAt: NOW,
+      sourceMemoryCount: 1,
+      warnings: [],
+    },
+    NOW,
+  );
 }
 
 function makeProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
@@ -1925,6 +1973,305 @@ describe('runAoiAutonomyWakeup()', () => {
 
     expect(result.ok).toBe(true);
     expect(loadAoiCommandAuditRecords(root, SESSION_PATH)).toEqual([]);
+  });
+
+  it('blocks run-now proactive scouts when the current-info provider is missing', async () => {
+    const root = makeTempRoot();
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => false,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).not.toHaveBeenCalled();
+    expect(result.record.proactiveScout).toMatchObject({
+      requested: true,
+      runNow: true,
+      status: 'blocked',
+      providerConfigured: false,
+    });
+    expect(result.record.proactiveScout?.blockedReasons).toContain('current_provider_missing');
+
+    const health = buildAoiOperatorHealthState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      configFile: join(root, 'missing-config.json'),
+      now: NOW + 10,
+    });
+    expect(
+      health.issues.find((issue) => issue.code === 'proactive_brief_scout_provider_missing'),
+    ).toMatchObject({
+      capability: 'research',
+      severity: 'warning',
+    });
+  });
+
+  it('enforces proactive scout session budget even for run-now requests', async () => {
+    const root = makeTempRoot();
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 1,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    const baseWakeup = {
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh' as const,
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    };
+
+    const first = await runAoiAutonomyWakeup({
+      ...baseWakeup,
+      now: NOW,
+    });
+    const second = await runAoiAutonomyWakeup({
+      ...baseWakeup,
+      now: NOW + 1_000,
+    });
+
+    expect(scout).toHaveBeenCalledTimes(1);
+    expect(first.record.proactiveScout?.status).toBe('no_candidate');
+    expect(first.state.proactiveScoutBudget).toMatchObject({
+      runsThisSession: 1,
+      runsToday: 1,
+    });
+    expect(second.record.proactiveScout).toMatchObject({
+      requested: true,
+      runNow: true,
+      status: 'blocked',
+    });
+    expect(second.record.proactiveScout?.blockedReasons).toContain(
+      'scout_session_budget_exhausted',
+    );
+
+    const health = buildAoiOperatorHealthState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      configFile: join(root, 'missing-config.json'),
+      now: NOW + 2_000,
+    });
+    expect(
+      health.issues.find((issue) => issue.code === 'proactive_brief_scout_budget_exhausted'),
+    ).toMatchObject({
+      capability: 'research',
+      severity: 'warning',
+    });
+  });
+
+  it('includes proactive scout runtime in wakeup completion timing', async () => {
+    const root = makeTempRoot();
+    const timestamps = [NOW, NOW + 250];
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      dependencies: {
+        now: () => timestamps.shift() ?? NOW + 250,
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).toHaveBeenCalledTimes(1);
+    expect(result.record.proactiveScout?.status).toBe('no_candidate');
+    expect(result.record.completedAt).toBe(NOW + 250);
+    expect(result.record.durationMs).toBe(250);
+  });
+
+  it('honors muted proactive topics before calling the scout provider', async () => {
+    const root = makeTempRoot();
+    const topic = makeInterestTopic();
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root, topic);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          minScoutCooldownMs: 0,
+          topicControls: {
+            [topic.id]: {
+              version: 1,
+              topicId: topic.id,
+              allowed: false,
+              muted: true,
+              pinned: false,
+              updatedAt: NOW,
+            },
+          },
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).not.toHaveBeenCalled();
+    expect(result.record.proactiveScout).toMatchObject({
+      requested: true,
+      runNow: true,
+      status: 'blocked',
+    });
+    expect(result.record.proactiveScout?.blockedReasons).toContain('all_topics_muted');
+    expect(
+      loadAoiProactiveBriefFieldEvents(root, SESSION_PATH, NOW + 1).some(
+        (event) =>
+          event.kind === 'suppressed_no_topics' &&
+          event.suppressionReasons.includes('all_topics_muted'),
+      ),
+    ).toBe(true);
   });
 
   it('records a failed wakeup on background tick timeout without corrupting scheduler state', async () => {

@@ -26,6 +26,11 @@ function makePolicy(now = 1000): AoiAutonomyPolicy {
     ...DEFAULT_AOI_AUTONOMY_POLICY,
     enabled: true,
     proactiveSuggestionsEnabled: true,
+    proactiveBriefing: {
+      ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+      enabled: true,
+      allowBackgroundScout: true,
+    },
     confidenceFloor: 0.5,
     defaultCooldownMs: 60 * 60 * 1000,
     updatedAt: now,
@@ -182,6 +187,53 @@ describe('Aoi proactive brief scout', () => {
     expect(sources.map((source) => source.host)).toEqual([
       'research.example.com',
       'security.example.net',
+    ]);
+  });
+
+  it('applies source host controls before storing a candidate', async () => {
+    const root = makeTempRoot();
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: 10_000,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+        minSourcesPerCandidate: 1,
+      },
+      dependencies: {
+        search: makeSearch(),
+        loadPolicy: () => ({
+          ...makePolicy(10_000),
+          proactiveBriefing: {
+            ...makePolicy(10_000).proactiveBriefing,
+            sourceHostControls: {
+              'research.example.com': {
+                version: 1,
+                host: 'research.example.com',
+                allowed: true,
+                muted: false,
+                updatedAt: 10_000,
+              },
+              'security.example.net': {
+                version: 1,
+                host: 'security.example.net',
+                allowed: false,
+                muted: true,
+                updatedAt: 10_000,
+              },
+            },
+          },
+        }),
+      },
+    });
+
+    expect(result.createdCandidates).toHaveLength(1);
+    expect(result.createdCandidates[0]?.sources.map((source) => source.host)).toEqual([
+      'research.example.com',
     ]);
   });
 

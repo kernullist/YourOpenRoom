@@ -93,6 +93,9 @@ describe('Aoi autonomy policy defaults', () => {
     expect(DEFAULT_AOI_AUTONOMY_POLICY.previewMode).toBe(true);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.level).toBe('L1');
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveSuggestionsEnabled).toBe(false);
+    expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.enabled).toBe(false);
+    expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.allowBackgroundScout).toBe(false);
+    expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.directChatHookOptIn).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.maxActiveProposals).toBeLessThanOrEqual(8);
   });
 
@@ -106,6 +109,41 @@ describe('Aoi autonomy policy defaults', () => {
         confidenceFloor: 99,
         maxActiveProposals: 0,
         defaultCooldownMs: 1,
+        proactiveBriefing: {
+          version: 1,
+          enabled: true,
+          allowBackgroundScout: true,
+          maxScoutRunsPerDay: 99,
+          maxScoutRunsPerSession: 99,
+          minScoutCooldownMs: -1,
+          maxSessionIdleMs: 1,
+          quietWindow: {
+            version: 1,
+            enabled: true,
+            startMinuteOfDay: -10,
+            endMinuteOfDay: 3_000,
+          },
+          directChatHookOptIn: true,
+          topicControls: {
+            'aoi-interest-re': {
+              version: 1,
+              topicId: 'aoi-interest-re',
+              allowed: false,
+              muted: true,
+              pinned: true,
+              updatedAt: 10,
+            },
+          },
+          sourceHostControls: {
+            'Research.Example.COM': {
+              version: 1,
+              host: 'Research.Example.COM',
+              allowed: false,
+              muted: true,
+              updatedAt: 10,
+            },
+          },
+        },
       },
       DEFAULT_AOI_AUTONOMY_POLICY,
       1234,
@@ -121,6 +159,32 @@ describe('Aoi autonomy policy defaults', () => {
       maxActiveProposals: 1,
       defaultCooldownMs: 60_000,
       updatedAt: 1234,
+    });
+    expect(policy.proactiveBriefing).toMatchObject({
+      enabled: true,
+      allowBackgroundScout: true,
+      maxScoutRunsPerDay: 24,
+      maxScoutRunsPerSession: 48,
+      minScoutCooldownMs: 0,
+      maxSessionIdleMs: 60_000,
+      quietWindow: {
+        enabled: true,
+        startMinuteOfDay: 0,
+        endMinuteOfDay: 1439,
+      },
+      directChatHookOptIn: true,
+    });
+    expect(policy.proactiveBriefing.topicControls['aoi-interest-re']).toMatchObject({
+      allowed: false,
+      muted: true,
+      pinned: true,
+      updatedAt: 10,
+    });
+    expect(policy.proactiveBriefing.sourceHostControls['research.example.com']).toMatchObject({
+      host: 'research.example.com',
+      allowed: false,
+      muted: true,
+      updatedAt: 10,
     });
   });
 });

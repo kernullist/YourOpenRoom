@@ -1,7 +1,11 @@
 import * as fs from 'fs';
 import { dirname, isAbsolute, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
-import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
+import {
+  applyAoiProactiveBriefingTopicControls,
+  checkAoiEnvironmentSourceOperation,
+  isAoiProactiveBriefQuietWindowActive,
+} from './aoiAutonomyPolicy';
 import {
   runAoiAutonomyBackgroundTick,
   type AoiAutonomyBackgroundTickParams,
@@ -9,6 +13,7 @@ import {
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
+  loadAoiAutonomyPolicy,
   loadAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomySessionPath,
   resolveAoiAutonomyPaths,
@@ -18,10 +23,23 @@ import {
   collectAndPersistAoiWorkspaceSnapshot,
   type AoiWorkspaceSignalStoreInput,
 } from './aoiWorkspaceSignals';
+import { loadAoiResearchTavilyConfig } from './aoiResearchEngine';
 import {
   recordAoiOperatorTimelineEvent,
   type AoiOperatorTimelineEventInput,
 } from './aoiOperatorTimeline';
+import {
+  runAoiProactiveBriefScout,
+  type AoiProactiveBriefScoutResult,
+} from './aoiProactiveBriefScout';
+import { planAoiProactiveBriefTopics } from './aoiProactiveBriefPlanner';
+import {
+  loadAoiInterestProfile,
+  loadAoiProactiveBriefCalibrationTuning,
+  loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFeedback,
+  recordAoiProactiveBriefFieldEvent,
+} from './aoiProactiveBriefStore';
 import type { LLMConfig } from './llmModels';
 import type {
   AoiAutonomySchedulerState,
@@ -35,6 +53,8 @@ import type {
   AoiEnvironmentSource,
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
+  AoiProactiveBriefSchedulerRunRecord,
+  AoiProactiveBriefScoutBudgetState,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
@@ -77,12 +97,17 @@ export interface AoiAutonomyWakeupInput {
   sessionPath: string;
   reason: AoiAutonomyWakeupReason;
   workspaceRoot?: string;
+  configFile?: string;
   latestUserMessage?: string;
   llmConfig?: LLMConfig | null;
   sourceIds?: string[];
   budget?: Partial<AoiAutonomyWakeupBudget>;
   quietMode?: boolean;
   userIdleMs?: number;
+  proactiveScout?: {
+    runNow?: boolean;
+    topicId?: string;
+  };
   now?: number;
   dependencies?: AoiAutonomySchedulerDependencies;
 }
@@ -91,6 +116,10 @@ export interface AoiAutonomySchedulerDependencies {
   now?: () => number;
   collectWorkspaceSnapshot?: (input: AoiWorkspaceSignalStoreInput) => AoiWorkspaceSnapshot | null;
   runBackgroundTick?: (params: AoiAutonomyBackgroundTickParams) => Promise<AoiAutonomyTickResult>;
+  runProactiveBriefScout?: (
+    input: Parameters<typeof runAoiProactiveBriefScout>[0],
+  ) => Promise<AoiProactiveBriefScoutResult>;
+  currentInfoProviderConfigured?: (configFile: string) => boolean;
 }
 
 interface SourceDecision {
@@ -320,6 +349,74 @@ function normalizeWakeupBudget(value: unknown): AoiAutonomyWakeupBudget {
   return normalizeBudget(budget);
 }
 
+function dayKeyForTimestamp(now: number): string {
+  return new Date(now).toISOString().slice(0, 10);
+}
+
+function normalizeProactiveScoutBudgetState(
+  value: unknown,
+  now: number,
+): AoiProactiveBriefScoutBudgetState {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiProactiveBriefScoutBudgetState>)
+      : {};
+  const dayKey =
+    typeof raw.dayKey === 'string' && raw.dayKey ? raw.dayKey : dayKeyForTimestamp(now);
+  const sameDay = dayKey === dayKeyForTimestamp(now);
+  return {
+    version: 1,
+    dayKey: sameDay ? dayKey : dayKeyForTimestamp(now),
+    runsToday: sameDay ? clampNumber(raw.runsToday, 0, 0, 100_000) : 0,
+    runsThisSession: clampNumber(raw.runsThisSession, 0, 0, 100_000),
+    updatedAt: typeof raw.updatedAt === 'number' ? raw.updatedAt : now,
+  };
+}
+
+function normalizeProactiveScoutRunRecord(
+  value: unknown,
+): AoiProactiveBriefSchedulerRunRecord | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Partial<AoiProactiveBriefSchedulerRunRecord>;
+  const status =
+    raw.status === 'not_requested' ||
+    raw.status === 'blocked' ||
+    raw.status === 'scouted' ||
+    raw.status === 'no_candidate' ||
+    raw.status === 'failed'
+      ? raw.status
+      : 'blocked';
+  const budget =
+    raw.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget) ? raw.budget : {};
+  return {
+    version: 1,
+    requested: raw.requested === true,
+    runNow: raw.runNow === true,
+    background: raw.background !== false,
+    status,
+    provider: raw.provider === 'tavily' || raw.provider === 'test' ? raw.provider : 'none',
+    providerConfigured: raw.providerConfigured === true,
+    startedAt: typeof raw.startedAt === 'number' ? raw.startedAt : 0,
+    completedAt: typeof raw.completedAt === 'number' ? raw.completedAt : 0,
+    createdCandidateCount: clampNumber(raw.createdCandidateCount, 0, 0, 100_000),
+    skippedTopicCount: clampNumber(raw.skippedTopicCount, 0, 0, 100_000),
+    sourceFreshnessCount: clampNumber(raw.sourceFreshnessCount, 0, 0, 100_000),
+    topicIds: normalizeStringList(raw.topicIds, 24),
+    blockedReasons: normalizeStringList(raw.blockedReasons, 24),
+    warnings: normalizeStringList(raw.warnings, 24),
+    budget: {
+      dayKey: typeof budget.dayKey === 'string' ? budget.dayKey.slice(0, 20) : '',
+      runsToday: clampNumber(budget.runsToday, 0, 0, 100_000),
+      maxRunsPerDay: clampNumber(budget.maxRunsPerDay, 0, 0, 100_000),
+      runsThisSession: clampNumber(budget.runsThisSession, 0, 0, 100_000),
+      maxRunsPerSession: clampNumber(budget.maxRunsPerSession, 0, 0, 100_000),
+    },
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 24),
+  };
+}
+
 function normalizeWakeupRecord(value: unknown): AoiAutonomyWakeupRecord | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return null;
@@ -381,6 +478,9 @@ function normalizeWakeupRecord(value: unknown): AoiAutonomyWakeupRecord | null {
     proposalsCreated: clampNumber(record.proposalsCreated, 0, 0, 100_000),
     observationsSeen: clampNumber(record.observationsSeen, 0, 0, 100_000),
     warnings: normalizeStringList(record.warnings, 24),
+    ...(normalizeProactiveScoutRunRecord(record.proactiveScout)
+      ? { proactiveScout: normalizeProactiveScoutRunRecord(record.proactiveScout) }
+      : {}),
   };
 }
 
@@ -435,6 +535,7 @@ function normalizeSchedulerState(
     ...(typeof record.nextAllowedWakeupAt === 'number'
       ? { nextAllowedWakeupAt: record.nextAllowedWakeupAt }
       : {}),
+    proactiveScoutBudget: normalizeProactiveScoutBudgetState(record.proactiveScoutBudget, now),
     sourceSchedules,
     recentWakeups,
   };
@@ -652,6 +753,25 @@ function buildStateWithRecord(params: {
   record: AoiAutonomyWakeupRecord;
   scheduleUpdates: AoiAutonomySourceSchedule[];
 }): AoiAutonomySchedulerState {
+  const scoutBudget = normalizeProactiveScoutBudgetState(
+    params.previous.proactiveScoutBudget,
+    params.record.completedAt,
+  );
+  const scoutRan =
+    params.record.proactiveScout?.status === 'scouted' ||
+    params.record.proactiveScout?.status === 'no_candidate' ||
+    params.record.proactiveScout?.status === 'failed';
+  const nextScoutBudget: AoiProactiveBriefScoutBudgetState = scoutRan
+    ? {
+        ...scoutBudget,
+        runsToday: scoutBudget.runsToday + 1,
+        runsThisSession: scoutBudget.runsThisSession + 1,
+        updatedAt: params.record.completedAt,
+      }
+    : {
+        ...scoutBudget,
+        updatedAt: params.record.completedAt,
+      };
   return {
     ...params.previous,
     version: 1,
@@ -661,6 +781,7 @@ function buildStateWithRecord(params: {
     lastWakeupReason: params.record.reason,
     lastWakeupStatus: params.record.status,
     nextAllowedWakeupAt: params.record.completedAt + params.record.budget.wakeupCooldownMs,
+    proactiveScoutBudget: nextScoutBudget,
     sourceSchedules: mergeSchedules(params.previous.sourceSchedules, params.scheduleUpdates),
     recentWakeups: [params.record, ...params.previous.recentWakeups].slice(0, MAX_RECENT_WAKEUPS),
   };
@@ -696,6 +817,9 @@ function recordWakeupTimeline(params: {
       tickSkipped: params.record.tickSkipped,
       quietMode: params.record.budget.quietMode,
       warnings: params.record.warnings,
+      proactiveScoutStatus: params.record.proactiveScout?.status,
+      proactiveScoutReasons: params.record.proactiveScout?.blockedReasons,
+      proactiveScoutCandidates: params.record.proactiveScout?.createdCandidateCount,
     },
   });
 }
@@ -729,6 +853,425 @@ function recordSourceTimeline(params: {
       reasons,
     },
   });
+}
+
+function isCurrentInfoProviderConfigured(params: {
+  configFile?: string;
+  dependencies: AoiAutonomySchedulerDependencies;
+}): boolean {
+  if (params.dependencies.currentInfoProviderConfigured) {
+    return params.dependencies.currentInfoProviderConfigured(params.configFile ?? '');
+  }
+  return Boolean(loadAoiResearchTavilyConfig(params.configFile ?? ''));
+}
+
+function activeProactiveScoutCooldownReason(params: {
+  state: AoiAutonomySchedulerState;
+  controls: NonNullable<ReturnType<typeof loadAoiAutonomyPolicy>['proactiveBriefing']>;
+  now: number;
+}): string | null {
+  const previousRun = params.state.recentWakeups.find(
+    (record) =>
+      record.proactiveScout?.status === 'scouted' ||
+      record.proactiveScout?.status === 'no_candidate' ||
+      record.proactiveScout?.status === 'failed',
+  );
+  if (!previousRun?.proactiveScout || params.controls.minScoutCooldownMs <= 0) {
+    return null;
+  }
+  return previousRun.proactiveScout.completedAt + params.controls.minScoutCooldownMs > params.now
+    ? 'scout_cooldown_active'
+    : null;
+}
+
+function scoutBudgetReasons(params: {
+  budgetState: AoiProactiveBriefScoutBudgetState;
+  controls: NonNullable<ReturnType<typeof loadAoiAutonomyPolicy>['proactiveBriefing']>;
+}): string[] {
+  const reasons: string[] = [];
+  if (params.controls.maxScoutRunsPerDay <= 0) {
+    reasons.push('scout_daily_budget_zero');
+  } else if (params.budgetState.runsToday >= params.controls.maxScoutRunsPerDay) {
+    reasons.push('scout_daily_budget_exhausted');
+  }
+  if (params.controls.maxScoutRunsPerSession <= 0) {
+    reasons.push('scout_session_budget_zero');
+  } else if (params.budgetState.runsThisSession >= params.controls.maxScoutRunsPerSession) {
+    reasons.push('scout_session_budget_exhausted');
+  }
+  return reasons;
+}
+
+function sourceHostControlLists(
+  controls: NonNullable<ReturnType<typeof loadAoiAutonomyPolicy>['proactiveBriefing']>,
+): { allowedSourceHosts: string[]; mutedSourceHosts: string[] } {
+  const controlsList = Object.values(controls.sourceHostControls);
+  return {
+    allowedSourceHosts: controlsList
+      .filter((control) => control.allowed === true && control.muted !== true)
+      .map((control) => control.host),
+    mutedSourceHosts: controlsList
+      .filter((control) => control.muted === true || control.allowed === false)
+      .map((control) => control.host),
+  };
+}
+
+function proactiveScoutFieldEventKind(
+  status: AoiProactiveBriefSchedulerRunRecord['status'],
+  reasons: string[],
+): Parameters<typeof recordAoiProactiveBriefFieldEvent>[1]['kind'] {
+  if (status === 'no_candidate') {
+    return 'suppressed_no_topics';
+  }
+  if (reasons.some((reason) => reason.includes('quiet'))) {
+    return 'suppressed_quiet_mode';
+  }
+  if (reasons.some((reason) => reason.includes('cooldown'))) {
+    return 'suppressed_cooldown';
+  }
+  if (reasons.some((reason) => reason.includes('topic') || reason.includes('profile_empty'))) {
+    return 'suppressed_no_topics';
+  }
+  return 'suppressed_budget';
+}
+
+function recordProactiveScoutFieldEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  record: AoiProactiveBriefSchedulerRunRecord;
+  now: number;
+}): void {
+  if (!params.record.requested) {
+    return;
+  }
+  const reasons =
+    params.record.blockedReasons.length > 0
+      ? params.record.blockedReasons
+      : params.record.warnings.length > 0
+        ? params.record.warnings
+        : [`scheduler_${params.record.status}`];
+  try {
+    recordAoiProactiveBriefFieldEvent(params.sessionsDir, {
+      sessionPath: params.sessionPath,
+      kind: proactiveScoutFieldEventKind(params.record.status, reasons),
+      policyReason: `scheduler:${params.record.status}`,
+      suppressionReasons: reasons,
+      title: 'Scheduler proactive scout decision',
+      summary:
+        params.record.status === 'no_candidate'
+          ? 'Scheduler checked allowed current-info sources but did not create a candidate.'
+          : `Scheduler did not run proactive scout: ${reasons.join(', ')}.`,
+      evidenceRefs: params.record.evidenceRefs,
+      freshness: {
+        searchedAt:
+          params.record.status === 'scouted' || params.record.status === 'no_candidate'
+            ? params.record.completedAt
+            : undefined,
+        cannotKnow: params.record.providerConfigured
+          ? []
+          : [
+              'Aoi could not check current information because no approved provider was configured.',
+            ],
+        stale: false,
+      },
+      dedupeKey: `scheduler:proactive-scout:${params.record.completedAt}:${params.record.status}:${reasons.join('|')}`,
+      createdAt: params.now,
+    });
+  } catch {
+    // Field events are diagnostic; scheduler state remains authoritative.
+  }
+}
+
+async function runProactiveScoutForWakeup(params: {
+  input: AoiAutonomyWakeupInput;
+  dependencies: AoiAutonomySchedulerDependencies;
+  previousState: AoiAutonomySchedulerState;
+  startedAt: number;
+  now: number;
+  budget: AoiAutonomyWakeupBudget;
+}): Promise<AoiProactiveBriefSchedulerRunRecord> {
+  const sessionPath =
+    normalizeAoiAutonomySessionPath(params.input.sessionPath) ?? params.input.sessionPath;
+  const policy = loadAoiAutonomyPolicy(params.input.sessionsDir, sessionPath);
+  const controls = policy.proactiveBriefing;
+  const runNow = params.input.proactiveScout?.runNow === true;
+  const background = !runNow;
+  const profile = applyAoiProactiveBriefingTopicControls(
+    loadAoiInterestProfile(params.input.sessionsDir, sessionPath, params.now),
+    controls,
+  );
+  const providerConfigured = isCurrentInfoProviderConfigured({
+    configFile: params.input.configFile,
+    dependencies: params.dependencies,
+  });
+  const scoutBudget = normalizeProactiveScoutBudgetState(
+    params.previousState.proactiveScoutBudget,
+    params.now,
+  );
+  const requested =
+    runNow ||
+    controls.allowBackgroundScout ||
+    controls.enabled ||
+    policy.proactiveSuggestionsEnabled ||
+    profile.topics.length > 0;
+  const budgetSnapshot = {
+    dayKey: scoutBudget.dayKey,
+    runsToday: scoutBudget.runsToday,
+    maxRunsPerDay: controls.maxScoutRunsPerDay,
+    runsThisSession: scoutBudget.runsThisSession,
+    maxRunsPerSession: controls.maxScoutRunsPerSession,
+  };
+
+  const makeRecord = (
+    status: AoiProactiveBriefSchedulerRunRecord['status'],
+    blockedReasons: string[],
+    extra?: Partial<AoiProactiveBriefSchedulerRunRecord>,
+  ): AoiProactiveBriefSchedulerRunRecord => ({
+    version: 1,
+    requested,
+    runNow,
+    background,
+    status,
+    provider: providerConfigured
+      ? params.dependencies.runProactiveBriefScout
+        ? 'test'
+        : 'tavily'
+      : 'none',
+    providerConfigured,
+    startedAt: params.startedAt,
+    completedAt: params.now,
+    createdCandidateCount: 0,
+    skippedTopicCount: 0,
+    sourceFreshnessCount: 0,
+    topicIds: [],
+    blockedReasons: [...new Set(blockedReasons)].slice(0, 24),
+    warnings: [],
+    budget: budgetSnapshot,
+    evidenceRefs: ['scheduler:proactive-scout'],
+    ...extra,
+  });
+
+  if (!requested) {
+    return makeRecord('not_requested', []);
+  }
+
+  const blockedReasons: string[] = [];
+  if (!policy.enabled) {
+    blockedReasons.push('autonomy_policy_disabled');
+  }
+  if (!policy.proactiveSuggestionsEnabled) {
+    blockedReasons.push('proactive_suggestions_disabled');
+  }
+  if (!controls.enabled) {
+    blockedReasons.push('proactive_scouting_disabled');
+  }
+  if (background && !controls.allowBackgroundScout) {
+    blockedReasons.push('background_scout_disabled');
+  }
+  if (
+    background &&
+    typeof params.input.userIdleMs === 'number' &&
+    params.input.userIdleMs > controls.maxSessionIdleMs
+  ) {
+    blockedReasons.push('session_not_active_enough');
+  }
+  if (!params.budget.allowNetwork) {
+    blockedReasons.push('network_budget_disabled');
+  }
+  if (!providerConfigured) {
+    blockedReasons.push('current_provider_missing');
+  }
+  blockedReasons.push(...scoutBudgetReasons({ budgetState: scoutBudget, controls }));
+  const scoutCooldownReason = activeProactiveScoutCooldownReason({
+    state: params.previousState,
+    controls,
+    now: params.now,
+  });
+  if (scoutCooldownReason) {
+    blockedReasons.push(scoutCooldownReason);
+  }
+  const quietWindowActive = isAoiProactiveBriefQuietWindowActive(controls, params.now);
+  const tuning = loadAoiProactiveBriefCalibrationTuning(
+    params.input.sessionsDir,
+    sessionPath,
+    params.now,
+  );
+  if (tuning.unsafeLabelCount > 0) {
+    blockedReasons.push('unsafe_label_blocker');
+  }
+  if (tuning.staleLabelCount > 0) {
+    blockedReasons.push('stale_label_direct_chat_blocker');
+  }
+
+  if (profile.topics.length === 0) {
+    blockedReasons.push('profile_empty');
+  } else if (profile.topics.every((topic) => topic.muted)) {
+    blockedReasons.push('all_topics_muted');
+  }
+
+  const cooldownState = loadAoiProactiveBriefCooldownState(
+    params.input.sessionsDir,
+    sessionPath,
+    params.now,
+  );
+  const feedback = loadAoiProactiveBriefFeedback(params.input.sessionsDir, sessionPath);
+  const plan = planAoiProactiveBriefTopics({
+    profile,
+    cooldownState,
+    feedback,
+    now: params.now,
+    topicId: params.input.proactiveScout?.topicId,
+    budget: {
+      allowNetwork: true,
+      quietMode: params.budget.quietMode || quietWindowActive,
+      maxTopicsPerWakeup: 1,
+      maxNetworkCallsPerWakeup: 1,
+      directChatHookOptIn: controls.directChatHookOptIn,
+      globalCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
+      topicCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
+    },
+  });
+  if (
+    plan.topics.length === 0 &&
+    !blockedReasons.includes('profile_empty') &&
+    !blockedReasons.includes('all_topics_muted')
+  ) {
+    blockedReasons.push(
+      plan.skippedTopics[0]?.reason === 'global_cooldown_active' ||
+        plan.skippedTopics[0]?.reason === 'topic_cooldown_active'
+        ? 'proactive_brief_cooldown_active'
+        : 'no_eligible_topics',
+    );
+  }
+
+  if (blockedReasons.length > 0) {
+    const record = makeRecord('blocked', blockedReasons, {
+      topicIds: plan.topics.map((topic) => topic.topic.id),
+      skippedTopicCount: plan.skippedTopics.length,
+      warnings: [
+        ...plan.warnings,
+        ...(quietWindowActive ? ['quiet_window_active:direct_chat_suppressed'] : []),
+      ].slice(0, 24),
+      evidenceRefs: [
+        'scheduler:proactive-scout',
+        ...plan.skippedTopics.flatMap((topic) =>
+          topic.topicId
+            ? [`topic:${topic.topicId}:skipped:${topic.reason}`]
+            : [`topic:skipped:${topic.reason}`],
+        ),
+      ].slice(0, 24),
+    });
+    recordProactiveScoutFieldEvent({
+      sessionsDir: params.input.sessionsDir,
+      sessionPath,
+      record,
+      now: params.now,
+    });
+    return record;
+  }
+
+  const runScout = params.dependencies.runProactiveBriefScout ?? runAoiProactiveBriefScout;
+  const sourceControls = sourceHostControlLists(controls);
+  let result: AoiProactiveBriefScoutResult;
+  try {
+    result = await runScout({
+      sessionsDir: params.input.sessionsDir,
+      sessionPath,
+      configFile: params.input.configFile,
+      now: params.now,
+      topicId: params.input.proactiveScout?.topicId,
+      mode: 'quick',
+      budget: {
+        allowNetwork: params.budget.allowNetwork,
+        quietMode: params.budget.quietMode || quietWindowActive,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+        globalCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
+        topicCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
+        directChatHookOptIn: controls.directChatHookOptIn,
+        ...sourceControls,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'proactive scout failed';
+    const record = makeRecord('failed', ['scout_failed'], {
+      warnings: [message.slice(0, 180)],
+    });
+    recordProactiveScoutFieldEvent({
+      sessionsDir: params.input.sessionsDir,
+      sessionPath,
+      record,
+      now: params.now,
+    });
+    return record;
+  }
+
+  const createdCandidates = result.createdCandidates;
+  for (const candidate of createdCandidates) {
+    try {
+      recordAoiProactiveBriefFieldEvent(params.input.sessionsDir, {
+        sessionPath,
+        kind: 'candidate_created',
+        briefId: candidate.id,
+        topicId: candidate.topicId,
+        title: candidate.title,
+        summary: candidate.hook,
+        sourceRefs: candidate.sources.map((source) => source.url),
+        sourceHosts: candidate.sources.map((source) => source.host),
+        evidenceRefs: ['scheduler:proactive-scout', ...candidate.evidenceRefs],
+        freshness: {
+          searchedAt: candidate.freshness.searchedAt,
+          newestSourceAt: candidate.freshness.newestSourceAt,
+          cannotKnow: candidate.freshness.cannotKnow,
+          stale: candidate.freshness.cannotKnow.some((item) =>
+            /outside the freshness window|stale/i.test(item),
+          ),
+        },
+        createdAt: params.now,
+      });
+    } catch {
+      // Field events are diagnostic; stored candidates remain authoritative.
+    }
+  }
+
+  const status: AoiProactiveBriefSchedulerRunRecord['status'] =
+    createdCandidates.length > 0 ? 'scouted' : 'no_candidate';
+  const record = makeRecord(status, [], {
+    createdCandidateCount: createdCandidates.length,
+    skippedTopicCount: result.skippedTopics.length,
+    sourceFreshnessCount: result.sourceFreshness.length,
+    topicIds: [
+      ...new Set([
+        ...createdCandidates.map((candidate) => candidate.topicId),
+        ...result.skippedTopics
+          .map((topic) => topic.topicId)
+          .filter((item): item is string => Boolean(item)),
+      ]),
+    ].slice(0, 24),
+    warnings: [
+      ...result.warnings,
+      ...(quietWindowActive ? ['quiet_window_active:direct_chat_suppressed'] : []),
+      ...(controls.directChatHookOptIn ? [] : ['direct_chat_hook_opt_in_disabled']),
+    ].slice(0, 24),
+    evidenceRefs: [
+      'scheduler:proactive-scout',
+      ...createdCandidates.map((candidate) => `brief:${candidate.id}`),
+      ...result.skippedTopics.flatMap((topic) =>
+        topic.topicId
+          ? [`topic:${topic.topicId}:skipped:${topic.reason}`]
+          : [`topic:skipped:${topic.reason}`],
+      ),
+    ].slice(0, 24),
+  });
+  if (status === 'no_candidate') {
+    recordProactiveScoutFieldEvent({
+      sessionsDir: params.input.sessionsDir,
+      sessionPath,
+      record,
+      now: params.now,
+    });
+  }
+  return record;
 }
 
 async function runWakeupInternal(
@@ -961,7 +1504,6 @@ async function runWakeupInternal(
     }
   }
 
-  const completedAt = input.now ?? getNow();
   const tickRan = Boolean(tickResult);
   const tickOk = tickResult?.ok ?? false;
   const tickSkipped = tickResult?.skipped ?? false;
@@ -970,6 +1512,15 @@ async function runWakeupInternal(
   );
   const tickFailed = tickResult?.ok === false;
   const recordOk = !runtimeBudgetFailed && !tickFailed;
+  const proactiveScout = await runProactiveScoutForWakeup({
+    input,
+    dependencies,
+    previousState,
+    startedAt,
+    now,
+    budget,
+  });
+  const completedAt = input.now ?? getNow();
   const record: AoiAutonomyWakeupRecord = {
     version: 1,
     id: createAoiAutonomyId('aoi-wakeup', startedAt),
@@ -995,6 +1546,7 @@ async function runWakeupInternal(
     proposalsCreated: tickResult?.newActiveProposalCount ?? 0,
     observationsSeen: tickResult?.tickState.recentObservationCount ?? 0,
     warnings: [...new Set(warnings)].slice(0, 24),
+    proactiveScout,
   };
   if (guard?.cancelled) {
     return {

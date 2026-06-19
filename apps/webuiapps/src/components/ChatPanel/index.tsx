@@ -245,9 +245,11 @@ import {
   recordAoiOperatorVoiceDecision,
   recordAoiProactiveBriefFeedback,
   recordAoiProposalFeedback,
+  resetAoiProactiveBriefCooldown,
   resetAoiTrustCalibrationCategory,
   runAoiAutonomyManualWakeup,
   runAoiAutonomySessionOpenWakeup,
+  runAoiProactiveBriefScoutNow,
   updateAoiEnvironmentSource,
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalPreviewResult,
@@ -3356,6 +3358,54 @@ const ChatPanel: React.FC<{
     }
   }, [aoiAutonomyPanelSettings.quietMode, refreshAoiAutonomy]);
 
+  const runAoiProactiveBriefScoutFromPanel = useCallback(async () => {
+    const sessionPathForAutonomy = sessionPathRef.current;
+    if (!sessionPathForAutonomy) {
+      return;
+    }
+    setAoiAutonomyActionId('proactive-scout');
+    setAoiAutonomyLoading(true);
+    setAoiAutonomyError('');
+
+    try {
+      const result = await runAoiProactiveBriefScoutNow({
+        sessionPath: sessionPathForAutonomy,
+        quietMode: aoiAutonomyPanelSettings.quietMode,
+      });
+      setAoiAutonomyStatus(result.status);
+      setAoiAutonomyScheduler(result.state);
+      setAoiProactiveBriefs(result.proactiveBriefs);
+      setAoiAutonomyLastTickAt(result.status.lastTickAt ?? result.record.completedAt);
+      await refreshAoiAutonomy({ silent: true });
+    } catch (error) {
+      setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAoiAutonomyLoading(false);
+      setAoiAutonomyActionId(null);
+    }
+  }, [aoiAutonomyPanelSettings.quietMode, refreshAoiAutonomy]);
+
+  const resetAoiProactiveBriefCooldownFromPanel = useCallback(async () => {
+    const sessionPathForAutonomy = sessionPathRef.current;
+    if (!sessionPathForAutonomy) {
+      return;
+    }
+    setAoiAutonomyActionId('proactive-cooldown-reset');
+    setAoiAutonomyError('');
+
+    try {
+      const result = await resetAoiProactiveBriefCooldown({
+        sessionPath: sessionPathForAutonomy,
+      });
+      setAoiProactiveBriefs(result);
+      await refreshAoiAutonomy({ silent: true });
+    } catch (error) {
+      setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setAoiAutonomyActionId(null);
+    }
+  }, [refreshAoiAutonomy]);
+
   const decideAoiMissionFromPanel = useCallback(
     async (action: AoiMissionDecisionAction) => {
       const actionId = `mission:${action}`;
@@ -6439,7 +6489,7 @@ const ChatPanel: React.FC<{
         context: {
           now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
           quietMode: aoiAutonomyPanelSettings.quietMode,
-          directChatOptIn: false,
+          directChatOptIn: aoiAutonomyStatus?.policy.proactiveBriefing.directChatHookOptIn === true,
           inlineCardsShown: aoiInlineShownCount,
           maxInlineCards: Math.min(1, aoiAutonomyPanelSettings.maxSuggestionsPerSession),
         },
@@ -6449,6 +6499,7 @@ const ChatPanel: React.FC<{
       aoiAutonomyPanelSettings.maxSuggestionsPerSession,
       aoiAutonomyPanelSettings.quietMode,
       aoiAutonomyStatus?.policy,
+      aoiAutonomyStatus?.policy.proactiveBriefing.directChatHookOptIn,
       aoiAutonomyStatus?.updatedAt,
       aoiInlineShownCount,
       aoiProactiveBriefs?.candidates,
@@ -7292,6 +7343,8 @@ const ChatPanel: React.FC<{
           onResetAoiTrustCalibration={resetAoiTrustCalibrationFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
+          onRunAoiProactiveBriefScout={runAoiProactiveBriefScoutFromPanel}
+          onResetAoiProactiveBriefCooldown={resetAoiProactiveBriefCooldownFromPanel}
           onDecideAoiMission={decideAoiMissionFromPanel}
           onDecideAoiProposal={decideAoiProposalFromPanel}
           onPauseAoiGoalForRecovery={pauseAoiGoalForRecoveryFromPanel}
@@ -7888,6 +7941,8 @@ const SettingsModal: React.FC<{
   onResetAoiTrustCalibration: (dimension: AoiCalibrationDimension, key: string) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
+  onRunAoiProactiveBriefScout: () => Promise<void>;
+  onResetAoiProactiveBriefCooldown: () => Promise<void>;
   onDecideAoiMission: (action: AoiMissionDecisionAction) => Promise<void>;
   onDecideAoiProposal: (
     proposalId: string,
@@ -7978,6 +8033,8 @@ const SettingsModal: React.FC<{
   onResetAoiTrustCalibration,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
+  onRunAoiProactiveBriefScout,
+  onResetAoiProactiveBriefCooldown,
   onDecideAoiMission,
   onDecideAoiProposal,
   onPauseAoiGoalForRecovery,
@@ -10321,15 +10378,139 @@ const SettingsModal: React.FC<{
                               ? styles.saveBtn
                               : styles.cancelBtn
                           }
-                          onClick={() =>
+                          onClick={() => {
+                            const enabled = !aoiAutonomyPolicy?.proactiveSuggestionsEnabled;
                             void onUpdateAoiAutonomyPolicy({
-                              proactiveSuggestionsEnabled:
-                                !aoiAutonomyPolicy?.proactiveSuggestionsEnabled,
-                            })
-                          }
+                              proactiveSuggestionsEnabled: enabled,
+                              ...(aoiAutonomyPolicy
+                                ? {
+                                    proactiveBriefing: {
+                                      ...aoiAutonomyPolicy.proactiveBriefing,
+                                      enabled,
+                                    },
+                                  }
+                                : {}),
+                            });
+                          }}
                           disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
                         >
                           {aoiAutonomyPolicy?.proactiveSuggestionsEnabled ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Scout policy</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.proactiveBriefing.enabled
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() => {
+                            if (!aoiAutonomyPolicy) {
+                              return;
+                            }
+                            void onUpdateAoiAutonomyPolicy({
+                              proactiveBriefing: {
+                                ...aoiAutonomyPolicy.proactiveBriefing,
+                                enabled: !aoiAutonomyPolicy.proactiveBriefing.enabled,
+                              },
+                            });
+                          }}
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          title="Pause or resume proactive current-info scouting"
+                        >
+                          {aoiAutonomyPolicy?.proactiveBriefing.enabled ? 'Resumed' : 'Paused'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Background scout</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() => {
+                            if (!aoiAutonomyPolicy) {
+                              return;
+                            }
+                            void onUpdateAoiAutonomyPolicy({
+                              proactiveBriefing: {
+                                ...aoiAutonomyPolicy.proactiveBriefing,
+                                allowBackgroundScout:
+                                  !aoiAutonomyPolicy.proactiveBriefing.allowBackgroundScout,
+                              },
+                            });
+                          }}
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          title="Allow scheduler wakeups to scout current public sources"
+                        >
+                          {aoiAutonomyPolicy?.proactiveBriefing.allowBackgroundScout ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Direct chat hooks</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() => {
+                            if (!aoiAutonomyPolicy) {
+                              return;
+                            }
+                            void onUpdateAoiAutonomyPolicy({
+                              proactiveBriefing: {
+                                ...aoiAutonomyPolicy.proactiveBriefing,
+                                directChatHookOptIn:
+                                  !aoiAutonomyPolicy.proactiveBriefing.directChatHookOptIn,
+                              },
+                            });
+                          }}
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          title="Opt in or out of compact proactive chat hooks"
+                        >
+                          {aoiAutonomyPolicy?.proactiveBriefing.directChatHookOptIn
+                            ? 'Opt-in'
+                            : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Run scout now</span>
+                        <button
+                          type="button"
+                          className={styles.inlineActionBtn}
+                          onClick={() => void onRunAoiProactiveBriefScout()}
+                          disabled={
+                            !aoiAutonomyPolicy ||
+                            aoiAutonomyLoading ||
+                            aoiAutonomyActionId === 'proactive-scout'
+                          }
+                          title="Run a budgeted proactive scout through scheduler gates"
+                        >
+                          {aoiAutonomyActionId === 'proactive-scout' ? 'Running' : 'Run'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Scout cooldown</span>
+                        <button
+                          type="button"
+                          className={styles.inlineActionBtn}
+                          onClick={() => void onResetAoiProactiveBriefCooldown()}
+                          disabled={
+                            !aoiAutonomyPolicy?.enabled ||
+                            !aoiAutonomyPolicy.proactiveBriefing.enabled ||
+                            aoiAutonomyActionId === 'proactive-cooldown-reset'
+                          }
+                          title="Reset global proactive scout cooldown when policy allows it"
+                        >
+                          {aoiAutonomyActionId === 'proactive-cooldown-reset'
+                            ? 'Resetting'
+                            : 'Reset'}
                         </button>
                       </div>
                       <div className={styles.promptBudgetMetric}>
@@ -10551,6 +10732,10 @@ const SettingsModal: React.FC<{
                           )}
                           {aoiProactiveBriefPanel.cards.map((card) => {
                             const expanded = expandedAoiProactiveBriefId === card.id;
+                            const topicControl =
+                              aoiAutonomyPolicy?.proactiveBriefing.topicControls[card.topicId];
+                            const topicMuted = topicControl?.muted === true;
+                            const topicPinned = topicControl?.pinned === true;
                             return (
                               <div
                                 className={styles.aoiAutonomyProposalItem}
@@ -10667,6 +10852,68 @@ const SettingsModal: React.FC<{
                                       <ChevronRight size={14} />
                                     )}
                                     Details
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => {
+                                      if (!aoiAutonomyPolicy) {
+                                        return;
+                                      }
+                                      void onUpdateAoiAutonomyPolicy({
+                                        proactiveBriefing: {
+                                          ...aoiAutonomyPolicy.proactiveBriefing,
+                                          topicControls: {
+                                            ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
+                                            [card.topicId]: {
+                                              version: 1,
+                                              topicId: card.topicId,
+                                              allowed: topicMuted,
+                                              muted: !topicMuted,
+                                              pinned: topicMuted ? topicPinned : false,
+                                              updatedAt: Date.now(),
+                                            },
+                                          },
+                                        },
+                                      });
+                                    }}
+                                    disabled={
+                                      !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
+                                    }
+                                    title="Mute or unmute this proactive topic"
+                                  >
+                                    {topicMuted ? 'Unmute topic' : 'Mute topic'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => {
+                                      if (!aoiAutonomyPolicy) {
+                                        return;
+                                      }
+                                      void onUpdateAoiAutonomyPolicy({
+                                        proactiveBriefing: {
+                                          ...aoiAutonomyPolicy.proactiveBriefing,
+                                          topicControls: {
+                                            ...aoiAutonomyPolicy.proactiveBriefing.topicControls,
+                                            [card.topicId]: {
+                                              version: 1,
+                                              topicId: card.topicId,
+                                              allowed: true,
+                                              muted: false,
+                                              pinned: !topicPinned,
+                                              updatedAt: Date.now(),
+                                            },
+                                          },
+                                        },
+                                      });
+                                    }}
+                                    disabled={
+                                      !aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'
+                                    }
+                                    title="Pin or unpin this proactive topic"
+                                  >
+                                    {topicPinned ? 'Unpin topic' : 'Pin topic'}
                                   </button>
                                 </div>
                               </div>

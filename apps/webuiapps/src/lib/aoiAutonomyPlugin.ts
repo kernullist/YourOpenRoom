@@ -55,7 +55,6 @@ import {
   loadAoiAutonomySchedulerState,
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
-import { runAoiProactiveBriefScout } from './aoiProactiveBriefScout';
 import { applyAoiProactiveBriefFeedbackAction } from './aoiProactiveBriefFeedback';
 import {
   loadAoiInterestProfile,
@@ -66,7 +65,9 @@ import {
   loadAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefFeedback,
   recordAoiProactiveBriefDeliveryFieldEvents,
+  upsertAoiProactiveBriefCooldown,
 } from './aoiProactiveBriefStore';
+import { AOI_PROACTIVE_BRIEF_GLOBAL_COOLDOWN_KEY } from './aoiProactiveBriefPlanner';
 import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
@@ -882,6 +883,7 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         reason: body.reason,
         workspaceRoot,
+        configFile,
         latestUserMessage:
           typeof body.latestUserMessage === 'string' ? body.latestUserMessage : undefined,
         llmConfig,
@@ -968,6 +970,48 @@ async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'POST' && route === '/proactive-briefs/cooldown/reset') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
+      if (!policy.enabled || !policy.proactiveBriefing.enabled) {
+        writeJson(res, 403, {
+          error: 'Proactive scout cooldown reset is disabled by policy.',
+          code: 'cooldown_reset_policy_blocked',
+        });
+        return true;
+      }
+      const now = Date.now();
+      const topicId =
+        typeof body.topicId === 'string' && body.topicId.trim() ? body.topicId.trim() : undefined;
+      const profile = loadAoiInterestProfile(sessionsDir, sessionPath, now);
+      const topic = topicId ? profile.topics.find((item) => item.id === topicId) : undefined;
+      if (topicId && !topic) {
+        writeJson(res, 404, {
+          error: 'Proactive brief topic was not found.',
+          code: 'topic_not_found',
+        });
+        return true;
+      }
+      upsertAoiProactiveBriefCooldown(sessionsDir, sessionPath, {
+        cooldownKey: topic?.cooldownKey ?? AOI_PROACTIVE_BRIEF_GLOBAL_COOLDOWN_KEY,
+        ...(topic ? { topicId: topic.id } : {}),
+        nextAllowedAt: now,
+        reason: 'operator_reset',
+        sourceBriefIds: [],
+        now,
+      });
+      writeJson(res, 200, buildAoiProactiveBriefResponse({ sessionsDir, sessionPath }));
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/proactive-briefs/scout') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -997,20 +1041,33 @@ async function handleAoiAutonomyRequest(
       }
       const topicId =
         typeof body.topicId === 'string' && body.topicId.trim() ? body.topicId.trim() : undefined;
-      const result = await runAoiProactiveBriefScout({
+      const result = await runAoiAutonomyWakeup({
         sessionsDir,
         sessionPath,
+        reason: 'manual_refresh',
+        workspaceRoot,
         configFile,
-        topicId,
-        mode: 'quick',
         budget: {
+          maxSchedulerRuntimeMs: 15_000,
+          maxBackgroundTickRuntimeMs: 0,
+          maxSourceCount: 0,
+          maxGeneratedProposalCount: 0,
+          wakeupCooldownMs: 0,
           allowNetwork: true,
-          quietMode: true,
-          maxTopicsPerWakeup: 1,
-          maxNetworkCallsPerWakeup: 1,
+        },
+        quietMode: body.quietMode === true,
+        proactiveScout: {
+          runNow: true,
+          ...(topicId ? { topicId } : {}),
         },
       });
-      writeJson(res, 200, result);
+      writeJson(res, 200, {
+        ...result,
+        proactiveBriefs: buildAoiProactiveBriefResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+      });
       return true;
     }
 

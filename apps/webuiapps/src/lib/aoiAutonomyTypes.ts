@@ -489,6 +489,85 @@ export interface AoiProactiveBriefCalibrationTuning {
   evidenceRefs: string[];
 }
 
+export interface AoiProactiveBriefQuietWindow {
+  version: 1;
+  enabled: boolean;
+  startMinuteOfDay: number;
+  endMinuteOfDay: number;
+}
+
+export interface AoiProactiveBriefTopicControl {
+  version: 1;
+  topicId: string;
+  allowed: boolean;
+  muted: boolean;
+  pinned: boolean;
+  updatedAt: number;
+}
+
+export interface AoiProactiveBriefSourceHostControl {
+  version: 1;
+  host: string;
+  allowed: boolean;
+  muted: boolean;
+  updatedAt: number;
+}
+
+export interface AoiProactiveBriefSchedulerControls {
+  version: 1;
+  enabled: boolean;
+  allowBackgroundScout: boolean;
+  maxScoutRunsPerDay: number;
+  maxScoutRunsPerSession: number;
+  minScoutCooldownMs: number;
+  maxSessionIdleMs: number;
+  quietWindow: AoiProactiveBriefQuietWindow;
+  directChatHookOptIn: boolean;
+  topicControls: Record<string, AoiProactiveBriefTopicControl>;
+  sourceHostControls: Record<string, AoiProactiveBriefSourceHostControl>;
+}
+
+export interface AoiProactiveBriefScoutBudgetState {
+  version: 1;
+  dayKey: string;
+  runsToday: number;
+  runsThisSession: number;
+  updatedAt: number;
+}
+
+export type AoiProactiveBriefSchedulerRunStatus =
+  | 'not_requested'
+  | 'blocked'
+  | 'scouted'
+  | 'no_candidate'
+  | 'failed';
+
+export interface AoiProactiveBriefSchedulerRunRecord {
+  version: 1;
+  requested: boolean;
+  runNow: boolean;
+  background: boolean;
+  status: AoiProactiveBriefSchedulerRunStatus;
+  provider: 'tavily' | 'test' | 'none';
+  providerConfigured: boolean;
+  startedAt: number;
+  completedAt: number;
+  createdCandidateCount: number;
+  skippedTopicCount: number;
+  sourceFreshnessCount: number;
+  topicIds: string[];
+  blockedReasons: string[];
+  warnings: string[];
+  budget: {
+    dayKey: string;
+    runsToday: number;
+    maxRunsPerDay: number;
+    runsThisSession: number;
+    maxRunsPerSession: number;
+  };
+  evidenceRefs: string[];
+}
+
 export type AoiFailureKind =
   | 'policy_blocked'
   | 'missing_evidence'
@@ -1064,6 +1143,7 @@ export interface AoiAutonomyWakeupRecord {
   proposalsCreated: number;
   observationsSeen: number;
   warnings: string[];
+  proactiveScout?: AoiProactiveBriefSchedulerRunRecord;
 }
 
 export interface AoiAutonomySchedulerState {
@@ -1075,6 +1155,7 @@ export interface AoiAutonomySchedulerState {
   lastWakeupReason?: AoiAutonomyWakeupReason;
   lastWakeupStatus?: AoiAutonomyWakeupRecord['status'];
   nextAllowedWakeupAt?: number;
+  proactiveScoutBudget?: AoiProactiveBriefScoutBudgetState;
   sourceSchedules: AoiAutonomySourceSchedule[];
   recentWakeups: AoiAutonomyWakeupRecord[];
 }
@@ -1883,6 +1964,7 @@ export interface AoiAutonomyPolicy {
   defaultSnoozeMs: number;
   duplicateCheckEnabled: boolean;
   cooldownCheckEnabled: boolean;
+  proactiveBriefing: AoiProactiveBriefSchedulerControls;
   requireEvidenceRefs: boolean;
   requireApprovalForHighRisk: boolean;
   updatedAt: number;

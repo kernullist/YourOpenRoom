@@ -1,4 +1,8 @@
 import { loadAoiResearchTavilyConfig, type AoiResearchTavilyConfig } from './aoiResearchEngine';
+import {
+  applyAoiProactiveBriefingTopicControls,
+  isAoiProactiveBriefQuietWindowActive,
+} from './aoiAutonomyPolicy';
 import { loadAoiAutonomyPolicy, normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
 import {
   loadAoiInterestProfile,
@@ -30,6 +34,8 @@ export interface AoiProactiveBriefScoutBudget extends AoiProactiveBriefPlannerBu
   maxResultsPerTopic?: number;
   minSourcesPerCandidate?: number;
   sourceStaleAfterMs?: number;
+  allowedSourceHosts?: string[];
+  mutedSourceHosts?: string[];
 }
 
 export interface AoiProactiveBriefScoutDependencies {
@@ -90,12 +96,27 @@ function normalizeScoutBudget(
   input: AoiProactiveBriefScoutBudget | undefined,
   policy: AoiAutonomyPolicy,
 ): AoiProactiveBriefScoutBudget {
+  const controls = policy.proactiveBriefing;
+  const quietMode = input?.quietMode === true || isAoiProactiveBriefQuietWindowActive(controls);
   return {
     ...input,
     allowNetwork:
       input?.allowNetwork === true &&
       policy.enabled === true &&
-      policy.proactiveSuggestionsEnabled === true,
+      policy.proactiveSuggestionsEnabled === true &&
+      controls.enabled === true,
+    quietMode,
+    directChatHookOptIn: controls.directChatHookOptIn === true,
+    allowedSourceHosts:
+      input?.allowedSourceHosts ??
+      Object.values(controls.sourceHostControls)
+        .filter((control) => control.allowed === true && control.muted !== true)
+        .map((control) => control.host),
+    mutedSourceHosts:
+      input?.mutedSourceHosts ??
+      Object.values(controls.sourceHostControls)
+        .filter((control) => control.muted === true || control.allowed === false)
+        .map((control) => control.host),
     topicCooldownMs: normalizePositiveInteger(
       input?.topicCooldownMs,
       policy.defaultCooldownMs,
@@ -132,6 +153,47 @@ function normalizeScoutBudget(
       0,
       1,
     ),
+  };
+}
+
+function normalizeHost(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function hostFromUrl(value: string): string {
+  try {
+    return new URL(value).hostname.toLowerCase();
+  } catch {
+    return '';
+  }
+}
+
+function wrapSearchWithSourceControls(
+  search: AoiProactiveBriefSearchAdapter,
+  budget: AoiProactiveBriefScoutBudget,
+): AoiProactiveBriefSearchAdapter {
+  const allowedHosts = new Set(
+    (budget.allowedSourceHosts ?? []).map(normalizeHost).filter(Boolean),
+  );
+  const mutedHosts = new Set((budget.mutedSourceHosts ?? []).map(normalizeHost).filter(Boolean));
+  if (allowedHosts.size === 0 && mutedHosts.size === 0) {
+    return search;
+  }
+  return async (request) => {
+    const response = await search(request);
+    return {
+      ...response,
+      results: response.results.filter((result) => {
+        const host = hostFromUrl(result.url);
+        if (!host) {
+          return false;
+        }
+        if (mutedHosts.has(host)) {
+          return false;
+        }
+        return allowedHosts.size === 0 || allowedHosts.has(host);
+      }),
+    };
   };
 }
 
@@ -173,8 +235,14 @@ export async function runAoiProactiveBriefScout(
   if (!policy.enabled || !policy.proactiveSuggestionsEnabled) {
     warnings.push('proactive_suggestions_disabled');
   }
+  if (!policy.proactiveBriefing.enabled) {
+    warnings.push('proactive_brief_scouting_disabled');
+  }
 
-  const profile = loadAoiInterestProfile(input.sessionsDir, sessionPath, now);
+  const profile = applyAoiProactiveBriefingTopicControls(
+    loadAoiInterestProfile(input.sessionsDir, sessionPath, now),
+    policy.proactiveBriefing,
+  );
   const cooldownState = loadAoiProactiveBriefCooldownState(input.sessionsDir, sessionPath, now);
   const feedback = loadAoiProactiveBriefFeedback(input.sessionsDir, sessionPath);
   const plan = planAoiProactiveBriefTopics({
@@ -188,14 +256,14 @@ export async function runAoiProactiveBriefScout(
   const skippedTopics = [...plan.skippedTopics];
   warnings.push(...plan.warnings);
 
-  if (!policy.enabled || !policy.proactiveSuggestionsEnabled) {
+  if (!policy.enabled || !policy.proactiveSuggestionsEnabled || !policy.proactiveBriefing.enabled) {
     for (const planned of plan.topics) {
       skippedTopics.push(
         makeSkip({
           topicId: planned.topic.id,
           topicLabel: planned.topic.label,
           reason: 'policy_disabled',
-          detail: 'Aoi proactive suggestions are disabled by policy.',
+          detail: 'Aoi proactive suggestions or proactive scouting are disabled by policy.',
         }),
       );
     }
@@ -254,6 +322,7 @@ export async function runAoiProactiveBriefScout(
       fetchImpl: input.dependencies?.fetchImpl,
     });
   }
+  search = wrapSearchWithSourceControls(search, budget);
 
   for (const planned of plan.topics) {
     try {

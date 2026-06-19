@@ -25,6 +25,7 @@ import {
   buildAoiProactiveBriefCalibrationDiagnostics,
   buildAoiProactiveBriefDiagnostics,
   buildAoiProactiveBriefFieldDiagnostics,
+  buildAoiProactiveBriefSchedulerDiagnostics,
 } from './aoiProactiveBriefReplay';
 import type { PersistedConfig } from './configPersistence';
 import type {
@@ -158,6 +159,7 @@ export function buildAoiOperatorHealthState(params: {
     null,
   );
   const hasProactiveArtifacts = Boolean(
+    scheduler?.recentWakeups.some((record) => record.proactiveScout?.requested) ||
     proactiveProfile?.topics.length ||
     proactiveCandidates.length ||
     proactiveFeedback.length ||
@@ -194,6 +196,12 @@ export function buildAoiOperatorHealthState(params: {
         }),
         ...buildAoiProactiveBriefFieldDiagnostics(proactiveFieldMetrics, now),
         ...buildAoiProactiveBriefCalibrationDiagnostics(proactiveCalibrationTuning, now),
+        ...buildAoiProactiveBriefSchedulerDiagnostics({
+          policy,
+          scheduler,
+          tavilyConfigured: config.tavilyConfigured,
+          now,
+        }),
       ]
     : [];
 

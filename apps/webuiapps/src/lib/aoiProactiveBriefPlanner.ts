@@ -54,6 +54,7 @@ export interface AoiProactiveBriefPlannerBudget {
   negativeFeedbackCooldownMs?: number;
   minTopicConfidence?: number;
   minTopicImportance?: number;
+  directChatHookOptIn?: boolean;
 }
 
 export interface AoiProactiveBriefPlannedTopic {
@@ -107,6 +108,7 @@ interface NormalizedPlannerBudget {
   negativeFeedbackCooldownMs: number;
   minTopicConfidence: number;
   minTopicImportance: number;
+  directChatHookOptIn: boolean;
 }
 
 function normalizePositiveInteger(
@@ -179,6 +181,7 @@ function normalizeBudget(budget?: AoiProactiveBriefPlannerBudget): NormalizedPla
       0,
       1,
     ),
+    directChatHookOptIn: budget?.directChatHookOptIn === true,
   };
 }
 
@@ -229,7 +232,9 @@ function deliveryForBudget(
     };
   }
   return {
-    allowedModes: ['dashboard', 'digest'],
+    allowedModes: budget.directChatHookOptIn
+      ? ['dashboard', 'digest', 'chat_hook']
+      : ['dashboard', 'digest'],
     quietModeSuppressed: false,
   };
 }

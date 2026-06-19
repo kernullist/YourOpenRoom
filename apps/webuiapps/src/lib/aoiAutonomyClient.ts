@@ -195,6 +195,10 @@ export interface AoiProactiveBriefFeedbackResponse extends AoiProactiveBriefList
   candidate: AoiProactiveBriefCandidate;
 }
 
+export interface AoiProactiveBriefScoutNowResponse extends AoiAutonomyWakeupResult {
+  proactiveBriefs: AoiProactiveBriefListResponse;
+}
+
 export interface AoiAutonomyProposalFeedbackResult {
   sessionPath: string;
   decision: AoiProposalDecision;
@@ -627,6 +631,62 @@ export async function recordAoiProactiveBriefFeedback(
       'Aoi proactive brief candidate response was malformed.',
     ),
   };
+}
+
+export async function runAoiProactiveBriefScoutNow(params: {
+  sessionPath: string;
+  topicId?: string;
+  quietMode?: boolean;
+}): Promise<AoiProactiveBriefScoutNowResponse> {
+  const response = await fetch(`${API_PREFIX}/proactive-briefs/scout`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      topicId: params.topicId,
+      mode: 'quick',
+      quietMode: params.quietMode,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to run Aoi proactive brief scout.');
+  const hasWakeupResultPayload =
+    isRecord(payload.record) &&
+    isRecord(payload.state) &&
+    isRecord(payload.status) &&
+    isRecord(payload.proactiveBriefs);
+  if (payload.ok !== true && !hasWakeupResultPayload) {
+    throw new Error(getErrorMessage(payload, 'Aoi proactive brief scout did not complete.'));
+  }
+  return {
+    ...(payload as unknown as AoiAutonomyWakeupResult),
+    proactiveBriefs: parseAoiProactiveBriefListPayload(
+      requireRecordField<Record<string, unknown>>(
+        payload,
+        'proactiveBriefs',
+        'Aoi proactive brief scout response was malformed.',
+      ),
+      params.sessionPath,
+    ),
+  };
+}
+
+export async function resetAoiProactiveBriefCooldown(params: {
+  sessionPath: string;
+  topicId?: string;
+}): Promise<AoiProactiveBriefListResponse> {
+  const response = await fetch(`${API_PREFIX}/proactive-briefs/cooldown/reset`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      topicId: params.topicId,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to reset Aoi proactive brief cooldown.');
+  if (payload.ok !== true) {
+    throw new Error(getErrorMessage(payload, 'Aoi proactive brief cooldown reset was blocked.'));
+  }
+  return parseAoiProactiveBriefListPayload(payload, params.sessionPath);
 }
 
 export async function fetchAoiPlaybooks(

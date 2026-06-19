@@ -18,6 +18,10 @@ import type {
   AoiProposalFeedbackCategory,
   AoiProposalPolicyCheckInput,
   AoiProposalPolicyCheckResult,
+  AoiProactiveBriefSchedulerControls,
+  AoiProactiveBriefSourceHostControl,
+  AoiProactiveBriefTopicControl,
+  AoiInterestProfile,
 } from './aoiAutonomyTypes';
 import {
   collectAoiKiraHandoffScopeReasons,
@@ -193,6 +197,25 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
   },
 ];
 
+export const DEFAULT_AOI_PROACTIVE_BRIEFING_CONTROLS: AoiProactiveBriefSchedulerControls = {
+  version: 1,
+  enabled: false,
+  allowBackgroundScout: false,
+  maxScoutRunsPerDay: 3,
+  maxScoutRunsPerSession: 5,
+  minScoutCooldownMs: 30 * 60 * 1000,
+  maxSessionIdleMs: 30 * 60 * 1000,
+  quietWindow: {
+    version: 1,
+    enabled: false,
+    startMinuteOfDay: 22 * 60,
+    endMinuteOfDay: 8 * 60,
+  },
+  directChatHookOptIn: false,
+  topicControls: {},
+  sourceHostControls: {},
+};
+
 export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   version: 1,
   enabled: false,
@@ -207,6 +230,7 @@ export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   defaultSnoozeMs: 4 * 60 * 60 * 1000,
   duplicateCheckEnabled: true,
   cooldownCheckEnabled: true,
+  proactiveBriefing: DEFAULT_AOI_PROACTIVE_BRIEFING_CONTROLS,
   requireEvidenceRefs: true,
   requireApprovalForHighRisk: true,
   updatedAt: 0,
@@ -348,6 +372,166 @@ function normalizeBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+function normalizeControlKey(value: unknown, maxLength = 120): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, maxLength) : '';
+}
+
+function normalizeHostControlKey(value: unknown): string {
+  return normalizeControlKey(value, 160).toLowerCase();
+}
+
+function normalizeMinuteOfDay(value: unknown, fallback: number): number {
+  return Math.round(clampNumber(value, fallback, 0, 24 * 60 - 1));
+}
+
+function normalizeProactiveBriefQuietWindow(
+  value: unknown,
+  fallback: AoiProactiveBriefSchedulerControls['quietWindow'],
+): AoiProactiveBriefSchedulerControls['quietWindow'] {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiProactiveBriefSchedulerControls['quietWindow']>)
+      : {};
+  return {
+    version: 1,
+    enabled: normalizeBoolean(raw.enabled, fallback.enabled),
+    startMinuteOfDay: normalizeMinuteOfDay(raw.startMinuteOfDay, fallback.startMinuteOfDay),
+    endMinuteOfDay: normalizeMinuteOfDay(raw.endMinuteOfDay, fallback.endMinuteOfDay),
+  };
+}
+
+function normalizeProactiveBriefTopicControls(
+  value: unknown,
+  fallback: Record<string, AoiProactiveBriefTopicControl>,
+  now: number,
+): Record<string, AoiProactiveBriefTopicControl> {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, Partial<AoiProactiveBriefTopicControl>>)
+      : fallback;
+  const out: Record<string, AoiProactiveBriefTopicControl> = {};
+  for (const [key, item] of Object.entries(raw).slice(0, 80)) {
+    const topicId = normalizeControlKey(item?.topicId ?? key);
+    if (!topicId) {
+      continue;
+    }
+    const previous = fallback[topicId];
+    out[topicId] = {
+      version: 1,
+      topicId,
+      allowed: normalizeBoolean(item?.allowed, previous?.allowed ?? true),
+      muted: normalizeBoolean(item?.muted, previous?.muted ?? false),
+      pinned: normalizeBoolean(item?.pinned, previous?.pinned ?? false),
+      updatedAt: typeof item?.updatedAt === 'number' ? item.updatedAt : now,
+    };
+  }
+  return out;
+}
+
+function normalizeProactiveBriefSourceHostControls(
+  value: unknown,
+  fallback: Record<string, AoiProactiveBriefSourceHostControl>,
+  now: number,
+): Record<string, AoiProactiveBriefSourceHostControl> {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Record<string, Partial<AoiProactiveBriefSourceHostControl>>)
+      : fallback;
+  const out: Record<string, AoiProactiveBriefSourceHostControl> = {};
+  for (const [key, item] of Object.entries(raw).slice(0, 80)) {
+    const host = normalizeHostControlKey(item?.host ?? key);
+    if (!host) {
+      continue;
+    }
+    const previous = fallback[host];
+    out[host] = {
+      version: 1,
+      host,
+      allowed: normalizeBoolean(item?.allowed, previous?.allowed ?? true),
+      muted: normalizeBoolean(item?.muted, previous?.muted ?? false),
+      updatedAt: typeof item?.updatedAt === 'number' ? item.updatedAt : now,
+    };
+  }
+  return out;
+}
+
+export function normalizeAoiProactiveBriefingControls(
+  value: unknown,
+  fallback: AoiProactiveBriefSchedulerControls = DEFAULT_AOI_PROACTIVE_BRIEFING_CONTROLS,
+  now = Date.now(),
+): AoiProactiveBriefSchedulerControls {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiProactiveBriefSchedulerControls>)
+      : {};
+  return {
+    version: 1,
+    enabled: normalizeBoolean(raw.enabled, fallback.enabled),
+    allowBackgroundScout: normalizeBoolean(raw.allowBackgroundScout, fallback.allowBackgroundScout),
+    maxScoutRunsPerDay: Math.round(
+      clampNumber(raw.maxScoutRunsPerDay, fallback.maxScoutRunsPerDay, 0, 24),
+    ),
+    maxScoutRunsPerSession: Math.round(
+      clampNumber(raw.maxScoutRunsPerSession, fallback.maxScoutRunsPerSession, 0, 48),
+    ),
+    minScoutCooldownMs: Math.round(
+      clampNumber(raw.minScoutCooldownMs, fallback.minScoutCooldownMs, 0, 24 * 60 * 60 * 1000),
+    ),
+    maxSessionIdleMs: Math.round(
+      clampNumber(raw.maxSessionIdleMs, fallback.maxSessionIdleMs, 60_000, 24 * 60 * 60 * 1000),
+    ),
+    quietWindow: normalizeProactiveBriefQuietWindow(raw.quietWindow, fallback.quietWindow),
+    directChatHookOptIn: normalizeBoolean(raw.directChatHookOptIn, fallback.directChatHookOptIn),
+    topicControls: normalizeProactiveBriefTopicControls(
+      raw.topicControls,
+      fallback.topicControls,
+      now,
+    ),
+    sourceHostControls: normalizeProactiveBriefSourceHostControls(
+      raw.sourceHostControls,
+      fallback.sourceHostControls,
+      now,
+    ),
+  };
+}
+
+export function applyAoiProactiveBriefingTopicControls(
+  profile: AoiInterestProfile,
+  controls: AoiProactiveBriefSchedulerControls,
+): AoiInterestProfile {
+  return {
+    ...profile,
+    topics: profile.topics.map((topic) => {
+      const control = controls.topicControls[topic.id];
+      if (!control) {
+        return topic;
+      }
+      return {
+        ...topic,
+        muted: topic.muted || control.muted || control.allowed === false,
+        pinned: control.muted || control.allowed === false ? false : topic.pinned || control.pinned,
+      };
+    }),
+  };
+}
+
+export function isAoiProactiveBriefQuietWindowActive(
+  controls: AoiProactiveBriefSchedulerControls,
+  now = Date.now(),
+): boolean {
+  if (!controls.quietWindow.enabled) {
+    return false;
+  }
+  const date = new Date(now);
+  const minute = date.getHours() * 60 + date.getMinutes();
+  const start = controls.quietWindow.startMinuteOfDay;
+  const end = controls.quietWindow.endMinuteOfDay;
+  if (start === end) {
+    return true;
+  }
+  return start < end ? minute >= start && minute < end : minute >= start || minute < end;
+}
+
 function normalizeText(value: unknown, fallback: string, maxLength: number): string {
   if (typeof value !== 'string') {
     return fallback;
@@ -476,6 +660,11 @@ export function normalizeAoiAutonomyPolicy(
       fallback.duplicateCheckEnabled,
     ),
     cooldownCheckEnabled: normalizeBoolean(raw.cooldownCheckEnabled, fallback.cooldownCheckEnabled),
+    proactiveBriefing: normalizeAoiProactiveBriefingControls(
+      raw.proactiveBriefing,
+      fallback.proactiveBriefing,
+      now,
+    ),
     requireEvidenceRefs: normalizeBoolean(raw.requireEvidenceRefs, fallback.requireEvidenceRefs),
     requireApprovalForHighRisk: normalizeBoolean(
       raw.requireApprovalForHighRisk,
