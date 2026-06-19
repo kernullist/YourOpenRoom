@@ -142,10 +142,14 @@ export function shouldOpenAoiProactiveTrendSourcesFromPrompt(prompt: string): bo
     return false;
   }
   return [
-    /\b(open|visit|show|load|launch|bring up)\b.*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/i,
-    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(open|visit|show|load|launch|bring up)\b/i,
-    /(열어|띄워|보여|열람).*(출처|근거|링크|주소|페이지|소스)/u,
-    /(출처|근거|링크|주소|페이지|소스).*(열어|띄워|보여|열람)/u,
+    /\b(open|visit|load|launch|bring up)\b.*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/i,
+    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(open|visit|load|launch|bring up)\b/i,
+    /(열어|띄워|열람|방문).*(출처|근거|링크|주소|페이지|소스)/u,
+    /(출처|근거|링크|주소|페이지|소스).*(열어|띄워|열람|방문)/u,
+    /\b(open|visit|load|launch|bring up)\b.*(출처|근거|링크|주소|페이지|소스)/iu,
+    /(출처|근거|링크|주소|페이지|소스).*\b(open|visit|load|launch|bring up)\b/iu,
+    /(열어|띄워|열람|방문).*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/iu,
+    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*(열어|띄워|열람|방문)/iu,
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -159,6 +163,20 @@ export function shouldOpenAllAoiProactiveTrendSourcesFromPrompt(prompt: string):
     /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(all|every|each|both)\b/i,
     /(모든|전체|전부|각각).*(출처|근거|링크|주소|페이지|소스)/u,
     /(출처|근거|링크|주소|페이지|소스).*(모두|모든|전체|전부|각각|다)/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+export function shouldListAoiProactiveTrendSourcesFromPrompt(prompt: string): boolean {
+  const normalized = sanitizeText(prompt, 240).toLowerCase();
+  if (!normalized || shouldOpenAoiProactiveTrendSourcesFromPrompt(normalized)) {
+    return false;
+  }
+  return [
+    /\b(show|list|cite|display|give|tell)\b.*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/i,
+    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(show|list|cite|display|give|tell)\b/i,
+    /\bwhat\s+(?:are|is|were|was)\b.*\b(source|sources|evidence|url|urls|link|links)\b/i,
+    /(보여|알려|정리|목록|나열|인용).*(출처|근거|링크|주소|페이지|소스)/u,
+    /(출처|근거|링크|주소|페이지|소스).*(보여|알려|정리|목록|나열|인용|뭐|어디)/u,
   ].some((pattern) => pattern.test(normalized));
 }
 
@@ -285,6 +303,35 @@ export function selectAoiProactiveTrendSourcesToOpen(
 
   const source = selectAoiProactiveTrendSourceToOpen(context, prompt);
   return source ? [source] : [];
+}
+
+export function buildAoiProactiveTrendSourceListText(
+  context?: AoiProactiveTrendFollowUpContext | null,
+): string {
+  if (!context) {
+    return '';
+  }
+
+  if (context.sources.length < 1) {
+    return `꿀보, "${context.title}"에 저장된 source URL이 없어.`;
+  }
+
+  const sourceLines = context.sources.map((source, index) => {
+    const sourceTitle = source.title || source.host || 'Source';
+    const dateParts = [
+      source.publishedAt ? `published ${source.publishedAt}` : '',
+      source.retrievedAt ? `retrieved ${new Date(source.retrievedAt).toISOString()}` : '',
+    ].filter(Boolean);
+    const dateLine = dateParts.length > 0 ? `\n   ${dateParts.join(', ')}` : '';
+    const snippetLine = source.snippet ? `\n   ${source.snippet}` : '';
+    return `${index + 1}. ${sourceTitle} (${source.host})\n   URL: ${source.url}${dateLine}${snippetLine}`;
+  });
+
+  return [
+    `꿀보, "${context.title}"에 저장된 근거는 ${context.sources.length}개야.`,
+    sourceLines.join('\n'),
+    '열람까지 원하면 "첫 번째 근거 열어줘" 또는 "모든 근거 열어줘"라고 하면 바로 열 수 있어.',
+  ].join('\n');
 }
 
 export function buildAoiProactiveTrendFollowUpPromptBlock(

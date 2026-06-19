@@ -294,8 +294,10 @@ import {
 import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
+  buildAoiProactiveTrendSourceListText,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourcesToOpen,
+  shouldListAoiProactiveTrendSourcesFromPrompt,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
   type AoiProactiveTrendFollowUpContext,
   type AoiProactiveTrendFollowUpSource,
@@ -4649,6 +4651,26 @@ const ChatPanel: React.FC<{
 
       const newHistory: ChatMessage[] = [...chatHistory, outgoingUserMessage];
       setChatHistory(newHistory);
+
+      if (
+        aoiTrendFollowUpContext &&
+        shouldListAoiProactiveTrendSourcesFromPrompt(aoiTrendFollowUpContext.prompt)
+      ) {
+        const ack = buildAoiProactiveTrendSourceListText(aoiTrendFollowUpContext);
+        emitAssistantMessage({
+          id: String(Date.now()),
+          role: 'assistant',
+          content: ack,
+        });
+        recordAoiMemoryTurn({
+          userMessage: text,
+          assistantMessage: ack,
+          toolCalls: [`direct:aoi_trend_list_sources:${aoiTrendFollowUpContext.cardId}`],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
+      }
 
       if (
         aoiTrendFollowUpContext &&

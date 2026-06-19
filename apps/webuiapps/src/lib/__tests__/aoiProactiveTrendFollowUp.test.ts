@@ -3,11 +3,13 @@ import type { AoiProactiveTrendOpinionCard } from '../aoiAutonomyTypes';
 import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
+  buildAoiProactiveTrendSourceListText,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourceToOpen,
   selectAoiProactiveTrendSourcesToOpen,
   shouldOpenAllAoiProactiveTrendSourcesFromPrompt,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
+  shouldListAoiProactiveTrendSourcesFromPrompt,
 } from '../aoiProactiveTrendFollowUp';
 
 const NOW = Date.parse('2026-06-19T00:00:00.000Z');
@@ -181,7 +183,7 @@ describe('Aoi proactive trend follow-up context', () => {
     );
   });
 
-  it('only auto-opens sources for explicit open/show/visit follow-up prompts', () => {
+  it('only auto-opens sources for explicit open/visit follow-up prompts', () => {
     expect(
       shouldOpenAoiProactiveTrendSourcesFromPrompt(
         'Aoi, open the source evidence for "Fresh reversing writeup trend".',
@@ -196,6 +198,20 @@ describe('Aoi proactive trend follow-up context', () => {
     expect(
       shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, turn this trend into a research plan.'),
     ).toBe(false);
+    expect(shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, source evidence 열어줘.')).toBe(true);
+    expect(shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, open 근거 링크.')).toBe(true);
+    expect(shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, show the source evidence.')).toBe(
+      false,
+    );
+    expect(shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, 출처 보여줘.')).toBe(false);
+    expect(shouldListAoiProactiveTrendSourcesFromPrompt('Aoi, show the source evidence.')).toBe(
+      true,
+    );
+    expect(shouldListAoiProactiveTrendSourcesFromPrompt('Aoi, 출처 보여줘.')).toBe(true);
+    expect(shouldListAoiProactiveTrendSourcesFromPrompt('Aoi, source evidence 열어줘.')).toBe(
+      false,
+    );
+    expect(shouldListAoiProactiveTrendSourcesFromPrompt('Aoi, open 근거 링크.')).toBe(false);
     expect(shouldOpenAllAoiProactiveTrendSourcesFromPrompt('Aoi, open all source evidence.')).toBe(
       true,
     );
@@ -285,5 +301,23 @@ describe('Aoi proactive trend follow-up context', () => {
       ),
     ).toEqual(['https://security.example.net/re/case-study']);
     expect(selectAoiProactiveTrendSourcesToOpen(null)).toEqual([]);
+  });
+
+  it('builds a direct source evidence list without claiming pages were opened', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard(),
+      'Aoi, show the source evidence.',
+      NOW,
+    );
+
+    const text = buildAoiProactiveTrendSourceListText(context);
+
+    expect(text).toContain('저장된 근거는 2개');
+    expect(text).toContain('1. Fresh reversing writeup (research.example.com)');
+    expect(text).toContain('URL: https://research.example.com/re/writeup');
+    expect(text).toContain('2. Second reversing source (security.example.net)');
+    expect(text).toContain('URL: https://security.example.net/re/case-study');
+    expect(text).not.toContain('Browser에서 열었어');
+    expect(buildAoiProactiveTrendSourceListText(null)).toBe('');
   });
 });
