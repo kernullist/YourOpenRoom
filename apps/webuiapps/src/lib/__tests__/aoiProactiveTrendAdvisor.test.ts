@@ -18,7 +18,10 @@ import {
   loadAoiProactiveTrendSnapshots,
   resolveAoiProactiveTrendPaths,
 } from '../aoiProactiveTrendAdvisor';
-import { runBuiltInAoiProactiveTrendReplayFixtures } from '../aoiProactiveTrendReplay';
+import {
+  runAoiProactiveTrendProviderSmokeReplay,
+  runBuiltInAoiProactiveTrendReplayFixtures,
+} from '../aoiProactiveTrendReplay';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = Date.parse('2026-06-19T00:00:00.000Z');
@@ -166,6 +169,22 @@ function makeCandidate(
     createdAt: partial.createdAt ?? NOW,
     updatedAt: partial.updatedAt ?? NOW,
     expiresAt: partial.expiresAt ?? NOW + 14 * 24 * 60 * 60 * 1000,
+  };
+}
+
+function makeFeedback(
+  category: AoiProactiveBriefFeedback['category'],
+  partial: Partial<AoiProactiveBriefFeedback> = {},
+): AoiProactiveBriefFeedback {
+  return {
+    version: 1,
+    id: partial.id ?? `aoi-trend-feedback-${category}`,
+    briefId: partial.briefId ?? 'aoi-brief-trend-re',
+    topicId: partial.topicId ?? 'aoi-interest-re',
+    sessionPath: partial.sessionPath ?? SESSION_PATH,
+    category,
+    ...(partial.note ? { note: partial.note } : {}),
+    createdAt: partial.createdAt ?? NOW,
   };
 }
 
@@ -348,6 +367,82 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.opinionCards[0].sourceHosts).toEqual(['research.example.com']);
     expect(state.opinionCards[0].directChatAllowed).toBe(false);
     expect(state.opinionCards[0].directChatBlockedReasons).toContain('weak_source_evidence');
+    expect(state.snapshots[0].sourceQuality.status).toBe('weak');
+    expect(state.sourceQualityCounts.weak).toBe(1);
+  });
+
+  it('suppresses duplicate direct chat and notification delivery with a stable control key', () => {
+    const first = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ dedupeKey: 'trend:reverse-engineering:loader' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+    const repeated = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ dedupeKey: 'trend:reverse-engineering:loader' })],
+      existingSnapshots: first.snapshots,
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW + 60_000,
+      persist: false,
+    });
+
+    expect(repeated.snapshots[0].delivery.controls.duplicateBlocked).toBe(true);
+    expect(repeated.snapshots[0].delivery.controls.reasons).toContain('duplicate_trend_delivery');
+    expect(repeated.opinionCards[0].directChatBlockedReasons).toContain('duplicate_trend_delivery');
+    expect(repeated.opinionCards[0].deliveryMode).toBe('dashboard');
+    expect(repeated.deliveryControlBlockedReasons).toContain('duplicate_trend_delivery');
+  });
+
+  it('honors quiet and snooze feedback controls before interrupting chat', () => {
+    const quiet = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      feedback: [makeFeedback('wrong_timing')],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+    const snoozed = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      feedback: [makeFeedback('archive_brief')],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+
+    expect(quiet.opinionCards[0].directChatBlockedReasons).toContain('trend_quiet_control_active');
+    expect(quiet.opinionCards[0].quietUntil).toBeGreaterThan(NOW);
+    expect(snoozed.opinionCards[0].directChatBlockedReasons).toContain('trend_snoozed');
+    expect(snoozed.opinionCards[0].snoozedUntil).toBeGreaterThan(NOW);
+    expect(snoozed.opinionCards[0].deliveryMode).toBe('blocked');
+  });
+
+  it('calibrates interest drift from wrong-topic feedback and blocks direct chat', () => {
+    const state = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      feedback: [makeFeedback('wrong_topic')],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+
+    expect(state.snapshots[0].interestDrift.status).toBe('drifting');
+    expect(state.interestDriftCounts.drifting).toBe(1);
+    expect(state.opinionCards[0].directChatBlockedReasons).toContain('interest_drift_detected');
   });
 
   it('runs deterministic replay fixtures for trend advisor edge cases', () => {
@@ -363,6 +458,20 @@ describe('Aoi proactive trend advisor', () => {
       'useful_opinion',
     ]);
     expect(reports.every((report) => report.passed)).toBe(true);
+  });
+
+  it('runs provider smoke from current-info search adapter through trend advisor', async () => {
+    const report = await runAoiProactiveTrendProviderSmokeReplay();
+
+    expect(report.scenario).toBe('provider_smoke');
+    expect(report.passed).toBe(true);
+    expect(report.metrics.find((item) => item.name === 'provider_search_called')?.passed).toBe(
+      true,
+    );
+    expect(report.metrics.find((item) => item.name === 'source_quality_gate')?.actual).toContain(
+      'strong',
+    );
+    expect(report.state.directChatHookCount).toBe(1);
   });
 
   it('emits operator-health diagnostics without claiming unrestricted background research', () => {
@@ -390,6 +499,61 @@ describe('Aoi proactive trend advisor', () => {
     );
     expect(diagnostics.map((item) => item.cannotKnow).join(' ')).toContain(
       'cannot know current public trends',
+    );
+  });
+
+  it('emits operator-health evidence for source quality, controls, and interest drift', () => {
+    const first = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ dedupeKey: 'trend:reverse-engineering:loader' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    });
+    const state = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [
+        makeCandidate({ dedupeKey: 'trend:reverse-engineering:loader' }),
+        makeCandidate({
+          id: 'aoi-brief-trend-weak-health',
+          sources: [
+            {
+              title: 'Single reversing source',
+              url: 'https://research.example.com/re/single-source',
+              host: 'research.example.com',
+              publishedAt: '2026-06-18T00:00:00.000Z',
+              retrievedAt: NOW,
+              snippet: 'Only one source.',
+            },
+          ],
+          evidenceRefs: ['source:research.example.com'],
+        }),
+      ],
+      existingSnapshots: first.snapshots,
+      feedback: [makeFeedback('wrong_timing'), makeFeedback('wrong_topic')],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW + 60_000,
+      persist: false,
+    });
+    const diagnostics = buildAoiProactiveTrendAdvisorDiagnostics({
+      state,
+      tavilyConfigured: true,
+      now: NOW + 60_000,
+    });
+    const codes = diagnostics.map((item) => item.code);
+
+    expect(codes).toEqual(
+      expect.arrayContaining([
+        'trend_source_quality_weak',
+        'trend_duplicate_suppressed',
+        'trend_quiet_control_active',
+        'trend_interest_drift_detected',
+        'trend_provider_smoke_ready',
+      ]),
     );
   });
 });

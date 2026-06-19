@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import { createHash, randomUUID } from 'crypto';
+import { isIP } from 'net';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { redactAoiSensitiveContent } from './aoiMemoryShared';
 import {
@@ -22,6 +23,9 @@ import type {
   AoiProactiveTrendAdvisorReadiness,
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryMode,
+  AoiProactiveTrendDeliveryControls,
+  AoiProactiveTrendInterestDrift,
+  AoiProactiveTrendInterestDriftStatus,
   AoiProactiveTrendNovelty,
   AoiProactiveTrendNoveltyStatus,
   AoiProactiveTrendOpinionCard,
@@ -29,6 +33,8 @@ import type {
   AoiProactiveTrendSnapshotFreshness,
   AoiProactiveTrendSnapshotIndex,
   AoiProactiveTrendSnapshotIndexEntry,
+  AoiProactiveTrendSourceQuality,
+  AoiProactiveTrendSourceQualityStatus,
   AoiProactiveTrendWatchCadence,
   AoiProactiveTrendWatchProfile,
   AoiProactiveTrendWatchTopic,
@@ -301,6 +307,20 @@ function normalizeDeliveryMode(value: unknown): AoiProactiveTrendDeliveryMode {
   return 'dashboard';
 }
 
+function normalizeSourceQualityStatus(value: unknown): AoiProactiveTrendSourceQualityStatus {
+  if (value === 'strong' || value === 'acceptable' || value === 'weak' || value === 'blocked') {
+    return value;
+  }
+  return 'weak';
+}
+
+function normalizeInterestDriftStatus(value: unknown): AoiProactiveTrendInterestDriftStatus {
+  if (value === 'aligned' || value === 'watch' || value === 'drifting' || value === 'muted') {
+    return value;
+  }
+  return 'watch';
+}
+
 function normalizeNovelty(value: unknown, fallbackScore: number): AoiProactiveTrendNovelty {
   const raw =
     value && typeof value === 'object' && !Array.isArray(value)
@@ -319,6 +339,99 @@ function normalizeNovelty(value: unknown, fallbackScore: number): AoiProactiveTr
       typeof raw.sourceOverlapCount === 'number' && Number.isFinite(raw.sourceOverlapCount)
         ? Math.max(0, Math.round(raw.sourceOverlapCount))
         : 0,
+  };
+}
+
+function normalizeSourceQuality(
+  value: unknown,
+  fallback: AoiProactiveTrendSourceQuality,
+): AoiProactiveTrendSourceQuality {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return fallback;
+  }
+  const raw = value as Partial<AoiProactiveTrendSourceQuality>;
+  const status = normalizeSourceQualityStatus(raw.status);
+  return {
+    version: 1,
+    status,
+    score: clampScore(raw.score, fallback.score),
+    independentHostCount:
+      typeof raw.independentHostCount === 'number' && Number.isFinite(raw.independentHostCount)
+        ? Math.max(0, Math.round(raw.independentHostCount))
+        : fallback.independentHostCount,
+    freshSourceCount:
+      typeof raw.freshSourceCount === 'number' && Number.isFinite(raw.freshSourceCount)
+        ? Math.max(0, Math.round(raw.freshSourceCount))
+        : fallback.freshSourceCount,
+    publicSourceCount:
+      typeof raw.publicSourceCount === 'number' && Number.isFinite(raw.publicSourceCount)
+        ? Math.max(0, Math.round(raw.publicSourceCount))
+        : fallback.publicSourceCount,
+    evidenceRefCount:
+      typeof raw.evidenceRefCount === 'number' && Number.isFinite(raw.evidenceRefCount)
+        ? Math.max(0, Math.round(raw.evidenceRefCount))
+        : fallback.evidenceRefCount,
+    reasons: normalizeStringList(raw.reasons, 8, 120),
+    blockedReasons: normalizeStringList(raw.blockedReasons, 8, 120),
+  };
+}
+
+function normalizeInterestDrift(value: unknown): AoiProactiveTrendInterestDrift {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      version: 1,
+      status: 'watch',
+      score: 0.5,
+      positiveFeedbackCount: 0,
+      negativeFeedbackCount: 0,
+      reasons: ['legacy_snapshot_without_interest_drift'],
+      evidenceRefs: [],
+    };
+  }
+  const raw = value as Partial<AoiProactiveTrendInterestDrift>;
+  return {
+    version: 1,
+    status: normalizeInterestDriftStatus(raw.status),
+    score: clampScore(raw.score, 0.5),
+    positiveFeedbackCount:
+      typeof raw.positiveFeedbackCount === 'number' && Number.isFinite(raw.positiveFeedbackCount)
+        ? Math.max(0, Math.round(raw.positiveFeedbackCount))
+        : 0,
+    negativeFeedbackCount:
+      typeof raw.negativeFeedbackCount === 'number' && Number.isFinite(raw.negativeFeedbackCount)
+        ? Math.max(0, Math.round(raw.negativeFeedbackCount))
+        : 0,
+    reasons: normalizeStringList(raw.reasons, 8, 120),
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 12, 180),
+  };
+}
+
+function normalizeDeliveryControls(
+  value: unknown,
+  fallbackDedupeKey: string,
+  now: number,
+): AoiProactiveTrendDeliveryControls {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      version: 1,
+      dedupeKey: fallbackDedupeKey,
+      duplicateBlocked: false,
+      reasons: [],
+      evidenceRefs: [`trend-control:${stableHash(fallbackDedupeKey)}`],
+    };
+  }
+  const raw = value as Partial<AoiProactiveTrendDeliveryControls>;
+  const dedupeKey = sanitizeText(raw.dedupeKey, 240) || fallbackDedupeKey;
+  const quietUntil = normalizeTimestamp(raw.quietUntil, 0);
+  const snoozedUntil = normalizeTimestamp(raw.snoozedUntil, 0);
+  return {
+    version: 1,
+    dedupeKey,
+    duplicateBlocked: raw.duplicateBlocked === true,
+    ...(quietUntil > now ? { quietUntil } : {}),
+    ...(snoozedUntil > now ? { snoozedUntil } : {}),
+    reasons: normalizeStringList(raw.reasons, 12, 120),
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 12, 180),
   };
 }
 
@@ -610,8 +723,363 @@ function candidateFreshness(
   return now - newest > staleAfterMs ? 'stale' : 'fresh';
 }
 
-function sourceEvidenceStrong(sources: AoiProactiveBriefSource[], evidenceRefs: string[]): boolean {
-  return sources.length >= 2 && evidenceRefs.length > 0;
+function ipv4ToNumber(ip: string): number | null {
+  const parts = ip.split('.').map((part) => Number.parseInt(part, 10));
+  if (
+    parts.length !== 4 ||
+    parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)
+  ) {
+    return null;
+  }
+  return ((parts[0] * 256 + parts[1]) * 256 + parts[2]) * 256 + parts[3];
+}
+
+function ipv4InRange(ip: string, base: string, prefixBits: number): boolean {
+  const value = ipv4ToNumber(ip);
+  const baseValue = ipv4ToNumber(base);
+  if (value === null || baseValue === null) {
+    return false;
+  }
+  const size = 2 ** (32 - prefixBits);
+  return value >= baseValue && value < baseValue + size;
+}
+
+function isPrivateOrLocalHost(host: string): boolean {
+  const normalized = host
+    .toLowerCase()
+    .replace(/^\[|\]$/g, '')
+    .replace(/\.$/, '');
+  if (
+    !normalized ||
+    normalized === 'localhost' ||
+    normalized.endsWith('.localhost') ||
+    normalized.endsWith('.local')
+  ) {
+    return true;
+  }
+  const ipKind = isIP(normalized);
+  if (ipKind === 4) {
+    return (
+      ipv4InRange(normalized, '0.0.0.0', 8) ||
+      ipv4InRange(normalized, '10.0.0.0', 8) ||
+      ipv4InRange(normalized, '100.64.0.0', 10) ||
+      ipv4InRange(normalized, '127.0.0.0', 8) ||
+      ipv4InRange(normalized, '169.254.0.0', 16) ||
+      ipv4InRange(normalized, '172.16.0.0', 12) ||
+      ipv4InRange(normalized, '192.168.0.0', 16) ||
+      ipv4InRange(normalized, '198.18.0.0', 15) ||
+      ipv4InRange(normalized, '224.0.0.0', 4) ||
+      ipv4InRange(normalized, '240.0.0.0', 4)
+    );
+  }
+  if (ipKind === 6) {
+    return (
+      normalized === '::' ||
+      normalized === '::1' ||
+      normalized.startsWith('fc') ||
+      normalized.startsWith('fd') ||
+      /^fe[89ab]/.test(normalized) ||
+      (normalized.startsWith('::ffff:') && isPrivateOrLocalHost(normalized.slice('::ffff:'.length)))
+    );
+  }
+  return false;
+}
+
+function sourceTime(source: AoiProactiveBriefSource): number | null {
+  if (source.publishedAt) {
+    const parsed = Date.parse(source.publishedAt);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return typeof source.retrievedAt === 'number' && Number.isFinite(source.retrievedAt)
+    ? source.retrievedAt
+    : null;
+}
+
+function buildSourceQuality(params: {
+  sources: AoiProactiveBriefSource[];
+  evidenceRefs: string[];
+  freshness: AoiProactiveTrendSnapshotFreshness;
+  now: number;
+  staleAfterMs: number;
+}): AoiProactiveTrendSourceQuality {
+  const publicSources = params.sources.filter((source) => !isPrivateOrLocalHost(source.host));
+  const independentHostCount = unique(publicSources.map((source) => source.host)).length;
+  const freshSourceCount = publicSources.filter((source) => {
+    const time = sourceTime(source);
+    return time !== null && params.now - time <= params.staleAfterMs;
+  }).length;
+  const evidenceRefCount = params.evidenceRefs.length;
+  const sourceShapeCount = publicSources.filter(
+    (source) => sanitizeText(source.title, 120) && sanitizeText(source.snippet, 120),
+  ).length;
+  const publicRatio = params.sources.length > 0 ? publicSources.length / params.sources.length : 0;
+  const hostScore =
+    independentHostCount >= 3
+      ? 1
+      : independentHostCount >= 2
+        ? 0.86
+        : independentHostCount === 1
+          ? 0.38
+          : 0;
+  const freshnessScore = publicSources.length > 0 ? freshSourceCount / publicSources.length : 0;
+  const evidenceScore = Math.min(1, evidenceRefCount / 3);
+  const shapeScore = publicSources.length > 0 ? sourceShapeCount / publicSources.length : 0;
+  const stalePenalty =
+    params.freshness === 'stale' ? 0.22 : params.freshness === 'unknown' ? 0.08 : 0;
+  const score = clampScore(
+    hostScore * 0.38 +
+      freshnessScore * 0.24 +
+      evidenceScore * 0.22 +
+      shapeScore * 0.1 +
+      publicRatio * 0.06 -
+      stalePenalty,
+    0,
+  );
+  const reasons: string[] = [];
+  const blockedReasons: string[] = [];
+  if (publicSources.length === 0) {
+    blockedReasons.push('no_public_sources');
+  }
+  if (evidenceRefCount === 0) {
+    blockedReasons.push('missing_evidence_refs');
+  }
+  if (independentHostCount < 2) {
+    reasons.push('single_independent_host');
+  }
+  if (freshSourceCount < Math.min(2, publicSources.length)) {
+    reasons.push('fresh_source_coverage_low');
+  }
+  if (params.freshness === 'stale') {
+    reasons.push('stale_source_window');
+  }
+  if (evidenceRefCount < 2) {
+    reasons.push('low_evidence_ref_count');
+  }
+  let status: AoiProactiveTrendSourceQualityStatus = 'strong';
+  if (blockedReasons.length > 0) {
+    status = 'blocked';
+  } else if (score < 0.62 || independentHostCount < 2) {
+    status = 'weak';
+  } else if (score < 0.82) {
+    status = 'acceptable';
+  }
+  return {
+    version: 1,
+    status,
+    score,
+    independentHostCount,
+    freshSourceCount,
+    publicSourceCount: publicSources.length,
+    evidenceRefCount,
+    reasons: unique(reasons).slice(0, 8),
+    blockedReasons: unique(blockedReasons).slice(0, 8),
+  };
+}
+
+function sourceEvidenceStrong(sourceQuality: AoiProactiveTrendSourceQuality): boolean {
+  return sourceQuality.status === 'strong';
+}
+
+function trendDedupeKey(params: {
+  candidate: AoiProactiveBriefCandidate;
+  sources: AoiProactiveBriefSource[];
+  topicId: string;
+}): string {
+  const explicit = sanitizeText(params.candidate.dedupeKey, 240);
+  if (explicit) {
+    return explicit;
+  }
+  const urls = params.sources
+    .map((source) => source.url.toLowerCase())
+    .sort()
+    .join('|');
+  return `trend:${params.topicId}:${stableHash(
+    `${normalizedTrendTitle(params.candidate.title)}:${urls}`,
+  )}`;
+}
+
+function matchingDedupeSnapshots(params: {
+  existingSnapshots: AoiProactiveTrendSnapshot[];
+  topicId: string;
+  dedupeKey: string;
+  now: number;
+}): AoiProactiveTrendSnapshot[] {
+  return params.existingSnapshots.filter((snapshot) => {
+    if (
+      snapshot.topicId !== params.topicId ||
+      snapshot.expiresAt <= params.now ||
+      params.now - snapshot.updatedAt > RECENT_TREND_REPEAT_WINDOW_MS
+    ) {
+      return false;
+    }
+    return snapshot.delivery.controls?.dedupeKey === params.dedupeKey;
+  });
+}
+
+function recentFeedback(
+  feedback: AoiProactiveBriefFeedback[],
+  candidate: AoiProactiveBriefCandidate,
+  now: number,
+): AoiProactiveBriefFeedback[] {
+  const threshold = now - 14 * 24 * 60 * 60 * 1000;
+  return feedback.filter(
+    (item) =>
+      item.createdAt >= threshold &&
+      (item.briefId === candidate.id || item.topicId === candidate.topicId),
+  );
+}
+
+function buildDeliveryControls(params: {
+  candidate: AoiProactiveBriefCandidate;
+  sources: AoiProactiveBriefSource[];
+  topicId: string;
+  existingSnapshots: AoiProactiveTrendSnapshot[];
+  feedback: AoiProactiveBriefFeedback[];
+  now: number;
+}): AoiProactiveTrendDeliveryControls {
+  const dedupeKey = trendDedupeKey({
+    candidate: params.candidate,
+    sources: params.sources,
+    topicId: params.topicId,
+  });
+  const duplicates = matchingDedupeSnapshots({
+    existingSnapshots: params.existingSnapshots,
+    topicId: params.topicId,
+    dedupeKey,
+    now: params.now,
+  });
+  const feedback = recentFeedback(params.feedback, params.candidate, params.now);
+  let quietUntil = 0;
+  let snoozedUntil = 0;
+  const reasons: string[] = [];
+  const evidenceRefs: string[] = [];
+  if (duplicates.length > 0) {
+    reasons.push('duplicate_trend_delivery');
+    evidenceRefs.push(...duplicates.map((snapshot) => `trend-duplicate:${snapshot.id}`));
+  }
+  for (const item of feedback) {
+    evidenceRefs.push(`feedback:${item.id}`);
+    if (item.category === 'too_frequent') {
+      quietUntil = Math.max(quietUntil, item.createdAt + 24 * 60 * 60 * 1000);
+      reasons.push('quiet_control_too_frequent');
+    }
+    if (item.category === 'wrong_timing') {
+      quietUntil = Math.max(quietUntil, item.createdAt + 12 * 60 * 60 * 1000);
+      reasons.push('quiet_control_wrong_timing');
+    }
+    if (item.category === 'show_less') {
+      quietUntil = Math.max(quietUntil, item.createdAt + 6 * 60 * 60 * 1000);
+      reasons.push('quiet_control_show_less');
+    }
+    if (item.category === 'archive_brief') {
+      snoozedUntil = Math.max(snoozedUntil, item.createdAt + 7 * 24 * 60 * 60 * 1000);
+      reasons.push('trend_snoozed_by_archive');
+    }
+    if (item.category === 'mute_topic') {
+      snoozedUntil = Math.max(snoozedUntil, item.createdAt + 30 * 24 * 60 * 60 * 1000);
+      reasons.push('trend_snoozed_by_topic_mute');
+    }
+  }
+  if (quietUntil > params.now) {
+    reasons.push('trend_quiet_control_active');
+  }
+  if (snoozedUntil > params.now) {
+    reasons.push('trend_snoozed');
+  }
+  return {
+    version: 1,
+    dedupeKey,
+    duplicateBlocked: duplicates.length > 0,
+    ...(quietUntil > params.now ? { quietUntil } : {}),
+    ...(snoozedUntil > params.now ? { snoozedUntil } : {}),
+    reasons: unique(reasons).slice(0, 12),
+    evidenceRefs: unique([
+      `trend-control:${stableHash(dedupeKey)}`,
+      ...evidenceRefs.map((ref) => sanitizeText(ref, 180)).filter(Boolean),
+    ]).slice(0, 12),
+  };
+}
+
+function buildInterestDrift(params: {
+  candidate: AoiProactiveBriefCandidate;
+  watch: AoiProactiveTrendWatchTopic | null;
+  feedback: AoiProactiveBriefFeedback[];
+  policy?: AoiAutonomyPolicy | null;
+  now: number;
+}): AoiProactiveTrendInterestDrift {
+  const feedback = recentFeedback(params.feedback, params.candidate, params.now);
+  const positiveCategories = new Set([
+    'useful',
+    'show_more',
+    'open_sources',
+    'expand_summary',
+    'pin_topic',
+  ]);
+  const negativeCategories = new Set([
+    'not_useful',
+    'show_less',
+    'wrong_topic',
+    'wrong_timing',
+    'too_frequent',
+    'stale',
+    'unsafe',
+    'mute_topic',
+    'archive_brief',
+  ]);
+  const positiveFeedbackCount = feedback.filter((item) =>
+    positiveCategories.has(item.category),
+  ).length;
+  const negativeFeedbackCount = feedback.filter((item) =>
+    negativeCategories.has(item.category),
+  ).length;
+  const wrongTopicCount = feedback.filter((item) => item.category === 'wrong_topic').length;
+  const muted =
+    params.watch?.muted === true ||
+    params.policy?.proactiveBriefing.topicControls[params.candidate.topicId]?.muted === true ||
+    feedback.some((item) => item.category === 'mute_topic');
+  const baseScore = params.watch ? params.watch.confidence : 0.28;
+  const score = clampScore(
+    baseScore +
+      positiveFeedbackCount * 0.08 -
+      negativeFeedbackCount * 0.09 -
+      wrongTopicCount * 0.18 -
+      (params.watch ? 0 : 0.3) -
+      (muted ? 0.5 : 0),
+    baseScore,
+  );
+  const reasons: string[] = [];
+  let status: AoiProactiveTrendInterestDriftStatus = 'aligned';
+  if (!params.watch) {
+    reasons.push('missing_watch_topic');
+  }
+  if (wrongTopicCount > 0) {
+    reasons.push('wrong_topic_feedback');
+  }
+  if (negativeFeedbackCount > positiveFeedbackCount) {
+    reasons.push('negative_feedback_dominates');
+  }
+  if (muted) {
+    status = 'muted';
+    reasons.push('topic_muted');
+  } else if (!params.watch || wrongTopicCount > positiveFeedbackCount || score < 0.46) {
+    status = 'drifting';
+  } else if (negativeFeedbackCount > positiveFeedbackCount || score < 0.68) {
+    status = 'watch';
+  }
+  return {
+    version: 1,
+    status,
+    score,
+    positiveFeedbackCount,
+    negativeFeedbackCount,
+    reasons: unique(reasons).slice(0, 8),
+    evidenceRefs: unique([
+      ...(params.watch?.evidenceRefs ?? []),
+      ...feedback.map((item) => `feedback:${item.id}`),
+    ]).slice(0, 12),
+  };
 }
 
 function normalizedTrendTitle(value: string): string {
@@ -708,19 +1176,6 @@ function computeTrendNovelty(params: {
   };
 }
 
-function recentFeedback(
-  feedback: AoiProactiveBriefFeedback[],
-  candidate: AoiProactiveBriefCandidate,
-  now: number,
-): AoiProactiveBriefFeedback[] {
-  const threshold = now - 14 * 24 * 60 * 60 * 1000;
-  return feedback.filter(
-    (item) =>
-      item.createdAt >= threshold &&
-      (item.briefId === candidate.id || item.topicId === candidate.topicId),
-  );
-}
-
 function directChatBlockReasons(params: {
   candidate: AoiProactiveBriefCandidate;
   watch: AoiProactiveTrendWatchTopic | null;
@@ -728,7 +1183,10 @@ function directChatBlockReasons(params: {
   readiness: AoiProactiveTrendAdvisorReadiness;
   feedback: AoiProactiveBriefFeedback[];
   freshness: AoiProactiveTrendSnapshotFreshness;
+  sourceQuality: AoiProactiveTrendSourceQuality;
   sourceStrong: boolean;
+  controls: AoiProactiveTrendDeliveryControls;
+  interestDrift: AoiProactiveTrendInterestDrift;
   novelty: AoiProactiveTrendNovelty;
   now: number;
 }): string[] {
@@ -762,6 +1220,26 @@ function directChatBlockReasons(params: {
   }
   if (!params.sourceStrong) {
     reasons.push('weak_source_evidence');
+    reasons.push(`source_quality_${params.sourceQuality.status}`);
+  }
+  if (params.sourceQuality.status === 'blocked') {
+    reasons.push(...params.sourceQuality.blockedReasons);
+  }
+  if (params.controls.duplicateBlocked) {
+    reasons.push('duplicate_trend_delivery');
+  }
+  if (params.controls.quietUntil && params.controls.quietUntil > params.now) {
+    reasons.push('trend_quiet_control_active');
+  }
+  if (params.controls.snoozedUntil && params.controls.snoozedUntil > params.now) {
+    reasons.push('trend_snoozed');
+  }
+  if (params.interestDrift.status === 'muted') {
+    reasons.push('topic_muted');
+  } else if (params.interestDrift.status === 'drifting') {
+    reasons.push('interest_drift_detected');
+  } else if (params.interestDrift.status === 'watch') {
+    reasons.push('interest_drift_watch');
   }
   if (params.novelty.status === 'repeat') {
     reasons.push('repeat_trend_snapshot');
@@ -822,6 +1300,33 @@ function noveltyLabel(novelty: AoiProactiveTrendNovelty): string {
   return `Weak signal (${novelty.score.toFixed(2)})`;
 }
 
+function sourceQualityLabel(sourceQuality: AoiProactiveTrendSourceQuality): string {
+  return `Source ${sourceQuality.status} (${sourceQuality.score.toFixed(2)}, ${sourceQuality.independentHostCount} hosts)`;
+}
+
+function interestDriftLabel(interestDrift: AoiProactiveTrendInterestDrift): string {
+  if (interestDrift.status === 'aligned') {
+    return `Interest aligned (${interestDrift.score.toFixed(2)})`;
+  }
+  if (interestDrift.status === 'muted') {
+    return `Interest muted (${interestDrift.score.toFixed(2)})`;
+  }
+  if (interestDrift.status === 'drifting') {
+    return `Interest drift (${interestDrift.score.toFixed(2)})`;
+  }
+  return `Interest watch (${interestDrift.score.toFixed(2)})`;
+}
+
+function controlSummary(controls: AoiProactiveTrendDeliveryControls): string {
+  const active = controls.reasons.filter((reason) =>
+    /duplicate|quiet_control_active|snoozed/.test(reason),
+  );
+  if (active.length === 0) {
+    return 'No active quiet, snooze, or duplicate suppression.';
+  }
+  return `Controls active: ${active.slice(0, 3).join(', ')}.`;
+}
+
 function deliveryModeForTrend(params: {
   candidate: AoiProactiveBriefCandidate;
   novelty: AoiProactiveTrendNovelty;
@@ -831,6 +1336,20 @@ function deliveryModeForTrend(params: {
 }): AoiProactiveTrendDeliveryMode {
   if (params.blockReasons.length === 0) {
     return 'direct_chat';
+  }
+  if (
+    params.blockReasons.some((reason) =>
+      /trend_snoozed|topic_muted|unsafe|no_public_sources/.test(reason),
+    )
+  ) {
+    return 'blocked';
+  }
+  if (
+    params.blockReasons.some((reason) =>
+      /duplicate_trend_delivery|trend_quiet_control_active/.test(reason),
+    )
+  ) {
+    return 'dashboard';
   }
   if (params.freshness === 'stale' || params.novelty.status === 'stale') {
     return 'dashboard';
@@ -842,7 +1361,7 @@ function deliveryModeForTrend(params: {
     return 'quiet_notification';
   }
   const hardBlock = params.blockReasons.some((reason) =>
-    /policy_disabled|proactive_briefing_disabled|topic_muted|wrong_topic|unsafe|stale_feedback|private|unauthorized|chat_hook_mode_not_allowed/.test(
+    /policy_disabled|proactive_briefing_disabled|topic_muted|wrong_topic|unsafe|stale_feedback|private|unauthorized|chat_hook_mode_not_allowed|duplicate_trend_delivery|trend_quiet_control_active|interest_drift|source_quality_blocked/.test(
       reason,
     ),
   );
@@ -1057,7 +1576,14 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     now,
     params.sourceStaleAfterMs ?? DEFAULT_SOURCE_STALE_AFTER_MS,
   );
-  const sourceStrong = sourceEvidenceStrong(sources, evidenceRefs);
+  const sourceQuality = buildSourceQuality({
+    sources,
+    evidenceRefs,
+    freshness,
+    now,
+    staleAfterMs: params.sourceStaleAfterMs ?? DEFAULT_SOURCE_STALE_AFTER_MS,
+  });
+  const sourceStrong = sourceEvidenceStrong(sourceQuality);
   const novelty = computeTrendNovelty({
     candidate,
     sources,
@@ -1067,6 +1593,23 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     watch: params.watch,
     now,
   });
+  const topicId = params.watch?.topicId ?? sanitizeText(candidate.topicId, 120);
+  const topicLabel = params.watch?.topicLabel ?? sanitizeText(candidate.topicLabel, 80);
+  const controls = buildDeliveryControls({
+    candidate,
+    sources,
+    topicId,
+    existingSnapshots: params.existingSnapshots ?? [],
+    feedback: params.feedback ?? [],
+    now,
+  });
+  const interestDrift = buildInterestDrift({
+    candidate,
+    watch: params.watch,
+    feedback: params.feedback ?? [],
+    policy: params.policy,
+    now,
+  });
   const blockReasons = directChatBlockReasons({
     candidate,
     watch: params.watch,
@@ -1074,18 +1617,20 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     readiness: params.readiness,
     feedback: params.feedback ?? [],
     freshness,
+    sourceQuality,
     sourceStrong,
+    controls,
+    interestDrift,
     novelty,
     now,
   });
-  const topicId = params.watch?.topicId ?? sanitizeText(candidate.topicId, 120);
-  const topicLabel = params.watch?.topicLabel ?? sanitizeText(candidate.topicLabel, 80);
   const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong });
   const confidence = clampScore(
     candidate.confidence +
-      (sourceStrong ? 0.04 : -0.15) +
+      (sourceStrong ? 0.04 : sourceQuality.status === 'acceptable' ? -0.05 : -0.15) +
       (freshness === 'fresh' ? 0.04 : freshness === 'stale' ? -0.24 : -0.08) +
-      (params.watch ? 0.04 : -0.2),
+      (params.watch ? 0.04 : -0.2) +
+      (interestDrift.status === 'aligned' ? 0.03 : interestDrift.status === 'watch' ? -0.08 : -0.2),
     0.55,
   );
   const deliveryMode = deliveryModeForTrend({
@@ -1119,20 +1664,31 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     novelty,
     risk: normalizeRisk(candidate.risk),
     freshness,
+    sourceQuality,
+    interestDrift,
     sources,
     delivery: {
       mode: deliveryMode,
       summary: deliverySummary({ mode: deliveryMode, novelty, blockReasons }),
       directChatAllowed: blockReasons.length === 0,
       directChatBlockedReasons: blockReasons,
+      controls,
       ...(chatHookText ? { chatHookText } : {}),
       evidenceRefs: unique([
         `trend-delivery:${deliveryMode}`,
         `trend-novelty:${novelty.status}`,
+        `trend-source-quality:${sourceQuality.status}`,
+        `trend-interest-drift:${interestDrift.status}`,
         ...novelty.matchedSnapshotIds.map((id) => `trend-repeat:${id}`),
+        ...controls.evidenceRefs.slice(0, 4),
       ]).slice(0, 12),
     },
-    evidenceRefs,
+    evidenceRefs: unique([
+      ...evidenceRefs,
+      `trend-source-quality:${sourceQuality.status}:${sourceQuality.score.toFixed(2)}`,
+      `trend-interest-drift:${interestDrift.status}:${interestDrift.score.toFixed(2)}`,
+      ...controls.evidenceRefs.slice(0, 4),
+    ]).slice(0, 28),
     createdAt: normalizeTimestamp(candidate.createdAt, now),
     updatedAt: now,
     expiresAt: normalizeTimestamp(candidate.expiresAt, now + DEFAULT_TREND_TTL_MS),
@@ -1161,6 +1717,24 @@ function normalizeSnapshot(
   const noveltyScore = clampScore(raw.noveltyScore, 0.5);
   const novelty = normalizeNovelty(raw.novelty, noveltyScore);
   const deliveryMode = normalizeDeliveryMode(raw.delivery?.mode);
+  const freshness = normalizeFreshness(raw.freshness);
+  const sources = normalizeSources(raw.sources, now);
+  const evidenceRefs = normalizeStringList(raw.evidenceRefs, 28, 180);
+  const fallbackSourceQuality = buildSourceQuality({
+    sources,
+    evidenceRefs,
+    freshness,
+    now,
+    staleAfterMs: DEFAULT_SOURCE_STALE_AFTER_MS,
+  });
+  const sourceQuality = normalizeSourceQuality(raw.sourceQuality, fallbackSourceQuality);
+  const fallbackDedupeKey = `trend:${topicId}:${stableHash(
+    `${normalizedTrendTitle(sanitizeText(raw.title, 160))}:${sources
+      .map((source) => source.url.toLowerCase())
+      .sort()
+      .join('|')}`,
+  )}`;
+  const controls = normalizeDeliveryControls(raw.delivery?.controls, fallbackDedupeKey, now);
   return {
     version: 1,
     id: raw.id,
@@ -1179,8 +1753,10 @@ function normalizeSnapshot(
     noveltyScore,
     novelty,
     risk: normalizeRisk(raw.risk),
-    freshness: normalizeFreshness(raw.freshness),
-    sources: normalizeSources(raw.sources, now),
+    freshness,
+    sourceQuality,
+    interestDrift: normalizeInterestDrift(raw.interestDrift),
+    sources,
     delivery: {
       mode: deliveryMode,
       summary:
@@ -1196,12 +1772,13 @@ function normalizeSnapshot(
         16,
         120,
       ),
+      controls,
       ...(sanitizeText(raw.delivery?.chatHookText, 360)
         ? { chatHookText: sanitizeText(raw.delivery?.chatHookText, 360) }
         : {}),
       evidenceRefs: normalizeStringList(raw.delivery?.evidenceRefs, 12, 180),
     },
-    evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
+    evidenceRefs,
     createdAt,
     updatedAt,
     expiresAt: normalizeTimestamp(raw.expiresAt, createdAt + DEFAULT_TREND_TTL_MS),
@@ -1381,15 +1958,32 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     confidenceLabel: confidenceLabel(snapshot.confidence),
     freshnessLabel: freshnessLabel(snapshot.freshness),
     noveltyLabel: noveltyLabel(snapshot.novelty),
+    sourceQualityLabel: sourceQualityLabel(snapshot.sourceQuality),
+    interestDriftLabel: interestDriftLabel(snapshot.interestDrift),
     deliveryMode: snapshot.delivery.mode,
     deliverySummary: snapshot.delivery.summary,
+    controlSummary: controlSummary(snapshot.delivery.controls),
     sourceHosts,
     directChatAllowed: snapshot.delivery.directChatAllowed,
     directChatBlockedReasons: snapshot.delivery.directChatBlockedReasons,
+    ...(snapshot.delivery.controls.quietUntil
+      ? { quietUntil: snapshot.delivery.controls.quietUntil }
+      : {}),
+    ...(snapshot.delivery.controls.snoozedUntil
+      ? { snoozedUntil: snapshot.delivery.controls.snoozedUntil }
+      : {}),
     ...(snapshot.delivery.chatHookText ? { chatHookText: snapshot.delivery.chatHookText } : {}),
     evidenceRefs: snapshot.evidenceRefs.slice(0, 16),
     createdAt: snapshot.updatedAt,
   };
+}
+
+function countByStatus<T extends string>(values: T[]): Partial<Record<T, number>> {
+  const counts: Partial<Record<T, number>> = {};
+  for (const value of values) {
+    counts[value] = (counts[value] ?? 0) + 1;
+  }
+  return counts;
 }
 
 export function buildAoiProactiveTrendAdvisorState(
@@ -1472,6 +2066,13 @@ export function buildAoiProactiveTrendAdvisorState(
     opinionCards.find((card) => card.deliveryMode === 'direct_chat' && card.chatHookText) ??
     undefined;
   const chatHook = directChatCard?.chatHookText;
+  const deliveryControlBlockedReasons = unique(
+    snapshots.flatMap((snapshot) =>
+      snapshot.delivery.controls.reasons.filter((reason) =>
+        /duplicate|quiet_control_active|snoozed/.test(reason),
+      ),
+    ),
+  ).slice(0, 16);
 
   return {
     version: 1,
@@ -1484,6 +2085,9 @@ export function buildAoiProactiveTrendAdvisorState(
       (card) => card.deliveryMode === 'quiet_notification' || card.deliveryMode === 'inline_card',
     ).length,
     directChatHookCount: opinionCards.filter((card) => card.deliveryMode === 'direct_chat').length,
+    sourceQualityCounts: countByStatus(snapshots.map((snapshot) => snapshot.sourceQuality.status)),
+    interestDriftCounts: countByStatus(snapshots.map((snapshot) => snapshot.interestDrift.status)),
+    deliveryControlBlockedReasons,
     ...(inlineCard ? { inlineCard } : {}),
     ...(directChatCard && chatHook ? { directChatCard, chatHook } : {}),
     readiness,
@@ -1593,6 +2197,32 @@ export function buildAoiProactiveTrendAdvisorDiagnostics(
       }),
     );
   }
+  if (
+    state.snapshots.some(
+      (snapshot) =>
+        snapshot.sourceQuality.status === 'weak' || snapshot.sourceQuality.status === 'blocked',
+    )
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_source_quality_weak',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary:
+          'Some trend cards remain low-interruption because source quality scoring is weak or blocked.',
+        cannotKnow:
+          'Aoi cannot safely promote weak, private, or poorly corroborated source evidence into proactive chat.',
+        evidenceRefs: state.snapshots
+          .filter(
+            (snapshot) =>
+              snapshot.sourceQuality.status === 'weak' ||
+              snapshot.sourceQuality.status === 'blocked',
+          )
+          .flatMap((snapshot) => snapshot.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
   if (state.snapshots.some((snapshot) => snapshot.novelty.status === 'repeat')) {
     diagnostics.push(
       diagnostic({
@@ -1606,6 +2236,104 @@ export function buildAoiProactiveTrendAdvisorDiagnostics(
           .filter((snapshot) => snapshot.novelty.status === 'repeat')
           .flatMap((snapshot) => snapshot.evidenceRefs.slice(0, 3)),
         observedAt: now,
+      }),
+    );
+  }
+  if (state.snapshots.some((snapshot) => snapshot.delivery.controls.duplicateBlocked)) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_duplicate_suppressed',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Duplicate trend delivery was suppressed before reaching chat or notification.',
+        cannotKnow:
+          'Aoi cannot assume the operator wants repeated delivery of the same trend without fresh evidence or feedback.',
+        evidenceRefs: state.snapshots
+          .filter((snapshot) => snapshot.delivery.controls.duplicateBlocked)
+          .flatMap((snapshot) => snapshot.delivery.controls.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
+  if (
+    state.snapshots.some(
+      (snapshot) =>
+        Boolean(snapshot.delivery.controls.quietUntil) ||
+        Boolean(snapshot.delivery.controls.snoozedUntil),
+    )
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_quiet_control_active',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Trend quiet or snooze controls are actively suppressing interruption.',
+        cannotKnow:
+          'Aoi cannot interrupt during an active quiet or snooze window unless the operator changes feedback controls.',
+        evidenceRefs: state.snapshots.flatMap((snapshot) =>
+          snapshot.delivery.controls.evidenceRefs.slice(0, 2),
+        ),
+        observedAt: now,
+      }),
+    );
+  }
+  if (state.snapshots.some((snapshot) => snapshot.interestDrift.status === 'watch')) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_interest_drift_watch',
+        severity: 'info',
+        capability: 'memory',
+        summary: 'Some trend topics need additional feedback before direct chat escalation.',
+        cannotKnow:
+          'Aoi cannot know whether this interest is still strongly desired until more operator feedback is recorded.',
+        evidenceRefs: state.snapshots
+          .filter((snapshot) => snapshot.interestDrift.status === 'watch')
+          .flatMap((snapshot) => snapshot.interestDrift.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
+  if (
+    state.snapshots.some(
+      (snapshot) =>
+        snapshot.interestDrift.status === 'drifting' || snapshot.interestDrift.status === 'muted',
+    )
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_interest_drift_detected',
+        severity: 'warning',
+        capability: 'memory',
+        summary: 'Some trend topics appear drifted or muted and are blocked from proactive chat.',
+        cannotKnow:
+          'Aoi cannot safely assume a drifted or muted topic remains worth direct interruption.',
+        evidenceRefs: state.snapshots
+          .filter(
+            (snapshot) =>
+              snapshot.interestDrift.status === 'drifting' ||
+              snapshot.interestDrift.status === 'muted',
+          )
+          .flatMap((snapshot) => snapshot.interestDrift.evidenceRefs.slice(0, 3)),
+        observedAt: now,
+      }),
+    );
+  }
+  if (
+    input.tavilyConfigured === true &&
+    state.snapshots.some((snapshot) => snapshot.sourceQuality.status === 'strong')
+  ) {
+    diagnostics.push(
+      diagnostic({
+        code: 'trend_provider_smoke_ready',
+        severity: 'info',
+        capability: 'research',
+        summary: 'Current-info provider evidence can feed source-backed trend snapshots.',
+        cannotKnow:
+          'Aoi still cannot know future trend changes after the last provider retrieval timestamp.',
+        evidenceRefs: state.snapshots
+          .filter((snapshot) => snapshot.sourceQuality.status === 'strong')
+          .flatMap((snapshot) => snapshot.evidenceRefs.slice(0, 3)),
+        observedAt: state.generatedAt || now,
       }),
     );
   }

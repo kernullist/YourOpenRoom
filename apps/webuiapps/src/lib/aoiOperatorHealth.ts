@@ -831,7 +831,13 @@ function proactiveBriefRecommendation(
   if (
     diagnostic.code === 'trend_snapshot_stale' ||
     diagnostic.code === 'trend_weak_evidence' ||
+    diagnostic.code === 'trend_source_quality_weak' ||
     diagnostic.code === 'trend_repeat_snapshot' ||
+    diagnostic.code === 'trend_duplicate_suppressed' ||
+    diagnostic.code === 'trend_quiet_control_active' ||
+    diagnostic.code === 'trend_interest_drift_watch' ||
+    diagnostic.code === 'trend_interest_drift_detected' ||
+    diagnostic.code === 'trend_provider_smoke_ready' ||
     diagnostic.code === 'trend_quiet_notification_ready' ||
     diagnostic.code === 'trend_direct_chat_ready' ||
     diagnostic.code === 'trend_opinion_cards_ready'
@@ -942,8 +948,20 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Trend advisor snapshot stale';
     case 'trend_weak_evidence':
       return 'Trend advisor evidence weak';
+    case 'trend_source_quality_weak':
+      return 'Trend advisor source quality weak';
     case 'trend_repeat_snapshot':
       return 'Trend advisor repeated snapshot';
+    case 'trend_duplicate_suppressed':
+      return 'Trend advisor duplicate suppressed';
+    case 'trend_quiet_control_active':
+      return 'Trend advisor quiet control active';
+    case 'trend_interest_drift_watch':
+      return 'Trend advisor interest watch';
+    case 'trend_interest_drift_detected':
+      return 'Trend advisor interest drift detected';
+    case 'trend_provider_smoke_ready':
+      return 'Trend advisor provider smoke ready';
     case 'trend_quiet_notification_ready':
       return 'Trend advisor quiet notification ready';
     case 'trend_opinion_cards_ready':

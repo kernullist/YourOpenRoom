@@ -9,9 +9,18 @@ import type {
   AoiProactiveTrendAdvisorState,
 } from './aoiAutonomyTypes';
 import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
+import {
+  scoutAoiProactiveBriefTopic,
+  type AoiProactiveBriefRawSearchResult,
+  type AoiProactiveBriefSearchAdapter,
+} from './aoiProactiveBriefResearch';
 
 const DEFAULT_NOW = Date.parse('2026-06-19T00:00:00.000Z');
 const DEFAULT_SESSION_PATH = 'aoi/default';
+
+function unique<T>(values: T[]): T[] {
+  return [...new Set(values)];
+}
 
 export type AoiProactiveTrendReplayScenario =
   | 'fresh_trend'
@@ -19,7 +28,8 @@ export type AoiProactiveTrendReplayScenario =
   | 'weak_evidence'
   | 'wrong_topic'
   | 'too_frequent'
-  | 'useful_opinion';
+  | 'useful_opinion'
+  | 'provider_smoke';
 
 export interface AoiProactiveTrendReplayFixture {
   id: string;
@@ -421,4 +431,126 @@ export function runAoiProactiveTrendReplayFixture(
 
 export function runBuiltInAoiProactiveTrendReplayFixtures(): AoiProactiveTrendReplayReport[] {
   return builtInAoiProactiveTrendReplayFixtures().map(runAoiProactiveTrendReplayFixture);
+}
+
+function providerSmokeResults(): AoiProactiveBriefRawSearchResult[] {
+  return [
+    {
+      title: 'Reverse engineering loader analysis trend',
+      url: 'https://research.example.com/re/loader-analysis-2026',
+      content:
+        'A current public writeup describes a loader analysis workflow with practical reversing details.',
+      publishedAt: '2026-06-18T00:00:00.000Z',
+    },
+    {
+      title: 'Malware reversing case study update',
+      url: 'https://security.example.net/posts/reversing-case-study-2026',
+      content:
+        'A second independent source corroborates the same reverse engineering theme with case-study evidence.',
+      publishedAt: '2026-06-17T00:00:00.000Z',
+    },
+    {
+      title: 'Duplicate tracking parameter result',
+      url: 'https://research.example.com/re/loader-analysis-2026?utm_source=feed',
+      content: 'Duplicate source that should be normalized away by the provider path.',
+      publishedAt: '2026-06-18T00:00:00.000Z',
+    },
+  ];
+}
+
+export async function runAoiProactiveTrendProviderSmokeReplay(): Promise<AoiProactiveTrendReplayReport> {
+  const now = DEFAULT_NOW;
+  const topic = makeTopic();
+  const profile = makeProfile(topic);
+  let searchCallCount = 0;
+  let lastQuery = '';
+  const search: AoiProactiveBriefSearchAdapter = async (request) => {
+    searchCallCount += 1;
+    lastQuery = request.query;
+    return {
+      query: request.query,
+      retrievedAt: request.now,
+      results: providerSmokeResults(),
+    };
+  };
+  const scout = await scoutAoiProactiveBriefTopic({
+    topic,
+    search,
+    now,
+    minSources: 2,
+    delivery: {
+      allowedModes: ['dashboard', 'digest', 'inline_card', 'chat_hook'],
+    },
+  });
+  const fixture: AoiProactiveTrendReplayFixture = {
+    id: 'trend-provider-smoke',
+    scenario: 'provider_smoke',
+    title: 'Provider smoke creates a current-info trend candidate end-to-end',
+    now,
+    policy: makePolicy(now, true),
+    profile,
+    candidates: scout.candidate ? [scout.candidate] : [],
+    fieldMetrics: makeFieldMetrics(),
+    expected: {
+      minOpinionCards: 1,
+      directChatAllowed: true,
+    },
+  };
+  const report = runAoiProactiveTrendReplayFixture(fixture);
+  const sourceQualityStatuses = report.state.snapshots.map(
+    (snapshot) => snapshot.sourceQuality.status,
+  );
+  const metrics = [
+    ...report.metrics,
+    metric({
+      name: 'provider_search_called',
+      passed: searchCallCount === 1 && lastQuery.includes('Reverse Engineering'),
+      expected: 'one provider search for the watched topic',
+      actual: `${searchCallCount} call(s): ${lastQuery || 'none'}`,
+      evidenceRefs: [`trend-provider-smoke:query:${searchCallCount}`],
+    }),
+    metric({
+      name: 'provider_candidate_created',
+      passed: Boolean(scout.candidate) && scout.evidence.sources.length >= 2,
+      expected: 'candidate from at least two provider-normalized public sources',
+      actual: `${scout.evidence.sources.length} source(s), candidate ${scout.candidate ? 'created' : 'missing'}`,
+      evidenceRefs: scout.evidence.sources.map((source) => `source:${source.host}`),
+    }),
+    metric({
+      name: 'source_quality_gate',
+      passed: sourceQualityStatuses.includes('strong'),
+      expected: 'strong source quality',
+      actual: sourceQualityStatuses.join(', ') || 'none',
+      evidenceRefs: report.state.snapshots.flatMap((snapshot) =>
+        snapshot.evidenceRefs.filter((ref) => ref.startsWith('trend-source-quality')).slice(0, 2),
+      ),
+    }),
+    metric({
+      name: 'no_fabricated_current_info',
+      passed:
+        Boolean(scout.candidate) &&
+        (scout.candidate?.sources.length ?? 0) > 0 &&
+        scout.candidate?.summary.includes('source-backed current-info candidate') === true,
+      expected: 'candidate text is source-backed and not memory-only',
+      actual: scout.candidate?.summary ?? scout.rejectedReason ?? 'missing candidate',
+      evidenceRefs: scout.candidate?.evidenceRefs.slice(0, 6) ?? [],
+    }),
+  ];
+  const passed = metrics.every((item) => item.passed);
+  return {
+    ...report,
+    passed,
+    summary: passed
+      ? 'trend-provider-smoke passed.'
+      : `trend-provider-smoke failed: ${metrics
+          .filter((item) => !item.passed)
+          .map((item) => item.name)
+          .join(', ')}`,
+    metrics,
+    evidenceRefs: unique([
+      ...report.evidenceRefs,
+      `trend-provider-smoke:search-calls:${searchCallCount}`,
+      ...scout.evidence.sources.map((source) => `source:${source.host}`),
+    ]).slice(0, 32),
+  };
 }

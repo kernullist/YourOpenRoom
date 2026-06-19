@@ -623,6 +623,16 @@ function formatUsageNumber(value: number): string {
   return value.toFixed(1).replace(/\.0$/, '');
 }
 
+function formatAoiStatusCounts(counts: Partial<Record<string, number>> | null | undefined): string {
+  const entries = Object.entries(counts ?? {})
+    .filter(([, count]) => typeof count === 'number' && Number.isFinite(count) && count > 0)
+    .sort(([left], [right]) => left.localeCompare(right));
+  if (entries.length === 0) {
+    return 'none';
+  }
+  return entries.map(([label, count]) => `${label} ${count}`).join(', ');
+}
+
 function formatCurrentModelUsageLabel(
   usageStatus: CurrentModelUsageStatus | null,
   config: LLMConfig | null,
@@ -6762,7 +6772,13 @@ const ChatPanel: React.FC<{
   }, [inlineAoiTrendCard]);
 
   useEffect(() => {
-    if (!directAoiTrendCard?.chatHookText || loading) {
+    if (
+      !directAoiTrendCard?.chatHookText ||
+      loading ||
+      directAoiTrendCard.deliveryMode !== 'direct_chat' ||
+      directAoiTrendCard.quietUntil ||
+      directAoiTrendCard.snoozedUntil
+    ) {
       return;
     }
     const messageId = `aoi-trend-direct-${directAoiTrendCard.snapshotId}`;
@@ -7123,6 +7139,8 @@ const ChatPanel: React.FC<{
                 <div className={styles.aoiInlineSuggestionMeta}>
                   <span>Aoi trend signal</span>
                   <span>{inlineAoiTrendCard.noveltyLabel}</span>
+                  <span>{inlineAoiTrendCard.sourceQualityLabel}</span>
+                  <span>{inlineAoiTrendCard.interestDriftLabel}</span>
                   <span>{inlineAoiTrendCard.deliveryMode}</span>
                 </div>
                 <div className={styles.aoiInlineSuggestionTitle}>
@@ -7133,7 +7151,7 @@ const ChatPanel: React.FC<{
                 </div>
                 <div className={styles.aoiInlineSuggestionHint}>
                   {sanitizeAoiProposalDisplayText(
-                    `${inlineAoiTrendCard.topicLabel}; ${inlineAoiTrendCard.sourceHosts.join(', ') || 'source-backed'}; ${inlineAoiTrendCard.deliverySummary}`,
+                    `${inlineAoiTrendCard.topicLabel}; ${inlineAoiTrendCard.sourceHosts.join(', ') || 'source-backed'}; ${inlineAoiTrendCard.controlSummary}; ${inlineAoiTrendCard.deliverySummary}`,
                     360,
                   )}
                 </div>
@@ -7170,6 +7188,38 @@ const ChatPanel: React.FC<{
                   title="Tell Aoi this trend signal was too noisy"
                 >
                   Less
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    inlineAoiTrendCard.candidateId
+                      ? void recordAoiProactiveBriefFeedbackFromPanel(
+                          inlineAoiTrendCard.candidateId,
+                          'wrong_timing',
+                        )
+                      : undefined
+                  }
+                  disabled={aoiAutonomyActionId !== null || !inlineAoiTrendCard.candidateId}
+                  title="Quiet this trend until a better time"
+                >
+                  Quiet
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    inlineAoiTrendCard.candidateId
+                      ? void recordAoiProactiveBriefFeedbackFromPanel(
+                          inlineAoiTrendCard.candidateId,
+                          'archive_brief',
+                        )
+                      : undefined
+                  }
+                  disabled={aoiAutonomyActionId !== null || !inlineAoiTrendCard.candidateId}
+                  title="Snooze this trend card"
+                >
+                  Snooze
                 </button>
                 <button
                   type="button"
@@ -10856,6 +10906,27 @@ const SettingsModal: React.FC<{
                               Delivery: quiet {aoiProactiveTrendAdvisor.quietNotificationCount} /
                               direct {aoiProactiveTrendAdvisor.directChatHookCount}
                             </div>
+                            <div>
+                              Source quality:{' '}
+                              {sanitizeAoiProposalDisplayText(
+                                formatAoiStatusCounts(aoiProactiveTrendAdvisor.sourceQualityCounts),
+                                180,
+                              )}
+                            </div>
+                            <div>
+                              Interest drift:{' '}
+                              {sanitizeAoiProposalDisplayText(
+                                formatAoiStatusCounts(aoiProactiveTrendAdvisor.interestDriftCounts),
+                                180,
+                              )}
+                            </div>
+                            {aoiProactiveTrendAdvisor.deliveryControlBlockedReasons
+                              .slice(0, 4)
+                              .map((reason, index) => (
+                                <div key={`trend-control-block-${index}`}>
+                                  Control block: {sanitizeAoiProposalDisplayText(reason, 120)}
+                                </div>
+                              ))}
                             {aoiProactiveTrendAdvisor.chatHook && (
                               <div>
                                 Direct hook:{' '}
@@ -10885,6 +10956,8 @@ const SettingsModal: React.FC<{
                                   <span>{card.freshnessLabel}</span>
                                   <span>{card.confidenceLabel}</span>
                                   <span>{card.noveltyLabel}</span>
+                                  <span>{card.sourceQualityLabel}</span>
+                                  <span>{card.interestDriftLabel}</span>
                                   <span>{card.deliveryMode}</span>
                                   <span>
                                     {card.directChatAllowed
@@ -10914,6 +10987,10 @@ const SettingsModal: React.FC<{
                                   <div>
                                     Delivery:{' '}
                                     {sanitizeAoiProposalDisplayText(card.deliverySummary, 260)}
+                                  </div>
+                                  <div>
+                                    Controls:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.controlSummary, 220)}
                                   </div>
                                   <div>
                                     Evidence:{' '}

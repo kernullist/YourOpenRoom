@@ -185,6 +185,42 @@ export type AoiProactiveTrendDeliveryMode =
   | 'direct_chat'
   | 'blocked';
 
+export type AoiProactiveTrendSourceQualityStatus = 'strong' | 'acceptable' | 'weak' | 'blocked';
+
+export interface AoiProactiveTrendSourceQuality {
+  version: 1;
+  status: AoiProactiveTrendSourceQualityStatus;
+  score: number;
+  independentHostCount: number;
+  freshSourceCount: number;
+  publicSourceCount: number;
+  evidenceRefCount: number;
+  reasons: string[];
+  blockedReasons: string[];
+}
+
+export type AoiProactiveTrendInterestDriftStatus = 'aligned' | 'watch' | 'drifting' | 'muted';
+
+export interface AoiProactiveTrendInterestDrift {
+  version: 1;
+  status: AoiProactiveTrendInterestDriftStatus;
+  score: number;
+  positiveFeedbackCount: number;
+  negativeFeedbackCount: number;
+  reasons: string[];
+  evidenceRefs: string[];
+}
+
+export interface AoiProactiveTrendDeliveryControls {
+  version: 1;
+  dedupeKey: string;
+  duplicateBlocked: boolean;
+  quietUntil?: number;
+  snoozedUntil?: number;
+  reasons: string[];
+  evidenceRefs: string[];
+}
+
 export interface AoiProactiveTrendSnapshot {
   version: 1;
   id: string;
@@ -202,12 +238,15 @@ export interface AoiProactiveTrendSnapshot {
   novelty: AoiProactiveTrendNovelty;
   risk: AoiAutonomyRisk;
   freshness: AoiProactiveTrendSnapshotFreshness;
+  sourceQuality: AoiProactiveTrendSourceQuality;
+  interestDrift: AoiProactiveTrendInterestDrift;
   sources: AoiProactiveBriefSource[];
   delivery: {
     mode: AoiProactiveTrendDeliveryMode;
     summary: string;
     directChatAllowed: boolean;
     directChatBlockedReasons: string[];
+    controls: AoiProactiveTrendDeliveryControls;
     chatHookText?: string;
     evidenceRefs: string[];
   };
@@ -270,11 +309,16 @@ export interface AoiProactiveTrendOpinionCard {
   confidenceLabel: string;
   freshnessLabel: string;
   noveltyLabel: string;
+  sourceQualityLabel: string;
+  interestDriftLabel: string;
   deliveryMode: AoiProactiveTrendDeliveryMode;
   deliverySummary: string;
+  controlSummary: string;
   sourceHosts: string[];
   directChatAllowed: boolean;
   directChatBlockedReasons: string[];
+  quietUntil?: number;
+  snoozedUntil?: number;
   chatHookText?: string;
   evidenceRefs: string[];
   createdAt: number;
@@ -289,6 +333,9 @@ export interface AoiProactiveTrendAdvisorState {
   opinionCards: AoiProactiveTrendOpinionCard[];
   quietNotificationCount: number;
   directChatHookCount: number;
+  sourceQualityCounts: Partial<Record<AoiProactiveTrendSourceQualityStatus, number>>;
+  interestDriftCounts: Partial<Record<AoiProactiveTrendInterestDriftStatus, number>>;
+  deliveryControlBlockedReasons: string[];
   inlineCard?: AoiProactiveTrendOpinionCard;
   directChatCard?: AoiProactiveTrendOpinionCard;
   chatHook?: string;
