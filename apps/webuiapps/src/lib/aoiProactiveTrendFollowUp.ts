@@ -359,6 +359,28 @@ export function buildAoiProactiveTrendSourceListText(
   ].join('\n');
 }
 
+export function buildAoiProactiveTrendSourceOpenUnavailableText(
+  context?: AoiProactiveTrendFollowUpContext | null,
+): string {
+  if (!context) {
+    return '';
+  }
+
+  const sourceHosts =
+    context.sourceHosts.length > 0
+      ? context.sourceHosts.join(', ')
+      : 'No source host metadata saved.';
+  const evidenceRefs =
+    context.evidenceRefs.length > 0 ? context.evidenceRefs.join(', ') : 'No evidence refs saved.';
+
+  return [
+    `꿀보, "${context.title}"에 저장된 source URL이 없어서 Browser로 열 수 없어.`,
+    `Source hosts: ${sourceHosts}`,
+    `Evidence refs: ${evidenceRefs}`,
+    '원하면 내가 이 트렌드를 다시 조사해서 열 수 있는 공개 URL을 찾아볼게.',
+  ].join('\n');
+}
+
 export function buildAoiProactiveTrendFollowUpPromptBlock(
   context?: AoiProactiveTrendFollowUpContext | null,
 ): string {

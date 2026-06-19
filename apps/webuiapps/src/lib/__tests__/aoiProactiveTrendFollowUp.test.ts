@@ -4,6 +4,7 @@ import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
   buildAoiProactiveTrendSourceListText,
+  buildAoiProactiveTrendSourceOpenUnavailableText,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourceToOpen,
   selectAoiProactiveTrendSourcesToList,
@@ -302,6 +303,28 @@ describe('Aoi proactive trend follow-up context', () => {
       ),
     ).toEqual(['https://security.example.net/re/case-study']);
     expect(selectAoiProactiveTrendSourcesToOpen(null)).toEqual([]);
+  });
+
+  it('builds a deterministic no-source acknowledgement for source opening prompts', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard({
+        sources: [],
+      }),
+      'Aoi, open the source evidence.',
+      NOW,
+    );
+
+    expect(selectAoiProactiveTrendSourcesToOpen(context)).toEqual([]);
+
+    const text = buildAoiProactiveTrendSourceOpenUnavailableText(context);
+    expect(text).toContain('Fresh reversing writeup trend');
+    expect(text).toContain('저장된 source URL이 없어서 Browser로 열 수 없어');
+    expect(text).toContain('Source hosts: research.example.com, security.example.net');
+    expect(text).toContain(
+      'Evidence refs: source:research.example.com, source:security.example.net',
+    );
+    expect(text).not.toContain('Browser에서 열었어');
+    expect(buildAoiProactiveTrendSourceOpenUnavailableText(null)).toBe('');
   });
 
   it('builds a direct source evidence list without claiming pages were opened', () => {

@@ -295,6 +295,7 @@ import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
   buildAoiProactiveTrendSourceListText,
+  buildAoiProactiveTrendSourceOpenUnavailableText,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourcesToList,
   selectAoiProactiveTrendSourcesToOpen,
@@ -4718,6 +4719,23 @@ const ChatPanel: React.FC<{
           });
           return;
         }
+
+        const ack = buildAoiProactiveTrendSourceOpenUnavailableText(aoiTrendFollowUpContext);
+        emitAssistantMessage({
+          id: String(Date.now()),
+          role: 'assistant',
+          content: ack,
+        });
+        recordAoiMemoryTurn({
+          userMessage: text,
+          assistantMessage: ack,
+          toolCalls: [
+            `direct:aoi_trend_open_sources_unavailable:${aoiTrendFollowUpContext.cardId}`,
+          ],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
       }
 
       const inferredMemory = extractNameMemory(text);
