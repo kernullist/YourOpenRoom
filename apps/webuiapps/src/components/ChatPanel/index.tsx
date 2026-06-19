@@ -295,7 +295,10 @@ import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
   classifyAoiProactiveTrendFollowUpFeedback,
+  selectAoiProactiveTrendSourceToOpen,
+  shouldOpenAoiProactiveTrendSourcesFromPrompt,
   type AoiProactiveTrendFollowUpContext,
+  type AoiProactiveTrendFollowUpSource,
 } from '@/lib/aoiProactiveTrendFollowUp';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
@@ -524,6 +527,63 @@ const IDE_APP_ID = 19;
 const PE_ANALYST_APP_ID = 20;
 const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
 const YOUTUBE_APP_ID = 3;
+const BROWSER_APP_ID = 17;
+
+function buildOpenUrlAction(url: string): {
+  app_id: number;
+  action_type: string;
+  params: { url: string };
+} {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname.toLowerCase();
+    const isYoutube =
+      host === 'youtu.be' ||
+      host === 'youtube.com' ||
+      host === 'www.youtube.com' ||
+      host === 'm.youtube.com';
+    if (isYoutube) {
+      return {
+        app_id: YOUTUBE_APP_ID,
+        action_type: 'OPEN_VIDEO',
+        params: { url },
+      };
+    }
+  } catch {
+    // Fall through to Browser. BrowserReader normalizes user-facing URL input.
+  }
+  return {
+    app_id: BROWSER_APP_ID,
+    action_type: 'OPEN_URL',
+    params: { url },
+  };
+}
+
+function buildAoiTrendSourceOpenAck(params: {
+  context: AoiProactiveTrendFollowUpContext;
+  source: AoiProactiveTrendFollowUpSource;
+  result: string;
+}): string {
+  const sourceTitle = params.source.title || params.source.host || params.source.url;
+  const opened = params.result && !params.result.toLowerCase().startsWith('error:');
+  if (!opened) {
+    return [
+      `꿀보, "${params.context.title}" 근거 URL을 Browser로 열려고 했는데 아직 완료되지 않았어.`,
+      `대상: ${sourceTitle}`,
+      `URL: ${params.source.url}`,
+      `결과: ${params.result || 'no result'}`,
+    ].join('\n');
+  }
+  const extraCount = Math.max(0, params.context.sources.length - 1);
+  return [
+    `꿀보, "${params.context.title}"의 첫 번째 근거를 Browser에서 열었어.`,
+    `Source: ${sourceTitle}`,
+    `URL: ${params.source.url}`,
+    extraCount > 0 ? `추가 저장 근거 ${extraCount}개는 follow-up context에 같이 남겨뒀어.` : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
 
 async function triggerKiraAutomationScan(sessionPath: string): Promise<void> {
   await fetch('/api/kira-automation/scan', {
@@ -4540,6 +4600,40 @@ const ChatPanel: React.FC<{
       const newHistory: ChatMessage[] = [...chatHistory, outgoingUserMessage];
       setChatHistory(newHistory);
 
+      if (
+        aoiTrendFollowUpContext &&
+        shouldOpenAoiProactiveTrendSourcesFromPrompt(aoiTrendFollowUpContext.prompt)
+      ) {
+        const sourceToOpen = selectAoiProactiveTrendSourceToOpen(aoiTrendFollowUpContext);
+        if (sourceToOpen) {
+          let actionResult = '';
+          try {
+            actionResult = await dispatchAgentAction(buildOpenUrlAction(sourceToOpen.url));
+          } catch (error) {
+            actionResult = `error: ${error instanceof Error ? error.message : String(error)}`;
+            console.error('[ChatPanel] Failed to open Aoi trend source URL', error);
+          }
+          const ack = buildAoiTrendSourceOpenAck({
+            context: aoiTrendFollowUpContext,
+            source: sourceToOpen,
+            result: actionResult,
+          });
+          emitAssistantMessage({
+            id: String(Date.now()),
+            role: 'assistant',
+            content: ack,
+          });
+          recordAoiMemoryTurn({
+            userMessage: text,
+            assistantMessage: ack,
+            toolCalls: [`direct:aoi_trend_open_source:${sourceToOpen.url}`],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
+          return;
+        }
+      }
+
       const inferredMemory = extractNameMemory(text);
       if (inferredMemory) {
         try {
@@ -6567,35 +6661,7 @@ const ChatPanel: React.FC<{
   };
 
   const handleOpenLinkInBrowser = useCallback((url: string) => {
-    try {
-      const parsed = new URL(url);
-      const host = parsed.hostname.toLowerCase();
-      const isYoutube =
-        host === 'youtu.be' ||
-        host === 'youtube.com' ||
-        host === 'www.youtube.com' ||
-        host === 'm.youtube.com';
-
-      void dispatchAgentAction(
-        isYoutube
-          ? {
-              app_id: 3,
-              action_type: 'OPEN_VIDEO',
-              params: { url },
-            }
-          : {
-              app_id: 17,
-              action_type: 'OPEN_URL',
-              params: { url },
-            },
-      );
-    } catch {
-      void dispatchAgentAction({
-        app_id: 17,
-        action_type: 'OPEN_URL',
-        params: { url },
-      });
-    }
+    void dispatchAgentAction(buildOpenUrlAction(url));
   }, []);
 
   const handleOpenLinkExternal = useCallback((url: string) => {

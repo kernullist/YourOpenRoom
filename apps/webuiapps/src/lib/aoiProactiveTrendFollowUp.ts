@@ -136,6 +136,25 @@ export function classifyAoiProactiveTrendFollowUpFeedback(
   return 'expand_summary';
 }
 
+export function shouldOpenAoiProactiveTrendSourcesFromPrompt(prompt: string): boolean {
+  const normalized = sanitizeText(prompt, 240).toLowerCase();
+  if (!normalized) {
+    return false;
+  }
+  return [
+    /\b(open|visit|show|load|launch|bring up)\b.*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/i,
+    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(open|visit|show|load|launch|bring up)\b/i,
+    /(열어|띄워|보여|열람).*(출처|근거|링크|주소|페이지|소스)/u,
+    /(출처|근거|링크|주소|페이지|소스).*(열어|띄워|보여|열람)/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
+export function selectAoiProactiveTrendSourceToOpen(
+  context?: AoiProactiveTrendFollowUpContext | null,
+): AoiProactiveTrendFollowUpSource | null {
+  return context?.sources[0] ?? null;
+}
+
 export function buildAoiProactiveTrendFollowUpPromptBlock(
   context?: AoiProactiveTrendFollowUpContext | null,
 ): string {

@@ -4,6 +4,8 @@ import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
   classifyAoiProactiveTrendFollowUpFeedback,
+  selectAoiProactiveTrendSourceToOpen,
+  shouldOpenAoiProactiveTrendSourcesFromPrompt,
 } from '../aoiProactiveTrendFollowUp';
 
 const NOW = Date.parse('2026-06-19T00:00:00.000Z');
@@ -175,5 +177,38 @@ describe('Aoi proactive trend follow-up context', () => {
     expect(classifyAoiProactiveTrendFollowUpFeedback('Aoi, turn this into a research plan.')).toBe(
       'expand_summary',
     );
+  });
+
+  it('only auto-opens sources for explicit open/show/visit follow-up prompts', () => {
+    expect(
+      shouldOpenAoiProactiveTrendSourcesFromPrompt(
+        'Aoi, open the source evidence for "Fresh reversing writeup trend".',
+      ),
+    ).toBe(true);
+    expect(shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, 링크 근거를 열어줘.')).toBe(true);
+    expect(
+      shouldOpenAoiProactiveTrendSourcesFromPrompt(
+        'Aoi, dig deeper and compare the strongest evidence.',
+      ),
+    ).toBe(false);
+    expect(
+      shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, turn this trend into a research plan.'),
+    ).toBe(false);
+  });
+
+  it('selects the first sanitized source URL for direct Browser opening', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard(),
+      'Aoi, open the source evidence.',
+      NOW,
+    );
+
+    expect(selectAoiProactiveTrendSourceToOpen(context)).toEqual(
+      expect.objectContaining({
+        title: 'Fresh reversing writeup',
+        url: 'https://research.example.com/re/writeup',
+      }),
+    );
+    expect(selectAoiProactiveTrendSourceToOpen(null)).toBeNull();
   });
 });
