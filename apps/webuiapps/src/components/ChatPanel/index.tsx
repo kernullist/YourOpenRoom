@@ -291,6 +291,12 @@ import {
   buildAoiProactiveBriefPanelModel,
   type AoiProactiveBriefPanelModel,
 } from '@/lib/aoiProactiveBriefUi';
+import {
+  buildAoiProactiveTrendFollowUpContext,
+  buildAoiProactiveTrendFollowUpPromptBlock,
+  classifyAoiProactiveTrendFollowUpFeedback,
+  type AoiProactiveTrendFollowUpContext,
+} from '@/lib/aoiProactiveTrendFollowUp';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
   AoiAutonomyBlockedProposal,
@@ -320,6 +326,7 @@ import type {
   AoiProactiveBriefFeedbackCategory,
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryEventKind,
+  AoiProactiveTrendOpinionCard,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
@@ -452,6 +459,7 @@ interface ChatLoadingInfo {
 interface ConversationRunOptions {
   signal?: AbortSignal;
   onStatus?: (status: string) => void;
+  aoiTrendFollowUpContext?: AoiProactiveTrendFollowUpContext | null;
 }
 
 const MAX_PROMPT_BUDGET_ENTRIES = 10;
@@ -2440,6 +2448,10 @@ const ChatPanel: React.FC<{
   chatHistoryRef.current = chatHistory;
   const suggestedRepliesRef = useRef(suggestedReplies);
   suggestedRepliesRef.current = suggestedReplies;
+  const pendingAoiTrendFollowUpRef = useRef<AoiProactiveTrendFollowUpContext | null>(null);
+  const aoiTrendFollowUpContextsByPromptRef = useRef(
+    new Map<string, AoiProactiveTrendFollowUpContext>(),
+  );
   const aoiAutonomyRefreshInFlightRef = useRef(false);
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
@@ -3631,6 +3643,73 @@ const ChatPanel: React.FC<{
     [],
   );
 
+  const rememberAoiTrendFollowUpContext = useCallback(
+    (card: AoiProactiveTrendOpinionCard, prompt: string) => {
+      const context = buildAoiProactiveTrendFollowUpContext(card, prompt);
+      if (!context) {
+        return;
+      }
+      pendingAoiTrendFollowUpRef.current = context;
+      aoiTrendFollowUpContextsByPromptRef.current.set(context.prompt, context);
+      if (aoiTrendFollowUpContextsByPromptRef.current.size > 24) {
+        const oldestKey = aoiTrendFollowUpContextsByPromptRef.current.keys().next().value;
+        if (oldestKey) {
+          aoiTrendFollowUpContextsByPromptRef.current.delete(oldestKey);
+        }
+      }
+    },
+    [],
+  );
+
+  const registerAoiTrendSuggestedReplies = useCallback(
+    (card: AoiProactiveTrendOpinionCard, prompts: string[]) => {
+      for (const prompt of prompts) {
+        const context = buildAoiProactiveTrendFollowUpContext(card, prompt);
+        if (context) {
+          aoiTrendFollowUpContextsByPromptRef.current.set(context.prompt, context);
+        }
+      }
+      while (aoiTrendFollowUpContextsByPromptRef.current.size > 24) {
+        const oldestKey = aoiTrendFollowUpContextsByPromptRef.current.keys().next().value;
+        if (!oldestKey) {
+          break;
+        }
+        aoiTrendFollowUpContextsByPromptRef.current.delete(oldestKey);
+      }
+    },
+    [],
+  );
+
+  const consumeAoiTrendFollowUpContext = useCallback((messageText: string) => {
+    const pending = pendingAoiTrendFollowUpRef.current;
+    pendingAoiTrendFollowUpRef.current = null;
+    if (pending?.prompt === messageText) {
+      aoiTrendFollowUpContextsByPromptRef.current.delete(messageText);
+      return pending;
+    }
+    return null;
+  }, []);
+
+  const recordAoiTrendFollowUpPromptUse = useCallback(
+    (context: AoiProactiveTrendFollowUpContext | null) => {
+      const briefId = context?.candidateId;
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!briefId || !sessionPathForAutonomy) {
+        return;
+      }
+      const category = classifyAoiProactiveTrendFollowUpFeedback(context.prompt);
+      void recordAoiProactiveBriefFeedback(sessionPathForAutonomy, {
+        briefId,
+        category,
+      })
+        .then(setAoiProactiveBriefs)
+        .catch((error) => {
+          console.warn('[ChatPanel] Failed to record Aoi trend follow-up feedback', error);
+        });
+    },
+    [],
+  );
+
   const prepareAoiKiraHandoffFromPanel = useCallback(
     async (proposal: AoiProposal) => {
       const actionId = `proposal:${proposal.id}:preview`;
@@ -4427,11 +4506,19 @@ const ChatPanel: React.FC<{
         return;
       }
 
+      const aoiTrendFollowUpContext = !hasImageAttachments
+        ? consumeAoiTrendFollowUpContext(messageText)
+        : null;
       if (!overrideText) {
         setInput('');
         clearPendingImages();
       }
       setSuggestedReplies([]);
+      if (aoiTrendFollowUpContext) {
+        recordAoiTrendFollowUpPromptUse(aoiTrendFollowUpContext);
+      } else {
+        aoiTrendFollowUpContextsByPromptRef.current.clear();
+      }
       hasUserInteractedRef.current = true;
       stopAoiTtsPlayback();
       console.info('[ChatPanel] Sending user message', {
@@ -4667,6 +4754,7 @@ const ChatPanel: React.FC<{
         await runConversation(newHistory, selectedConfig, liveDialogConfig, {
           signal: abortController.signal,
           onStatus: updateChatLoadingStatus,
+          aoiTrendFollowUpContext,
         });
       } catch (err) {
         if (isChatAbortError(err)) {
@@ -4692,14 +4780,35 @@ const ChatPanel: React.FC<{
       addMessage,
       beginChatLoading,
       clearPendingImages,
+      consumeAoiTrendFollowUpContext,
       emitAssistantMessage,
       finishChatLoading,
       publishAoiRunLedgerEntry,
       recordAoiMemoryTurn,
+      recordAoiTrendFollowUpPromptUse,
       refreshAoiMemories,
       refreshConversationConfigs,
       updateChatLoadingStatus,
     ],
+  );
+
+  const handleAoiTrendFollowUpPrompt = useCallback(
+    (card: AoiProactiveTrendOpinionCard, prompt: string) => {
+      rememberAoiTrendFollowUpContext(card, prompt);
+      void handleSend(prompt);
+    },
+    [handleSend, rememberAoiTrendFollowUpContext],
+  );
+
+  const handleSuggestedReply = useCallback(
+    (reply: string) => {
+      const context = aoiTrendFollowUpContextsByPromptRef.current.get(reply);
+      if (context) {
+        pendingAoiTrendFollowUpRef.current = context;
+      }
+      void handleSend(reply);
+    },
+    [handleSend],
   );
 
   // Core conversation loop
@@ -4879,11 +4988,22 @@ const ChatPanel: React.FC<{
       mcpPluginPrompt,
       toolCallRuntimeAvailable,
     );
+    const aoiTrendFollowUpPrompt = buildAoiProactiveTrendFollowUpPromptBlock(
+      options.aoiTrendFollowUpContext,
+    );
     const fullMessages: ChatMessage[] = [
       {
         role: 'system',
         content: systemPrompt,
       },
+      ...(aoiTrendFollowUpPrompt
+        ? [
+            {
+              role: 'system' as const,
+              content: aoiTrendFollowUpPrompt,
+            },
+          ]
+        : []),
       ...(confirmedResearchRequest
         ? [
             {
@@ -6825,13 +6945,20 @@ const ChatPanel: React.FC<{
     addMessage(message);
     setChatHistory((prev) => [...prev, { role: 'assistant', content: message.content }]);
     if (followUpPrompts.length > 0) {
+      registerAoiTrendSuggestedReplies(directAoiTrendCard, followUpPrompts);
       setSuggestedReplies(followUpPrompts);
     }
     void recordAoiProactiveTrendDeliveryFromPanel(
       directAoiTrendCard.snapshotId,
       'direct_chat_offered',
     );
-  }, [addMessage, directAoiTrendCard, loading, recordAoiProactiveTrendDeliveryFromPanel]);
+  }, [
+    addMessage,
+    directAoiTrendCard,
+    loading,
+    recordAoiProactiveTrendDeliveryFromPanel,
+    registerAoiTrendSuggestedReplies,
+  ]);
 
   if (!visible) return null;
 
@@ -7278,7 +7405,7 @@ const ChatPanel: React.FC<{
                     type="button"
                     className={styles.inlineActionBtn}
                     key={`trend-follow-up-${inlineAoiTrendCard.id}-${index}`}
-                    onClick={() => handleSend(prompt)}
+                    onClick={() => handleAoiTrendFollowUpPrompt(inlineAoiTrendCard, prompt)}
                     disabled={loading}
                     title={sanitizeAoiProposalDisplayText(prompt, 180)}
                   >
@@ -7377,7 +7504,11 @@ const ChatPanel: React.FC<{
           {suggestedReplies.length > 0 && !loading && (
             <div className={styles.suggestedReplies}>
               {suggestedReplies.map((reply, i) => (
-                <button key={i} className={styles.suggestedReply} onClick={() => handleSend(reply)}>
+                <button
+                  key={i}
+                  className={styles.suggestedReply}
+                  onClick={() => handleSuggestedReply(reply)}
+                >
                   {reply}
                 </button>
               ))}
