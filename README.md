@@ -208,7 +208,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     conflicts without shell, network, or workspace mutation
   - `aoiProactiveBriefReplay` adds deterministic scenarios for fresh RE sources, missing Tavily,
     quiet mode, too-frequent feedback, stale sources, private-memory exclusion, and useful feedback
-    that still respects cooldowns
+    that still respects cooldowns; labeled field events can also be redacted into separate replay
+    promotion drafts and checked by proactive-brief readiness gates before they are considered for
+    built-in replay packs
 - **Skills workshop**
   - built-in and user-authored skills are matched by trigger terms before a chat turn
   - only enabled and trusted skills are injected into the system prompt
@@ -247,7 +249,9 @@ These tools are guarded by the current implementation:
 - Aoi proactive interest briefs are quiet and evidence-gated. Memory-only interests can seed a topic
   profile, but they cannot create fresh/current claims without source-backed scouting. Live public
   scouting requires Tavily/current-info configuration, never runs shell commands, and does not
-  mutate external systems.
+  mutate external systems. Field events, calibration labels, suppression reasons, stale-current
+  signals, and redacted replay-promotion candidates feed the operator health summary; direct chat
+  hooks remain opt-in and policy gated.
 
 ## Kira + Aoi's IDE
 

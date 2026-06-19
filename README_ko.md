@@ -179,7 +179,9 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
     ref, non-interruption, blocked reason 을 회귀 테스트합니다
   - `aoiProactiveBriefReplay` 는 fresh RE source, Tavily missing, quiet mode, too-frequent feedback,
     stale source, private-memory exclusion, useful feedback 과 cooldown 조합을 network 없이
-    결정론적으로 검증합니다
+    결정론적으로 검증합니다. 라벨이 붙은 field event 는 별도의 redacted replay promotion draft 로
+    만들 수 있고, proactive brief readiness gate 가 이를 built-in replay pack 후보로 보기 전에
+    검증합니다
 - **Skills Workshop**
   - built-in skill 과 사용자가 만든 skill 을 trigger term 으로 매칭합니다
   - enabled 이면서 trusted 인 skill 만 system prompt 에 주입합니다
@@ -218,7 +220,9 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - Aoi proactive interest brief 는 quiet/evidence-gated 기능입니다. memory-only 관심사는 topic
   profile 의 근거가 될 수 있지만, source-backed scout 없이 fresh/current claim 을 만들 수 없습니다.
   live public scouting 에는 Tavily/current-info 설정이 필요하고, 이 경로는 shell command 를
-  실행하거나 외부 시스템을 mutation 하지 않습니다.
+  실행하거나 외부 시스템을 mutation 하지 않습니다. Field event, calibration label, suppression
+  reason, stale-current signal, redacted replay promotion candidate 는 operator health 요약에
+  반영되며, direct chat hook 은 계속 opt-in 과 policy gate 를 통과해야 합니다.
 
 ## Kira 와 Aoi's IDE
 

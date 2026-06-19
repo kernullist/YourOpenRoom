@@ -344,6 +344,7 @@ export interface AoiProactiveBriefFieldMetrics {
   wrongTopicCount: number;
   wrongTimingCount: number;
   staleCount: number;
+  staleCurrentClaimCount: number;
   unsafeCount: number;
   suppressionCounts: Record<string, number>;
   privateLeakCount: number;

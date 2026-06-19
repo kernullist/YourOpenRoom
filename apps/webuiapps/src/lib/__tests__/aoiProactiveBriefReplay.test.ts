@@ -4,7 +4,11 @@ import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import { saveAoiAutonomyPolicy } from '../aoiAutonomyStore';
-import type { AoiInterestProfile, AoiInterestTopic } from '../aoiAutonomyTypes';
+import type {
+  AoiInterestProfile,
+  AoiInterestTopic,
+  AoiProactiveBriefCalibrationLabel,
+} from '../aoiAutonomyTypes';
 import { evaluateAoiOperatorHealth } from '../aoiOperatorHealth';
 import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import {
@@ -12,11 +16,20 @@ import {
   buildAoiProactiveBriefCalibrationDiagnostics,
   buildAoiProactiveBriefDiagnostics,
   buildAoiProactiveBriefFieldDiagnostics,
+  buildAoiProactiveBriefReadinessDiagnostics,
+  buildAoiProactiveBriefReadinessSummary,
+  buildAoiProactiveBriefReplayPromotionDrafts,
   formatAoiProactiveBriefReplayReport,
   runBuiltInAoiProactiveBriefReplayFixtures,
+  runAoiProactiveBriefReplayFixture,
+  type AoiProactiveBriefReplayFixtureDraft,
 } from '../aoiProactiveBriefReplay';
 import { scoutAoiProactiveBriefTopic } from '../aoiProactiveBriefResearch';
-import { saveAoiInterestProfile } from '../aoiProactiveBriefStore';
+import {
+  recordAoiProactiveBriefCalibrationLabel,
+  recordAoiProactiveBriefFieldEvent,
+  saveAoiInterestProfile,
+} from '../aoiProactiveBriefStore';
 
 const tempRoots: string[] = [];
 const SESSION_PATH = 'aoi/default';
@@ -59,6 +72,78 @@ function makeProfile(topic: AoiInterestTopic = makeTopic()): AoiInterestProfile 
     generatedAt: NOW,
     sourceMemoryCount: 1,
     warnings: [],
+  };
+}
+
+function recordLabeledFieldEvent(params: {
+  root: string;
+  id: string;
+  label: AoiProactiveBriefCalibrationLabel;
+  createdAt: number;
+}) {
+  const event = recordAoiProactiveBriefFieldEvent(params.root, {
+    kind: 'shown_dashboard',
+    sessionPath: SESSION_PATH,
+    briefId: `brief-${params.id}`,
+    topicId: 'aoi-interest-reverse-engineering',
+    deliveryMode: 'dashboard',
+    policyReason: 'dashboard_allowed',
+    title: `Field brief ${params.id}`,
+    summary: `Field summary ${params.id}`,
+    sourceRefs: [`https://${params.id}.example.com/re/writeup`],
+    sourceHosts: [`${params.id}.example.com`],
+    evidenceRefs: [`source:${params.id}.example.com:field`],
+    freshness: {
+      searchedAt: params.createdAt - 10_000,
+      newestSourceAt: '2026-06-18T00:00:00.000Z',
+      cannotKnow: ['Aoi cannot know whether sources changed after retrieval.'],
+    },
+    dedupeKey: `shown_dashboard:${params.id}`,
+    createdAt: params.createdAt,
+  });
+  const label = recordAoiProactiveBriefCalibrationLabel(params.root, {
+    sessionPath: SESSION_PATH,
+    fieldEventId: event.id,
+    label: params.label,
+    actor: 'user',
+    now: params.createdAt + 1,
+  });
+  return { event, label };
+}
+
+function makePromotedDraft(id: string): AoiProactiveBriefReplayFixtureDraft {
+  return {
+    version: 1,
+    id: `draft-${id}`,
+    sessionPath: SESSION_PATH,
+    fieldEventId: `field-${id}`,
+    calibrationLabelId: `label-${id}`,
+    label: 'useful',
+    status: 'promoted_candidate',
+    fixture: {
+      id: `fixture-${id}`,
+      title: 'Ready field replay',
+      scenario: 'fresh_public_sources',
+      now: NOW,
+      profile: makeProfile(),
+      skipSearch: true,
+      directCandidates: [],
+    },
+    validation: {
+      deterministicClock: true,
+      noNetworkDependency: true,
+      rawPrivateTextAbsent: true,
+      hasSourceEvidence: true,
+      expectedOutcome: 'ready',
+      blockers: [],
+    },
+    redaction: {
+      applied: true,
+      removedPrivateFieldCount: 0,
+      removedRefs: [],
+    },
+    evidenceRefs: [`proactive-brief-field-event:${id}`],
+    createdAt: NOW,
   };
 }
 
@@ -135,6 +220,174 @@ describe('Aoi proactive brief replay scenario pack', () => {
 });
 
 describe('Aoi proactive brief replay hardening', () => {
+  it('promotes labeled field events into redacted deterministic replay drafts without network', async () => {
+    const root = makeTempRoot();
+    const event = recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'shown_dashboard',
+      sessionPath: SESSION_PATH,
+      briefId: 'brief-private-field',
+      topicId: 'aoi-interest-reverse-engineering',
+      deliveryMode: 'dashboard',
+      policyReason: 'Checked C:\\Users\\operator\\private-policy.txt',
+      title: 'Expanded private api_key=secret-value brief',
+      summary:
+        'User-local path F:\\private\\notes.txt and private-roadmap@example.com should be redacted.',
+      sourceRefs: [
+        'https://research.example.com/re/writeup?token=private-token-value',
+        'C:\\Users\\operator\\secret-source.txt',
+      ],
+      sourceHosts: ['research.example.com'],
+      evidenceRefs: ['memory:memory-re-001', 'C:\\Users\\operator\\secret-evidence.txt'],
+      freshness: {
+        searchedAt: NOW - 20_000,
+        newestSourceAt: '2026-06-18T00:00:00.000Z',
+        cannotKnow: ['Aoi cannot know whether sources changed after retrieval.'],
+      },
+      dedupeKey: 'shown_dashboard:brief-private-field',
+      createdAt: NOW - 10_000,
+    });
+    const label = recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: SESSION_PATH,
+      fieldEventId: event.id,
+      label: 'useful',
+      actor: 'user',
+      note: 'private-roadmap@example.com liked this, do not store the note body.',
+      now: NOW - 5_000,
+    });
+    const fetchSpy = vi.fn(() => {
+      throw new Error('Promoted replay drafts must not call real network.');
+    });
+    vi.stubGlobal('fetch', fetchSpy);
+
+    const drafts = buildAoiProactiveBriefReplayPromotionDrafts({
+      sessionPath: SESSION_PATH,
+      events: [event],
+      labels: [label],
+      now: NOW,
+    });
+    const draft = drafts[0];
+
+    expect(draft.status).toBe('promoted_candidate');
+    expect(draft.validation).toMatchObject({
+      deterministicClock: true,
+      noNetworkDependency: true,
+      rawPrivateTextAbsent: true,
+      hasSourceEvidence: true,
+    });
+    const draftJson = JSON.stringify(draft);
+    expect(draftJson).not.toContain('api_key=secret-value');
+    expect(draftJson).not.toContain('F:\\private\\notes.txt');
+    expect(draftJson).not.toContain('C:\\Users\\operator\\secret-source.txt');
+    expect(draftJson).not.toContain('private-roadmap@example.com');
+    expect(draft.fixture.skipSearch).toBe(true);
+
+    const first = await runAoiProactiveBriefReplayFixture(draft.fixture);
+    const second = await runAoiProactiveBriefReplayFixture(draft.fixture);
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+    expect(first.passed).toBe(true);
+  });
+
+  it('summarizes readiness gates and refuses to pass unsafe field states', () => {
+    const baseMetrics = {
+      version: 1 as const,
+      sessionPath: SESSION_PATH,
+      generatedAt: NOW,
+      status: 'field_events_recorded' as const,
+      eventCount: 3,
+      consideredCount: 3,
+      shownCount: 2,
+      shownByDeliveryMode: {
+        dashboard: 2,
+        digest: 0,
+        inline_card: 0,
+        chat_hook: 0,
+      },
+      expandedCount: 1,
+      sourceOpenedCount: 1,
+      feedbackRecordedCount: 3,
+      usefulCount: 1,
+      tooFrequentCount: 0,
+      wrongTopicCount: 0,
+      wrongTimingCount: 0,
+      staleCount: 0,
+      staleCurrentClaimCount: 0,
+      unsafeCount: 0,
+      suppressionCounts: {
+        suppressed_cooldown: 1,
+      },
+      privateLeakCount: 0,
+      unauthorizedMutationCount: 0,
+      directChatHookCount: 0,
+      lastEventAt: NOW,
+      evidenceRefs: ['proactive-brief-field-event:ready'],
+    };
+    const promotedDraft = makePromotedDraft('ready');
+    const ready = buildAoiProactiveBriefReadinessSummary({
+      sessionPath: SESSION_PATH,
+      metrics: baseMetrics,
+      replayDrafts: [promotedDraft],
+      policy: {
+        ...DEFAULT_AOI_AUTONOMY_POLICY,
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          directChatHookOptIn: true,
+        },
+        updatedAt: NOW,
+      },
+      tavilyConfigured: true,
+      now: NOW,
+    });
+    const notFieldTested = buildAoiProactiveBriefReadinessSummary({
+      sessionPath: SESSION_PATH,
+      metrics: {
+        ...baseMetrics,
+        status: 'not_field_tested',
+        eventCount: 0,
+        evidenceRefs: [],
+      },
+      replayDrafts: [],
+      now: NOW,
+    });
+    const blocked = buildAoiProactiveBriefReadinessSummary({
+      sessionPath: SESSION_PATH,
+      metrics: {
+        ...baseMetrics,
+        status: 'blocked',
+        privateLeakCount: 1,
+        unauthorizedMutationCount: 1,
+        staleCurrentClaimCount: 1,
+      },
+      replayDrafts: [promotedDraft],
+      now: NOW,
+    });
+    const diagnostics = buildAoiProactiveBriefReadinessDiagnostics(blocked, NOW);
+
+    expect(ready.status).toBe('ready');
+    expect(ready.summary).toContain('samples=3');
+    expect(ready.summary).toContain('suppression=suppressed_cooldown=1');
+    expect(ready.replayPromotionCandidateCount).toBe(1);
+    expect(ready.directChatReadiness).toBe('eligible_opt_in');
+    expect(notFieldTested.status).toBe('not_field_tested');
+    expect(notFieldTested.gates.find((gate) => gate.id === 'field.sample_count')?.status).toBe(
+      'block',
+    );
+    expect(blocked.status).toBe('blocked');
+    expect(blocked.directChatReadiness).toBe('blocked_private_or_unsafe');
+    expect(blocked.gates.map((gate) => gate.id)).toEqual(
+      expect.arrayContaining([
+        'field.private_leak_zero',
+        'field.unauthorized_mutation_zero',
+        'field.stale_current_claim_zero',
+      ]),
+    );
+    expect(diagnostics.map((item) => item.code)).toContain('field_stale_current_claim_detected');
+  });
+
   it('rejects bad source data and zero-source candidates before candidate creation', async () => {
     const topic = makeTopic();
     const bad = await scoutAoiProactiveBriefTopic({
@@ -224,6 +477,7 @@ describe('Aoi proactive brief replay hardening', () => {
         wrongTopicCount: 0,
         wrongTimingCount: 0,
         staleCount: 0,
+        staleCurrentClaimCount: 0,
         unsafeCount: 0,
         suppressionCounts: {},
         privateLeakCount: 1,
@@ -332,5 +586,69 @@ describe('Aoi proactive brief replay hardening', () => {
     expect(
       health.issues.find((issue) => issue.code === 'proactive_brief_tavily_unavailable')?.title,
     ).toContain('Tavily');
+  });
+
+  it('surfaces proactive field readiness counts and replay promotion candidates in persisted health', () => {
+    const root = makeTempRoot();
+    const configFile = join(root, 'config.json');
+    fs.writeFileSync(configFile, JSON.stringify({ tavily: { apiKey: 'tvly-test' } }), 'utf-8');
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        ...DEFAULT_AOI_AUTONOMY_POLICY,
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        confidenceFloor: 0.5,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          directChatHookOptIn: true,
+        },
+        updatedAt: NOW,
+      },
+      NOW,
+    );
+    saveAoiInterestProfile(root, SESSION_PATH, makeProfile(), NOW);
+    recordLabeledFieldEvent({
+      root,
+      id: 'field-ready-one',
+      label: 'useful',
+      createdAt: NOW - 30_000,
+    });
+    recordLabeledFieldEvent({
+      root,
+      id: 'field-ready-two',
+      label: 'too_frequent',
+      createdAt: NOW - 20_000,
+    });
+    recordLabeledFieldEvent({
+      root,
+      id: 'field-ready-three',
+      label: 'wrong_topic',
+      createdAt: NOW - 10_000,
+    });
+
+    const health = buildAoiOperatorHealthState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      configFile,
+      now: NOW,
+    });
+    const readinessIssue = health.issues.find(
+      (issue) => issue.code === 'proactive_brief_field_readiness_ready',
+    );
+
+    expect(readinessIssue?.summary).toContain('samples=3');
+    expect(readinessIssue?.summary).toContain('useful=1');
+    expect(readinessIssue?.summary).toContain('too_frequent=1');
+    expect(readinessIssue?.summary).toContain('wrong_topic=1');
+    expect(readinessIssue?.summary).toContain('replay_candidates=3');
+    expect(health.issues.map((issue) => issue.code)).toContain(
+      'proactive_brief_field_replay_candidates_ready',
+    );
+    expect(health.issues.map((issue) => issue.code)).toContain(
+      'proactive_brief_field_direct_chat_not_ready',
+    );
   });
 });

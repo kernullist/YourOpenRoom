@@ -14,9 +14,11 @@ import {
 } from './aoiOperatorHealth';
 import {
   loadAoiInterestProfile,
+  loadAoiProactiveBriefCalibrationLabels,
   loadAoiProactiveBriefCalibrationTuning,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFieldEvents,
   loadAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefFeedback,
   resolveAoiProactiveBriefPaths,
@@ -25,6 +27,9 @@ import {
   buildAoiProactiveBriefCalibrationDiagnostics,
   buildAoiProactiveBriefDiagnostics,
   buildAoiProactiveBriefFieldDiagnostics,
+  buildAoiProactiveBriefReadinessDiagnostics,
+  buildAoiProactiveBriefReadinessSummary,
+  buildAoiProactiveBriefReplayPromotionDrafts,
   buildAoiProactiveBriefSchedulerDiagnostics,
 } from './aoiProactiveBriefReplay';
 import type { PersistedConfig } from './configPersistence';
@@ -154,6 +159,14 @@ export function buildAoiOperatorHealthState(params: {
     () => loadAoiProactiveBriefFieldMetrics(params.sessionsDir, sessionPath, now),
     null,
   );
+  const proactiveFieldEvents = tryLoad(
+    () => loadAoiProactiveBriefFieldEvents(params.sessionsDir, sessionPath, now),
+    [],
+  );
+  const proactiveCalibrationLabels = tryLoad(
+    () => loadAoiProactiveBriefCalibrationLabels(params.sessionsDir, sessionPath, now),
+    [],
+  );
   const proactiveCalibrationTuning = tryLoad(
     () => loadAoiProactiveBriefCalibrationTuning(params.sessionsDir, sessionPath, now),
     null,
@@ -164,6 +177,8 @@ export function buildAoiOperatorHealthState(params: {
     proactiveCandidates.length ||
     proactiveFeedback.length ||
     (proactiveFieldMetrics?.eventCount ?? 0) > 0 ||
+    proactiveFieldEvents.length > 0 ||
+    proactiveCalibrationLabels.length > 0 ||
     (proactiveCalibrationTuning?.labelCount ?? 0) > 0 ||
     Object.keys(proactiveCooldownState?.cooldowns ?? {}).length ||
     (proactivePaths &&
@@ -184,6 +199,28 @@ export function buildAoiOperatorHealthState(params: {
     config.tavilyConfigured !== true
       ? ['tavily_not_configured:cannot_refresh_current_info']
       : [];
+  const proactiveReplayPromotionDrafts = hasProactiveArtifacts
+    ? buildAoiProactiveBriefReplayPromotionDrafts({
+        sessionPath,
+        events: proactiveFieldEvents,
+        labels: proactiveCalibrationLabels,
+        candidates: proactiveCandidates,
+        policy,
+        profile: proactiveProfile,
+        now,
+      })
+    : [];
+  const proactiveReadinessSummary = hasProactiveArtifacts
+    ? buildAoiProactiveBriefReadinessSummary({
+        sessionPath,
+        metrics: proactiveFieldMetrics,
+        calibrationTuning: proactiveCalibrationTuning,
+        replayDrafts: proactiveReplayPromotionDrafts,
+        policy,
+        tavilyConfigured: config.tavilyConfigured,
+        now,
+      })
+    : null;
   const proactiveBriefDiagnostics = hasProactiveArtifacts
     ? [
         ...buildAoiProactiveBriefDiagnostics({
@@ -196,6 +233,7 @@ export function buildAoiOperatorHealthState(params: {
         }),
         ...buildAoiProactiveBriefFieldDiagnostics(proactiveFieldMetrics, now),
         ...buildAoiProactiveBriefCalibrationDiagnostics(proactiveCalibrationTuning, now),
+        ...buildAoiProactiveBriefReadinessDiagnostics(proactiveReadinessSummary, now),
         ...buildAoiProactiveBriefSchedulerDiagnostics({
           policy,
           scheduler,

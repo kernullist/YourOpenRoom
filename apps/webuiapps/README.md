@@ -86,8 +86,10 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - `src/lib/aoiInterestProfile.ts`, `src/lib/aoiProactiveBrief*.ts`
   - local-first proactive interest briefings: eligible Aoi memories become compact interest topics,
     public current-info scout results become source-backed candidates, policy keeps delivery quiet
-    by default, feedback adjusts future relevance/cooldowns, and deterministic replay fixtures
-    validate freshness, interruption, feedback, and privacy gates without real network calls
+    by default, feedback adjusts future relevance/cooldowns, field events and calibration labels
+    feed readiness health summaries, and deterministic replay fixtures validate freshness,
+    interruption, feedback, privacy gates, and redacted field replay-promotion drafts without real
+    network calls
 - `src/lib/llmClient.ts`
   - provider request formatting, including chat image attachments for OpenAI-compatible, Responses
     API, and Anthropic-compatible model routes
@@ -256,7 +258,9 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
 - Proactive interest briefings reuse that governed model. Memory-only topics cannot produce
   fresh/current claims; Tavily-backed public scouting is required for live source evidence, and the
   replay pack covers missing Tavily, stale sources, quiet mode, cooldown, feedback adaptation, and
-  private-memory exclusion.
+  private-memory exclusion. Real-session field evidence is tracked separately: readiness only
+  improves after enough safe field samples, private leaks or stale current claims block readiness,
+  and direct chat hooks remain explicit opt-in plus policy gated.
 - App-operation requests, including Kira setting changes and "apply it like that" follow-ups that
   reference recent app context, bypass the dialog-model shortcut and keep app tools exposed to the
   main model route.

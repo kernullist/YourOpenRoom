@@ -1072,6 +1072,7 @@ export function buildAoiProactiveBriefFieldMetrics(
   let wrongTopicCount = 0;
   let wrongTimingCount = 0;
   let staleCount = 0;
+  let staleCurrentClaimCount = 0;
   let unsafeCount = 0;
   let privateLeakCount = 0;
   let unauthorizedMutationCount = 0;
@@ -1129,6 +1130,17 @@ export function buildAoiProactiveBriefFieldMetrics(
     ) {
       staleCount += 1;
     }
+    if (
+      event.freshness.stale &&
+      (event.kind === 'shown_dashboard' ||
+        event.kind === 'shown_digest' ||
+        event.kind === 'shown_inline' ||
+        event.kind === 'chat_hook_offered' ||
+        event.kind === 'expanded' ||
+        event.kind === 'source_opened')
+    ) {
+      staleCurrentClaimCount += 1;
+    }
     if (event.feedbackCategory === 'unsafe') {
       unsafeCount += 1;
     }
@@ -1174,6 +1186,7 @@ export function buildAoiProactiveBriefFieldMetrics(
     wrongTopicCount,
     wrongTimingCount,
     staleCount,
+    staleCurrentClaimCount,
     unsafeCount,
     suppressionCounts,
     privateLeakCount,

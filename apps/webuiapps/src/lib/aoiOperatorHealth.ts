@@ -831,6 +831,15 @@ function proactiveBriefRecommendation(
     return recommendation('review_scheduler', 'Review freshness', 'replay_evaluation');
   }
   if (
+    diagnostic.code === 'field_stale_current_claim_detected' ||
+    diagnostic.code === 'field_readiness_measuring' ||
+    diagnostic.code === 'field_readiness_ready' ||
+    diagnostic.code === 'field_direct_chat_not_ready' ||
+    diagnostic.code === 'field_replay_candidates_ready'
+  ) {
+    return recommendation('review_replay', 'Review field readiness', 'replay_evaluation');
+  }
+  if (
     diagnostic.code === 'no_eligible_topics' ||
     diagnostic.code === 'all_topics_muted' ||
     diagnostic.code === 'scout_no_eligible_topics' ||
@@ -864,6 +873,16 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Proactive brief private leak detected';
     case 'field_unauthorized_mutation_detected':
       return 'Proactive brief unauthorized mutation detected';
+    case 'field_stale_current_claim_detected':
+      return 'Proactive brief stale current claim detected';
+    case 'field_readiness_measuring':
+      return 'Proactive brief field readiness measuring';
+    case 'field_readiness_ready':
+      return 'Proactive brief field readiness ready';
+    case 'field_direct_chat_not_ready':
+      return 'Direct proactive chat not ready';
+    case 'field_replay_candidates_ready':
+      return 'Proactive brief replay candidates ready';
     case 'calibration_not_labeled':
       return 'Proactive brief calibration labels missing';
     case 'calibration_tuning_active':

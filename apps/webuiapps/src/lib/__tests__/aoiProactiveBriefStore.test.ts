@@ -284,6 +284,10 @@ describe('Aoi proactive brief candidate storage', () => {
       sourceRefs: ['https://example.com/re/writeup'],
       sourceHosts: ['example.com'],
       evidenceRefs: ['source:example.com'],
+      freshness: {
+        searchedAt: 1400,
+        cannotKnow: ['Source is outside the freshness window and must not be claimed current.'],
+      },
       createdAt: 1500,
     });
     const second = recordAoiProactiveBriefFieldEvent(root, {
@@ -310,6 +314,8 @@ describe('Aoi proactive brief candidate storage', () => {
       eventCount: 2,
       expandedCount: 1,
       sourceOpenedCount: 1,
+      staleCount: 1,
+      staleCurrentClaimCount: 1,
       privateLeakCount: 0,
       unauthorizedMutationCount: 0,
     });
