@@ -296,6 +296,7 @@ import {
   buildAoiProactiveTrendFollowUpPromptBlock,
   buildAoiProactiveTrendSourceListText,
   classifyAoiProactiveTrendFollowUpFeedback,
+  selectAoiProactiveTrendSourcesToList,
   selectAoiProactiveTrendSourcesToOpen,
   shouldListAoiProactiveTrendSourcesFromPrompt,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
@@ -4656,7 +4657,8 @@ const ChatPanel: React.FC<{
         aoiTrendFollowUpContext &&
         shouldListAoiProactiveTrendSourcesFromPrompt(aoiTrendFollowUpContext.prompt)
       ) {
-        const ack = buildAoiProactiveTrendSourceListText(aoiTrendFollowUpContext);
+        const sourcesToList = selectAoiProactiveTrendSourcesToList(aoiTrendFollowUpContext);
+        const ack = buildAoiProactiveTrendSourceListText(aoiTrendFollowUpContext, sourcesToList);
         emitAssistantMessage({
           id: String(Date.now()),
           role: 'assistant',
@@ -4665,7 +4667,10 @@ const ChatPanel: React.FC<{
         recordAoiMemoryTurn({
           userMessage: text,
           assistantMessage: ack,
-          toolCalls: [`direct:aoi_trend_list_sources:${aoiTrendFollowUpContext.cardId}`],
+          toolCalls:
+            sourcesToList.length === aoiTrendFollowUpContext.sources.length
+              ? [`direct:aoi_trend_list_sources:${aoiTrendFollowUpContext.cardId}`]
+              : sourcesToList.map((source) => `direct:aoi_trend_list_source:${source.url}`),
           source: 'direct_action',
           llmConfig: selectedConfig,
         });

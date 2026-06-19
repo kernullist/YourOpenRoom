@@ -6,6 +6,7 @@ import {
   buildAoiProactiveTrendSourceListText,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourceToOpen,
+  selectAoiProactiveTrendSourcesToList,
   selectAoiProactiveTrendSourcesToOpen,
   shouldOpenAllAoiProactiveTrendSourcesFromPrompt,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
@@ -319,5 +320,43 @@ describe('Aoi proactive trend follow-up context', () => {
     expect(text).toContain('URL: https://security.example.net/re/case-study');
     expect(text).not.toContain('Browser에서 열었어');
     expect(buildAoiProactiveTrendSourceListText(null)).toBe('');
+  });
+
+  it('builds targeted source evidence lists when the list prompt names a source', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard(),
+      'Aoi, show the second source evidence.',
+      NOW,
+    );
+
+    const genericSources = selectAoiProactiveTrendSourcesToList(context, 'Aoi, 출처 보여줘.');
+    expect(genericSources.map((source) => source.url)).toEqual([
+      'https://research.example.com/re/writeup',
+      'https://security.example.net/re/case-study',
+    ]);
+
+    const numberedSources = selectAoiProactiveTrendSourcesToList(
+      context,
+      'Aoi, 두 번째 출처 보여줘.',
+    );
+    expect(numberedSources.map((source) => source.url)).toEqual([
+      'https://security.example.net/re/case-study',
+    ]);
+
+    const hostSources = selectAoiProactiveTrendSourcesToList(
+      context,
+      'Aoi, security.example.net 근거 알려줘.',
+    );
+    expect(hostSources.map((source) => source.url)).toEqual([
+      'https://security.example.net/re/case-study',
+    ]);
+
+    const text = buildAoiProactiveTrendSourceListText(context, hostSources);
+    expect(text).toContain('요청한 저장 근거는 1개');
+    expect(text).toContain('전체 2개 중');
+    expect(text).toContain('2. Second reversing source (security.example.net)');
+    expect(text).toContain('URL: https://security.example.net/re/case-study');
+    expect(text).not.toContain('Fresh reversing writeup (research.example.com)');
+    expect(selectAoiProactiveTrendSourcesToList(null)).toEqual([]);
   });
 });

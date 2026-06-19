@@ -268,14 +268,10 @@ function sourceTitleMatchesPrompt(
   return title.length >= 6 && normalizedPrompt.includes(title);
 }
 
-export function selectAoiProactiveTrendSourceToOpen(
-  context?: AoiProactiveTrendFollowUpContext | null,
-  prompt = context?.prompt ?? '',
+function selectExplicitAoiProactiveTrendSource(
+  context: AoiProactiveTrendFollowUpContext,
+  prompt: string,
 ): AoiProactiveTrendFollowUpSource | null {
-  if (!context || context.sources.length < 1) {
-    return null;
-  }
-
   const selectedIndex = parseSourceIndexFromPrompt(prompt, context.sources.length);
   if (selectedIndex !== null) {
     return context.sources[selectedIndex] ?? null;
@@ -284,9 +280,19 @@ export function selectAoiProactiveTrendSourceToOpen(
   return (
     context.sources.find((source) => sourceHostMatchesPrompt(source, prompt)) ??
     context.sources.find((source) => sourceTitleMatchesPrompt(source, prompt)) ??
-    context.sources[0] ??
     null
   );
+}
+
+export function selectAoiProactiveTrendSourceToOpen(
+  context?: AoiProactiveTrendFollowUpContext | null,
+  prompt = context?.prompt ?? '',
+): AoiProactiveTrendFollowUpSource | null {
+  if (!context || context.sources.length < 1) {
+    return null;
+  }
+
+  return selectExplicitAoiProactiveTrendSource(context, prompt) ?? context.sources[0] ?? null;
 }
 
 export function selectAoiProactiveTrendSourcesToOpen(
@@ -305,30 +311,49 @@ export function selectAoiProactiveTrendSourcesToOpen(
   return source ? [source] : [];
 }
 
+export function selectAoiProactiveTrendSourcesToList(
+  context?: AoiProactiveTrendFollowUpContext | null,
+  prompt = context?.prompt ?? '',
+): AoiProactiveTrendFollowUpSource[] {
+  if (!context || context.sources.length < 1) {
+    return [];
+  }
+
+  const source = selectExplicitAoiProactiveTrendSource(context, prompt);
+  return source ? [source] : [...context.sources];
+}
+
 export function buildAoiProactiveTrendSourceListText(
   context?: AoiProactiveTrendFollowUpContext | null,
+  sources = context?.sources ?? [],
 ): string {
   if (!context) {
     return '';
   }
 
-  if (context.sources.length < 1) {
+  if (context.sources.length < 1 || sources.length < 1) {
     return `꿀보, "${context.title}"에 저장된 source URL이 없어.`;
   }
 
-  const sourceLines = context.sources.map((source, index) => {
+  const sourceLines = sources.map((source) => {
     const sourceTitle = source.title || source.host || 'Source';
+    const sourceIndex = context.sources.findIndex((candidate) => candidate.url === source.url);
+    const sourceLabel = sourceIndex >= 0 ? sourceIndex + 1 : 1;
     const dateParts = [
       source.publishedAt ? `published ${source.publishedAt}` : '',
       source.retrievedAt ? `retrieved ${new Date(source.retrievedAt).toISOString()}` : '',
     ].filter(Boolean);
     const dateLine = dateParts.length > 0 ? `\n   ${dateParts.join(', ')}` : '';
     const snippetLine = source.snippet ? `\n   ${source.snippet}` : '';
-    return `${index + 1}. ${sourceTitle} (${source.host})\n   URL: ${source.url}${dateLine}${snippetLine}`;
+    return `${sourceLabel}. ${sourceTitle} (${source.host})\n   URL: ${source.url}${dateLine}${snippetLine}`;
   });
+  const intro =
+    sources.length === context.sources.length
+      ? `꿀보, "${context.title}"에 저장된 근거는 ${context.sources.length}개야.`
+      : `꿀보, "${context.title}"에서 요청한 저장 근거는 ${sources.length}개야. 전체 ${context.sources.length}개 중에서 골랐어.`;
 
   return [
-    `꿀보, "${context.title}"에 저장된 근거는 ${context.sources.length}개야.`,
+    intro,
     sourceLines.join('\n'),
     '열람까지 원하면 "첫 번째 근거 열어줘" 또는 "모든 근거 열어줘"라고 하면 바로 열 수 있어.',
   ].join('\n');
