@@ -78,6 +78,12 @@ export interface AoiAutonomyPaths {
   fieldShadowRecords: string;
   fieldShadowFeedbackLabels: string;
   schedulerState: string;
+  proactiveInterestProfile: string;
+  proactiveBriefsDir: string;
+  proactiveBriefsIndex: string;
+  proactiveBriefCandidatesDir: string;
+  proactiveBriefFeedbackDir: string;
+  proactiveBriefCooldowns: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -354,6 +360,7 @@ export function resolveAoiAutonomyPaths(
   const playbooksDir = join(root, 'playbooks');
   const timelineDir = join(root, 'timeline');
   const fieldShadowDir = join(root, 'field-shadow');
+  const proactiveBriefsDir = join(root, 'proactive-briefs');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -378,6 +385,12 @@ export function resolveAoiAutonomyPaths(
     fieldShadowRecords: join(fieldShadowDir, 'records.json'),
     fieldShadowFeedbackLabels: join(fieldShadowDir, 'feedback-labels.json'),
     schedulerState: join(root, 'scheduler-state.json'),
+    proactiveInterestProfile: join(root, 'proactive-interest-profile.json'),
+    proactiveBriefsDir,
+    proactiveBriefsIndex: join(proactiveBriefsDir, 'index.json'),
+    proactiveBriefCandidatesDir: join(proactiveBriefsDir, 'candidates'),
+    proactiveBriefFeedbackDir: join(proactiveBriefsDir, 'feedback'),
+    proactiveBriefCooldowns: join(proactiveBriefsDir, 'cooldowns.json'),
   };
 }
 

@@ -97,6 +97,158 @@ export type AoiProposalFeedbackCategory =
   | 'already_done'
   | 'needs_more_detail';
 
+export type AoiInterestTopicSource =
+  | 'memory'
+  | 'manual'
+  | 'feedback'
+  | 'research_run'
+  | 'project_context';
+
+export interface AoiInterestTopic {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  label: string;
+  normalizedLabel: string;
+  aliases: string[];
+  source: AoiInterestTopicSource;
+  memoryIds: string[];
+  evidenceRefs: string[];
+  confidence: number;
+  importance: number;
+  noveltyPreference: number;
+  currentInfoPreference: number;
+  muted: boolean;
+  pinned: boolean;
+  cooldownKey: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AoiInterestProfile {
+  version: 1;
+  sessionPath: string;
+  topics: AoiInterestTopic[];
+  generatedAt: number;
+  sourceMemoryCount: number;
+  warnings: string[];
+}
+
+export type AoiProactiveBriefStatus =
+  | 'candidate'
+  | 'shown'
+  | 'accepted'
+  | 'dismissed'
+  | 'archived'
+  | 'expired'
+  | 'blocked';
+
+export type AoiProactiveBriefDeliveryMode = 'dashboard' | 'digest' | 'inline_card' | 'chat_hook';
+
+export interface AoiProactiveBriefSource {
+  title: string;
+  url: string;
+  host: string;
+  publishedAt?: string;
+  retrievedAt: number;
+  snippet: string;
+}
+
+export interface AoiProactiveBriefCandidate {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  topicId: string;
+  topicLabel: string;
+  status: AoiProactiveBriefStatus;
+  title: string;
+  hook: string;
+  summary: string;
+  whyForOperator: string;
+  noveltyReason: string;
+  sources: AoiProactiveBriefSource[];
+  evidenceRefs: string[];
+  memoryIds: string[];
+  researchRunId?: string;
+  score: number;
+  confidence: number;
+  risk: AoiAutonomyRisk;
+  freshness: {
+    searchedAt: number;
+    newestSourceAt?: string;
+    cannotKnow: string[];
+  };
+  delivery: {
+    allowedModes: AoiProactiveBriefDeliveryMode[];
+    selectedMode?: AoiProactiveBriefDeliveryMode;
+    quietModeSuppressed?: boolean;
+    lastShownAt?: number;
+  };
+  cooldownKey: string;
+  dedupeKey?: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export type AoiProactiveBriefFeedbackCategory =
+  | 'useful'
+  | 'not_useful'
+  | 'show_more'
+  | 'show_less'
+  | 'wrong_topic'
+  | 'wrong_timing'
+  | 'too_frequent'
+  | 'stale'
+  | 'unsafe';
+
+export interface AoiProactiveBriefFeedback {
+  version: 1;
+  id: string;
+  briefId: string;
+  topicId: string;
+  sessionPath: string;
+  category: AoiProactiveBriefFeedbackCategory;
+  note?: string;
+  createdAt: number;
+}
+
+export interface AoiProactiveBriefCooldownEntry {
+  version: 1;
+  cooldownKey: string;
+  topicId?: string;
+  nextAllowedAt: number;
+  reason: string;
+  sourceBriefIds: string[];
+  updatedAt: number;
+}
+
+export interface AoiProactiveBriefCooldownState {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  cooldowns: Record<string, AoiProactiveBriefCooldownEntry>;
+}
+
+export interface AoiProactiveBriefIndexEntry {
+  id: string;
+  topicId: string;
+  cooldownKey: string;
+  status: AoiProactiveBriefStatus;
+  title: string;
+  dedupeKey: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+}
+
+export interface AoiProactiveBriefIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiProactiveBriefIndexEntry[];
+}
+
 export type AoiFailureKind =
   | 'policy_blocked'
   | 'missing_evidence'
