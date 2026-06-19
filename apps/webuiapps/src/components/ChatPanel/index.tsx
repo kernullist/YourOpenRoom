@@ -283,6 +283,7 @@ import {
   buildAoiWorkspaceSignalPanelSummary,
   canShowAoiProposalPrimaryAction,
   loadAoiAutonomyPanelSettings,
+  recordAoiAgendaNudgeFeedback,
   sanitizeAoiProposalDisplayText,
   saveAoiAutonomyPanelSettings,
   selectAoiAgendaChatNudge,
@@ -2521,6 +2522,8 @@ const ChatPanel: React.FC<{
     useState<AoiProactiveBriefListResponse | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
     useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
+  const aoiAutonomyPanelSettingsRef = useRef(aoiAutonomyPanelSettings);
+  aoiAutonomyPanelSettingsRef.current = aoiAutonomyPanelSettings;
   const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
     AoiAutonomyBlockedProposal[]
   >([]);
@@ -3486,10 +3489,14 @@ const ChatPanel: React.FC<{
 
   const updateAoiAutonomyPanelSettingsFromPanel = useCallback(
     (patch: Partial<AoiAutonomyPanelSettings>) => {
-      setAoiAutonomyPanelSettings((prev) => ({
-        ...prev,
-        ...patch,
-      }));
+      setAoiAutonomyPanelSettings((prev) => {
+        const next = {
+          ...prev,
+          ...patch,
+        };
+        aoiAutonomyPanelSettingsRef.current = next;
+        return next;
+      });
     },
     [],
   );
@@ -4717,9 +4724,18 @@ const ChatPanel: React.FC<{
           blockedProposals: aoiAutonomyBlockedProposalsRef.current,
           digest: aoiOperatorDigestRef.current,
         });
-        if (response.shouldEnableQuietMode) {
-          updateAoiAutonomyPanelSettingsFromPanel({ quietMode: true });
-        }
+        const nextAgendaNudgeCalibration = recordAoiAgendaNudgeFeedback(
+          aoiAutonomyPanelSettingsRef.current.agendaNudgeCalibration,
+          {
+            kind: response.feedbackKind,
+            reason: response.intent,
+            dedupeKey: aoiAgendaFollowUpContext.nudge.dedupeKey,
+          },
+        );
+        updateAoiAutonomyPanelSettingsFromPanel({
+          ...(response.shouldEnableQuietMode ? { quietMode: true } : {}),
+          agendaNudgeCalibration: nextAgendaNudgeCalibration,
+        });
         if (response.suggestedReplies.length > 0) {
           registerAoiAgendaSuggestedReplies(
             aoiAgendaFollowUpContext.nudge,

@@ -59,6 +59,8 @@ import type {
 
 export const AOI_INLINE_SUGGESTION_COOLDOWN_MS = 30 * 60 * 1000;
 export const AOI_AGENDA_CHAT_NUDGE_COOLDOWN_MS = 45 * 60 * 1000;
+export const AOI_AGENDA_NUDGE_TOO_MUCH_MUTE_MS = 2 * 60 * 60 * 1000;
+export const AOI_AGENDA_NUDGE_QUIET_MUTE_MS = 6 * 60 * 60 * 1000;
 export const AOI_INLINE_SUGGESTION_MAX_PER_SESSION = 3;
 export const AOI_AUTONOMY_PANEL_SETTINGS_KEY = 'openroom-aoi-autonomy-panel-settings';
 
@@ -114,6 +116,29 @@ export interface AoiAgendaChatNudgeSelectionOptions {
   quietMode?: boolean;
   notificationsEnabled?: boolean;
   shownDedupeKeys?: ReadonlySet<string>;
+  calibration?: AoiAgendaNudgeCalibrationState | null;
+}
+
+export type AoiAgendaNudgeFeedbackKind = 'useful' | 'too_much' | 'quieted' | 'neutral';
+
+export interface AoiAgendaNudgeCalibrationState {
+  version: 1;
+  updatedAt: number;
+  usefulCount: number;
+  noisyCount: number;
+  quietedCount: number;
+  neutralCount: number;
+  mutedUntil: number | null;
+  lastFeedbackKind: AoiAgendaNudgeFeedbackKind | null;
+  lastFeedbackReason: string | null;
+  lastDedupeKey: string | null;
+}
+
+export interface AoiAgendaNudgeCalibrationGate {
+  suppressed: boolean;
+  reasonLabels: string[];
+  mutedUntil: number | null;
+  evidenceRefs: string[];
 }
 
 export type AoiAgendaChatFollowUpIntent =
@@ -138,6 +163,7 @@ export interface AoiAgendaChatFollowUpResponse {
   suggestedReplies: string[];
   evidenceRefs: string[];
   shouldEnableQuietMode: boolean;
+  feedbackKind: AoiAgendaNudgeFeedbackKind;
 }
 
 export interface AoiAutonomyProposalCounts {
@@ -152,6 +178,7 @@ export interface AoiAutonomyPanelSettings {
   notificationsEnabled: boolean;
   quietMode: boolean;
   maxSuggestionsPerSession: number;
+  agendaNudgeCalibration?: AoiAgendaNudgeCalibrationState | null;
 }
 
 export interface AoiAutonomyNotificationBadge {
@@ -578,6 +605,7 @@ export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
   notificationsEnabled: false,
   quietMode: false,
   maxSuggestionsPerSession: AOI_INLINE_SUGGESTION_MAX_PER_SESSION,
+  agendaNudgeCalibration: null,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -599,6 +627,57 @@ function normalizeMaxSuggestions(value: unknown, fallback: number): number {
   return Math.round(clamp(value, 0, 12));
 }
 
+function normalizeCount(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+  return Math.round(clamp(value, 0, 1000));
+}
+
+function normalizeTimestampOrNull(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.round(value);
+}
+
+function normalizeAoiAgendaNudgeFeedbackKind(value: unknown): AoiAgendaNudgeFeedbackKind | null {
+  return value === 'useful' || value === 'too_much' || value === 'quieted' || value === 'neutral'
+    ? value
+    : null;
+}
+
+export function normalizeAoiAgendaNudgeCalibration(
+  value: unknown,
+): AoiAgendaNudgeCalibrationState | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiAgendaNudgeCalibrationState>)
+      : null;
+  if (!raw) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    updatedAt: normalizeTimestampOrNull(raw.updatedAt) ?? 0,
+    usefulCount: normalizeCount(raw.usefulCount),
+    noisyCount: normalizeCount(raw.noisyCount),
+    quietedCount: normalizeCount(raw.quietedCount),
+    neutralCount: normalizeCount(raw.neutralCount),
+    mutedUntil: normalizeTimestampOrNull(raw.mutedUntil),
+    lastFeedbackKind: normalizeAoiAgendaNudgeFeedbackKind(raw.lastFeedbackKind),
+    lastFeedbackReason:
+      typeof raw.lastFeedbackReason === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.lastFeedbackReason, 120)
+        : null,
+    lastDedupeKey:
+      typeof raw.lastDedupeKey === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.lastDedupeKey, 160)
+        : null,
+  };
+}
+
 export function normalizeAoiAutonomyPanelSettings(
   value: unknown,
   fallback: AoiAutonomyPanelSettings = DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS,
@@ -616,6 +695,10 @@ export function normalizeAoiAutonomyPanelSettings(
       raw.maxSuggestionsPerSession,
       fallback.maxSuggestionsPerSession,
     ),
+    agendaNudgeCalibration:
+      normalizeAoiAgendaNudgeCalibration(raw.agendaNudgeCalibration) ??
+      fallback.agendaNudgeCalibration ??
+      null,
   };
 }
 
@@ -654,6 +737,99 @@ export function saveAoiAutonomyPanelSettings(
     // Persistence is best-effort.
   }
   return normalized;
+}
+
+export function recordAoiAgendaNudgeFeedback(
+  calibration: AoiAgendaNudgeCalibrationState | null | undefined,
+  params: {
+    kind: AoiAgendaNudgeFeedbackKind;
+    now?: number;
+    reason?: string;
+    dedupeKey?: string;
+  },
+): AoiAgendaNudgeCalibrationState {
+  const now = params.now ?? Date.now();
+  const current = normalizeAoiAgendaNudgeCalibration(calibration) ?? {
+    version: 1,
+    updatedAt: 0,
+    usefulCount: 0,
+    noisyCount: 0,
+    quietedCount: 0,
+    neutralCount: 0,
+    mutedUntil: null,
+    lastFeedbackKind: null,
+    lastFeedbackReason: null,
+    lastDedupeKey: null,
+  };
+  const next: AoiAgendaNudgeCalibrationState = {
+    ...current,
+    updatedAt: now,
+    lastFeedbackKind: params.kind,
+    lastFeedbackReason: params.reason
+      ? sanitizeAoiProposalDisplayText(params.reason, 120)
+      : current.lastFeedbackReason,
+    lastDedupeKey: params.dedupeKey
+      ? sanitizeAoiProposalDisplayText(params.dedupeKey, 160)
+      : current.lastDedupeKey,
+  };
+
+  if (params.kind === 'useful') {
+    next.usefulCount += 1;
+    next.mutedUntil = null;
+  } else if (params.kind === 'too_much') {
+    next.noisyCount += 1;
+    next.mutedUntil = now + AOI_AGENDA_NUDGE_TOO_MUCH_MUTE_MS;
+  } else if (params.kind === 'quieted') {
+    next.quietedCount += 1;
+    next.mutedUntil = now + AOI_AGENDA_NUDGE_QUIET_MUTE_MS;
+  } else {
+    next.neutralCount += 1;
+  }
+
+  return next;
+}
+
+export function getAoiAgendaNudgeCalibrationGate(
+  calibration: AoiAgendaNudgeCalibrationState | null | undefined,
+  now = Date.now(),
+): AoiAgendaNudgeCalibrationGate {
+  const normalized = normalizeAoiAgendaNudgeCalibration(calibration);
+  if (!normalized) {
+    return {
+      suppressed: false,
+      reasonLabels: [],
+      mutedUntil: null,
+      evidenceRefs: [],
+    };
+  }
+
+  const mutedUntil =
+    normalized.mutedUntil && normalized.mutedUntil > now ? normalized.mutedUntil : null;
+  const reasonLabels: string[] = [];
+  const evidenceRefs = [`agenda-feedback:${normalized.lastFeedbackKind ?? 'none'}`];
+
+  if (mutedUntil) {
+    const kindLabel = normalized.lastFeedbackKind
+      ? normalized.lastFeedbackKind.replace(/_/g, ' ')
+      : 'recent feedback';
+    reasonLabels.push(`Agenda nudges muted after ${kindLabel} feedback.`);
+    reasonLabels.push(`Muted until ${new Date(mutedUntil).toLocaleString()}.`);
+  }
+  if (normalized.usefulCount > 0) {
+    reasonLabels.push(`${normalized.usefulCount} useful agenda response(s) recorded.`);
+  }
+  if (normalized.noisyCount + normalized.quietedCount > 0) {
+    reasonLabels.push(
+      `${normalized.noisyCount + normalized.quietedCount} quiet/noisy agenda response(s) recorded.`,
+    );
+  }
+
+  return {
+    suppressed: Boolean(mutedUntil),
+    reasonLabels,
+    mutedUntil,
+    evidenceRefs,
+  };
 }
 
 export function sanitizeAoiProposalDisplayText(value: string, maxLength = 520): string {
@@ -2075,6 +2251,14 @@ export function selectAoiAgendaChatNudge(params: {
   }
 
   const now = options.now ?? Date.now();
+  const calibrationGate = getAoiAgendaNudgeCalibrationGate(
+    options.calibration ?? settings.agendaNudgeCalibration,
+    now,
+  );
+  if (calibrationGate.suppressed) {
+    return null;
+  }
+
   const maxPerSession = options.maxPerSession ?? settings.maxSuggestionsPerSession;
   const shownCount = options.shownCount ?? 0;
   if (maxPerSession <= 0 || shownCount >= maxPerSession) {
@@ -2316,9 +2500,11 @@ export function buildAoiAgendaChatFollowUpResponse(params: {
     (proposal ? `Review proposal: ${proposal.title}.` : 'Open the Aoi panel and review the item.');
   let chatText = '';
   let shouldEnableQuietMode = false;
+  let feedbackKind: AoiAgendaNudgeFeedbackKind = 'useful';
 
   if (intent === 'enable_quiet_mode') {
     shouldEnableQuietMode = true;
+    feedbackKind = 'quieted';
     chatText = [
       'Aoi agenda quiet mode is on for this panel.',
       'I will keep observing and recording evidence, but I will not surface agenda chat nudges until quiet mode is turned off.',
@@ -2395,6 +2581,7 @@ export function buildAoiAgendaChatFollowUpResponse(params: {
           .slice(0, 3),
     evidenceRefs,
     shouldEnableQuietMode,
+    feedbackKind,
   };
 }
 

@@ -33,7 +33,9 @@ import {
   buildAoiRecoveryPreviewSummary,
   canShowAoiProposalPrimaryAction,
   getAoiSafeAlternativeForReasons,
+  getAoiAgendaNudgeCalibrationGate,
   loadAoiAutonomyPanelSettings,
+  recordAoiAgendaNudgeFeedback,
   saveAoiAutonomyPanelSettings,
   sanitizeAoiProposalDisplayText,
   selectAoiAgendaChatNudge,
@@ -928,6 +930,7 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(response.intent).toBe('review_approval_gate');
     expect(response.shouldEnableQuietMode).toBe(false);
+    expect(response.feedbackKind).toBe('useful');
     expect(response.chatText).toContain('Approval gate: Refresh stale RE research');
     expect(response.chatText).toContain('required level: L3');
     expect(response.chatText).toContain('waiting for explicit approval');
@@ -968,9 +971,72 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(response.intent).toBe('enable_quiet_mode');
     expect(response.shouldEnableQuietMode).toBe(true);
+    expect(response.feedbackKind).toBe('quieted');
     expect(response.suggestedReplies).toEqual([]);
     expect(response.chatText).toContain('quiet mode is on');
     expect(response.chatText).toContain('no tools or external actions run');
+  });
+
+  it('calibrates agenda chat nudges from follow-up feedback', () => {
+    const proposal = makeProposal({
+      confidence: 0.96,
+      evidenceRefs: ['research:aoi-research-ui-test/report', 'memory:re-interest', 'source:kernel'],
+    });
+    const quieted = recordAoiAgendaNudgeFeedback(null, {
+      kind: 'quieted',
+      now: 5000,
+      reason: 'enable_quiet_mode',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+    const gate = getAoiAgendaNudgeCalibrationGate(quieted, 6000);
+
+    expect(gate).toMatchObject({
+      suppressed: true,
+      evidenceRefs: ['agenda-feedback:quieted'],
+    });
+    expect(gate.reasonLabels.join(' ')).toContain('quieted feedback');
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [proposal],
+        settings: {
+          panelExpanded: true,
+          notificationsEnabled: true,
+          quietMode: false,
+          maxSuggestionsPerSession: 3,
+          agendaNudgeCalibration: quieted,
+        },
+        options: {
+          now: 6000,
+        },
+      }),
+    ).toBeNull();
+
+    const useful = recordAoiAgendaNudgeFeedback(quieted, {
+      kind: 'useful',
+      now: 7000,
+      reason: 'review_approval_gate',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+
+    expect(useful.mutedUntil).toBeNull();
+    expect(getAoiAgendaNudgeCalibrationGate(useful, 8000).suppressed).toBe(false);
+    expect(
+      selectAoiAgendaChatNudge({
+        status: makeAutonomyStatus(),
+        activeProposals: [proposal],
+        settings: {
+          panelExpanded: true,
+          notificationsEnabled: true,
+          quietMode: false,
+          maxSuggestionsPerSession: 3,
+          agendaNudgeCalibration: useful,
+        },
+        options: {
+          now: 8000,
+        },
+      })?.reason,
+    ).toBe('high_signal_proposal');
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {
