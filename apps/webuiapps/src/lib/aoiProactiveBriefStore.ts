@@ -21,6 +21,11 @@ import type {
   AoiProactiveBriefCooldownEntry,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefDeliveryMode,
+  AoiProactiveBriefFieldEvent,
+  AoiProactiveBriefFieldEventIndex,
+  AoiProactiveBriefFieldEventIndexEntry,
+  AoiProactiveBriefFieldEventKind,
+  AoiProactiveBriefFieldMetrics,
   AoiProactiveBriefFeedback,
   AoiProactiveBriefFeedbackCategory,
   AoiProactiveBriefIndex,
@@ -28,9 +33,14 @@ import type {
   AoiProactiveBriefSource,
   AoiProactiveBriefStatus,
 } from './aoiAutonomyTypes';
+import type {
+  AoiProactiveBriefDeliveryDecision,
+  AoiProactiveBriefDeliverySuppressionReason,
+} from './aoiProactiveBriefPolicy';
 
 const MAX_PROACTIVE_BRIEF_INDEX_ITEMS = 200;
 const MAX_PROACTIVE_BRIEF_FEEDBACK_ITEMS = 500;
+const MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS = 500;
 const DEFAULT_BRIEF_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_PROFILE_LABEL = 'Interest Topic';
 
@@ -42,6 +52,10 @@ export interface AoiProactiveBriefPaths {
   candidatesDir: string;
   feedbackDir: string;
   cooldowns: string;
+  fieldEventsDir: string;
+  fieldEventIndex: string;
+  fieldEventRecordsDir: string;
+  fieldMetrics: string;
 }
 
 export interface AoiInterestProfileRebuildInput {
@@ -65,6 +79,35 @@ export interface AoiProactiveBriefCooldownInput {
   nextAllowedAt: number;
   reason: string;
   sourceBriefIds?: string[];
+  now?: number;
+}
+
+export interface AoiProactiveBriefFieldEventInput {
+  kind: AoiProactiveBriefFieldEventKind;
+  sessionPath: string;
+  briefId?: string;
+  topicId?: string;
+  feedbackId?: string;
+  feedbackCategory?: AoiProactiveBriefFeedbackCategory;
+  deliveryMode?: AoiProactiveBriefDeliveryMode;
+  policyReason?: string;
+  suppressionReasons?: string[];
+  title?: string;
+  summary?: string;
+  sourceRefs?: string[];
+  sourceHosts?: string[];
+  evidenceRefs?: string[];
+  freshness?: Partial<AoiProactiveBriefFieldEvent['freshness']>;
+  privacy?: Partial<AoiProactiveBriefFieldEvent['privacy']>;
+  dedupeKey?: string;
+  createdAt?: number;
+}
+
+export interface AoiProactiveBriefDeliveryFieldEventInput {
+  sessionsDir: string;
+  sessionPath: string;
+  candidates: AoiProactiveBriefCandidate[];
+  decisions: AoiProactiveBriefDeliveryDecision[];
   now?: number;
 }
 
@@ -123,7 +166,14 @@ function normalizeText(value: unknown, maxChars: number): string | undefined {
   if (typeof value !== 'string') {
     return undefined;
   }
-  const normalized = normalizeWhitespace(redactAoiSensitiveContent(value)).slice(0, maxChars);
+  const normalized = normalizeWhitespace(
+    redactAoiSensitiveContent(value)
+      .replace(/(?:[A-Za-z]:\\|\\\\)[^\s'"`<>|]+/g, '[redacted-path]')
+      .replace(
+        /(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace)\/[^\s'"`<>|]+)/g,
+        '[redacted-path]',
+      ),
+  ).slice(0, maxChars);
   return normalized || undefined;
 }
 
@@ -274,6 +324,10 @@ export function resolveAoiProactiveBriefPaths(
     candidatesDir: autonomyPaths.proactiveBriefCandidatesDir,
     feedbackDir: autonomyPaths.proactiveBriefFeedbackDir,
     cooldowns: autonomyPaths.proactiveBriefCooldowns,
+    fieldEventsDir: autonomyPaths.proactiveBriefFieldEventsDir,
+    fieldEventIndex: autonomyPaths.proactiveBriefFieldEventIndex,
+    fieldEventRecordsDir: autonomyPaths.proactiveBriefFieldEventRecordsDir,
+    fieldMetrics: autonomyPaths.proactiveBriefFieldMetrics,
   };
 
   for (const target of [
@@ -283,6 +337,10 @@ export function resolveAoiProactiveBriefPaths(
     paths.candidatesDir,
     paths.feedbackDir,
     paths.cooldowns,
+    paths.fieldEventsDir,
+    paths.fieldEventIndex,
+    paths.fieldEventRecordsDir,
+    paths.fieldMetrics,
   ]) {
     if (!isPathInsideRoot(paths.root, target)) {
       throw new Error('Resolved proactive brief path escaped the autonomy root.');
@@ -695,6 +753,640 @@ export function loadAoiProactiveBriefCandidates(
     .slice(0, MAX_PROACTIVE_BRIEF_INDEX_ITEMS);
 }
 
+function isFieldEventKind(value: unknown): value is AoiProactiveBriefFieldEventKind {
+  return (
+    value === 'candidate_created' ||
+    value === 'shown_dashboard' ||
+    value === 'shown_digest' ||
+    value === 'shown_inline' ||
+    value === 'chat_hook_offered' ||
+    value === 'expanded' ||
+    value === 'source_opened' ||
+    value === 'feedback_recorded' ||
+    value === 'suppressed_quiet_mode' ||
+    value === 'suppressed_cooldown' ||
+    value === 'suppressed_stale_source' ||
+    value === 'suppressed_no_opt_in' ||
+    value === 'suppressed_budget' ||
+    value === 'suppressed_no_topics' ||
+    value === 'expired' ||
+    value === 'archived'
+  );
+}
+
+function normalizeFieldEventIndexEntry(
+  value: unknown,
+  now: number,
+): AoiProactiveBriefFieldEventIndexEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveBriefFieldEventIndexEntry>;
+  if (!isValidAoiAutonomyId(raw.id) || !isFieldEventKind(raw.kind)) {
+    return null;
+  }
+  const createdAt = normalizeTimestamp(raw.createdAt, now);
+  return {
+    id: raw.id,
+    kind: raw.kind,
+    createdAt,
+    ...(normalizeText(raw.briefId, 120) ? { briefId: normalizeText(raw.briefId, 120) } : {}),
+    ...(normalizeText(raw.topicId, 120) ? { topicId: normalizeText(raw.topicId, 120) } : {}),
+    ...(normalizeText(raw.feedbackId, 120)
+      ? { feedbackId: normalizeText(raw.feedbackId, 120) }
+      : {}),
+    ...(isDeliveryMode(raw.deliveryMode) ? { deliveryMode: raw.deliveryMode } : {}),
+    ...(normalizeText(raw.dedupeKey, 260) ? { dedupeKey: normalizeText(raw.dedupeKey, 260) } : {}),
+  };
+}
+
+function loadAoiProactiveBriefFieldEventIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefFieldEventIndex {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const normalizedSessionPath = resolveSessionPath(sessionPath);
+  const parsed = readJson<Partial<AoiProactiveBriefFieldEventIndex>>(paths.fieldEventIndex);
+  const entries =
+    parsed?.version === 1 && Array.isArray(parsed.entries)
+      ? parsed.entries
+          .map((entry) => normalizeFieldEventIndexEntry(entry, now))
+          .filter((entry): entry is AoiProactiveBriefFieldEventIndexEntry => entry !== null)
+          .sort(
+            (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+          )
+          .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS)
+      : [];
+  return {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    updatedAt: normalizeTimestamp(parsed?.updatedAt, 0),
+    entries,
+  };
+}
+
+function saveAoiProactiveBriefFieldEventIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  index: AoiProactiveBriefFieldEventIndex,
+): AoiProactiveBriefFieldEventIndex {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const normalizedSessionPath = resolveSessionPath(sessionPath);
+  const normalized: AoiProactiveBriefFieldEventIndex = {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    updatedAt: index.updatedAt,
+    entries: index.entries
+      .map((entry) => normalizeFieldEventIndexEntry(entry, index.updatedAt))
+      .filter((entry): entry is AoiProactiveBriefFieldEventIndexEntry => entry !== null)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+      .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS),
+  };
+  writeJsonAtomic(paths.root, paths.fieldEventIndex, normalized);
+  return normalized;
+}
+
+function normalizeFieldEventFreshness(
+  value: Partial<AoiProactiveBriefFieldEvent['freshness']> | undefined,
+  now: number,
+): AoiProactiveBriefFieldEvent['freshness'] {
+  const raw = value && typeof value === 'object' ? value : {};
+  return {
+    ...(typeof raw.searchedAt === 'number' && Number.isFinite(raw.searchedAt)
+      ? { searchedAt: Math.max(0, raw.searchedAt) }
+      : {}),
+    ...(normalizeText(raw.newestSourceAt, 64)
+      ? { newestSourceAt: normalizeText(raw.newestSourceAt, 64) }
+      : {}),
+    cannotKnow: normalizeStringList(raw.cannotKnow, 12, 240),
+    stale:
+      raw.stale === true ||
+      normalizeStringList(raw.cannotKnow, 12, 240).some((item) =>
+        /stale|freshness window/i.test(item),
+      ) ||
+      (typeof raw.searchedAt === 'number' &&
+        Number.isFinite(raw.searchedAt) &&
+        raw.searchedAt > now),
+  };
+}
+
+function normalizeFieldEventPrivacy(params: {
+  rawText: string;
+  input?: Partial<AoiProactiveBriefFieldEvent['privacy']>;
+}): AoiProactiveBriefFieldEvent['privacy'] {
+  const hasSensitiveText = containsAoiSensitiveContent(params.rawText);
+  const hasPrivatePath =
+    /(?:[A-Za-z]:\\|\\\\)[^\s'"`<>|]+/.test(params.rawText) ||
+    /(?:\/(?:Users|home|mnt|tmp|var|Volumes|workspace)\/[^\s'"`<>|]+)/.test(params.rawText);
+  return {
+    redacted: params.input?.redacted === true || hasSensitiveText || hasPrivatePath,
+    privateLeakDetected: params.input?.privateLeakDetected === true,
+    unauthorizedMutationDetected: params.input?.unauthorizedMutationDetected === true,
+    redactionReasons: [
+      ...new Set([
+        ...(hasSensitiveText ? ['sensitive_text_redacted'] : []),
+        ...(hasPrivatePath ? ['private_path_redacted'] : []),
+        ...normalizeStringList(params.input?.redactionReasons, 12, 120),
+      ]),
+    ],
+  };
+}
+
+function normalizeAoiProactiveBriefFieldEvent(
+  value: unknown,
+  sessionPathFallback?: string,
+  now = Date.now(),
+): AoiProactiveBriefFieldEvent | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveBriefFieldEvent>;
+  const sessionPath = normalizeAoiAutonomySessionPath(raw.sessionPath ?? sessionPathFallback ?? '');
+  if (!sessionPath || !isValidAoiAutonomyId(raw.id) || !isFieldEventKind(raw.kind)) {
+    return null;
+  }
+  const title = normalizeText(raw.title, 160);
+  const summary = normalizeText(raw.summary, 420);
+  const suppressionReasons = normalizeStringList(raw.suppressionReasons, 12, 120);
+  const sourceRefs = normalizeStringList(raw.sourceRefs, 16, 180);
+  const sourceHosts = normalizeStringList(raw.sourceHosts, 12, 120);
+  const evidenceRefs = normalizeStringList(raw.evidenceRefs, 24, 180);
+  const rawText = JSON.stringify({
+    briefId: raw.briefId,
+    topicId: raw.topicId,
+    feedbackId: raw.feedbackId,
+    policyReason: raw.policyReason,
+    title: raw.title,
+    summary: raw.summary,
+    suppressionReasons: raw.suppressionReasons,
+    sourceRefs: raw.sourceRefs,
+    sourceHosts: raw.sourceHosts,
+    evidenceRefs: raw.evidenceRefs,
+    freshness: raw.freshness,
+    dedupeKey: raw.dedupeKey,
+  });
+  return {
+    version: 1,
+    id: raw.id,
+    sessionPath,
+    kind: raw.kind,
+    ...(normalizeText(raw.briefId, 120) ? { briefId: normalizeText(raw.briefId, 120) } : {}),
+    ...(normalizeText(raw.topicId, 120) ? { topicId: normalizeText(raw.topicId, 120) } : {}),
+    ...(normalizeText(raw.feedbackId, 120)
+      ? { feedbackId: normalizeText(raw.feedbackId, 120) }
+      : {}),
+    ...(isFeedbackCategory(raw.feedbackCategory) ? { feedbackCategory: raw.feedbackCategory } : {}),
+    ...(isDeliveryMode(raw.deliveryMode) ? { deliveryMode: raw.deliveryMode } : {}),
+    ...(normalizeText(raw.policyReason, 180)
+      ? { policyReason: normalizeText(raw.policyReason, 180) }
+      : {}),
+    suppressionReasons,
+    ...(title ? { title } : {}),
+    ...(summary ? { summary } : {}),
+    sourceRefs,
+    sourceHosts,
+    evidenceRefs,
+    freshness: normalizeFieldEventFreshness(raw.freshness, now),
+    privacy: normalizeFieldEventPrivacy({
+      rawText,
+      input: raw.privacy,
+    }),
+    ...(normalizeText(raw.dedupeKey, 260) ? { dedupeKey: normalizeText(raw.dedupeKey, 260) } : {}),
+    createdAt: normalizeTimestamp(raw.createdAt, now),
+  };
+}
+
+function fieldEventIndexEntry(
+  event: AoiProactiveBriefFieldEvent,
+): AoiProactiveBriefFieldEventIndexEntry {
+  return {
+    id: event.id,
+    kind: event.kind,
+    createdAt: event.createdAt,
+    ...(event.briefId ? { briefId: event.briefId } : {}),
+    ...(event.topicId ? { topicId: event.topicId } : {}),
+    ...(event.feedbackId ? { feedbackId: event.feedbackId } : {}),
+    ...(event.deliveryMode ? { deliveryMode: event.deliveryMode } : {}),
+    ...(event.dedupeKey ? { dedupeKey: event.dedupeKey } : {}),
+  };
+}
+
+function loadFieldEventById(
+  sessionsDir: string,
+  sessionPath: string,
+  eventId: string,
+  now: number,
+): AoiProactiveBriefFieldEvent | null {
+  if (!isValidAoiAutonomyId(eventId)) {
+    return null;
+  }
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  return normalizeAoiProactiveBriefFieldEvent(
+    readJson<unknown>(join(paths.fieldEventRecordsDir, `${eventId}.json`)),
+    sessionPath,
+    now,
+  );
+}
+
+export function loadAoiProactiveBriefFieldEvents(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefFieldEvent[] {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const index = loadAoiProactiveBriefFieldEventIndex(sessionsDir, sessionPath, now);
+  const indexed = index.entries
+    .map((entry) => loadFieldEventById(sessionsDir, sessionPath, entry.id, now))
+    .filter((event): event is AoiProactiveBriefFieldEvent => event !== null);
+  if (indexed.length > 0 || index.updatedAt > 0) {
+    return indexed.sort(
+      (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+    );
+  }
+  return listJsonFiles<unknown>(paths.fieldEventRecordsDir)
+    .map((event) => normalizeAoiProactiveBriefFieldEvent(event, sessionPath, now))
+    .filter((event): event is AoiProactiveBriefFieldEvent => event !== null)
+    .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+    .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS);
+}
+
+function incrementCount(counts: Record<string, number>, key: string): void {
+  counts[key] = (counts[key] ?? 0) + 1;
+}
+
+export function buildAoiProactiveBriefFieldMetrics(
+  sessionPath: string,
+  events: AoiProactiveBriefFieldEvent[],
+  now = Date.now(),
+): AoiProactiveBriefFieldMetrics {
+  const normalizedSessionPath = resolveSessionPath(sessionPath);
+  const suppressionCounts: Record<string, number> = {};
+  const shownByDeliveryMode: Record<AoiProactiveBriefDeliveryMode, number> = {
+    dashboard: 0,
+    digest: 0,
+    inline_card: 0,
+    chat_hook: 0,
+  };
+  let consideredCount = 0;
+  let shownCount = 0;
+  let expandedCount = 0;
+  let sourceOpenedCount = 0;
+  let feedbackRecordedCount = 0;
+  let usefulCount = 0;
+  let tooFrequentCount = 0;
+  let wrongTopicCount = 0;
+  let wrongTimingCount = 0;
+  let staleCount = 0;
+  let unsafeCount = 0;
+  let privateLeakCount = 0;
+  let unauthorizedMutationCount = 0;
+  let directChatHookCount = 0;
+
+  for (const event of events) {
+    if (event.kind === 'candidate_created') {
+      consideredCount += 1;
+    }
+    if (
+      event.kind === 'shown_dashboard' ||
+      event.kind === 'shown_digest' ||
+      event.kind === 'shown_inline' ||
+      event.kind === 'chat_hook_offered'
+    ) {
+      shownCount += 1;
+      if (event.deliveryMode) {
+        shownByDeliveryMode[event.deliveryMode] += 1;
+      }
+    }
+    if (event.kind === 'expanded') {
+      expandedCount += 1;
+    }
+    if (event.kind === 'source_opened') {
+      sourceOpenedCount += 1;
+    }
+    if (event.kind === 'feedback_recorded') {
+      feedbackRecordedCount += 1;
+    }
+    if (event.kind === 'chat_hook_offered' || event.deliveryMode === 'chat_hook') {
+      directChatHookCount += 1;
+    }
+    if (event.kind.startsWith('suppressed_')) {
+      incrementCount(suppressionCounts, event.kind);
+    }
+    for (const reason of event.suppressionReasons) {
+      incrementCount(suppressionCounts, reason);
+    }
+    if (event.feedbackCategory === 'useful') {
+      usefulCount += 1;
+    }
+    if (event.feedbackCategory === 'too_frequent') {
+      tooFrequentCount += 1;
+    }
+    if (event.feedbackCategory === 'wrong_topic') {
+      wrongTopicCount += 1;
+    }
+    if (event.feedbackCategory === 'wrong_timing') {
+      wrongTimingCount += 1;
+    }
+    if (
+      event.feedbackCategory === 'stale' ||
+      event.kind === 'suppressed_stale_source' ||
+      event.freshness.stale
+    ) {
+      staleCount += 1;
+    }
+    if (event.feedbackCategory === 'unsafe') {
+      unsafeCount += 1;
+    }
+    if (event.privacy.privateLeakDetected) {
+      privateLeakCount += 1;
+    }
+    if (event.privacy.unauthorizedMutationDetected) {
+      unauthorizedMutationCount += 1;
+    }
+  }
+
+  const eventCount = events.length;
+  const status =
+    privateLeakCount > 0 || unauthorizedMutationCount > 0
+      ? 'blocked'
+      : eventCount > 0
+        ? 'field_events_recorded'
+        : 'not_field_tested';
+  const evidenceRefs = [
+    ...new Set(
+      events.flatMap((event) => [`proactive-brief-field-event:${event.id}`, ...event.evidenceRefs]),
+    ),
+  ].slice(0, 24);
+  const lastEventAt = events
+    .map((event) => event.createdAt)
+    .filter((createdAt) => createdAt > 0)
+    .sort((left, right) => right - left)[0];
+
+  return {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    generatedAt: now,
+    status,
+    eventCount,
+    consideredCount,
+    shownCount,
+    shownByDeliveryMode,
+    expandedCount,
+    sourceOpenedCount,
+    feedbackRecordedCount,
+    usefulCount,
+    tooFrequentCount,
+    wrongTopicCount,
+    wrongTimingCount,
+    staleCount,
+    unsafeCount,
+    suppressionCounts,
+    privateLeakCount,
+    unauthorizedMutationCount,
+    directChatHookCount,
+    ...(lastEventAt ? { lastEventAt } : {}),
+    evidenceRefs,
+  };
+}
+
+function saveAoiProactiveBriefFieldMetrics(
+  sessionsDir: string,
+  sessionPath: string,
+  metrics: AoiProactiveBriefFieldMetrics,
+): AoiProactiveBriefFieldMetrics {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  writeJsonAtomic(paths.root, paths.fieldMetrics, metrics);
+  return metrics;
+}
+
+export function loadAoiProactiveBriefFieldMetrics(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefFieldMetrics {
+  return buildAoiProactiveBriefFieldMetrics(
+    sessionPath,
+    loadAoiProactiveBriefFieldEvents(sessionsDir, sessionPath, now),
+    now,
+  );
+}
+
+function createFieldEventId(params: {
+  prefix: string;
+  now: number;
+  sequence: number;
+  seed: string;
+}): string {
+  const sequence = Math.max(1, params.sequence).toString(36);
+  return `${params.prefix}-${params.now.toString(36)}-${sequence}-${hashText(params.seed)}`.slice(
+    0,
+    127,
+  );
+}
+
+export function recordAoiProactiveBriefFieldEvent(
+  sessionsDir: string,
+  input: AoiProactiveBriefFieldEventInput,
+): AoiProactiveBriefFieldEvent {
+  const now = input.createdAt ?? Date.now();
+  const sessionPath = resolveSessionPath(input.sessionPath);
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const index = loadAoiProactiveBriefFieldEventIndex(sessionsDir, sessionPath, now);
+  const dedupeKey = normalizeText(input.dedupeKey, 260);
+  const existingEntry = dedupeKey
+    ? index.entries.find((entry) => entry.dedupeKey === dedupeKey)
+    : undefined;
+  const existingEvent = existingEntry
+    ? loadFieldEventById(sessionsDir, sessionPath, existingEntry.id, now)
+    : null;
+  if (existingEvent) {
+    return existingEvent;
+  }
+  const eventId = createFieldEventId({
+    prefix: 'aoi-brief-field',
+    now,
+    sequence: index.entries.length + 1,
+    seed: [
+      sessionPath,
+      input.kind,
+      input.briefId ?? '',
+      input.topicId ?? '',
+      input.feedbackId ?? '',
+      dedupeKey ?? '',
+    ].join(':'),
+  });
+  const event = normalizeAoiProactiveBriefFieldEvent(
+    {
+      version: 1,
+      id: eventId,
+      ...input,
+      sessionPath,
+      ...(dedupeKey ? { dedupeKey } : {}),
+      createdAt: now,
+    },
+    sessionPath,
+    now,
+  );
+  if (!event) {
+    throw new Error('Invalid proactive brief field event.');
+  }
+  writeJsonAtomic(paths.root, join(paths.fieldEventRecordsDir, `${event.id}.json`), event);
+  const nextIndex = saveAoiProactiveBriefFieldEventIndex(sessionsDir, sessionPath, {
+    version: 1,
+    sessionPath,
+    updatedAt: now,
+    entries: [
+      fieldEventIndexEntry(event),
+      ...index.entries.filter((entry) => entry.id !== event.id),
+    ],
+  });
+  const indexedEvents = nextIndex.entries
+    .map((entry) => loadFieldEventById(sessionsDir, sessionPath, entry.id, now))
+    .filter((item): item is AoiProactiveBriefFieldEvent => item !== null);
+  saveAoiProactiveBriefFieldMetrics(
+    sessionsDir,
+    sessionPath,
+    buildAoiProactiveBriefFieldMetrics(sessionPath, indexedEvents, now),
+  );
+  return event;
+}
+
+function fieldEventSources(candidate: AoiProactiveBriefCandidate): {
+  sourceRefs: string[];
+  sourceHosts: string[];
+} {
+  const sourceHosts = [...new Set(candidate.sources.map((source) => source.host).filter(Boolean))];
+  return {
+    sourceRefs: [
+      ...new Set([
+        ...candidate.sources.map((source) => `source:${source.host}`),
+        ...candidate.sources.map((source) => source.url),
+      ]),
+    ].slice(0, 16),
+    sourceHosts: sourceHosts.slice(0, 12),
+  };
+}
+
+function candidateFieldEventInput(
+  candidate: AoiProactiveBriefCandidate,
+  kind: AoiProactiveBriefFieldEventKind,
+  now: number,
+): AoiProactiveBriefFieldEventInput {
+  const sources = fieldEventSources(candidate);
+  return {
+    kind,
+    sessionPath: candidate.sessionPath,
+    briefId: candidate.id,
+    topicId: candidate.topicId,
+    title: candidate.title,
+    summary: `${candidate.hook} ${candidate.whyForOperator}`.trim(),
+    sourceRefs: sources.sourceRefs,
+    sourceHosts: sources.sourceHosts,
+    evidenceRefs: candidate.evidenceRefs,
+    freshness: {
+      searchedAt: candidate.freshness.searchedAt,
+      newestSourceAt: candidate.freshness.newestSourceAt,
+      cannotKnow: candidate.freshness.cannotKnow,
+    },
+    dedupeKey: `${kind}:${candidate.id}`,
+    createdAt: now,
+  };
+}
+
+function suppressionKindForDecision(
+  decision: AoiProactiveBriefDeliveryDecision,
+): AoiProactiveBriefFieldEventKind {
+  const reasons: AoiProactiveBriefDeliverySuppressionReason[] = [
+    ...decision.suppressionReasons,
+    ...Object.values(decision.modeReasons).flat(),
+    ...decision.chatHook.reasons,
+  ];
+  if (
+    reasons.some(
+      (reason) =>
+        reason === 'quiet_mode_suppresses_chat_hook' ||
+        reason === 'quiet_mode_suppresses_inline_card',
+    )
+  ) {
+    return 'suppressed_quiet_mode';
+  }
+  if (
+    reasons.some(
+      (reason) => reason === 'topic_cooldown_active' || reason === 'global_cooldown_active',
+    )
+  ) {
+    return 'suppressed_cooldown';
+  }
+  if (reasons.includes('stale_source')) {
+    return 'suppressed_stale_source';
+  }
+  if (
+    reasons.some(
+      (reason) =>
+        reason === 'missing_sources' ||
+        reason === 'topic_muted' ||
+        reason === 'candidate_not_active' ||
+        reason === 'confidence_below_policy_floor',
+    )
+  ) {
+    return 'suppressed_no_topics';
+  }
+  if (reasons.includes('chat_hook_not_opted_in')) {
+    return 'suppressed_no_opt_in';
+  }
+  return 'suppressed_budget';
+}
+
+function shownKindForMode(mode: AoiProactiveBriefDeliveryMode): AoiProactiveBriefFieldEventKind {
+  if (mode === 'digest') {
+    return 'shown_digest';
+  }
+  if (mode === 'inline_card') {
+    return 'shown_inline';
+  }
+  if (mode === 'chat_hook') {
+    return 'chat_hook_offered';
+  }
+  return 'shown_dashboard';
+}
+
+export function recordAoiProactiveBriefDeliveryFieldEvents(
+  input: AoiProactiveBriefDeliveryFieldEventInput,
+): AoiProactiveBriefFieldEvent[] {
+  const now = input.now ?? Date.now();
+  const byId = new Map(input.candidates.map((candidate) => [candidate.id, candidate]));
+  const events: AoiProactiveBriefFieldEvent[] = [];
+  for (const decision of input.decisions) {
+    const candidate = byId.get(decision.candidateId);
+    if (!candidate) {
+      continue;
+    }
+    const mode = decision.chatHook.allowed
+      ? 'chat_hook'
+      : (decision.selectedMode ?? (decision.compactCardVisible ? 'dashboard' : null));
+    const reasons = [
+      ...new Set([
+        ...decision.suppressionReasons,
+        ...Object.values(decision.modeReasons).flat(),
+        ...decision.chatHook.reasons,
+      ]),
+    ];
+    const kind = mode ? shownKindForMode(mode) : suppressionKindForDecision(decision);
+    const policyReason = mode ? `${mode}_allowed` : reasons[0];
+    events.push(
+      recordAoiProactiveBriefFieldEvent(input.sessionsDir, {
+        ...candidateFieldEventInput(candidate, kind, now),
+        deliveryMode: mode ?? undefined,
+        policyReason,
+        suppressionReasons: mode ? [] : reasons,
+        dedupeKey: `${kind}:${candidate.id}:${mode ?? (reasons.join('|') || 'policy')}`,
+      }),
+    );
+  }
+  return events;
+}
+
 export function upsertAoiProactiveBriefCandidate(
   sessionsDir: string,
   value: unknown,
@@ -751,6 +1443,12 @@ export function upsertAoiProactiveBriefCandidate(
     updatedAt: now,
     entries: nextEntries,
   });
+  if (!existingEntry && storedCandidate.status === 'candidate') {
+    recordAoiProactiveBriefFieldEvent(
+      sessionsDir,
+      candidateFieldEventInput(storedCandidate, 'candidate_created', now),
+    );
+  }
 
   return {
     candidate: storedCandidate,
@@ -784,6 +1482,10 @@ export function expireStaleAoiProactiveBriefCandidates(
       updatedAt: now,
     };
     writeJsonAtomic(paths.root, join(paths.candidatesDir, `${expired.id}.json`), expired);
+    recordAoiProactiveBriefFieldEvent(
+      sessionsDir,
+      candidateFieldEventInput(expired, 'expired', now),
+    );
     return expired;
   });
   saveAoiProactiveBriefIndex(sessionsDir, sessionPath, {
@@ -848,6 +1550,49 @@ export function recordAoiProactiveBriefFeedback(
   }
   const paths = resolveAoiProactiveBriefPaths(sessionsDir, normalized.sessionPath);
   writeJsonAtomic(paths.root, join(paths.feedbackDir, `${normalized.id}.json`), normalized);
+  recordAoiProactiveBriefFieldEvent(sessionsDir, {
+    kind: 'feedback_recorded',
+    sessionPath: normalized.sessionPath,
+    briefId: normalized.briefId,
+    topicId: normalized.topicId,
+    feedbackId: normalized.id,
+    feedbackCategory: normalized.category,
+    summary: normalized.note,
+    evidenceRefs: [`feedback:${normalized.id}`],
+    dedupeKey: `feedback_recorded:${normalized.id}`,
+    createdAt: normalized.createdAt,
+  });
+  const candidate = loadCandidateById(
+    sessionsDir,
+    normalized.sessionPath,
+    normalized.briefId,
+    normalized.createdAt,
+  );
+  const actionKind =
+    normalized.category === 'expand_summary'
+      ? 'expanded'
+      : normalized.category === 'open_sources'
+        ? 'source_opened'
+        : normalized.category === 'archive_brief'
+          ? 'archived'
+          : null;
+  if (actionKind) {
+    recordAoiProactiveBriefFieldEvent(sessionsDir, {
+      ...(candidate
+        ? candidateFieldEventInput(candidate, actionKind, normalized.createdAt)
+        : {
+            kind: actionKind,
+            sessionPath: normalized.sessionPath,
+            briefId: normalized.briefId,
+            topicId: normalized.topicId,
+            createdAt: normalized.createdAt,
+          }),
+      feedbackId: normalized.id,
+      feedbackCategory: normalized.category,
+      evidenceRefs: [...new Set([...(candidate?.evidenceRefs ?? []), `feedback:${normalized.id}`])],
+      dedupeKey: `${actionKind}:${normalized.id}`,
+    });
+  }
   return normalized;
 }
 

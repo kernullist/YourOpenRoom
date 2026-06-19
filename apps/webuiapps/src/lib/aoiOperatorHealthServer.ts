@@ -16,10 +16,14 @@ import {
   loadAoiInterestProfile,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefFeedback,
   resolveAoiProactiveBriefPaths,
 } from './aoiProactiveBriefStore';
-import { buildAoiProactiveBriefDiagnostics } from './aoiProactiveBriefReplay';
+import {
+  buildAoiProactiveBriefDiagnostics,
+  buildAoiProactiveBriefFieldDiagnostics,
+} from './aoiProactiveBriefReplay';
 import type { PersistedConfig } from './configPersistence';
 import type {
   AoiAutonomySchedulerState,
@@ -143,15 +147,22 @@ export function buildAoiOperatorHealthState(params: {
     () => loadAoiProactiveBriefCooldownState(params.sessionsDir, sessionPath, now),
     null,
   );
+  const proactiveFieldMetrics = tryLoad(
+    () => loadAoiProactiveBriefFieldMetrics(params.sessionsDir, sessionPath, now),
+    null,
+  );
   const hasProactiveArtifacts = Boolean(
     proactiveProfile?.topics.length ||
     proactiveCandidates.length ||
     proactiveFeedback.length ||
+    (proactiveFieldMetrics?.eventCount ?? 0) > 0 ||
     Object.keys(proactiveCooldownState?.cooldowns ?? {}).length ||
     (proactivePaths &&
       (fs.existsSync(proactivePaths.profile) ||
         fs.existsSync(proactivePaths.index) ||
-        fs.existsSync(proactivePaths.cooldowns))),
+        fs.existsSync(proactivePaths.cooldowns) ||
+        fs.existsSync(proactivePaths.fieldMetrics) ||
+        fs.existsSync(proactivePaths.fieldEventIndex))),
   );
   const proactiveScoutWarnings =
     hasProactiveArtifacts &&
@@ -163,14 +174,17 @@ export function buildAoiOperatorHealthState(params: {
       ? ['tavily_not_configured:cannot_refresh_current_info']
       : [];
   const proactiveBriefDiagnostics = hasProactiveArtifacts
-    ? buildAoiProactiveBriefDiagnostics({
-        profile: proactiveProfile,
-        candidates: proactiveCandidates,
-        feedback: proactiveFeedback,
-        cooldownState: proactiveCooldownState,
-        scoutWarnings: proactiveScoutWarnings,
-        now,
-      })
+    ? [
+        ...buildAoiProactiveBriefDiagnostics({
+          profile: proactiveProfile,
+          candidates: proactiveCandidates,
+          feedback: proactiveFeedback,
+          cooldownState: proactiveCooldownState,
+          scoutWarnings: proactiveScoutWarnings,
+          now,
+        }),
+        ...buildAoiProactiveBriefFieldDiagnostics(proactiveFieldMetrics, now),
+      ]
     : [];
 
   return evaluateAoiOperatorHealth({

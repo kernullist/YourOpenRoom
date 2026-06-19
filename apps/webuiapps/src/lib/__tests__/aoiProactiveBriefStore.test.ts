@@ -6,15 +6,21 @@ import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiProactiveBriefCandidate } from '../aoiAutonomyTypes';
 import {
   expireStaleAoiProactiveBriefCandidates,
+  buildAoiProactiveBriefFieldMetrics,
   loadAoiInterestProfile,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFieldEvents,
+  loadAoiProactiveBriefFieldMetrics,
   normalizeAoiProactiveBriefCandidate,
+  recordAoiProactiveBriefDeliveryFieldEvents,
+  recordAoiProactiveBriefFieldEvent,
   rebuildAndSaveAoiInterestProfile,
   resolveAoiProactiveBriefPaths,
   upsertAoiProactiveBriefCandidate,
   upsertAoiProactiveBriefCooldown,
 } from '../aoiProactiveBriefStore';
+import { decideAoiProactiveBriefDelivery } from '../aoiProactiveBriefPolicy';
 
 const tempRoots: string[] = [];
 
@@ -172,6 +178,13 @@ describe('Aoi proactive brief candidate storage', () => {
     expect(second.candidate.id).toBe(first.candidate.id);
     expect(candidates).toHaveLength(1);
     expect(candidates[0]?.dedupeKey).toBe(first.dedupeKey);
+    expect(loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 1400)).toMatchObject([
+      {
+        kind: 'candidate_created',
+        briefId: first.candidate.id,
+        topicId: first.candidate.topicId,
+      },
+    ]);
   });
 
   it('expires stale candidates without deleting their audit files', () => {
@@ -187,10 +200,12 @@ describe('Aoi proactive brief candidate storage', () => {
     const candidatePath = join(paths.candidatesDir, `${upserted.candidate.id}.json`);
 
     const expired = expireStaleAoiProactiveBriefCandidates(root, 'aoi/default', 1200);
+    const events = loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 1300);
 
     expect(expired[0]?.status).toBe('expired');
     expect(fs.existsSync(candidatePath)).toBe(true);
     expect(loadAoiProactiveBriefCandidates(root, 'aoi/default', 1300)[0]?.status).toBe('expired');
+    expect(events.some((event) => event.kind === 'expired')).toBe(true);
   });
 
   it('normalizes malformed candidates without throwing', () => {
@@ -249,6 +264,105 @@ describe('Aoi proactive brief candidate storage', () => {
         },
       },
     });
+  });
+
+  it('records append-only redacted field events and deterministic metrics', () => {
+    const root = makeTempRoot();
+
+    const first = recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'expanded',
+      sessionPath: 'aoi/default',
+      briefId: 'aoi-brief-field-test',
+      topicId: 'aoi-interest-reverse',
+      title: 'Expanded private api_key=secret-value brief',
+      summary: 'User-local path F:\\private\\notes.txt should be redacted.',
+      policyReason: 'Checked C:\\Users\\operator\\private-policy.txt',
+      sourceRefs: ['https://example.com/re/writeup'],
+      sourceHosts: ['example.com'],
+      evidenceRefs: ['source:example.com'],
+      createdAt: 1500,
+    });
+    const second = recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'source_opened',
+      sessionPath: 'aoi/default',
+      briefId: 'aoi-brief-field-test',
+      topicId: 'aoi-interest-reverse',
+      sourceRefs: ['https://example.com/re/writeup'],
+      sourceHosts: ['example.com'],
+      evidenceRefs: ['source:example.com'],
+      createdAt: 1600,
+    });
+    const events = loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 1700);
+    const metrics = buildAoiProactiveBriefFieldMetrics('aoi/default', events, 1700);
+
+    expect(first.id).not.toBe(second.id);
+    expect(events).toHaveLength(2);
+    expect(JSON.stringify(events)).not.toContain('api_key=secret-value');
+    expect(JSON.stringify(events)).not.toContain('F:\\private\\notes.txt');
+    expect(JSON.stringify(events)).not.toContain('C:\\Users\\operator\\private-policy.txt');
+    expect(first.privacy.redacted).toBe(true);
+    expect(metrics).toMatchObject({
+      status: 'field_events_recorded',
+      eventCount: 2,
+      expandedCount: 1,
+      sourceOpenedCount: 1,
+      privateLeakCount: 0,
+      unauthorizedMutationCount: 0,
+    });
+  });
+
+  it('aggregates delivery suppression and feedback metrics by reason', () => {
+    const root = makeTempRoot();
+    const upserted = upsertAoiProactiveBriefCandidate(root, makeCandidate(), 2000);
+    const suppressed = upsertAoiProactiveBriefCandidate(
+      root,
+      makeCandidate({
+        id: 'aoi-brief-no-source',
+        sources: [],
+        evidenceRefs: [],
+      }),
+      2050,
+    );
+    const shownDecision = decideAoiProactiveBriefDelivery({
+      candidate: upserted.candidate,
+      context: {
+        now: 2100,
+        quietMode: true,
+        directChatOptIn: true,
+      },
+    });
+    const suppressedDecision = decideAoiProactiveBriefDelivery({
+      candidate: suppressed.candidate,
+      context: {
+        now: 2100,
+      },
+    });
+
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      candidates: [upserted.candidate, suppressed.candidate],
+      decisions: [shownDecision, suppressedDecision],
+      now: 2100,
+    });
+    recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'feedback_recorded',
+      sessionPath: 'aoi/default',
+      briefId: upserted.candidate.id,
+      topicId: upserted.candidate.topicId,
+      feedbackId: 'aoi-brief-feedback-metrics',
+      feedbackCategory: 'too_frequent',
+      evidenceRefs: ['feedback:aoi-brief-feedback-metrics'],
+      createdAt: 2200,
+    });
+    const metrics = loadAoiProactiveBriefFieldMetrics(root, 'aoi/default', 2300);
+
+    expect(metrics.consideredCount).toBe(2);
+    expect(metrics.shownByDeliveryMode.digest).toBe(1);
+    expect(metrics.suppressionCounts.suppressed_no_topics).toBe(1);
+    expect(metrics.suppressionCounts.missing_sources).toBe(1);
+    expect(metrics.feedbackRecordedCount).toBe(1);
+    expect(metrics.tooFrequentCount).toBe(1);
   });
 
   it('does not import network, research, or command execution helpers in this layer', () => {

@@ -14,6 +14,7 @@ import { applyAoiProactiveBriefFeedbackAction } from '../aoiProactiveBriefFeedba
 import {
   loadAoiInterestProfile,
   loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFieldEvents,
   loadAoiProactiveBriefFeedback,
   saveAoiInterestProfile,
   upsertAoiProactiveBriefCandidate,
@@ -282,6 +283,7 @@ describe('Aoi proactive brief feedback adaptation', () => {
     const cooldown = loadAoiProactiveBriefCooldownState(root, SESSION_PATH, NOW).cooldowns[
       'interest:reverse-engineering'
     ];
+    const fieldEvents = loadAoiProactiveBriefFieldEvents(root, SESSION_PATH, NOW + 1000);
     const followUpDecision = decideAoiProactiveBriefDelivery({
       candidate: makeCandidate({
         id: 'aoi-brief-after-too-frequent',
@@ -300,9 +302,47 @@ describe('Aoi proactive brief feedback adaptation', () => {
     });
 
     expect(cooldown.nextAllowedAt).toBeGreaterThanOrEqual(NOW + 24 * 60 * 60 * 1000);
+    expect(fieldEvents.some((event) => event.kind === 'feedback_recorded')).toBe(true);
+    expect(fieldEvents.some((event) => event.feedbackCategory === 'too_frequent')).toBe(true);
     expect(followUpDecision.digestVisible).toBe(false);
     expect(followUpDecision.inlineCardVisible).toBe(false);
     expect(followUpDecision.modeReasons.digest).toContain('topic_cooldown_active');
+  });
+
+  it('records expansion and source-open field events from feedback actions', () => {
+    const root = makeTempRoot();
+    saveProfileAndCandidate(root);
+
+    applyAoiProactiveBriefFeedbackAction({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      briefId: 'aoi-brief-delivery-test',
+      category: 'expand_summary',
+      now: NOW + 1000,
+    });
+    applyAoiProactiveBriefFeedbackAction({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      briefId: 'aoi-brief-delivery-test',
+      category: 'open_sources',
+      now: NOW + 2000,
+    });
+    applyAoiProactiveBriefFeedbackAction({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      briefId: 'aoi-brief-delivery-test',
+      category: 'archive_brief',
+      now: NOW + 3000,
+    });
+
+    const fieldEvents = loadAoiProactiveBriefFieldEvents(root, SESSION_PATH, NOW + 4000);
+
+    expect(fieldEvents.some((event) => event.kind === 'expanded')).toBe(true);
+    expect(fieldEvents.some((event) => event.kind === 'source_opened')).toBe(true);
+    expect(fieldEvents.some((event) => event.kind === 'archived')).toBe(true);
+    expect(fieldEvents.some((event) => event.feedbackCategory === 'expand_summary')).toBe(true);
+    expect(fieldEvents.some((event) => event.feedbackCategory === 'open_sources')).toBe(true);
+    expect(fieldEvents.some((event) => event.feedbackCategory === 'archive_brief')).toBe(true);
   });
 
   it('lowers topic score and records feedback evidence for wrong topic', () => {

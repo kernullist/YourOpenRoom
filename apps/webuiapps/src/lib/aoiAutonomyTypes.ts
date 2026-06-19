@@ -254,6 +254,105 @@ export interface AoiProactiveBriefIndex {
   entries: AoiProactiveBriefIndexEntry[];
 }
 
+export type AoiProactiveBriefFieldEventKind =
+  | 'candidate_created'
+  | 'shown_dashboard'
+  | 'shown_digest'
+  | 'shown_inline'
+  | 'chat_hook_offered'
+  | 'expanded'
+  | 'source_opened'
+  | 'feedback_recorded'
+  | 'suppressed_quiet_mode'
+  | 'suppressed_cooldown'
+  | 'suppressed_stale_source'
+  | 'suppressed_no_opt_in'
+  | 'suppressed_budget'
+  | 'suppressed_no_topics'
+  | 'expired'
+  | 'archived';
+
+export interface AoiProactiveBriefFieldEventFreshness {
+  searchedAt?: number;
+  newestSourceAt?: string;
+  cannotKnow: string[];
+  stale: boolean;
+}
+
+export interface AoiProactiveBriefFieldEventPrivacy {
+  redacted: boolean;
+  privateLeakDetected: boolean;
+  unauthorizedMutationDetected: boolean;
+  redactionReasons: string[];
+}
+
+export interface AoiProactiveBriefFieldEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  kind: AoiProactiveBriefFieldEventKind;
+  briefId?: string;
+  topicId?: string;
+  feedbackId?: string;
+  feedbackCategory?: AoiProactiveBriefFeedbackCategory;
+  deliveryMode?: AoiProactiveBriefDeliveryMode;
+  policyReason?: string;
+  suppressionReasons: string[];
+  title?: string;
+  summary?: string;
+  sourceRefs: string[];
+  sourceHosts: string[];
+  evidenceRefs: string[];
+  freshness: AoiProactiveBriefFieldEventFreshness;
+  privacy: AoiProactiveBriefFieldEventPrivacy;
+  dedupeKey?: string;
+  createdAt: number;
+}
+
+export interface AoiProactiveBriefFieldEventIndexEntry {
+  id: string;
+  kind: AoiProactiveBriefFieldEventKind;
+  createdAt: number;
+  briefId?: string;
+  topicId?: string;
+  feedbackId?: string;
+  deliveryMode?: AoiProactiveBriefDeliveryMode;
+  dedupeKey?: string;
+}
+
+export interface AoiProactiveBriefFieldEventIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiProactiveBriefFieldEventIndexEntry[];
+}
+
+export interface AoiProactiveBriefFieldMetrics {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  status: 'not_field_tested' | 'field_events_recorded' | 'blocked';
+  eventCount: number;
+  consideredCount: number;
+  shownCount: number;
+  shownByDeliveryMode: Record<AoiProactiveBriefDeliveryMode, number>;
+  expandedCount: number;
+  sourceOpenedCount: number;
+  feedbackRecordedCount: number;
+  usefulCount: number;
+  tooFrequentCount: number;
+  wrongTopicCount: number;
+  wrongTimingCount: number;
+  staleCount: number;
+  unsafeCount: number;
+  suppressionCounts: Record<string, number>;
+  privateLeakCount: number;
+  unauthorizedMutationCount: number;
+  directChatHookCount: number;
+  lastEventAt?: number;
+  evidenceRefs: string[];
+}
+
 export type AoiFailureKind =
   | 'policy_blocked'
   | 'missing_evidence'

@@ -10,6 +10,7 @@ import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import {
   AOI_PROACTIVE_BRIEF_REPLAY_PRIVATE_TEXT_SAMPLES,
   buildAoiProactiveBriefDiagnostics,
+  buildAoiProactiveBriefFieldDiagnostics,
   formatAoiProactiveBriefReplayReport,
   runBuiltInAoiProactiveBriefReplayFixtures,
 } from '../aoiProactiveBriefReplay';
@@ -198,6 +199,55 @@ describe('Aoi proactive brief replay hardening', () => {
     expect(JSON.stringify(health)).not.toContain('api_key=secret-value');
   });
 
+  it('maps proactive field leak metrics into operator health blockers', () => {
+    const diagnostics = buildAoiProactiveBriefFieldDiagnostics(
+      {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        generatedAt: NOW,
+        status: 'blocked',
+        eventCount: 1,
+        consideredCount: 1,
+        shownCount: 0,
+        shownByDeliveryMode: {
+          dashboard: 0,
+          digest: 0,
+          inline_card: 0,
+          chat_hook: 0,
+        },
+        expandedCount: 0,
+        sourceOpenedCount: 0,
+        feedbackRecordedCount: 0,
+        usefulCount: 0,
+        tooFrequentCount: 0,
+        wrongTopicCount: 0,
+        wrongTimingCount: 0,
+        staleCount: 0,
+        unsafeCount: 0,
+        suppressionCounts: {},
+        privateLeakCount: 1,
+        unauthorizedMutationCount: 1,
+        directChatHookCount: 0,
+        lastEventAt: NOW,
+        evidenceRefs: ['proactive-brief-field-event:test'],
+      },
+      NOW,
+    );
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: SESSION_PATH,
+      proactiveBriefDiagnostics: diagnostics,
+      now: NOW,
+    });
+
+    expect(health.overallStatus).toBe('blocked');
+    expect(health.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining([
+        'proactive_brief_field_private_leak_detected',
+        'proactive_brief_field_unauthorized_mutation_detected',
+      ]),
+    );
+  });
+
   it('surfaces proactive Tavily diagnostics from persisted health state only when proactive artifacts exist', () => {
     const root = makeTempRoot();
     const configFile = join(root, 'config.json');
@@ -224,6 +274,9 @@ describe('Aoi proactive brief replay hardening', () => {
     });
 
     expect(health.issues.some((issue) => issue.code === 'proactive_brief_tavily_unavailable')).toBe(
+      true,
+    );
+    expect(health.issues.some((issue) => issue.code === 'proactive_brief_field_not_tested')).toBe(
       true,
     );
     expect(

@@ -8,6 +8,7 @@ import type {
   AoiProactiveBriefCandidate,
   AoiProactiveBriefCooldownEntry,
   AoiProactiveBriefCooldownState,
+  AoiProactiveBriefFieldMetrics,
   AoiProactiveBriefFeedback,
 } from './aoiAutonomyTypes';
 import {
@@ -56,7 +57,10 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'no_eligible_topics'
   | 'all_topics_muted'
   | 'cooldown_suppressed_all_candidates'
-  | 'direct_chat_disabled_by_policy';
+  | 'direct_chat_disabled_by_policy'
+  | 'field_not_tested'
+  | 'field_private_leak_detected'
+  | 'field_unauthorized_mutation_detected';
 
 export interface AoiProactiveBriefReplayMetric {
   name: AoiProactiveBriefReplayMetricName;
@@ -606,6 +610,60 @@ export function buildAoiProactiveBriefDiagnostics(
     );
   }
 
+  return diagnostics;
+}
+
+export function buildAoiProactiveBriefFieldDiagnostics(
+  metrics: AoiProactiveBriefFieldMetrics | null | undefined,
+  now = Date.now(),
+): AoiProactiveBriefDiagnostic[] {
+  if (!metrics) {
+    return [];
+  }
+  const diagnostics: AoiProactiveBriefDiagnostic[] = [];
+  if (metrics.eventCount === 0 || metrics.status === 'not_field_tested') {
+    diagnostics.push(
+      diagnostic({
+        code: 'field_not_tested',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary:
+          'Proactive interest briefs have no field event evidence yet; replay coverage exists, but real-session usefulness is not proven.',
+        cannotKnow:
+          'Aoi cannot claim proactive brief field readiness until shown, suppressed, or feedback events are recorded.',
+        evidenceRefs: ['proactive-brief-field:metrics'],
+        observedAt: metrics.generatedAt || now,
+      }),
+    );
+  }
+  if (metrics.privateLeakCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'field_private_leak_detected',
+        severity: 'blocker',
+        capability: 'replay_evaluation',
+        summary: `${metrics.privateLeakCount} proactive brief field event(s) reported private leakage.`,
+        cannotKnow:
+          'Aoi cannot promote proactive brief field behavior until private leakage is investigated and fixed.',
+        evidenceRefs: metrics.evidenceRefs,
+        observedAt: metrics.lastEventAt ?? metrics.generatedAt ?? now,
+      }),
+    );
+  }
+  if (metrics.unauthorizedMutationCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'field_unauthorized_mutation_detected',
+        severity: 'blocker',
+        capability: 'replay_evaluation',
+        summary: `${metrics.unauthorizedMutationCount} proactive brief field event(s) reported unauthorized mutation.`,
+        cannotKnow:
+          'Aoi cannot promote proactive brief field behavior while any unauthorized mutation is present.',
+        evidenceRefs: metrics.evidenceRefs,
+        observedAt: metrics.lastEventAt ?? metrics.generatedAt ?? now,
+      }),
+    );
+  }
   return diagnostics;
 }
 

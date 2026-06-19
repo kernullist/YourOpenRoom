@@ -839,6 +839,12 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Proactive brief cooldown active';
     case 'direct_chat_disabled_by_policy':
       return 'Direct proactive chat disabled';
+    case 'field_not_tested':
+      return 'Proactive brief field events missing';
+    case 'field_private_leak_detected':
+      return 'Proactive brief private leak detected';
+    case 'field_unauthorized_mutation_detected':
+      return 'Proactive brief unauthorized mutation detected';
     default:
       return 'Proactive brief diagnostic';
   }

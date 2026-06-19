@@ -35,6 +35,7 @@ import type {
   AoiProposalFeedbackCategory,
   AoiProactiveBriefCandidate,
   AoiProactiveBriefCooldownState,
+  AoiProactiveBriefFieldMetrics,
   AoiProactiveBriefFeedback,
   AoiProactiveBriefFeedbackCategory,
   AoiReflection,
@@ -175,6 +176,7 @@ export interface AoiProactiveBriefListResponse {
   feedback: AoiProactiveBriefFeedback[];
   profile: AoiInterestProfile;
   cooldownState: AoiProactiveBriefCooldownState;
+  fieldMetrics?: AoiProactiveBriefFieldMetrics;
   panel?: AoiProactiveBriefPanelModel;
 }
 
@@ -572,6 +574,9 @@ function parseAoiProactiveBriefListPayload(
     feedback: asArray<AoiProactiveBriefFeedback>(payload.feedback),
     profile,
     cooldownState,
+    ...(isRecord(payload.fieldMetrics)
+      ? { fieldMetrics: payload.fieldMetrics as AoiProactiveBriefFieldMetrics }
+      : {}),
     ...(isRecord(payload.panel) ? { panel: payload.panel as AoiProactiveBriefPanelModel } : {}),
   };
 }

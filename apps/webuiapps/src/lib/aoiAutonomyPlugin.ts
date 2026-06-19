@@ -61,8 +61,11 @@ import {
   loadAoiInterestProfile,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefFeedback,
+  recordAoiProactiveBriefDeliveryFieldEvents,
 } from './aoiProactiveBriefStore';
+import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
@@ -247,19 +250,46 @@ function buildAoiProactiveBriefResponse(params: {
     params.sessionPath,
     now,
   );
+  const deliveryContext = {
+    now,
+    quietMode: true,
+    directChatOptIn: false,
+    maxInlineCards: 0,
+    inlineCardsShown: 0,
+  };
+  const deliveryDecisions = candidates.map((candidate) =>
+    decideAoiProactiveBriefDelivery({
+      candidate,
+      policy,
+      profile,
+      feedback,
+      cooldownState,
+      context: deliveryContext,
+    }),
+  );
+  try {
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      candidates,
+      decisions: deliveryDecisions,
+      now,
+    });
+  } catch (error) {
+    console.warn('[AoiAutonomyPlugin] Failed to record proactive brief field events', error);
+  }
+  const fieldMetrics = loadAoiProactiveBriefFieldMetrics(
+    params.sessionsDir,
+    params.sessionPath,
+    now,
+  );
   const panel = buildAoiProactiveBriefPanelModel({
     candidates,
     policy,
     profile,
     feedback,
     cooldownState,
-    context: {
-      now,
-      quietMode: true,
-      directChatOptIn: false,
-      maxInlineCards: 0,
-      inlineCardsShown: 0,
-    },
+    context: deliveryContext,
   });
   return {
     ok: true,
@@ -268,6 +298,7 @@ function buildAoiProactiveBriefResponse(params: {
     feedback,
     profile,
     cooldownState,
+    fieldMetrics,
     panel,
   };
 }
