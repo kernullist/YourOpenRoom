@@ -3,6 +3,7 @@ import type {
   AoiInterestProfile,
   AoiInterestTopic,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefDeliveryMode,
   AoiProactiveBriefFeedback,
@@ -48,7 +49,10 @@ export type AoiProactiveBriefDeliverySuppressionReason =
   | 'quiet_mode_suppresses_inline_card'
   | 'chat_hook_mode_not_allowed'
   | 'inline_mode_not_allowed'
-  | 'inline_session_limit_reached';
+  | 'inline_session_limit_reached'
+  | 'calibration_stale_direct_chat_block'
+  | 'calibration_unsafe_direct_chat_block'
+  | 'calibration_timing_prefers_digest';
 
 export interface AoiProactiveBriefDeliveryContext {
   quietMode?: boolean;
@@ -83,6 +87,7 @@ export interface DecideAoiProactiveBriefDeliveryInput {
   profile?: AoiInterestProfile | null;
   feedback?: AoiProactiveBriefFeedback[];
   cooldownState?: AoiProactiveBriefCooldownState | null;
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
   context?: AoiProactiveBriefDeliveryContext;
 }
 
@@ -187,6 +192,88 @@ function activeCooldownReason(
   return null;
 }
 
+function sourceHostKey(value: string): string {
+  return value.replace(/\s+/g, ' ').trim().toLowerCase();
+}
+
+function sourceCalibrationTuning(
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined,
+  candidate: AoiProactiveBriefCandidate,
+): Array<AoiProactiveBriefCalibrationTuning['sourceTuning'][string]> {
+  if (!tuning) {
+    return [];
+  }
+  return candidate.sources
+    .map((source) => tuning.sourceTuning[sourceHostKey(source.host)])
+    .filter((item): item is AoiProactiveBriefCalibrationTuning['sourceTuning'][string] =>
+      Boolean(item),
+    );
+}
+
+function calibrationScoreAdjustment(params: {
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined;
+  candidate: AoiProactiveBriefCandidate;
+}): number {
+  const topicTuning = params.tuning?.topicTuning[params.candidate.topicId];
+  const sourceTunings = sourceCalibrationTuning(params.tuning, params.candidate);
+  const sourceDelta =
+    sourceTunings.length > 0
+      ? sourceTunings.reduce((sum, item) => sum + item.preferenceDelta, 0) / sourceTunings.length
+      : 0;
+  return Math.max(
+    -0.5,
+    Math.min(
+      0.35,
+      (topicTuning?.scoreDelta ?? 0) +
+        (topicTuning?.sourcePreferenceDelta ?? 0) * 0.4 +
+        sourceDelta * 0.25,
+    ),
+  );
+}
+
+function activeCalibrationCooldownReason(
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined,
+  candidate: AoiProactiveBriefCandidate,
+  now: number,
+): AoiProactiveBriefDeliverySuppressionReason | null {
+  const topicTuning = tuning?.topicTuning[candidate.topicId];
+  if (!topicTuning || topicTuning.cooldownMs <= 0) {
+    return null;
+  }
+  return topicTuning.updatedAt + topicTuning.cooldownMs > now ? 'topic_cooldown_active' : null;
+}
+
+function calibrationChatHookReasons(params: {
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined;
+  candidate: AoiProactiveBriefCandidate;
+}): AoiProactiveBriefDeliverySuppressionReason[] {
+  const topicTuning = params.tuning?.topicTuning[params.candidate.topicId];
+  const sourceTunings = sourceCalibrationTuning(params.tuning, params.candidate);
+  const reasons: AoiProactiveBriefDeliverySuppressionReason[] = [];
+  if (topicTuning?.directChatBlocked || topicTuning?.preferDigestOrDashboard) {
+    if (topicTuning.conservativeReasons.includes('unsafe')) {
+      reasons.push('calibration_unsafe_direct_chat_block');
+    } else if (topicTuning.conservativeReasons.includes('stale')) {
+      reasons.push('calibration_stale_direct_chat_block');
+    } else {
+      reasons.push('calibration_timing_prefers_digest');
+    }
+  }
+  if (sourceTunings.some((item) => item.unsafeBlocked)) {
+    reasons.push('calibration_unsafe_direct_chat_block');
+  } else if (sourceTunings.some((item) => item.staleBlocked || item.directChatBlocked)) {
+    reasons.push('calibration_stale_direct_chat_block');
+  }
+  return uniqueReasons(reasons);
+}
+
+function calibrationChatHookThresholdDelta(
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined,
+  candidate: AoiProactiveBriefCandidate,
+): number {
+  return tuning?.topicTuning[candidate.topicId]?.chatHookThresholdDelta ?? 0;
+}
+
 function addReason(
   reasons: AoiProactiveBriefDeliverySuppressionReason[],
   value: AoiProactiveBriefDeliverySuppressionReason | null | undefined,
@@ -218,6 +305,8 @@ export function decideAoiProactiveBriefDelivery(
   const context = input.context ?? {};
   const now = context.now ?? Date.now();
   const topic = findTopic(input.profile, candidate);
+  const calibrationTuning = input.calibrationTuning ?? null;
+  const topicCalibration = calibrationTuning?.topicTuning[candidate.topicId];
   const sourceStale = isSourceStale(
     candidate,
     now,
@@ -242,6 +331,9 @@ export function decideAoiProactiveBriefDelivery(
   if (topic?.muted) {
     baseReasons.push('topic_muted');
   }
+  if (topicCalibration?.muted) {
+    baseReasons.push('topic_muted');
+  }
   if (candidate.sources.length === 0) {
     baseReasons.push('missing_sources');
   }
@@ -252,13 +344,16 @@ export function decideAoiProactiveBriefDelivery(
     baseReasons.push('recent_negative_feedback');
   }
   addReason(baseReasons, activeCooldownReason(candidate, input.cooldownState, now));
+  addReason(baseReasons, activeCalibrationCooldownReason(calibrationTuning, candidate, now));
 
   const deliveryScore = clampScore(
     candidate.score * 0.48 +
       candidate.confidence * 0.28 +
       (topic?.importance ?? 0.5) * 0.12 +
       (topic?.pinned ? 0.08 : 0) +
-      feedbackAdjustment(recentFeedback),
+      (topicCalibration?.pinned ? 0.04 : 0) +
+      feedbackAdjustment(recentFeedback) +
+      calibrationScoreAdjustment({ tuning: calibrationTuning, candidate }),
   );
   const dashboardBlocking = baseReasons.filter(
     (reason) =>
@@ -306,6 +401,13 @@ export function decideAoiProactiveBriefDelivery(
   if (context.quietMode) {
     inlineReasons.push('quiet_mode_suppresses_inline_card');
   }
+  if (
+    calibrationChatHookReasons({ tuning: calibrationTuning, candidate }).includes(
+      'calibration_unsafe_direct_chat_block',
+    )
+  ) {
+    inlineReasons.push('calibration_unsafe_direct_chat_block');
+  }
   modeReasons.inline_card = uniqueReasons([
     ...dashboardBlocking,
     ...attentionBlocking,
@@ -325,6 +427,7 @@ export function decideAoiProactiveBriefDelivery(
   if (sourceStale) {
     chatHookReasons.push('stale_source');
   }
+  chatHookReasons.push(...calibrationChatHookReasons({ tuning: calibrationTuning, candidate }));
   modeReasons.chat_hook = uniqueReasons([
     ...dashboardBlocking,
     ...attentionBlocking,
@@ -334,12 +437,12 @@ export function decideAoiProactiveBriefDelivery(
   const inlineCardVisible =
     compactCardVisible &&
     modeReasons.inline_card.length === 0 &&
-    deliveryScore >= 0.58 &&
+    deliveryScore >= 0.58 + (topicCalibration?.preferDigestOrDashboard ? 0.08 : 0) &&
     !hasNegativeFeedback;
   const chatHookAllowed =
     compactCardVisible &&
     modeReasons.chat_hook.length === 0 &&
-    deliveryScore >= 0.72 &&
+    deliveryScore >= 0.72 + calibrationChatHookThresholdDelta(calibrationTuning, candidate) &&
     !hasNegativeFeedback;
 
   const allowedModes: AoiProactiveBriefDeliveryMode[] = [];

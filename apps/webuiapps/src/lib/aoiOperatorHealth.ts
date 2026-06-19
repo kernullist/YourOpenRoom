@@ -822,6 +822,9 @@ function proactiveBriefRecommendation(
   if (diagnostic.code === 'no_eligible_topics' || diagnostic.code === 'all_topics_muted') {
     return recommendation('inspect_memory', 'Inspect interest profile', 'memory');
   }
+  if (diagnostic.code.startsWith('calibration_')) {
+    return recommendation('review_replay', 'Review calibration labels', 'replay_evaluation');
+  }
   return recommendation('review_replay', 'Review proactive brief replay', 'replay_evaluation');
 }
 
@@ -845,6 +848,14 @@ function proactiveBriefIssueTitle(code: string): string {
       return 'Proactive brief private leak detected';
     case 'field_unauthorized_mutation_detected':
       return 'Proactive brief unauthorized mutation detected';
+    case 'calibration_not_labeled':
+      return 'Proactive brief calibration labels missing';
+    case 'calibration_tuning_active':
+      return 'Proactive brief calibration active';
+    case 'calibration_stale_direct_chat_block':
+      return 'Proactive brief stale calibration active';
+    case 'calibration_unsafe_label_blocker':
+      return 'Proactive brief unsafe calibration active';
     default:
       return 'Proactive brief diagnostic';
   }

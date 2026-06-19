@@ -18,6 +18,13 @@ import type {
   AoiInterestTopic,
   AoiInterestTopicSource,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefCalibrationInbox,
+  AoiProactiveBriefCalibrationInboxItem,
+  AoiProactiveBriefCalibrationLabel,
+  AoiProactiveBriefCalibrationLabelIndex,
+  AoiProactiveBriefCalibrationLabelIndexEntry,
+  AoiProactiveBriefCalibrationLabelRecord,
+  AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownEntry,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefDeliveryMode,
@@ -41,8 +48,13 @@ import type {
 const MAX_PROACTIVE_BRIEF_INDEX_ITEMS = 200;
 const MAX_PROACTIVE_BRIEF_FEEDBACK_ITEMS = 500;
 const MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS = 500;
+const MAX_PROACTIVE_BRIEF_CALIBRATION_LABEL_INDEX_ITEMS = 1000;
+const MAX_PROACTIVE_BRIEF_CALIBRATION_INBOX_ITEMS = 80;
 const DEFAULT_BRIEF_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_PROFILE_LABEL = 'Interest Topic';
+const TOO_FREQUENT_CALIBRATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+const STALE_CALIBRATION_COOLDOWN_MS = 12 * 60 * 60 * 1000;
+const UNSAFE_CALIBRATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 export interface AoiProactiveBriefPaths {
   root: string;
@@ -56,6 +68,10 @@ export interface AoiProactiveBriefPaths {
   fieldEventIndex: string;
   fieldEventRecordsDir: string;
   fieldMetrics: string;
+  calibrationLabelsDir: string;
+  calibrationLabelIndex: string;
+  calibrationLabelRecordsDir: string;
+  calibrationTuning: string;
 }
 
 export interface AoiInterestProfileRebuildInput {
@@ -108,6 +124,16 @@ export interface AoiProactiveBriefDeliveryFieldEventInput {
   sessionPath: string;
   candidates: AoiProactiveBriefCandidate[];
   decisions: AoiProactiveBriefDeliveryDecision[];
+  now?: number;
+}
+
+export interface AoiProactiveBriefCalibrationLabelInput {
+  sessionPath: string;
+  fieldEventId: string;
+  label: AoiProactiveBriefCalibrationLabel;
+  actor?: 'user' | 'system';
+  note?: string;
+  evidenceRefs?: string[];
   now?: number;
 }
 
@@ -328,6 +354,10 @@ export function resolveAoiProactiveBriefPaths(
     fieldEventIndex: autonomyPaths.proactiveBriefFieldEventIndex,
     fieldEventRecordsDir: autonomyPaths.proactiveBriefFieldEventRecordsDir,
     fieldMetrics: autonomyPaths.proactiveBriefFieldMetrics,
+    calibrationLabelsDir: autonomyPaths.proactiveBriefCalibrationLabelsDir,
+    calibrationLabelIndex: autonomyPaths.proactiveBriefCalibrationLabelIndex,
+    calibrationLabelRecordsDir: autonomyPaths.proactiveBriefCalibrationLabelRecordsDir,
+    calibrationTuning: autonomyPaths.proactiveBriefCalibrationTuning,
   };
 
   for (const target of [
@@ -341,6 +371,10 @@ export function resolveAoiProactiveBriefPaths(
     paths.fieldEventIndex,
     paths.fieldEventRecordsDir,
     paths.fieldMetrics,
+    paths.calibrationLabelsDir,
+    paths.calibrationLabelIndex,
+    paths.calibrationLabelRecordsDir,
+    paths.calibrationTuning,
   ]) {
     if (!isPathInsideRoot(paths.root, target)) {
       throw new Error('Resolved proactive brief path escaped the autonomy root.');
@@ -1172,6 +1206,763 @@ export function loadAoiProactiveBriefFieldMetrics(
   );
 }
 
+const CALIBRATION_LABELS: readonly AoiProactiveBriefCalibrationLabel[] = [
+  'useful',
+  'show_more',
+  'show_less',
+  'too_frequent',
+  'wrong_topic',
+  'wrong_timing',
+  'stale',
+  'unsafe',
+  'mute_topic',
+  'pin_topic',
+];
+
+function isCalibrationLabel(value: unknown): value is AoiProactiveBriefCalibrationLabel {
+  return CALIBRATION_LABELS.includes(value as AoiProactiveBriefCalibrationLabel);
+}
+
+function emptyCalibrationLabelDistribution(): Record<AoiProactiveBriefCalibrationLabel, number> {
+  return CALIBRATION_LABELS.reduce(
+    (out, label) => {
+      out[label] = 0;
+      return out;
+    },
+    {} as Record<AoiProactiveBriefCalibrationLabel, number>,
+  );
+}
+
+function calibrationLabelIndexEntry(
+  label: AoiProactiveBriefCalibrationLabelRecord,
+): AoiProactiveBriefCalibrationLabelIndexEntry {
+  return {
+    id: label.id,
+    fieldEventId: label.fieldEventId,
+    label: label.label,
+    createdAt: label.createdAt,
+    ...(label.briefId ? { briefId: label.briefId } : {}),
+    ...(label.topicId ? { topicId: label.topicId } : {}),
+  };
+}
+
+function normalizeCalibrationLabelIndexEntry(
+  value: unknown,
+  now: number,
+): AoiProactiveBriefCalibrationLabelIndexEntry | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveBriefCalibrationLabelIndexEntry>;
+  if (
+    !isValidAoiAutonomyId(raw.id) ||
+    !isValidAoiAutonomyId(raw.fieldEventId) ||
+    !isCalibrationLabel(raw.label)
+  ) {
+    return null;
+  }
+  return {
+    id: raw.id,
+    fieldEventId: raw.fieldEventId,
+    label: raw.label,
+    createdAt: normalizeTimestamp(raw.createdAt, now),
+    ...(normalizeText(raw.briefId, 120) ? { briefId: normalizeText(raw.briefId, 120) } : {}),
+    ...(normalizeText(raw.topicId, 120) ? { topicId: normalizeText(raw.topicId, 120) } : {}),
+  };
+}
+
+function loadAoiProactiveBriefCalibrationLabelIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefCalibrationLabelIndex {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const parsed = readJson<Partial<AoiProactiveBriefCalibrationLabelIndex>>(
+    paths.calibrationLabelIndex,
+  );
+  const entries =
+    parsed?.version === 1 && Array.isArray(parsed.entries)
+      ? parsed.entries
+          .map((entry) => normalizeCalibrationLabelIndexEntry(entry, now))
+          .filter((entry): entry is AoiProactiveBriefCalibrationLabelIndexEntry => entry !== null)
+          .sort(
+            (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+          )
+          .slice(0, MAX_PROACTIVE_BRIEF_CALIBRATION_LABEL_INDEX_ITEMS)
+      : [];
+  return {
+    version: 1,
+    sessionPath: resolveSessionPath(sessionPath),
+    updatedAt: normalizeTimestamp(parsed?.updatedAt, 0),
+    entries,
+  };
+}
+
+function saveAoiProactiveBriefCalibrationLabelIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  index: AoiProactiveBriefCalibrationLabelIndex,
+): AoiProactiveBriefCalibrationLabelIndex {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const normalized: AoiProactiveBriefCalibrationLabelIndex = {
+    version: 1,
+    sessionPath: resolveSessionPath(sessionPath),
+    updatedAt: index.updatedAt,
+    entries: index.entries
+      .map((entry) => normalizeCalibrationLabelIndexEntry(entry, index.updatedAt))
+      .filter((entry): entry is AoiProactiveBriefCalibrationLabelIndexEntry => entry !== null)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+      .slice(0, MAX_PROACTIVE_BRIEF_CALIBRATION_LABEL_INDEX_ITEMS),
+  };
+  writeJsonAtomic(paths.root, paths.calibrationLabelIndex, normalized);
+  return normalized;
+}
+
+function normalizeAoiProactiveBriefCalibrationLabelRecord(
+  value: unknown,
+  sessionPathFallback?: string,
+  now = Date.now(),
+): AoiProactiveBriefCalibrationLabelRecord | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiProactiveBriefCalibrationLabelRecord>;
+  const sessionPath = normalizeAoiAutonomySessionPath(raw.sessionPath ?? sessionPathFallback ?? '');
+  if (
+    !sessionPath ||
+    !isValidAoiAutonomyId(raw.id) ||
+    !isValidAoiAutonomyId(raw.fieldEventId) ||
+    !isCalibrationLabel(raw.label)
+  ) {
+    return null;
+  }
+  return {
+    version: 1,
+    id: raw.id,
+    sessionPath,
+    fieldEventId: raw.fieldEventId,
+    ...(normalizeText(raw.briefId, 120) ? { briefId: normalizeText(raw.briefId, 120) } : {}),
+    ...(normalizeText(raw.topicId, 120) ? { topicId: normalizeText(raw.topicId, 120) } : {}),
+    label: raw.label,
+    actor: raw.actor === 'system' ? 'system' : 'user',
+    ...(normalizeText(raw.note, 240) ? { note: normalizeText(raw.note, 240) } : {}),
+    ...(isDeliveryMode(raw.deliveryMode) ? { deliveryMode: raw.deliveryMode } : {}),
+    ...(normalizeText(raw.policyReason, 180)
+      ? { policyReason: normalizeText(raw.policyReason, 180) }
+      : {}),
+    sourceRefs: normalizeStringList(raw.sourceRefs, 16, 180),
+    sourceHosts: normalizeStringList(raw.sourceHosts, 12, 120),
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 24, 180),
+    createdAt: normalizeTimestamp(raw.createdAt, now),
+  };
+}
+
+function loadCalibrationLabelById(
+  sessionsDir: string,
+  sessionPath: string,
+  labelId: string,
+  now: number,
+): AoiProactiveBriefCalibrationLabelRecord | null {
+  if (!isValidAoiAutonomyId(labelId)) {
+    return null;
+  }
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  return normalizeAoiProactiveBriefCalibrationLabelRecord(
+    readJson<unknown>(join(paths.calibrationLabelRecordsDir, `${labelId}.json`)),
+    sessionPath,
+    now,
+  );
+}
+
+export function loadAoiProactiveBriefCalibrationLabels(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefCalibrationLabelRecord[] {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const index = loadAoiProactiveBriefCalibrationLabelIndex(sessionsDir, sessionPath, now);
+  const indexed = index.entries
+    .map((entry) => loadCalibrationLabelById(sessionsDir, sessionPath, entry.id, now))
+    .filter((label): label is AoiProactiveBriefCalibrationLabelRecord => label !== null);
+  if (indexed.length > 0 || index.updatedAt > 0) {
+    return indexed.sort(
+      (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+    );
+  }
+  return listJsonFiles<unknown>(paths.calibrationLabelRecordsDir)
+    .map((label) => normalizeAoiProactiveBriefCalibrationLabelRecord(label, sessionPath, now))
+    .filter((label): label is AoiProactiveBriefCalibrationLabelRecord => label !== null)
+    .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+    .slice(0, MAX_PROACTIVE_BRIEF_CALIBRATION_LABEL_INDEX_ITEMS);
+}
+
+function createCalibrationLabelId(params: {
+  sessionPath: string;
+  fieldEventId: string;
+  label: AoiProactiveBriefCalibrationLabel;
+  now: number;
+  sequence: number;
+  note?: string;
+}): string {
+  return `aoi-brief-calibration-${params.now.toString(36)}-${hashText(
+    `${params.sessionPath}:${params.fieldEventId}:${params.label}:${params.now}:${params.sequence}:${params.note ?? ''}`,
+  )}`;
+}
+
+function clampDelta(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Number(value.toFixed(3))));
+}
+
+function sourceHostKey(value: string): string {
+  return normalizeWhitespace(value).toLowerCase();
+}
+
+function incrementCalibrationLabelCount(
+  counts: Partial<Record<AoiProactiveBriefCalibrationLabel, number>>,
+  label: AoiProactiveBriefCalibrationLabel,
+): void {
+  counts[label] = (counts[label] ?? 0) + 1;
+}
+
+export function buildAoiProactiveBriefCalibrationTuning(
+  sessionPath: string,
+  labels: AoiProactiveBriefCalibrationLabelRecord[],
+  now = Date.now(),
+): AoiProactiveBriefCalibrationTuning {
+  const normalizedSessionPath = resolveSessionPath(sessionPath);
+  const scopedLabels = labels
+    .filter((item) => item.sessionPath === normalizedSessionPath)
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+  const labelDistribution = emptyCalibrationLabelDistribution();
+  const topicTuning: AoiProactiveBriefCalibrationTuning['topicTuning'] = {};
+  const sourceTuning: AoiProactiveBriefCalibrationTuning['sourceTuning'] = {};
+
+  for (const label of scopedLabels) {
+    labelDistribution[label.label] += 1;
+    if (label.topicId) {
+      const current =
+        topicTuning[label.topicId] ??
+        ({
+          version: 1,
+          topicId: label.topicId,
+          labelCounts: {},
+          scoreDelta: 0,
+          confidenceDelta: 0,
+          sourcePreferenceDelta: 0,
+          chatHookThresholdDelta: 0,
+          cooldownMs: 0,
+          directChatBlocked: false,
+          preferDigestOrDashboard: false,
+          muted: false,
+          pinned: false,
+          conservativeReasons: [],
+          evidenceRefs: [],
+          updatedAt: 0,
+        } satisfies AoiProactiveBriefCalibrationTuning['topicTuning'][string]);
+      incrementCalibrationLabelCount(current.labelCounts, label.label);
+      current.evidenceRefs = [
+        ...new Set([
+          ...current.evidenceRefs,
+          `proactive-brief-calibration:${label.id}`,
+          ...label.evidenceRefs,
+        ]),
+      ].slice(0, 24);
+      current.updatedAt = Math.max(current.updatedAt, label.createdAt);
+      if (label.label === 'useful' || label.label === 'show_more') {
+        current.scoreDelta += 0.08;
+        current.confidenceDelta += 0.04;
+        current.sourcePreferenceDelta += 0.06;
+      }
+      if (label.label === 'pin_topic') {
+        current.scoreDelta += 0.1;
+        current.confidenceDelta += 0.04;
+        current.pinned = true;
+        current.muted = false;
+        current.conservativeReasons = current.conservativeReasons.filter(
+          (reason) => reason !== 'muted',
+        );
+        current.directChatBlocked = current.conservativeReasons.some(
+          (reason) => reason === 'wrong_timing' || reason === 'stale' || reason === 'unsafe',
+        );
+      }
+      if (label.label === 'show_less') {
+        current.scoreDelta -= 0.1;
+        current.chatHookThresholdDelta += 0.06;
+      }
+      if (label.label === 'too_frequent') {
+        current.chatHookThresholdDelta += 0.14;
+        current.cooldownMs = Math.max(current.cooldownMs, TOO_FREQUENT_CALIBRATION_COOLDOWN_MS);
+        current.preferDigestOrDashboard = true;
+        current.conservativeReasons.push('too_frequent');
+      }
+      if (label.label === 'wrong_topic') {
+        current.scoreDelta -= 0.18;
+        current.confidenceDelta -= 0.16;
+        current.sourcePreferenceDelta -= 0.08;
+        current.conservativeReasons.push('wrong_topic');
+      }
+      if (label.label === 'wrong_timing') {
+        current.chatHookThresholdDelta += 0.18;
+        current.preferDigestOrDashboard = true;
+        current.directChatBlocked = true;
+        current.conservativeReasons.push('wrong_timing');
+      }
+      if (label.label === 'stale') {
+        current.scoreDelta -= 0.12;
+        current.sourcePreferenceDelta -= 0.12;
+        current.chatHookThresholdDelta += 0.2;
+        current.cooldownMs = Math.max(current.cooldownMs, STALE_CALIBRATION_COOLDOWN_MS);
+        current.directChatBlocked = true;
+        current.preferDigestOrDashboard = true;
+        current.conservativeReasons.push('stale');
+      }
+      if (label.label === 'unsafe') {
+        current.scoreDelta -= 0.28;
+        current.confidenceDelta -= 0.2;
+        current.chatHookThresholdDelta += 0.28;
+        current.cooldownMs = Math.max(current.cooldownMs, UNSAFE_CALIBRATION_COOLDOWN_MS);
+        current.directChatBlocked = true;
+        current.preferDigestOrDashboard = true;
+        current.conservativeReasons.push('unsafe');
+      }
+      if (label.label === 'mute_topic') {
+        current.muted = true;
+        current.pinned = false;
+        current.directChatBlocked = true;
+        current.conservativeReasons.push('muted');
+      }
+      current.scoreDelta = clampDelta(current.scoreDelta, -0.6, 0.35);
+      current.confidenceDelta = clampDelta(current.confidenceDelta, -0.5, 0.25);
+      current.sourcePreferenceDelta = clampDelta(current.sourcePreferenceDelta, -0.5, 0.35);
+      current.chatHookThresholdDelta = clampDelta(current.chatHookThresholdDelta, 0, 0.45);
+      current.conservativeReasons = [...new Set(current.conservativeReasons)].slice(0, 12);
+      topicTuning[label.topicId] = current;
+    }
+
+    for (const host of label.sourceHosts.map(sourceHostKey).filter(Boolean)) {
+      const current =
+        sourceTuning[host] ??
+        ({
+          version: 1,
+          host,
+          labelCounts: {},
+          preferenceDelta: 0,
+          directChatBlocked: false,
+          staleBlocked: false,
+          unsafeBlocked: false,
+          evidenceRefs: [],
+          updatedAt: 0,
+        } satisfies AoiProactiveBriefCalibrationTuning['sourceTuning'][string]);
+      incrementCalibrationLabelCount(current.labelCounts, label.label);
+      current.evidenceRefs = [
+        ...new Set([
+          ...current.evidenceRefs,
+          `proactive-brief-calibration:${label.id}`,
+          ...label.evidenceRefs,
+        ]),
+      ].slice(0, 24);
+      current.updatedAt = Math.max(current.updatedAt, label.createdAt);
+      if (label.label === 'useful' || label.label === 'show_more' || label.label === 'pin_topic') {
+        current.preferenceDelta += 0.08;
+      }
+      if (
+        label.label === 'show_less' ||
+        label.label === 'wrong_topic' ||
+        label.label === 'wrong_timing' ||
+        label.label === 'too_frequent'
+      ) {
+        current.preferenceDelta -= 0.06;
+      }
+      if (label.label === 'stale') {
+        current.preferenceDelta -= 0.14;
+        current.directChatBlocked = true;
+        current.staleBlocked = true;
+      }
+      if (label.label === 'unsafe') {
+        current.preferenceDelta -= 0.24;
+        current.directChatBlocked = true;
+        current.unsafeBlocked = true;
+      }
+      if (label.label === 'mute_topic') {
+        current.directChatBlocked = true;
+      }
+      if (label.label === 'pin_topic' && !current.staleBlocked && !current.unsafeBlocked) {
+        current.directChatBlocked = false;
+      }
+      current.preferenceDelta = clampDelta(current.preferenceDelta, -0.6, 0.35);
+      sourceTuning[host] = current;
+    }
+  }
+
+  const labelCount = scopedLabels.length;
+  const unsafeLabelCount = labelDistribution.unsafe;
+  const staleLabelCount = labelDistribution.stale;
+  const status = unsafeLabelCount > 0 ? 'blocked' : labelCount > 0 ? 'tuning_active' : 'no_labels';
+  const directChatBlockedTopics = Object.values(topicTuning).filter(
+    (item) => item.directChatBlocked || item.muted,
+  ).length;
+  const directChatBlockedSources = Object.values(sourceTuning).filter(
+    (item) => item.directChatBlocked,
+  ).length;
+  const summaryLabels = [
+    labelCount > 0
+      ? `${labelCount} calibration label${labelCount === 1 ? '' : 's'} applied`
+      : 'No proactive brief calibration labels yet',
+    directChatBlockedTopics > 0
+      ? `${directChatBlockedTopics} topic${directChatBlockedTopics === 1 ? '' : 's'} tighten direct chat`
+      : '',
+    directChatBlockedSources > 0
+      ? `${directChatBlockedSources} source${directChatBlockedSources === 1 ? '' : 's'} tighten direct chat`
+      : '',
+    staleLabelCount > 0 ? `${staleLabelCount} stale label${staleLabelCount === 1 ? '' : 's'}` : '',
+    unsafeLabelCount > 0
+      ? `${unsafeLabelCount} unsafe label${unsafeLabelCount === 1 ? '' : 's'}`
+      : '',
+  ].filter(Boolean);
+  const evidenceRefs = [
+    ...new Set(
+      scopedLabels.flatMap((label) => [
+        `proactive-brief-calibration:${label.id}`,
+        ...label.evidenceRefs,
+      ]),
+    ),
+  ].slice(0, 24);
+
+  return {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    generatedAt: now,
+    status,
+    labelCount,
+    labelDistribution,
+    unsafeLabelCount,
+    staleLabelCount,
+    tooFrequentLabelCount: labelDistribution.too_frequent,
+    wrongTimingLabelCount: labelDistribution.wrong_timing,
+    mutedTopicCount: Object.values(topicTuning).filter((item) => item.muted).length,
+    pinnedTopicCount: Object.values(topicTuning).filter((item) => item.pinned).length,
+    topicTuning,
+    sourceTuning,
+    summaryLabels,
+    evidenceRefs,
+  };
+}
+
+function saveAoiProactiveBriefCalibrationTuning(
+  sessionsDir: string,
+  sessionPath: string,
+  tuning: AoiProactiveBriefCalibrationTuning,
+): AoiProactiveBriefCalibrationTuning {
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  writeJsonAtomic(paths.root, paths.calibrationTuning, tuning);
+  return tuning;
+}
+
+export function loadAoiProactiveBriefCalibrationTuning(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiProactiveBriefCalibrationTuning {
+  return buildAoiProactiveBriefCalibrationTuning(
+    sessionPath,
+    loadAoiProactiveBriefCalibrationLabels(sessionsDir, sessionPath, now),
+    now,
+  );
+}
+
+export function recordAoiProactiveBriefCalibrationLabel(
+  sessionsDir: string,
+  input: AoiProactiveBriefCalibrationLabelInput,
+): AoiProactiveBriefCalibrationLabelRecord {
+  const now = input.now ?? Date.now();
+  const sessionPath = resolveSessionPath(input.sessionPath);
+  if (!isCalibrationLabel(input.label)) {
+    throw new Error('Unsupported proactive brief calibration label.');
+  }
+  const fieldEvent = loadFieldEventById(sessionsDir, sessionPath, input.fieldEventId, now);
+  if (!fieldEvent) {
+    throw new Error('Proactive brief field event was not found.');
+  }
+  const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
+  const index = loadAoiProactiveBriefCalibrationLabelIndex(sessionsDir, sessionPath, now);
+  const rawRecord = {
+    version: 1,
+    id: createCalibrationLabelId({
+      sessionPath,
+      fieldEventId: fieldEvent.id,
+      label: input.label,
+      now,
+      sequence: index.entries.length + 1,
+      note: input.note,
+    }),
+    sessionPath,
+    fieldEventId: fieldEvent.id,
+    briefId: fieldEvent.briefId,
+    topicId: fieldEvent.topicId,
+    label: input.label,
+    actor: input.actor ?? 'user',
+    note: input.note,
+    deliveryMode: fieldEvent.deliveryMode,
+    policyReason: fieldEvent.policyReason,
+    sourceRefs: fieldEvent.sourceRefs,
+    sourceHosts: fieldEvent.sourceHosts,
+    evidenceRefs: [
+      `proactive-brief-field-event:${fieldEvent.id}`,
+      ...fieldEvent.evidenceRefs,
+      ...(input.evidenceRefs ?? []),
+    ],
+    createdAt: now,
+  };
+  const record = normalizeAoiProactiveBriefCalibrationLabelRecord(rawRecord, sessionPath, now);
+  if (!record) {
+    throw new Error('Invalid proactive brief calibration label.');
+  }
+  writeJsonAtomic(paths.root, join(paths.calibrationLabelRecordsDir, `${record.id}.json`), record);
+  const nextIndex = saveAoiProactiveBriefCalibrationLabelIndex(sessionsDir, sessionPath, {
+    version: 1,
+    sessionPath,
+    updatedAt: now,
+    entries: [calibrationLabelIndexEntry(record), ...index.entries],
+  });
+  const indexedLabels = nextIndex.entries
+    .map((entry) => loadCalibrationLabelById(sessionsDir, sessionPath, entry.id, now))
+    .filter((item): item is AoiProactiveBriefCalibrationLabelRecord => item !== null);
+  saveAoiProactiveBriefCalibrationTuning(
+    sessionsDir,
+    sessionPath,
+    buildAoiProactiveBriefCalibrationTuning(sessionPath, indexedLabels, now),
+  );
+  return record;
+}
+
+function labelsForFieldEvent(
+  labels: AoiProactiveBriefCalibrationLabelRecord[],
+  fieldEventId: string,
+): AoiProactiveBriefCalibrationLabelRecord[] {
+  return labels
+    .filter((label) => label.fieldEventId === fieldEventId)
+    .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id));
+}
+
+function isCalibrationReviewableEvent(event: AoiProactiveBriefFieldEvent): boolean {
+  if (event.kind === 'candidate_created') {
+    return false;
+  }
+  if (event.kind === 'feedback_recorded') {
+    return Boolean(event.feedbackCategory && isCalibrationLabel(event.feedbackCategory));
+  }
+  return (
+    event.kind === 'shown_dashboard' ||
+    event.kind === 'shown_digest' ||
+    event.kind === 'shown_inline' ||
+    event.kind === 'chat_hook_offered' ||
+    event.kind === 'expanded' ||
+    event.kind === 'source_opened' ||
+    event.kind.startsWith('suppressed_') ||
+    event.kind === 'expired' ||
+    event.kind === 'archived'
+  );
+}
+
+function sourceFreshnessLabel(event: AoiProactiveBriefFieldEvent): string {
+  const searchedAt =
+    typeof event.freshness.searchedAt === 'number'
+      ? new Date(event.freshness.searchedAt).toISOString().slice(0, 16).replace('T', ' ')
+      : 'unknown';
+  const newest = event.freshness.newestSourceAt ?? 'unknown';
+  return `${event.freshness.stale ? 'stale' : 'freshness tracked'}; searched ${searchedAt}; newest ${newest}`;
+}
+
+function suggestedCalibrationLabels(
+  event: AoiProactiveBriefFieldEvent,
+): AoiProactiveBriefCalibrationLabel[] {
+  if (event.kind === 'suppressed_stale_source' || event.freshness.stale) {
+    return ['stale', 'wrong_timing', 'show_less', 'unsafe'];
+  }
+  if (event.kind === 'suppressed_quiet_mode' || event.kind === 'suppressed_no_opt_in') {
+    return ['wrong_timing', 'show_less', 'useful'];
+  }
+  if (event.kind === 'suppressed_cooldown' || event.kind === 'suppressed_budget') {
+    return ['too_frequent', 'wrong_timing', 'show_less'];
+  }
+  if (event.kind === 'suppressed_no_topics') {
+    return ['wrong_topic', 'show_less', 'mute_topic'];
+  }
+  if (event.kind === 'feedback_recorded' && event.feedbackCategory) {
+    return [event.feedbackCategory as AoiProactiveBriefCalibrationLabel].filter(isCalibrationLabel);
+  }
+  return ['useful', 'show_more', 'show_less', 'too_frequent', 'wrong_topic', 'wrong_timing'];
+}
+
+function makeCalibrationInboxItem(
+  event: AoiProactiveBriefFieldEvent,
+  labels: AoiProactiveBriefCalibrationLabelRecord[],
+): AoiProactiveBriefCalibrationInboxItem {
+  const latest = labels[labels.length - 1];
+  const labelState = labels.some((label) => label.label === 'unsafe')
+    ? 'unsafe_flagged'
+    : labels.length > 0
+      ? 'labeled'
+      : 'unlabeled';
+  const whyNow = normalizeRequiredText(
+    event.policyReason || event.suppressionReasons.join(', ') || event.kind.replace(/_/g, ' '),
+    event.kind.replace(/_/g, ' '),
+    220,
+  );
+  const whyRelevant = normalizeRequiredText(
+    event.summary || event.title || event.briefId || 'No compact explanation attached.',
+    'No compact explanation attached.',
+    260,
+  );
+  const evidenceRefs = [
+    ...new Set([
+      `proactive-brief-field-event:${event.id}`,
+      ...event.evidenceRefs,
+      ...labels.flatMap((label) => [
+        `proactive-brief-calibration:${label.id}`,
+        ...label.evidenceRefs,
+      ]),
+    ]),
+  ].slice(0, 24);
+  return {
+    version: 1,
+    id: `aoi-brief-calibration-item-${hashText(event.id)}`,
+    sessionPath: event.sessionPath,
+    fieldEventId: event.id,
+    fieldEventKind: event.kind,
+    fieldEventAt: event.createdAt,
+    ...(event.briefId ? { briefId: event.briefId } : {}),
+    ...(event.topicId ? { topicId: event.topicId } : {}),
+    ...(event.deliveryMode ? { deliveryMode: event.deliveryMode } : {}),
+    title: normalizeRequiredText(event.title, event.kind.replace(/_/g, ' '), 160),
+    whyNow,
+    whyRelevant,
+    sourceFreshness: sourceFreshnessLabel(event),
+    cannotKnowLabels: event.freshness.cannotKnow,
+    sourceRefs: event.sourceRefs,
+    sourceHosts: event.sourceHosts,
+    ...(event.policyReason ? { policyReason: event.policyReason } : {}),
+    labels,
+    labelState,
+    ...(latest ? { latestLabel: latest.label, latestLabelAt: latest.createdAt } : {}),
+    suggestedLabels: suggestedCalibrationLabels(event),
+    priorityScore:
+      (labelState === 'unlabeled' ? 100 : labelState === 'unsafe_flagged' ? 70 : 20) +
+      (event.kind.startsWith('suppressed_') ? 18 : 0) +
+      (event.freshness.stale ? 16 : 0),
+    evidenceRefs,
+  };
+}
+
+export function buildAoiProactiveBriefCalibrationInbox(
+  sessionPath: string,
+  events: AoiProactiveBriefFieldEvent[],
+  labels: AoiProactiveBriefCalibrationLabelRecord[],
+  now = Date.now(),
+  limit = MAX_PROACTIVE_BRIEF_CALIBRATION_INBOX_ITEMS,
+): AoiProactiveBriefCalibrationInbox {
+  const normalizedSessionPath = resolveSessionPath(sessionPath);
+  const items = events
+    .filter(
+      (event) => event.sessionPath === normalizedSessionPath && isCalibrationReviewableEvent(event),
+    )
+    .map((event) => makeCalibrationInboxItem(event, labelsForFieldEvent(labels, event.id)))
+    .sort(
+      (left, right) =>
+        right.priorityScore - left.priorityScore ||
+        right.fieldEventAt - left.fieldEventAt ||
+        left.id.localeCompare(right.id),
+    )
+    .slice(0, Math.max(1, Math.min(limit, MAX_PROACTIVE_BRIEF_CALIBRATION_INBOX_ITEMS)));
+  const matchedLabels = items.flatMap((item) => item.labels);
+  const evidenceRefs = [
+    ...new Set([
+      ...items.flatMap((item) => item.evidenceRefs),
+      ...matchedLabels.flatMap((label) => label.evidenceRefs),
+    ]),
+  ].slice(0, 24);
+  return {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    generatedAt: now,
+    inboxCount: items.length,
+    unlabeledCount: items.filter((item) => item.labelState === 'unlabeled').length,
+    labeledCount: items.filter((item) => item.labelState !== 'unlabeled').length,
+    labelCount: matchedLabels.length,
+    unsafeLabelCount: matchedLabels.filter((label) => label.label === 'unsafe').length,
+    staleLabelCount: matchedLabels.filter((label) => label.label === 'stale').length,
+    items,
+    evidenceRefs,
+  };
+}
+
+export function loadAoiProactiveBriefCalibrationInbox(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+  limit = MAX_PROACTIVE_BRIEF_CALIBRATION_INBOX_ITEMS,
+): AoiProactiveBriefCalibrationInbox {
+  return buildAoiProactiveBriefCalibrationInbox(
+    sessionPath,
+    loadAoiProactiveBriefFieldEvents(sessionsDir, sessionPath, now),
+    loadAoiProactiveBriefCalibrationLabels(sessionsDir, sessionPath, now),
+    now,
+    limit,
+  );
+}
+
+function calibrationTargetEventForFeedback(
+  sessionsDir: string,
+  feedback: AoiProactiveBriefFeedback,
+): AoiProactiveBriefFieldEvent | null {
+  const events = loadAoiProactiveBriefFieldEvents(
+    sessionsDir,
+    feedback.sessionPath,
+    feedback.createdAt,
+  ).filter((event) => event.briefId === feedback.briefId && event.createdAt <= feedback.createdAt);
+  const preferred = events.find(
+    (event) =>
+      event.kind !== 'feedback_recorded' &&
+      (event.kind.startsWith('shown_') ||
+        event.kind.startsWith('suppressed_') ||
+        event.kind === 'expanded' ||
+        event.kind === 'source_opened' ||
+        event.kind === 'archived' ||
+        event.kind === 'expired'),
+  );
+  if (preferred) {
+    return preferred;
+  }
+  return (
+    events.find(
+      (event) => event.kind === 'feedback_recorded' && event.feedbackId === feedback.id,
+    ) ??
+    events[0] ??
+    null
+  );
+}
+
+function recordCalibrationLabelForFeedback(
+  sessionsDir: string,
+  feedback: AoiProactiveBriefFeedback,
+): AoiProactiveBriefCalibrationLabelRecord | null {
+  if (!isCalibrationLabel(feedback.category)) {
+    return null;
+  }
+  const targetEvent = calibrationTargetEventForFeedback(sessionsDir, feedback);
+  if (!targetEvent) {
+    return null;
+  }
+  return recordAoiProactiveBriefCalibrationLabel(sessionsDir, {
+    sessionPath: feedback.sessionPath,
+    fieldEventId: targetEvent.id,
+    label: feedback.category,
+    note: feedback.note,
+    evidenceRefs: [`feedback:${feedback.id}`],
+    now: feedback.createdAt,
+  });
+}
+
 function createFieldEventId(params: {
   prefix: string;
   now: number;
@@ -1593,6 +2384,7 @@ export function recordAoiProactiveBriefFeedback(
       dedupeKey: `${actionKind}:${normalized.id}`,
     });
   }
+  recordCalibrationLabelForFeedback(sessionsDir, normalized);
   return normalized;
 }
 

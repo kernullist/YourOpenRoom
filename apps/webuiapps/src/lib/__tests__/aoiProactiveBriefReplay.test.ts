@@ -9,6 +9,7 @@ import { evaluateAoiOperatorHealth } from '../aoiOperatorHealth';
 import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import {
   AOI_PROACTIVE_BRIEF_REPLAY_PRIVATE_TEXT_SAMPLES,
+  buildAoiProactiveBriefCalibrationDiagnostics,
   buildAoiProactiveBriefDiagnostics,
   buildAoiProactiveBriefFieldDiagnostics,
   formatAoiProactiveBriefReplayReport,
@@ -246,6 +247,55 @@ describe('Aoi proactive brief replay hardening', () => {
         'proactive_brief_field_unauthorized_mutation_detected',
       ]),
     );
+  });
+
+  it('maps proactive calibration tuning into operator health warnings', () => {
+    const diagnostics = buildAoiProactiveBriefCalibrationDiagnostics(
+      {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        generatedAt: NOW,
+        status: 'blocked',
+        labelCount: 2,
+        labelDistribution: {
+          useful: 0,
+          show_more: 0,
+          show_less: 0,
+          too_frequent: 0,
+          wrong_topic: 0,
+          wrong_timing: 0,
+          stale: 1,
+          unsafe: 1,
+          mute_topic: 0,
+          pin_topic: 0,
+        },
+        unsafeLabelCount: 1,
+        staleLabelCount: 1,
+        tooFrequentLabelCount: 0,
+        wrongTimingLabelCount: 0,
+        mutedTopicCount: 0,
+        pinnedTopicCount: 0,
+        topicTuning: {},
+        sourceTuning: {},
+        summaryLabels: ['2 calibration labels applied'],
+        evidenceRefs: ['proactive-brief-calibration:test'],
+      },
+      NOW,
+    );
+    const health = evaluateAoiOperatorHealth({
+      sessionPath: SESSION_PATH,
+      proactiveBriefDiagnostics: diagnostics,
+      now: NOW,
+    });
+
+    expect(health.issues.map((issue) => issue.code)).toEqual(
+      expect.arrayContaining([
+        'proactive_brief_calibration_tuning_active',
+        'proactive_brief_calibration_stale_direct_chat_block',
+        'proactive_brief_calibration_unsafe_label_blocker',
+      ]),
+    );
+    expect(health.issues.some((issue) => issue.title.includes('unsafe calibration'))).toBe(true);
   });
 
   it('surfaces proactive Tavily diagnostics from persisted health state only when proactive artifacts exist', () => {

@@ -6,6 +6,7 @@ import type {
   AoiOperatorHealthCapability,
   AoiOperatorHealthSeverity,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownEntry,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefFieldMetrics,
@@ -60,7 +61,11 @@ export type AoiProactiveBriefDiagnosticCode =
   | 'direct_chat_disabled_by_policy'
   | 'field_not_tested'
   | 'field_private_leak_detected'
-  | 'field_unauthorized_mutation_detected';
+  | 'field_unauthorized_mutation_detected'
+  | 'calibration_not_labeled'
+  | 'calibration_tuning_active'
+  | 'calibration_stale_direct_chat_block'
+  | 'calibration_unsafe_label_blocker';
 
 export interface AoiProactiveBriefReplayMetric {
   name: AoiProactiveBriefReplayMetricName;
@@ -661,6 +666,72 @@ export function buildAoiProactiveBriefFieldDiagnostics(
           'Aoi cannot promote proactive brief field behavior while any unauthorized mutation is present.',
         evidenceRefs: metrics.evidenceRefs,
         observedAt: metrics.lastEventAt ?? metrics.generatedAt ?? now,
+      }),
+    );
+  }
+  return diagnostics;
+}
+
+export function buildAoiProactiveBriefCalibrationDiagnostics(
+  tuning: AoiProactiveBriefCalibrationTuning | null | undefined,
+  now = Date.now(),
+): AoiProactiveBriefDiagnostic[] {
+  if (!tuning) {
+    return [];
+  }
+  const diagnostics: AoiProactiveBriefDiagnostic[] = [];
+  if (tuning.labelCount === 0 || tuning.status === 'no_labels') {
+    diagnostics.push(
+      diagnostic({
+        code: 'calibration_not_labeled',
+        severity: 'info',
+        capability: 'replay_evaluation',
+        summary: 'Proactive brief field events have no operator calibration labels yet.',
+        cannotKnow:
+          'Aoi cannot know whether proactive brief timing, topic fit, or source selection is useful until field outcomes are labeled.',
+        evidenceRefs: ['proactive-brief-calibration:tuning'],
+        observedAt: tuning.generatedAt || now,
+      }),
+    );
+    return diagnostics;
+  }
+  diagnostics.push(
+    diagnostic({
+      code: 'calibration_tuning_active',
+      severity: 'info',
+      capability: 'replay_evaluation',
+      summary: tuning.summaryLabels.join('; ') || 'Proactive brief calibration tuning is active.',
+      cannotKnow:
+        'Aoi can apply calibration only within existing safety gates; it cannot infer field readiness from labels alone.',
+      evidenceRefs: tuning.evidenceRefs,
+      observedAt: tuning.generatedAt || now,
+    }),
+  );
+  if (tuning.staleLabelCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'calibration_stale_direct_chat_block',
+        severity: 'warning',
+        capability: 'replay_evaluation',
+        summary: `${tuning.staleLabelCount} stale proactive brief label(s) tighten direct chat delivery.`,
+        cannotKnow:
+          'Aoi cannot use similar stale sources for proactive direct chat until fresh evidence is available.',
+        evidenceRefs: tuning.evidenceRefs,
+        observedAt: tuning.generatedAt || now,
+      }),
+    );
+  }
+  if (tuning.unsafeLabelCount > 0) {
+    diagnostics.push(
+      diagnostic({
+        code: 'calibration_unsafe_label_blocker',
+        severity: 'warning',
+        capability: 'replay_evaluation',
+        summary: `${tuning.unsafeLabelCount} unsafe proactive brief label(s) force conservative delivery.`,
+        cannotKnow:
+          'Aoi cannot safely escalate affected proactive topics or sources into direct chat while unsafe labels are active.',
+        evidenceRefs: tuning.evidenceRefs,
+        observedAt: tuning.generatedAt || now,
       }),
     );
   }

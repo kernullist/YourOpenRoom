@@ -13,11 +13,17 @@ import { decideAoiProactiveBriefDelivery } from '../aoiProactiveBriefPolicy';
 import { applyAoiProactiveBriefFeedbackAction } from '../aoiProactiveBriefFeedback';
 import {
   loadAoiInterestProfile,
+  loadAoiProactiveBriefCalibrationInbox,
+  loadAoiProactiveBriefCalibrationTuning,
+  loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFieldEvents,
   loadAoiProactiveBriefFeedback,
+  recordAoiProactiveBriefCalibrationLabel,
+  recordAoiProactiveBriefDeliveryFieldEvents,
   saveAoiInterestProfile,
   upsertAoiProactiveBriefCandidate,
+  upsertAoiProactiveBriefCooldown,
 } from '../aoiProactiveBriefStore';
 import { buildAoiProactiveBriefPanelModel } from '../aoiProactiveBriefUi';
 
@@ -267,6 +273,118 @@ describe('Aoi proactive brief feedback adaptation', () => {
     );
   });
 
+  it('does not let positive calibration bypass quiet mode, opt-in, freshness, or cooldown gates', () => {
+    const root = makeTempRoot();
+    saveProfileAndCandidate(root);
+
+    applyAoiProactiveBriefFeedbackAction({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      briefId: 'aoi-brief-delivery-test',
+      category: 'useful',
+      now: NOW + 1000,
+    });
+    upsertAoiProactiveBriefCooldown(root, SESSION_PATH, {
+      cooldownKey: 'interest:reverse-engineering',
+      topicId: 'aoi-interest-re',
+      nextAllowedAt: NOW + 60_000,
+      reason: 'test:cooldown',
+      now: NOW + 1000,
+    });
+
+    const tuning = loadAoiProactiveBriefCalibrationTuning(root, SESSION_PATH, NOW + 2000);
+    const future = makeCandidate({
+      id: 'aoi-brief-positive-calibration-future',
+      score: 0.99,
+      confidence: 0.99,
+      updatedAt: NOW + 2000,
+    });
+    const staleFuture = makeCandidate({
+      id: 'aoi-brief-positive-calibration-stale',
+      score: 0.99,
+      confidence: 0.99,
+      sources: [
+        {
+          title: 'Old reverse engineering writeup',
+          url: 'https://research.example.com/re/old-writeup',
+          host: 'research.example.com',
+          publishedAt: '2026-04-01T00:00:00.000Z',
+          retrievedAt: NOW + 2000,
+          snippet: 'Older public source snippet.',
+        },
+      ],
+      freshness: {
+        searchedAt: NOW + 2000,
+        newestSourceAt: '2026-04-01T00:00:00.000Z',
+        cannotKnow: [],
+      },
+      updatedAt: NOW + 2000,
+    });
+
+    const quietDecision = decideAoiProactiveBriefDelivery({
+      candidate: future,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: loadAoiProactiveBriefFeedback(root, SESSION_PATH),
+      cooldownState: { version: 1, sessionPath: SESSION_PATH, updatedAt: NOW, cooldowns: {} },
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: true,
+        directChatOptIn: true,
+      },
+    });
+    const noOptInDecision = decideAoiProactiveBriefDelivery({
+      candidate: future,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: loadAoiProactiveBriefFeedback(root, SESSION_PATH),
+      cooldownState: { version: 1, sessionPath: SESSION_PATH, updatedAt: NOW, cooldowns: {} },
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: false,
+        directChatOptIn: false,
+      },
+    });
+    const cooldownDecision = decideAoiProactiveBriefDelivery({
+      candidate: future,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: loadAoiProactiveBriefFeedback(root, SESSION_PATH),
+      cooldownState: loadAoiProactiveBriefCooldownState(root, SESSION_PATH, NOW + 2000),
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: false,
+        directChatOptIn: true,
+      },
+    });
+    const staleDecision = decideAoiProactiveBriefDelivery({
+      candidate: staleFuture,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: loadAoiProactiveBriefFeedback(root, SESSION_PATH),
+      cooldownState: { version: 1, sessionPath: SESSION_PATH, updatedAt: NOW, cooldowns: {} },
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: false,
+        directChatOptIn: true,
+      },
+    });
+
+    expect(tuning.labelDistribution.useful).toBe(1);
+    expect(quietDecision.chatHook.allowed).toBe(false);
+    expect(quietDecision.modeReasons.chat_hook).toContain('quiet_mode_suppresses_chat_hook');
+    expect(noOptInDecision.chatHook.allowed).toBe(false);
+    expect(noOptInDecision.modeReasons.chat_hook).toContain('chat_hook_not_opted_in');
+    expect(cooldownDecision.chatHook.allowed).toBe(false);
+    expect(cooldownDecision.modeReasons.chat_hook).toContain('topic_cooldown_active');
+    expect(staleDecision.chatHook.allowed).toBe(false);
+    expect(staleDecision.modeReasons.chat_hook).toContain('stale_source');
+  });
+
   it('raises cooldown after too frequent feedback', () => {
     const root = makeTempRoot();
     saveProfileAndCandidate(root);
@@ -307,6 +425,83 @@ describe('Aoi proactive brief feedback adaptation', () => {
     expect(followUpDecision.digestVisible).toBe(false);
     expect(followUpDecision.inlineCardVisible).toBe(false);
     expect(followUpDecision.modeReasons.digest).toContain('topic_cooldown_active');
+  });
+
+  it('uses unsafe and stale calibration labels to tighten future direct chat delivery', () => {
+    const root = makeTempRoot();
+    saveProfileAndCandidate(root);
+    const candidate = loadAoiProactiveBriefCandidates(root, SESSION_PATH, NOW)[0]!;
+    const shownDecision = decideAoiProactiveBriefDelivery({
+      candidate,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW),
+      context: {
+        now: NOW,
+      },
+    });
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      candidates: [candidate],
+      decisions: [shownDecision],
+      now: NOW,
+    });
+    const shown = loadAoiProactiveBriefFieldEvents(root, SESSION_PATH, NOW + 1).find((event) =>
+      event.kind.startsWith('shown_'),
+    )!;
+
+    recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: SESSION_PATH,
+      fieldEventId: shown.id,
+      label: 'unsafe',
+      note: 'Do not show this in chat; contains private path C:\\Users\\operator\\secret.txt',
+      now: NOW + 1000,
+    });
+
+    const tuning = loadAoiProactiveBriefCalibrationTuning(root, SESSION_PATH, NOW + 2000);
+    const inbox = loadAoiProactiveBriefCalibrationInbox(root, SESSION_PATH, NOW + 2000);
+    const future = makeCandidate({
+      id: 'aoi-brief-after-unsafe-calibration',
+      score: 0.99,
+      confidence: 0.99,
+      updatedAt: NOW + 2000,
+    });
+    const decision = decideAoiProactiveBriefDelivery({
+      candidate: future,
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: [],
+      cooldownState: { version: 1, sessionPath: SESSION_PATH, updatedAt: NOW, cooldowns: {} },
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: false,
+        directChatOptIn: true,
+      },
+    });
+    const panel = buildAoiProactiveBriefPanelModel({
+      candidates: [future],
+      policy: makePolicy(),
+      profile: loadAoiInterestProfile(root, SESSION_PATH, NOW + 2000),
+      feedback: [],
+      cooldownState: { version: 1, sessionPath: SESSION_PATH, updatedAt: NOW, cooldowns: {} },
+      calibrationInbox: inbox,
+      calibrationTuning: tuning,
+      context: {
+        now: NOW + 2000,
+        quietMode: false,
+        directChatOptIn: true,
+        maxInlineCards: 1,
+        inlineCardsShown: 0,
+      },
+    });
+
+    expect(tuning.unsafeLabelCount).toBe(1);
+    expect(decision.chatHook.allowed).toBe(false);
+    expect(decision.modeReasons.chat_hook).toContain('calibration_unsafe_direct_chat_block');
+    expect(panel.calibrationSummaryLabels.length).toBeGreaterThan(0);
+    expect(panel.cards[0]?.tuningLabels).toContain('Topic tuning: unsafe');
+    expect(JSON.stringify(panel)).not.toContain('C:\\Users\\operator\\secret.txt');
   });
 
   it('records expansion and source-open field events from feedback actions', () => {

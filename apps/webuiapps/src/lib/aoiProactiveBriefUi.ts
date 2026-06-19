@@ -7,6 +7,8 @@ import type {
   AoiAutonomyPolicy,
   AoiInterestProfile,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefCalibrationInbox,
+  AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefFeedback,
 } from './aoiAutonomyTypes';
@@ -65,12 +67,16 @@ export interface AoiProactiveBriefCardModel {
   delivery: AoiProactiveBriefDeliveryDecision;
   directChatHook: string;
   expandedSummaryLabel: string;
+  tuningLabels: string[];
 }
 
 export interface AoiProactiveBriefPanelModel {
   visible: boolean;
   statusLabel: string;
   hiddenLabel: string;
+  calibrationSummaryLabels: string[];
+  calibrationInbox?: AoiProactiveBriefCalibrationInbox;
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning;
   cards: AoiProactiveBriefCardModel[];
   inlineCard?: AoiProactiveBriefCardModel;
   chatHook?: string;
@@ -83,6 +89,8 @@ export interface BuildAoiProactiveBriefPanelModelInput {
   profile?: AoiInterestProfile | null;
   feedback?: AoiProactiveBriefFeedback[];
   cooldownState?: AoiProactiveBriefCooldownState | null;
+  calibrationInbox?: AoiProactiveBriefCalibrationInbox | null;
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
   context?: AoiProactiveBriefDeliveryContext;
   includeHidden?: boolean;
 }
@@ -203,8 +211,13 @@ function buildFeedbackActions(
 function buildCard(params: {
   candidate: AoiProactiveBriefCandidate;
   decision: AoiProactiveBriefDeliveryDecision;
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning | null;
 }): AoiProactiveBriefCardModel {
   const candidate = params.candidate;
+  const topicTuning = params.calibrationTuning?.topicTuning[candidate.topicId];
+  const sourceTuning = candidate.sources
+    .map((source) => params.calibrationTuning?.sourceTuning[source.host.toLowerCase()])
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
   const sourceHosts = uniqueLabels(
     candidate.sources.map((source) => source.host),
     4,
@@ -242,6 +255,23 @@ function buildCard(params: {
       `${candidate.summary} ${candidate.whyForOperator} ${candidate.noveltyReason}`,
       700,
     ),
+    tuningLabels: uniqueLabels(
+      [
+        ...(topicTuning?.conservativeReasons.map((reason) => `Topic tuning: ${reason}`) ?? []),
+        topicTuning?.muted ? 'Topic muted by calibration' : undefined,
+        topicTuning?.pinned ? 'Topic pinned by calibration' : undefined,
+        topicTuning?.preferDigestOrDashboard
+          ? 'Calibration favors dashboard or digest before chat'
+          : undefined,
+        sourceTuning.some((item) => item.staleBlocked)
+          ? 'Source tuning blocks stale direct chat'
+          : undefined,
+        sourceTuning.some((item) => item.unsafeBlocked)
+          ? 'Source tuning blocks unsafe direct chat'
+          : undefined,
+      ],
+      6,
+    ),
   };
 }
 
@@ -257,6 +287,7 @@ export function buildAoiProactiveBriefPanelModel(
       profile: input.profile,
       feedback: input.feedback,
       cooldownState: input.cooldownState,
+      calibrationTuning: input.calibrationTuning,
       context,
     }),
   }));
@@ -269,7 +300,7 @@ export function buildAoiProactiveBriefPanelModel(
         right.candidate.updatedAt - left.candidate.updatedAt,
     )
     .slice(0, MAX_CARD_COUNT)
-    .map(buildCard);
+    .map((item) => buildCard({ ...item, calibrationTuning: input.calibrationTuning }));
   const hiddenCount = decisions.filter((item) => !item.decision.compactCardVisible).length;
   const inlineCard = cards.find((card) => card.delivery.inlineCardVisible);
   const chatHook = cards.find((card) => card.delivery.chatHook.allowed)?.directChatHook;
@@ -288,6 +319,19 @@ export function buildAoiProactiveBriefPanelModel(
       hiddenCount > 0
         ? `${hiddenCount} candidate${hiddenCount === 1 ? '' : 's'} hidden by policy`
         : '',
+    calibrationSummaryLabels: uniqueLabels(
+      [
+        ...(input.calibrationTuning?.summaryLabels ?? []),
+        input.calibrationInbox
+          ? `${input.calibrationInbox.unlabeledCount} calibration item${
+              input.calibrationInbox.unlabeledCount === 1 ? '' : 's'
+            } need review`
+          : undefined,
+      ],
+      6,
+    ),
+    ...(input.calibrationInbox ? { calibrationInbox: input.calibrationInbox } : {}),
+    ...(input.calibrationTuning ? { calibrationTuning: input.calibrationTuning } : {}),
     cards,
     ...(inlineCard ? { inlineCard } : {}),
     ...(chatHook ? { chatHook } : {}),

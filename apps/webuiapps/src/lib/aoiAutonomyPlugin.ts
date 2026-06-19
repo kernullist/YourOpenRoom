@@ -59,6 +59,8 @@ import { runAoiProactiveBriefScout } from './aoiProactiveBriefScout';
 import { applyAoiProactiveBriefFeedbackAction } from './aoiProactiveBriefFeedback';
 import {
   loadAoiInterestProfile,
+  loadAoiProactiveBriefCalibrationInbox,
+  loadAoiProactiveBriefCalibrationTuning,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFieldMetrics,
@@ -250,6 +252,11 @@ function buildAoiProactiveBriefResponse(params: {
     params.sessionPath,
     now,
   );
+  const calibrationTuning = loadAoiProactiveBriefCalibrationTuning(
+    params.sessionsDir,
+    params.sessionPath,
+    now,
+  );
   const deliveryContext = {
     now,
     quietMode: true,
@@ -264,6 +271,7 @@ function buildAoiProactiveBriefResponse(params: {
       profile,
       feedback,
       cooldownState,
+      calibrationTuning,
       context: deliveryContext,
     }),
   );
@@ -283,12 +291,19 @@ function buildAoiProactiveBriefResponse(params: {
     params.sessionPath,
     now,
   );
+  const calibrationInbox = loadAoiProactiveBriefCalibrationInbox(
+    params.sessionsDir,
+    params.sessionPath,
+    now,
+  );
   const panel = buildAoiProactiveBriefPanelModel({
     candidates,
     policy,
     profile,
     feedback,
     cooldownState,
+    calibrationInbox,
+    calibrationTuning,
     context: deliveryContext,
   });
   return {
@@ -299,6 +314,8 @@ function buildAoiProactiveBriefResponse(params: {
     profile,
     cooldownState,
     fieldMetrics,
+    calibrationInbox,
+    calibrationTuning,
     panel,
   };
 }

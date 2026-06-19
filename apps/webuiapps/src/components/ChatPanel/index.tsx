@@ -6434,6 +6434,8 @@ const ChatPanel: React.FC<{
         profile: aoiProactiveBriefs?.profile,
         feedback: aoiProactiveBriefs?.feedback,
         cooldownState: aoiProactiveBriefs?.cooldownState,
+        calibrationInbox: aoiProactiveBriefs?.calibrationInbox,
+        calibrationTuning: aoiProactiveBriefs?.calibrationTuning,
         context: {
           now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
           quietMode: aoiAutonomyPanelSettings.quietMode,
@@ -6450,6 +6452,8 @@ const ChatPanel: React.FC<{
       aoiAutonomyStatus?.updatedAt,
       aoiInlineShownCount,
       aoiProactiveBriefs?.candidates,
+      aoiProactiveBriefs?.calibrationInbox,
+      aoiProactiveBriefs?.calibrationTuning,
       aoiProactiveBriefs?.cooldownState,
       aoiProactiveBriefs?.feedback,
       aoiProactiveBriefs?.profile,
@@ -10534,6 +10538,17 @@ const SettingsModal: React.FC<{
                               <div>{aoiProactiveBriefPanel.hiddenLabel}</div>
                             </div>
                           )}
+                          {aoiProactiveBriefPanel.calibrationSummaryLabels.length > 0 && (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiProactiveBriefPanel.calibrationSummaryLabels.map(
+                                (label, index) => (
+                                  <div key={`proactive-brief-calibration-${index}`}>
+                                    Calibration: {sanitizeAoiProposalDisplayText(label, 220)}
+                                  </div>
+                                ),
+                              )}
+                            </div>
+                          )}
                           {aoiProactiveBriefPanel.cards.map((card) => {
                             const expanded = expandedAoiProactiveBriefId === card.id;
                             return (
@@ -10573,6 +10588,11 @@ const SettingsModal: React.FC<{
                                         Cannot know: {sanitizeAoiProposalDisplayText(label, 260)}
                                       </div>
                                     ))}
+                                  {card.tuningLabels.map((label, index) => (
+                                    <div key={`brief-${card.id}-tuning-${index}`}>
+                                      Calibration: {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ))}
                                   {expanded && (
                                     <>
                                       <div>

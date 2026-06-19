@@ -353,6 +353,142 @@ export interface AoiProactiveBriefFieldMetrics {
   evidenceRefs: string[];
 }
 
+export type AoiProactiveBriefCalibrationLabel =
+  | 'useful'
+  | 'show_more'
+  | 'show_less'
+  | 'too_frequent'
+  | 'wrong_topic'
+  | 'wrong_timing'
+  | 'stale'
+  | 'unsafe'
+  | 'mute_topic'
+  | 'pin_topic';
+
+export interface AoiProactiveBriefCalibrationLabelRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  fieldEventId: string;
+  briefId?: string;
+  topicId?: string;
+  label: AoiProactiveBriefCalibrationLabel;
+  actor: 'user' | 'system';
+  note?: string;
+  deliveryMode?: AoiProactiveBriefDeliveryMode;
+  policyReason?: string;
+  sourceRefs: string[];
+  sourceHosts: string[];
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiProactiveBriefCalibrationLabelIndexEntry {
+  id: string;
+  fieldEventId: string;
+  label: AoiProactiveBriefCalibrationLabel;
+  createdAt: number;
+  briefId?: string;
+  topicId?: string;
+}
+
+export interface AoiProactiveBriefCalibrationLabelIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiProactiveBriefCalibrationLabelIndexEntry[];
+}
+
+export interface AoiProactiveBriefCalibrationInboxItem {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  fieldEventId: string;
+  fieldEventKind: AoiProactiveBriefFieldEventKind;
+  fieldEventAt: number;
+  briefId?: string;
+  topicId?: string;
+  deliveryMode?: AoiProactiveBriefDeliveryMode;
+  title: string;
+  whyNow: string;
+  whyRelevant: string;
+  sourceFreshness: string;
+  cannotKnowLabels: string[];
+  sourceRefs: string[];
+  sourceHosts: string[];
+  policyReason?: string;
+  labels: AoiProactiveBriefCalibrationLabelRecord[];
+  labelState: 'unlabeled' | 'labeled' | 'unsafe_flagged';
+  latestLabel?: AoiProactiveBriefCalibrationLabel;
+  latestLabelAt?: number;
+  suggestedLabels: AoiProactiveBriefCalibrationLabel[];
+  priorityScore: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiProactiveBriefCalibrationInbox {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  inboxCount: number;
+  unlabeledCount: number;
+  labeledCount: number;
+  labelCount: number;
+  unsafeLabelCount: number;
+  staleLabelCount: number;
+  items: AoiProactiveBriefCalibrationInboxItem[];
+  evidenceRefs: string[];
+}
+
+export interface AoiProactiveBriefTopicCalibrationTuning {
+  version: 1;
+  topicId: string;
+  labelCounts: Partial<Record<AoiProactiveBriefCalibrationLabel, number>>;
+  scoreDelta: number;
+  confidenceDelta: number;
+  sourcePreferenceDelta: number;
+  chatHookThresholdDelta: number;
+  cooldownMs: number;
+  directChatBlocked: boolean;
+  preferDigestOrDashboard: boolean;
+  muted: boolean;
+  pinned: boolean;
+  conservativeReasons: string[];
+  evidenceRefs: string[];
+  updatedAt: number;
+}
+
+export interface AoiProactiveBriefSourceCalibrationTuning {
+  version: 1;
+  host: string;
+  labelCounts: Partial<Record<AoiProactiveBriefCalibrationLabel, number>>;
+  preferenceDelta: number;
+  directChatBlocked: boolean;
+  staleBlocked: boolean;
+  unsafeBlocked: boolean;
+  evidenceRefs: string[];
+  updatedAt: number;
+}
+
+export interface AoiProactiveBriefCalibrationTuning {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  status: 'no_labels' | 'tuning_active' | 'blocked';
+  labelCount: number;
+  labelDistribution: Record<AoiProactiveBriefCalibrationLabel, number>;
+  unsafeLabelCount: number;
+  staleLabelCount: number;
+  tooFrequentLabelCount: number;
+  wrongTimingLabelCount: number;
+  mutedTopicCount: number;
+  pinnedTopicCount: number;
+  topicTuning: Record<string, AoiProactiveBriefTopicCalibrationTuning>;
+  sourceTuning: Record<string, AoiProactiveBriefSourceCalibrationTuning>;
+  summaryLabels: string[];
+  evidenceRefs: string[];
+}
+
 export type AoiFailureKind =
   | 'policy_blocked'
   | 'missing_evidence'

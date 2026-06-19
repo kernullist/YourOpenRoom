@@ -14,6 +14,7 @@ import {
 } from './aoiOperatorHealth';
 import {
   loadAoiInterestProfile,
+  loadAoiProactiveBriefCalibrationTuning,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFieldMetrics,
@@ -21,6 +22,7 @@ import {
   resolveAoiProactiveBriefPaths,
 } from './aoiProactiveBriefStore';
 import {
+  buildAoiProactiveBriefCalibrationDiagnostics,
   buildAoiProactiveBriefDiagnostics,
   buildAoiProactiveBriefFieldDiagnostics,
 } from './aoiProactiveBriefReplay';
@@ -151,18 +153,25 @@ export function buildAoiOperatorHealthState(params: {
     () => loadAoiProactiveBriefFieldMetrics(params.sessionsDir, sessionPath, now),
     null,
   );
+  const proactiveCalibrationTuning = tryLoad(
+    () => loadAoiProactiveBriefCalibrationTuning(params.sessionsDir, sessionPath, now),
+    null,
+  );
   const hasProactiveArtifacts = Boolean(
     proactiveProfile?.topics.length ||
     proactiveCandidates.length ||
     proactiveFeedback.length ||
     (proactiveFieldMetrics?.eventCount ?? 0) > 0 ||
+    (proactiveCalibrationTuning?.labelCount ?? 0) > 0 ||
     Object.keys(proactiveCooldownState?.cooldowns ?? {}).length ||
     (proactivePaths &&
       (fs.existsSync(proactivePaths.profile) ||
         fs.existsSync(proactivePaths.index) ||
         fs.existsSync(proactivePaths.cooldowns) ||
         fs.existsSync(proactivePaths.fieldMetrics) ||
-        fs.existsSync(proactivePaths.fieldEventIndex))),
+        fs.existsSync(proactivePaths.fieldEventIndex) ||
+        fs.existsSync(proactivePaths.calibrationTuning) ||
+        fs.existsSync(proactivePaths.calibrationLabelIndex))),
   );
   const proactiveScoutWarnings =
     hasProactiveArtifacts &&
@@ -184,6 +193,7 @@ export function buildAoiOperatorHealthState(params: {
           now,
         }),
         ...buildAoiProactiveBriefFieldDiagnostics(proactiveFieldMetrics, now),
+        ...buildAoiProactiveBriefCalibrationDiagnostics(proactiveCalibrationTuning, now),
       ]
     : [];
 

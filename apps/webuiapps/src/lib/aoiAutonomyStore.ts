@@ -88,6 +88,10 @@ export interface AoiAutonomyPaths {
   proactiveBriefFieldEventIndex: string;
   proactiveBriefFieldEventRecordsDir: string;
   proactiveBriefFieldMetrics: string;
+  proactiveBriefCalibrationLabelsDir: string;
+  proactiveBriefCalibrationLabelIndex: string;
+  proactiveBriefCalibrationLabelRecordsDir: string;
+  proactiveBriefCalibrationTuning: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -366,6 +370,7 @@ export function resolveAoiAutonomyPaths(
   const fieldShadowDir = join(root, 'field-shadow');
   const proactiveBriefsDir = join(root, 'proactive-briefs');
   const proactiveBriefFieldEventsDir = join(proactiveBriefsDir, 'field-events');
+  const proactiveBriefCalibrationLabelsDir = join(proactiveBriefsDir, 'calibration-labels');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -400,6 +405,10 @@ export function resolveAoiAutonomyPaths(
     proactiveBriefFieldEventIndex: join(proactiveBriefFieldEventsDir, 'index.json'),
     proactiveBriefFieldEventRecordsDir: join(proactiveBriefFieldEventsDir, 'events'),
     proactiveBriefFieldMetrics: join(proactiveBriefsDir, 'field-metrics.json'),
+    proactiveBriefCalibrationLabelsDir,
+    proactiveBriefCalibrationLabelIndex: join(proactiveBriefCalibrationLabelsDir, 'index.json'),
+    proactiveBriefCalibrationLabelRecordsDir: join(proactiveBriefCalibrationLabelsDir, 'labels'),
+    proactiveBriefCalibrationTuning: join(proactiveBriefsDir, 'calibration-tuning.json'),
   };
 }
 

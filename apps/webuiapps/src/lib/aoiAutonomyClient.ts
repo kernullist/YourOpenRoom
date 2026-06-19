@@ -34,6 +34,8 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiProactiveBriefCandidate,
+  AoiProactiveBriefCalibrationInbox,
+  AoiProactiveBriefCalibrationTuning,
   AoiProactiveBriefCooldownState,
   AoiProactiveBriefFieldMetrics,
   AoiProactiveBriefFeedback,
@@ -177,6 +179,8 @@ export interface AoiProactiveBriefListResponse {
   profile: AoiInterestProfile;
   cooldownState: AoiProactiveBriefCooldownState;
   fieldMetrics?: AoiProactiveBriefFieldMetrics;
+  calibrationInbox?: AoiProactiveBriefCalibrationInbox;
+  calibrationTuning?: AoiProactiveBriefCalibrationTuning;
   panel?: AoiProactiveBriefPanelModel;
 }
 
@@ -576,6 +580,12 @@ function parseAoiProactiveBriefListPayload(
     cooldownState,
     ...(isRecord(payload.fieldMetrics)
       ? { fieldMetrics: payload.fieldMetrics as AoiProactiveBriefFieldMetrics }
+      : {}),
+    ...(isRecord(payload.calibrationInbox)
+      ? { calibrationInbox: payload.calibrationInbox as AoiProactiveBriefCalibrationInbox }
+      : {}),
+    ...(isRecord(payload.calibrationTuning)
+      ? { calibrationTuning: payload.calibrationTuning as AoiProactiveBriefCalibrationTuning }
       : {}),
     ...(isRecord(payload.panel) ? { panel: payload.panel as AoiProactiveBriefPanelModel } : {}),
   };

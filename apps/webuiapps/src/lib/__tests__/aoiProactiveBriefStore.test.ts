@@ -7,12 +7,16 @@ import type { AoiProactiveBriefCandidate } from '../aoiAutonomyTypes';
 import {
   expireStaleAoiProactiveBriefCandidates,
   buildAoiProactiveBriefFieldMetrics,
+  loadAoiProactiveBriefCalibrationInbox,
+  loadAoiProactiveBriefCalibrationLabels,
+  loadAoiProactiveBriefCalibrationTuning,
   loadAoiInterestProfile,
   loadAoiProactiveBriefCandidates,
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFieldEvents,
   loadAoiProactiveBriefFieldMetrics,
   normalizeAoiProactiveBriefCandidate,
+  recordAoiProactiveBriefCalibrationLabel,
   recordAoiProactiveBriefDeliveryFieldEvents,
   recordAoiProactiveBriefFieldEvent,
   rebuildAndSaveAoiInterestProfile,
@@ -363,6 +367,131 @@ describe('Aoi proactive brief candidate storage', () => {
     expect(metrics.suppressionCounts.missing_sources).toBe(1);
     expect(metrics.feedbackRecordedCount).toBe(1);
     expect(metrics.tooFrequentCount).toBe(1);
+  });
+
+  it('persists append-only calibration labels and derives inbox tuning from field events', () => {
+    const root = makeTempRoot();
+    const upserted = upsertAoiProactiveBriefCandidate(root, makeCandidate(), 3000);
+    const decision = decideAoiProactiveBriefDelivery({
+      candidate: upserted.candidate,
+      context: {
+        now: 3100,
+      },
+    });
+
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      candidates: [upserted.candidate],
+      decisions: [decision],
+      now: 3100,
+    });
+    const shown = loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 3200).find((event) =>
+      event.kind.startsWith('shown_'),
+    );
+
+    expect(shown).toBeTruthy();
+
+    const first = recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: 'aoi/default',
+      fieldEventId: shown!.id,
+      label: 'useful',
+      note: 'Good hit, but redact api_key=secret-value and C:\\Users\\operator\\note.txt',
+      now: 3300,
+    });
+    const second = recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: 'aoi/default',
+      fieldEventId: shown!.id,
+      label: 'show_less',
+      now: 3400,
+    });
+    const labels = loadAoiProactiveBriefCalibrationLabels(root, 'aoi/default', 3500);
+    const inbox = loadAoiProactiveBriefCalibrationInbox(root, 'aoi/default', 3500);
+    const tuning = loadAoiProactiveBriefCalibrationTuning(root, 'aoi/default', 3500);
+
+    expect(first.id).not.toBe(second.id);
+    expect(labels).toHaveLength(2);
+    expect(labels.map((label) => label.fieldEventId)).toEqual([second, first].map(() => shown!.id));
+    expect(JSON.stringify(labels)).not.toContain('api_key=secret-value');
+    expect(JSON.stringify(labels)).not.toContain('C:\\Users\\operator\\note.txt');
+    expect(inbox.items[0]).toMatchObject({
+      fieldEventId: shown!.id,
+      labelState: 'labeled',
+    });
+    expect(inbox.items[0]?.labels).toHaveLength(2);
+    expect(tuning.labelCount).toBe(2);
+    expect(tuning.labelDistribution.useful).toBe(1);
+    expect(tuning.labelDistribution.show_less).toBe(1);
+    expect(tuning.topicTuning[upserted.candidate.topicId]!.chatHookThresholdDelta).toBeGreaterThan(
+      0,
+    );
+    expect(tuning.sourceTuning['example.com']!.preferenceDelta).toBeGreaterThan(0);
+  });
+
+  it('lets latest topic mute and pin calibration labels supersede topic state', () => {
+    const root = makeTempRoot();
+    const upserted = upsertAoiProactiveBriefCandidate(root, makeCandidate(), 4000);
+    const decision = decideAoiProactiveBriefDelivery({
+      candidate: upserted.candidate,
+      context: {
+        now: 4100,
+      },
+    });
+
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      candidates: [upserted.candidate],
+      decisions: [decision],
+      now: 4100,
+    });
+    const shown = loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 4200).find((event) =>
+      event.kind.startsWith('shown_'),
+    );
+
+    expect(shown).toBeTruthy();
+
+    recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: 'aoi/default',
+      fieldEventId: shown!.id,
+      label: 'mute_topic',
+      now: 4300,
+    });
+    recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: 'aoi/default',
+      fieldEventId: shown!.id,
+      label: 'pin_topic',
+      now: 4400,
+    });
+
+    const pinnedTuning = loadAoiProactiveBriefCalibrationTuning(root, 'aoi/default', 4500);
+    const pinnedTopic = pinnedTuning.topicTuning[upserted.candidate.topicId]!;
+
+    expect(loadAoiProactiveBriefCalibrationLabels(root, 'aoi/default', 4500)).toHaveLength(2);
+    expect(pinnedTopic.muted).toBe(false);
+    expect(pinnedTopic.pinned).toBe(true);
+    expect(pinnedTopic.directChatBlocked).toBe(false);
+    expect(pinnedTopic.conservativeReasons).not.toContain('muted');
+    expect(pinnedTuning.sourceTuning['example.com']!.directChatBlocked).toBe(false);
+
+    recordAoiProactiveBriefCalibrationLabel(root, {
+      sessionPath: 'aoi/default',
+      fieldEventId: shown!.id,
+      label: 'mute_topic',
+      now: 4600,
+    });
+
+    const mutedTuning = loadAoiProactiveBriefCalibrationTuning(root, 'aoi/default', 4700);
+    const mutedTopic = mutedTuning.topicTuning[upserted.candidate.topicId]!;
+
+    expect(loadAoiProactiveBriefCalibrationLabels(root, 'aoi/default', 4700)).toHaveLength(3);
+    expect(mutedTopic.muted).toBe(true);
+    expect(mutedTopic.pinned).toBe(false);
+    expect(mutedTopic.directChatBlocked).toBe(true);
+    expect(mutedTopic.conservativeReasons).toContain('muted');
+    expect(mutedTuning.mutedTopicCount).toBe(1);
+    expect(mutedTuning.pinnedTopicCount).toBe(0);
+    expect(mutedTuning.sourceTuning['example.com']!.directChatBlocked).toBe(true);
   });
 
   it('does not import network, research, or command execution helpers in this layer', () => {
