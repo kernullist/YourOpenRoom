@@ -6815,13 +6815,18 @@ const ChatPanel: React.FC<{
       return;
     }
     aoiDirectTrendChatIdsRef.current.add(messageId);
+    const followUpPrompts = directAoiTrendCard.followUpPrompts.slice(0, 4);
     const message: CharacterDisplayMessage = {
       id: messageId,
       role: 'assistant',
       content: directAoiTrendCard.chatHookText,
+      ...(followUpPrompts.length > 0 ? { suggestedReplies: followUpPrompts } : {}),
     };
     addMessage(message);
     setChatHistory((prev) => [...prev, { role: 'assistant', content: message.content }]);
+    if (followUpPrompts.length > 0) {
+      setSuggestedReplies(followUpPrompts);
+    }
     void recordAoiProactiveTrendDeliveryFromPanel(
       directAoiTrendCard.snapshotId,
       'direct_chat_offered',
@@ -7268,6 +7273,18 @@ const ChatPanel: React.FC<{
                 >
                   Sources
                 </button>
+                {inlineAoiTrendCard.followUpPrompts.slice(0, 2).map((prompt, index) => (
+                  <button
+                    type="button"
+                    className={styles.inlineActionBtn}
+                    key={`trend-follow-up-${inlineAoiTrendCard.id}-${index}`}
+                    onClick={() => handleSend(prompt)}
+                    disabled={loading}
+                    title={sanitizeAoiProposalDisplayText(prompt, 180)}
+                  >
+                    {index === 0 ? 'Ask deeper' : 'Plan'}
+                  </button>
+                ))}
               </div>
             </div>
           )}

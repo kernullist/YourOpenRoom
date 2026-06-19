@@ -1463,6 +1463,27 @@ function buildChatHookText(params: {
   return `Aoi trend signal for ${params.topicLabel}: ${params.title}. My take: ${params.myTake} Sources: ${hosts}.`;
 }
 
+export function buildAoiProactiveTrendFollowUpPrompts(
+  card: Pick<
+    AoiProactiveTrendOpinionCard,
+    'title' | 'topicLabel' | 'sourceHosts' | 'suggestedNextAction'
+  >,
+): string[] {
+  const title = sanitizeText(card.title, 120) || 'this trend';
+  const topicLabel = sanitizeText(card.topicLabel, 80) || 'this topic';
+  const sourceHint = card.sourceHosts.slice(0, 2).join(', ') || 'the source evidence';
+  return unique(
+    [
+      `Aoi, dig deeper into "${title}" and compare the strongest evidence.`,
+      `Aoi, open the source evidence for "${title}" from ${sourceHint}.`,
+      `Aoi, turn this ${topicLabel} trend into a short research plan.`,
+      sanitizeText(card.suggestedNextAction, 160)
+        ? `Aoi, help me act on this: ${sanitizeText(card.suggestedNextAction, 160)}`
+        : '',
+    ].filter(Boolean),
+  ).slice(0, 4);
+}
+
 function findWatchForCandidate(
   watchProfile: AoiProactiveTrendWatchProfile,
   candidate: AoiProactiveBriefCandidate,
@@ -2269,7 +2290,7 @@ export function buildAoiProactiveTrendDeliveryAuditSummary(
 
 function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTrendOpinionCard {
   const sourceHosts = unique(snapshot.sources.map((source) => source.host)).slice(0, 6);
-  return {
+  const card: AoiProactiveTrendOpinionCard = {
     version: 1,
     id: makeStableId('aoi-trend-card', `${snapshot.id}:${snapshot.updatedAt}`),
     snapshotId: snapshot.id,
@@ -2290,6 +2311,7 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     deliverySummary: snapshot.delivery.summary,
     controlSummary: controlSummary(snapshot.delivery.controls),
     sourceHosts,
+    followUpPrompts: [],
     directChatAllowed: snapshot.delivery.directChatAllowed,
     directChatBlockedReasons: snapshot.delivery.directChatBlockedReasons,
     ...(snapshot.delivery.controls.quietUntil
@@ -2301,6 +2323,10 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
     ...(snapshot.delivery.chatHookText ? { chatHookText: snapshot.delivery.chatHookText } : {}),
     evidenceRefs: snapshot.evidenceRefs.slice(0, 16),
     createdAt: snapshot.updatedAt,
+  };
+  return {
+    ...card,
+    followUpPrompts: buildAoiProactiveTrendFollowUpPrompts(card),
   };
 }
 

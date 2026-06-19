@@ -268,6 +268,12 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.opinionCards[0].whyItMatters).toBeTruthy();
     expect(state.opinionCards[0].myTake).toBeTruthy();
     expect(state.opinionCards[0].suggestedNextAction).toBeTruthy();
+    expect(state.opinionCards[0].followUpPrompts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('dig deeper'),
+        expect.stringContaining('open the source evidence'),
+      ]),
+    );
   });
 
   it('keeps direct chat blocked by default while still preparing dashboard opinion cards', () => {
@@ -303,6 +309,12 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.opinionCards[0].directChatAllowed).toBe(true);
     expect(state.opinionCards[0].deliveryMode).toBe('direct_chat');
     expect(state.chatHook).toContain('Aoi trend signal');
+    expect(state.directChatCard?.followUpPrompts).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining('Fresh reversing writeup trend'),
+        expect.stringContaining('short research plan'),
+      ]),
+    );
     expect(state.directChatHookCount).toBe(1);
   });
 
