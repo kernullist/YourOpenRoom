@@ -116,6 +116,30 @@ export interface AoiAgendaChatNudgeSelectionOptions {
   shownDedupeKeys?: ReadonlySet<string>;
 }
 
+export type AoiAgendaChatFollowUpIntent =
+  | 'preview_prepared_action'
+  | 'review_approval_gate'
+  | 'explain_why_now'
+  | 'show_safety_boundary'
+  | 'explain_blocked_gate'
+  | 'show_safe_alternative'
+  | 'show_safe_next_step'
+  | 'enable_quiet_mode';
+
+export interface AoiAgendaChatFollowUpContext {
+  prompt: string;
+  nudge: AoiAgendaChatNudge;
+  createdAt: number;
+}
+
+export interface AoiAgendaChatFollowUpResponse {
+  intent: AoiAgendaChatFollowUpIntent;
+  chatText: string;
+  suggestedReplies: string[];
+  evidenceRefs: string[];
+  shouldEnableQuietMode: boolean;
+}
+
 export interface AoiAutonomyProposalCounts {
   active: number;
   dismissed: number;
@@ -2165,6 +2189,213 @@ export function selectAoiAgendaChatNudge(params: {
   }
 
   return nudge;
+}
+
+export function buildAoiAgendaChatFollowUpContext(
+  nudge: AoiAgendaChatNudge,
+  prompt: string,
+  now = Date.now(),
+): AoiAgendaChatFollowUpContext {
+  return {
+    prompt: sanitizeAoiProposalDisplayText(prompt, 160),
+    nudge,
+    createdAt: now,
+  };
+}
+
+export function classifyAoiAgendaChatFollowUpPrompt(
+  prompt: string,
+  nudge?: AoiAgendaChatNudge | null,
+): AoiAgendaChatFollowUpIntent {
+  const normalized = prompt.toLowerCase();
+  if (normalized.includes('quiet')) {
+    return 'enable_quiet_mode';
+  }
+  if (normalized.includes('approval') || normalized.includes('gate')) {
+    if (nudge?.reason === 'blocked_gate' || normalized.includes('blocked')) {
+      return 'explain_blocked_gate';
+    }
+    return 'review_approval_gate';
+  }
+  if (normalized.includes('preview') || normalized.includes('prepared action')) {
+    return 'preview_prepared_action';
+  }
+  if (normalized.includes('boundary') || normalized.includes('safety')) {
+    return 'show_safety_boundary';
+  }
+  if (normalized.includes('alternative')) {
+    return 'show_safe_alternative';
+  }
+  if (normalized.includes('next step') || normalized.includes('safe next')) {
+    return 'show_safe_next_step';
+  }
+  if (normalized.includes('why') || normalized.includes('matter')) {
+    return 'explain_why_now';
+  }
+  if (nudge?.reason === 'approval_waiting') {
+    return 'review_approval_gate';
+  }
+  if (nudge?.reason === 'blocked_gate') {
+    return 'explain_blocked_gate';
+  }
+  if (nudge?.reason === 'accepted_action_ready') {
+    return 'preview_prepared_action';
+  }
+  return 'explain_why_now';
+}
+
+function findAoiAgendaProposal(
+  proposals: readonly AoiProposal[],
+  proposalId: string | undefined,
+): AoiProposal | undefined {
+  if (!proposalId) {
+    return undefined;
+  }
+  return proposals.find((proposal) => proposal.id === proposalId);
+}
+
+function findAoiAgendaApproval(
+  digest: AoiOperatorDigest | null | undefined,
+  proposalId: string | undefined,
+) {
+  if (!proposalId) {
+    return undefined;
+  }
+  return digest?.approvalInbox.find((item) => item.proposalId === proposalId);
+}
+
+function findAoiAgendaBlockedProposal(
+  blockedProposals: readonly AoiAutonomyBlockedProposal[],
+  proposalId: string | undefined,
+): AoiAutonomyBlockedProposal | undefined {
+  if (!proposalId) {
+    return undefined;
+  }
+  return blockedProposals.find((proposal) => proposal.proposalId === proposalId);
+}
+
+function formatAoiAgendaEvidenceLine(evidenceRefs: readonly string[]): string {
+  if (evidenceRefs.length === 0) {
+    return 'Evidence: no evidence refs are attached yet; keep this as a review-only note.';
+  }
+  return `Evidence: ${evidenceRefs.slice(0, 4).join(', ')}${evidenceRefs.length > 4 ? `, +${evidenceRefs.length - 4} more` : ''}.`;
+}
+
+export function buildAoiAgendaChatFollowUpResponse(params: {
+  context: AoiAgendaChatFollowUpContext;
+  activeProposals?: AoiProposal[];
+  blockedProposals?: AoiAutonomyBlockedProposal[];
+  digest?: AoiOperatorDigest | null;
+}): AoiAgendaChatFollowUpResponse {
+  const { context } = params;
+  const nudge = context.nudge;
+  const activeProposals = params.activeProposals ?? [];
+  const blockedProposals = params.blockedProposals ?? [];
+  const proposal = findAoiAgendaProposal(activeProposals, nudge.proposalId);
+  const approval = findAoiAgendaApproval(params.digest, nudge.proposalId);
+  const blockedProposal = findAoiAgendaBlockedProposal(blockedProposals, nudge.proposalId);
+  const evidenceRefs = collectAoiAgendaEvidenceRefs(
+    nudge.evidenceRefs,
+    proposal?.evidenceRefs,
+    approval?.evidenceRefs,
+    blockedProposal?.evidenceRefs,
+  );
+  const intent = classifyAoiAgendaChatFollowUpPrompt(context.prompt, nudge);
+  const title = sanitizeAoiProposalDisplayText(
+    approval?.title ?? blockedProposal?.title ?? proposal?.title ?? 'Aoi agenda item',
+    160,
+  );
+  const boundary =
+    approval?.boundary ??
+    (proposal
+      ? `${proposal.acceptAction?.kind ?? 'prepared action'} remains behind ${proposal.requiredAutonomyLevel}; no tool runs until the existing proposal controls approve it.`
+      : 'No tools, app actions, file changes, commits, or pushes start from this follow-up.');
+  const safeNextAction =
+    approval?.exactNextAction ??
+    blockedProposal?.safeAlternative ??
+    (proposal ? `Review proposal: ${proposal.title}.` : 'Open the Aoi panel and review the item.');
+  let chatText = '';
+  let shouldEnableQuietMode = false;
+
+  if (intent === 'enable_quiet_mode') {
+    shouldEnableQuietMode = true;
+    chatText = [
+      'Aoi agenda quiet mode is on for this panel.',
+      'I will keep observing and recording evidence, but I will not surface agenda chat nudges until quiet mode is turned off.',
+      'Boundary: this changes only the Aoi panel quiet preference; no tools or external actions run.',
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else if (intent === 'review_approval_gate') {
+    chatText = [
+      `Approval gate: ${title}.`,
+      `Exact next action: ${sanitizeAoiProposalDisplayText(safeNextAction, 220)}`,
+      `Risk: ${approval?.risk ?? proposal?.risk ?? 'unknown'}; required level: ${
+        approval?.requiredAutonomyLevel ?? proposal?.requiredAutonomyLevel ?? 'unknown'
+      }.`,
+      `Boundary: ${sanitizeAoiProposalDisplayText(boundary, 260)}`,
+      'State: waiting for explicit approval; no tool has run from this follow-up.',
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else if (intent === 'preview_prepared_action') {
+    chatText = [
+      `Prepared action: ${title}.`,
+      `Action kind: ${proposal?.acceptAction?.kind ?? approval?.actionKind ?? 'review'}.`,
+      `Safe next step: ${sanitizeAoiProposalDisplayText(safeNextAction, 220)}`,
+      `Boundary: ${sanitizeAoiProposalDisplayText(boundary, 260)}`,
+      'State: this is a preview/explanation only; no command, file write, app action, commit, or push has run.',
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else if (intent === 'show_safety_boundary') {
+    chatText = [
+      `Safety boundary for ${title}:`,
+      sanitizeAoiProposalDisplayText(boundary, 300),
+      'Aoi can explain, preview, or point to the approval gate here, but execution stays behind the existing proposal controls.',
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else if (intent === 'explain_blocked_gate') {
+    const reasons = blockedProposal?.reasons.length
+      ? blockedProposal.reasons.join(', ')
+      : 'the agenda item needs a stricter approval or safer prerequisite.';
+    chatText = [
+      `Blocked gate: ${title}.`,
+      `Reason: ${sanitizeAoiProposalDisplayText(reasons, 240)}`,
+      `Safe alternative: ${sanitizeAoiProposalDisplayText(safeNextAction, 220)}`,
+      'State: blocked means Aoi should not execute or escalate this path automatically.',
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else if (intent === 'show_safe_alternative' || intent === 'show_safe_next_step') {
+    chatText = [
+      `Safe next step for ${title}:`,
+      sanitizeAoiProposalDisplayText(safeNextAction, 260),
+      `Boundary: ${sanitizeAoiProposalDisplayText(boundary, 260)}`,
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  } else {
+    const whyNow =
+      proposal?.reason ??
+      approval?.title ??
+      blockedProposal?.reasons.join(', ') ??
+      'Aoi ranked this agenda item as currently relevant.';
+    chatText = [
+      `Why this agenda item matters now: ${title}.`,
+      sanitizeAoiProposalDisplayText(whyNow, 260),
+      `Safe next step: ${sanitizeAoiProposalDisplayText(safeNextAction, 220)}`,
+      `Boundary: ${sanitizeAoiProposalDisplayText(boundary, 260)}`,
+      formatAoiAgendaEvidenceLine(evidenceRefs),
+    ].join('\n');
+  }
+
+  return {
+    intent,
+    chatText,
+    suggestedReplies: shouldEnableQuietMode
+      ? []
+      : buildAoiAgendaSuggestedReplies(nudge.reason)
+          .filter((reply) => reply !== context.prompt)
+          .slice(0, 3),
+    evidenceRefs,
+    shouldEnableQuietMode,
+  };
 }
 
 export function buildAoiOperatorHealthPanelSummary(

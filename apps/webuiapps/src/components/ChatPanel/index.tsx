@@ -259,6 +259,8 @@ import {
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
+  buildAoiAgendaChatFollowUpContext,
+  buildAoiAgendaChatFollowUpResponse,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
@@ -286,6 +288,8 @@ import {
   selectAoiAgendaChatNudge,
   selectAoiInlineProposal,
   summarizeAoiAutonomyProposalCounts,
+  type AoiAgendaChatFollowUpContext,
+  type AoiAgendaChatNudge,
   type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
@@ -2569,6 +2573,10 @@ const ChatPanel: React.FC<{
   const aoiTrendFollowUpContextsByPromptRef = useRef(
     new Map<string, AoiProactiveTrendFollowUpContext>(),
   );
+  const pendingAoiAgendaFollowUpRef = useRef<AoiAgendaChatFollowUpContext | null>(null);
+  const aoiAgendaFollowUpContextsByPromptRef = useRef(
+    new Map<string, AoiAgendaChatFollowUpContext>(),
+  );
   const aoiAutonomyRefreshInFlightRef = useRef(false);
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
@@ -2578,6 +2586,12 @@ const ChatPanel: React.FC<{
   const aoiAgendaNudgeShownKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
+  const aoiAutonomyActiveProposalsRef = useRef(aoiAutonomyActiveProposals);
+  aoiAutonomyActiveProposalsRef.current = aoiAutonomyActiveProposals;
+  const aoiAutonomyBlockedProposalsRef = useRef(aoiAutonomyBlockedProposals);
+  aoiAutonomyBlockedProposalsRef.current = aoiAutonomyBlockedProposals;
+  const aoiOperatorDigestRef = useRef(aoiOperatorDigest);
+  aoiOperatorDigestRef.current = aoiOperatorDigest;
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -2721,6 +2735,8 @@ const ChatPanel: React.FC<{
     aoiInlineShownTrendIdsRef.current = new Set();
     aoiDirectTrendChatIdsRef.current = new Set();
     aoiAgendaNudgeShownKeysRef.current = new Set();
+    pendingAoiAgendaFollowUpRef.current = null;
+    aoiAgendaFollowUpContextsByPromptRef.current.clear();
     loadChatHistory(sessionPath).then(async (data) => {
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
@@ -3810,6 +3826,33 @@ const ChatPanel: React.FC<{
     return null;
   }, []);
 
+  const registerAoiAgendaSuggestedReplies = useCallback(
+    (nudge: AoiAgendaChatNudge, prompts: string[]) => {
+      for (const prompt of prompts) {
+        const context = buildAoiAgendaChatFollowUpContext(nudge, prompt);
+        aoiAgendaFollowUpContextsByPromptRef.current.set(context.prompt, context);
+      }
+      while (aoiAgendaFollowUpContextsByPromptRef.current.size > 24) {
+        const oldestKey = aoiAgendaFollowUpContextsByPromptRef.current.keys().next().value;
+        if (!oldestKey) {
+          break;
+        }
+        aoiAgendaFollowUpContextsByPromptRef.current.delete(oldestKey);
+      }
+    },
+    [],
+  );
+
+  const consumeAoiAgendaFollowUpContext = useCallback((messageText: string) => {
+    const pending = pendingAoiAgendaFollowUpRef.current;
+    pendingAoiAgendaFollowUpRef.current = null;
+    if (pending?.prompt === messageText) {
+      aoiAgendaFollowUpContextsByPromptRef.current.delete(messageText);
+      return pending;
+    }
+    return null;
+  }, []);
+
   const recordAoiTrendFollowUpPromptUse = useCallback(
     (context: AoiProactiveTrendFollowUpContext | null) => {
       const briefId = context?.candidateId;
@@ -4629,6 +4672,10 @@ const ChatPanel: React.FC<{
       const aoiTrendFollowUpContext = !hasImageAttachments
         ? consumeAoiTrendFollowUpContext(messageText)
         : null;
+      const aoiAgendaFollowUpContext =
+        !hasImageAttachments && !aoiTrendFollowUpContext
+          ? consumeAoiAgendaFollowUpContext(messageText)
+          : null;
       if (!overrideText) {
         setInput('');
         clearPendingImages();
@@ -4636,8 +4683,11 @@ const ChatPanel: React.FC<{
       setSuggestedReplies([]);
       if (aoiTrendFollowUpContext) {
         recordAoiTrendFollowUpPromptUse(aoiTrendFollowUpContext);
+      } else if (aoiAgendaFollowUpContext) {
+        aoiTrendFollowUpContextsByPromptRef.current.clear();
       } else {
         aoiTrendFollowUpContextsByPromptRef.current.clear();
+        aoiAgendaFollowUpContextsByPromptRef.current.clear();
       }
       hasUserInteractedRef.current = true;
       stopAoiTtsPlayback();
@@ -4659,6 +4709,47 @@ const ChatPanel: React.FC<{
 
       const newHistory: ChatMessage[] = [...chatHistory, outgoingUserMessage];
       setChatHistory(newHistory);
+
+      if (aoiAgendaFollowUpContext) {
+        const response = buildAoiAgendaChatFollowUpResponse({
+          context: aoiAgendaFollowUpContext,
+          activeProposals: aoiAutonomyActiveProposalsRef.current,
+          blockedProposals: aoiAutonomyBlockedProposalsRef.current,
+          digest: aoiOperatorDigestRef.current,
+        });
+        if (response.shouldEnableQuietMode) {
+          updateAoiAutonomyPanelSettingsFromPanel({ quietMode: true });
+        }
+        if (response.suggestedReplies.length > 0) {
+          registerAoiAgendaSuggestedReplies(
+            aoiAgendaFollowUpContext.nudge,
+            response.suggestedReplies,
+          );
+        }
+        emitAssistantMessage(
+          {
+            id: String(Date.now()),
+            role: 'assistant',
+            content: response.chatText,
+            ...(response.suggestedReplies.length > 0
+              ? { suggestedReplies: response.suggestedReplies }
+              : {}),
+          },
+          {
+            updateSuggestedReplies: response.suggestedReplies.length > 0,
+          },
+        );
+        recordAoiMemoryTurn({
+          userMessage: messageText,
+          assistantMessage: response.chatText,
+          toolCalls: [
+            `direct:aoi_agenda_followup:${response.intent}:${aoiAgendaFollowUpContext.nudge.dedupeKey}`,
+          ],
+          source: 'direct_action',
+          llmConfig: selectedConfig,
+        });
+        return;
+      }
 
       if (
         aoiTrendFollowUpContext &&
@@ -4984,15 +5075,18 @@ const ChatPanel: React.FC<{
       addMessage,
       beginChatLoading,
       clearPendingImages,
+      consumeAoiAgendaFollowUpContext,
       consumeAoiTrendFollowUpContext,
       emitAssistantMessage,
       finishChatLoading,
       publishAoiRunLedgerEntry,
       recordAoiMemoryTurn,
       recordAoiTrendFollowUpPromptUse,
+      registerAoiAgendaSuggestedReplies,
       refreshAoiMemories,
       refreshConversationConfigs,
       updateChatLoadingStatus,
+      updateAoiAutonomyPanelSettingsFromPanel,
     ],
   );
 
@@ -5009,6 +5103,11 @@ const ChatPanel: React.FC<{
       const context = aoiTrendFollowUpContextsByPromptRef.current.get(reply);
       if (context) {
         pendingAoiTrendFollowUpRef.current = context;
+      } else {
+        const agendaContext = aoiAgendaFollowUpContextsByPromptRef.current.get(reply);
+        if (agendaContext) {
+          pendingAoiAgendaFollowUpRef.current = agendaContext;
+        }
       }
       void handleSend(reply);
     },
@@ -7133,6 +7232,8 @@ const ChatPanel: React.FC<{
     }
     aoiAgendaNudgeShownKeysRef.current.add(aoiAgendaChatNudge.dedupeKey);
     const followUpPrompts = aoiAgendaChatNudge.suggestedReplies.slice(0, 3);
+    pendingAoiTrendFollowUpRef.current = null;
+    aoiTrendFollowUpContextsByPromptRef.current.clear();
     emitAssistantMessage(
       {
         id: messageId,
@@ -7145,6 +7246,9 @@ const ChatPanel: React.FC<{
         speak: false,
       },
     );
+    if (followUpPrompts.length > 0) {
+      registerAoiAgendaSuggestedReplies(aoiAgendaChatNudge, followUpPrompts);
+    }
     setAoiAgendaNudgeLastShownAt(Date.now());
     setAoiInlineShownCount((prev) => prev + 1);
     recordAoiMemoryTurn({
@@ -7159,6 +7263,7 @@ const ChatPanel: React.FC<{
     emitAssistantMessage,
     loading,
     recordAoiMemoryTurn,
+    registerAoiAgendaSuggestedReplies,
     selectedConfig,
     visible,
   ]);
@@ -7182,6 +7287,8 @@ const ChatPanel: React.FC<{
       return;
     }
     aoiDirectTrendChatIdsRef.current.add(messageId);
+    pendingAoiAgendaFollowUpRef.current = null;
+    aoiAgendaFollowUpContextsByPromptRef.current.clear();
     const followUpPrompts = directAoiTrendCard.followUpPrompts.slice(0, 4);
     const message: CharacterDisplayMessage = {
       id: messageId,

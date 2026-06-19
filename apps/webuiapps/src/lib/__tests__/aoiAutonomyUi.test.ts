@@ -7,6 +7,8 @@ import { decideAoiMission } from '../aoiAutonomyClient';
 import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContextRouter';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  buildAoiAgendaChatFollowUpContext,
+  buildAoiAgendaChatFollowUpResponse,
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiOperatorHealthPanelSummary,
   buildAoiPlaybookPanelSummary,
@@ -877,6 +879,98 @@ describe('Aoi autonomy UI helpers', () => {
     });
     expect(nudge?.chatText).toContain('approval-gated action is waiting');
     expect(nudge?.chatText).toContain('Safe next step:');
+  });
+
+  it('answers agenda nudge follow-ups with bounded approval details', () => {
+    const approvalProposal = makeProposal({
+      id: 'aoi-proposal-approval-ui-test',
+      title: 'Refresh stale RE research',
+      reason: 'The saved RE trend research is stale for a current-info question.',
+      risk: 'medium',
+      requiredAutonomyLevel: 'L3',
+      requiresUserApproval: true,
+      acceptAction: {
+        kind: 'start_research',
+        params: {
+          request: 'latest reverse engineering trend',
+        },
+      },
+      evidenceRefs: ['memory:stale-research-ui-test'],
+      suggestedTools: ['start_research'],
+    });
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      activeProposals: [approvalProposal],
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+    });
+    const nudge = selectAoiAgendaChatNudge({
+      status: makeAutonomyStatus(),
+      activeProposals: [approvalProposal],
+      digest,
+      settings: {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+
+    expect(nudge).not.toBeNull();
+    const response = buildAoiAgendaChatFollowUpResponse({
+      context: buildAoiAgendaChatFollowUpContext(nudge!, 'Review the approval gate', 5001),
+      activeProposals: [approvalProposal],
+      digest,
+    });
+
+    expect(response.intent).toBe('review_approval_gate');
+    expect(response.shouldEnableQuietMode).toBe(false);
+    expect(response.chatText).toContain('Approval gate: Refresh stale RE research');
+    expect(response.chatText).toContain('required level: L3');
+    expect(response.chatText).toContain('waiting for explicit approval');
+    expect(response.chatText).not.toMatch(/\bhas run command\b|\bhas executed\b/i);
+    expect(response.evidenceRefs).toContain('memory:stale-research-ui-test');
+  });
+
+  it('turns agenda nudge quiet follow-ups into a local quiet-mode preference', () => {
+    const proposal = makeProposal({
+      status: 'accepted',
+      evidenceRefs: ['research:aoi-research-ui-test/report'],
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: {
+          runId: 'aoi-research-ui-test',
+        },
+      },
+    });
+    const nudge = selectAoiAgendaChatNudge({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+      },
+      options: {
+        now: 5000,
+      },
+    });
+
+    expect(nudge).not.toBeNull();
+    const response = buildAoiAgendaChatFollowUpResponse({
+      context: buildAoiAgendaChatFollowUpContext(nudge!, 'Keep observing quietly', 5001),
+      activeProposals: [proposal],
+    });
+
+    expect(response.intent).toBe('enable_quiet_mode');
+    expect(response.shouldEnableQuietMode).toBe(true);
+    expect(response.suggestedReplies).toEqual([]);
+    expect(response.chatText).toContain('quiet mode is on');
+    expect(response.chatText).toContain('no tools or external actions run');
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {
