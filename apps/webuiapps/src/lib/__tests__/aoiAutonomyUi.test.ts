@@ -7,6 +7,7 @@ import { decideAoiMission } from '../aoiAutonomyClient';
 import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContextRouter';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  buildAoiAutonomyAgendaPanelSummary,
   buildAoiOperatorHealthPanelSummary,
   buildAoiPlaybookPanelSummary,
   buildAoiBlockedStateSummary,
@@ -76,6 +77,7 @@ import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomySchedulerState,
+  AoiAutonomyStatus,
   AoiAttentionEvent,
   AoiApprovedCommandPolicy,
   AoiContextRouterResult,
@@ -423,6 +425,41 @@ function makeSchedulerState(
   };
 }
 
+function makeAutonomyStatus(partial: Partial<AoiAutonomyStatus> = {}): AoiAutonomyStatus {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    policy: makePolicy(),
+    activeProposalCount: 2,
+    archivedProposalCount: 0,
+    acceptedProposalCount: 1,
+    snoozedProposalCount: 0,
+    blockedProposalCount: 0,
+    observationCount: 5,
+    reflectionCount: 2,
+    decisionCount: 1,
+    lastDecisionAt: 3500,
+    lastObservationAt: 4500,
+    lastReflectionAt: 4600,
+    lastTickAt: 4700,
+    nextAllowedTickAt: 6000,
+    lastTickReason: 'manual',
+    activeTick: false,
+    recentObservationCount: 3,
+    proposalsCreatedInLastTick: 1,
+    activeGoalCount: 1,
+    currentGoalTitle: 'Refresh Windows kernel security research',
+    nextGoalStepTitle: 'Inspect research',
+    environmentSourceCount: 3,
+    enabledEnvironmentSourceCount: 2,
+    highRiskEnvironmentSourceCount: 1,
+    privateEnvironmentSourceCount: 1,
+    lastEnvironmentSourceObservedAt: 4500,
+    updatedAt: 5000,
+    ...partial,
+  };
+}
+
 function makeProposalDecision(partial: Partial<AoiProposalDecision> = {}): AoiProposalDecision {
   return {
     version: 1,
@@ -582,6 +619,110 @@ describe('Aoi autonomy UI helpers', () => {
       why: 'Background research finished while you were away.',
       reason: 'background_event',
     });
+  });
+
+  it('summarizes the observe-think-propose-act-reflect agenda from autonomy state', () => {
+    const acceptedProposal = makeProposal({
+      status: 'accepted',
+      title: 'Open matching research',
+      reason: 'A completed research report matches the current mission.',
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: {
+          runId: 'aoi-research-ui-test',
+          artifact: 'report',
+        },
+      },
+      evidenceRefs: ['research:aoi-research-ui-test/report'],
+      suggestedTools: ['read_research_artifact'],
+      updatedAt: 4900,
+    });
+    const approvalProposal = makeProposal({
+      id: 'aoi-proposal-approval-ui-test',
+      title: 'Refresh stale research',
+      reason: 'The saved research is stale for a current-info question.',
+      trigger: 'stale_research_memory',
+      risk: 'medium',
+      requiresUserApproval: true,
+      acceptAction: {
+        kind: 'start_research',
+        params: {
+          request: 'latest Windows kernel security trend',
+        },
+      },
+      evidenceRefs: ['memory:stale-research-ui-test'],
+      suggestedTools: ['start_research'],
+      updatedAt: 4800,
+    });
+    const digest = buildAoiOperatorDigest({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      activeProposals: [approvalProposal],
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+    });
+
+    const summary = buildAoiAutonomyAgendaPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [acceptedProposal, approvalProposal],
+      blockedProposals: [
+        {
+          proposalId: 'aoi-proposal-blocked-ui-test',
+          title: 'Run risky command',
+          reasons: ['autonomy_level_too_low'],
+          evidenceRefs: ['workspace:validation:stale'],
+          actionKind: 'run_command',
+          requiredAutonomyLevel: 'L5',
+          requiresUserApproval: true,
+          risk: 'high',
+          safeAlternative: 'Keep this as a manual proposal.',
+        },
+      ],
+      mission: makeMission(),
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      digest,
+      scheduler: makeSchedulerState(),
+      health: makeBlockingHealth(),
+      recentDecisions: [
+        makeProposalDecision({
+          action: 'accept',
+          nextStatus: 'accepted',
+          feedbackCategory: 'useful',
+          evidenceRefs: ['research:aoi-research-ui-test/report'],
+        }),
+      ],
+      now: 5000,
+      includeDetails: true,
+    });
+
+    expect(summary.headlineLabel).toBe('Aoi has an accepted action ready');
+    expect(summary.loopLabel).toBe('Observe -> Think -> Propose -> Act -> Reflect');
+    expect(summary.nextBestActionLabel).toContain('read research artifact');
+    expect(summary.approvalInboxLabel).toContain('1 approval-gated action');
+    expect(summary.safetyBoundaryLabel).toContain('L2');
+    expect(summary.phaseSummaries.map((phase) => phase.key)).toEqual([
+      'observe',
+      'think',
+      'propose',
+      'act',
+      'reflect',
+    ]);
+    expect(summary.phaseSummaries.find((phase) => phase.key === 'observe')).toMatchObject({
+      statusLabel: 'watching',
+      tone: 'active',
+    });
+    expect(summary.phaseSummaries.find((phase) => phase.key === 'think')?.primaryLabel).toContain(
+      'last reflection',
+    );
+    expect(summary.phaseSummaries.find((phase) => phase.key === 'act')).toMatchObject({
+      statusLabel: 'ready',
+      tone: 'ready',
+    });
+    expect(summary.phaseSummaries.find((phase) => phase.key === 'reflect')?.detailLabels).toEqual(
+      expect.arrayContaining(['latest feedback: useful']),
+    );
+    expect(summary.evidenceRefs).toEqual(
+      expect.arrayContaining(['research:aoi-research-ui-test/report']),
+    );
   });
 
   it('keeps proposal inspector evidence refs opt-in', () => {

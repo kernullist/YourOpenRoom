@@ -21,6 +21,7 @@ import {
   loadAoiAutonomyTickState,
   loadAoiCommandAuditRecords,
   loadAoiObservations,
+  loadAoiReflections,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
   updateAoiEnvironmentSource,
@@ -647,7 +648,9 @@ describe('runAoiAutonomyTick()', () => {
     });
 
     const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    const reflections = loadAoiReflections(root, SESSION_PATH);
     expect(result.newActiveProposalCount).toBe(1);
+    expect(result.newReflectionCount).toBe(1);
     expect(proposals[0]).toMatchObject({
       trigger: 'research_followup',
       cooldownKey: 'research-followup:aoi-research-done-001',
@@ -661,6 +664,12 @@ describe('runAoiAutonomyTick()', () => {
         runId: 'aoi-research-done-001',
         artifact: 'report',
       },
+    });
+    expect(reflections[0]).toMatchObject({
+      kind: 'opportunity',
+      claim: expect.stringContaining('Open the matching Aoi research report'),
+      evidenceRefs: expect.arrayContaining(['research:aoi-research-done-001/report']),
+      proposedActions: expect.arrayContaining(['read_research_artifact']),
     });
   });
 

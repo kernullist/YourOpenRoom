@@ -53,6 +53,7 @@ import type {
   AoiPreparedActionPlan,
   AoiPlaybook,
   AoiProposal,
+  AoiProposalDecision,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
@@ -335,6 +336,31 @@ export interface AoiAutonomySchedulerPanelSummary {
   skippedSourceLabels: string[];
   warningLabels: string[];
   budgetLabel: string;
+  evidenceRefs: string[];
+}
+
+export type AoiAutonomyAgendaPhaseKey = 'observe' | 'think' | 'propose' | 'act' | 'reflect';
+
+export type AoiAutonomyAgendaTone = 'idle' | 'ready' | 'active' | 'waiting' | 'blocked' | 'muted';
+
+export interface AoiAutonomyAgendaPhaseSummary {
+  key: AoiAutonomyAgendaPhaseKey;
+  label: string;
+  statusLabel: string;
+  primaryLabel: string;
+  detailLabels: string[];
+  evidenceRefs: string[];
+  tone: AoiAutonomyAgendaTone;
+}
+
+export interface AoiAutonomyAgendaPanelSummary {
+  visible: boolean;
+  headlineLabel: string;
+  loopLabel: string;
+  nextBestActionLabel: string;
+  safetyBoundaryLabel: string;
+  approvalInboxLabel: string;
+  phaseSummaries: AoiAutonomyAgendaPhaseSummary[];
   evidenceRefs: string[];
 }
 
@@ -1626,6 +1652,310 @@ export function buildAoiOperatorDigestPanelSummary(
     evidenceRefs: includeDetails
       ? digest.evidenceRefs.slice(0, 10).map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
       : [],
+  };
+}
+
+function formatAoiAgendaAge(timestamp: number | undefined, now: number): string {
+  if (!timestamp || !Number.isFinite(timestamp)) {
+    return 'not recorded';
+  }
+  const deltaMs = Math.max(0, now - timestamp);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (deltaMs < minute) {
+    return 'just now';
+  }
+  if (deltaMs < hour) {
+    return `${Math.max(1, Math.round(deltaMs / minute))}m ago`;
+  }
+  if (deltaMs < day) {
+    return `${Math.max(1, Math.round(deltaMs / hour))}h ago`;
+  }
+  return `${Math.max(1, Math.round(deltaMs / day))}d ago`;
+}
+
+function sortAoiAgendaProposals(proposals: AoiProposal[]): AoiProposal[] {
+  return [...proposals].sort((left, right) => {
+    const statusDelta =
+      (right.status === 'accepted' ? 1 : 0) - (left.status === 'accepted' ? 1 : 0);
+    if (statusDelta !== 0) {
+      return statusDelta;
+    }
+    const confidenceDelta = right.confidence - left.confidence;
+    if (Math.abs(confidenceDelta) > 0.001) {
+      return confidenceDelta;
+    }
+    return right.updatedAt - left.updatedAt;
+  });
+}
+
+function collectAoiAgendaEvidenceRefs(...groups: Array<readonly string[] | undefined>): string[] {
+  const refs = new Set<string>();
+  for (const group of groups) {
+    for (const ref of group ?? []) {
+      const sanitized = sanitizeAoiProposalDisplayText(ref, 180);
+      if (sanitized) {
+        refs.add(sanitized);
+      }
+      if (refs.size >= 12) {
+        return [...refs];
+      }
+    }
+  }
+  return [...refs];
+}
+
+function getAoiAgendaActionLabel(proposal: AoiProposal | undefined): string {
+  if (!proposal) {
+    return 'No prepared action';
+  }
+  const actionKind = proposal.acceptAction?.kind ?? proposal.suggestedTools[0] ?? 'review';
+  return `${actionKind.replace(/_/g, ' ')}: ${sanitizeAoiProposalDisplayText(proposal.title, 96)}`;
+}
+
+function buildAoiAgendaPhase(params: {
+  key: AoiAutonomyAgendaPhaseKey;
+  label: string;
+  statusLabel: string;
+  primaryLabel: string;
+  detailLabels?: string[];
+  evidenceRefs?: string[];
+  tone: AoiAutonomyAgendaTone;
+}): AoiAutonomyAgendaPhaseSummary {
+  return {
+    key: params.key,
+    label: params.label,
+    statusLabel: sanitizeAoiProposalDisplayText(params.statusLabel, 80),
+    primaryLabel: sanitizeAoiProposalDisplayText(params.primaryLabel, 180),
+    detailLabels: (params.detailLabels ?? [])
+      .map((label) => sanitizeAoiProposalDisplayText(label, 180))
+      .filter(Boolean)
+      .slice(0, 4),
+    evidenceRefs: (params.evidenceRefs ?? [])
+      .map((ref) => sanitizeAoiProposalDisplayText(ref, 180))
+      .filter(Boolean)
+      .slice(0, 6),
+    tone: params.tone,
+  };
+}
+
+export function buildAoiAutonomyAgendaPanelSummary(params: {
+  status?: AoiAutonomyStatus | null;
+  activeProposals?: AoiProposal[];
+  blockedProposals?: AoiAutonomyBlockedProposal[];
+  mission?: AoiMissionState | null;
+  workspaceSnapshot?: AoiWorkspaceSnapshot | null;
+  digest?: AoiOperatorDigest | null;
+  scheduler?: AoiAutonomySchedulerState | null;
+  health?: AoiOperatorHealthState | null;
+  recentDecisions?: AoiProposalDecision[];
+  settings?: AoiAutonomyPanelSettings;
+  now?: number;
+  includeDetails?: boolean;
+}): AoiAutonomyAgendaPanelSummary {
+  const now = params.now ?? Date.now();
+  const settings = params.settings ?? DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS;
+  const policy = params.status?.policy ?? DEFAULT_AOI_AUTONOMY_POLICY;
+  const activeProposals = params.activeProposals ?? [];
+  const blockedProposals = params.blockedProposals ?? [];
+  const recentDecisions = params.recentDecisions ?? [];
+  const proposalCandidates = sortAoiAgendaProposals(
+    activeProposals.filter(
+      (proposal) => proposal.status === 'active' || proposal.status === 'snoozed',
+    ),
+  );
+  const topProposal = proposalCandidates[0];
+  const acceptedProposal = sortAoiAgendaProposals(
+    activeProposals.filter((proposal) => proposal.status === 'accepted'),
+  )[0];
+  const approvalInbox = params.digest?.approvalInbox ?? [];
+  const feedbackDecisions = recentDecisions.filter((decision) => decision.feedbackCategory);
+  const lastDecision = recentDecisions[0];
+  const enabledSourceCount = params.status?.enabledEnvironmentSourceCount ?? 0;
+  const totalSourceCount = params.status?.environmentSourceCount ?? 0;
+  const activeObservationLabel =
+    params.status && params.status.recentObservationCount > 0
+      ? `${params.status.recentObservationCount} recent observation(s)`
+      : params.status
+        ? `${params.status.observationCount} total observation(s)`
+        : 'observation state unavailable';
+  const workspaceLabel = params.workspaceSnapshot
+    ? `${params.workspaceSnapshot.workspaceLabel}: ${params.workspaceSnapshot.freshness}`
+    : 'workspace snapshot not loaded';
+  const missionLabel = params.mission?.focusSummary
+    ? `mission: ${params.mission.focusSummary}`
+    : 'mission not active';
+  const observationTone: AoiAutonomyAgendaTone =
+    !policy.enabled || settings.quietMode ? 'muted' : enabledSourceCount > 0 ? 'active' : 'idle';
+  const thinkTone: AoiAutonomyAgendaTone = params.status?.activeTick
+    ? 'active'
+    : params.status?.lastReflectionAt
+      ? 'ready'
+      : 'idle';
+  const proposeTone: AoiAutonomyAgendaTone =
+    blockedProposals.length > 0 ? 'blocked' : proposalCandidates.length > 0 ? 'waiting' : 'idle';
+  const actTone: AoiAutonomyAgendaTone = acceptedProposal
+    ? 'ready'
+    : approvalInbox.length > 0
+      ? 'waiting'
+      : 'idle';
+  const reflectTone: AoiAutonomyAgendaTone =
+    feedbackDecisions.length > 0 ? 'active' : lastDecision ? 'ready' : 'idle';
+
+  const phases: AoiAutonomyAgendaPhaseSummary[] = [
+    buildAoiAgendaPhase({
+      key: 'observe',
+      label: 'Observe',
+      statusLabel: policy.enabled ? (settings.quietMode ? 'quiet' : 'watching') : 'disabled',
+      primaryLabel: activeObservationLabel,
+      detailLabels: [
+        `${enabledSourceCount}/${totalSourceCount} environment source(s) enabled`,
+        workspaceLabel,
+        params.scheduler?.recentWakeups[0]
+          ? `last wakeup ${formatAoiAgendaAge(params.scheduler.recentWakeups[0].completedAt, now)}`
+          : 'no wakeup record',
+      ],
+      evidenceRefs: collectAoiAgendaEvidenceRefs(params.workspaceSnapshot?.evidenceRefs),
+      tone: observationTone,
+    }),
+    buildAoiAgendaPhase({
+      key: 'think',
+      label: 'Think',
+      statusLabel: params.status?.activeTick ? 'running' : 'standing by',
+      primaryLabel: params.status?.lastReflectionAt
+        ? `last reflection ${formatAoiAgendaAge(params.status.lastReflectionAt, now)}`
+        : 'no persisted reflection yet',
+      detailLabels: [
+        `${params.status?.reflectionCount ?? 0} reflection(s)`,
+        params.status?.lastTickReason ? `last tick: ${params.status.lastTickReason}` : '',
+        missionLabel,
+        params.digest?.summary ?? '',
+      ],
+      evidenceRefs: collectAoiAgendaEvidenceRefs(params.digest?.evidenceRefs),
+      tone: thinkTone,
+    }),
+    buildAoiAgendaPhase({
+      key: 'propose',
+      label: 'Propose',
+      statusLabel:
+        blockedProposals.length > 0
+          ? `${blockedProposals.length} blocked`
+          : `${proposalCandidates.length} proposal(s)`,
+      primaryLabel: topProposal
+        ? sanitizeAoiProposalDisplayText(topProposal.title, 160)
+        : blockedProposals[0]
+          ? sanitizeAoiProposalDisplayText(blockedProposals[0].title, 160)
+          : 'no active proposal',
+      detailLabels: [
+        topProposal ? `why: ${topProposal.reason}` : '',
+        `${approvalInbox.length} approval inbox item(s)`,
+        blockedProposals[0]?.safeAlternative ?? '',
+      ],
+      evidenceRefs: collectAoiAgendaEvidenceRefs(
+        topProposal?.evidenceRefs,
+        blockedProposals[0]?.evidenceRefs,
+      ),
+      tone: proposeTone,
+    }),
+    buildAoiAgendaPhase({
+      key: 'act',
+      label: 'Act',
+      statusLabel: acceptedProposal ? 'ready' : approvalInbox.length > 0 ? 'approval' : 'idle',
+      primaryLabel: acceptedProposal
+        ? getAoiAgendaActionLabel(acceptedProposal)
+        : approvalInbox[0]?.exactNextAction || 'wait for explicit approval',
+      detailLabels: [
+        acceptedProposal
+          ? `requires ${acceptedProposal.requiredAutonomyLevel}, risk ${acceptedProposal.risk}`
+          : '',
+        approvalInbox[0]?.boundary ?? '',
+        policy.previewMode ? 'preview mode active' : '',
+      ],
+      evidenceRefs: collectAoiAgendaEvidenceRefs(
+        acceptedProposal?.evidenceRefs,
+        approvalInbox[0]?.evidenceRefs,
+      ),
+      tone: actTone,
+    }),
+    buildAoiAgendaPhase({
+      key: 'reflect',
+      label: 'Reflect',
+      statusLabel: `${feedbackDecisions.length} feedback`,
+      primaryLabel: lastDecision
+        ? `last decision ${lastDecision.action} ${formatAoiAgendaAge(lastDecision.createdAt, now)}`
+        : 'no recent decision',
+      detailLabels: [
+        feedbackDecisions[0]?.feedbackCategory
+          ? `latest feedback: ${feedbackDecisions[0].feedbackCategory.replace(/_/g, ' ')}`
+          : '',
+        params.health ? `health: ${params.health.overallStatus.replace(/_/g, ' ')}` : '',
+      ],
+      evidenceRefs: collectAoiAgendaEvidenceRefs(
+        lastDecision?.evidenceRefs,
+        params.health?.evidenceRefs,
+      ),
+      tone: reflectTone,
+    }),
+  ];
+
+  const headlineLabel = !policy.enabled
+    ? 'Aoi autonomy is disabled'
+    : settings.quietMode
+      ? 'Aoi is observing quietly'
+      : acceptedProposal
+        ? 'Aoi has an accepted action ready'
+        : approvalInbox.length > 0
+          ? 'Aoi has approval-gated actions waiting'
+          : topProposal
+            ? 'Aoi has a proposal for you'
+            : blockedProposals.length > 0
+              ? 'Aoi found work but safety gates blocked it'
+              : 'Aoi is observing and thinking in the background';
+  const nextBestActionLabel = acceptedProposal
+    ? `Execute or preview: ${getAoiAgendaActionLabel(acceptedProposal)}`
+    : approvalInbox[0]
+      ? `Review approval: ${sanitizeAoiProposalDisplayText(approvalInbox[0].exactNextAction, 140)}`
+      : topProposal
+        ? `Review proposal: ${sanitizeAoiProposalDisplayText(topProposal.title, 140)}`
+        : blockedProposals[0]
+          ? `Resolve gate: ${sanitizeAoiProposalDisplayText(
+              blockedProposals[0].safeAlternative ?? blockedProposals[0].reasons.join(', '),
+              140,
+            )}`
+          : 'Run check when you want a fresh autonomy pass';
+  const safetyBoundaryLabel = acceptedProposal
+    ? `Boundary: ${acceptedProposal.acceptAction?.kind ?? 'manual review'} stays behind ${acceptedProposal.requiredAutonomyLevel} and existing approval gates.`
+    : approvalInbox[0]?.boundary ||
+      'Boundary: no file writes, commands, commits, or external actions execute without the existing proposal gates.';
+  const approvalInboxLabel =
+    approvalInbox.length > 0
+      ? `${approvalInbox.length} approval-gated action${approvalInbox.length === 1 ? '' : 's'} waiting`
+      : blockedProposals.length > 0
+        ? `${blockedProposals.length} blocked proposal${blockedProposals.length === 1 ? '' : 's'}`
+        : 'No approval inbox pressure';
+
+  return {
+    visible: true,
+    headlineLabel: sanitizeAoiProposalDisplayText(headlineLabel, 180),
+    loopLabel: 'Observe -> Think -> Propose -> Act -> Reflect',
+    nextBestActionLabel: sanitizeAoiProposalDisplayText(nextBestActionLabel, 200),
+    safetyBoundaryLabel: sanitizeAoiProposalDisplayText(safetyBoundaryLabel, 240),
+    approvalInboxLabel,
+    phaseSummaries: params.includeDetails
+      ? phases
+      : phases.map((phase) => ({
+          ...phase,
+          detailLabels: phase.detailLabels.slice(0, 2),
+          evidenceRefs: phase.evidenceRefs.slice(0, 3),
+        })),
+    evidenceRefs: collectAoiAgendaEvidenceRefs(
+      params.digest?.evidenceRefs,
+      topProposal?.evidenceRefs,
+      acceptedProposal?.evidenceRefs,
+      blockedProposals[0]?.evidenceRefs,
+      params.workspaceSnapshot?.evidenceRefs,
+    ),
   };
 }
 

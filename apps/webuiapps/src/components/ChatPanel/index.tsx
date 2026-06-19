@@ -259,6 +259,7 @@ import {
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
+  buildAoiAutonomyAgendaPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomySchedulerPanelSummary,
@@ -8842,6 +8843,38 @@ const SettingsModal: React.FC<{
       ),
     [aoiOperatorDigest, expandedAoiMissionEvidence, expandedAoiProposalId],
   );
+  const aoiAutonomyAgendaSummary = useMemo(
+    () =>
+      buildAoiAutonomyAgendaPanelSummary({
+        status: aoiAutonomyStatus,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        mission: aoiMissionState,
+        workspaceSnapshot: aoiWorkspaceSnapshot,
+        digest: aoiOperatorDigest,
+        scheduler: aoiAutonomyScheduler,
+        health: aoiOperatorHealth,
+        recentDecisions: aoiRecentProposalDecisions,
+        settings: aoiAutonomyPanelSettings,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+        includeDetails: expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
+      }),
+    [
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyScheduler,
+      aoiAutonomyStatus,
+      aoiMissionState,
+      aoiOperatorDigest,
+      aoiOperatorHealth,
+      aoiRecentProposalDecisions,
+      aoiWorkspaceSnapshot,
+      expandedAoiMissionEvidence,
+      expandedAoiProposalId,
+    ],
+  );
   const aoiOperatorHealthSummary = useMemo(
     () =>
       buildAoiOperatorHealthPanelSummary(
@@ -10791,6 +10824,38 @@ const SettingsModal: React.FC<{
                         <strong>{privateAoiEnvironmentSourceCount}</strong>
                       </div>
                     </div>
+
+                    {aoiAutonomyAgendaSummary.visible && (
+                      <div className={styles.aoiAutonomyProposalSection}>
+                        <div className={styles.promptBudgetSectionTitle}>Aoi agenda</div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiAutonomyAgendaSummary.loopLabel}</span>
+                            <span>{aoiAutonomyAgendaSummary.approvalInboxLabel}</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiAutonomyAgendaSummary.headlineLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {aoiAutonomyAgendaSummary.nextBestActionLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>{aoiAutonomyAgendaSummary.safetyBoundaryLabel}</div>
+                            {aoiAutonomyAgendaSummary.phaseSummaries.map((phase) => (
+                              <div key={phase.key}>
+                                {phase.label}: {phase.statusLabel} - {phase.primaryLabel}
+                                {phase.detailLabels.length > 0
+                                  ? ` (${phase.detailLabels.join('; ')})`
+                                  : ''}
+                              </div>
+                            ))}
+                            {aoiAutonomyAgendaSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`agenda-evidence-${index}`}>Evidence: {ref}</div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {aoiOperatorHealthSummary.visible && (
                       <div className={styles.aoiAutonomyProposalSection}>

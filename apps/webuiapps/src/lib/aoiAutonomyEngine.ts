@@ -1693,6 +1693,36 @@ function makeBlockedReflection(params: {
   };
 }
 
+function makeAcceptedProposalReflection(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  now: number;
+}): AoiReflection {
+  const evidenceRefs = params.proposal.evidenceRefs.slice(0, 8);
+  return {
+    version: 1,
+    id: `aoi-reflection-proposal-${sanitizeIdPart(params.proposal.id)}`.slice(0, 127),
+    observationIds: evidenceRefs
+      .filter((ref) => ref.startsWith('observation:'))
+      .map((ref) => ref.slice('observation:'.length)),
+    sessionPath: params.sessionPath,
+    createdAt: params.now,
+    kind: params.proposal.trigger === 'procedure_candidate' ? 'procedure_candidate' : 'opportunity',
+    claim: truncateText(
+      `Aoi proposed "${params.proposal.title}" because ${params.proposal.reason}`,
+      CLAIM_MAX_CHARS,
+    ),
+    evidenceRefs,
+    confidence: Math.min(1, Math.max(0, params.proposal.confidence)),
+    risk: params.proposal.risk,
+    proposedMemoryCandidates: [],
+    proposedActions: [
+      ...(params.proposal.acceptAction ? [params.proposal.acceptAction.kind] : []),
+      ...params.proposal.suggestedTools,
+    ].slice(0, 4),
+  };
+}
+
 function makeBlockedProposalSafeAlternative(proposal: AoiProposal, reasons: string[]): string {
   if (reasons.some((reason) => reason.includes('autonomy_level_too_low'))) {
     return `Raise autonomy to ${proposal.requiredAutonomyLevel} or keep this as a proposal.`;
@@ -2215,6 +2245,15 @@ export async function runAoiAutonomyTick(
 
     activeProposals = [proposal, ...activeProposals];
     acceptedProposals.push(proposal);
+    appendAoiReflection(
+      params.sessionsDir,
+      makeAcceptedProposalReflection({
+        proposal,
+        sessionPath,
+        now,
+      }),
+    );
+    newReflectionCount += 1;
     recordAoiProposalCreatedRelations(params.sessionsDir, proposal, now);
     recordAoiEngineTimelineBestEffort(() => {
       recordAoiProposalCreatedTimelineEvent({
