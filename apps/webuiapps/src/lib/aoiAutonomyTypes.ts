@@ -200,7 +200,12 @@ export type AoiProactiveBriefFeedbackCategory =
   | 'wrong_timing'
   | 'too_frequent'
   | 'stale'
-  | 'unsafe';
+  | 'unsafe'
+  | 'mute_topic'
+  | 'pin_topic'
+  | 'archive_brief'
+  | 'open_sources'
+  | 'expand_summary';
 
 export interface AoiProactiveBriefFeedback {
   version: 1;
@@ -360,7 +365,8 @@ export type AoiDigestItemKind =
   | 'stale_validation'
   | 'pending_approval'
   | 'blocked_item'
-  | 'operator_health';
+  | 'operator_health'
+  | 'proactive_interest_brief';
 
 export interface AoiDigestItem {
   version: 1;

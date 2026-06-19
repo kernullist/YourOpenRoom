@@ -243,6 +243,7 @@ import {
   previewAoiProposalAction,
   recordAoiContextSourceFeedback,
   recordAoiOperatorVoiceDecision,
+  recordAoiProactiveBriefFeedback,
   recordAoiProposalFeedback,
   resetAoiTrustCalibrationCategory,
   runAoiAutonomyManualWakeup,
@@ -251,6 +252,7 @@ import {
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalPreviewResult,
   type AoiAutonomyProposalExecutionResult,
+  type AoiProactiveBriefListResponse,
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
@@ -282,6 +284,10 @@ import {
   type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
+import {
+  buildAoiProactiveBriefPanelModel,
+  type AoiProactiveBriefPanelModel,
+} from '@/lib/aoiProactiveBriefUi';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
 import type {
   AoiAutonomyBlockedProposal,
@@ -308,6 +314,7 @@ import type {
   AoiProposalDecision,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
+  AoiProactiveBriefFeedbackCategory,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
@@ -2367,6 +2374,8 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyEvaluation, setAoiAutonomyEvaluation] =
     useState<AoiAutonomyEvaluationResult | null>(null);
   const [aoiOperatorHealth, setAoiOperatorHealth] = useState<AoiOperatorHealthState | null>(null);
+  const [aoiProactiveBriefs, setAoiProactiveBriefs] =
+    useState<AoiProactiveBriefListResponse | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
     useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
   const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
@@ -2378,6 +2387,9 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyLastTickAt, setAoiAutonomyLastTickAt] = useState<number | null>(null);
   const [aoiAutonomyLastSeenAt, setAoiAutonomyLastSeenAt] = useState<number | null>(null);
   const [dismissedAoiResumeBriefId, setDismissedAoiResumeBriefId] = useState<string | null>(null);
+  const [expandedAoiProactiveBriefId, setExpandedAoiProactiveBriefId] = useState<string | null>(
+    null,
+  );
   const [aoiAutonomyExecutionMessages, setAoiAutonomyExecutionMessages] = useState<
     Record<string, string>
   >({});
@@ -2416,6 +2428,7 @@ const ChatPanel: React.FC<{
   const aoiAutonomyRefreshInFlightRef = useRef(false);
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
+  const aoiInlineShownProactiveBriefIdsRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
 
@@ -3121,6 +3134,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyScheduler(snapshot.scheduler);
       setAoiAutonomyEvaluation(snapshot.evaluation);
       setAoiOperatorHealth(snapshot.health);
+      setAoiProactiveBriefs(snapshot.proactiveBriefs);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -3493,6 +3507,41 @@ const ChatPanel: React.FC<{
       }
     },
     [aoiAutonomyPendingFeedback, refreshAoiAutonomy],
+  );
+
+  const recordAoiProactiveBriefFeedbackFromPanel = useCallback(
+    async (briefId: string, category: AoiProactiveBriefFeedbackCategory) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy) {
+        return;
+      }
+      const actionId = `proactive-brief:${briefId}:${category}`;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      try {
+        const result = await recordAoiProactiveBriefFeedback(sessionPathForAutonomy, {
+          briefId,
+          category,
+        });
+        setAoiProactiveBriefs(result);
+        if (
+          category === 'show_less' ||
+          category === 'not_useful' ||
+          category === 'wrong_timing' ||
+          category === 'too_frequent' ||
+          category === 'wrong_topic' ||
+          category === 'mute_topic' ||
+          category === 'archive_brief'
+        ) {
+          setAoiInlineHiddenAt(Date.now());
+        }
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [],
   );
 
   const prepareAoiKiraHandoffFromPanel = useCallback(
@@ -6377,6 +6426,36 @@ const ChatPanel: React.FC<{
     void refreshAoiAutonomy({ silent: true });
   }, [refreshAoiAutonomy]);
 
+  const aoiProactiveBriefPanel = useMemo(
+    () =>
+      buildAoiProactiveBriefPanelModel({
+        candidates: aoiProactiveBriefs?.candidates ?? [],
+        policy: aoiAutonomyStatus?.policy,
+        profile: aoiProactiveBriefs?.profile,
+        feedback: aoiProactiveBriefs?.feedback,
+        cooldownState: aoiProactiveBriefs?.cooldownState,
+        context: {
+          now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+          quietMode: aoiAutonomyPanelSettings.quietMode,
+          directChatOptIn: false,
+          inlineCardsShown: aoiInlineShownCount,
+          maxInlineCards: Math.min(1, aoiAutonomyPanelSettings.maxSuggestionsPerSession),
+        },
+      }),
+    [
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings.maxSuggestionsPerSession,
+      aoiAutonomyPanelSettings.quietMode,
+      aoiAutonomyStatus?.policy,
+      aoiAutonomyStatus?.updatedAt,
+      aoiInlineShownCount,
+      aoiProactiveBriefs?.candidates,
+      aoiProactiveBriefs?.cooldownState,
+      aoiProactiveBriefs?.feedback,
+      aoiProactiveBriefs?.profile,
+    ],
+  );
+
   const aoiOperatorDigest = useMemo(
     () =>
       buildAoiOperatorDigest({
@@ -6392,6 +6471,11 @@ const ChatPanel: React.FC<{
         lastSeenAt: aoiAutonomyLastSeenAt,
         trustCalibrationProfile: aoiAutonomyEvaluation?.trustCalibration,
         operatorHealth: aoiOperatorHealth,
+        policy: aoiAutonomyStatus?.policy,
+        proactiveBriefCandidates: aoiProactiveBriefs?.candidates,
+        proactiveBriefProfile: aoiProactiveBriefs?.profile,
+        proactiveBriefFeedback: aoiProactiveBriefs?.feedback,
+        proactiveBriefCooldownState: aoiProactiveBriefs?.cooldownState,
       }),
     [
       aoiAutonomyActiveProposals,
@@ -6400,11 +6484,16 @@ const ChatPanel: React.FC<{
       aoiAutonomyLastSeenAt,
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings.quietMode,
+      aoiAutonomyStatus?.policy,
       aoiAutonomyStatus?.updatedAt,
       aoiRecentProposalDecisions,
       aoiMemories,
       aoiMissionState,
       aoiOperatorHealth,
+      aoiProactiveBriefs?.candidates,
+      aoiProactiveBriefs?.cooldownState,
+      aoiProactiveBriefs?.feedback,
+      aoiProactiveBriefs?.profile,
       aoiWorkspaceSnapshot,
       sessionPath,
     ],
@@ -6570,6 +6659,8 @@ const ChatPanel: React.FC<{
     aoiResumeBrief.id !== dismissedAoiResumeBriefId &&
     !inlineAoiProposal,
   );
+  const inlineAoiProactiveBrief =
+    !inlineAoiProposal && !showAoiResumeBrief ? (aoiProactiveBriefPanel.inlineCard ?? null) : null;
 
   useEffect(() => {
     if (!inlineAoiProposal) {
@@ -6581,6 +6672,17 @@ const ChatPanel: React.FC<{
     aoiInlineShownProposalIdsRef.current.add(inlineAoiProposal.id);
     setAoiInlineShownCount((prev) => prev + 1);
   }, [inlineAoiProposal]);
+
+  useEffect(() => {
+    if (!inlineAoiProactiveBrief) {
+      return;
+    }
+    if (aoiInlineShownProactiveBriefIdsRef.current.has(inlineAoiProactiveBrief.id)) {
+      return;
+    }
+    aoiInlineShownProactiveBriefIdsRef.current.add(inlineAoiProactiveBrief.id);
+    setAoiInlineShownCount((prev) => prev + 1);
+  }, [inlineAoiProactiveBrief]);
 
   if (!visible) return null;
 
@@ -6840,6 +6942,79 @@ const ChatPanel: React.FC<{
             </div>
           )}
 
+          {inlineAoiProactiveBrief && !loading && (
+            <div
+              className={styles.aoiInlineSuggestion}
+              data-testid="aoi-proactive-brief-inline-card"
+            >
+              <div className={styles.aoiInlineSuggestionMain}>
+                <div className={styles.aoiInlineSuggestionMeta}>
+                  <span>Aoi interest brief</span>
+                  <span>{inlineAoiProactiveBrief.sourceCountLabel}</span>
+                  <span>{inlineAoiProactiveBrief.delivery.deliveryScore.toFixed(2)}</span>
+                </div>
+                <div className={styles.aoiInlineSuggestionTitle}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiProactiveBrief.title, 120)}
+                </div>
+                <div className={styles.aoiInlineSuggestionBody}>
+                  {sanitizeAoiProposalDisplayText(inlineAoiProactiveBrief.hook, 220)}
+                </div>
+                <div className={styles.aoiInlineSuggestionHint}>
+                  {sanitizeAoiProposalDisplayText(
+                    `${inlineAoiProactiveBrief.sourceHostLabel}; ${inlineAoiProactiveBrief.freshnessLabel}`,
+                    320,
+                  )}
+                </div>
+              </div>
+              <div className={styles.aoiInlineSuggestionActions}>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    void recordAoiProactiveBriefFeedbackFromPanel(
+                      inlineAoiProactiveBrief.id,
+                      'useful',
+                    )
+                  }
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Tell Aoi this brief was useful"
+                >
+                  Useful
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() =>
+                    void recordAoiProactiveBriefFeedbackFromPanel(
+                      inlineAoiProactiveBrief.id,
+                      'show_less',
+                    )
+                  }
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Show fewer briefs like this"
+                >
+                  Less
+                </button>
+                <button
+                  type="button"
+                  className={styles.inlineActionBtn}
+                  onClick={() => {
+                    setExpandedAoiProactiveBriefId(inlineAoiProactiveBrief.id);
+                    void recordAoiProactiveBriefFeedbackFromPanel(
+                      inlineAoiProactiveBrief.id,
+                      'expand_summary',
+                    );
+                    openAoiAutonomySettings();
+                  }}
+                  disabled={aoiAutonomyActionId !== null}
+                  title="Open sources, freshness, and evidence"
+                >
+                  Details
+                </button>
+              </div>
+            </div>
+          )}
+
           {inlineAoiProposal && !loading && (
             <div className={styles.aoiInlineSuggestion} data-testid="aoi-inline-suggestion">
               <div className={styles.aoiInlineSuggestionMain}>
@@ -7080,6 +7255,8 @@ const ChatPanel: React.FC<{
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiOperatorDigest={aoiOperatorDigest}
           aoiOperatorHealth={aoiOperatorHealth}
+          aoiProactiveBriefPanel={aoiProactiveBriefPanel}
+          expandedAoiProactiveBriefId={expandedAoiProactiveBriefId}
           aoiOperatorVoicePolicy={aoiOperatorVoicePolicy}
           aoiOperatorVoiceMuted={aoiOperatorVoiceMuted}
           aoiLastOperatorVoiceDecision={aoiLastOperatorVoiceDecision}
@@ -7104,6 +7281,10 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onUpdateAoiEnvironmentSource={updateAoiEnvironmentSourceFromPanel}
           onRecordAoiContextSourceFeedback={recordAoiContextSourceFeedbackFromPanel}
+          onRecordAoiProactiveBriefFeedback={recordAoiProactiveBriefFeedbackFromPanel}
+          onToggleAoiProactiveBriefExpanded={(briefId) =>
+            setExpandedAoiProactiveBriefId((prev) => (prev === briefId ? null : briefId))
+          }
           onResetAoiTrustCalibration={resetAoiTrustCalibrationFromPanel}
           onUpdateAoiAutonomyPanelSettings={updateAoiAutonomyPanelSettingsFromPanel}
           onRunAoiAutonomyCheck={runAoiAutonomyCheckFromPanel}
@@ -7653,6 +7834,8 @@ const SettingsModal: React.FC<{
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiOperatorDigest: AoiOperatorDigest | null;
   aoiOperatorHealth: AoiOperatorHealthState | null;
+  aoiProactiveBriefPanel: AoiProactiveBriefPanelModel;
+  expandedAoiProactiveBriefId: string | null;
   aoiOperatorVoicePolicy: AoiOperatorVoicePolicy;
   aoiOperatorVoiceMuted: boolean;
   aoiLastOperatorVoiceDecision: AoiVoiceRenderDecision | null;
@@ -7693,6 +7876,11 @@ const SettingsModal: React.FC<{
     >,
     evidenceRefs: string[],
   ) => Promise<void>;
+  onRecordAoiProactiveBriefFeedback: (
+    briefId: string,
+    category: AoiProactiveBriefFeedbackCategory,
+  ) => Promise<void>;
+  onToggleAoiProactiveBriefExpanded: (briefId: string) => void;
   onResetAoiTrustCalibration: (dimension: AoiCalibrationDimension, key: string) => Promise<void>;
   onUpdateAoiAutonomyPanelSettings: (patch: Partial<AoiAutonomyPanelSettings>) => void;
   onRunAoiAutonomyCheck: () => Promise<void>;
@@ -7755,6 +7943,8 @@ const SettingsModal: React.FC<{
   aoiAutonomyEvaluation,
   aoiOperatorDigest,
   aoiOperatorHealth,
+  aoiProactiveBriefPanel,
+  expandedAoiProactiveBriefId,
   aoiOperatorVoicePolicy,
   aoiOperatorVoiceMuted,
   aoiLastOperatorVoiceDecision,
@@ -7779,6 +7969,8 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onUpdateAoiEnvironmentSource,
   onRecordAoiContextSourceFeedback,
+  onRecordAoiProactiveBriefFeedback,
+  onToggleAoiProactiveBriefExpanded,
   onResetAoiTrustCalibration,
   onUpdateAoiAutonomyPanelSettings,
   onRunAoiAutonomyCheck,
@@ -10328,6 +10520,141 @@ const SettingsModal: React.FC<{
                         <p className={styles.modelHint}>
                           No meaningful ambient operator updates are available.
                         </p>
+                      )}
+                    </div>
+
+                    <div className={styles.aoiAutonomyProposalSection}>
+                      <div className={styles.promptBudgetSectionTitle}>
+                        Proactive interest briefs
+                      </div>
+                      {aoiProactiveBriefPanel.visible ? (
+                        <div className={styles.aoiAutonomyProposalList}>
+                          {aoiProactiveBriefPanel.hiddenLabel && (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>{aoiProactiveBriefPanel.hiddenLabel}</div>
+                            </div>
+                          )}
+                          {aoiProactiveBriefPanel.cards.map((card) => {
+                            const expanded = expandedAoiProactiveBriefId === card.id;
+                            return (
+                              <div
+                                className={styles.aoiAutonomyProposalItem}
+                                key={`proactive-brief-${card.id}`}
+                                data-testid="aoi-proactive-brief-card"
+                              >
+                                <div className={styles.aoiAutonomyProposalMeta}>
+                                  <span>{card.status}</span>
+                                  <span>{card.sourceCountLabel}</span>
+                                  <span>{card.delivery.selectedMode ?? 'dashboard'}</span>
+                                  <span>{card.delivery.deliveryScore.toFixed(2)}</span>
+                                </div>
+                                <div className={styles.aoiAutonomyProposalTitle}>
+                                  {sanitizeAoiProposalDisplayText(card.title, 140)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalReason}>
+                                  {sanitizeAoiProposalDisplayText(card.hook, 220)}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalDetails}>
+                                  <div>
+                                    Why: {sanitizeAoiProposalDisplayText(card.whyForOperator, 260)}
+                                  </div>
+                                  <div>
+                                    Sources:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.sourceHostLabel, 220)}
+                                  </div>
+                                  <div>
+                                    Freshness:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.freshnessLabel, 260)}
+                                  </div>
+                                  {card.cannotKnowLabels
+                                    .slice(0, expanded ? 6 : 2)
+                                    .map((label, index) => (
+                                      <div key={`brief-${card.id}-cannot-${index}`}>
+                                        Cannot know: {sanitizeAoiProposalDisplayText(label, 260)}
+                                      </div>
+                                    ))}
+                                  {expanded && (
+                                    <>
+                                      <div>
+                                        Summary:{' '}
+                                        {sanitizeAoiProposalDisplayText(
+                                          card.expandedSummaryLabel,
+                                          700,
+                                        )}
+                                      </div>
+                                      <div>
+                                        Novelty:{' '}
+                                        {sanitizeAoiProposalDisplayText(card.noveltyReason, 260)}
+                                      </div>
+                                      {card.sources.map((source, index) => (
+                                        <div key={`brief-${card.id}-source-${index}`}>
+                                          Source {index + 1}:{' '}
+                                          {sanitizeAoiProposalDisplayText(
+                                            `${source.host} | ${source.title} | published ${source.publishedAtLabel} | retrieved ${source.retrievedAtLabel} | ${source.url} | ${source.snippet}`,
+                                            520,
+                                          )}
+                                        </div>
+                                      ))}
+                                      {card.evidenceRefs.map((ref, index) => (
+                                        <div key={`brief-${card.id}-evidence-${index}`}>
+                                          Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                        </div>
+                                      ))}
+                                      {card.memoryRefs.map((ref, index) => (
+                                        <div key={`brief-${card.id}-memory-${index}`}>
+                                          Memory ref: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                        </div>
+                                      ))}
+                                    </>
+                                  )}
+                                </div>
+                                <div className={styles.aoiAutonomyProposalActions}>
+                                  {card.feedbackActions.map((action) => {
+                                    const actionId = `proactive-brief:${card.id}:${action.action}`;
+                                    return (
+                                      <button
+                                        type="button"
+                                        key={actionId}
+                                        className={styles.inlineActionBtn}
+                                        onClick={() => {
+                                          if (
+                                            action.action === 'open_sources' ||
+                                            action.action === 'expand_summary'
+                                          ) {
+                                            onToggleAoiProactiveBriefExpanded(card.id);
+                                          }
+                                          void onRecordAoiProactiveBriefFeedback(
+                                            card.id,
+                                            action.action,
+                                          );
+                                        }}
+                                        disabled={aoiAutonomyActionId === actionId}
+                                        title={action.title}
+                                      >
+                                        {action.label}
+                                      </button>
+                                    );
+                                  })}
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => onToggleAoiProactiveBriefExpanded(card.id)}
+                                    title="Show source freshness and evidence"
+                                  >
+                                    {expanded ? (
+                                      <ChevronDown size={14} />
+                                    ) : (
+                                      <ChevronRight size={14} />
+                                    )}
+                                    Details
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className={styles.modelHint}>No proactive interest briefs are ready.</p>
                       )}
                     </div>
 

@@ -15,6 +15,10 @@ describe('Aoi autonomy plugin routes', () => {
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/decision')).toBe('/goal/decision');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/check')).toBe('/goal/check');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/proposal/feedback')).toBe('/proposal/feedback');
+    expect(getAoiAutonomyRoute('/api/aoi-autonomy/proactive-briefs')).toBe('/proactive-briefs');
+    expect(getAoiAutonomyRoute('/api/aoi-autonomy/proactive-briefs/feedback')).toBe(
+      '/proactive-briefs/feedback',
+    );
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/proactive-briefs/scout')).toBe(
       '/proactive-briefs/scout',
     );

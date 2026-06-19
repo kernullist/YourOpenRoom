@@ -21,6 +21,7 @@ import {
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiObservations,
+  loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
@@ -55,6 +56,14 @@ import {
   runAoiAutonomyWakeup,
 } from './aoiAutonomyScheduler';
 import { runAoiProactiveBriefScout } from './aoiProactiveBriefScout';
+import { applyAoiProactiveBriefFeedbackAction } from './aoiProactiveBriefFeedback';
+import {
+  loadAoiInterestProfile,
+  loadAoiProactiveBriefCandidates,
+  loadAoiProactiveBriefCooldownState,
+  loadAoiProactiveBriefFeedback,
+} from './aoiProactiveBriefStore';
+import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
@@ -74,6 +83,7 @@ import type {
   AoiPlaybookStepRefs,
   AoiProposal,
   AoiProposalFeedbackCategory,
+  AoiProactiveBriefFeedbackCategory,
   AoiVoiceRenderDecision,
 } from './aoiAutonomyTypes';
 import type { LLMConfig } from './llmModels';
@@ -199,6 +209,67 @@ function isAoiPlaybookEvidenceKind(value: unknown): value is AoiPlaybookEvidence
     value === 'user_decision_recorded' ||
     value === 'step_failed'
   );
+}
+
+function isAoiProactiveBriefFeedbackCategory(
+  value: unknown,
+): value is AoiProactiveBriefFeedbackCategory {
+  return (
+    value === 'useful' ||
+    value === 'not_useful' ||
+    value === 'show_more' ||
+    value === 'show_less' ||
+    value === 'wrong_topic' ||
+    value === 'wrong_timing' ||
+    value === 'too_frequent' ||
+    value === 'stale' ||
+    value === 'unsafe' ||
+    value === 'mute_topic' ||
+    value === 'pin_topic' ||
+    value === 'archive_brief' ||
+    value === 'open_sources' ||
+    value === 'expand_summary'
+  );
+}
+
+function buildAoiProactiveBriefResponse(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  now?: number;
+}) {
+  const now = params.now ?? Date.now();
+  const policy = loadAoiAutonomyPolicy(params.sessionsDir, params.sessionPath);
+  const profile = loadAoiInterestProfile(params.sessionsDir, params.sessionPath, now);
+  const candidates = loadAoiProactiveBriefCandidates(params.sessionsDir, params.sessionPath, now);
+  const feedback = loadAoiProactiveBriefFeedback(params.sessionsDir, params.sessionPath);
+  const cooldownState = loadAoiProactiveBriefCooldownState(
+    params.sessionsDir,
+    params.sessionPath,
+    now,
+  );
+  const panel = buildAoiProactiveBriefPanelModel({
+    candidates,
+    policy,
+    profile,
+    feedback,
+    cooldownState,
+    context: {
+      now,
+      quietMode: true,
+      directChatOptIn: false,
+      maxInlineCards: 0,
+      inlineCardsShown: 0,
+    },
+  });
+  return {
+    ok: true,
+    sessionPath: params.sessionPath,
+    candidates,
+    feedback,
+    profile,
+    cooldownState,
+    panel,
+  };
 }
 
 function getWakeupBudgetFromBody(value: unknown): Partial<AoiAutonomyWakeupBudget> | undefined {
@@ -774,6 +845,78 @@ async function handleAoiAutonomyRequest(
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
       });
       writeJson(res, 200, result);
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/proactive-briefs') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(
+        res,
+        200,
+        buildAoiProactiveBriefResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+      );
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/proactive-briefs/feedback') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const briefId = typeof body.briefId === 'string' ? body.briefId.trim() : '';
+      if (!briefId || briefId.length > 127) {
+        writeJson(res, 400, {
+          error: 'briefId must be a non-empty string no longer than 127 characters.',
+          code: 'invalid_brief_id',
+        });
+        return true;
+      }
+      if (!isAoiProactiveBriefFeedbackCategory(body.category)) {
+        writeJson(res, 400, {
+          error: 'Invalid proactive brief feedback category.',
+          code: 'invalid_feedback_category',
+        });
+        return true;
+      }
+      if (body.note !== undefined && typeof body.note !== 'string') {
+        writeJson(res, 400, {
+          error: 'note must be a string when provided.',
+          code: 'invalid_feedback_note',
+        });
+        return true;
+      }
+      const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
+      const mutation = applyAoiProactiveBriefFeedbackAction({
+        sessionsDir,
+        sessionPath,
+        briefId,
+        category: body.category,
+        note: typeof body.note === 'string' ? body.note.slice(0, 240) : undefined,
+        defaultCooldownMs: policy.defaultCooldownMs,
+      });
+      writeJson(res, 200, {
+        ...buildAoiProactiveBriefResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+        feedbackRecord: mutation.feedback,
+        candidate: mutation.candidate,
+      });
       return true;
     }
 

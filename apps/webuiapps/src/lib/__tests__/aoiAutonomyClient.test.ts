@@ -4,7 +4,9 @@ import {
   fetchAoiAutonomyDashboard,
   fetchAoiOperatorHealth,
   fetchAoiPlaybooks,
+  fetchAoiProactiveBriefs,
   prepareAoiPlaybookPreview,
+  recordAoiProactiveBriefFeedback,
   runAoiAutonomyManualTick,
   runAoiAutonomyManualWakeup,
   updateAoiPlaybookProgress,
@@ -176,6 +178,76 @@ function makePlaybook(): AoiPlaybook {
   };
 }
 
+function makeProactiveBriefPayload() {
+  const profile = {
+    version: 1,
+    sessionPath: 'aoi/default',
+    topics: [],
+    generatedAt: 1000,
+    sourceMemoryCount: 0,
+    warnings: [],
+  };
+  const cooldownState = {
+    version: 1,
+    sessionPath: 'aoi/default',
+    updatedAt: 1000,
+    cooldowns: {},
+  };
+  const candidate = {
+    version: 1,
+    id: 'aoi-brief-client-test',
+    sessionPath: 'aoi/default',
+    topicId: 'aoi-interest-re',
+    topicLabel: 'Reverse Engineering',
+    status: 'candidate',
+    title: 'Fresh reversing writeup',
+    hook: 'A fresh reversing writeup matches your saved interests.',
+    summary: 'Short source-backed summary.',
+    whyForOperator: 'Matches reverse engineering interests.',
+    noveltyReason: 'New source for a saved topic.',
+    sources: [
+      {
+        title: 'Fresh reversing writeup',
+        url: 'https://research.example.com/re/writeup',
+        host: 'research.example.com',
+        retrievedAt: 1000,
+        snippet: 'Public source snippet.',
+      },
+    ],
+    evidenceRefs: ['source:research.example.com'],
+    memoryIds: ['memory-re-001'],
+    score: 0.8,
+    confidence: 0.82,
+    risk: 'low',
+    freshness: {
+      searchedAt: 1000,
+      cannotKnow: ['Aoi cannot know whether the source changed after retrieval.'],
+    },
+    delivery: {
+      allowedModes: ['dashboard', 'digest', 'inline_card'],
+    },
+    cooldownKey: 'interest:reverse-engineering',
+    createdAt: 1000,
+    updatedAt: 1000,
+    expiresAt: 2000,
+  };
+  return {
+    ok: true,
+    sessionPath: 'aoi/default',
+    candidates: [candidate],
+    feedback: [],
+    profile,
+    cooldownState,
+    panel: {
+      visible: true,
+      statusLabel: '1 proactive interest brief',
+      hiddenLabel: '',
+      cards: [],
+      evidenceRefs: ['source:research.example.com'],
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -279,6 +351,9 @@ describe('Aoi autonomy client dashboard', () => {
           archived: [],
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/proactive-briefs?')) {
+        return jsonResponse(makeProactiveBriefPayload());
+      }
       throw new Error(`Unexpected URL: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -294,7 +369,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.scheduler.wakeupCount).toBe(0);
     expect(snapshot.health.overallStatus).toBe('limited');
     expect(snapshot.playbooks.active).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(12);
+    expect(snapshot.proactiveBriefs.candidates).toHaveLength(1);
+    expect(fetchMock).toHaveBeenCalledTimes(13);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -309,8 +385,54 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/playbooks?sessionPath=aoi%2Fdefault&includeArchived=true',
+        '/api/aoi-autonomy/proactive-briefs?sessionPath=aoi%2Fdefault',
       ]),
     );
+  });
+
+  it('fetches and records proactive brief feedback', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/aoi-autonomy/proactive-briefs?')) {
+        return jsonResponse(makeProactiveBriefPayload());
+      }
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (url === '/api/aoi-autonomy/proactive-briefs/feedback') {
+        const payload = makeProactiveBriefPayload();
+        return jsonResponse({
+          ...payload,
+          feedbackRecord: {
+            version: 1,
+            id: 'aoi-brief-feedback-client-test',
+            briefId: 'aoi-brief-client-test',
+            topicId: 'aoi-interest-re',
+            sessionPath: 'aoi/default',
+            category: 'show_less',
+            createdAt: 2000,
+          },
+          candidate: payload.candidates[0],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await fetchAoiProactiveBriefs('aoi/default');
+    const feedback = await recordAoiProactiveBriefFeedback('aoi/default', {
+      briefId: 'aoi-brief-client-test',
+      category: 'show_less',
+    });
+
+    expect(list.candidates[0].id).toBe('aoi-brief-client-test');
+    expect(feedback.feedbackRecord.category).toBe('show_less');
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        briefId: 'aoi-brief-client-test',
+        category: 'show_less',
+      },
+    ]);
   });
 
   it('fetches the compact operator health snapshot', async () => {

@@ -15,6 +15,7 @@ import type {
   AoiEnvironmentSourceRegistry,
   AoiGoal,
   AoiGoalProgressEvent,
+  AoiInterestProfile,
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiObservation,
@@ -32,12 +33,17 @@ import type {
   AoiProposalDecision,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
+  AoiProactiveBriefCandidate,
+  AoiProactiveBriefCooldownState,
+  AoiProactiveBriefFeedback,
+  AoiProactiveBriefFeedbackCategory,
   AoiReflection,
   AoiTrustCalibrationReset,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
+import type { AoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
 
 const API_PREFIX = '/api/aoi-autonomy';
 
@@ -159,6 +165,28 @@ export interface AoiAutonomyDashboardSnapshot {
   scheduler: AoiAutonomySchedulerState;
   health: AoiOperatorHealthState;
   playbooks: AoiAutonomyPlaybookList;
+  proactiveBriefs: AoiProactiveBriefListResponse;
+}
+
+export interface AoiProactiveBriefListResponse {
+  ok: boolean;
+  sessionPath: string;
+  candidates: AoiProactiveBriefCandidate[];
+  feedback: AoiProactiveBriefFeedback[];
+  profile: AoiInterestProfile;
+  cooldownState: AoiProactiveBriefCooldownState;
+  panel?: AoiProactiveBriefPanelModel;
+}
+
+export interface AoiProactiveBriefFeedbackInput {
+  briefId: string;
+  category: AoiProactiveBriefFeedbackCategory;
+  note?: string;
+}
+
+export interface AoiProactiveBriefFeedbackResponse extends AoiProactiveBriefListResponse {
+  feedbackRecord: AoiProactiveBriefFeedback;
+  candidate: AoiProactiveBriefCandidate;
 }
 
 export interface AoiAutonomyProposalFeedbackResult {
@@ -515,6 +543,73 @@ export async function fetchAoiOperatorHealth(
       payload,
       'health',
       'Aoi operator health response was malformed.',
+    ),
+  };
+}
+
+function parseAoiProactiveBriefListPayload(
+  payload: Record<string, unknown>,
+  sessionPath: string,
+): AoiProactiveBriefListResponse {
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+  const profile = requireRecordField<AoiInterestProfile>(
+    payload,
+    'profile',
+    'Aoi proactive brief profile response was malformed.',
+  );
+  const cooldownState = requireRecordField<AoiProactiveBriefCooldownState>(
+    payload,
+    'cooldownState',
+    'Aoi proactive brief cooldown response was malformed.',
+  );
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    candidates: asArray<AoiProactiveBriefCandidate>(payload.candidates),
+    feedback: asArray<AoiProactiveBriefFeedback>(payload.feedback),
+    profile,
+    cooldownState,
+    ...(isRecord(payload.panel) ? { panel: payload.panel as AoiProactiveBriefPanelModel } : {}),
+  };
+}
+
+export async function fetchAoiProactiveBriefs(
+  sessionPath: string,
+): Promise<AoiProactiveBriefListResponse> {
+  const response = await fetch(`${API_PREFIX}/proactive-briefs?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi proactive briefs.');
+  return parseAoiProactiveBriefListPayload(payload, sessionPath);
+}
+
+export async function recordAoiProactiveBriefFeedback(
+  sessionPath: string,
+  input: AoiProactiveBriefFeedbackInput,
+): Promise<AoiProactiveBriefFeedbackResponse> {
+  const response = await fetch(`${API_PREFIX}/proactive-briefs/feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      briefId: input.briefId,
+      category: input.category,
+      note: input.note,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi proactive brief feedback.');
+  return {
+    ...parseAoiProactiveBriefListPayload(payload, sessionPath),
+    feedbackRecord: requireRecordField<AoiProactiveBriefFeedback>(
+      payload,
+      'feedbackRecord',
+      'Aoi proactive brief feedback response was malformed.',
+    ),
+    candidate: requireRecordField<AoiProactiveBriefCandidate>(
+      payload,
+      'candidate',
+      'Aoi proactive brief candidate response was malformed.',
     ),
   };
 }
@@ -971,6 +1066,7 @@ export async function fetchAoiAutonomyDashboard(
     scheduler,
     health,
     playbooks,
+    proactiveBriefs,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -984,6 +1080,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiAutonomyScheduler(sessionPath),
     fetchAoiOperatorHealth(sessionPath),
     fetchAoiPlaybooks(sessionPath, true),
+    fetchAoiProactiveBriefs(sessionPath),
   ]);
 
   return {
@@ -1000,6 +1097,7 @@ export async function fetchAoiAutonomyDashboard(
     scheduler: scheduler.state,
     health: health.health,
     playbooks,
+    proactiveBriefs,
   };
 }
 

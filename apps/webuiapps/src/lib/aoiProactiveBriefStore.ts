@@ -222,7 +222,12 @@ function isFeedbackCategory(value: unknown): value is AoiProactiveBriefFeedbackC
     value === 'wrong_timing' ||
     value === 'too_frequent' ||
     value === 'stale' ||
-    value === 'unsafe'
+    value === 'unsafe' ||
+    value === 'mute_topic' ||
+    value === 'pin_topic' ||
+    value === 'archive_brief' ||
+    value === 'open_sources' ||
+    value === 'expand_summary'
   );
 }
 

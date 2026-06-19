@@ -24,6 +24,8 @@ const NEGATIVE_FEEDBACK_CATEGORIES = new Set<AoiProactiveBriefFeedback['category
   'too_frequent',
   'stale',
   'unsafe',
+  'mute_topic',
+  'archive_brief',
 ]);
 
 export type AoiProactiveBriefSkipReason =

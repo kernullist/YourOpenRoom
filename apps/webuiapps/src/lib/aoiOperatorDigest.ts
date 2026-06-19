@@ -1,18 +1,24 @@
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import { applyAoiTrustCalibration } from './aoiTrustCalibration';
+import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type {
   AoiApprovalInboxItem,
   AoiAttentionBrokerDecision,
   AoiAttentionEvent,
+  AoiAutonomyPolicy,
   AoiAutonomyBlockedProposal,
   AoiAutonomyRisk,
   AoiDigestItem,
   AoiDigestItemKind,
+  AoiInterestProfile,
   AoiMissionState,
   AoiNotificationLane,
   AoiOperatorDigest,
   AoiOperatorHealthState,
+  AoiProactiveBriefCandidate,
+  AoiProactiveBriefCooldownState,
+  AoiProactiveBriefFeedback,
   AoiProposal,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
@@ -52,6 +58,11 @@ export interface AoiOperatorDigestInput {
   maxItems?: number;
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
   operatorHealth?: AoiOperatorHealthState | null;
+  policy?: AoiAutonomyPolicy | null;
+  proactiveBriefCandidates?: AoiProactiveBriefCandidate[];
+  proactiveBriefProfile?: AoiInterestProfile | null;
+  proactiveBriefFeedback?: AoiProactiveBriefFeedback[];
+  proactiveBriefCooldownState?: AoiProactiveBriefCooldownState | null;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -467,6 +478,54 @@ function collectBlockedItems(
   );
 }
 
+function collectProactiveBriefItems(params: AoiOperatorDigestInput, now: number): AoiDigestItem[] {
+  const candidates = params.proactiveBriefCandidates ?? [];
+  if (candidates.length === 0) {
+    return [];
+  }
+  return candidates
+    .map((candidate) => {
+      const decision = decideAoiProactiveBriefDelivery({
+        candidate,
+        policy: params.policy,
+        profile: params.proactiveBriefProfile,
+        feedback: params.proactiveBriefFeedback,
+        cooldownState: params.proactiveBriefCooldownState,
+        context: {
+          now,
+          quietMode: params.quietMode,
+          directChatOptIn: false,
+          maxInlineCards: 1,
+          inlineCardsShown: 0,
+        },
+      });
+      if (!decision.digestVisible && !decision.inlineCardVisible) {
+        return null;
+      }
+      return makeDigestItem({
+        kind: 'proactive_interest_brief',
+        lane: decision.inlineCardVisible ? 'mission_update' : 'fyi',
+        title: candidate.title,
+        summary: candidate.hook,
+        nextSafeAction: 'Open the compact brief card to review sources and give feedback.',
+        risk: candidate.risk,
+        relevance: decision.deliveryScore,
+        createdAt: candidate.updatedAt || now,
+        dedupeKey: `proactive-brief:${candidate.dedupeKey ?? candidate.id}`,
+        sourceRefs: [
+          `proactive-brief:${candidate.id}`,
+          `topic:${candidate.topicId}`,
+          ...candidate.sources.map((source) => `source:${source.host}`),
+        ],
+        evidenceRefs: [
+          ...candidate.evidenceRefs,
+          ...candidate.sources.map((source) => `source:${source.host}`),
+        ],
+      });
+    })
+    .filter((item): item is AoiDigestItem => item !== null);
+}
+
 function approvalAggregateItem(
   approvalInbox: AoiApprovalInboxItem[],
   now: number,
@@ -775,6 +834,7 @@ export function buildAoiOperatorDigest(params: AoiOperatorDigestInput): AoiOpera
     collectHealthItem(params.operatorHealth),
     ...collectMemoryOutcomeItems(params.memories),
     ...collectBlockedItems(params.blockedProposals),
+    ...collectProactiveBriefItems(params, now),
   ].filter((item): item is AoiDigestItem => Boolean(item));
 
   const deduped = new Map<string, AoiDigestItem>();
