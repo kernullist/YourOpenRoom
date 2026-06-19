@@ -149,6 +149,19 @@ export function shouldOpenAoiProactiveTrendSourcesFromPrompt(prompt: string): bo
   ].some((pattern) => pattern.test(normalized));
 }
 
+export function shouldOpenAllAoiProactiveTrendSourcesFromPrompt(prompt: string): boolean {
+  const normalized = sanitizeText(prompt, 240).toLowerCase();
+  if (!normalized || !shouldOpenAoiProactiveTrendSourcesFromPrompt(normalized)) {
+    return false;
+  }
+  return [
+    /\b(all|every|each|both)\b.*\b(source|sources|evidence|url|urls|link|links|page|pages)\b/i,
+    /\b(source|sources|evidence|url|urls|link|links|page|pages)\b.*\b(all|every|each|both)\b/i,
+    /(모든|전체|전부|각각).*(출처|근거|링크|주소|페이지|소스)/u,
+    /(출처|근거|링크|주소|페이지|소스).*(모두|모든|전체|전부|각각|다)/u,
+  ].some((pattern) => pattern.test(normalized));
+}
+
 function normalizeSourceMatchText(value: string): string {
   return sanitizeText(value, 500).normalize('NFKC').toLowerCase();
 }
@@ -256,6 +269,22 @@ export function selectAoiProactiveTrendSourceToOpen(
     context.sources[0] ??
     null
   );
+}
+
+export function selectAoiProactiveTrendSourcesToOpen(
+  context?: AoiProactiveTrendFollowUpContext | null,
+  prompt = context?.prompt ?? '',
+): AoiProactiveTrendFollowUpSource[] {
+  if (!context || context.sources.length < 1) {
+    return [];
+  }
+
+  if (shouldOpenAllAoiProactiveTrendSourcesFromPrompt(prompt)) {
+    return [...context.sources];
+  }
+
+  const source = selectAoiProactiveTrendSourceToOpen(context, prompt);
+  return source ? [source] : [];
 }
 
 export function buildAoiProactiveTrendFollowUpPromptBlock(

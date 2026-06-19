@@ -295,7 +295,7 @@ import {
   buildAoiProactiveTrendFollowUpContext,
   buildAoiProactiveTrendFollowUpPromptBlock,
   classifyAoiProactiveTrendFollowUpFeedback,
-  selectAoiProactiveTrendSourceToOpen,
+  selectAoiProactiveTrendSourcesToOpen,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
   type AoiProactiveTrendFollowUpContext,
   type AoiProactiveTrendFollowUpSource,
@@ -587,6 +587,52 @@ function buildAoiTrendSourceOpenAck(params: {
   ]
     .filter(Boolean)
     .join('\n');
+}
+
+function buildAoiTrendSourcesOpenAck(params: {
+  context: AoiProactiveTrendFollowUpContext;
+  results: Array<{
+    source: AoiProactiveTrendFollowUpSource;
+    result: string;
+  }>;
+}): string {
+  if (params.results.length === 1) {
+    const [entry] = params.results;
+    if (!entry) {
+      return `꿀보, "${params.context.title}"에 열 수 있는 저장 근거 URL이 없어.`;
+    }
+    return buildAoiTrendSourceOpenAck({
+      context: params.context,
+      source: entry.source,
+      result: entry.result,
+    });
+  }
+
+  const openedCount = params.results.filter(
+    (entry) => entry.result && !entry.result.toLowerCase().startsWith('error:'),
+  ).length;
+  const lines = [
+    `꿀보, "${params.context.title}"의 저장 근거 ${params.results.length}개를 인앱 링크 액션으로 순서대로 전달했어.`,
+    `성공: ${openedCount}개 / 실패: ${params.results.length - openedCount}개`,
+  ];
+
+  for (const entry of params.results) {
+    const sourceTitle = entry.source.title || entry.source.host || entry.source.url;
+    const sourceIndex = params.context.sources.findIndex(
+      (source) => source.url === entry.source.url,
+    );
+    const sourceLabel = sourceIndex >= 0 ? `${sourceIndex + 1}번째` : '선택한';
+    const opened = entry.result && !entry.result.toLowerCase().startsWith('error:');
+    lines.push(
+      `${sourceLabel} 근거: ${opened ? 'opened' : 'failed'} - ${sourceTitle}`,
+      `URL: ${entry.source.url}`,
+    );
+    if (!opened) {
+      lines.push(`결과: ${entry.result || 'no result'}`);
+    }
+  }
+
+  return lines.join('\n');
 }
 
 async function triggerKiraAutomationScan(sessionPath: string): Promise<void> {
@@ -4608,19 +4654,28 @@ const ChatPanel: React.FC<{
         aoiTrendFollowUpContext &&
         shouldOpenAoiProactiveTrendSourcesFromPrompt(aoiTrendFollowUpContext.prompt)
       ) {
-        const sourceToOpen = selectAoiProactiveTrendSourceToOpen(aoiTrendFollowUpContext);
-        if (sourceToOpen) {
-          let actionResult = '';
-          try {
-            actionResult = await dispatchAgentAction(buildOpenUrlAction(sourceToOpen.url));
-          } catch (error) {
-            actionResult = `error: ${error instanceof Error ? error.message : String(error)}`;
-            console.error('[ChatPanel] Failed to open Aoi trend source URL', error);
+        const sourcesToOpen = selectAoiProactiveTrendSourcesToOpen(aoiTrendFollowUpContext);
+        if (sourcesToOpen.length > 0) {
+          const actionResults: Array<{
+            source: AoiProactiveTrendFollowUpSource;
+            result: string;
+          }> = [];
+          for (const sourceToOpen of sourcesToOpen) {
+            let actionResult = '';
+            try {
+              actionResult = await dispatchAgentAction(buildOpenUrlAction(sourceToOpen.url));
+            } catch (error) {
+              actionResult = `error: ${error instanceof Error ? error.message : String(error)}`;
+              console.error('[ChatPanel] Failed to open Aoi trend source URL', error);
+            }
+            actionResults.push({
+              source: sourceToOpen,
+              result: actionResult,
+            });
           }
-          const ack = buildAoiTrendSourceOpenAck({
+          const ack = buildAoiTrendSourcesOpenAck({
             context: aoiTrendFollowUpContext,
-            source: sourceToOpen,
-            result: actionResult,
+            results: actionResults,
           });
           emitAssistantMessage({
             id: String(Date.now()),
@@ -4630,7 +4685,7 @@ const ChatPanel: React.FC<{
           recordAoiMemoryTurn({
             userMessage: text,
             assistantMessage: ack,
-            toolCalls: [`direct:aoi_trend_open_source:${sourceToOpen.url}`],
+            toolCalls: sourcesToOpen.map((source) => `direct:aoi_trend_open_source:${source.url}`),
             source: 'direct_action',
             llmConfig: selectedConfig,
           });

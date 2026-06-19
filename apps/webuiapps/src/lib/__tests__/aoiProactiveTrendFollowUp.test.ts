@@ -5,6 +5,8 @@ import {
   buildAoiProactiveTrendFollowUpPromptBlock,
   classifyAoiProactiveTrendFollowUpFeedback,
   selectAoiProactiveTrendSourceToOpen,
+  selectAoiProactiveTrendSourcesToOpen,
+  shouldOpenAllAoiProactiveTrendSourcesFromPrompt,
   shouldOpenAoiProactiveTrendSourcesFromPrompt,
 } from '../aoiProactiveTrendFollowUp';
 
@@ -194,6 +196,18 @@ describe('Aoi proactive trend follow-up context', () => {
     expect(
       shouldOpenAoiProactiveTrendSourcesFromPrompt('Aoi, turn this trend into a research plan.'),
     ).toBe(false);
+    expect(shouldOpenAllAoiProactiveTrendSourcesFromPrompt('Aoi, open all source evidence.')).toBe(
+      true,
+    );
+    expect(shouldOpenAllAoiProactiveTrendSourcesFromPrompt('Aoi, 모든 근거 링크 열어줘.')).toBe(
+      true,
+    );
+    expect(shouldOpenAllAoiProactiveTrendSourcesFromPrompt('Aoi, 두 번째 근거 링크 열어줘.')).toBe(
+      false,
+    );
+    expect(shouldOpenAllAoiProactiveTrendSourcesFromPrompt('Aoi, 다음 근거 링크 열어줘.')).toBe(
+      false,
+    );
   });
 
   it('selects requested source URLs for direct Browser opening', () => {
@@ -252,5 +266,24 @@ describe('Aoi proactive trend follow-up context', () => {
       }),
     );
     expect(selectAoiProactiveTrendSourceToOpen(null)).toBeNull();
+  });
+
+  it('selects every saved source URL for all-source opening prompts', () => {
+    const context = buildAoiProactiveTrendFollowUpContext(
+      makeTrendCard(),
+      'Aoi, open all source evidence.',
+      NOW,
+    );
+
+    expect(selectAoiProactiveTrendSourcesToOpen(context).map((source) => source.url)).toEqual([
+      'https://research.example.com/re/writeup',
+      'https://security.example.net/re/case-study',
+    ]);
+    expect(
+      selectAoiProactiveTrendSourcesToOpen(context, 'Aoi, 두 번째 근거 링크 열어줘.').map(
+        (source) => source.url,
+      ),
+    ).toEqual(['https://security.example.net/re/case-study']);
+    expect(selectAoiProactiveTrendSourcesToOpen(null)).toEqual([]);
   });
 });
