@@ -320,7 +320,16 @@ import {
   type AoiProactiveTrendFollowUpContext,
   type AoiProactiveTrendFollowUpSource,
 } from '@/lib/aoiProactiveTrendFollowUp';
+import {
+  buildAoiJarvisAutonomyGovernor,
+  buildAoiJarvisAutonomyGovernorPanelSummary,
+  canAoiJarvisAutonomyUseCapability,
+  type AoiJarvisAutonomyGovernorDecision,
+} from '@/lib/aoiJarvisAutonomyGovernor';
 import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
+import { buildAoiJarvisReadinessScorecard } from '@/lib/aoiJarvisReadinessScorecard';
+import { buildAoiMissionControlState } from '@/lib/aoiMissionControlRuntime';
+import { buildAoiSourceFreshnessContracts } from '@/lib/aoiSourceFreshnessContract';
 import type {
   AoiAutonomyBlockedProposal,
   AoiCalibrationDimension,
@@ -7011,9 +7020,144 @@ const ChatPanel: React.FC<{
     ],
   );
 
+  const aoiSourceFreshnessContracts = useMemo(
+    () =>
+      buildAoiSourceFreshnessContracts({
+        sourceRegistry: aoiEnvironmentSources,
+        workspaceSnapshot: aoiWorkspaceSnapshot,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+      }),
+    [
+      aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.updatedAt,
+      aoiEnvironmentSources,
+      aoiWorkspaceSnapshot,
+    ],
+  );
+
+  const aoiMissionControlState = useMemo(
+    () =>
+      buildAoiMissionControlState({
+        sessionPath,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+        mission: aoiMissionState,
+        goals: aoiAutonomyActiveGoals,
+        playbooks: aoiActivePlaybooks,
+        workspaceSnapshot: aoiWorkspaceSnapshot,
+        health: aoiOperatorHealth,
+        sourceRegistry: aoiEnvironmentSources,
+        sourceFreshnessContracts: aoiSourceFreshnessContracts,
+      }),
+    [
+      aoiActivePlaybooks,
+      aoiAutonomyActiveGoals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.updatedAt,
+      aoiEnvironmentSources,
+      aoiMissionState,
+      aoiOperatorHealth,
+      aoiSourceFreshnessContracts,
+      aoiWorkspaceSnapshot,
+      sessionPath,
+    ],
+  );
+
+  const aoiAgendaNudgeReadinessForGovernor = useMemo(
+    () =>
+      buildAoiAgendaNudgeReadinessPanelSummary({
+        status: aoiAutonomyStatus,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        digest: aoiOperatorDigest,
+        settings: aoiAutonomyPanelSettings,
+        options: {
+          now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+          lastShownAt: aoiAgendaNudgeLastShownAt,
+          shownCount: aoiInlineShownCount,
+          shownDedupeKeys: aoiAgendaNudgeShownKeysRef.current,
+        },
+      }),
+    [
+      aoiAgendaNudgeLastShownAt,
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyStatus,
+      aoiInlineShownCount,
+      aoiOperatorDigest,
+    ],
+  );
+
+  const aoiJarvisReadinessScorecard = useMemo(
+    () =>
+      buildAoiJarvisReadinessScorecard({
+        sessionPath,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+        sourceFreshnessContracts: aoiSourceFreshnessContracts,
+        missionControl: aoiMissionControlState,
+      }),
+    [
+      aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.updatedAt,
+      aoiMissionControlState,
+      aoiSourceFreshnessContracts,
+      sessionPath,
+    ],
+  );
+
   const aoiOperatorVoicePolicy = useMemo(
     () => normalizeAoiOperatorVoicePolicy(conversationPreferences?.operatorVoicePolicy),
     [conversationPreferences?.operatorVoicePolicy],
+  );
+
+  const aoiJarvisAutonomyGovernor = useMemo(
+    () =>
+      buildAoiJarvisAutonomyGovernor({
+        sessionPath,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+        policy: aoiAutonomyStatus?.policy,
+        operatorHealth: aoiOperatorHealth,
+        jarvisReadinessScorecard: aoiJarvisReadinessScorecard,
+        sourceFreshnessContracts: aoiSourceFreshnessContracts,
+        missionControl: aoiMissionControlState,
+        proactiveTrendAdvisor: aoiProactiveBriefs?.trendAdvisor,
+        proactiveBrief: {
+          visible: aoiProactiveBriefPanel.visible,
+          statusLabel: aoiProactiveBriefPanel.statusLabel,
+          hasInlineCard: Boolean(aoiProactiveBriefPanel.inlineCard),
+          hasChatHook: Boolean(aoiProactiveBriefPanel.chatHook),
+          evidenceRefs: aoiProactiveBriefPanel.evidenceRefs,
+        },
+        agendaNudgeReadiness: aoiAgendaNudgeReadinessForGovernor,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        operatorVoicePolicy: aoiOperatorVoicePolicy,
+        ttsEnabled: conversationPreferences?.ttsEnabled === true,
+        operatorVoiceMuted: aoiOperatorVoiceMuted,
+      }),
+    [
+      aoiAgendaNudgeReadinessForGovernor,
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.policy,
+      aoiAutonomyStatus?.updatedAt,
+      aoiJarvisReadinessScorecard,
+      aoiMissionControlState,
+      aoiOperatorHealth,
+      aoiOperatorVoiceMuted,
+      aoiOperatorVoicePolicy,
+      aoiProactiveBriefPanel.chatHook,
+      aoiProactiveBriefPanel.evidenceRefs,
+      aoiProactiveBriefPanel.inlineCard,
+      aoiProactiveBriefPanel.statusLabel,
+      aoiProactiveBriefPanel.visible,
+      aoiProactiveBriefs?.trendAdvisor,
+      aoiSourceFreshnessContracts,
+      conversationPreferences?.ttsEnabled,
+      sessionPath,
+    ],
   );
   const aoiOperatorVoicePanelSummary = useMemo(
     () => buildAoiOperatorVoicePanelSummary(aoiLastOperatorVoiceDecision),
@@ -7026,7 +7170,7 @@ const ChatPanel: React.FC<{
       mission: aoiMissionState,
       now: aoiOperatorDigest.generatedAt,
     });
-    const decision = decideAoiOperatorVoiceRender({
+    let decision = decideAoiOperatorVoiceRender({
       sessionPath,
       event,
       policy: aoiOperatorVoicePolicy,
@@ -7038,6 +7182,26 @@ const ChatPanel: React.FC<{
       trustCalibrationProfile: aoiAutonomyEvaluation?.trustCalibration,
       now: aoiOperatorDigest.generatedAt,
     });
+    if (
+      decision.shouldSpeak &&
+      !canAoiJarvisAutonomyUseCapability(aoiJarvisAutonomyGovernor, 'voice')
+    ) {
+      decision = {
+        ...decision,
+        status: 'suppressed',
+        shouldSpeak: false,
+        silentReason: `Jarvis autonomy governor limited voice to ${aoiJarvisAutonomyGovernor.modeLabel}.`,
+        reasons: [
+          ...decision.reasons,
+          `jarvis_governor_mode:${aoiJarvisAutonomyGovernor.overallMode}`,
+        ],
+        evidenceRefs: [
+          ...decision.evidenceRefs,
+          ...aoiJarvisAutonomyGovernor.evidenceRefs.slice(0, 6),
+        ],
+        spokenSummary: undefined,
+      };
+    }
     const recordKey = [
       decision.eventDedupeKey ?? 'no-event',
       decision.status,
@@ -7097,6 +7261,7 @@ const ChatPanel: React.FC<{
     aoiAutonomyEvaluation?.trustCalibration,
     aoiOperatorVoiceMuted,
     aoiOperatorVoicePolicy,
+    aoiJarvisAutonomyGovernor,
     aoiRecentProposalDecisions,
     conversationPreferences?.responseLanguageMode,
     conversationPreferences?.ttsEnabled,
@@ -7171,28 +7336,45 @@ const ChatPanel: React.FC<{
     aoiResumeBrief.id !== dismissedAoiResumeBriefId &&
     !inlineAoiProposal,
   );
+  const aoiGovernorAllowsProactiveBrief = canAoiJarvisAutonomyUseCapability(
+    aoiJarvisAutonomyGovernor,
+    'proactive_brief',
+  );
+  const aoiGovernorAllowsDirectChat = canAoiJarvisAutonomyUseCapability(
+    aoiJarvisAutonomyGovernor,
+    'direct_chat',
+  );
   const inlineAoiProactiveBrief =
-    !inlineAoiProposal && !showAoiResumeBrief ? (aoiProactiveBriefPanel.inlineCard ?? null) : null;
+    !inlineAoiProposal && !showAoiResumeBrief && aoiGovernorAllowsProactiveBrief
+      ? (aoiProactiveBriefPanel.inlineCard ?? null)
+      : null;
   const inlineAoiTrendCard =
-    !inlineAoiProposal && !showAoiResumeBrief && !inlineAoiProactiveBrief
+    !inlineAoiProposal &&
+    !showAoiResumeBrief &&
+    !inlineAoiProactiveBrief &&
+    aoiGovernorAllowsProactiveBrief
       ? (aoiProactiveBriefs?.trendAdvisor?.inlineCard ?? null)
       : null;
-  const directAoiTrendCard = aoiProactiveBriefs?.trendAdvisor?.directChatCard ?? null;
+  const directAoiTrendCard = aoiGovernorAllowsDirectChat
+    ? (aoiProactiveBriefs?.trendAdvisor?.directChatCard ?? null)
+    : null;
   const aoiAgendaChatNudge = useMemo(
     () =>
-      selectAoiAgendaChatNudge({
-        status: aoiAutonomyStatus,
-        activeProposals: aoiAutonomyActiveProposals,
-        blockedProposals: aoiAutonomyBlockedProposals,
-        digest: aoiOperatorDigest,
-        settings: aoiAutonomyPanelSettings,
-        options: {
-          now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
-          lastShownAt: aoiAgendaNudgeLastShownAt,
-          shownCount: aoiInlineShownCount,
-          shownDedupeKeys: aoiAgendaNudgeShownKeysRef.current,
-        },
-      }),
+      aoiGovernorAllowsDirectChat
+        ? selectAoiAgendaChatNudge({
+            status: aoiAutonomyStatus,
+            activeProposals: aoiAutonomyActiveProposals,
+            blockedProposals: aoiAutonomyBlockedProposals,
+            digest: aoiOperatorDigest,
+            settings: aoiAutonomyPanelSettings,
+            options: {
+              now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+              lastShownAt: aoiAgendaNudgeLastShownAt,
+              shownCount: aoiInlineShownCount,
+              shownDedupeKeys: aoiAgendaNudgeShownKeysRef.current,
+            },
+          })
+        : null,
     [
       aoiAgendaNudgeLastShownAt,
       aoiAutonomyActiveProposals,
@@ -7200,6 +7382,7 @@ const ChatPanel: React.FC<{
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings,
       aoiAutonomyStatus,
+      aoiGovernorAllowsDirectChat,
       aoiInlineShownCount,
       aoiOperatorDigest,
     ],
@@ -8056,6 +8239,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyEvaluation={aoiAutonomyEvaluation}
           aoiOperatorDigest={aoiOperatorDigest}
           aoiOperatorHealth={aoiOperatorHealth}
+          aoiJarvisAutonomyGovernor={aoiJarvisAutonomyGovernor}
           aoiProactiveBriefPanel={aoiProactiveBriefPanel}
           aoiProactiveTrendAdvisor={aoiProactiveBriefs?.trendAdvisor ?? null}
           expandedAoiProactiveBriefId={expandedAoiProactiveBriefId}
@@ -8641,6 +8825,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyEvaluation: AoiAutonomyEvaluationResult | null;
   aoiOperatorDigest: AoiOperatorDigest | null;
   aoiOperatorHealth: AoiOperatorHealthState | null;
+  aoiJarvisAutonomyGovernor: AoiJarvisAutonomyGovernorDecision;
   aoiProactiveBriefPanel: AoiProactiveBriefPanelModel;
   aoiProactiveTrendAdvisor: AoiProactiveTrendAdvisorState | null;
   expandedAoiProactiveBriefId: string | null;
@@ -8756,6 +8941,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyEvaluation,
   aoiOperatorDigest,
   aoiOperatorHealth,
+  aoiJarvisAutonomyGovernor,
   aoiProactiveBriefPanel,
   aoiProactiveTrendAdvisor,
   expandedAoiProactiveBriefId,
@@ -9336,6 +9522,10 @@ const SettingsModal: React.FC<{
         expandedAoiMissionEvidence || Boolean(expandedAoiProposalId),
       ),
     [aoiOperatorHealth, expandedAoiMissionEvidence, expandedAoiProposalId],
+  );
+  const aoiJarvisAutonomyGovernorSummary = useMemo(
+    () => buildAoiJarvisAutonomyGovernorPanelSummary(aoiJarvisAutonomyGovernor),
+    [aoiJarvisAutonomyGovernor],
   );
   const latestAoiPlaybook = useMemo(
     () =>
@@ -11279,6 +11469,68 @@ const SettingsModal: React.FC<{
                       </div>
                     </div>
 
+                    {aoiJarvisAutonomyGovernorSummary.visible && (
+                      <div
+                        className={styles.aoiAutonomyProposalSection}
+                        data-testid="aoi-jarvis-autonomy-governor"
+                      >
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Jarvis autonomy governor
+                        </div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiJarvisAutonomyGovernorSummary.modeLabel}</span>
+                            <span>
+                              allowed{' '}
+                              {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length}
+                            </span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {sanitizeAoiProposalDisplayText(
+                              aoiJarvisAutonomyGovernorSummary.summaryLabel,
+                              180,
+                            )}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.length > 0 ? (
+                              <div>
+                                Allowed:{' '}
+                                {aoiJarvisAutonomyGovernorSummary.allowedCapabilityLabels.join(
+                                  ', ',
+                                )}
+                              </div>
+                            ) : (
+                              <div>Allowed: none beyond observation</div>
+                            )}
+                            {aoiJarvisAutonomyGovernorSummary.blockerLabels.map((label, index) => (
+                              <div key={`jarvis-governor-blocker-${index}`}>
+                                Blocker: {sanitizeAoiProposalDisplayText(label, 260)}
+                              </div>
+                            ))}
+                            {aoiJarvisAutonomyGovernorSummary.whyNotJarvisYetLabels.map(
+                              (label, index) => (
+                                <div key={`jarvis-governor-why-${index}`}>
+                                  Boundary: {sanitizeAoiProposalDisplayText(label, 260)}
+                                </div>
+                              ),
+                            )}
+                            <div>
+                              Next:{' '}
+                              {sanitizeAoiProposalDisplayText(
+                                aoiJarvisAutonomyGovernorSummary.nextUpgradeActionLabel,
+                                260,
+                              )}
+                            </div>
+                            {aoiJarvisAutonomyGovernorSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`jarvis-governor-evidence-${index}`}>
+                                Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    )}
+
                     {aoiAutonomyAgendaSummary.visible && (
                       <div className={styles.aoiAutonomyProposalSection}>
                         <div className={styles.promptBudgetSectionTitle}>Aoi agenda</div>
@@ -12528,6 +12780,10 @@ const SettingsModal: React.FC<{
                           </div>
                           <div className={styles.aoiAutonomyProposalDetails}>
                             <div>{aoiMissionPanelSummary.nextActionReason}</div>
+                            <div>
+                              Governor: {aoiJarvisAutonomyGovernor.modeLabel}; mission actions stay
+                              inside this autonomy ceiling.
+                            </div>
                             {aoiMissionState?.sourceRefs.proposalRef && (
                               <div>
                                 Proposal:{' '}
@@ -12818,10 +13074,20 @@ const SettingsModal: React.FC<{
                               aoiAutonomyActionId?.startsWith(`proposal:${proposal.id}:`),
                             );
                             const expanded = expandedAoiProposalId === proposal.id;
-                            const executableAction = canExecuteAoiProposalAtCurrentLevel(
+                            const policyExecutableAction = canExecuteAoiProposalAtCurrentLevel(
                               proposal,
                               aoiAutonomyPolicy,
                             );
+                            const governorExecutionCapability =
+                              proposal.acceptAction?.kind === 'run_command'
+                                ? 'command'
+                                : 'app_action';
+                            const governorAllowsExecution = canAoiJarvisAutonomyUseCapability(
+                              aoiJarvisAutonomyGovernor,
+                              governorExecutionCapability,
+                            );
+                            const executableAction =
+                              policyExecutableAction && governorAllowsExecution;
                             const executionMessage = aoiAutonomyExecutionMessages[proposal.id];
                             const kiraHandoffPreviewResult = aoiKiraHandoffPreviews[proposal.id];
                             const kiraHandoffPreview =
@@ -13015,6 +13281,12 @@ const SettingsModal: React.FC<{
                                 {proposal.risk === 'high' && (
                                   <div className={styles.aoiAutonomyBlockedReason}>
                                     High risk: execution still requires fresh explicit acceptance.
+                                  </div>
+                                )}
+                                {policyExecutableAction && !governorAllowsExecution && (
+                                  <div className={styles.aoiAutonomyBlockedReason}>
+                                    Governor blocked execution: current ceiling is{' '}
+                                    {aoiJarvisAutonomyGovernor.modeLabel}.
                                   </div>
                                 )}
                                 {proposal.acceptAction?.kind === 'start_research' &&

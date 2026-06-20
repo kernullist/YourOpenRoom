@@ -1,0 +1,357 @@
+import { describe, expect, it } from 'vitest';
+import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
+import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
+import {
+  buildAoiJarvisAutonomyGovernor,
+  buildAoiJarvisAutonomyGovernorPanelSummary,
+  canAoiJarvisAutonomyUseCapability,
+} from '../aoiJarvisAutonomyGovernor';
+import type { AoiMissionControlState } from '../aoiMissionControlRuntime';
+import type { AoiSourceFreshnessContract } from '../aoiSourceFreshnessContract';
+import type {
+  AoiAutonomyPolicy,
+  AoiOperatorHealthState,
+  AoiProactiveTrendAdvisorState,
+} from '../aoiAutonomyTypes';
+
+function makePolicy(partial: Partial<AoiAutonomyPolicy> = {}): AoiAutonomyPolicy {
+  return {
+    ...DEFAULT_AOI_AUTONOMY_POLICY,
+    enabled: true,
+    previewMode: true,
+    level: 'L5',
+    proactiveSuggestionsEnabled: true,
+    proactiveBriefing: {
+      ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+      enabled: true,
+      directChatHookOptIn: true,
+    },
+    updatedAt: 1000,
+    ...partial,
+  };
+}
+
+function makeHealth(partial: Partial<AoiOperatorHealthState> = {}): AoiOperatorHealthState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 1000,
+    overallStatus: 'healthy',
+    summary: 'All operator surfaces are healthy.',
+    capabilities: [],
+    issues: [],
+    userBlockingIssueCount: 0,
+    evidenceRefs: ['operator-health:healthy'],
+    ...partial,
+  };
+}
+
+function makeSource(partial: Partial<AoiSourceFreshnessContract> = {}): AoiSourceFreshnessContract {
+  return {
+    version: 1,
+    id: 'source-freshness-workspace-git',
+    sourceId: 'workspace-git',
+    sourceKind: 'workspace_git',
+    sourceLabel: 'Workspace git',
+    consentState: 'not_required',
+    dataScope: 'workspace metadata',
+    scopeState: 'workspace',
+    bodyAccessState: 'not_applicable',
+    freshnessState: 'fresh',
+    signalFreshness: 'fresh',
+    lastObservedAt: 1000,
+    lastSuccessfulReadAt: 1000,
+    staleAfterMs: 60_000,
+    cannotKnow: [],
+    evidenceRefs: ['source-freshness:workspace-git:fresh'],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    ...partial,
+  };
+}
+
+function makeTrend(
+  partial: Partial<AoiProactiveTrendAdvisorState> = {},
+): AoiProactiveTrendAdvisorState {
+  return {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 1000,
+    watchProfile: {
+      version: 1,
+      sessionPath: 'aoi/default',
+      generatedAt: 1000,
+      sourceTopicCount: 0,
+      topicWatches: [],
+      evidenceRefs: ['trend-watch-profile:test'],
+    },
+    snapshots: [],
+    opinionCards: [],
+    quietNotificationCount: 0,
+    directChatHookCount: 0,
+    sourceQualityCounts: {},
+    interestDriftCounts: {},
+    deliveryControlBlockedReasons: [],
+    recentDeliveryEvents: [],
+    deliveryAuditSummary: {
+      version: 1,
+      inlineShownCount: 0,
+      directChatOfferedCount: 0,
+      suppressedCount: 0,
+      evidenceRefs: ['trend-delivery:audit'],
+    },
+    readiness: {
+      version: 1,
+      status: 'ready',
+      sampleCount: 4,
+      directChatReady: true,
+      directChatBlockedReasons: [],
+      summary: 'Trend advisor is ready for direct chat.',
+      evidenceRefs: ['trend-readiness:ready'],
+    },
+    evidenceRefs: ['trend-advisor:ready'],
+    ...partial,
+  };
+}
+
+function makeBlockedReadinessScorecard(): AoiJarvisReadinessScorecard {
+  return {
+    version: 1,
+    id: 'readiness-blocked-test',
+    sessionPath: 'aoi/default',
+    generatedAt: 1000,
+    score: 58,
+    level: 'not_ready',
+    gateStatus: 'blocked',
+    canIncreaseTrust: false,
+    modeRecommendation: 'tighten_or_rollback',
+    metricGroups: [],
+    metrics: [],
+    gates: [
+      {
+        version: 1,
+        id: 'gate.stale_source_honesty_minimum',
+        label: 'Stale-source honesty minimum',
+        status: 'block',
+        reason: 'Higher trust is blocked until source honesty is proven.',
+        evidenceRefs: ['readiness:stale-source-honesty'],
+        blockerRefs: ['source.stale_honesty_rate'],
+      },
+    ],
+    recommendations: [
+      {
+        version: 1,
+        id: 'recommendation.run_source_calibration',
+        severity: 'blocker',
+        label: 'Run source calibration',
+        reason: 'Source honesty needs more evidence.',
+        action: 'Collect source calibration evidence before higher-trust execution.',
+        evidenceRefs: ['readiness:stale-source-honesty'],
+      },
+    ],
+    evidenceRefs: ['readiness:stale-source-honesty'],
+    blockerRefs: ['gate.stale_source_honesty_minimum', 'source.stale_honesty_rate'],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+describe('Aoi Jarvis autonomy governor', () => {
+  it('allows approval execution only when policy and evidence gates are healthy', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      agendaNudgeReadiness: {
+        visible: true,
+        tone: 'ready',
+        statusLabel: 'ready',
+        summaryLabel: 'Agenda direct chat is ready.',
+        evidenceRefs: ['agenda-readiness:ready'],
+      },
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('approval_execution');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(true);
+    expect(governor.actionAuthority).toBe('display_only');
+    expect(governor.mutationCount).toBe(0);
+  });
+
+  it('blocks direct chat when sources are stale without disabling quiet suggestions', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [
+        makeSource({
+          freshnessState: 'stale',
+          signalFreshness: 'stale',
+          evidenceRefs: ['source-freshness:workspace-git:stale'],
+        }),
+      ],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('proactive_brief');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'research')).toBe(true);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'direct_chat')).toBe(false);
+    expect(governor.blockers.map((blocker) => blocker.id)).toContain(
+      'aoi-jarvis-governor:source-freshness-stale',
+    );
+  });
+
+  it('keeps proactive briefs but blocks direct chat when agenda nudge readiness is muted', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy({ level: 'L4' }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      agendaNudgeReadiness: {
+        visible: true,
+        tone: 'muted',
+        statusLabel: 'muted',
+        summaryLabel: 'Feedback mute is active.',
+        evidenceRefs: ['agenda-feedback:too-much'],
+      },
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('proactive_brief');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'proactive_brief')).toBe(true);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'direct_chat')).toBe(false);
+    expect(governor.nextUpgradeAction.toLowerCase()).toContain('agenda direct chat is blocked');
+  });
+
+  it('falls back to observe only when operator health is blocked', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth({
+        overallStatus: 'blocked',
+        summary: 'Approved command runner is unavailable.',
+        userBlockingIssueCount: 1,
+        evidenceRefs: ['operator-health:approved-command-runner-blocked'],
+      }),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('observe_only');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'mission_control')).toBe(false);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(false);
+  });
+
+  it('uses readiness blockers to prevent execution without muting source-backed direct chat', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      jarvisReadinessScorecard: makeBlockedReadinessScorecard(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      agendaNudgeReadiness: {
+        visible: true,
+        tone: 'ready',
+        statusLabel: 'ready',
+        summaryLabel: 'Agenda direct chat is ready.',
+        evidenceRefs: ['agenda-readiness:ready'],
+      },
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('direct_chat');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'direct_chat')).toBe(true);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(false);
+  });
+
+  it('allows prepared actions but blocks command execution while mission control waits for approval', () => {
+    const missionControl: AoiMissionControlState = {
+      version: 1,
+      id: 'mission-control-waiting-approval',
+      sessionPath: 'aoi/default',
+      generatedAt: 2000,
+      items: [],
+      health: {
+        version: 1,
+        activeMissionCount: 1,
+        staleMissionCount: 0,
+        waitingExternalCount: 0,
+        waitingApprovalCount: 1,
+        blockedMissionCount: 0,
+        pausedMissionCount: 0,
+        completedMissionCount: 0,
+        archivedMissionCount: 0,
+        whyQuiet: 'Waiting for explicit approval.',
+        warnings: [],
+        evidenceRefs: ['mission-control:waiting-approval'],
+      },
+      dashboardSummary: {
+        version: 1,
+        visible: true,
+        statusLabel: 'waiting approval',
+        activeMissionCountLabel: '1 active',
+        staleMissionCountLabel: '0 stale',
+        waitingExternalCountLabel: '0 waiting external',
+        waitingApprovalCountLabel: '1 waiting approval',
+        blockedMissionCountLabel: '0 blocked',
+        topMissionLabel: 'No top mission',
+        nextSafeActionLabel: 'Wait for approval',
+        whyQuietLabel: 'Waiting for explicit approval.',
+        itemLabels: [],
+        evidenceRefs: ['mission-control:waiting-approval'],
+      },
+      evidenceRefs: ['mission-control:waiting-approval'],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      missionControl,
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+
+    expect(governor.overallMode).toBe('prepare_actions');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'prepare_action')).toBe(true);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(false);
+  });
+
+  it('builds a compact panel summary with blockers and evidence', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy({
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          directChatHookOptIn: false,
+        },
+      }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const panel = buildAoiJarvisAutonomyGovernorPanelSummary(governor);
+
+    expect(panel.visible).toBe(true);
+    expect(panel.modeLabel).toBe('Proactive brief');
+    expect(panel.blockerLabels.join(' ')).toContain('Direct chat opt-in is off');
+    expect(panel.evidenceRefs).toContain('policy:directChatHookOptIn:false');
+  });
+});

@@ -3045,6 +3045,8 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.pendingApproval.visible).toBe(false);
     expect(dashboard.replayHealth.builtInReplayLabel).toBe('No built-in replay report');
     expect(dashboard.jarvisReadiness.visible).toBe(false);
+    expect(dashboard.jarvisAutonomyGovernor.visible).toBe(true);
+    expect(dashboard.jarvisAutonomyGovernor.modeLabel).toBe('Observe only');
   });
 
   it('uses mission memory to explain stale validation, pending external work, and approvals', () => {
@@ -3914,6 +3916,10 @@ describe('Aoi autonomy UI helpers', () => {
     expect(serialized).not.toContain('increase autonomy now');
     expect(dashboard.jarvisReadiness.evidenceRefs).toContain(
       'shadow-readiness:wrong-source-dashboard',
+    );
+    expect(dashboard.jarvisAutonomyGovernor.visible).toBe(true);
+    expect(dashboard.jarvisAutonomyGovernor.blockerLabels.join(' ')).toContain(
+      'Jarvis readiness gate is blocked',
     );
   });
 

@@ -22,6 +22,12 @@ import {
   buildAoiJarvisReadinessScorecard,
   type AoiJarvisReadinessScorecard,
 } from './aoiJarvisReadinessScorecard';
+import {
+  buildAoiJarvisAutonomyGovernor,
+  buildAoiJarvisAutonomyGovernorPanelSummary,
+  type AoiJarvisAutonomyGovernorDecision,
+  type AoiJarvisAutonomyGovernorPanelSummary,
+} from './aoiJarvisAutonomyGovernor';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
@@ -637,6 +643,8 @@ export interface AoiJarvisReadinessPanel {
   evidenceRefs: string[];
 }
 
+export type AoiJarvisAutonomyGovernorPanel = AoiJarvisAutonomyGovernorPanelSummary;
+
 export interface AoiOperatorFeedbackInboxPanel {
   visible: boolean;
   inboxCountLabel: string;
@@ -663,6 +671,7 @@ export interface AoiOperatorAcceptanceDashboard {
   pendingApproval: AoiPendingApprovalPanel;
   replayHealth: AoiReplayHealthPanel;
   jarvisReadiness: AoiJarvisReadinessPanel;
+  jarvisAutonomyGovernor: AoiJarvisAutonomyGovernorPanel;
   feedbackInbox: AoiOperatorFeedbackInboxPanel;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
@@ -672,6 +681,7 @@ export interface AoiOperatorAcceptanceDashboard {
 export interface AoiOperatorAcceptanceDashboardInput {
   sessionPath: string;
   now?: number;
+  policy?: AoiAutonomyPolicy | null;
   mission?: AoiMissionState | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   health?: AoiOperatorHealthState | null;
@@ -689,6 +699,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   builtInReplayReports?: AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
+  jarvisAutonomyGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
   shadowReport?: AoiShadowDecisionReport | null;
   promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
@@ -4773,9 +4784,32 @@ function buildAoiOperatorFeedbackInboxPanel(
   };
 }
 
+function buildAoiJarvisAutonomyGovernorPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+  sourceFreshnessContracts: AoiSourceFreshnessContract[],
+  jarvisReadinessScorecard: AoiJarvisReadinessScorecard | null,
+): AoiJarvisAutonomyGovernorPanel {
+  const governor =
+    input.jarvisAutonomyGovernor ??
+    buildAoiJarvisAutonomyGovernor({
+      sessionPath: input.sessionPath,
+      now: input.now,
+      policy: input.policy ?? DEFAULT_AOI_AUTONOMY_POLICY,
+      operatorHealth: input.health,
+      jarvisReadinessScorecard,
+      jarvisAcceptanceReport: input.jarvisAcceptanceReport,
+      sourceFreshnessContracts,
+      missionControl: input.missionControl,
+      activeProposals: [],
+      blockedProposals: [],
+    });
+  return buildAoiJarvisAutonomyGovernorPanelSummary(governor);
+}
+
 export function buildAoiOperatorAcceptanceDashboard(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiOperatorAcceptanceDashboard {
+  const sourceFreshnessContracts = resolveAoiSourceFreshnessContracts(input);
   const missionControl = buildAoiMissionControlDashboardSummary(input.missionControl);
   const currentBrief = buildAoiCurrentBriefPanel(input);
   const blindSpots = buildAoiBlindSpotsPanel(input);
@@ -4786,6 +4820,27 @@ export function buildAoiOperatorAcceptanceDashboard(
   const pendingApproval = buildAoiPendingApprovalPanel(input);
   const replayHealth = buildAoiReplayHealthPanel(input);
   const jarvisReadiness = buildAoiJarvisReadinessPanel(input);
+  const jarvisReadinessScorecard =
+    input.jarvisReadinessScorecard ??
+    buildAoiJarvisReadinessScorecard({
+      sessionPath: input.sessionPath,
+      now: input.now,
+      shadowReport: input.shadowReport,
+      feedbackInbox: input.feedbackInbox,
+      builtInReplayReports: input.builtInReplayReports,
+      jarvisAcceptanceReport: input.jarvisAcceptanceReport,
+      fieldShadowReport: input.fieldShadowReport,
+      personalSourceRealityCheck: input.personalSourceRealityCheck,
+      sourceFreshnessContracts,
+      missionControl: input.missionControl,
+      boundedWorkOrders: input.boundedWorkOrders,
+      promotedFixtureCandidates: input.promotedFixtureCandidates,
+    });
+  const jarvisAutonomyGovernor = buildAoiJarvisAutonomyGovernorPanel(
+    input,
+    sourceFreshnessContracts,
+    jarvisReadinessScorecard,
+  );
   const feedbackInbox = buildAoiOperatorFeedbackInboxPanel(input.feedbackInbox);
   const evidenceRefs = dashboardRefs([
     ...missionControl.evidenceRefs,
@@ -4798,6 +4853,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...pendingApproval.evidenceRefs,
     ...replayHealth.evidenceRefs,
     ...jarvisReadiness.evidenceRefs,
+    ...jarvisAutonomyGovernor.evidenceRefs,
     ...feedbackInbox.evidenceRefs,
   ]);
 
@@ -4816,6 +4872,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     pendingApproval,
     replayHealth,
     jarvisReadiness,
+    jarvisAutonomyGovernor,
     feedbackInbox,
     evidenceRefs,
     actionAuthority: 'display_only',
