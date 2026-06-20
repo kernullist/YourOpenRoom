@@ -508,6 +508,48 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(command?.responseLabel).toContain('Approved command');
   });
 
+  it('prioritizes request scenario guidance from the latest user message', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      policy: makePolicy({ level: 'L3' }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const settingsScenarios = buildAoiJarvisAutonomyGovernorRequestScenarios(governor, {
+      requestText: 'Kira 모델 설정을 직접 변경해줘',
+      maxItems: 2,
+    });
+    const researchScenarios = buildAoiJarvisAutonomyGovernorRequestScenarios(governor, {
+      requestText: 'RE 최신 동향을 조사해서 알려줘',
+      maxItems: 1,
+    });
+    const block = buildAoiJarvisAutonomyGovernorPromptBlock({
+      decision: governor,
+      latestUserMessage: 'Kira 모델 설정을 직접 변경해줘',
+      maxChars: 4600,
+    });
+
+    expect(settingsScenarios[0]).toMatchObject({
+      kind: 'app_action',
+      allowed: false,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(settingsScenarios[0].requestMatchScore).toBeGreaterThan(0);
+    expect(settingsScenarios[0].requestMatchLabel).toContain('Matched latest request terms');
+    expect(settingsScenarios[0].evidenceRefs).toContain('request-scenario:app_action:matched');
+    expect(researchScenarios[0]).toMatchObject({
+      kind: 'proactive_research',
+      allowed: true,
+    });
+    expect(block).toContain('Latest request routing');
+    expect(block).toContain('Matched request scenario: blocked When the user asks Aoi to change');
+    expect(block).toContain('Do not say the whole app cannot be controlled');
+  });
+
   it('records display-only audit events and dedupes repeated governor decisions', () => {
     const governor = buildAoiJarvisAutonomyGovernor({
       sessionPath: 'aoi/default',

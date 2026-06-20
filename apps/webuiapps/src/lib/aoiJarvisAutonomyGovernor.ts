@@ -205,6 +205,9 @@ export interface AoiJarvisAutonomyGovernorRequestScenarioGuidance {
   requestLabel: string;
   requiredCapability: AoiJarvisAutonomyCapability;
   allowed: boolean;
+  requestMatchScore: number;
+  requestMatchLabel: string;
+  matchedRequestTerms: string[];
   responseLabel: string;
   safeFallbackLabel: string;
   evidenceRefs: string[];
@@ -1365,6 +1368,8 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
   kind: AoiJarvisAutonomyGovernorRequestScenarioKind;
   requestLabel: string;
   requiredCapability: AoiJarvisAutonomyCapability;
+  matchTerms: string[];
+  strongMatchTerms?: string[];
   allowedTemplate: string;
   fallbackTemplate: string;
 }> = [
@@ -1372,6 +1377,20 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'capability_question',
     requestLabel: 'When the user asks what Aoi can do now',
     requiredCapability: 'observe',
+    matchTerms: [
+      '가능',
+      '할 수',
+      '권한',
+      '제어권',
+      '현재 상태',
+      '얼마나',
+      'can you',
+      'what can',
+      'capability',
+      'permission',
+      'control',
+    ],
+    strongMatchTerms: ['제어권', 'what can', 'capability'],
     allowedTemplate:
       'Answer directly with the current ceiling, allowed capability list, blocked capability list, and next evidence step.',
     fallbackTemplate:
@@ -1381,6 +1400,20 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'proactive_research',
     requestLabel: 'When the user asks Aoi to research or monitor a topic',
     requiredCapability: 'research',
+    matchTerms: [
+      '조사',
+      '검색',
+      '찾아',
+      '최신',
+      '동향',
+      '모니터',
+      '리서치',
+      'research',
+      'search',
+      'trend',
+      'monitor',
+    ],
+    strongMatchTerms: ['최신 동향', 'research', 'monitor'],
     allowedTemplate:
       'Use allowed research/observation surfaces and summarize findings with evidence; avoid claiming background execution beyond configured schedulers.',
     fallbackTemplate:
@@ -1390,6 +1423,20 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'direct_chat_delivery',
     requestLabel: 'When the user asks Aoi to proactively message or interrupt',
     requiredCapability: 'direct_chat',
+    matchTerms: [
+      '먼저',
+      '가끔',
+      '메시지',
+      '알려줘',
+      '말해줘',
+      '깨워',
+      '중단',
+      'interrupt',
+      'notify',
+      'message me',
+      'proactively',
+    ],
+    strongMatchTerms: ['먼저', '가끔', 'interrupt', 'notify'],
     allowedTemplate:
       'Deliver a concise direct-chat style answer only when direct chat and source freshness gates are open.',
     fallbackTemplate:
@@ -1399,6 +1446,19 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'prepare_action',
     requestLabel: 'When the user asks Aoi to prepare a concrete action',
     requiredCapability: 'prepare_action',
+    matchTerms: [
+      '준비',
+      '계획',
+      '설계',
+      '초안',
+      '작업항목',
+      '드라이런',
+      'prepare',
+      'plan',
+      'draft',
+      'dry-run',
+    ],
+    strongMatchTerms: ['준비', '작업항목', 'prepare', 'dry-run'],
     allowedTemplate:
       'Prepare a dry-run plan, inputs, risks, and approval checklist without mutating apps or commands.',
     fallbackTemplate:
@@ -1408,6 +1468,23 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'app_action',
     requestLabel: 'When the user asks Aoi to change an in-app setting or app state',
     requiredCapability: 'app_action',
+    matchTerms: [
+      '설정',
+      '변경',
+      '바꿔',
+      '적용',
+      '버튼',
+      '눌러',
+      '인앱',
+      '앱',
+      'kira',
+      'model settings',
+      'change setting',
+      'apply setting',
+      'toggle',
+      'button',
+    ],
+    strongMatchTerms: ['설정', '변경', '인앱', 'model settings', 'change setting'],
     allowedTemplate:
       'Use only existing approved app-action gates and name the exact app surface involved.',
     fallbackTemplate:
@@ -1417,6 +1494,21 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
     kind: 'command_execution',
     requestLabel: 'When the user asks Aoi to run a command or mutation',
     requiredCapability: 'command',
+    matchTerms: [
+      '실행',
+      '명령',
+      '커맨드',
+      '쉘',
+      '터미널',
+      'powershell',
+      'cmd',
+      'pnpm',
+      'git',
+      'run command',
+      'execute',
+      'terminal',
+    ],
+    strongMatchTerms: ['실행', '명령', 'powershell', 'run command', 'execute'],
     allowedTemplate:
       'Use existing explicit approval gates only; summarize command intent, scope, risk, and expected evidence first.',
     fallbackTemplate:
@@ -1424,9 +1516,38 @@ const REQUEST_SCENARIO_DEFINITIONS: Array<{
   },
 ];
 
+function scoreAoiJarvisAutonomyRequestScenario(
+  requestText: string,
+  scenario: (typeof REQUEST_SCENARIO_DEFINITIONS)[number],
+): { score: number; matchedTerms: string[] } {
+  if (!requestText) {
+    return { score: 0, matchedTerms: [] };
+  }
+
+  const strongTerms = new Set((scenario.strongMatchTerms ?? []).map((term) => term.toLowerCase()));
+  const matchedTerms: string[] = [];
+  let score = 0;
+  for (const term of scenario.matchTerms) {
+    const normalizedTerm = term.replace(/\s+/g, ' ').trim().toLowerCase();
+    if (!normalizedTerm || !requestText.includes(normalizedTerm)) {
+      continue;
+    }
+    matchedTerms.push(term);
+    score += strongTerms.has(normalizedTerm) ? 2 : 1;
+  }
+  return {
+    score,
+    matchedTerms: uniqueLabels(matchedTerms, 6),
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorRequestScenarios(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
-  options: { maxItems?: number } = {},
+  options: {
+    maxItems?: number;
+    requestText?: string | null;
+    preferMatched?: boolean;
+  } = {},
 ): AoiJarvisAutonomyGovernorRequestScenarioGuidance[] {
   const maxItems = Math.max(
     0,
@@ -1439,8 +1560,26 @@ export function buildAoiJarvisAutonomyGovernorRequestScenarios(
   const gaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, {
     maxItems: CAPABILITY_ORDER.length,
   });
-  return REQUEST_SCENARIO_DEFINITIONS.map(
-    (scenario): AoiJarvisAutonomyGovernorRequestScenarioGuidance => {
+  const normalizedRequestText = normalizeAuditLabel(options.requestText, '', 600).toLowerCase();
+  const scoredScenarios = REQUEST_SCENARIO_DEFINITIONS.map((scenario, index) => {
+    const match = scoreAoiJarvisAutonomyRequestScenario(normalizedRequestText, scenario);
+    return {
+      ...scenario,
+      index,
+      requestMatchScore: match.score,
+      matchedRequestTerms: match.matchedTerms,
+    };
+  });
+  const orderedScenarios =
+    normalizedRequestText && options.preferMatched !== false
+      ? [...scoredScenarios].sort(
+          (left, right) =>
+            right.requestMatchScore - left.requestMatchScore || left.index - right.index,
+        )
+      : scoredScenarios;
+
+  return orderedScenarios
+    .map((scenario): AoiJarvisAutonomyGovernorRequestScenarioGuidance => {
       const allowed = canAoiJarvisAutonomyUseCapability(decision, scenario.requiredCapability);
       const capabilityLabel = CAPABILITY_LABELS[scenario.requiredCapability];
       const gap = gaps.find((item) => item.capability === scenario.requiredCapability);
@@ -1459,10 +1598,21 @@ export function buildAoiJarvisAutonomyGovernorRequestScenarios(
         requestLabel: scenario.requestLabel,
         requiredCapability: scenario.requiredCapability,
         allowed,
+        requestMatchScore: scenario.requestMatchScore,
+        requestMatchLabel:
+          scenario.requestMatchScore > 0
+            ? `Matched latest request terms: ${scenario.matchedRequestTerms.join(', ')}.`
+            : normalizedRequestText
+              ? 'No direct latest-request terms matched this scenario.'
+              : 'No latest request text was provided.',
+        matchedRequestTerms: scenario.matchedRequestTerms,
         responseLabel,
         safeFallbackLabel,
         evidenceRefs: uniqueLabels(
           [
+            ...(scenario.requestMatchScore > 0
+              ? [`request-scenario:${scenario.kind}:matched`]
+              : []),
             ...(gap?.evidenceRefs ?? []),
             ...decision.nextUpgradeEvidenceRefs,
             ...decision.evidenceRefs,
@@ -1472,8 +1622,8 @@ export function buildAoiJarvisAutonomyGovernorRequestScenarios(
         actionAuthority: 'display_only',
         mutationCount: 0,
       };
-    },
-  ).slice(0, maxItems);
+    })
+    .slice(0, maxItems);
 }
 
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
@@ -2051,6 +2201,7 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
   trail?: AoiJarvisAutonomyGovernorAuditTrail | null;
   maxEvents?: number;
   maxChars?: number;
+  latestUserMessage?: string | null;
 }): string {
   const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(params.trail);
   const decision = params.decision ?? null;
@@ -2127,11 +2278,23 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
     )) {
       lines.push(`  - Response rule: ${normalizePromptLabel(label, '', 220)}.`);
     }
+    if (normalizeAuditLabel(params.latestUserMessage, '', 400)) {
+      lines.push(
+        '- Latest request routing: prioritize matched request scenarios below; use unmatched scenarios only as fallback guidance.',
+      );
+    }
     for (const scenario of buildAoiJarvisAutonomyGovernorRequestScenarios(decision, {
       maxItems: 4,
+      requestText: params.latestUserMessage,
     })) {
+      const scenarioPrefix =
+        scenario.requestMatchScore > 0 ? 'Matched request scenario' : 'Request scenario';
+      const matchLabel =
+        scenario.requestMatchScore > 0
+          ? ` Match: ${normalizePromptLabel(scenario.requestMatchLabel, '', 140)}`
+          : '';
       lines.push(
-        `- Request scenario: ${scenario.allowed ? 'allowed' : 'blocked'} ${normalizePromptLabel(
+        `- ${scenarioPrefix}: ${scenario.allowed ? 'allowed' : 'blocked'} ${normalizePromptLabel(
           scenario.requestLabel,
           '',
           120,
@@ -2139,7 +2302,7 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
           scenario.allowed ? scenario.responseLabel : scenario.safeFallbackLabel,
           '',
           220,
-        )}.`,
+        )}.${matchLabel}`,
       );
     }
     const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 2 });

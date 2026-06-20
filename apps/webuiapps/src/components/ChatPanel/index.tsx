@@ -5318,6 +5318,7 @@ const ChatPanel: React.FC<{
     const currentAoiGovernorPrompt = buildAoiJarvisAutonomyGovernorPromptBlock({
       decision: aoiJarvisAutonomyGovernor,
       trail: aoiAutonomyPanelSettingsRef.current.jarvisAutonomyGovernorAuditTrail,
+      latestUserMessage,
     });
     const systemPrompt = buildSystemPrompt(
       char,
