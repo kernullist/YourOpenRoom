@@ -1068,7 +1068,19 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'untrained',
       tone: 'neutral',
       resetLabel: 'Nothing to reset',
+      auditLabels: [],
     });
+    const staleFeedbackAudit = {
+      version: 1 as const,
+      actionId: 'quiet_decision_nudges' as const,
+      kind: 'quieted' as const,
+      actionLabel: 'Quiet for now',
+      reason: 'delivery decision silent/no candidate',
+      dedupeKey: 'agenda-decision:silent:5000:no candidate',
+      recordedAt: 5100,
+      safetyBoundary:
+        'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
+    };
     const staleAuditSummary = buildAoiAgendaNudgeCalibrationPanelSummary(
       {
         panelExpanded: true,
@@ -1076,17 +1088,7 @@ describe('Aoi autonomy UI helpers', () => {
         quietMode: false,
         maxSuggestionsPerSession: 3,
         agendaNudgeCalibration: null,
-        agendaNudgeReadinessLastDecisionFeedback: {
-          version: 1,
-          actionId: 'quiet_decision_nudges',
-          kind: 'quieted',
-          actionLabel: 'Quiet for now',
-          reason: 'delivery decision silent/no candidate',
-          dedupeKey: 'agenda-decision:silent:5000:no candidate',
-          recordedAt: 5100,
-          safetyBoundary:
-            'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
-        },
+        agendaNudgeReadinessLastDecisionFeedback: staleFeedbackAudit,
       },
       6000,
     );
@@ -1096,6 +1098,7 @@ describe('Aoi autonomy UI helpers', () => {
       evidenceRefs: ['agenda-feedback:audit-trail'],
     });
     expect(staleAuditSummary.reasonLabels.join(' ')).toContain('audit trail');
+    expect(staleAuditSummary.auditLabels.join(' ')).toContain('Last feedback: Quiet for now');
 
     const quieted = recordAoiAgendaNudgeFeedback(null, {
       kind: 'quieted',
@@ -1103,6 +1106,10 @@ describe('Aoi autonomy UI helpers', () => {
       reason: 'enable_quiet_mode',
       dedupeKey: 'proposal:aoi-proposal-ui-test-001',
     });
+    const trainedFeedbackHistory = appendAoiAgendaNudgeDecisionFeedbackHistory(
+      null,
+      staleFeedbackAudit,
+    );
     const mutedSummary = buildAoiAgendaNudgeCalibrationPanelSummary(
       {
         panelExpanded: true,
@@ -1110,6 +1117,8 @@ describe('Aoi autonomy UI helpers', () => {
         quietMode: false,
         maxSuggestionsPerSession: 3,
         agendaNudgeCalibration: quieted,
+        agendaNudgeReadinessLastDecisionFeedback: staleFeedbackAudit,
+        agendaNudgeReadinessDecisionFeedbackHistory: trainedFeedbackHistory,
       },
       6000,
     );
@@ -1121,6 +1130,7 @@ describe('Aoi autonomy UI helpers', () => {
     });
     expect(mutedSummary.reasonLabels.join(' ')).toContain('quieted feedback');
     expect(mutedSummary.countLabels).toContain('1 quiet/noisy');
+    expect(mutedSummary.auditLabels.join(' ')).toContain('Feedback trail');
 
     const useful = recordAoiAgendaNudgeFeedback(quieted, {
       kind: 'useful',

@@ -11417,6 +11417,9 @@ const SettingsModal: React.FC<{
                             {aoiAgendaNudgeCalibrationSummary.reasonLabels.map((label, index) => (
                               <div key={`agenda-calibration-reason-${index}`}>{label}</div>
                             ))}
+                            {aoiAgendaNudgeCalibrationSummary.auditLabels.map((label, index) => (
+                              <div key={`agenda-calibration-audit-${index}`}>{label}</div>
+                            ))}
                             {aoiAgendaNudgeCalibrationSummary.evidenceRefs.map((ref, index) => (
                               <div key={`agenda-calibration-evidence-${index}`}>
                                 Evidence: {ref}

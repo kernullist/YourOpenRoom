@@ -535,6 +535,7 @@ export interface AoiAgendaNudgeCalibrationPanelSummary {
   summaryLabel: string;
   countLabels: string[];
   reasonLabels: string[];
+  auditLabels: string[];
   evidenceRefs: string[];
   resetLabel: string;
   tone: 'neutral' | 'learning' | 'suppressed';
@@ -1202,6 +1203,10 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
   const feedbackHistory = normalizeAoiAgendaNudgeDecisionFeedbackHistory(
     settings?.agendaNudgeReadinessDecisionFeedbackHistory,
   );
+  const auditLabels = [
+    ...buildAoiAgendaNudgeLastDecisionFeedbackLabels(lastDecisionFeedback),
+    ...buildAoiAgendaNudgeDecisionFeedbackHistoryLabels(feedbackHistory),
+  ];
   const hasFeedbackSurface = Boolean(calibration || lastDecisionFeedback || feedbackHistory.length);
   const gate = getAoiAgendaNudgeCalibrationGate(calibration, now);
 
@@ -1219,6 +1224,7 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
             'A local feedback audit trail is still available for reset.',
           ]
         : ['No local suppression is active.'],
+      auditLabels,
       evidenceRefs: hasFeedbackSurface ? ['agenda-feedback:audit-trail'] : [],
       resetLabel: hasFeedbackSurface ? 'Reset agenda nudge feedback' : 'Nothing to reset',
       tone: 'neutral',
@@ -1256,6 +1262,7 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
     summaryLabel,
     countLabels,
     reasonLabels,
+    auditLabels,
     evidenceRefs: gate.evidenceRefs,
     resetLabel: 'Reset agenda nudge feedback',
     tone: gate.suppressed ? 'suppressed' : 'learning',
