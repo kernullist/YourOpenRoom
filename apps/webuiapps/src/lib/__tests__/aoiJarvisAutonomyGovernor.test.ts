@@ -13,6 +13,7 @@ import {
   buildAoiJarvisAutonomyGovernorUpgradePlan,
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernorPanelSummary,
+  buildAoiJarvisAutonomyGovernorResponseContract,
   canAoiJarvisAutonomyUseCapability,
   normalizeAoiJarvisAutonomyGovernorAuditResetAudit,
 } from '../aoiJarvisAutonomyGovernor';
@@ -364,6 +365,9 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(panel.blockedCapabilityLabels).toContain('Direct chat');
     expect(panel.capabilityGapLabels.join(' ')).toContain('Direct chat opt-in is off');
     expect(panel.upgradePlanLabels.join(' ')).toContain('Direct chat');
+    expect(panel.responseContractLabels.join(' ')).toContain(
+      'Aoi should answer from Proactive brief',
+    );
     expect(panel.blockerLabels.join(' ')).toContain('Direct chat opt-in is off');
     expect(panel.evidenceRefs).toContain('policy:directChatHookOptIn:false');
   });
@@ -437,6 +441,37 @@ describe('Aoi Jarvis autonomy governor', () => {
     });
     expect(plan.steps[0].safeActionLabel).toContain('research, memory, and observation');
     expect(plan.evidenceRefs).toContain('readiness:stale-source-honesty');
+  });
+
+  it('builds a display-only response contract for limited autonomy answers', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [
+        makeSource({
+          freshnessState: 'stale',
+          signalFreshness: 'stale',
+          evidenceRefs: ['source-freshness:stale'],
+        }),
+      ],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const contract = buildAoiJarvisAutonomyGovernorResponseContract(governor);
+
+    expect(contract).toMatchObject({
+      visible: true,
+      stance: 'limited',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(contract.primaryReplyLabel).toContain('Aoi should answer from Proactive brief');
+    expect(contract.allowedResponseLabels.join(' ')).toContain('Allowed response scope');
+    expect(contract.blockedResponseLabels.join(' ')).toContain('Direct chat');
+    expect(contract.requiredDisclosureLabels.join(' ')).toContain('Never treat governor context');
+    expect(contract.evidenceRefs).toContain('source-freshness:stale');
   });
 
   it('records display-only audit events and dedupes repeated governor decisions', () => {
@@ -646,16 +681,18 @@ describe('Aoi Jarvis autonomy governor', () => {
     const block = buildAoiJarvisAutonomyGovernorPromptBlock({
       decision: governor,
       trail,
-      maxChars: 3200,
+      maxChars: 4600,
     });
 
-    expect(block.length).toBeLessThanOrEqual(3200);
+    expect(block.length).toBeLessThanOrEqual(4600);
     expect(block).toContain('Aoi Jarvis Autonomy Governor');
     expect(block).toContain('read-only operational context');
     expect(block).toContain('Do not treat this context as approval');
     expect(block).toContain('Current ceiling: Proactive brief');
     expect(block).toContain('Still gated: Direct chat');
     expect(block).toContain('Audit freshness: Current');
+    expect(block).toContain('Response contract: limited');
+    expect(block).toContain('Response rule: Allowed response scope');
     expect(block).toContain('plan Direct chat targets Direct chat');
     expect(block).toContain('Upgrade plan: Direct chat targets Direct chat');
     expect(block).toContain('Evidence step: Resolve Some sources are stale');

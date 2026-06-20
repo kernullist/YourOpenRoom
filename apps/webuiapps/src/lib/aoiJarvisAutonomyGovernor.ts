@@ -122,6 +122,7 @@ export interface AoiJarvisAutonomyGovernorPanelSummary {
   blockedCapabilityLabels: string[];
   capabilityGapLabels: string[];
   upgradePlanLabels: string[];
+  responseContractLabels: string[];
   blockerLabels: string[];
   whyNotJarvisYetLabels: string[];
   nextUpgradeActionLabel: string;
@@ -169,6 +170,21 @@ export interface AoiJarvisAutonomyUpgradePlan {
   summaryLabel: string;
   stepLabels: string[];
   steps: AoiJarvisAutonomyUpgradePlanStep[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export type AoiJarvisAutonomyGovernorResponseStance = 'ready' | 'limited' | 'blocked';
+
+export interface AoiJarvisAutonomyGovernorResponseContract {
+  version: 1;
+  visible: boolean;
+  stance: AoiJarvisAutonomyGovernorResponseStance;
+  primaryReplyLabel: string;
+  allowedResponseLabels: string[];
+  blockedResponseLabels: string[];
+  requiredDisclosureLabels: string[];
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -1238,6 +1254,91 @@ export function buildAoiJarvisAutonomyGovernorUpgradePlan(
   };
 }
 
+export function buildAoiJarvisAutonomyGovernorResponseContract(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  trail?: AoiJarvisAutonomyGovernorAuditTrail | null,
+): AoiJarvisAutonomyGovernorResponseContract {
+  if (!decision) {
+    return {
+      version: 1,
+      visible: false,
+      stance: 'blocked',
+      primaryReplyLabel:
+        'Aoi should say the autonomy governor has not evaluated the current state yet.',
+      allowedResponseLabels: [],
+      blockedResponseLabels: ['Refresh the Aoi autonomy governor before claiming capability.'],
+      requiredDisclosureLabels: [
+        'Do not claim Jarvis-level authority without a current governor decision.',
+      ],
+      evidenceRefs: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const allowedLabels = decision.allowedAutonomyBands
+    .filter((band) => band.allowed)
+    .map((band) => CAPABILITY_LABELS[band.capability]);
+  const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 4 });
+  const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 2 });
+  const auditFreshness = buildAoiJarvisAutonomyGovernorAuditFreshnessReview(decision, trail);
+  const hasBlocker = decision.blockers.some((blocker) => blocker.severity === 'blocker');
+  const stance: AoiJarvisAutonomyGovernorResponseStance =
+    decision.overallMode === 'observe_only' && hasBlocker
+      ? 'blocked'
+      : capabilityGaps.length > 0
+        ? 'limited'
+        : 'ready';
+  const primaryReplyLabel =
+    stance === 'ready'
+      ? `Aoi can answer as ${decision.modeLabel} under existing approval gates; do not claim independent authority.`
+      : `Aoi should answer from ${decision.modeLabel}: do allowed work, name blocked capability gaps, then offer the next evidence step.`;
+  const safeStep = upgradePlan.steps[0]?.safeActionLabel ?? decision.nextUpgradeAction;
+  const auditDisclosure =
+    auditFreshness.visible && auditFreshness.status === 'stale'
+      ? [`Mention that the latest governor audit snapshot is stale: ${auditFreshness.label}`]
+      : [];
+
+  return {
+    version: 1,
+    visible: true,
+    stance,
+    primaryReplyLabel,
+    allowedResponseLabels: uniqueLabels(
+      [
+        `Allowed response scope: ${allowedLabels.join(', ') || 'observation only'}.`,
+        `Safe next response: ${safeStep}`,
+      ],
+      4,
+    ),
+    blockedResponseLabels: uniqueLabels(
+      capabilityGaps.map((gap) => `${gap.capabilityLabel}: ${gap.reason}`),
+      4,
+    ),
+    requiredDisclosureLabels: uniqueLabels(
+      [
+        'Never treat governor context as tool approval, app-action approval, command approval, policy override, or permission to bypass existing gates.',
+        decision.overallMode !== 'approval_execution'
+          ? `Say that current ceiling is ${decision.modeLabel} before discussing blocked execution.`
+          : 'Even at approval execution, mutation still requires the existing explicit approval gates.',
+        ...auditDisclosure,
+      ],
+      5,
+    ),
+    evidenceRefs: uniqueLabels(
+      [
+        ...decision.evidenceRefs,
+        ...decision.nextUpgradeEvidenceRefs,
+        ...upgradePlan.evidenceRefs,
+        ...auditFreshness.evidenceRefs,
+      ],
+      12,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
 ): AoiJarvisAutonomyGovernorPanelSummary {
@@ -1250,6 +1351,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       blockedCapabilityLabels: [],
       capabilityGapLabels: [],
       upgradePlanLabels: [],
+      responseContractLabels: [],
       blockerLabels: [],
       whyNotJarvisYetLabels: [],
       nextUpgradeActionLabel: 'Refresh Aoi autonomy state.',
@@ -1262,6 +1364,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
     .slice(0, 8);
   const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 6 });
   const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 3 });
+  const responseContract = buildAoiJarvisAutonomyGovernorResponseContract(decision);
   return {
     visible: true,
     modeLabel: decision.modeLabel,
@@ -1272,6 +1375,12 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       (gap) => `${gap.capabilityLabel}: ${gap.reason} Next: ${gap.nextAction}`,
     ),
     upgradePlanLabels: [upgradePlan.summaryLabel, ...upgradePlan.stepLabels].slice(0, 4),
+    responseContractLabels: [
+      responseContract.primaryReplyLabel,
+      ...responseContract.allowedResponseLabels,
+      ...responseContract.blockedResponseLabels,
+      ...responseContract.requiredDisclosureLabels,
+    ].slice(0, 6),
     blockerLabels: decision.blockers
       .filter((blocker) => blocker.severity !== 'info')
       .map((blocker) => `${blocker.label}: ${blocker.reason}`)
@@ -1852,6 +1961,23 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
       `- Still gated: ${uniqueLabels(blockedLabels, 8).join(', ') || 'none'}.`,
       `- Next upgrade action: ${normalizePromptLabel(decision.nextUpgradeAction, 'Refresh Aoi autonomy state.', 240)}.`,
     );
+    const responseContract = buildAoiJarvisAutonomyGovernorResponseContract(
+      decision,
+      normalizedTrail,
+    );
+    lines.push(
+      `- Response contract: ${responseContract.stance}; ${normalizePromptLabel(responseContract.primaryReplyLabel, '', 240)}.`,
+    );
+    for (const label of uniqueLabels(
+      [
+        ...responseContract.allowedResponseLabels,
+        ...responseContract.blockedResponseLabels,
+        ...responseContract.requiredDisclosureLabels,
+      ],
+      4,
+    )) {
+      lines.push(`  - Response rule: ${normalizePromptLabel(label, '', 220)}.`);
+    }
     const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 2 });
     lines.push(`- Upgrade plan: ${normalizePromptLabel(upgradePlan.summaryLabel, '', 240)}.`);
     for (const step of upgradePlan.steps) {

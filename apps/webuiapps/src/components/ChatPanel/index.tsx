@@ -11602,6 +11602,13 @@ const SettingsModal: React.FC<{
                                 </div>
                               ),
                             )}
+                            {aoiJarvisAutonomyGovernorSummary.responseContractLabels.map(
+                              (label, index) => (
+                                <div key={`jarvis-governor-response-contract-${index}`}>
+                                  Response: {sanitizeAoiProposalDisplayText(label, 300)}
+                                </div>
+                              ),
+                            )}
                             {aoiJarvisAutonomyGovernorSummary.blockerLabels.map((label, index) => (
                               <div key={`jarvis-governor-blocker-${index}`}>
                                 Blocker: {sanitizeAoiProposalDisplayText(label, 260)}
