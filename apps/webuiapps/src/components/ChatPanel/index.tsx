@@ -11577,6 +11577,22 @@ const SettingsModal: React.FC<{
                             ) : (
                               <div>Allowed: none beyond observation</div>
                             )}
+                            {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.length >
+                              0 && (
+                              <div>
+                                Blocked capability:{' '}
+                                {aoiJarvisAutonomyGovernorSummary.blockedCapabilityLabels.join(
+                                  ', ',
+                                )}
+                              </div>
+                            )}
+                            {aoiJarvisAutonomyGovernorSummary.capabilityGapLabels.map(
+                              (label, index) => (
+                                <div key={`jarvis-governor-gap-${index}`}>
+                                  Gap: {sanitizeAoiProposalDisplayText(label, 300)}
+                                </div>
+                              ),
+                            )}
                             {aoiJarvisAutonomyGovernorSummary.blockerLabels.map((label, index) => (
                               <div key={`jarvis-governor-blocker-${index}`}>
                                 Blocker: {sanitizeAoiProposalDisplayText(label, 260)}

@@ -119,10 +119,28 @@ export interface AoiJarvisAutonomyGovernorPanelSummary {
   modeLabel: string;
   summaryLabel: string;
   allowedCapabilityLabels: string[];
+  blockedCapabilityLabels: string[];
+  capabilityGapLabels: string[];
   blockerLabels: string[];
   whyNotJarvisYetLabels: string[];
   nextUpgradeActionLabel: string;
   evidenceRefs: string[];
+}
+
+export interface AoiJarvisAutonomyCapabilityGap {
+  version: 1;
+  capability: AoiJarvisAutonomyCapability;
+  capabilityLabel: string;
+  currentMode: AoiJarvisAutonomyMode;
+  currentModeLabel: string;
+  requiredMode: AoiJarvisAutonomyMode;
+  requiredModeLabel: string;
+  reason: string;
+  blockerLabels: string[];
+  nextAction: string;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
 }
 
 export type AoiJarvisAutonomyGovernorAuditEventKind =
@@ -958,6 +976,72 @@ export function canAoiJarvisAutonomyUseCapability(
   );
 }
 
+function getAoiJarvisAutonomyCapabilityBlockers(
+  decision: AoiJarvisAutonomyGovernorDecision,
+  band: AoiJarvisAutonomyBand,
+): AoiJarvisAutonomyBlocker[] {
+  return decision.blockers.filter(
+    (blocker) =>
+      blocker.severity !== 'info' &&
+      blocker.affectedModes.some((affectedMode) => isModeAtLeast(band.requiredMode, affectedMode)),
+  );
+}
+
+export function buildAoiJarvisAutonomyGovernorCapabilityGaps(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  options: { maxItems?: number } = {},
+): AoiJarvisAutonomyCapabilityGap[] {
+  if (!decision) {
+    return [];
+  }
+
+  const maxItems = Math.max(0, Math.min(options.maxItems ?? 8, CAPABILITY_ORDER.length));
+  return decision.allowedAutonomyBands
+    .filter((band) => !band.allowed)
+    .map((band): AoiJarvisAutonomyCapabilityGap => {
+      const capabilityLabel = CAPABILITY_LABELS[band.capability];
+      const requiredModeLabel = MODE_LABELS[band.requiredMode];
+      const capabilityBlockers = getAoiJarvisAutonomyCapabilityBlockers(decision, band);
+      const firstBlocker = capabilityBlockers[0];
+      const modeGap = !isModeAtLeast(decision.overallMode, band.requiredMode);
+      const reason = firstBlocker
+        ? `${capabilityLabel} is blocked by ${firstBlocker.label}: ${firstBlocker.reason}`
+        : modeGap
+          ? `${capabilityLabel} requires ${requiredModeLabel}; current ceiling is ${decision.modeLabel}.`
+          : band.reason;
+      const nextAction = firstBlocker
+        ? `Resolve ${firstBlocker.label}: ${firstBlocker.reason}`
+        : `Reach ${requiredModeLabel} with evidence before using ${capabilityLabel}.`;
+
+      return {
+        version: 1,
+        capability: band.capability,
+        capabilityLabel,
+        currentMode: decision.overallMode,
+        currentModeLabel: decision.modeLabel,
+        requiredMode: band.requiredMode,
+        requiredModeLabel,
+        reason,
+        blockerLabels: uniqueLabels(
+          capabilityBlockers.map((blocker) => `${blocker.label}: ${blocker.reason}`),
+          4,
+        ),
+        nextAction,
+        evidenceRefs: uniqueLabels(
+          [
+            ...band.evidenceRefs,
+            ...capabilityBlockers.flatMap((blocker) => blocker.evidenceRefs),
+            ...decision.nextUpgradeEvidenceRefs,
+          ],
+          8,
+        ),
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      };
+    })
+    .slice(0, maxItems);
+}
+
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
 ): AoiJarvisAutonomyGovernorPanelSummary {
@@ -967,6 +1051,8 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       modeLabel: 'Unknown',
       summaryLabel: 'Aoi autonomy governor has not evaluated the current state.',
       allowedCapabilityLabels: [],
+      blockedCapabilityLabels: [],
+      capabilityGapLabels: [],
       blockerLabels: [],
       whyNotJarvisYetLabels: [],
       nextUpgradeActionLabel: 'Refresh Aoi autonomy state.',
@@ -977,11 +1063,16 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
     .filter((band) => band.allowed)
     .map((band) => CAPABILITY_LABELS[band.capability])
     .slice(0, 8);
+  const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 6 });
   return {
     visible: true,
     modeLabel: decision.modeLabel,
     summaryLabel: decision.operatorSummary,
     allowedCapabilityLabels,
+    blockedCapabilityLabels: capabilityGaps.map((gap) => gap.capabilityLabel),
+    capabilityGapLabels: capabilityGaps.map(
+      (gap) => `${gap.capabilityLabel}: ${gap.reason} Next: ${gap.nextAction}`,
+    ),
     blockerLabels: decision.blockers
       .filter((blocker) => blocker.severity !== 'info')
       .map((blocker) => `${blocker.label}: ${blocker.reason}`)
@@ -1377,6 +1468,16 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
     '- Do not treat this context as approval, policy override, tool permission, app-action permission, command permission, or a reason to bypass existing gates.',
   ];
 
+  if (normalizedTrail) {
+    lines.push(`- Recent audit events: ${normalizedTrail.events.length} retained.`);
+    for (const event of normalizedTrail.events.slice(0, maxEvents)) {
+      const reason = event.blockerLabels[0] ?? event.nextUpgradeAction;
+      lines.push(
+        `  - ${eventKindLabels[event.kind]} at ${event.recordedAt}: ${normalizePromptLabel(event.modeLabel, 'Unknown mode', 80)}; ${normalizePromptLabel(reason, '', 220)}.`,
+      );
+    }
+  }
+
   if (decision) {
     const allowedLabels = decision.allowedAutonomyBands
       .filter((band) => band.allowed)
@@ -1390,6 +1491,11 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
       `- Still gated: ${uniqueLabels(blockedLabels, 8).join(', ') || 'none'}.`,
       `- Next upgrade action: ${normalizePromptLabel(decision.nextUpgradeAction, 'Refresh Aoi autonomy state.', 240)}.`,
     );
+    for (const gap of buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 2 })) {
+      lines.push(
+        `- Capability gap: ${normalizePromptLabel(gap.capabilityLabel, '', 80)} requires ${gap.requiredModeLabel}; ${normalizePromptLabel(gap.reason, '', 220)} Next: ${normalizePromptLabel(gap.nextAction, '', 160)}.`,
+      );
+    }
     const blockerLabels = decision.blockers
       .filter((blocker) => blocker.severity !== 'info')
       .map((blocker) => `${blocker.label}: ${blocker.reason}`);
@@ -1406,16 +1512,6 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
     if (evidenceRefs.length > 0) {
       lines.push(
         `- Evidence refs: ${evidenceRefs.map((ref) => normalizePromptLabel(ref, '', 160)).join(', ')}.`,
-      );
-    }
-  }
-
-  if (normalizedTrail) {
-    lines.push(`- Recent audit events: ${normalizedTrail.events.length} retained.`);
-    for (const event of normalizedTrail.events.slice(0, maxEvents)) {
-      const reason = event.blockerLabels[0] ?? event.nextUpgradeAction;
-      lines.push(
-        `  - ${eventKindLabels[event.kind]} at ${event.recordedAt}: ${normalizePromptLabel(event.modeLabel, 'Unknown mode', 80)}; ${normalizePromptLabel(reason, '', 220)}.`,
       );
     }
   }
