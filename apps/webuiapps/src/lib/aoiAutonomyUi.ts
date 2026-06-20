@@ -165,6 +165,20 @@ export interface AoiAgendaNudgeReadinessActionAudit {
   safetyBoundary: string;
 }
 
+export type AoiAgendaNudgeDeliveryDecisionState = 'ready' | 'silent' | 'blocked';
+
+export interface AoiAgendaNudgeDeliveryDecisionAudit {
+  version: 1;
+  recordedAt: number;
+  state: AoiAgendaNudgeDeliveryDecisionState;
+  statusLabel: string;
+  candidateLabel: string;
+  summaryLabel: string;
+  decisionLabels: string[];
+  evidenceRefs: string[];
+  safetyBoundary: string;
+}
+
 export interface AoiAgendaNudgeReadinessPanelSummary {
   visible: boolean;
   statusLabel: string;
@@ -175,6 +189,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   nextActionLabels: string[];
   actions: AoiAgendaNudgeReadinessAction[];
   lastActionLabels: string[];
+  lastDecisionLabels: string[];
   evidenceRefs: string[];
   tone: 'ready' | 'waiting' | 'blocked';
 }
@@ -218,6 +233,7 @@ export interface AoiAutonomyPanelSettings {
   maxSuggestionsPerSession: number;
   agendaNudgeCalibration?: AoiAgendaNudgeCalibrationState | null;
   agendaNudgeReadinessLastAction?: AoiAgendaNudgeReadinessActionAudit | null;
+  agendaNudgeReadinessLastDecision?: AoiAgendaNudgeDeliveryDecisionAudit | null;
 }
 
 export interface AoiAutonomyNotificationBadge {
@@ -657,6 +673,7 @@ export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
   maxSuggestionsPerSession: AOI_INLINE_SUGGESTION_MAX_PER_SESSION,
   agendaNudgeCalibration: null,
   agendaNudgeReadinessLastAction: null,
+  agendaNudgeReadinessLastDecision: null,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -709,6 +726,24 @@ function normalizeAoiAgendaNudgeReadinessActionId(
     value === 'run_check'
     ? value
     : null;
+}
+
+function normalizeAoiAgendaNudgeDeliveryDecisionState(
+  value: unknown,
+): AoiAgendaNudgeDeliveryDecisionState | null {
+  return value === 'ready' || value === 'silent' || value === 'blocked' ? value : null;
+}
+
+function normalizeAoiStringList(value: unknown, maxItems: number, maxLength: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  return value
+    .filter((item): item is string => typeof item === 'string')
+    .slice(0, maxItems)
+    .map((item) => sanitizeAoiProposalDisplayText(item, maxLength))
+    .filter(Boolean);
 }
 
 export function normalizeAoiAgendaNudgeCalibration(
@@ -782,6 +817,48 @@ export function normalizeAoiAgendaNudgeReadinessActionAudit(
   };
 }
 
+export function normalizeAoiAgendaNudgeDeliveryDecisionAudit(
+  value: unknown,
+): AoiAgendaNudgeDeliveryDecisionAudit | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiAgendaNudgeDeliveryDecisionAudit>)
+      : null;
+  if (!raw) {
+    return null;
+  }
+
+  const recordedAt = normalizeTimestampOrNull(raw.recordedAt);
+  const state = normalizeAoiAgendaNudgeDeliveryDecisionState(raw.state);
+  if (!recordedAt || !state) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    recordedAt,
+    state,
+    statusLabel:
+      typeof raw.statusLabel === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.statusLabel, 120)
+        : state,
+    candidateLabel:
+      typeof raw.candidateLabel === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.candidateLabel, 180)
+        : 'unknown',
+    summaryLabel:
+      typeof raw.summaryLabel === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.summaryLabel, 220)
+        : 'No delivery summary recorded.',
+    decisionLabels: normalizeAoiStringList(raw.decisionLabels, 6, 260),
+    evidenceRefs: normalizeAoiStringList(raw.evidenceRefs, 8, 180),
+    safetyBoundary:
+      typeof raw.safetyBoundary === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.safetyBoundary, 260)
+        : 'Local delivery decision audit only; no tools, app actions, policy bypass, or execution gates were run.',
+  };
+}
+
 export function normalizeAoiAutonomyPanelSettings(
   value: unknown,
   fallback: AoiAutonomyPanelSettings = DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS,
@@ -806,6 +883,10 @@ export function normalizeAoiAutonomyPanelSettings(
     agendaNudgeReadinessLastAction:
       normalizeAoiAgendaNudgeReadinessActionAudit(raw.agendaNudgeReadinessLastAction) ??
       fallback.agendaNudgeReadinessLastAction ??
+      null,
+    agendaNudgeReadinessLastDecision:
+      normalizeAoiAgendaNudgeDeliveryDecisionAudit(raw.agendaNudgeReadinessLastDecision) ??
+      fallback.agendaNudgeReadinessLastDecision ??
       null,
   };
 }
@@ -2623,6 +2704,61 @@ function buildAoiAgendaNudgeDeliveryDecisionLabels(params: {
   return labels;
 }
 
+function buildAoiAgendaNudgeLastDecisionLabels(
+  audit: AoiAgendaNudgeDeliveryDecisionAudit | null | undefined,
+): string[] {
+  const normalized = normalizeAoiAgendaNudgeDeliveryDecisionAudit(audit);
+  if (!normalized) {
+    return [];
+  }
+
+  return [
+    `Last decision: ${normalized.state} while ${normalized.statusLabel}.`,
+    `Decision candidate: ${normalized.candidateLabel}.`,
+    `Decision summary: ${normalized.summaryLabel}`,
+    ...normalized.decisionLabels.slice(0, 3).map((label) => `Decision detail: ${label}`),
+    `Decision boundary: ${normalized.safetyBoundary}`,
+    `Decision recorded: ${new Date(normalized.recordedAt).toLocaleString()}.`,
+  ];
+}
+
+export function buildAoiAgendaNudgeDeliveryDecisionAudit(params: {
+  summary: Pick<
+    AoiAgendaNudgeReadinessPanelSummary,
+    | 'tone'
+    | 'statusLabel'
+    | 'candidateLabel'
+    | 'summaryLabel'
+    | 'deliveryDecisionLabels'
+    | 'evidenceRefs'
+  >;
+  now?: number;
+}): AoiAgendaNudgeDeliveryDecisionAudit {
+  const state: AoiAgendaNudgeDeliveryDecisionState =
+    params.summary.tone === 'ready'
+      ? 'ready'
+      : params.summary.tone === 'blocked'
+        ? 'blocked'
+        : 'silent';
+
+  return {
+    version: 1,
+    recordedAt: Math.round(params.now ?? Date.now()),
+    state,
+    statusLabel: sanitizeAoiProposalDisplayText(params.summary.statusLabel, 120),
+    candidateLabel: sanitizeAoiProposalDisplayText(params.summary.candidateLabel, 180),
+    summaryLabel: sanitizeAoiProposalDisplayText(params.summary.summaryLabel, 220),
+    decisionLabels: params.summary.deliveryDecisionLabels
+      .slice(0, 6)
+      .map((label) => sanitizeAoiProposalDisplayText(label, 260)),
+    evidenceRefs: params.summary.evidenceRefs
+      .slice(0, 8)
+      .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),
+    safetyBoundary:
+      'Local delivery decision audit only; no tools, app actions, policy bypass, or execution gates were run.',
+  };
+}
+
 export function buildAoiAgendaNudgeReadinessActionAudit(params: {
   action: AoiAgendaNudgeReadinessAction;
   summary: Pick<AoiAgendaNudgeReadinessPanelSummary, 'statusLabel' | 'candidateLabel'>;
@@ -2660,6 +2796,9 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
   const lastActionLabels = buildAoiAgendaNudgeReadinessAuditLabels(
     settings.agendaNudgeReadinessLastAction,
   );
+  const lastDecisionLabels = buildAoiAgendaNudgeLastDecisionLabels(
+    settings.agendaNudgeReadinessLastDecision,
+  );
 
   const blockedSummary = (
     statusLabel: string,
@@ -2684,6 +2823,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     nextActionLabels,
     actions,
     lastActionLabels,
+    lastDecisionLabels,
     evidenceRefs,
     tone: 'blocked',
   });
@@ -2877,6 +3017,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
           },
         ],
         lastActionLabels,
+        lastDecisionLabels,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -2906,6 +3047,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
           },
         ],
         lastActionLabels,
+        lastDecisionLabels,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -2929,6 +3071,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       ],
       actions: [],
       lastActionLabels,
+      lastDecisionLabels,
       evidenceRefs: candidate.evidenceRefs,
       tone: 'ready',
     };
@@ -2965,6 +3108,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       },
     ],
     lastActionLabels,
+    lastDecisionLabels,
     evidenceRefs: [],
     tone: 'waiting',
   };

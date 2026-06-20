@@ -261,6 +261,7 @@ import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeDeliveryDecisionAudit,
   buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
@@ -7271,6 +7272,22 @@ const ChatPanel: React.FC<{
     }
     setAoiAgendaNudgeLastShownAt(Date.now());
     setAoiInlineShownCount((prev) => prev + 1);
+    updateAoiAutonomyPanelSettingsFromPanel({
+      agendaNudgeReadinessLastDecision: buildAoiAgendaNudgeDeliveryDecisionAudit({
+        summary: {
+          tone: 'ready',
+          statusLabel: 'ready',
+          candidateLabel: `${aoiAgendaChatNudge.reason}: ${aoiAgendaChatNudge.dedupeKey}`,
+          summaryLabel: 'Aoi delivered a direct agenda chat nudge.',
+          deliveryDecisionLabels: [
+            'Delivery: ready to speak. A direct agenda chat nudge was delivered.',
+            'Next eligible: waits for cooldown and duplicate protection before repeating.',
+            'Boundary: direct agenda delivery only; no tools, app actions, policy bypass, or execution gates run from this decision.',
+          ],
+          evidenceRefs: aoiAgendaChatNudge.evidenceRefs,
+        },
+      }),
+    });
     recordAoiMemoryTurn({
       userMessage: '[aoi-agenda-nudge]',
       assistantMessage: aoiAgendaChatNudge.chatText,
@@ -7285,6 +7302,7 @@ const ChatPanel: React.FC<{
     recordAoiMemoryTurn,
     registerAoiAgendaSuggestedReplies,
     selectedConfig,
+    updateAoiAutonomyPanelSettingsFromPanel,
     visible,
   ]);
 
@@ -8822,6 +8840,7 @@ const SettingsModal: React.FC<{
   );
   const [activeTab, setActiveTab] = useState<SettingsTabKey>(initialTab);
   const [focusedKiraApiKeyId, setFocusedKiraApiKeyId] = useState<string | null>(null);
+  const aoiAgendaNudgeDecisionAuditKeyRef = useRef<string | null>(null);
   const [ttsEnabled, setTtsEnabled] = useState(Boolean(conversationPreferences?.ttsEnabled));
   const [ttsPreloadCommonPhrases, setTtsPreloadCommonPhrases] = useState(
     conversationPreferences?.ttsPreloadCommonPhrases !== false,
@@ -9122,6 +9141,53 @@ const SettingsModal: React.FC<{
       aoiOperatorDigest,
     ],
   );
+
+  useEffect(() => {
+    if (!aoiAgendaNudgeReadinessSummary.visible || aoiAutonomyLoading) {
+      return;
+    }
+
+    const nextAudit = buildAoiAgendaNudgeDeliveryDecisionAudit({
+      summary: aoiAgendaNudgeReadinessSummary,
+    });
+    const decisionKey = [
+      nextAudit.state,
+      nextAudit.statusLabel,
+      nextAudit.candidateLabel,
+      nextAudit.summaryLabel,
+      nextAudit.decisionLabels.join('|'),
+      nextAudit.evidenceRefs.join('|'),
+    ].join('\n');
+    const currentAudit = aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecision;
+    const currentDecisionKey = currentAudit
+      ? [
+          currentAudit.state,
+          currentAudit.statusLabel,
+          currentAudit.candidateLabel,
+          currentAudit.summaryLabel,
+          currentAudit.decisionLabels.join('|'),
+          currentAudit.evidenceRefs.join('|'),
+        ].join('\n')
+      : null;
+    if (aoiAgendaNudgeDecisionAuditKeyRef.current === decisionKey) {
+      return;
+    }
+    if (currentDecisionKey === decisionKey) {
+      aoiAgendaNudgeDecisionAuditKeyRef.current = decisionKey;
+      return;
+    }
+
+    aoiAgendaNudgeDecisionAuditKeyRef.current = decisionKey;
+    onUpdateAoiAutonomyPanelSettings({
+      agendaNudgeReadinessLastDecision: nextAudit,
+    });
+  }, [
+    aoiAgendaNudgeReadinessSummary,
+    aoiAutonomyLoading,
+    aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecision,
+    onUpdateAoiAutonomyPanelSettings,
+  ]);
+
   const runAoiAgendaNudgeReadinessAction = useCallback(
     (actionId: AoiAgendaNudgeReadinessActionId) => {
       const action = aoiAgendaNudgeReadinessSummary.actions.find((item) => item.id === actionId);
@@ -11228,6 +11294,11 @@ const SettingsModal: React.FC<{
                             {aoiAgendaNudgeReadinessSummary.lastActionLabels.map((label, index) => (
                               <div key={`agenda-readiness-audit-${index}`}>{label}</div>
                             ))}
+                            {aoiAgendaNudgeReadinessSummary.lastDecisionLabels.map(
+                              (label, index) => (
+                                <div key={`agenda-readiness-decision-audit-${index}`}>{label}</div>
+                              ),
+                            )}
                           </div>
                           {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (
                             <div className={styles.aoiInlineSuggestionActions}>

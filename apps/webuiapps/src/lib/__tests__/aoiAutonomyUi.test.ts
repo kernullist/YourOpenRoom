@@ -9,6 +9,7 @@ import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeDeliveryDecisionAudit,
   buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
@@ -1132,6 +1133,29 @@ describe('Aoi autonomy UI helpers', () => {
     expect(readySummary.reasonLabels.join(' ')).toContain('gates all allow');
     expect(readySummary.evidenceRefs).toContain('memory:re-interest');
     expect(readySummary.actions).toEqual([]);
+    const readyDeliveryAudit = buildAoiAgendaNudgeDeliveryDecisionAudit({
+      summary: readySummary,
+      now: 9000,
+    });
+    expect(readyDeliveryAudit).toMatchObject({
+      state: 'ready',
+      statusLabel: 'ready',
+      recordedAt: 9000,
+    });
+    expect(readyDeliveryAudit.safetyBoundary).toContain('no tools');
+    const auditedReadySummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        agendaNudgeReadinessLastDecision: readyDeliveryAudit,
+      },
+      options: {
+        now: 9500,
+      },
+    });
+    expect(auditedReadySummary.lastDecisionLabels.join(' ')).toContain('Last decision: ready');
+    expect(auditedReadySummary.lastDecisionLabels.join(' ')).toContain('Decision boundary');
 
     const notificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1391,6 +1415,21 @@ describe('Aoi autonomy UI helpers', () => {
           safetyBoundary:
             'Local readiness recovery only; no tools, app actions, policy bypass, or execution gates were run.',
         },
+        agendaNudgeReadinessLastDecision: {
+          version: 1,
+          recordedAt: 7100,
+          state: 'silent',
+          statusLabel: 'no candidate',
+          candidateLabel: '0 active, 0 blocked, 0 approval',
+          summaryLabel: 'Aoi is allowed to speak, but no agenda item currently qualifies.',
+          decisionLabels: [
+            'Delivery: silent. Aoi is allowed to speak, but no agenda item currently qualifies.',
+            'Boundary: direct agenda delivery only; no tools, app actions, policy bypass, or execution gates run from this decision.',
+          ],
+          evidenceRefs: ['memory:agenda-decision'],
+          safetyBoundary:
+            'Local delivery decision audit only; no tools, app actions, policy bypass, or execution gates were run.',
+        },
       },
       storageAdapter,
     );
@@ -1404,6 +1443,12 @@ describe('Aoi autonomy UI helpers', () => {
         actionId: 'disable_quiet_mode',
         actionLabel: 'Leave quiet mode',
         recordedAt: 7000,
+      },
+      agendaNudgeReadinessLastDecision: {
+        state: 'silent',
+        statusLabel: 'no candidate',
+        recordedAt: 7100,
+        evidenceRefs: ['memory:agenda-decision'],
       },
     });
     expect(storage.has(AOI_AUTONOMY_PANEL_SETTINGS_KEY)).toBe(true);
