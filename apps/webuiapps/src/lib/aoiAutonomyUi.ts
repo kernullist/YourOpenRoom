@@ -155,6 +155,20 @@ export interface AoiAgendaNudgeReadinessAction {
   title: string;
 }
 
+export type AoiAgendaNudgeDecisionFeedbackActionId =
+  | 'mark_decision_useful'
+  | 'mark_decision_too_much'
+  | 'quiet_decision_nudges';
+
+export interface AoiAgendaNudgeDecisionFeedbackAction {
+  id: AoiAgendaNudgeDecisionFeedbackActionId;
+  kind: AoiAgendaNudgeFeedbackKind;
+  label: string;
+  title: string;
+  reason: string;
+  dedupeKey: string;
+}
+
 export interface AoiAgendaNudgeReadinessActionAudit {
   version: 1;
   actionId: AoiAgendaNudgeReadinessActionId;
@@ -190,6 +204,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   actions: AoiAgendaNudgeReadinessAction[];
   lastActionLabels: string[];
   lastDecisionLabels: string[];
+  decisionFeedbackActions: AoiAgendaNudgeDecisionFeedbackAction[];
   evidenceRefs: string[];
   tone: 'ready' | 'waiting' | 'blocked';
 }
@@ -2722,6 +2737,49 @@ function buildAoiAgendaNudgeLastDecisionLabels(
   ];
 }
 
+function buildAoiAgendaNudgeDecisionFeedbackActions(
+  audit: AoiAgendaNudgeDeliveryDecisionAudit | null | undefined,
+): AoiAgendaNudgeDecisionFeedbackAction[] {
+  const normalized = normalizeAoiAgendaNudgeDeliveryDecisionAudit(audit);
+  if (!normalized) {
+    return [];
+  }
+
+  const stateLabel = `${normalized.state}/${normalized.statusLabel}`;
+  const reason = `delivery decision ${stateLabel}`;
+  const dedupeKey = sanitizeAoiProposalDisplayText(
+    `agenda-decision:${normalized.state}:${normalized.recordedAt}:${normalized.statusLabel}`,
+    160,
+  );
+
+  return [
+    {
+      id: 'mark_decision_useful',
+      kind: 'useful',
+      label: 'Useful',
+      title: 'Record that this delivery decision was useful and clear local nudge mute state',
+      reason,
+      dedupeKey,
+    },
+    {
+      id: 'mark_decision_too_much',
+      kind: 'too_much',
+      label: 'Too much',
+      title: 'Record that this delivery decision was too noisy and temporarily mute nudges',
+      reason,
+      dedupeKey,
+    },
+    {
+      id: 'quiet_decision_nudges',
+      kind: 'quieted',
+      label: 'Quiet for now',
+      title: 'Record that Aoi should stay quieter for this delivery decision class',
+      reason,
+      dedupeKey,
+    },
+  ];
+}
+
 export function buildAoiAgendaNudgeDeliveryDecisionAudit(params: {
   summary: Pick<
     AoiAgendaNudgeReadinessPanelSummary,
@@ -2799,6 +2857,9 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
   const lastDecisionLabels = buildAoiAgendaNudgeLastDecisionLabels(
     settings.agendaNudgeReadinessLastDecision,
   );
+  const decisionFeedbackActions = buildAoiAgendaNudgeDecisionFeedbackActions(
+    settings.agendaNudgeReadinessLastDecision,
+  );
 
   const blockedSummary = (
     statusLabel: string,
@@ -2824,6 +2885,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     actions,
     lastActionLabels,
     lastDecisionLabels,
+    decisionFeedbackActions,
     evidenceRefs,
     tone: 'blocked',
   });
@@ -3018,6 +3080,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         ],
         lastActionLabels,
         lastDecisionLabels,
+        decisionFeedbackActions,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -3048,6 +3111,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         ],
         lastActionLabels,
         lastDecisionLabels,
+        decisionFeedbackActions,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -3072,6 +3136,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       actions: [],
       lastActionLabels,
       lastDecisionLabels,
+      decisionFeedbackActions,
       evidenceRefs: candidate.evidenceRefs,
       tone: 'ready',
     };
@@ -3109,6 +3174,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     ],
     lastActionLabels,
     lastDecisionLabels,
+    decisionFeedbackActions,
     evidenceRefs: [],
     tone: 'waiting',
   };

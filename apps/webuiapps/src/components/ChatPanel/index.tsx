@@ -295,6 +295,7 @@ import {
   summarizeAoiAutonomyProposalCounts,
   type AoiAgendaChatFollowUpContext,
   type AoiAgendaChatNudge,
+  type AoiAgendaNudgeDecisionFeedbackActionId,
   type AoiAgendaNudgeReadinessActionId,
   type AoiAutonomyPanelSettings,
 } from '@/lib/aoiAutonomyUi';
@@ -9245,6 +9246,32 @@ const SettingsModal: React.FC<{
       onUpdateAoiAutonomyPanelSettings,
     ],
   );
+  const runAoiAgendaNudgeDecisionFeedback = useCallback(
+    (actionId: AoiAgendaNudgeDecisionFeedbackActionId) => {
+      const action = aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.find(
+        (item) => item.id === actionId,
+      );
+      if (!action) {
+        return;
+      }
+
+      onUpdateAoiAutonomyPanelSettings({
+        agendaNudgeCalibration: recordAoiAgendaNudgeFeedback(
+          aoiAutonomyPanelSettings.agendaNudgeCalibration,
+          {
+            kind: action.kind,
+            reason: action.reason,
+            dedupeKey: action.dedupeKey,
+          },
+        ),
+      });
+    },
+    [
+      aoiAgendaNudgeReadinessSummary.decisionFeedbackActions,
+      aoiAutonomyPanelSettings.agendaNudgeCalibration,
+      onUpdateAoiAutonomyPanelSettings,
+    ],
+  );
   const isAoiAgendaNudgeReadinessActionDisabled = useCallback(
     (actionId: AoiAgendaNudgeReadinessActionId) => {
       if (actionId === 'enable_notifications') {
@@ -11314,6 +11341,23 @@ const SettingsModal: React.FC<{
                                   {action.label}
                                 </button>
                               ))}
+                            </div>
+                          )}
+                          {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.length > 0 && (
+                            <div className={styles.aoiInlineSuggestionActions}>
+                              {aoiAgendaNudgeReadinessSummary.decisionFeedbackActions.map(
+                                (action) => (
+                                  <button
+                                    key={action.id}
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={() => runAoiAgendaNudgeDecisionFeedback(action.id)}
+                                    title={action.title}
+                                  >
+                                    {action.label}
+                                  </button>
+                                ),
+                              )}
                             </div>
                           )}
                         </div>

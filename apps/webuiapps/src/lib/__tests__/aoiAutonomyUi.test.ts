@@ -1133,6 +1133,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(readySummary.reasonLabels.join(' ')).toContain('gates all allow');
     expect(readySummary.evidenceRefs).toContain('memory:re-interest');
     expect(readySummary.actions).toEqual([]);
+    expect(readySummary.decisionFeedbackActions).toEqual([]);
     const readyDeliveryAudit = buildAoiAgendaNudgeDeliveryDecisionAudit({
       summary: readySummary,
       now: 9000,
@@ -1156,6 +1157,24 @@ describe('Aoi autonomy UI helpers', () => {
     });
     expect(auditedReadySummary.lastDecisionLabels.join(' ')).toContain('Last decision: ready');
     expect(auditedReadySummary.lastDecisionLabels.join(' ')).toContain('Decision boundary');
+    expect(auditedReadySummary.decisionFeedbackActions.map((action) => action.id)).toEqual([
+      'mark_decision_useful',
+      'mark_decision_too_much',
+      'quiet_decision_nudges',
+    ]);
+    const tooMuchFeedback = auditedReadySummary.decisionFeedbackActions.find(
+      (action) => action.id === 'mark_decision_too_much',
+    )!;
+    const noisyCalibration = recordAoiAgendaNudgeFeedback(null, {
+      kind: tooMuchFeedback.kind,
+      reason: tooMuchFeedback.reason,
+      dedupeKey: tooMuchFeedback.dedupeKey,
+      now: 9700,
+    });
+    expect(noisyCalibration.noisyCount).toBe(1);
+    expect(noisyCalibration.lastFeedbackReason).toContain('delivery decision ready');
+    expect(noisyCalibration.lastDedupeKey).toContain('agenda-decision:ready');
+    expect(noisyCalibration.mutedUntil).toBeGreaterThan(9700);
 
     const notificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
