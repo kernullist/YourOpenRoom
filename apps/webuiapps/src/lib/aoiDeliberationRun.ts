@@ -2,6 +2,7 @@ import * as fs from 'fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { randomUUID } from 'crypto';
 import {
+  appendAoiFollowThroughEvent,
   createAoiAutonomyId,
   loadAoiActiveOpportunities,
   loadAoiActiveProposals,
@@ -9,6 +10,7 @@ import {
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
 import { loadAoiMissionState } from './aoiAutonomyMission';
+import { buildAoiFollowThroughEventFromDeliberationRun } from './aoiFollowThroughLearning';
 import type {
   AoiDeliberationEvidenceStep,
   AoiDeliberationEvidenceStepKind,
@@ -1048,7 +1050,20 @@ export function appendAoiDeliberationRun(
   run: AoiDeliberationRun,
 ): AoiDeliberationRun[] {
   const existing = loadAoiDeliberationRuns(sessionsDir, sessionPath, run.updatedAt);
-  return saveAoiDeliberationRuns(sessionsDir, sessionPath, [run, ...existing]);
+  const saved = saveAoiDeliberationRuns(sessionsDir, sessionPath, [run, ...existing]);
+  const savedRun = saved.find((item) => item.id === run.id) ?? run;
+  const followThroughEvent = buildAoiFollowThroughEventFromDeliberationRun(
+    savedRun,
+    savedRun.updatedAt,
+  );
+  if (followThroughEvent) {
+    try {
+      appendAoiFollowThroughEvent(sessionsDir, followThroughEvent, savedRun.updatedAt);
+    } catch {
+      // Follow-through learning must not block deliberation run persistence.
+    }
+  }
+  return saved;
 }
 
 export function loadLatestAoiDeliberationRun(

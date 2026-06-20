@@ -566,6 +566,76 @@ export function buildAoiFollowThroughEventFromTrendDelivery(
   )!;
 }
 
+function isUnsafeDeliberationBlock(run: AoiDeliberationRun): boolean {
+  return [
+    ...run.blockers,
+    ...(run.finding?.blockers ?? []),
+    ...run.evidencePlan.flatMap((step) => step.blockers),
+  ].some((item) => /credential|private|secret|sensitive|token|unsafe/i.test(item));
+}
+
+export function buildAoiFollowThroughEventFromDeliberationRun(
+  run: AoiDeliberationRun,
+  now = Date.now(),
+): AoiFollowThroughEvent | null {
+  if (run.phase !== 'ready' && run.phase !== 'blocked' && run.phase !== 'failed') {
+    return null;
+  }
+  const unsafeBlock = run.phase === 'blocked' && isUnsafeDeliberationBlock(run);
+  const action: AoiFollowThroughAction =
+    run.phase === 'ready' ? 'accepted' : run.phase === 'failed' ? 'failed' : 'blocked';
+  const result: AoiFollowThroughResult =
+    run.phase === 'ready'
+      ? 'positive'
+      : run.phase === 'failed'
+        ? 'failed'
+        : unsafeBlock
+          ? 'blocked'
+          : 'negative';
+  const feedbackCategory =
+    run.phase === 'ready'
+      ? 'deliberation_ready'
+      : run.phase === 'failed'
+        ? 'deliberation_failed'
+        : unsafeBlock
+          ? 'unsafe'
+          : 'deliberation_blocked';
+
+  return normalizeAoiFollowThroughEvent(
+    {
+      id: stableId('aoi-follow-through-deliberation', [
+        run.sessionPath,
+        run.id,
+        run.phase,
+        run.updatedAt,
+      ]),
+      opportunityId: run.opportunityId,
+      deliberationRunId: run.id,
+      sourceKind: 'deliberation',
+      topicKey: run.opportunityDedupeKey,
+      sourceKey: `deliberation:${run.phase}`,
+      deliveryMode: 'dashboard',
+      action,
+      feedbackCategory,
+      result,
+      timingLabel: `deliberation ${run.phase}`,
+      evidenceRefs: uniqueStrings(
+        [
+          `deliberation-run:${run.id}`,
+          `opportunity:${run.opportunityId}`,
+          ...run.evidenceRefs,
+          ...(run.finding?.evidenceRefs ?? []),
+          ...(run.opinion?.evidenceRefs ?? []),
+        ],
+        24,
+      ),
+      createdAt: run.updatedAt || now,
+    },
+    run.sessionPath,
+    now,
+  );
+}
+
 function allLearningEvents(input: AoiFollowThroughLearningInput): AoiFollowThroughEvent[] {
   const now = input.now ?? Date.now();
   const sessionPath = input.sessionPath;
@@ -575,6 +645,9 @@ function allLearningEvents(input: AoiFollowThroughLearningInput): AoiFollowThrou
     .filter((event): event is AoiFollowThroughEvent => event !== null);
   const opportunityEvents = opportunities
     .map((opportunity) => buildAoiFollowThroughEventFromOpportunity(opportunity, now))
+    .filter((event): event is AoiFollowThroughEvent => event !== null);
+  const deliberationEvents = (input.deliberationRuns ?? [])
+    .map((run) => buildAoiFollowThroughEventFromDeliberationRun(run, now))
     .filter((event): event is AoiFollowThroughEvent => event !== null);
   const decisionEvents = (input.proposalDecisions ?? []).map((decision) =>
     buildAoiFollowThroughEventFromProposalDecision(
@@ -595,6 +668,7 @@ function allLearningEvents(input: AoiFollowThroughLearningInput): AoiFollowThrou
   for (const event of [
     ...normalizedEvents,
     ...opportunityEvents,
+    ...deliberationEvents,
     ...decisionEvents,
     ...feedbackEvents,
     ...trendEvents,

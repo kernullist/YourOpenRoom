@@ -10,8 +10,13 @@ import {
   loadAoiFollowThroughSummaryIndex,
   upsertAoiOpportunity,
 } from '../aoiAutonomyStore';
-import type { AoiFollowThroughEvent, AoiOpportunity } from '../aoiAutonomyTypes';
+import type {
+  AoiDeliberationRun,
+  AoiFollowThroughEvent,
+  AoiOpportunity,
+} from '../aoiAutonomyTypes';
 import {
+  buildAoiFollowThroughEventFromDeliberationRun,
   buildAoiFollowThroughEventFromTrendDelivery,
   buildAoiFollowThroughLearningSummary,
   scoreAoiFollowThroughLearningForOpportunity,
@@ -75,6 +80,30 @@ function makeEvent(partial: Partial<AoiFollowThroughEvent>): AoiFollowThroughEve
     actionAuthority: 'display_only',
     mutationCount: 0,
     ...partial,
+  };
+}
+
+function makeDeliberationRun(partial: Partial<AoiDeliberationRun> = {}): AoiDeliberationRun {
+  return {
+    version: 1,
+    id: partial.id ?? 'deliberation-run-001',
+    sessionPath: partial.sessionPath ?? SESSION_PATH,
+    opportunityId: partial.opportunityId ?? 'opp-follow-through-re',
+    opportunityDedupeKey: partial.opportunityDedupeKey ?? 'interest:reverse-engineering',
+    opportunityTitle: partial.opportunityTitle ?? 'Track RE latest trends',
+    phase: partial.phase ?? 'ready',
+    selectedAt: partial.selectedAt ?? NOW - 10_000,
+    updatedAt: partial.updatedAt ?? NOW - 1_000,
+    evidencePlan: partial.evidencePlan ?? [],
+    ...(partial.finding ? { finding: partial.finding } : {}),
+    ...(partial.opinion ? { opinion: partial.opinion } : {}),
+    safeNextAction: partial.safeNextAction ?? 'Show a display-only finding.',
+    blockers: partial.blockers ?? [],
+    evidenceRefs: partial.evidenceRefs ?? ['deliberation:evidence'],
+    artifactRefs: partial.artifactRefs ?? [],
+    phaseHistory: partial.phaseHistory ?? [],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
   };
 }
 
@@ -178,6 +207,98 @@ describe('Aoi Follow-through Learning', () => {
     expect(summary.trustCalibrationHints.join(' ')).toContain(
       'approval and execution gates remain unchanged',
     );
+  });
+
+  it('tracks deliberation ready, blocked, and failed lifecycle outcomes', () => {
+    const readyRun = makeDeliberationRun({
+      id: 'deliberation-ready',
+      phase: 'ready',
+      finding: {
+        version: 1,
+        summary: 'Fresh evidence is available.',
+        sourceQuality: 'strong',
+        freshness: 'fresh',
+        confidence: 0.82,
+        evidenceRefs: ['research:fresh'],
+        blockers: [],
+        cannotKnow: [],
+        createdAt: NOW,
+      },
+    });
+    const blockedRun = makeDeliberationRun({
+      id: 'deliberation-blocked',
+      phase: 'blocked',
+      updatedAt: NOW - 900,
+      blockers: ['research evidence is stale'],
+      finding: {
+        version: 1,
+        summary: 'Evidence is stale.',
+        sourceQuality: 'acceptable',
+        freshness: 'stale',
+        confidence: 0.5,
+        evidenceRefs: ['research:stale'],
+        blockers: ['research evidence is stale'],
+        cannotKnow: [],
+        createdAt: NOW,
+      },
+    });
+    const failedRun = makeDeliberationRun({
+      id: 'deliberation-failed',
+      phase: 'failed',
+      updatedAt: NOW - 800,
+      blockers: ['all evidence sources are missing'],
+    });
+    const ready = buildAoiFollowThroughEventFromDeliberationRun(readyRun, NOW);
+    const blocked = buildAoiFollowThroughEventFromDeliberationRun(blockedRun, NOW);
+    const failed = buildAoiFollowThroughEventFromDeliberationRun(failedRun, NOW);
+
+    const summary = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      deliberationRuns: [readyRun, blockedRun, failedRun],
+      now: NOW,
+    });
+
+    expect(ready).toMatchObject({
+      sourceKind: 'deliberation',
+      action: 'accepted',
+      result: 'positive',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(blocked).toMatchObject({
+      action: 'blocked',
+      result: 'negative',
+      feedbackCategory: 'deliberation_blocked',
+    });
+    expect(failed).toMatchObject({
+      action: 'failed',
+      result: 'failed',
+      feedbackCategory: 'deliberation_failed',
+    });
+    expect(summary.eventCount).toBe(3);
+    expect(summary.recentEvents.map((event) => event.deliberationRunId)).toEqual(
+      expect.arrayContaining(['deliberation-ready', 'deliberation-blocked', 'deliberation-failed']),
+    );
+    expect(summary.actionAuthority).toBe('display_only');
+  });
+
+  it('marks sensitive deliberation blocks as unsafe without granting authority', () => {
+    const event = buildAoiFollowThroughEventFromDeliberationRun(
+      makeDeliberationRun({
+        id: 'deliberation-sensitive-block',
+        phase: 'blocked',
+        blockers: ['private sensitive evidence withheld'],
+      }),
+      NOW,
+    );
+
+    expect(event).toMatchObject({
+      action: 'blocked',
+      result: 'blocked',
+      feedbackCategory: 'unsafe',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
   });
 
   it('persists an append-only event log and bounded summary index', () => {

@@ -148,7 +148,12 @@ export interface AoiFollowThroughEvent {
   opportunityId: string;
   proposalId?: string;
   deliberationRunId?: string;
-  sourceKind?: AoiOpportunitySourceKind | 'proactive_brief' | 'proactive_trend' | 'proposal';
+  sourceKind?:
+    | AoiOpportunitySourceKind
+    | 'deliberation'
+    | 'proactive_brief'
+    | 'proactive_trend'
+    | 'proposal';
   topicKey?: string;
   sourceKey?: string;
   deliveryMode?: AoiFollowThroughDeliveryMode;

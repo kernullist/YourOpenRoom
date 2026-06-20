@@ -2,7 +2,11 @@ import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { upsertAoiOpportunity, type AoiOpportunityUpsertInput } from '../aoiAutonomyStore';
+import {
+  loadAoiFollowThroughEvents,
+  upsertAoiOpportunity,
+  type AoiOpportunityUpsertInput,
+} from '../aoiAutonomyStore';
 import { buildAoiDeliberationRunPanelSummary } from '../aoiAutonomyUi';
 import {
   buildAoiDeliberationRun,
@@ -121,6 +125,7 @@ describe('Aoi Deliberation Run', () => {
       force: true,
     });
     const runs = loadAoiDeliberationRuns(root, SESSION_PATH, NOW);
+    const followThroughEvents = loadAoiFollowThroughEvents(root, SESSION_PATH, NOW);
     const summary = buildAoiDeliberationRunPanelSummary({ latest: result.run, now: NOW });
 
     expect(result.created).toBe(true);
@@ -137,6 +142,19 @@ describe('Aoi Deliberation Run', () => {
     expect(result.run?.opinion?.stance).toBe('ready_to_brief');
     expect(result.run?.safeNextAction).toContain('ask before converting');
     expect(runs).toHaveLength(1);
+    expect(followThroughEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          deliberationRunId: result.run?.id,
+          opportunityId: stored.opportunity.id,
+          sourceKind: 'deliberation',
+          action: 'accepted',
+          result: 'positive',
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        }),
+      ]),
+    );
     expect(summary.visible).toBe(true);
     expect(summary.findingLabel).toContain('usable local evidence');
   });
