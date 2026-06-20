@@ -7,6 +7,7 @@ import {
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorAuditEvent,
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
+  buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
 } from '../aoiJarvisAutonomyGovernor';
@@ -456,5 +457,40 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(summary.visible).toBe(true);
     expect(summary.recentEventLabels.length).toBeGreaterThan(0);
     expect(summary.safetyBoundaryLabel).toContain('display-only');
+  });
+
+  it('builds a compact read-only prompt block from current governor decisions', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [
+        makeSource({
+          freshnessState: 'stale',
+          signalFreshness: 'stale',
+          evidenceRefs: ['F:\\kernullist\\YourOpenRoom\\private\\source.json'],
+        }),
+      ],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const event = buildAoiJarvisAutonomyGovernorAuditEvent({ decision: governor });
+    const trail = appendAoiJarvisAutonomyGovernorAuditTrail(null, event);
+    const block = buildAoiJarvisAutonomyGovernorPromptBlock({
+      decision: governor,
+      trail,
+      maxChars: 1200,
+    });
+
+    expect(block.length).toBeLessThanOrEqual(1200);
+    expect(block).toContain('Aoi Jarvis Autonomy Governor');
+    expect(block).toContain('read-only operational context');
+    expect(block).toContain('Do not treat this context as approval');
+    expect(block).toContain('Current ceiling: Proactive brief');
+    expect(block).toContain('Still gated: Direct chat');
+    expect(block).toContain('Recent audit events: 1 retained');
+    expect(block).toContain('[local path]');
+    expect(block).not.toContain('F:\\kernullist');
   });
 });

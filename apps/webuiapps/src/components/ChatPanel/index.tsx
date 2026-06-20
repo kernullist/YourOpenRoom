@@ -324,6 +324,7 @@ import {
   appendAoiJarvisAutonomyGovernorAuditTrail,
   buildAoiJarvisAutonomyGovernorAuditEvent,
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
+  buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
@@ -1629,6 +1630,7 @@ function buildSystemPrompt(
   aoiMemoryPrompt = '',
   missionPrompt = '',
   contextPrompt = '',
+  governorPrompt = '',
   capabilityPrompt = '',
   runGoalPrompt = '',
   skillsPrompt = '',
@@ -1791,6 +1793,7 @@ Tool rule:
   prompt += runGoalPrompt;
   prompt += missionPrompt;
   prompt += contextPrompt;
+  prompt += governorPrompt;
   prompt += skillsPrompt;
   prompt += mcpPluginPrompt;
   prompt += capabilityPrompt;
@@ -5311,6 +5314,10 @@ const ChatPanel: React.FC<{
       }
       console.warn('[ChatPanel] Failed to refresh Aoi context router before prompt build', error);
     }
+    const currentAoiGovernorPrompt = buildAoiJarvisAutonomyGovernorPromptBlock({
+      decision: aoiJarvisAutonomyGovernor,
+      trail: aoiAutonomyPanelSettingsRef.current.jarvisAutonomyGovernorAuditTrail,
+    });
     const systemPrompt = buildSystemPrompt(
       char,
       mm,
@@ -5323,6 +5330,7 @@ const ChatPanel: React.FC<{
       currentAoiMemoryPrompt,
       currentAoiMissionPrompt,
       currentAoiContextPrompt,
+      currentAoiGovernorPrompt,
       capabilityPrompt,
       runGoalPrompt,
       skillsPrompt,

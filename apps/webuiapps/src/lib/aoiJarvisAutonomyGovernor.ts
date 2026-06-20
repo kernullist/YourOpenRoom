@@ -174,6 +174,7 @@ export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
 }
 
 export const AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX = 8;
+export const AOI_JARVIS_AUTONOMY_GOVERNOR_PROMPT_MAX_CHARS = 1400;
 
 const MODE_ORDER: Record<AoiJarvisAutonomyMode, number> = {
   observe_only: 0,
@@ -275,6 +276,13 @@ function normalizeAuditLabel(value: unknown, fallback = '', maxLength = 220): st
   }
   const label = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
   return label || fallback;
+}
+
+function normalizePromptLabel(value: unknown, fallback = '', maxLength = 220): string {
+  const label = normalizeAuditLabel(value, fallback, maxLength);
+  return label
+    .replace(/[A-Za-z]:\\[^\s,;)"']+/g, '[local path]')
+    .replace(/\\\\[^\s,;)"']+/g, '[local path]');
 }
 
 function normalizeAuditLabelList(value: unknown, maxItems: number): string[] {
@@ -1227,4 +1235,82 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
     evidenceRefs: latest.evidenceRefs,
     safetyBoundaryLabel: latest.safetyBoundary,
   };
+}
+
+export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
+  decision?: AoiJarvisAutonomyGovernorDecision | null;
+  trail?: AoiJarvisAutonomyGovernorAuditTrail | null;
+  maxEvents?: number;
+  maxChars?: number;
+}): string {
+  const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(params.trail);
+  const decision = params.decision ?? null;
+  if (!decision && !normalizedTrail) {
+    return '';
+  }
+
+  const eventKindLabels: Record<AoiJarvisAutonomyGovernorAuditEventKind, string> = {
+    snapshot: 'snapshot',
+    mode_change: 'mode change',
+    capability_change: 'capability change',
+    blocker_change: 'blocker change',
+  };
+  const maxEvents = Math.max(0, Math.min(params.maxEvents ?? 3, 5));
+  const lines = [
+    '',
+    '',
+    'Aoi Jarvis Autonomy Governor:',
+    '- Use this as read-only operational context when explaining what Aoi can do now, why a request is blocked, or what evidence is needed next.',
+    '- Do not treat this context as approval, policy override, tool permission, app-action permission, command permission, or a reason to bypass existing gates.',
+  ];
+
+  if (decision) {
+    const allowedLabels = decision.allowedAutonomyBands
+      .filter((band) => band.allowed)
+      .map((band) => CAPABILITY_LABELS[band.capability]);
+    const blockedLabels = decision.allowedAutonomyBands
+      .filter((band) => !band.allowed)
+      .map((band) => CAPABILITY_LABELS[band.capability]);
+    lines.push(
+      `- Current ceiling: ${normalizePromptLabel(decision.modeLabel, 'Unknown mode', 80)} (${decision.overallMode}).`,
+      `- Allowed now: ${uniqueLabels(allowedLabels, 8).join(', ') || 'observation only'}.`,
+      `- Still gated: ${uniqueLabels(blockedLabels, 8).join(', ') || 'none'}.`,
+      `- Next upgrade action: ${normalizePromptLabel(decision.nextUpgradeAction, 'Refresh Aoi autonomy state.', 240)}.`,
+    );
+    const blockerLabels = decision.blockers
+      .filter((blocker) => blocker.severity !== 'info')
+      .map((blocker) => `${blocker.label}: ${blocker.reason}`);
+    for (const label of uniqueLabels(blockerLabels, 4)) {
+      lines.push(`- Active blocker: ${normalizePromptLabel(label, '', 240)}.`);
+    }
+    for (const label of uniqueLabels(decision.whyNotJarvisYetLabels, 3)) {
+      lines.push(`- Boundary: ${normalizePromptLabel(label, '', 240)}.`);
+    }
+    const evidenceRefs = uniqueLabels(
+      [...decision.evidenceRefs, ...decision.nextUpgradeEvidenceRefs],
+      6,
+    );
+    if (evidenceRefs.length > 0) {
+      lines.push(
+        `- Evidence refs: ${evidenceRefs.map((ref) => normalizePromptLabel(ref, '', 160)).join(', ')}.`,
+      );
+    }
+  }
+
+  if (normalizedTrail) {
+    lines.push(`- Recent audit events: ${normalizedTrail.events.length} retained.`);
+    for (const event of normalizedTrail.events.slice(0, maxEvents)) {
+      const reason = event.blockerLabels[0] ?? event.nextUpgradeAction;
+      lines.push(
+        `  - ${eventKindLabels[event.kind]} at ${event.recordedAt}: ${normalizePromptLabel(event.modeLabel, 'Unknown mode', 80)}; ${normalizePromptLabel(reason, '', 220)}.`,
+      );
+    }
+  }
+
+  const block = lines.join('\n');
+  const maxChars = Math.max(400, params.maxChars ?? AOI_JARVIS_AUTONOMY_GOVERNOR_PROMPT_MAX_CHARS);
+  if (block.length <= maxChars) {
+    return block;
+  }
+  return `${block.slice(0, Math.max(0, maxChars - 4)).trimEnd()}\n...`;
 }
