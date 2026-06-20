@@ -24,6 +24,12 @@ import {
   type AoiProactiveBriefSourceFreshness,
 } from './aoiProactiveBriefResearch';
 import type { AoiAutonomyPolicy, AoiProactiveBriefCandidate } from './aoiAutonomyTypes';
+import {
+  appendAoiFieldEvents,
+  type AoiFieldEvent,
+  type AoiFieldEventCategory,
+  type AoiFieldEventInput,
+} from './aoiFieldEventLedger';
 
 const DEFAULT_MAX_RESULTS_PER_TOPIC = 5;
 const DEFAULT_MIN_SOURCES_PER_CANDIDATE = 2;
@@ -64,6 +70,36 @@ export interface AoiProactiveBriefScoutResult {
   skippedTopics: AoiProactiveBriefSkippedTopic[];
   warnings: string[];
   sourceFreshness: AoiProactiveBriefSourceFreshness[];
+  sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[];
+  fieldEvents: AoiFieldEvent[];
+  cannotKnow: string[];
+  currentClaimAllowed: boolean;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export type AoiProactiveBriefScoutSourceHonestyStatus =
+  | 'candidate_created'
+  | 'blocked'
+  | 'suppressed'
+  | 'no_news';
+
+export interface AoiProactiveBriefScoutSourceHonestyRecord {
+  version: 1;
+  sessionPath: string;
+  topicId?: string;
+  topicLabel?: string;
+  status: AoiProactiveBriefScoutSourceHonestyStatus;
+  reason: string;
+  currentClaimAllowed: boolean;
+  currentClaimBlockedReasons: string[];
+  directChatCandidate: boolean;
+  directChatRequiresReadinessGate: boolean;
+  cannotKnow: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+  createdAt: number;
 }
 
 function normalizePositiveInteger(
@@ -213,6 +249,210 @@ function makeSkip(params: {
   };
 }
 
+function uniqueStrings(values: readonly string[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    out.push(normalized);
+  }
+  return out;
+}
+
+function currentClaimBlockReasonsForFreshness(
+  freshness: AoiProactiveBriefSourceFreshness,
+): string[] {
+  const reasons: string[] = [];
+  if (freshness.sourceCount <= 0) {
+    reasons.push('no_public_sources');
+  }
+  for (const cannotKnow of freshness.cannotKnow) {
+    const lower = cannotKnow.toLowerCase();
+    if (lower.includes('fresh current information') || lower.includes('freshness window')) {
+      reasons.push('source_stale');
+    } else if (lower.includes('publication dates') || lower.includes('newest item')) {
+      reasons.push('source_date_unknown');
+    } else if (lower.includes('coverage may be incomplete')) {
+      reasons.push('source_coverage_incomplete');
+    } else {
+      reasons.push('source_freshness_uncertain');
+    }
+  }
+  return uniqueStrings(reasons);
+}
+
+function cannotKnowForSkip(skip: AoiProactiveBriefSkippedTopic): string[] {
+  switch (skip.reason) {
+    case 'policy_disabled':
+      return [
+        'Aoi cannot claim current public information because proactive scouting is disabled by policy.',
+      ];
+    case 'tavily_not_configured':
+      return [
+        'Aoi cannot claim current public information because no approved current-info provider is configured.',
+      ];
+    case 'network_disabled':
+      return [
+        'Aoi cannot claim current public information because this wakeup has no network budget.',
+      ];
+    case 'network_budget_exhausted':
+      return [
+        'Aoi cannot claim current public information because the scout budget was exhausted.',
+      ];
+    case 'topic_muted':
+      return ['Aoi cannot claim current public information for a muted topic.'];
+    case 'global_cooldown_active':
+    case 'topic_cooldown_active':
+      return [
+        'Aoi cannot refresh current public information while proactive brief cooldown is active.',
+      ];
+    case 'low_evidence':
+      return [
+        'Aoi cannot claim current public information because public source evidence was too thin.',
+      ];
+    case 'scout_failed':
+      return [
+        'Aoi cannot claim current public information because the public scout failed before evidence was collected.',
+      ];
+    case 'profile_empty':
+      return [
+        'Aoi cannot scout current public information because no interest topics are available.',
+      ];
+    case 'topic_filter_mismatch':
+      return ['Aoi did not scout this topic because it did not match the requested topic filter.'];
+    case 'topic_confidence_low':
+    case 'topic_importance_low':
+      return [
+        'Aoi did not scout this topic because it did not meet proactive brief priority thresholds.',
+      ];
+    case 'recent_negative_feedback':
+      return ['Aoi did not scout this topic because recent operator feedback suppresses it.'];
+    default:
+      return ['Aoi cannot claim current public information for this skipped topic.'];
+  }
+}
+
+function statusForSkip(
+  reason: AoiProactiveBriefSkippedTopic['reason'],
+): AoiProactiveBriefScoutSourceHonestyStatus {
+  if (reason === 'low_evidence') {
+    return 'no_news';
+  }
+  if (
+    reason === 'topic_muted' ||
+    reason === 'global_cooldown_active' ||
+    reason === 'topic_cooldown_active' ||
+    reason === 'recent_negative_feedback'
+  ) {
+    return 'suppressed';
+  }
+  return 'blocked';
+}
+
+function fieldCategoryForSkip(
+  reason: AoiProactiveBriefSkippedTopic['reason'],
+): AoiFieldEventCategory {
+  if (
+    reason === 'topic_muted' ||
+    reason === 'global_cooldown_active' ||
+    reason === 'topic_cooldown_active' ||
+    reason === 'recent_negative_feedback'
+  ) {
+    return 'delivery_hidden';
+  }
+  return 'deliberation_blocked';
+}
+
+function createSkipHonestyRecord(params: {
+  sessionPath: string;
+  skip: AoiProactiveBriefSkippedTopic;
+  now: number;
+}): AoiProactiveBriefScoutSourceHonestyRecord {
+  const cannotKnow = cannotKnowForSkip(params.skip);
+  return {
+    version: 1,
+    sessionPath: params.sessionPath,
+    ...(params.skip.topicId ? { topicId: params.skip.topicId } : {}),
+    ...(params.skip.topicLabel ? { topicLabel: params.skip.topicLabel } : {}),
+    status: statusForSkip(params.skip.reason),
+    reason: params.skip.reason,
+    currentClaimAllowed: false,
+    currentClaimBlockedReasons: [params.skip.reason],
+    directChatCandidate: false,
+    directChatRequiresReadinessGate: true,
+    cannotKnow,
+    evidenceRefs: [],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    createdAt: params.now,
+  };
+}
+
+function createCandidateHonestyRecord(params: {
+  sessionPath: string;
+  candidate: AoiProactiveBriefCandidate;
+  now: number;
+}): AoiProactiveBriefScoutSourceHonestyRecord {
+  const blockedReasons = currentClaimBlockReasonsForFreshness({
+    topicId: params.candidate.topicId,
+    query: '',
+    searchedAt: params.candidate.freshness.searchedAt,
+    sourceCount: params.candidate.sources.length,
+    ...(params.candidate.freshness.newestSourceAt
+      ? { newestSourceAt: params.candidate.freshness.newestSourceAt }
+      : {}),
+    cannotKnow: params.candidate.freshness.cannotKnow,
+  });
+  const currentClaimAllowed = blockedReasons.length === 0;
+  return {
+    version: 1,
+    sessionPath: params.sessionPath,
+    topicId: params.candidate.topicId,
+    topicLabel: params.candidate.topicLabel,
+    status: 'candidate_created',
+    reason: currentClaimAllowed ? 'source_fresh' : 'source_freshness_uncertain',
+    currentClaimAllowed,
+    currentClaimBlockedReasons: blockedReasons,
+    directChatCandidate:
+      currentClaimAllowed && params.candidate.delivery.allowedModes.includes('chat_hook'),
+    directChatRequiresReadinessGate: true,
+    cannotKnow: params.candidate.freshness.cannotKnow,
+    evidenceRefs: params.candidate.evidenceRefs,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    createdAt: params.now,
+  };
+}
+
+function createFieldEventFromHonestyRecord(
+  record: AoiProactiveBriefScoutSourceHonestyRecord,
+  category: AoiFieldEventCategory,
+): AoiFieldEventInput {
+  const topic = record.topicLabel ?? record.topicId ?? 'proactive brief topic';
+  const sourceRefs = record.topicId
+    ? [`research:proactive-brief-scout:${record.topicId}`]
+    : ['research:proactive-brief-scout'];
+  const summary =
+    record.status === 'candidate_created'
+      ? `Aoi created a source-backed scout opportunity for ${topic}.`
+      : `Aoi did not create a current-info scout claim for ${topic}: ${record.reason}.`;
+  return {
+    sessionPath: record.sessionPath,
+    category,
+    summary,
+    sourceRefs,
+    evidenceRefs: record.evidenceRefs,
+    privacyState: 'metadata_only',
+    cannotKnow: record.cannotKnow,
+    createdAt: record.createdAt,
+    dedupeKey: `proactive-brief-scout:${record.topicId ?? topic}:${record.reason}:${record.createdAt}`,
+  };
+}
+
 export async function runAoiProactiveBriefScout(
   input: RunAoiProactiveBriefScoutInput,
 ): Promise<AoiProactiveBriefScoutResult> {
@@ -231,6 +471,70 @@ export async function runAoiProactiveBriefScout(
   const warnings: string[] = [];
   const createdCandidates: AoiProactiveBriefCandidate[] = [];
   const sourceFreshness: AoiProactiveBriefSourceFreshness[] = [];
+  const sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[] = [];
+  const fieldEventInputs: AoiFieldEventInput[] = [];
+  const recordedSkipKeys = new Set<string>();
+
+  function recordSkip(skip: AoiProactiveBriefSkippedTopic): void {
+    const key = `${skip.topicId ?? ''}:${skip.reason}:${skip.detail}`;
+    if (recordedSkipKeys.has(key)) {
+      return;
+    }
+    recordedSkipKeys.add(key);
+    const record = createSkipHonestyRecord({
+      sessionPath,
+      skip,
+      now,
+    });
+    sourceHonestyRecords.push(record);
+    fieldEventInputs.push(
+      createFieldEventFromHonestyRecord(record, fieldCategoryForSkip(skip.reason)),
+    );
+  }
+
+  function recordSkippedTopics(skips: readonly AoiProactiveBriefSkippedTopic[]): void {
+    for (const skip of skips) {
+      recordSkip(skip);
+    }
+  }
+
+  function recordCandidate(candidate: AoiProactiveBriefCandidate): void {
+    const record = createCandidateHonestyRecord({
+      sessionPath,
+      candidate,
+      now,
+    });
+    sourceHonestyRecords.push(record);
+    fieldEventInputs.push(
+      createFieldEventFromHonestyRecord(
+        record,
+        record.currentClaimAllowed ? 'opportunity_created' : 'delivery_dashboard',
+      ),
+    );
+  }
+
+  function finishResult(): AoiProactiveBriefScoutResult {
+    const fieldEvents =
+      fieldEventInputs.length > 0
+        ? appendAoiFieldEvents(input.sessionsDir, fieldEventInputs, now)
+        : [];
+    const cannotKnow = uniqueStrings(sourceHonestyRecords.flatMap((record) => record.cannotKnow));
+    return {
+      ok: true,
+      sessionPath,
+      mode: 'quick',
+      createdCandidates,
+      skippedTopics,
+      warnings,
+      sourceFreshness,
+      sourceHonestyRecords,
+      fieldEvents,
+      cannotKnow,
+      currentClaimAllowed: sourceHonestyRecords.some((record) => record.currentClaimAllowed),
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
 
   if (!policy.enabled || !policy.proactiveSuggestionsEnabled) {
     warnings.push('proactive_suggestions_disabled');
@@ -267,27 +571,13 @@ export async function runAoiProactiveBriefScout(
         }),
       );
     }
-    return {
-      ok: true,
-      sessionPath,
-      mode: 'quick',
-      createdCandidates,
-      skippedTopics,
-      warnings,
-      sourceFreshness,
-    };
+    recordSkippedTopics(skippedTopics);
+    return finishResult();
   }
 
   if (!budget.allowNetwork || plan.topics.length === 0) {
-    return {
-      ok: true,
-      sessionPath,
-      mode: 'quick',
-      createdCandidates,
-      skippedTopics,
-      warnings,
-      sourceFreshness,
-    };
+    recordSkippedTopics(skippedTopics);
+    return finishResult();
   }
 
   let search = input.dependencies?.search;
@@ -306,16 +596,18 @@ export async function runAoiProactiveBriefScout(
             detail: 'Tavily is not configured, so Aoi did not create a current-info brief.',
           }),
         );
+        sourceFreshness.push({
+          topicId: planned.topic.id,
+          query: '',
+          searchedAt: now,
+          sourceCount: 0,
+          cannotKnow: [
+            'Aoi cannot know current public developments because no approved current-info provider is configured.',
+          ],
+        });
       }
-      return {
-        ok: true,
-        sessionPath,
-        mode: 'quick',
-        createdCandidates,
-        skippedTopics,
-        warnings,
-        sourceFreshness,
-      };
+      recordSkippedTopics(skippedTopics);
+      return finishResult();
     }
     search = createAoiProactiveBriefTavilySearchAdapter({
       config,
@@ -347,11 +639,13 @@ export async function runAoiProactiveBriefScout(
             detail: 'Public search did not return enough independent source URLs.',
           }),
         );
+        recordSkip(skippedTopics[skippedTopics.length - 1]);
         continue;
       }
 
       const upserted = upsertAoiProactiveBriefCandidate(input.sessionsDir, result.candidate, now);
       createdCandidates.push(upserted.candidate);
+      recordCandidate(upserted.candidate);
 
       upsertAoiProactiveBriefCooldown(input.sessionsDir, sessionPath, {
         cooldownKey: planned.topic.cooldownKey,
@@ -379,16 +673,10 @@ export async function runAoiProactiveBriefScout(
           detail: 'Public scout failed before a source-backed candidate could be created.',
         }),
       );
+      recordSkip(skippedTopics[skippedTopics.length - 1]);
     }
   }
 
-  return {
-    ok: true,
-    sessionPath,
-    mode: 'quick',
-    createdCandidates,
-    skippedTopics,
-    warnings,
-    sourceFreshness,
-  };
+  recordSkippedTopics(skippedTopics);
+  return finishResult();
 }

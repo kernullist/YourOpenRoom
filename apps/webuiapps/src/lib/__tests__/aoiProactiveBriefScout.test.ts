@@ -4,6 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import type { AoiAutonomyPolicy, AoiInterestProfile, AoiInterestTopic } from '../aoiAutonomyTypes';
+import { loadAoiFieldEvents } from '../aoiFieldEventLedger';
 import { loadAoiProactiveBriefCandidates, saveAoiInterestProfile } from '../aoiProactiveBriefStore';
 import {
   normalizeAoiProactiveBriefSearchResults,
@@ -96,6 +97,30 @@ function makeSearch(results?: AoiProactiveBriefRawSearchResult[]): AoiProactiveB
   }));
 }
 
+function makeFreshResults(now: number): AoiProactiveBriefRawSearchResult[] {
+  const publishedAt = new Date(now - 60_000).toISOString();
+  return [
+    {
+      title: 'Reverse engineering loader telemetry',
+      url: 'https://research.example.com/re/loader-telemetry',
+      content: 'Fresh public source about reverse engineering loader telemetry.',
+      publishedAt,
+    },
+    {
+      title: 'Malware reversing trend report',
+      url: 'https://security.example.net/posts/re-trend-report',
+      content: 'Fresh public source about malware reversing trends.',
+      publishedAt,
+    },
+    {
+      title: 'Binary analysis workflow update',
+      url: 'https://analysis.example.org/binary/workflow-update',
+      content: 'Fresh public source about binary analysis workflows.',
+      publishedAt,
+    },
+  ];
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -128,8 +153,59 @@ describe('Aoi proactive brief scout', () => {
       'https://research.example.com/re/loader-technique',
       'https://security.example.net/posts/re-case-study',
     ]);
-    expect(result.createdCandidates[0]?.summary).toContain('source-backed current-info candidate');
+    expect(result.createdCandidates[0]?.summary).toContain('source-backed scout candidate');
     expect(loadAoiProactiveBriefCandidates(root, SESSION_PATH, 10_001)).toHaveLength(1);
+  });
+
+  it('records source honesty and field ledger evidence for a fresh scout candidate', async () => {
+    const root = makeTempRoot();
+    const now = 1_800_000_000_000;
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+      },
+      dependencies: {
+        search: makeSearch(makeFreshResults(now)),
+        loadPolicy: () => ({
+          ...makePolicy(now),
+          proactiveBriefing: {
+            ...makePolicy(now).proactiveBriefing,
+            directChatHookOptIn: true,
+          },
+        }),
+      },
+    });
+
+    expect(result.createdCandidates).toHaveLength(1);
+    expect(result.createdCandidates[0]?.summary).toContain('source-backed current-info candidate');
+    expect(result.currentClaimAllowed).toBe(true);
+    expect(result.sourceHonestyRecords).toMatchObject([
+      {
+        status: 'candidate_created',
+        reason: 'source_fresh',
+        currentClaimAllowed: true,
+        currentClaimBlockedReasons: [],
+        directChatCandidate: true,
+        directChatRequiresReadinessGate: true,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    ]);
+    expect(result.fieldEvents).toMatchObject([
+      {
+        category: 'opportunity_created',
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    ]);
+    expect(loadAoiFieldEvents(root, SESSION_PATH, now)).toHaveLength(1);
   });
 
   it('returns a Tavily warning and creates no fake current-info brief when config is missing', async () => {
@@ -150,11 +226,89 @@ describe('Aoi proactive brief scout', () => {
     });
 
     expect(result.createdCandidates).toHaveLength(0);
+    expect(result.currentClaimAllowed).toBe(false);
+    expect(result.sourceHonestyRecords[0]).toMatchObject({
+      reason: 'tavily_not_configured',
+      currentClaimAllowed: false,
+      directChatCandidate: false,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(result.fieldEvents[0]).toMatchObject({
+      category: 'deliberation_blocked',
+      mutationCount: 0,
+    });
     expect(result.warnings).toContain('tavily_not_configured:cannot_refresh_current_info');
     expect(result.skippedTopics.some((topic) => topic.reason === 'tavily_not_configured')).toBe(
       true,
     );
     expect(loadAoiProactiveBriefCandidates(root, SESSION_PATH, 10_001)).toHaveLength(0);
+  });
+
+  it('does not search or claim current info when scout network budget is exhausted', async () => {
+    const root = makeTempRoot();
+    const search = makeSearch();
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: 10_000,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 0,
+      },
+      dependencies: {
+        search,
+        loadPolicy: () => makePolicy(10_000),
+      },
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(result.createdCandidates).toHaveLength(0);
+    expect(result.currentClaimAllowed).toBe(false);
+    expect(result.skippedTopics.some((topic) => topic.reason === 'network_budget_exhausted')).toBe(
+      true,
+    );
+    expect(result.sourceHonestyRecords[0]).toMatchObject({
+      reason: 'network_budget_exhausted',
+      currentClaimAllowed: false,
+    });
+    expect(result.fieldEvents[0]?.cannotKnow.join(' ')).toContain('budget was exhausted');
+  });
+
+  it('does not search or claim current info for muted topics', async () => {
+    const root = makeTempRoot();
+    const search = makeSearch();
+    saveProfile(root, makeTopic({ muted: true }));
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: 10_000,
+      budget: {
+        allowNetwork: true,
+      },
+      dependencies: {
+        search,
+        loadPolicy: () => makePolicy(10_000),
+      },
+    });
+
+    expect(search).not.toHaveBeenCalled();
+    expect(result.createdCandidates).toHaveLength(0);
+    expect(result.currentClaimAllowed).toBe(false);
+    expect(result.sourceHonestyRecords[0]).toMatchObject({
+      status: 'suppressed',
+      reason: 'topic_muted',
+      currentClaimAllowed: false,
+      directChatCandidate: false,
+    });
+    expect(result.fieldEvents[0]).toMatchObject({
+      category: 'delivery_hidden',
+      mutationCount: 0,
+    });
   });
 
   it('deduplicates sources by normalized URL and host/title similarity', () => {
@@ -274,6 +428,8 @@ describe('Aoi proactive brief scout', () => {
           topic.reason === 'global_cooldown_active' || topic.reason === 'topic_cooldown_active',
       ),
     ).toBe(true);
+    expect(repeated.currentClaimAllowed).toBe(false);
+    expect(repeated.sourceHonestyRecords[0]?.currentClaimAllowed).toBe(false);
   });
 
   it('rejects low-evidence search results instead of storing a candidate', async () => {
@@ -325,6 +481,137 @@ describe('Aoi proactive brief scout', () => {
 
     expect(result.sourceFreshness[0]?.cannotKnow.join(' ')).toContain('cannot know');
     expect(stored[0]?.freshness.cannotKnow.join(' ')).toContain('cannot know');
+  });
+
+  it('blocks current claims and direct chat candidates when sources are stale', async () => {
+    const root = makeTempRoot();
+    const now = 1_800_000_000_000;
+    const stalePublishedAt = new Date(now - 60_000).toISOString();
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now,
+      budget: {
+        allowNetwork: true,
+        sourceStaleAfterMs: 1,
+      },
+      dependencies: {
+        search: makeSearch([
+          {
+            title: 'Old reversing source one',
+            url: 'https://research.example.com/re/old-one',
+            content: 'Old public source one.',
+            publishedAt: stalePublishedAt,
+          },
+          {
+            title: 'Old reversing source two',
+            url: 'https://security.example.net/posts/old-two',
+            content: 'Old public source two.',
+            publishedAt: stalePublishedAt,
+          },
+          {
+            title: 'Old reversing source three',
+            url: 'https://analysis.example.org/old-three',
+            content: 'Old public source three.',
+            publishedAt: stalePublishedAt,
+          },
+        ]),
+        loadPolicy: () => ({
+          ...makePolicy(now),
+          proactiveBriefing: {
+            ...makePolicy(now).proactiveBriefing,
+            directChatHookOptIn: true,
+          },
+        }),
+      },
+    });
+
+    expect(result.createdCandidates).toHaveLength(1);
+    expect(result.createdCandidates[0]?.summary).not.toContain('current-info candidate');
+    expect(result.currentClaimAllowed).toBe(false);
+    expect(result.sourceHonestyRecords[0]).toMatchObject({
+      status: 'candidate_created',
+      currentClaimAllowed: false,
+      directChatCandidate: false,
+    });
+    expect(result.sourceHonestyRecords[0]?.currentClaimBlockedReasons).toContain('source_stale');
+    expect(result.fieldEvents[0]).toMatchObject({
+      category: 'delivery_dashboard',
+      mutationCount: 0,
+    });
+  });
+
+  it('keeps quiet-mode scout candidates dashboard-only even when sources are fresh', async () => {
+    const root = makeTempRoot();
+    const now = 1_800_000_000_000;
+    saveProfile(root);
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now,
+      budget: {
+        allowNetwork: true,
+        quietMode: true,
+      },
+      dependencies: {
+        search: makeSearch(makeFreshResults(now)),
+        loadPolicy: () => ({
+          ...makePolicy(now),
+          proactiveBriefing: {
+            ...makePolicy(now).proactiveBriefing,
+            directChatHookOptIn: true,
+          },
+        }),
+      },
+    });
+
+    expect(result.createdCandidates).toHaveLength(1);
+    expect(result.currentClaimAllowed).toBe(true);
+    expect(result.createdCandidates[0]?.delivery.allowedModes).toEqual(['dashboard']);
+    expect(result.sourceHonestyRecords[0]).toMatchObject({
+      currentClaimAllowed: true,
+      directChatCandidate: false,
+      directChatRequiresReadinessGate: true,
+    });
+  });
+
+  it('redacts private memory text from scout field events', async () => {
+    const root = makeTempRoot();
+    const now = 1_800_000_000_000;
+    saveProfile(
+      root,
+      makeTopic({
+        label:
+          'Reverse Engineering C:\\Users\\honey\\private-plan.txt honey@example.com token=abcdefghijklmnopqrstuvwxyz123456',
+        normalizedLabel: 'reverse engineering private',
+      }),
+    );
+
+    const result = await runAoiProactiveBriefScout({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now,
+      budget: {
+        allowNetwork: true,
+        maxNetworkCallsPerWakeup: 0,
+      },
+      dependencies: {
+        search: makeSearch(),
+        loadPolicy: () => makePolicy(now),
+      },
+    });
+    const serializedEvents = JSON.stringify(result.fieldEvents);
+
+    expect(result.currentClaimAllowed).toBe(false);
+    expect(serializedEvents).not.toContain('C:\\Users\\honey\\private-plan.txt');
+    expect(serializedEvents).not.toContain('honey@example.com');
+    expect(serializedEvents).not.toContain('abcdefghijklmnopqrstuvwxyz123456');
+    expect(serializedEvents).toContain('[redacted-path]');
+    expect(serializedEvents).toContain('[redacted-email]');
+    expect(serializedEvents).toContain('token=[redacted-token]');
   });
 
   it('does not import the structured research start path in the quick scout modules', () => {

@@ -375,6 +375,10 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
     .slice(0, 3)
     .map((source) => `${source.title} (${source.host})`)
     .join('; ');
+  const currentInfoLabel =
+    input.evidence.cannotKnow.length === 0
+      ? 'source-backed current-info candidate'
+      : 'source-backed scout candidate';
   const allowedModes = input.delivery?.allowedModes?.length
     ? input.delivery.allowedModes
     : ['dashboard'];
@@ -388,7 +392,7 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
     status: 'candidate',
     title: `Source-backed scout for ${input.topic.label}`,
     hook: `I found ${sources.length} public sources that may be worth a quick look for ${input.topic.label}.`,
-    summary: `A quick public search surfaced ${sourceSummary}. This is a source-backed current-info candidate, not a memory-only claim.`,
+    summary: `A quick public search surfaced ${sourceSummary}. This is a ${currentInfoLabel}, not a memory-only claim.`,
     whyForOperator: `This matches a saved interest topic with confidence ${input.topic.confidence.toFixed(2)} and current-info preference ${input.topic.currentInfoPreference.toFixed(2)}.`,
     noveltyReason: otherHosts
       ? `${primary?.host ?? 'A public source'} is corroborated by ${otherHosts}.`
