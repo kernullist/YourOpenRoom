@@ -7,9 +7,11 @@ import {
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorAuditEvent,
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
+  buildAoiJarvisAutonomyGovernorAuditResetAudit,
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
+  normalizeAoiJarvisAutonomyGovernorAuditResetAudit,
 } from '../aoiJarvisAutonomyGovernor';
 import type { AoiMissionControlState } from '../aoiMissionControlRuntime';
 import type { AoiSourceFreshnessContract } from '../aoiSourceFreshnessContract';
@@ -457,6 +459,48 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(summary.visible).toBe(true);
     expect(summary.recentEventLabels.length).toBeGreaterThan(0);
     expect(summary.safetyBoundaryLabel).toContain('display-only');
+  });
+
+  it('builds a display-only reset audit and exposes restart controls in the summary', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 3000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const event = buildAoiJarvisAutonomyGovernorAuditEvent({ decision: governor });
+    const trail = appendAoiJarvisAutonomyGovernorAuditTrail(null, event);
+    const resetAudit = buildAoiJarvisAutonomyGovernorAuditResetAudit({
+      trail,
+      decision: governor,
+      now: 5000,
+    });
+    const normalizedReset = normalizeAoiJarvisAutonomyGovernorAuditResetAudit({
+      ...resetAudit,
+      droppedEventCount: 999,
+      actionAuthority: 'command',
+      mutationCount: 10,
+    });
+    const summary = buildAoiJarvisAutonomyGovernorAuditPanelSummary(trail, normalizedReset);
+
+    expect(resetAudit).toMatchObject({
+      recordedAt: 5000,
+      droppedEventCount: 1,
+      snapshotMode: 'approval_execution',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(normalizedReset).toMatchObject({
+      droppedEventCount: 100,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(summary.resetDisabled).toBe(false);
+    expect(summary.resetLabel).toBe('Restart governor audit');
+    expect(summary.lastResetLabel).toContain('100 event(s) cleared');
   });
 
   it('builds a compact read-only prompt block from current governor decisions', () => {

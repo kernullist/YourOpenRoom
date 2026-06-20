@@ -1592,6 +1592,21 @@ describe('Aoi autonomy UI helpers', () => {
       actionAuthority: 'display_only' as const,
       mutationCount: 0 as const,
     };
+    const governorAuditLastReset = {
+      version: 1 as const,
+      id: 'aoi-jarvis-governor-audit-reset-aoi-default-7400',
+      recordedAt: 7400,
+      sessionPath: 'aoi/default',
+      droppedEventCount: 1,
+      snapshotDecisionId: 'aoi-jarvis-governor-aoi-default-7300',
+      snapshotMode: 'direct_chat' as const,
+      snapshotModeLabel: 'Direct chat',
+      reason: 'Operator restarted the governor audit trail from the current snapshot.',
+      safetyBoundary:
+        'Governor audit reset is display-only; it clears local review history and records the current snapshot but does not run tools, app actions, policy bypasses, or command execution.',
+      actionAuthority: 'display_only' as const,
+      mutationCount: 0 as const,
+    };
 
     const saved = saveAoiAutonomyPanelSettings(
       {
@@ -1637,6 +1652,7 @@ describe('Aoi autonomy UI helpers', () => {
         },
         agendaNudgeReadinessDecisionFeedbackHistory: feedbackHistory,
         jarvisAutonomyGovernorAuditTrail: governorAuditTrail,
+        jarvisAutonomyGovernorAuditLastReset: governorAuditLastReset,
       },
       storageAdapter,
     );
@@ -1668,6 +1684,13 @@ describe('Aoi autonomy UI helpers', () => {
         actionAuthority: 'display_only',
         mutationCount: 0,
       },
+      jarvisAutonomyGovernorAuditLastReset: {
+        recordedAt: 7400,
+        droppedEventCount: 1,
+        snapshotMode: 'direct_chat',
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
     });
     expect(saved.jarvisAutonomyGovernorAuditTrail?.events[0]).toMatchObject({
       kind: 'mode_change',
@@ -1675,6 +1698,10 @@ describe('Aoi autonomy UI helpers', () => {
       previousMode: 'proactive_brief',
       actionAuthority: 'display_only',
       mutationCount: 0,
+    });
+    expect(saved.jarvisAutonomyGovernorAuditLastReset).toMatchObject({
+      snapshotDecisionId: 'aoi-jarvis-governor-aoi-default-7300',
+      safetyBoundary: expect.stringContaining('display-only'),
     });
     expect(saved.agendaNudgeReadinessDecisionFeedbackHistory).toHaveLength(5);
     expect(saved.agendaNudgeReadinessDecisionFeedbackHistory?.[0]).toMatchObject({

@@ -163,6 +163,21 @@ export interface AoiJarvisAutonomyGovernorAuditTrail {
   mutationCount: 0;
 }
 
+export interface AoiJarvisAutonomyGovernorAuditResetAudit {
+  version: 1;
+  id: string;
+  recordedAt: number;
+  sessionPath: string;
+  droppedEventCount: number;
+  snapshotDecisionId: string | null;
+  snapshotMode: AoiJarvisAutonomyMode | null;
+  snapshotModeLabel: string | null;
+  reason: string;
+  safetyBoundary: string;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
   visible: boolean;
   headlineLabel: string;
@@ -171,6 +186,10 @@ export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
   blockerLabels: string[];
   evidenceRefs: string[];
   safetyBoundaryLabel: string;
+  resetLabel: string;
+  resetTitle: string;
+  resetDisabled: boolean;
+  lastResetLabel: string | null;
 }
 
 export const AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX = 8;
@@ -1113,6 +1132,55 @@ export function normalizeAoiJarvisAutonomyGovernorAuditTrail(
   };
 }
 
+export function normalizeAoiJarvisAutonomyGovernorAuditResetAudit(
+  value: unknown,
+): AoiJarvisAutonomyGovernorAuditResetAudit | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiJarvisAutonomyGovernorAuditResetAudit>)
+      : null;
+  if (!raw) {
+    return null;
+  }
+
+  const recordedAt = normalizeAuditTimestamp(raw.recordedAt);
+  const sessionPath = normalizeAuditLabel(raw.sessionPath, '', 180);
+  if (!recordedAt || !sessionPath) {
+    return null;
+  }
+
+  const snapshotMode = normalizeAuditMode(raw.snapshotMode);
+  return {
+    version: 1,
+    id:
+      normalizeAuditLabel(raw.id, '', 180) ||
+      `aoi-jarvis-governor-audit-reset-${idPart(sessionPath)}-${recordedAt}`,
+    recordedAt,
+    sessionPath,
+    droppedEventCount:
+      typeof raw.droppedEventCount === 'number' && Number.isFinite(raw.droppedEventCount)
+        ? Math.max(0, Math.min(100, Math.round(raw.droppedEventCount)))
+        : 0,
+    snapshotDecisionId: normalizeAuditLabel(raw.snapshotDecisionId, '', 180) || null,
+    snapshotMode,
+    snapshotModeLabel: snapshotMode
+      ? normalizeAuditLabel(raw.snapshotModeLabel, MODE_LABELS[snapshotMode], 120)
+      : null,
+    reason: normalizeAuditLabel(
+      raw.reason,
+      'Operator restarted the governor audit trail from the current snapshot.',
+      220,
+    ),
+    safetyBoundary: normalizeAuditLabel(
+      raw.safetyBoundary,
+      'Governor audit reset is display-only; it clears local review history and records the current snapshot but does not run tools, app actions, policy bypasses, or command execution.',
+      320,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorAuditEvent(params: {
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined;
   previousEvent?: AoiJarvisAutonomyGovernorAuditEvent | null;
@@ -1166,6 +1234,36 @@ export function buildAoiJarvisAutonomyGovernorAuditEvent(params: {
   };
 }
 
+export function buildAoiJarvisAutonomyGovernorAuditResetAudit(params: {
+  trail?: AoiJarvisAutonomyGovernorAuditTrail | null;
+  decision?: AoiJarvisAutonomyGovernorDecision | null;
+  now?: number;
+  reason?: string;
+}): AoiJarvisAutonomyGovernorAuditResetAudit {
+  const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(params.trail);
+  const decision = params.decision ?? null;
+  const sessionPath = decision?.sessionPath ?? normalizedTrail?.events[0]?.sessionPath ?? 'unknown';
+  const recordedAt = params.now ?? Date.now();
+
+  return {
+    version: 1,
+    id: `aoi-jarvis-governor-audit-reset-${idPart(sessionPath)}-${recordedAt}`,
+    recordedAt,
+    sessionPath,
+    droppedEventCount: normalizedTrail?.events.length ?? 0,
+    snapshotDecisionId: decision?.id ?? null,
+    snapshotMode: decision?.overallMode ?? null,
+    snapshotModeLabel: decision?.modeLabel ?? null,
+    reason:
+      params.reason?.replace(/\s+/g, ' ').trim().slice(0, 220) ||
+      'Operator restarted the governor audit trail from the current snapshot.',
+    safetyBoundary:
+      'Governor audit reset is display-only; it clears local review history and records the current snapshot but does not run tools, app actions, policy bypasses, or command execution.',
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function appendAoiJarvisAutonomyGovernorAuditTrail(
   trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
   event: AoiJarvisAutonomyGovernorAuditEvent | null | undefined,
@@ -1200,8 +1298,10 @@ export function appendAoiJarvisAutonomyGovernorAuditTrail(
 
 export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
   trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
+  lastReset?: AoiJarvisAutonomyGovernorAuditResetAudit | null,
 ): AoiJarvisAutonomyGovernorAuditPanelSummary {
   const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(trail);
+  const normalizedLastReset = normalizeAoiJarvisAutonomyGovernorAuditResetAudit(lastReset);
   if (!normalizedTrail) {
     return {
       visible: false,
@@ -1212,6 +1312,12 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
       evidenceRefs: [],
       safetyBoundaryLabel:
         'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
+      resetLabel: 'Restart governor audit',
+      resetTitle: 'No governor audit events are available to restart.',
+      resetDisabled: true,
+      lastResetLabel: normalizedLastReset
+        ? `Last reset: ${normalizedLastReset.droppedEventCount} event(s) cleared at ${normalizedLastReset.recordedAt}.`
+        : null,
     };
   }
 
@@ -1234,6 +1340,13 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
     blockerLabels: latest.blockerLabels,
     evidenceRefs: latest.evidenceRefs,
     safetyBoundaryLabel: latest.safetyBoundary,
+    resetLabel: 'Restart governor audit',
+    resetTitle:
+      'Clear older governor review history and keep the current governor decision as the new display-only snapshot.',
+    resetDisabled: false,
+    lastResetLabel: normalizedLastReset
+      ? `Last reset: ${normalizedLastReset.droppedEventCount} event(s) cleared at ${normalizedLastReset.recordedAt}.`
+      : null,
   };
 }
 

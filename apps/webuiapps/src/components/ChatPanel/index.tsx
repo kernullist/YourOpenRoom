@@ -324,6 +324,7 @@ import {
   appendAoiJarvisAutonomyGovernorAuditTrail,
   buildAoiJarvisAutonomyGovernorAuditEvent,
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
+  buildAoiJarvisAutonomyGovernorAuditResetAudit,
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorPanelSummary,
@@ -9573,9 +9574,34 @@ const SettingsModal: React.FC<{
     () =>
       buildAoiJarvisAutonomyGovernorAuditPanelSummary(
         aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
+        aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditLastReset,
       ),
-    [aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail],
+    [
+      aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditLastReset,
+      aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
+    ],
   );
+  const restartAoiJarvisAutonomyGovernorAudit = useCallback(() => {
+    const currentTrail = aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail ?? null;
+    const resetAudit = buildAoiJarvisAutonomyGovernorAuditResetAudit({
+      trail: currentTrail,
+      decision: aoiJarvisAutonomyGovernor,
+      now: Date.now(),
+    });
+    const snapshotEvent = buildAoiJarvisAutonomyGovernorAuditEvent({
+      decision: aoiJarvisAutonomyGovernor,
+      previousEvent: null,
+    });
+    const nextTrail = appendAoiJarvisAutonomyGovernorAuditTrail(null, snapshotEvent);
+    onUpdateAoiAutonomyPanelSettings({
+      jarvisAutonomyGovernorAuditTrail: nextTrail,
+      jarvisAutonomyGovernorAuditLastReset: resetAudit,
+    });
+  }, [
+    aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
+    aoiJarvisAutonomyGovernor,
+    onUpdateAoiAutonomyPanelSettings,
+  ]);
   const latestAoiPlaybook = useMemo(
     () =>
       aoiActivePlaybooks.slice().sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
@@ -11599,6 +11625,26 @@ const SettingsModal: React.FC<{
                                     aoiJarvisAutonomyGovernorAuditSummary.safetyBoundaryLabel,
                                     260,
                                   )}
+                                </div>
+                                {aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel && (
+                                  <div>
+                                    Reset:{' '}
+                                    {sanitizeAoiProposalDisplayText(
+                                      aoiJarvisAutonomyGovernorAuditSummary.lastResetLabel,
+                                      220,
+                                    )}
+                                  </div>
+                                )}
+                                <div className={styles.aoiInlineSuggestionActions}>
+                                  <button
+                                    type="button"
+                                    className={styles.inlineActionBtn}
+                                    onClick={restartAoiJarvisAutonomyGovernorAudit}
+                                    disabled={aoiJarvisAutonomyGovernorAuditSummary.resetDisabled}
+                                    title={aoiJarvisAutonomyGovernorAuditSummary.resetTitle}
+                                  >
+                                    {aoiJarvisAutonomyGovernorAuditSummary.resetLabel}
+                                  </button>
                                 </div>
                               </>
                             )}
