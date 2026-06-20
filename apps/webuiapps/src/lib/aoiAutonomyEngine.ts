@@ -18,6 +18,7 @@ import {
 } from './aoiAutonomyGoals';
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
 import { buildAoiOperatorDigest } from './aoiOperatorDigest';
+import { runAoiCuriosityEngineForSession } from './aoiCuriosityEngine';
 import { loadAoiContextSourceFeedback } from './aoiContextRouter';
 import {
   runAoiKiraOutcomeLearning,
@@ -2120,6 +2121,27 @@ export async function runAoiAutonomyTick(
     ],
     now,
   });
+  const curiosityWarnings: string[] = [];
+  try {
+    runAoiCuriosityEngineForSession({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      now,
+      memories: bundle.memories,
+      researchRuns: bundle.researchRuns,
+      workspaceSnapshot,
+      activeProposals: bundle.activeProposals,
+      recentDecisions: bundle.decisions,
+      activeGoals: activeGoalsForTick,
+      mission: attentionMission,
+      kiraOutcomes: kiraOutcomeResult.freshOutcomes,
+      maxCandidates: Math.max(1, Math.min(6, policy.maxProposalsPerTick + 4)),
+    });
+  } catch (error) {
+    curiosityWarnings.push(
+      error instanceof Error ? `curiosity_engine:${error.message}` : 'curiosity_engine:failed',
+    );
+  }
 
   const knownEvidenceRefs = buildEvidenceRefSet({
     observations: bundle.observations,
@@ -2333,6 +2355,6 @@ export async function runAoiAutonomyTick(
     blockedProposalCount: blockedProposals.length,
     blockedProposals,
     operatorDigest,
-    warnings: [...observationWarnings, ...llmResult.warnings],
+    warnings: [...observationWarnings, ...llmResult.warnings, ...curiosityWarnings],
   };
 }
