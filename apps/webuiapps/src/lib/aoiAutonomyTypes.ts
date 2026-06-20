@@ -116,6 +116,101 @@ export interface AoiOpportunity {
   mutationCount: 0;
 }
 
+export type AoiDeliberationPhase =
+  | 'queued'
+  | 'planning'
+  | 'observing'
+  | 'summarizing'
+  | 'ready'
+  | 'blocked'
+  | 'failed';
+
+export type AoiDeliberationEvidenceStepStatus =
+  | 'pending'
+  | 'observed'
+  | 'missing'
+  | 'stale'
+  | 'blocked';
+
+export type AoiDeliberationEvidenceStepKind =
+  | 'opportunity'
+  | 'memory'
+  | 'research'
+  | 'workspace'
+  | 'kira'
+  | 'proposal'
+  | 'mission'
+  | 'app_state'
+  | 'unknown';
+
+export interface AoiDeliberationEvidenceStep {
+  version: 1;
+  id: string;
+  kind: AoiDeliberationEvidenceStepKind;
+  status: AoiDeliberationEvidenceStepStatus;
+  sourceRef: string;
+  label: string;
+  summary: string;
+  freshness: AoiSignalFreshness;
+  evidenceRefs: string[];
+  cannotKnow: string[];
+  blockers: string[];
+  observedAt?: number;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiDeliberationFinding {
+  version: 1;
+  summary: string;
+  sourceQuality: 'strong' | 'acceptable' | 'weak' | 'missing';
+  freshness: AoiSignalFreshness;
+  confidence: number;
+  evidenceRefs: string[];
+  blockers: string[];
+  cannotKnow: string[];
+  createdAt: number;
+}
+
+export interface AoiDeliberationOpinion {
+  version: 1;
+  stance: 'ready_to_brief' | 'needs_more_evidence' | 'abstain';
+  summary: string;
+  reason: string;
+  evidenceRefs: string[];
+  createdAt: number;
+}
+
+export interface AoiDeliberationPhaseTransition {
+  from?: AoiDeliberationPhase;
+  to: AoiDeliberationPhase;
+  reason: string;
+  createdAt: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiDeliberationRun {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  opportunityId: string;
+  opportunityDedupeKey: string;
+  opportunityTitle: string;
+  phase: AoiDeliberationPhase;
+  selectedAt: number;
+  updatedAt: number;
+  evidencePlan: AoiDeliberationEvidenceStep[];
+  finding?: AoiDeliberationFinding;
+  opinion?: AoiDeliberationOpinion;
+  safeNextAction: string;
+  blockers: string[];
+  evidenceRefs: string[];
+  artifactRefs: string[];
+  phaseHistory: AoiDeliberationPhaseTransition[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiObservationSource =
   | 'chat'
   | 'tool'

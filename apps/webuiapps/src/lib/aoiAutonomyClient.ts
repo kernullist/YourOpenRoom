@@ -8,6 +8,7 @@ import type {
   AoiAutonomyWakeupReason,
   AoiAutonomyWakeupResult,
   AoiBrowserContextMetadata,
+  AoiDeliberationRun,
   AoiCalibrationDimension,
   AoiContextRouterResult,
   AoiContextSourceFeedback,
@@ -64,6 +65,12 @@ export interface AoiOpportunityInboxList {
   sessionPath: string;
   active: AoiOpportunity[];
   archived: AoiOpportunity[];
+}
+
+export interface AoiDeliberationRunList {
+  sessionPath: string;
+  latest: AoiDeliberationRun | null;
+  runs: AoiDeliberationRun[];
 }
 
 export interface AoiAutonomyDecisionList {
@@ -179,6 +186,7 @@ export interface AoiAutonomyDashboardSnapshot {
   health: AoiOperatorHealthState;
   playbooks: AoiAutonomyPlaybookList;
   opportunities: AoiOpportunityInboxList;
+  deliberations: AoiDeliberationRunList;
   proactiveBriefs: AoiProactiveBriefListResponse;
 }
 
@@ -490,6 +498,26 @@ export async function fetchAoiOpportunityInbox(
     sessionPath: responseSessionPath,
     active: asArray<AoiOpportunity>(payload.active),
     archived: asArray<AoiOpportunity>(payload.archived),
+  };
+}
+
+export async function fetchAoiDeliberationRuns(
+  sessionPath: string,
+  limit = 20,
+): Promise<AoiDeliberationRunList> {
+  const response = await fetch(
+    `${API_PREFIX}/deliberations?${sessionQuery(sessionPath)}&limit=${encodeURIComponent(String(limit))}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi deliberation runs.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    latest: isRecord(payload.latest) ? (payload.latest as AoiDeliberationRun) : null,
+    runs: asArray<AoiDeliberationRun>(payload.runs),
   };
 }
 
@@ -1210,6 +1238,7 @@ export async function fetchAoiAutonomyDashboard(
     health,
     playbooks,
     opportunities,
+    deliberations,
     proactiveBriefs,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
@@ -1225,6 +1254,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiOperatorHealth(sessionPath),
     fetchAoiPlaybooks(sessionPath, true),
     fetchAoiOpportunityInbox(sessionPath, true),
+    fetchAoiDeliberationRuns(sessionPath, 20),
     fetchAoiProactiveBriefs(sessionPath),
   ]);
 
@@ -1243,6 +1273,7 @@ export async function fetchAoiAutonomyDashboard(
     health: health.health,
     playbooks,
     opportunities,
+    deliberations,
     proactiveBriefs,
   };
 }

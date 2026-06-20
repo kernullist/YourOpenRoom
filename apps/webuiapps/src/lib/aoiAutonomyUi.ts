@@ -51,6 +51,7 @@ import type {
   AoiAutonomyStatus,
   AoiContextRouterResult,
   AoiContextSourceSummary,
+  AoiDeliberationRun,
   AoiEnvironmentSource,
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
@@ -565,6 +566,19 @@ export interface AoiOpportunityInboxPanelSummary {
   expiredCount: number;
   itemLabels: AoiOpportunityInboxPanelItem[];
   evidenceRefs: string[];
+}
+
+export interface AoiDeliberationRunPanelSummary {
+  visible: boolean;
+  headlineLabel: string;
+  phaseLabel: string;
+  opportunityLabel: string;
+  findingLabel: string;
+  opinionLabel?: string;
+  safeNextActionLabel: string;
+  blockerLabels: string[];
+  evidenceRefs: string[];
+  safetyBoundaryLabel: string;
 }
 
 export interface AoiAgendaNudgeCalibrationPanelSummary {
@@ -2541,6 +2555,68 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
     expiredCount,
     itemLabels,
     evidenceRefs,
+  };
+}
+
+export function buildAoiDeliberationRunPanelSummary(params: {
+  latest?: AoiDeliberationRun | null;
+  runs?: readonly AoiDeliberationRun[];
+  now?: number;
+}): AoiDeliberationRunPanelSummary {
+  const latest =
+    params.latest ??
+    (params.runs ?? []).slice().sort((left, right) => right.updatedAt - left.updatedAt)[0] ??
+    null;
+  if (!latest) {
+    return {
+      visible: false,
+      headlineLabel: 'No deliberation run yet',
+      phaseLabel: 'not started',
+      opportunityLabel: 'No opportunity selected',
+      findingLabel: 'Aoi has not converted an opportunity into an evidence-backed finding yet.',
+      safeNextActionLabel: 'Run an Aoi autonomy check after opportunities exist.',
+      blockerLabels: [],
+      evidenceRefs: [],
+      safetyBoundaryLabel:
+        'Display-only deliberation: Aoi can summarize evidence and abstain, but cannot execute tools, mutate apps, start research, or create Kira work.',
+    };
+  }
+  const evidenceRefs = collectAoiAgendaEvidenceRefs(
+    [
+      `deliberation_run:${latest.id}`,
+      ...latest.evidenceRefs,
+      ...(latest.finding?.evidenceRefs ?? []),
+      ...(latest.opinion?.evidenceRefs ?? []),
+    ],
+    [`opportunity:${latest.opportunityId}`],
+  );
+  const ageLabel = formatAoiAgendaAge(latest.updatedAt, params.now ?? Date.now());
+  const findingLabel = latest.finding
+    ? `${latest.finding.summary} Source quality: ${latest.finding.sourceQuality}; freshness: ${latest.finding.freshness}; confidence ${Math.round(
+        latest.finding.confidence * 100,
+      )}%.`
+    : 'No finding was produced because the evidence source was missing or unusable.';
+  return {
+    visible: true,
+    headlineLabel: sanitizeAoiProposalDisplayText(`Latest deliberation: ${latest.phase}`, 120),
+    phaseLabel: sanitizeAoiProposalDisplayText(`${latest.phase} / updated ${ageLabel}`, 120),
+    opportunityLabel: sanitizeAoiProposalDisplayText(latest.opportunityTitle, 160),
+    findingLabel: sanitizeAoiProposalDisplayText(findingLabel, 320),
+    ...(latest.opinion
+      ? {
+          opinionLabel: sanitizeAoiProposalDisplayText(
+            `${latest.opinion.stance}: ${latest.opinion.summary} Reason: ${latest.opinion.reason}`,
+            320,
+          ),
+        }
+      : {}),
+    safeNextActionLabel: sanitizeAoiProposalDisplayText(latest.safeNextAction, 260),
+    blockerLabels: latest.blockers
+      .slice(0, 4)
+      .map((blocker) => sanitizeAoiProposalDisplayText(blocker, 180)),
+    evidenceRefs: evidenceRefs.slice(0, 6).map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),
+    safetyBoundaryLabel:
+      'Display-only deliberation: Aoi can summarize evidence and abstain, but cannot execute tools, mutate apps, start research, or create Kira work.',
   };
 }
 

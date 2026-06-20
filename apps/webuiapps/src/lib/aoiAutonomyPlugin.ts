@@ -4,6 +4,7 @@ import type { Plugin } from 'vite';
 import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
+import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
 import { resetAoiTrustCalibrationCategory } from './aoiTrustCalibrationStore';
 import {
   activateAoiGoalFromProposal,
@@ -484,6 +485,29 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         active: loadAoiActiveOpportunities(sessionsDir, sessionPath),
         archived: includeArchived ? loadAoiArchivedOpportunities(sessionsDir, sessionPath) : [],
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/deliberations') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '20', 10);
+      const runs = loadAoiDeliberationRuns(sessionsDir, sessionPath).slice(
+        0,
+        Number.isFinite(limit) ? Math.min(Math.max(limit, 1), 80) : 20,
+      );
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        latest: runs[0] ?? null,
+        runs,
       });
       return true;
     }

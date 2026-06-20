@@ -274,6 +274,7 @@ import {
   buildAoiAutonomySchedulerPanelSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiOpportunityInboxPanelSummary,
+  buildAoiDeliberationRunPanelSummary,
   buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
@@ -345,6 +346,7 @@ import type {
   AoiAutonomySchedulerState,
   AoiAutonomyStatus,
   AoiContextRouterResult,
+  AoiDeliberationRun,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiGoal,
@@ -2531,6 +2533,7 @@ const ChatPanel: React.FC<{
   );
   const [aoiActiveOpportunities, setAoiActiveOpportunities] = useState<AoiOpportunity[]>([]);
   const [aoiArchivedOpportunities, setAoiArchivedOpportunities] = useState<AoiOpportunity[]>([]);
+  const [aoiDeliberationRuns, setAoiDeliberationRuns] = useState<AoiDeliberationRun[]>([]);
   const [aoiRecentProposalDecisions, setAoiRecentProposalDecisions] = useState<
     AoiProposalDecision[]
   >([]);
@@ -3328,6 +3331,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
       setAoiActiveOpportunities(snapshot.opportunities.active);
       setAoiArchivedOpportunities(snapshot.opportunities.archived);
+      setAoiDeliberationRuns(snapshot.deliberations.runs);
       setAoiRecentProposalDecisions(decisions.decisions);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
       setAoiActivePlaybooks(snapshot.playbooks.active);
@@ -8290,6 +8294,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
           aoiActiveOpportunities={aoiActiveOpportunities}
           aoiArchivedOpportunities={aoiArchivedOpportunities}
+          aoiDeliberationRuns={aoiDeliberationRuns}
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
           aoiActivePlaybooks={aoiActivePlaybooks}
           aoiMissionState={aoiMissionState}
@@ -8879,6 +8884,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyArchivedProposals: AoiProposal[];
   aoiActiveOpportunities: AoiOpportunity[];
   aoiArchivedOpportunities: AoiOpportunity[];
+  aoiDeliberationRuns: AoiDeliberationRun[];
   aoiAutonomyActiveGoals: AoiGoal[];
   aoiActivePlaybooks: AoiPlaybook[];
   aoiMissionState: AoiMissionState | null;
@@ -8998,6 +9004,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyArchivedProposals,
   aoiActiveOpportunities,
   aoiArchivedOpportunities,
+  aoiDeliberationRuns,
   aoiAutonomyActiveGoals,
   aoiActivePlaybooks,
   aoiMissionState,
@@ -9290,6 +9297,14 @@ const SettingsModal: React.FC<{
         now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
       }),
     [aoiActiveOpportunities, aoiArchivedOpportunities, aoiAutonomyLastTickAt, aoiAutonomyStatus],
+  );
+  const aoiDeliberationRunSummary = useMemo(
+    () =>
+      buildAoiDeliberationRunPanelSummary({
+        runs: aoiDeliberationRuns,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+      }),
+    [aoiAutonomyLastTickAt, aoiAutonomyStatus, aoiDeliberationRuns],
   );
   const aoiApprovalInboxProposalIds = useMemo(
     () => new Set((aoiOperatorDigest?.approvalInbox ?? []).map((item) => item.proposalId)),
@@ -11874,6 +11889,43 @@ const SettingsModal: React.FC<{
                               ))}
                             </div>
                           )}
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiDeliberationRunSummary.visible && (
+                      <div
+                        className={styles.aoiAutonomyProposalSection}
+                        data-testid="aoi-deliberation-run"
+                      >
+                        <div className={styles.promptBudgetSectionTitle}>Deliberation run</div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiDeliberationRunSummary.phaseLabel}</span>
+                            <span>display-only</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {aoiDeliberationRunSummary.headlineLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {aoiDeliberationRunSummary.safetyBoundaryLabel}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>Opportunity: {aoiDeliberationRunSummary.opportunityLabel}</div>
+                            <div>Finding: {aoiDeliberationRunSummary.findingLabel}</div>
+                            {aoiDeliberationRunSummary.opinionLabel && (
+                              <div>Opinion: {aoiDeliberationRunSummary.opinionLabel}</div>
+                            )}
+                            <div>Next: {aoiDeliberationRunSummary.safeNextActionLabel}</div>
+                            {aoiDeliberationRunSummary.blockerLabels.map((blocker, index) => (
+                              <div key={`aoi-deliberation-blocker-${index}`}>
+                                Blocker: {blocker}
+                              </div>
+                            ))}
+                            {aoiDeliberationRunSummary.evidenceRefs.map((ref, index) => (
+                              <div key={`aoi-deliberation-evidence-${index}`}>Evidence: {ref}</div>
+                            ))}
+                          </div>
                         </div>
                       </div>
                     )}

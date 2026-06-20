@@ -19,6 +19,7 @@ import {
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
 import { buildAoiOperatorDigest } from './aoiOperatorDigest';
 import { runAoiCuriosityEngineForSession } from './aoiCuriosityEngine';
+import { runAoiDeliberationForSession } from './aoiDeliberationRun';
 import { loadAoiContextSourceFeedback } from './aoiContextRouter';
 import {
   runAoiKiraOutcomeLearning,
@@ -2122,6 +2123,7 @@ export async function runAoiAutonomyTick(
     now,
   });
   const curiosityWarnings: string[] = [];
+  const deliberationWarnings: string[] = [];
   try {
     runAoiCuriosityEngineForSession({
       sessionsDir: params.sessionsDir,
@@ -2140,6 +2142,22 @@ export async function runAoiAutonomyTick(
   } catch (error) {
     curiosityWarnings.push(
       error instanceof Error ? `curiosity_engine:${error.message}` : 'curiosity_engine:failed',
+    );
+  }
+  try {
+    runAoiDeliberationForSession({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      now,
+      memories: bundle.memories,
+      researchRuns: bundle.researchRuns,
+      workspaceSnapshot,
+      activeProposals: bundle.activeProposals,
+      mission: attentionMission,
+    });
+  } catch (error) {
+    deliberationWarnings.push(
+      error instanceof Error ? `deliberation_run:${error.message}` : 'deliberation_run:failed',
     );
   }
 
@@ -2355,6 +2373,11 @@ export async function runAoiAutonomyTick(
     blockedProposalCount: blockedProposals.length,
     blockedProposals,
     operatorDigest,
-    warnings: [...observationWarnings, ...llmResult.warnings, ...curiosityWarnings],
+    warnings: [
+      ...observationWarnings,
+      ...llmResult.warnings,
+      ...curiosityWarnings,
+      ...deliberationWarnings,
+    ],
   };
 }
