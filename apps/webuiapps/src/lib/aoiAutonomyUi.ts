@@ -993,6 +993,19 @@ export function appendAoiAgendaNudgeDecisionFeedbackHistory(
   return normalizeAoiAgendaNudgeDecisionFeedbackHistory([normalizedAudit, ...normalizedHistory]);
 }
 
+export function buildAoiAgendaNudgeFeedbackResetPatch(): Pick<
+  AoiAutonomyPanelSettings,
+  | 'agendaNudgeCalibration'
+  | 'agendaNudgeReadinessLastDecisionFeedback'
+  | 'agendaNudgeReadinessDecisionFeedbackHistory'
+> {
+  return {
+    agendaNudgeCalibration: null,
+    agendaNudgeReadinessLastDecisionFeedback: null,
+    agendaNudgeReadinessDecisionFeedbackHistory: [],
+  };
+}
+
 export function normalizeAoiAutonomyPanelSettings(
   value: unknown,
   fallback: AoiAutonomyPanelSettings = DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS,
@@ -1183,17 +1196,31 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
   now = Date.now(),
 ): AoiAgendaNudgeCalibrationPanelSummary {
   const calibration = normalizeAoiAgendaNudgeCalibration(settings?.agendaNudgeCalibration);
+  const lastDecisionFeedback = normalizeAoiAgendaNudgeDecisionFeedbackAudit(
+    settings?.agendaNudgeReadinessLastDecisionFeedback,
+  );
+  const feedbackHistory = normalizeAoiAgendaNudgeDecisionFeedbackHistory(
+    settings?.agendaNudgeReadinessDecisionFeedbackHistory,
+  );
+  const hasFeedbackSurface = Boolean(calibration || lastDecisionFeedback || feedbackHistory.length);
   const gate = getAoiAgendaNudgeCalibrationGate(calibration, now);
 
   if (!calibration) {
     return {
       visible: true,
       statusLabel: 'untrained',
-      summaryLabel: 'No direct agenda nudge feedback has been recorded yet.',
+      summaryLabel: hasFeedbackSurface
+        ? 'Direct agenda nudge feedback audit data is recorded, but no active calibration is applied.'
+        : 'No direct agenda nudge feedback has been recorded yet.',
       countLabels: ['0 useful', '0 quiet/noisy'],
-      reasonLabels: ['No local suppression is active.'],
-      evidenceRefs: [],
-      resetLabel: 'Nothing to reset',
+      reasonLabels: hasFeedbackSurface
+        ? [
+            'No local suppression is active.',
+            'A local feedback audit trail is still available for reset.',
+          ]
+        : ['No local suppression is active.'],
+      evidenceRefs: hasFeedbackSurface ? ['agenda-feedback:audit-trail'] : [],
+      resetLabel: hasFeedbackSurface ? 'Reset agenda nudge feedback' : 'Nothing to reset',
       tone: 'neutral',
     };
   }

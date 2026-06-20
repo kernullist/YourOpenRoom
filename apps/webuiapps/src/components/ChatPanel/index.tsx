@@ -262,6 +262,7 @@ import {
   appendAoiAgendaNudgeDecisionFeedbackHistory,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeFeedbackResetPatch,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
   buildAoiAgendaNudgeDecisionFeedbackAudit,
   buildAoiAgendaNudgeReadinessActionAudit,
@@ -9224,7 +9225,7 @@ const SettingsModal: React.FC<{
         });
       } else if (actionId === 'reset_feedback_mute') {
         onUpdateAoiAutonomyPanelSettings({
-          agendaNudgeCalibration: null,
+          ...buildAoiAgendaNudgeFeedbackResetPatch(),
           ...(audit ? { agendaNudgeReadinessLastAction: audit } : {}),
         });
       } else if (actionId === 'refresh_autonomy') {
@@ -9298,7 +9299,11 @@ const SettingsModal: React.FC<{
         return aoiAutonomyPanelSettings.maxSuggestionsPerSession >= 12;
       }
       if (actionId === 'reset_feedback_mute') {
-        return !aoiAutonomyPanelSettings.agendaNudgeCalibration;
+        return (
+          !aoiAutonomyPanelSettings.agendaNudgeCalibration &&
+          !aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecisionFeedback &&
+          (aoiAutonomyPanelSettings.agendaNudgeReadinessDecisionFeedbackHistory?.length ?? 0) === 0
+        );
       }
       if (actionId === 'refresh_autonomy') {
         return aoiAutonomyLoading;
@@ -9316,6 +9321,8 @@ const SettingsModal: React.FC<{
       aoiAutonomyActionId,
       aoiAutonomyLoading,
       aoiAutonomyPanelSettings.agendaNudgeCalibration,
+      aoiAutonomyPanelSettings.agendaNudgeReadinessDecisionFeedbackHistory?.length,
+      aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecisionFeedback,
       aoiAutonomyPanelSettings.maxSuggestionsPerSession,
       aoiAutonomyPanelSettings.notificationsEnabled,
       aoiAutonomyPanelSettings.quietMode,
@@ -11421,12 +11428,17 @@ const SettingsModal: React.FC<{
                               type="button"
                               className={styles.inlineActionBtn}
                               onClick={() =>
-                                onUpdateAoiAutonomyPanelSettings({
-                                  agendaNudgeCalibration: null,
-                                })
+                                onUpdateAoiAutonomyPanelSettings(
+                                  buildAoiAgendaNudgeFeedbackResetPatch(),
+                                )
                               }
-                              disabled={!aoiAutonomyPanelSettings.agendaNudgeCalibration}
-                              title="Reset only local agenda nudge feedback calibration"
+                              disabled={
+                                !aoiAutonomyPanelSettings.agendaNudgeCalibration &&
+                                !aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecisionFeedback &&
+                                (aoiAutonomyPanelSettings
+                                  .agendaNudgeReadinessDecisionFeedbackHistory?.length ?? 0) === 0
+                              }
+                              title="Reset local agenda nudge feedback calibration and audit trail"
                             >
                               {aoiAgendaNudgeCalibrationSummary.resetLabel}
                             </button>

@@ -12,6 +12,7 @@ import {
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
   buildAoiAgendaNudgeDecisionFeedbackAudit,
+  buildAoiAgendaNudgeFeedbackResetPatch,
   buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
@@ -1068,6 +1069,33 @@ describe('Aoi autonomy UI helpers', () => {
       tone: 'neutral',
       resetLabel: 'Nothing to reset',
     });
+    const staleAuditSummary = buildAoiAgendaNudgeCalibrationPanelSummary(
+      {
+        panelExpanded: true,
+        notificationsEnabled: true,
+        quietMode: false,
+        maxSuggestionsPerSession: 3,
+        agendaNudgeCalibration: null,
+        agendaNudgeReadinessLastDecisionFeedback: {
+          version: 1,
+          actionId: 'quiet_decision_nudges',
+          kind: 'quieted',
+          actionLabel: 'Quiet for now',
+          reason: 'delivery decision silent/no candidate',
+          dedupeKey: 'agenda-decision:silent:5000:no candidate',
+          recordedAt: 5100,
+          safetyBoundary:
+            'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
+        },
+      },
+      6000,
+    );
+    expect(staleAuditSummary).toMatchObject({
+      statusLabel: 'untrained',
+      resetLabel: 'Reset agenda nudge feedback',
+      evidenceRefs: ['agenda-feedback:audit-trail'],
+    });
+    expect(staleAuditSummary.reasonLabels.join(' ')).toContain('audit trail');
 
     const quieted = recordAoiAgendaNudgeFeedback(null, {
       kind: 'quieted',
@@ -1238,6 +1266,29 @@ describe('Aoi autonomy UI helpers', () => {
     expect(
       feedbackAuditedReadySummary.decisionFeedbackActions.find(
         (action) => action.id === 'mark_decision_useful',
+      )?.disabled,
+    ).toBe(false);
+    const resetFeedbackSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        agendaNudgeReadinessLastDecision: readyDeliveryAudit,
+        agendaNudgeCalibration: noisyCalibration,
+        agendaNudgeReadinessLastDecisionFeedback: tooMuchFeedbackAudit,
+        agendaNudgeReadinessDecisionFeedbackHistory: feedbackHistory,
+        ...buildAoiAgendaNudgeFeedbackResetPatch(),
+      },
+      options: {
+        now: 10000,
+      },
+    });
+    expect(resetFeedbackSummary.lastDecisionLabels.join(' ')).toContain('Last decision: ready');
+    expect(resetFeedbackSummary.lastDecisionFeedbackLabels).toEqual([]);
+    expect(resetFeedbackSummary.decisionFeedbackHistoryLabels).toEqual([]);
+    expect(
+      resetFeedbackSummary.decisionFeedbackActions.find(
+        (action) => action.id === 'mark_decision_too_much',
       )?.disabled,
     ).toBe(false);
 
