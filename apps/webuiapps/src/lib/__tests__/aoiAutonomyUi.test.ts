@@ -1068,6 +1068,8 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'untrained',
       tone: 'neutral',
       resetLabel: 'Nothing to reset',
+      resetDisabled: true,
+      resetTitle: 'No local agenda nudge feedback to reset',
       auditLabels: [],
     });
     const staleFeedbackAudit = {
@@ -1095,6 +1097,8 @@ describe('Aoi autonomy UI helpers', () => {
     expect(staleAuditSummary).toMatchObject({
       statusLabel: 'untrained',
       resetLabel: 'Reset agenda nudge feedback',
+      resetDisabled: false,
+      resetTitle: 'Reset local agenda nudge feedback calibration and audit trail',
       evidenceRefs: ['agenda-feedback:audit-trail'],
     });
     expect(staleAuditSummary.reasonLabels.join(' ')).toContain('audit trail');
@@ -1127,6 +1131,7 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'muted',
       tone: 'suppressed',
       resetLabel: 'Reset agenda nudge feedback',
+      resetDisabled: false,
     });
     expect(mutedSummary.reasonLabels.join(' ')).toContain('quieted feedback');
     expect(mutedSummary.countLabels).toContain('1 quiet/noisy');
@@ -1152,6 +1157,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(learningSummary).toMatchObject({
       statusLabel: 'learning',
       tone: 'learning',
+      resetDisabled: false,
     });
     expect(learningSummary.summaryLabel).toContain('positive local feedback');
     expect(learningSummary.reasonLabels.join(' ')).toContain('No local suppression');

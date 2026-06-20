@@ -538,6 +538,8 @@ export interface AoiAgendaNudgeCalibrationPanelSummary {
   auditLabels: string[];
   evidenceRefs: string[];
   resetLabel: string;
+  resetDisabled: boolean;
+  resetTitle: string;
   tone: 'neutral' | 'learning' | 'suppressed';
 }
 
@@ -1227,6 +1229,10 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
       auditLabels,
       evidenceRefs: hasFeedbackSurface ? ['agenda-feedback:audit-trail'] : [],
       resetLabel: hasFeedbackSurface ? 'Reset agenda nudge feedback' : 'Nothing to reset',
+      resetDisabled: !hasFeedbackSurface,
+      resetTitle: hasFeedbackSurface
+        ? 'Reset local agenda nudge feedback calibration and audit trail'
+        : 'No local agenda nudge feedback to reset',
       tone: 'neutral',
     };
   }
@@ -1265,6 +1271,8 @@ export function buildAoiAgendaNudgeCalibrationPanelSummary(
     auditLabels,
     evidenceRefs: gate.evidenceRefs,
     resetLabel: 'Reset agenda nudge feedback',
+    resetDisabled: false,
+    resetTitle: 'Reset local agenda nudge feedback calibration and audit trail',
     tone: gate.suppressed ? 'suppressed' : 'learning',
   };
 }

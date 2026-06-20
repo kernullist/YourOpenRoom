@@ -11435,13 +11435,8 @@ const SettingsModal: React.FC<{
                                   buildAoiAgendaNudgeFeedbackResetPatch(),
                                 )
                               }
-                              disabled={
-                                !aoiAutonomyPanelSettings.agendaNudgeCalibration &&
-                                !aoiAutonomyPanelSettings.agendaNudgeReadinessLastDecisionFeedback &&
-                                (aoiAutonomyPanelSettings
-                                  .agendaNudgeReadinessDecisionFeedbackHistory?.length ?? 0) === 0
-                              }
-                              title="Reset local agenda nudge feedback calibration and audit trail"
+                              disabled={aoiAgendaNudgeCalibrationSummary.resetDisabled}
+                              title={aoiAgendaNudgeCalibrationSummary.resetTitle}
                             >
                               {aoiAgendaNudgeCalibrationSummary.resetLabel}
                             </button>
