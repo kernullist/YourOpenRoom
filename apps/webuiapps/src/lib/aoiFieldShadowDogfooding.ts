@@ -20,6 +20,8 @@ export type AoiFieldShadowSubsystemOrigin =
   | 'personal_source_reality'
   | 'playbook'
   | 'approved_command_policy'
+  | 'interruption_governor'
+  | 'action_ladder'
   | 'mission_memory'
   | 'voice_policy'
   | 'unknown';
@@ -61,6 +63,17 @@ export interface AoiFieldShadowDecisionRecord {
   sourceSummary: string;
   mutationCount: 0;
   dedupeKey: string;
+  opportunityId?: string;
+  fieldEventId?: string;
+  whySpeak?: string;
+  whyQuiet?: string;
+  sourceFreshness?: 'fresh' | 'stale' | 'failed' | 'unknown';
+  interruptionDecisionId?: string;
+  interruptionDeliveryMode?: string;
+  actionLadderDecisionId?: string;
+  actionLadderLevel?: string;
+  directChatBlockers?: string[];
+  cannotKnow?: string[];
   missionId?: string;
   operatorMessagePreview?: string;
   silenceReason?: string;
@@ -204,6 +217,9 @@ function isDecisionKind(value: unknown): value is AoiShadowDecisionKind {
   return (
     value === 'would_speak' ||
     value === 'would_stay_quiet' ||
+    value === 'would_show_dashboard' ||
+    value === 'would_prepare_research' ||
+    value === 'would_prepare_work_order' ||
     value === 'would_propose' ||
     value === 'would_prepare_approval' ||
     value === 'would_mark_blind_spot'
@@ -242,6 +258,8 @@ function isSubsystemOrigin(value: unknown): value is AoiFieldShadowSubsystemOrig
     value === 'personal_source_reality' ||
     value === 'playbook' ||
     value === 'approved_command_policy' ||
+    value === 'interruption_governor' ||
+    value === 'action_ladder' ||
     value === 'mission_memory' ||
     value === 'voice_policy' ||
     value === 'unknown'
@@ -279,6 +297,12 @@ function inferSubsystemOrigin(
   }
   if (/\bapproved-command:/i.test(haystack)) {
     return 'approved_command_policy';
+  }
+  if (/\binterruption(?:-|_)?governor:|\baoi-interrupt-/i.test(haystack)) {
+    return 'interruption_governor';
+  }
+  if (/\baction(?:-|_)?ladder:|\baoi-action-ladder-/i.test(haystack)) {
+    return 'action_ladder';
   }
   if (/\bmission-memory:/i.test(haystack)) {
     return 'mission_memory';
@@ -408,6 +432,23 @@ function makeRecord(params: {
   const silenceReason = sanitizeFieldShadowText(decision.silenceReason);
   const suggestedAction = sanitizeFieldShadowText(decision.suggestedAction);
   const approvalBoundary = sanitizeFieldShadowText(decision.approvalBoundary);
+  const opportunityId = sanitizeFieldShadowText(decision.opportunityId, 127);
+  const fieldEventId = sanitizeFieldShadowText(decision.fieldEventId, 127);
+  const whySpeak = sanitizeFieldShadowText(decision.whySpeak);
+  const whyQuiet = sanitizeFieldShadowText(decision.whyQuiet);
+  const sourceFreshness =
+    decision.sourceFreshness === 'fresh' ||
+    decision.sourceFreshness === 'stale' ||
+    decision.sourceFreshness === 'failed' ||
+    decision.sourceFreshness === 'unknown'
+      ? decision.sourceFreshness
+      : undefined;
+  const interruptionDecisionId = sanitizeFieldShadowText(decision.interruptionDecisionId, 127);
+  const interruptionDeliveryMode = sanitizeFieldShadowText(decision.interruptionDeliveryMode, 80);
+  const actionLadderDecisionId = sanitizeFieldShadowText(decision.actionLadderDecisionId, 127);
+  const actionLadderLevel = sanitizeFieldShadowText(decision.actionLadderLevel, 40);
+  const directChatBlockers = normalizeRefs(decision.directChatBlockers, 12);
+  const cannotKnow = normalizeRefs(decision.cannotKnow, 12);
   const missionId = sanitizeFieldShadowText(decision.missionId ?? params.missionId, 120);
   const dedupeKey = sanitizeFieldShadowText(decision.dedupeKey || decision.id, 180);
   const textFields = [
@@ -416,7 +457,12 @@ function makeRecord(params: {
     silenceReason,
     suggestedAction,
     approvalBoundary,
+    whySpeak,
+    whyQuiet,
   ].filter((value) => value.length > 0);
+  const privacyState = isPrivacyState(decision.privacyState)
+    ? decision.privacyState
+    : inferPrivacyState({ sourceRefs, evidenceRefs, textFields });
 
   return {
     version: 1,
@@ -433,10 +479,21 @@ function makeRecord(params: {
     sourceRefs,
     evidenceRefs,
     consentState: decision.consentState,
-    privacyState: inferPrivacyState({ sourceRefs, evidenceRefs, textFields }),
+    privacyState,
     policyResult: decision.policyResult,
     risk: decision.risk,
     sourceSummary,
+    ...(opportunityId ? { opportunityId } : {}),
+    ...(fieldEventId ? { fieldEventId } : {}),
+    ...(whySpeak ? { whySpeak } : {}),
+    ...(whyQuiet ? { whyQuiet } : {}),
+    ...(sourceFreshness ? { sourceFreshness } : {}),
+    ...(interruptionDecisionId ? { interruptionDecisionId } : {}),
+    ...(interruptionDeliveryMode ? { interruptionDeliveryMode } : {}),
+    ...(actionLadderDecisionId ? { actionLadderDecisionId } : {}),
+    ...(actionLadderLevel ? { actionLadderLevel } : {}),
+    ...(directChatBlockers.length ? { directChatBlockers } : {}),
+    ...(cannotKnow.length ? { cannotKnow } : {}),
     ...(missionId ? { missionId } : {}),
     ...(operatorMessagePreview ? { operatorMessagePreview } : {}),
     ...(silenceReason ? { silenceReason } : {}),
@@ -499,6 +556,23 @@ export function normalizeAoiFieldShadowDecisionRecord(
   const silenceReason = sanitizeFieldShadowText(raw.silenceReason);
   const suggestedAction = sanitizeFieldShadowText(raw.suggestedAction);
   const approvalBoundary = sanitizeFieldShadowText(raw.approvalBoundary);
+  const opportunityId = sanitizeFieldShadowText(raw.opportunityId, 127);
+  const fieldEventId = sanitizeFieldShadowText(raw.fieldEventId, 127);
+  const whySpeak = sanitizeFieldShadowText(raw.whySpeak);
+  const whyQuiet = sanitizeFieldShadowText(raw.whyQuiet);
+  const sourceFreshness =
+    raw.sourceFreshness === 'fresh' ||
+    raw.sourceFreshness === 'stale' ||
+    raw.sourceFreshness === 'failed' ||
+    raw.sourceFreshness === 'unknown'
+      ? raw.sourceFreshness
+      : undefined;
+  const interruptionDecisionId = sanitizeFieldShadowText(raw.interruptionDecisionId, 127);
+  const interruptionDeliveryMode = sanitizeFieldShadowText(raw.interruptionDeliveryMode, 80);
+  const actionLadderDecisionId = sanitizeFieldShadowText(raw.actionLadderDecisionId, 127);
+  const actionLadderLevel = sanitizeFieldShadowText(raw.actionLadderLevel, 40);
+  const directChatBlockers = normalizeRefs(raw.directChatBlockers, 12);
+  const cannotKnow = normalizeRefs(raw.cannotKnow, 12);
 
   return {
     version: 1,
@@ -519,6 +593,17 @@ export function normalizeAoiFieldShadowDecisionRecord(
     policyResult: raw.policyResult,
     risk: raw.risk,
     sourceSummary: sanitizeFieldShadowText(raw.sourceSummary),
+    ...(opportunityId ? { opportunityId } : {}),
+    ...(fieldEventId ? { fieldEventId } : {}),
+    ...(whySpeak ? { whySpeak } : {}),
+    ...(whyQuiet ? { whyQuiet } : {}),
+    ...(sourceFreshness ? { sourceFreshness } : {}),
+    ...(interruptionDecisionId ? { interruptionDecisionId } : {}),
+    ...(interruptionDeliveryMode ? { interruptionDeliveryMode } : {}),
+    ...(actionLadderDecisionId ? { actionLadderDecisionId } : {}),
+    ...(actionLadderLevel ? { actionLadderLevel } : {}),
+    ...(directChatBlockers.length ? { directChatBlockers } : {}),
+    ...(cannotKnow.length ? { cannotKnow } : {}),
     ...(missionId ? { missionId } : {}),
     ...(operatorMessagePreview ? { operatorMessagePreview } : {}),
     ...(silenceReason ? { silenceReason } : {}),
@@ -599,6 +684,9 @@ export function buildAoiFieldShadowRecordReport(
   const decisionKindCounts = normalizeCounts<AoiShadowDecisionKind>([
     'would_speak',
     'would_stay_quiet',
+    'would_show_dashboard',
+    'would_prepare_research',
+    'would_prepare_work_order',
     'would_propose',
     'would_prepare_approval',
     'would_mark_blind_spot',
@@ -610,6 +698,8 @@ export function buildAoiFieldShadowRecordReport(
     'personal_source_reality',
     'playbook',
     'approved_command_policy',
+    'interruption_governor',
+    'action_ladder',
     'mission_memory',
     'voice_policy',
     'unknown',

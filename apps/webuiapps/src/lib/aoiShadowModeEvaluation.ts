@@ -20,6 +20,9 @@ const DEFAULT_SHADOW_NOW = 1_800_000_000_000;
 export type AoiShadowDecisionKind =
   | 'would_speak'
   | 'would_stay_quiet'
+  | 'would_show_dashboard'
+  | 'would_prepare_research'
+  | 'would_prepare_work_order'
   | 'would_propose'
   | 'would_prepare_approval'
   | 'would_mark_blind_spot';
@@ -70,6 +73,18 @@ export interface AoiShadowDecision {
   consentState: AoiShadowConsentState;
   risk: AoiAutonomyRisk;
   policyResult: AoiShadowPolicyResult;
+  opportunityId?: string;
+  fieldEventId?: string;
+  whySpeak?: string;
+  whyQuiet?: string;
+  sourceFreshness?: 'fresh' | 'stale' | 'failed' | 'unknown';
+  interruptionDecisionId?: string;
+  interruptionDeliveryMode?: string;
+  actionLadderDecisionId?: string;
+  actionLadderLevel?: string;
+  directChatBlockers?: string[];
+  privacyState?: 'redacted' | 'metadata_only' | 'synthetic' | 'unknown';
+  cannotKnow?: string[];
   operatorMessagePreview?: string;
   silenceReason?: string;
   suggestedAction?: string;
