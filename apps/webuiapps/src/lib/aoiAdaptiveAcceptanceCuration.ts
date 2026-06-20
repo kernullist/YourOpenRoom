@@ -23,10 +23,16 @@ const MAX_REFS = 24;
 const LABELS: readonly AoiShadowDecisionLabel[] = [
   'useful',
   'too_much',
+  'too_frequent',
   'wrong_source',
+  'wrong_timing',
   'unsafe',
   'missed_context',
   'should_have_spoken',
+  'show_more',
+  'show_less',
+  'mute_topic',
+  'pin_topic',
 ];
 
 const CURATABLE_LABELS = new Set<AoiShadowDecisionLabel>([
@@ -35,14 +41,20 @@ const CURATABLE_LABELS = new Set<AoiShadowDecisionLabel>([
   'unsafe',
   'missed_context',
   'should_have_spoken',
+  'show_more',
+  'pin_topic',
 ]);
 
 const FAILURE_LABELS = new Set<AoiShadowDecisionLabel>([
   'too_much',
+  'too_frequent',
   'wrong_source',
+  'wrong_timing',
   'unsafe',
   'missed_context',
   'should_have_spoken',
+  'show_less',
+  'mute_topic',
 ]);
 
 export type AoiAdaptiveAcceptanceDimension =
@@ -278,7 +290,14 @@ function dimensionForLabel(
   if (label === 'missed_context') {
     return 'context_coverage';
   }
-  if (label === 'too_much' || label === 'should_have_spoken') {
+  if (
+    label === 'too_much' ||
+    label === 'too_frequent' ||
+    label === 'wrong_timing' ||
+    label === 'show_less' ||
+    label === 'mute_topic' ||
+    label === 'should_have_spoken'
+  ) {
     return 'timing';
   }
   if (record.subsystemOrigin === 'mission_memory') {
@@ -297,7 +316,7 @@ function reasonForLabel(
   label: AoiShadowDecisionLabel,
   record: AoiFieldShadowDecisionRecord,
 ): string {
-  if (label === 'useful') {
+  if (label === 'useful' || label === 'show_more' || label === 'pin_topic') {
     return sanitizeCurationText(
       `Useful field example: ${record.decisionKind.replace(/_/g, ' ')} was worth preserving without turning it into a permanent preference.`,
       220,
@@ -314,6 +333,12 @@ function reasonForLabel(
   }
   if (label === 'should_have_spoken') {
     return 'Timing field example: replay should catch an overly quiet decision when Aoi should have spoken.';
+  }
+  if (label === 'too_frequent' || label === 'show_less' || label === 'mute_topic') {
+    return 'Timing field example: replay should lower delivery pressure without changing execution permissions.';
+  }
+  if (label === 'wrong_timing') {
+    return 'Timing field example: replay should catch a correct idea surfaced at the wrong time.';
   }
   return 'Timing field example: replay should catch excessive interruption pressure.';
 }

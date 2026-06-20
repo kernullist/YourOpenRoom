@@ -46,7 +46,7 @@ import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
 import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import type { AoiReplayReport } from './aoiOperatorReplay';
-import type { AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
+import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import type {
   AoiAutonomyVisibleState,
@@ -723,7 +723,40 @@ export interface AoiOperatorFeedbackInboxPanel {
   topSourceKindLabels: string[];
   promotionCandidateLabel: string;
   calibrationInputLabel: string;
+  itemLabels: AoiOperatorFeedbackInboxPanelItem[];
   evidenceRefs: string[];
+}
+
+export interface AoiOperatorFeedbackInboxPanelAction {
+  id: string;
+  label: string;
+  title: string;
+  feedbackLabel: AoiShadowDecisionLabel;
+  disabled: boolean;
+  resultLabel: string;
+}
+
+export interface AoiOperatorFeedbackInboxPanelItem {
+  id: string;
+  decisionRecordId: string;
+  decisionId: string;
+  fieldEventId?: string;
+  opportunityId?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: string;
+  sourceKinds: string[];
+  titleLabel: string;
+  metaLabel: string;
+  whatAoiNoticedLabel: string;
+  whySpeakQuietLabel: string;
+  cannotKnowLabel: string;
+  whyShowMoreLessLabel: string;
+  labelStateLabel: string;
+  evidenceRefs: string[];
+  labelActions: AoiOperatorFeedbackInboxPanelAction[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
 }
 
 export interface AoiOperatorAcceptanceDashboard {
@@ -5171,6 +5204,7 @@ function buildAoiOperatorFeedbackInboxPanel(
       topSourceKindLabels: [],
       promotionCandidateLabel: '0 promotion candidates',
       calibrationInputLabel: '0 calibration inputs',
+      itemLabels: [],
       evidenceRefs: [],
     };
   }
@@ -5200,10 +5234,129 @@ function buildAoiOperatorFeedbackInboxPanel(
     calibrationInputLabel: `${inbox.calibrationInputCount} calibration input${
       inbox.calibrationInputCount === 1 ? '' : 's'
     }`,
+    itemLabels: inbox.items.slice(0, 8).map(buildAoiOperatorFeedbackInboxPanelItem),
     evidenceRefs: dashboardRefs([
       ...inbox.evidenceRefs,
       ...inbox.topSourceKindsNeedingReview.flatMap((item) => item.evidenceRefs),
     ]),
+  };
+}
+
+const AOI_FIELD_FEEDBACK_PANEL_ACTIONS: readonly Array<{
+  feedbackLabel: AoiShadowDecisionLabel;
+  label: string;
+  title: string;
+  resultLabel: string;
+}> = [
+  {
+    feedbackLabel: 'useful',
+    label: 'Useful',
+    title: 'Rank similar evidence-backed field decisions slightly higher.',
+    resultLabel: 'show more after useful feedback',
+  },
+  {
+    feedbackLabel: 'too_frequent',
+    label: 'Too frequent',
+    title: 'Lower direct-chat sensitivity and extend cooldown for similar items.',
+    resultLabel: 'show less and cool down similar direct delivery',
+  },
+  {
+    feedbackLabel: 'wrong_source',
+    label: 'Wrong source',
+    title: 'Lower confidence in this source path and keep readiness conservative.',
+    resultLabel: 'tighten source selection',
+  },
+  {
+    feedbackLabel: 'wrong_timing',
+    label: 'Wrong timing',
+    title: 'Treat the timing as a negative delivery signal.',
+    resultLabel: 'reduce timing confidence',
+  },
+  {
+    feedbackLabel: 'unsafe',
+    label: 'Unsafe',
+    title: 'Block action escalation for similar opportunities.',
+    resultLabel: 'tighten action ladder gates',
+  },
+  {
+    feedbackLabel: 'missed_context',
+    label: 'Missed context',
+    title: 'Require more context before promoting similar field decisions.',
+    resultLabel: 'ask for more context next time',
+  },
+  {
+    feedbackLabel: 'should_have_spoken',
+    label: 'Should speak',
+    title:
+      'Raise future visibility candidates without bypassing opt-in, quiet, freshness, or approval gates.',
+    resultLabel: 'increase visibility candidate score only',
+  },
+  {
+    feedbackLabel: 'show_more',
+    label: 'Show more',
+    title: 'Prefer similar topics while preserving all safety gates.',
+    resultLabel: 'raise topic ranking',
+  },
+  {
+    feedbackLabel: 'show_less',
+    label: 'Show less',
+    title: 'Reduce similar dashboard/direct delivery frequency.',
+    resultLabel: 'lower delivery frequency',
+  },
+  {
+    feedbackLabel: 'mute_topic',
+    label: 'Mute topic',
+    title: 'Suppress this topic key in future field decisions.',
+    resultLabel: 'suppress topic',
+  },
+  {
+    feedbackLabel: 'pin_topic',
+    label: 'Pin topic',
+    title: 'Prefer this topic key when evidence is fresh and gates pass.',
+    resultLabel: 'boost topic only',
+  },
+];
+
+function buildAoiOperatorFeedbackInboxPanelActions(
+  item: AoiOperatorFeedbackInbox['items'][number],
+): AoiOperatorFeedbackInboxPanelAction[] {
+  const seenLabels = new Set(item.labels.map((label) => label.label));
+  return AOI_FIELD_FEEDBACK_PANEL_ACTIONS.map((action) => ({
+    id: `field-feedback:${item.decisionRecordId}:${action.feedbackLabel}`,
+    label: action.label,
+    title: action.title,
+    feedbackLabel: action.feedbackLabel,
+    disabled: seenLabels.has(action.feedbackLabel),
+    resultLabel: action.resultLabel,
+  }));
+}
+
+function buildAoiOperatorFeedbackInboxPanelItem(
+  item: AoiOperatorFeedbackInbox['items'][number],
+): AoiOperatorFeedbackInboxPanelItem {
+  const latestLabel = item.latestLabel ? item.latestLabel.replace(/_/g, ' ') : 'unlabeled';
+  return {
+    id: item.id,
+    decisionRecordId: item.decisionRecordId,
+    decisionId: item.decisionId,
+    ...(item.fieldEventId ? { fieldEventId: item.fieldEventId } : {}),
+    ...(item.opportunityId ? { opportunityId: item.opportunityId } : {}),
+    ...(item.topicKey ? { topicKey: item.topicKey } : {}),
+    ...(item.sourceKey ? { sourceKey: item.sourceKey } : {}),
+    ...(item.deliveryMode ? { deliveryMode: item.deliveryMode } : {}),
+    sourceKinds: item.sourceKinds,
+    titleLabel: `${item.decisionKind.replace(/_/g, ' ')} from ${item.subsystemOrigin.replace(/_/g, ' ')}`,
+    metaLabel: `${item.risk} risk / ${item.policyResult.replace(/_/g, ' ')} / ${item.privacyState.replace(/_/g, ' ')}`,
+    whatAoiNoticedLabel: item.sourceSummary,
+    whySpeakQuietLabel: `${item.whatAoiWouldHaveDone}; ${item.whyJudgedThisWay}`,
+    cannotKnowLabel: item.cannotKnowLabel,
+    whyShowMoreLessLabel:
+      'Feedback tunes ranking, cooldown, source preference, and delivery sensitivity only; execution authority stays display-only.',
+    labelStateLabel: `${item.labelState.replace(/_/g, ' ')} / latest ${latestLabel}`,
+    evidenceRefs: dashboardRefs(item.evidenceRefs),
+    labelActions: buildAoiOperatorFeedbackInboxPanelActions(item),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
   };
 }
 

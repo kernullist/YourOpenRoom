@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   fetchAoiAutonomyDashboard,
+  fetchAoiFieldFeedback,
   fetchAoiOperatorHealth,
   fetchAoiPlaybooks,
   fetchAoiProactiveBriefs,
   prepareAoiPlaybookPreview,
+  recordAoiFieldFeedback,
   recordAoiProactiveBriefFeedback,
   resetAoiProactiveBriefCooldown,
   runAoiAutonomyManualTick,
@@ -250,6 +252,105 @@ function makeProactiveBriefPayload() {
   };
 }
 
+function makeFieldFeedbackPayload() {
+  const fieldShadowReport = {
+    version: 1,
+    id: 'aoi-field-shadow-report-client-test',
+    sessionPath: 'aoi/default',
+    generatedAt: 1000,
+    session: {
+      version: 1,
+      id: 'aoi-field-shadow-session-client-test',
+      sessionPath: 'aoi/default',
+      startedAt: 1000,
+      updatedAt: 1000,
+      decisionCount: 0,
+      activeDecisionCount: 0,
+      expiredDecisionCount: 0,
+      evidenceRefs: [],
+      mutationCount: 0,
+      expiresAt: 2000,
+    },
+    records: [],
+    activeRecords: [],
+    expiredRecords: [],
+    totalRecordCount: 0,
+    activeRecordCount: 0,
+    expiredRecordCount: 0,
+    dedupedRecordCount: 0,
+    mutationCount: 0,
+    zeroMutation: true,
+    privacyCounts: {
+      redacted: 0,
+      metadata_only: 0,
+      synthetic: 0,
+      unknown: 0,
+    },
+    decisionKindCounts: {
+      would_speak: 0,
+      would_stay_quiet: 0,
+      would_show_dashboard: 0,
+      would_prepare_research: 0,
+      would_prepare_work_order: 0,
+      would_propose: 0,
+      would_prepare_approval: 0,
+      would_mark_blind_spot: 0,
+    },
+    subsystemOriginCounts: {
+      digest: 0,
+      health: 0,
+      source_consent: 0,
+      personal_source_reality: 0,
+      playbook: 0,
+      approved_command_policy: 0,
+      interruption_governor: 0,
+      action_ladder: 0,
+      mission_memory: 0,
+      voice_policy: 0,
+      unknown: 0,
+    },
+    sourceKindCounts: {},
+    evidenceRefs: [],
+  };
+  return {
+    ok: true,
+    sessionPath: 'aoi/default',
+    fieldShadowReport,
+    labelActions: [],
+    feedbackInbox: {
+      version: 1,
+      id: 'aoi-feedback-inbox-client-test',
+      sessionPath: 'aoi/default',
+      generatedAt: 1000,
+      inboxCount: 0,
+      unlabeledCount: 0,
+      labeledCount: 0,
+      unsafeLabelCount: 0,
+      calibrationInputCount: 0,
+      promotionCandidateCount: 0,
+      labelDistribution: {
+        useful: 0,
+        too_much: 0,
+        too_frequent: 0,
+        wrong_source: 0,
+        wrong_timing: 0,
+        unsafe: 0,
+        missed_context: 0,
+        should_have_spoken: 0,
+        show_more: 0,
+        show_less: 0,
+        mute_topic: 0,
+        pin_topic: 0,
+      },
+      topSourceKindsNeedingReview: [],
+      items: [],
+      evidenceRefs: [],
+      actionAuthority: 'label_only',
+      mutationCount: 0,
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -353,8 +454,25 @@ describe('Aoi autonomy client dashboard', () => {
           archived: [],
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/opportunities?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          active: [],
+          archived: [],
+        });
+      }
+      if (url.startsWith('/api/aoi-autonomy/deliberations?')) {
+        return jsonResponse({
+          sessionPath: 'aoi/default',
+          latest: null,
+          runs: [],
+        });
+      }
       if (url.startsWith('/api/aoi-autonomy/proactive-briefs?')) {
         return jsonResponse(makeProactiveBriefPayload());
+      }
+      if (url.startsWith('/api/aoi-autonomy/field-feedback?')) {
+        return jsonResponse(makeFieldFeedbackPayload());
       }
       throw new Error(`Unexpected URL: ${url}`);
     });
@@ -372,7 +490,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.health.overallStatus).toBe('limited');
     expect(snapshot.playbooks.active).toHaveLength(1);
     expect(snapshot.proactiveBriefs.candidates).toHaveLength(1);
-    expect(fetchMock).toHaveBeenCalledTimes(13);
+    expect(snapshot.fieldFeedback.feedbackInbox.inboxCount).toBe(0);
+    expect(fetchMock).toHaveBeenCalledTimes(16);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -387,7 +506,10 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/playbooks?sessionPath=aoi%2Fdefault&includeArchived=true',
+        '/api/aoi-autonomy/opportunities?sessionPath=aoi%2Fdefault&includeArchived=true',
+        '/api/aoi-autonomy/deliberations?sessionPath=aoi%2Fdefault&limit=20',
         '/api/aoi-autonomy/proactive-briefs?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/field-feedback?sessionPath=aoi%2Fdefault',
       ]),
     );
   });
@@ -433,6 +555,119 @@ describe('Aoi autonomy client dashboard', () => {
         sessionPath: 'aoi/default',
         briefId: 'aoi-brief-client-test',
         category: 'show_less',
+      },
+    ]);
+  });
+
+  it('fetches and records field feedback with label metadata', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/aoi-autonomy/field-feedback?')) {
+        return jsonResponse(makeFieldFeedbackPayload());
+      }
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (url === '/api/aoi-autonomy/field-feedback') {
+        return jsonResponse({
+          ...makeFieldFeedbackPayload(),
+          labelAction: {
+            version: 1,
+            id: 'aoi-feedback-label-client-test',
+            sessionPath: 'aoi/default',
+            decisionRecordId: 'field-shadow-record-client-test',
+            decisionId: 'field-shadow-decision-client-test',
+            fieldEventId: 'field-event-client-test',
+            opportunityId: 'opportunity-client-test',
+            topicKey: 'topic:reverse-engineering',
+            sourceKey: 'browser_context',
+            deliveryMode: 'direct_chat',
+            label: 'too_frequent',
+            actor: 'user',
+            createdAt: 2000,
+            sourceKinds: ['browser_context'],
+            evidenceRefs: ['field-shadow-record:field-shadow-record-client-test'],
+            calibrationEligible: true,
+            promotionEligible: false,
+            safetyTightening: false,
+            actionAuthority: 'display_only',
+            mutationCount: 0,
+          },
+          followThroughEvents: [
+            {
+              version: 1,
+              id: 'aoi-follow-through-field-feedback-client-test',
+              sessionPath: 'aoi/default',
+              opportunityId: 'opportunity-client-test',
+              sourceKind: 'research',
+              topicKey: 'topic:reverse-engineering',
+              sourceKey: 'browser_context',
+              deliveryMode: 'direct_chat',
+              action: 'snoozed',
+              feedbackCategory: 'too_frequent',
+              result: 'negative',
+              timingLabel: 'operator field feedback too_frequent',
+              evidenceRefs: ['operator-feedback:aoi-feedback-label-client-test'],
+              createdAt: 2000,
+              actionAuthority: 'display_only',
+              mutationCount: 0,
+            },
+          ],
+          fieldEvents: [
+            {
+              version: 1,
+              id: 'aoi-field-event-feedback-client-test',
+              sessionPath: 'aoi/default',
+              category: 'feedback_recorded',
+              summary: 'Operator labeled field decision as too_frequent.',
+              sourceRefs: ['operator-feedback:aoi-feedback-label-client-test'],
+              evidenceRefs: ['field-shadow-record:field-shadow-record-client-test'],
+              privacyState: 'metadata_only',
+              mutationCount: 0,
+              cannotKnow: [],
+              createdAt: 2000,
+              expiresAt: 3000,
+              signalIds: ['aoi-feedback-label-client-test'],
+              dedupeKey: 'operator-feedback:aoi-feedback-label-client-test',
+              actionAuthority: 'display_only',
+            },
+          ],
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await fetchAoiFieldFeedback('aoi/default');
+    const feedback = await recordAoiFieldFeedback('aoi/default', {
+      decisionRecordId: 'field-shadow-record-client-test',
+      decisionId: 'field-shadow-decision-client-test',
+      fieldEventId: 'field-event-client-test',
+      opportunityId: 'opportunity-client-test',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'browser_context',
+      deliveryMode: 'direct_chat',
+      label: 'too_frequent',
+      sourceKinds: ['browser_context'],
+      evidenceRefs: ['field-shadow-record:field-shadow-record-client-test'],
+    });
+
+    expect(list.feedbackInbox.inboxCount).toBe(0);
+    expect(feedback.labelAction.actionAuthority).toBe('display_only');
+    expect(feedback.followThroughEvents[0]?.feedbackCategory).toBe('too_frequent');
+    expect(feedback.fieldEvents[0]?.mutationCount).toBe(0);
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        decisionRecordId: 'field-shadow-record-client-test',
+        decisionId: 'field-shadow-decision-client-test',
+        fieldEventId: 'field-event-client-test',
+        opportunityId: 'opportunity-client-test',
+        topicKey: 'topic:reverse-engineering',
+        sourceKey: 'browser_context',
+        deliveryMode: 'direct_chat',
+        label: 'too_frequent',
+        sourceKinds: ['browser_context'],
+        evidenceRefs: ['field-shadow-record:field-shadow-record-client-test'],
       },
     ]);
   });

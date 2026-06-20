@@ -14,6 +14,7 @@ import type {
   AoiContextSourceFeedback,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
+  AoiFollowThroughLearningSummary,
   AoiGoal,
   AoiGoalProgressEvent,
   AoiInterestProfile,
@@ -31,6 +32,7 @@ import type {
   AoiPlaybook,
   AoiPlaybookEvidenceKind,
   AoiPlaybookStepRefs,
+  AoiFollowThroughEvent,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalDecisionAction,
@@ -51,7 +53,15 @@ import type {
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
+import type { AoiFieldEvent } from './aoiFieldEventLedger';
+import type { AoiFieldFeedbackLearningSummary } from './aoiFieldFeedbackLearning';
+import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
+import type {
+  AoiOperatorFeedbackInbox,
+  AoiOperatorFeedbackLabelAction,
+} from './aoiOperatorFeedbackInbox';
 import type { AoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
+import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 
 const API_PREFIX = '/api/aoi-autonomy';
 
@@ -188,6 +198,38 @@ export interface AoiAutonomyDashboardSnapshot {
   opportunities: AoiOpportunityInboxList;
   deliberations: AoiDeliberationRunList;
   proactiveBriefs: AoiProactiveBriefListResponse;
+  fieldFeedback: AoiFieldFeedbackResponse;
+}
+
+export interface AoiFieldFeedbackInput {
+  decisionRecordId: string;
+  decisionId: string;
+  fieldEventId?: string;
+  opportunityId?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: string;
+  label: AoiShadowDecisionLabel;
+  sourceKinds?: string[];
+  note?: string;
+  evidenceRefs?: string[];
+}
+
+export interface AoiFieldFeedbackResponse {
+  ok: boolean;
+  sessionPath: string;
+  fieldShadowReport: AoiFieldShadowRecordReport | null;
+  labelActions: AoiOperatorFeedbackLabelAction[];
+  feedbackInbox: AoiOperatorFeedbackInbox;
+  learningSummary?: AoiFieldFeedbackLearningSummary;
+  followThroughLearning?: AoiFollowThroughLearningSummary;
+}
+
+export interface AoiFieldFeedbackRecordResponse extends AoiFieldFeedbackResponse {
+  labelAction: AoiOperatorFeedbackLabelAction;
+  followThroughEvents: AoiFollowThroughEvent[];
+  fieldEvents: AoiFieldEvent[];
+  evaluation?: AoiAutonomyEvaluationResult;
 }
 
 export interface AoiProactiveBriefListResponse {
@@ -309,6 +351,81 @@ export interface AoiContextSourceFeedbackResponse {
   sessionPath: string;
   feedback: AoiContextSourceFeedback;
   context: AoiContextRouterResult | null;
+}
+
+function parseAoiFieldFeedbackPayload(
+  payload: Record<string, unknown>,
+  sessionPath: string,
+): AoiFieldFeedbackResponse {
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    fieldShadowReport: isRecord(payload.fieldShadowReport)
+      ? (payload.fieldShadowReport as AoiFieldShadowRecordReport)
+      : null,
+    labelActions: asArray<AoiOperatorFeedbackLabelAction>(payload.labelActions),
+    feedbackInbox: requireRecordField<AoiOperatorFeedbackInbox>(
+      payload,
+      'feedbackInbox',
+      'Aoi field feedback response was malformed.',
+    ),
+    ...(isRecord(payload.learningSummary)
+      ? { learningSummary: payload.learningSummary as AoiFieldFeedbackLearningSummary }
+      : {}),
+    ...(isRecord(payload.followThroughLearning)
+      ? { followThroughLearning: payload.followThroughLearning as AoiFollowThroughLearningSummary }
+      : {}),
+  };
+}
+
+export async function fetchAoiFieldFeedback(
+  sessionPath: string,
+): Promise<AoiFieldFeedbackResponse> {
+  const response = await fetch(`${API_PREFIX}/field-feedback?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi field feedback.');
+  return parseAoiFieldFeedbackPayload(payload, sessionPath);
+}
+
+export async function recordAoiFieldFeedback(
+  sessionPath: string,
+  input: AoiFieldFeedbackInput,
+): Promise<AoiFieldFeedbackRecordResponse> {
+  const response = await fetch(`${API_PREFIX}/field-feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      decisionRecordId: input.decisionRecordId,
+      decisionId: input.decisionId,
+      fieldEventId: input.fieldEventId,
+      opportunityId: input.opportunityId,
+      topicKey: input.topicKey,
+      sourceKey: input.sourceKey,
+      deliveryMode: input.deliveryMode,
+      label: input.label,
+      sourceKinds: input.sourceKinds,
+      note: input.note,
+      evidenceRefs: input.evidenceRefs,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi field feedback.');
+  return {
+    ...parseAoiFieldFeedbackPayload(payload, sessionPath),
+    labelAction: requireRecordField<AoiOperatorFeedbackLabelAction>(
+      payload,
+      'labelAction',
+      'Aoi field feedback record response was malformed.',
+    ),
+    followThroughEvents: asArray<AoiFollowThroughEvent>(payload.followThroughEvents),
+    fieldEvents: asArray<AoiFieldEvent>(payload.fieldEvents),
+    ...(isRecord(payload.evaluation)
+      ? { evaluation: payload.evaluation as AoiAutonomyEvaluationResult }
+      : {}),
+  };
 }
 
 export interface AoiAutonomyProposalDecisionResult {
@@ -1240,6 +1357,7 @@ export async function fetchAoiAutonomyDashboard(
     opportunities,
     deliberations,
     proactiveBriefs,
+    fieldFeedback,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -1256,6 +1374,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiOpportunityInbox(sessionPath, true),
     fetchAoiDeliberationRuns(sessionPath, 20),
     fetchAoiProactiveBriefs(sessionPath),
+    fetchAoiFieldFeedback(sessionPath),
   ]);
 
   return {
@@ -1275,6 +1394,7 @@ export async function fetchAoiAutonomyDashboard(
     opportunities,
     deliberations,
     proactiveBriefs,
+    fieldFeedback,
   };
 }
 

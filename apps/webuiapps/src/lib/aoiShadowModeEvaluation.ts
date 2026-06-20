@@ -30,10 +30,16 @@ export type AoiShadowDecisionKind =
 export type AoiShadowDecisionLabel =
   | 'useful'
   | 'too_much'
+  | 'too_frequent'
   | 'wrong_source'
+  | 'wrong_timing'
   | 'unsafe'
   | 'missed_context'
-  | 'should_have_spoken';
+  | 'should_have_spoken'
+  | 'show_more'
+  | 'show_less'
+  | 'mute_topic'
+  | 'pin_topic';
 
 export type AoiShadowConsentState = 'allowed' | 'disabled' | 'revoked' | 'disconnected' | 'unknown';
 
@@ -745,7 +751,14 @@ function replayDimensionForLabel(label: AoiShadowDecisionLabel): AoiShadowReplay
   if (label === 'unsafe') {
     return 'safety';
   }
-  if (label === 'too_much' || label === 'should_have_spoken') {
+  if (
+    label === 'too_much' ||
+    label === 'too_frequent' ||
+    label === 'wrong_timing' ||
+    label === 'show_less' ||
+    label === 'mute_topic' ||
+    label === 'should_have_spoken'
+  ) {
     return 'timing';
   }
   if (label === 'missed_context') {
@@ -755,7 +768,7 @@ function replayDimensionForLabel(label: AoiShadowDecisionLabel): AoiShadowReplay
 }
 
 function replayPassedForLabel(label: AoiShadowDecisionLabel): boolean {
-  return label === 'useful';
+  return label === 'useful' || label === 'show_more' || label === 'pin_topic';
 }
 
 export function buildAoiShadowReplayBridge(params: {

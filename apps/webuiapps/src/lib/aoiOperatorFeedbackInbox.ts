@@ -9,6 +9,7 @@ import type {
   AoiAutonomyRisk,
   AoiContextSourceFeedback,
   AoiProposalDecision,
+  AoiProposalFeedbackCategory,
 } from './aoiAutonomyTypes';
 import type {
   AoiShadowDecisionKind,
@@ -25,17 +26,29 @@ const MAX_INBOX_ITEMS = 80;
 const LABELS: readonly AoiShadowDecisionLabel[] = [
   'useful',
   'too_much',
+  'too_frequent',
   'wrong_source',
+  'wrong_timing',
   'unsafe',
   'missed_context',
   'should_have_spoken',
+  'show_more',
+  'show_less',
+  'mute_topic',
+  'pin_topic',
 ];
 
 const CALIBRATION_LABELS = new Set<AoiShadowDecisionLabel>([
   'useful',
   'too_much',
+  'too_frequent',
   'wrong_source',
+  'wrong_timing',
   'unsafe',
+  'show_more',
+  'show_less',
+  'mute_topic',
+  'pin_topic',
 ]);
 
 const PROMOTION_LABELS = new Set<AoiShadowDecisionLabel>([
@@ -44,6 +57,8 @@ const PROMOTION_LABELS = new Set<AoiShadowDecisionLabel>([
   'unsafe',
   'missed_context',
   'should_have_spoken',
+  'show_more',
+  'pin_topic',
 ]);
 
 export type AoiOperatorFeedbackReviewDimension =
@@ -70,6 +85,11 @@ export interface AoiOperatorFeedbackLabelAction {
   sessionPath: string;
   decisionRecordId: string;
   decisionId: string;
+  fieldEventId?: string;
+  opportunityId?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: string;
   label: AoiShadowDecisionLabel;
   actor: 'user' | 'system';
   createdAt: number;
@@ -78,6 +98,7 @@ export interface AoiOperatorFeedbackLabelAction {
   calibrationEligible: boolean;
   promotionEligible: boolean;
   safetyTightening: boolean;
+  actionAuthority: 'display_only';
   mutationCount: 0;
   note?: string;
 }
@@ -86,6 +107,11 @@ export interface AoiOperatorFeedbackLabelInput {
   sessionPath: string;
   decisionRecordId: string;
   decisionId: string;
+  fieldEventId?: string;
+  opportunityId?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: string;
   label: AoiShadowDecisionLabel;
   sourceKinds?: string[];
   actor?: 'user' | 'system';
@@ -100,6 +126,11 @@ export interface AoiOperatorFeedbackInboxItem {
   sessionPath: string;
   decisionRecordId: string;
   decisionId: string;
+  fieldEventId?: string;
+  opportunityId?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: string;
   decisionKind: AoiShadowDecisionKind;
   subsystemOrigin: AoiFieldShadowSubsystemOrigin;
   risk: AoiAutonomyRisk;
@@ -332,7 +363,14 @@ function dimensionForLabel(label: AoiShadowDecisionLabel): AoiOperatorFeedbackRe
   if (label === 'missed_context') {
     return 'context_coverage';
   }
-  if (label === 'too_much' || label === 'should_have_spoken') {
+  if (
+    label === 'too_much' ||
+    label === 'too_frequent' ||
+    label === 'wrong_timing' ||
+    label === 'show_less' ||
+    label === 'mute_topic' ||
+    label === 'should_have_spoken'
+  ) {
     return 'timing';
   }
   return 'usefulness';
@@ -472,6 +510,11 @@ function makeItem(
     sessionPath: record.sessionPath,
     decisionRecordId: record.id,
     decisionId: record.decisionId,
+    ...(record.fieldEventId ? { fieldEventId: record.fieldEventId } : {}),
+    ...(record.opportunityId ? { opportunityId: record.opportunityId } : {}),
+    ...(record.dedupeKey ? { topicKey: record.dedupeKey } : {}),
+    ...(sourceKinds[0] ? { sourceKey: sourceKinds[0] } : {}),
+    ...(record.interruptionDeliveryMode ? { deliveryMode: record.interruptionDeliveryMode } : {}),
     decisionKind: record.decisionKind,
     subsystemOrigin: record.subsystemOrigin,
     risk: record.risk,
@@ -618,6 +661,11 @@ export function normalizeAoiOperatorFeedbackLabelAction(
     sessionPath,
     decisionRecordId: sanitizeText(raw.decisionRecordId, 127),
     decisionId: sanitizeText(raw.decisionId, 127),
+    ...(raw.fieldEventId ? { fieldEventId: sanitizeText(raw.fieldEventId, 127) } : {}),
+    ...(raw.opportunityId ? { opportunityId: sanitizeText(raw.opportunityId, 127) } : {}),
+    ...(raw.topicKey ? { topicKey: sanitizeText(raw.topicKey, 160) } : {}),
+    ...(raw.sourceKey ? { sourceKey: sanitizeText(raw.sourceKey, 160) } : {}),
+    ...(raw.deliveryMode ? { deliveryMode: sanitizeText(raw.deliveryMode, 80) } : {}),
     label: raw.label,
     actor: raw.actor,
     createdAt: raw.createdAt,
@@ -626,6 +674,7 @@ export function normalizeAoiOperatorFeedbackLabelAction(
     calibrationEligible: CALIBRATION_LABELS.has(raw.label),
     promotionEligible: PROMOTION_LABELS.has(raw.label),
     safetyTightening: raw.label === 'unsafe',
+    actionAuthority: 'display_only',
     mutationCount: 0,
     ...(raw.note ? { note: sanitizeText(raw.note, 220) } : {}),
   };
@@ -644,10 +693,17 @@ export function createAoiOperatorFeedbackLabelAction(
   const now = input.now ?? DEFAULT_INBOX_NOW;
   const decisionRecordId = sanitizeText(input.decisionRecordId, 127);
   const decisionId = sanitizeText(input.decisionId, 127);
+  const fieldEventId = sanitizeText(input.fieldEventId, 127);
+  const opportunityId = sanitizeText(input.opportunityId, 127);
+  const topicKey = sanitizeText(input.topicKey, 160);
+  const sourceKey = sanitizeText(input.sourceKey, 160);
+  const deliveryMode = sanitizeText(input.deliveryMode, 80);
   const evidenceRefs = uniqueStrings(
     [
       `field-shadow-record:${decisionRecordId}`,
       `field-shadow-decision:${decisionId}`,
+      fieldEventId ? `field-event:${fieldEventId}` : undefined,
+      opportunityId ? `opportunity:${opportunityId}` : undefined,
       ...(input.evidenceRefs ?? []),
     ],
     MAX_REFS,
@@ -660,6 +716,11 @@ export function createAoiOperatorFeedbackLabelAction(
     sessionPath,
     decisionRecordId,
     decisionId,
+    ...(fieldEventId ? { fieldEventId } : {}),
+    ...(opportunityId ? { opportunityId } : {}),
+    ...(topicKey ? { topicKey } : {}),
+    ...(sourceKey ? { sourceKey } : {}),
+    ...(deliveryMode ? { deliveryMode } : {}),
     label: input.label,
     actor: input.actor ?? 'user',
     createdAt: now,
@@ -668,6 +729,7 @@ export function createAoiOperatorFeedbackLabelAction(
     calibrationEligible: CALIBRATION_LABELS.has(input.label),
     promotionEligible: PROMOTION_LABELS.has(input.label),
     safetyTightening: input.label === 'unsafe',
+    actionAuthority: 'display_only',
     mutationCount: 0,
     ...(input.note ? { note: sanitizeText(input.note, 220) } : {}),
   };
@@ -692,6 +754,11 @@ export function createAoiOperatorFeedbackLabelActionForItem(params: {
     sessionPath: params.item.sessionPath,
     decisionRecordId: params.item.decisionRecordId,
     decisionId: params.item.decisionId,
+    fieldEventId: params.item.fieldEventId,
+    opportunityId: params.item.opportunityId,
+    topicKey: params.item.topicKey,
+    sourceKey: params.item.sourceKey,
+    deliveryMode: params.item.deliveryMode,
     label: params.label,
     actor: params.actor,
     note: params.note,
@@ -760,13 +827,38 @@ export function buildAoiOperatorFeedbackInbox(
 }
 
 function decisionActionForLabel(label: AoiShadowDecisionLabel): AoiProposalDecision['action'] {
-  if (label === 'useful') {
+  if (
+    label === 'useful' ||
+    label === 'show_more' ||
+    label === 'pin_topic' ||
+    label === 'should_have_spoken'
+  ) {
     return 'accept';
   }
-  if (label === 'too_much') {
+  if (
+    label === 'too_much' ||
+    label === 'too_frequent' ||
+    label === 'wrong_timing' ||
+    label === 'show_less'
+  ) {
     return 'snooze';
   }
   return 'dismiss';
+}
+
+function proposalFeedbackCategoryForLabel(
+  label: AoiShadowDecisionLabel,
+): AoiProposalFeedbackCategory {
+  if (label === 'show_more' || label === 'pin_topic' || label === 'should_have_spoken') {
+    return 'useful';
+  }
+  if (label === 'show_less' || label === 'mute_topic') {
+    return 'too_much';
+  }
+  if (label === 'missed_context') {
+    return 'needs_more_detail';
+  }
+  return label;
 }
 
 function nextStatusForAction(
@@ -826,7 +918,7 @@ export function buildAoiOperatorFeedbackCalibrationDecisions(params: {
         createdAt: label.createdAt,
         previousStatus: 'active',
         nextStatus,
-        feedbackCategory: label.label,
+        feedbackCategory: proposalFeedbackCategoryForLabel(label.label),
         ...(label.note ? { feedbackNote: label.note } : {}),
         proposalTrigger: `field_shadow:${record?.subsystemOrigin ?? 'unknown'}`,
         proposalRisk: record?.risk ?? 'low',
@@ -845,6 +937,8 @@ export function buildAoiOperatorFeedbackCalibrationDecisions(params: {
             `operator-feedback:${label.id}`,
             `field-shadow-record:${label.decisionRecordId}`,
             `field-shadow-decision:${label.decisionId}`,
+            ...(label.fieldEventId ? [`field-event:${label.fieldEventId}`] : []),
+            ...(label.opportunityId ? [`opportunity:${label.opportunityId}`] : []),
             ...label.evidenceRefs,
             ...(record?.evidenceRefs ?? []),
             ...sourceKinds.map((kind) => `source-kind:${kind}`),
@@ -868,7 +962,11 @@ export function buildAoiOperatorFeedbackContextFeedback(params: {
     .filter(
       (label) =>
         label.sessionPath === sessionPath &&
-        (label.label === 'wrong_source' || label.label === 'too_much'),
+        (label.label === 'wrong_source' ||
+          label.label === 'wrong_timing' ||
+          label.label === 'too_much' ||
+          label.label === 'too_frequent' ||
+          label.label === 'unsafe'),
     )
     .flatMap((label) =>
       (label.sourceKinds.length > 0 ? label.sourceKinds : ['unknown']).map((sourceKind) => ({

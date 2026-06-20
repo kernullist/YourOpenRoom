@@ -3655,6 +3655,15 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.feedbackInbox.topSourceKindLabels.join(' ')).toContain('browser context');
     expect(dashboard.feedbackInbox.calibrationInputLabel).toContain('1 calibration');
     expect(dashboard.feedbackInbox.promotionCandidateLabel).toContain('1 promotion');
+    expect(dashboard.feedbackInbox.itemLabels[0]?.whatAoiNoticedLabel).toContain(
+      'Browser metadata mentioned',
+    );
+    expect(
+      dashboard.feedbackInbox.itemLabels[0]?.labelActions.some(
+        (action) => action.feedbackLabel === 'too_frequent',
+      ),
+    ).toBe(true);
+    expect(dashboard.feedbackInbox.itemLabels[0]?.actionAuthority).toBe('display_only');
     expect(dashboard.evidenceRefs).toContain('environment-source:browser-context');
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('C:\\Users\\secret\\note.txt');

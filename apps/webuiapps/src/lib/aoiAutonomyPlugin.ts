@@ -25,12 +25,16 @@ import {
   loadAoiArchivedOpportunities,
   loadAoiObservations,
   loadAoiAutonomyPolicy,
+  loadAoiFieldShadowRecordReport,
+  loadAoiOperatorFeedbackLabelActions,
   loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
   saveAoiAutonomyPolicy,
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
+import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
+import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import { applyAoiMissionDecision, deriveAoiMissionState } from './aoiAutonomyMission';
 import {
   collectAndPersistAoiWorkspaceSnapshot,
@@ -74,6 +78,7 @@ import {
 import { AOI_PROACTIVE_BRIEF_GLOBAL_COOLDOWN_KEY } from './aoiProactiveBriefPlanner';
 import { decideAoiProactiveBriefDelivery } from './aoiProactiveBriefPolicy';
 import { buildAoiProactiveBriefPanelModel } from './aoiProactiveBriefUi';
+import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 import {
   buildAoiProactiveTrendAdvisorState,
   isAoiProactiveTrendDeliveryEventKind,
@@ -248,6 +253,23 @@ function isAoiProactiveBriefFeedbackCategory(
   );
 }
 
+function isAoiShadowDecisionLabel(value: unknown): value is AoiShadowDecisionLabel {
+  return (
+    value === 'useful' ||
+    value === 'too_much' ||
+    value === 'too_frequent' ||
+    value === 'wrong_source' ||
+    value === 'wrong_timing' ||
+    value === 'unsafe' ||
+    value === 'missed_context' ||
+    value === 'should_have_spoken' ||
+    value === 'show_more' ||
+    value === 'show_less' ||
+    value === 'mute_topic' ||
+    value === 'pin_topic'
+  );
+}
+
 function buildAoiProactiveBriefResponse(params: {
   sessionsDir: string;
   sessionPath: string;
@@ -340,6 +362,33 @@ function buildAoiProactiveBriefResponse(params: {
     calibrationTuning,
     panel,
     trendAdvisor,
+  };
+}
+
+function buildAoiFieldFeedbackResponse(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  now?: number;
+}) {
+  const now = params.now ?? Date.now();
+  const fieldShadowReport = loadAoiFieldShadowRecordReport(
+    params.sessionsDir,
+    params.sessionPath,
+    now,
+  );
+  const labelActions = loadAoiOperatorFeedbackLabelActions(params.sessionsDir, params.sessionPath);
+  const feedbackInbox = buildAoiOperatorFeedbackInbox({
+    sessionPath: params.sessionPath,
+    fieldShadowReport,
+    labelActions,
+    now,
+  });
+  return {
+    ok: true,
+    sessionPath: params.sessionPath,
+    fieldShadowReport,
+    labelActions,
+    feedbackInbox,
   };
 }
 
@@ -794,6 +843,113 @@ async function handleAoiAutonomyRequest(
         ok: true,
         evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
       });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/field-feedback') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(
+        res,
+        200,
+        buildAoiFieldFeedbackResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+      );
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/field-feedback') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const decisionRecordId =
+        typeof body.decisionRecordId === 'string' ? body.decisionRecordId.trim() : '';
+      const decisionId = typeof body.decisionId === 'string' ? body.decisionId.trim() : '';
+      if (!decisionRecordId || !decisionId || !isAoiShadowDecisionLabel(body.label)) {
+        writeJson(res, 400, {
+          error: 'decisionRecordId, decisionId, and a supported label are required.',
+          code: 'invalid_field_feedback',
+        });
+        return true;
+      }
+      try {
+        const result = recordAoiFieldFeedbackLearningAction(sessionsDir, {
+          sessionPath,
+          decisionRecordId,
+          decisionId,
+          fieldEventId: typeof body.fieldEventId === 'string' ? body.fieldEventId : undefined,
+          opportunityId: typeof body.opportunityId === 'string' ? body.opportunityId : undefined,
+          topicKey: typeof body.topicKey === 'string' ? body.topicKey : undefined,
+          sourceKey: typeof body.sourceKey === 'string' ? body.sourceKey : undefined,
+          deliveryMode: typeof body.deliveryMode === 'string' ? body.deliveryMode : undefined,
+          label: body.label,
+          sourceKinds: Array.isArray(body.sourceKinds)
+            ? body.sourceKinds.filter((item): item is string => typeof item === 'string')
+            : undefined,
+          note: typeof body.note === 'string' ? body.note : undefined,
+          evidenceRefs: Array.isArray(body.evidenceRefs)
+            ? body.evidenceRefs.filter((item): item is string => typeof item === 'string')
+            : undefined,
+          now: typeof body.now === 'number' ? body.now : undefined,
+        });
+        recordAoiTimelineBestEffort(() => {
+          recordAoiOperatorTimelineEvent(sessionsDir, {
+            sessionPath,
+            kind: 'feedback_recorded',
+            visibility: 'operator_visible',
+            createdAt: result.labelAction.createdAt,
+            title: 'Field feedback recorded',
+            summary: `Operator labeled field decision as ${result.labelAction.label}.`,
+            sourceRef: `field-shadow-record:${result.labelAction.decisionRecordId}`,
+            sourceKind: 'field_feedback',
+            evidenceRefs: result.summary.evidenceRefs,
+            relatedRefs: [
+              `operator-feedback:${result.labelAction.id}`,
+              `field-shadow-record:${result.labelAction.decisionRecordId}`,
+              `field-shadow-decision:${result.labelAction.decisionId}`,
+              ...result.appendedFieldEvents.map((event) => `field-event:${event.id}`),
+            ],
+            metadata: {
+              label: result.labelAction.label,
+              actionAuthority: result.labelAction.actionAuthority,
+              mutationCount: result.labelAction.mutationCount,
+              executionPermissionRaised: result.executionPermissionRaised,
+            },
+          });
+        });
+        writeJson(res, 200, {
+          ...buildAoiFieldFeedbackResponse({
+            sessionsDir,
+            sessionPath,
+            now: result.generatedAt,
+          }),
+          labelAction: result.labelAction,
+          followThroughEvents: result.appendedFollowThroughEvents,
+          fieldEvents: result.appendedFieldEvents,
+          learningSummary: result.summary,
+          followThroughLearning: result.followThroughLearning,
+          evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'invalid_field_feedback',
+        });
+      }
       return true;
     }
 

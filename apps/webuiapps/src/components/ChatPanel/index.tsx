@@ -242,6 +242,7 @@ import {
   fetchAoiMissionState,
   previewAoiProposalAction,
   recordAoiContextSourceFeedback,
+  recordAoiFieldFeedback,
   recordAoiOperatorVoiceDecision,
   recordAoiProactiveBriefFeedback,
   recordAoiProactiveTrendDeliveryEvent,
@@ -255,6 +256,7 @@ import {
   updateAoiAutonomyPolicy,
   type AoiAutonomyProposalPreviewResult,
   type AoiAutonomyProposalExecutionResult,
+  type AoiFieldFeedbackResponse,
   type AoiProactiveBriefListResponse,
 } from '@/lib/aoiAutonomyClient';
 import {
@@ -279,6 +281,7 @@ import {
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
   buildAoiMissionResumePrompt,
+  buildAoiOperatorAcceptanceDashboard,
   buildAoiOperatorDigestPanelSummary,
   buildAoiOperatorHealthPanelSummary,
   buildAoiPlaybookPanelSummary,
@@ -303,7 +306,9 @@ import {
   type AoiAgendaNudgeDecisionFeedbackActionId,
   type AoiAgendaNudgeReadinessActionId,
   type AoiAutonomyPanelSettings,
+  type AoiOperatorFeedbackInboxPanelItem,
 } from '@/lib/aoiAutonomyUi';
+import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import {
   buildAoiProactiveBriefPanelModel,
@@ -2554,6 +2559,7 @@ const ChatPanel: React.FC<{
   const [aoiOperatorHealth, setAoiOperatorHealth] = useState<AoiOperatorHealthState | null>(null);
   const [aoiProactiveBriefs, setAoiProactiveBriefs] =
     useState<AoiProactiveBriefListResponse | null>(null);
+  const [aoiFieldFeedback, setAoiFieldFeedback] = useState<AoiFieldFeedbackResponse | null>(null);
   const [aoiAutonomyPanelSettings, setAoiAutonomyPanelSettings] =
     useState<AoiAutonomyPanelSettings>(() => loadAoiAutonomyPanelSettings());
   const aoiAutonomyPanelSettingsRef = useRef(aoiAutonomyPanelSettings);
@@ -3344,6 +3350,7 @@ const ChatPanel: React.FC<{
       setAoiAutonomyEvaluation(snapshot.evaluation);
       setAoiOperatorHealth(snapshot.health);
       setAoiProactiveBriefs(snapshot.proactiveBriefs);
+      setAoiFieldFeedback(snapshot.fieldFeedback);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
     } finally {
@@ -3490,6 +3497,42 @@ const ChatPanel: React.FC<{
           evidenceRefs,
         });
         setAoiContextRouter(result.context);
+        await refreshAoiAutonomy({ silent: true });
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        setAoiAutonomyActionId(null);
+      }
+    },
+    [refreshAoiAutonomy],
+  );
+
+  const recordAoiFieldFeedbackFromPanel = useCallback(
+    async (item: AoiOperatorFeedbackInboxPanelItem, label: AoiShadowDecisionLabel) => {
+      const sessionPathForAutonomy = sessionPathRef.current;
+      if (!sessionPathForAutonomy) {
+        return;
+      }
+      const actionId = `field-feedback:${item.decisionRecordId}:${label}`;
+      setAoiAutonomyActionId(actionId);
+      setAoiAutonomyError('');
+      try {
+        const result = await recordAoiFieldFeedback(sessionPathForAutonomy, {
+          decisionRecordId: item.decisionRecordId,
+          decisionId: item.decisionId,
+          fieldEventId: item.fieldEventId,
+          opportunityId: item.opportunityId,
+          topicKey: item.topicKey,
+          sourceKey: item.sourceKey,
+          deliveryMode: item.deliveryMode,
+          label,
+          sourceKinds: item.sourceKinds,
+          evidenceRefs: item.evidenceRefs,
+        });
+        setAoiFieldFeedback(result);
+        if (result.evaluation) {
+          setAoiAutonomyEvaluation(result.evaluation);
+        }
         await refreshAoiAutonomy({ silent: true });
       } catch (error) {
         setAoiAutonomyError(error instanceof Error ? error.message : String(error));
@@ -8316,6 +8359,7 @@ const ChatPanel: React.FC<{
           aoiOperatorVoiceMuted={aoiOperatorVoiceMuted}
           aoiLastOperatorVoiceDecision={aoiLastOperatorVoiceDecision}
           aoiOperatorVoicePanelSummary={aoiOperatorVoicePanelSummary}
+          aoiFieldFeedback={aoiFieldFeedback}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
           aoiAutonomyLoading={aoiAutonomyLoading}
@@ -8339,6 +8383,7 @@ const ChatPanel: React.FC<{
           onUpdateAoiAutonomyPolicy={updateAoiAutonomyPolicyFromPanel}
           onUpdateAoiEnvironmentSource={updateAoiEnvironmentSourceFromPanel}
           onRecordAoiContextSourceFeedback={recordAoiContextSourceFeedbackFromPanel}
+          onRecordAoiFieldFeedback={recordAoiFieldFeedbackFromPanel}
           onRecordAoiProactiveBriefFeedback={recordAoiProactiveBriefFeedbackFromPanel}
           onToggleAoiProactiveBriefExpanded={(briefId) =>
             setExpandedAoiProactiveBriefId((prev) => (prev === briefId ? null : briefId))
@@ -8907,6 +8952,7 @@ const SettingsModal: React.FC<{
   aoiOperatorVoiceMuted: boolean;
   aoiLastOperatorVoiceDecision: AoiVoiceRenderDecision | null;
   aoiOperatorVoicePanelSummary: ReturnType<typeof buildAoiOperatorVoicePanelSummary>;
+  aoiFieldFeedback: AoiFieldFeedbackResponse | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
   aoiAutonomyLoading: boolean;
@@ -8945,6 +8991,10 @@ const SettingsModal: React.FC<{
       'wrong_evidence' | 'wrong_source' | 'wrong_timing' | 'stale' | 'not_useful' | 'too_much'
     >,
     evidenceRefs: string[],
+  ) => Promise<void>;
+  onRecordAoiFieldFeedback: (
+    item: AoiOperatorFeedbackInboxPanelItem,
+    label: AoiShadowDecisionLabel,
   ) => Promise<void>;
   onRecordAoiProactiveBriefFeedback: (
     briefId: string,
@@ -9028,6 +9078,7 @@ const SettingsModal: React.FC<{
   aoiOperatorVoiceMuted,
   aoiLastOperatorVoiceDecision,
   aoiOperatorVoicePanelSummary,
+  aoiFieldFeedback,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
   aoiAutonomyLoading,
@@ -9051,6 +9102,7 @@ const SettingsModal: React.FC<{
   onUpdateAoiAutonomyPolicy,
   onUpdateAoiEnvironmentSource,
   onRecordAoiContextSourceFeedback,
+  onRecordAoiFieldFeedback,
   onRecordAoiProactiveBriefFeedback,
   onToggleAoiProactiveBriefExpanded,
   onResetAoiTrustCalibration,
@@ -9325,6 +9377,24 @@ const SettingsModal: React.FC<{
       aoiProactiveBriefFeedback,
       aoiProactiveTrendAdvisor,
       aoiRecentProposalDecisions,
+    ],
+  );
+  const aoiFieldFeedbackPanel = useMemo(
+    () =>
+      buildAoiOperatorAcceptanceDashboard({
+        sessionPath:
+          aoiFieldFeedback?.sessionPath ?? aoiAutonomyStatus?.sessionPath ?? 'aoi/default',
+        feedbackInbox: aoiFieldFeedback?.feedbackInbox ?? null,
+        fieldShadowReport: aoiFieldFeedback?.fieldShadowReport ?? null,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+      }).feedbackInbox,
+    [
+      aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.sessionPath,
+      aoiAutonomyStatus?.updatedAt,
+      aoiFieldFeedback?.feedbackInbox,
+      aoiFieldFeedback?.fieldShadowReport,
+      aoiFieldFeedback?.sessionPath,
     ],
   );
   const aoiDeliberationRunSummary = useMemo(
@@ -11946,6 +12016,119 @@ const SettingsModal: React.FC<{
                                 </div>
                               ))}
                             </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiFieldFeedbackPanel.visible && (
+                      <div
+                        className={styles.aoiAutonomyProposalSection}
+                        data-testid="aoi-field-feedback-learning"
+                      >
+                        <div className={styles.promptBudgetSectionTitle}>
+                          Field feedback learning
+                        </div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiFieldFeedbackPanel.inboxCountLabel}</span>
+                            <span>{aoiFieldFeedbackPanel.unlabeledCountLabel}</span>
+                            <span>{aoiFieldFeedbackPanel.calibrationInputLabel}</span>
+                            <span>{aoiFieldFeedbackPanel.promotionCandidateLabel}</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            Label field/shadow decisions
+                          </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            {aoiFieldFeedbackPanel.labelDistributionLabels.map((label, index) => (
+                              <div key={`field-feedback-distribution-${index}`}>
+                                Label: {sanitizeAoiProposalDisplayText(label, 120)}
+                              </div>
+                            ))}
+                            {aoiFieldFeedbackPanel.topSourceKindLabels.map((label, index) => (
+                              <div key={`field-feedback-source-${index}`}>
+                                Source: {sanitizeAoiProposalDisplayText(label, 160)}
+                              </div>
+                            ))}
+                            {aoiFieldFeedbackPanel.evidenceRefs.slice(0, 4).map((ref, index) => (
+                              <div key={`field-feedback-panel-evidence-${index}`}>
+                                Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                              </div>
+                            ))}
+                          </div>
+                          {aoiFieldFeedbackPanel.itemLabels.length > 0 ? (
+                            <div className={styles.aoiAutonomyProposalList}>
+                              {aoiFieldFeedbackPanel.itemLabels.map((item) => (
+                                <div
+                                  className={styles.aoiAutonomyProposalItem}
+                                  key={`field-feedback-item-${item.id}`}
+                                >
+                                  <div className={styles.aoiAutonomyProposalMeta}>
+                                    <span>
+                                      {sanitizeAoiProposalDisplayText(item.metaLabel, 120)}
+                                    </span>
+                                    <span>
+                                      {sanitizeAoiProposalDisplayText(item.labelStateLabel, 120)}
+                                    </span>
+                                    <span>display-only</span>
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalTitle}>
+                                    {sanitizeAoiProposalDisplayText(item.titleLabel, 180)}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalDetails}>
+                                    <div>
+                                      Noticed:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        item.whatAoiNoticedLabel,
+                                        260,
+                                      )}
+                                    </div>
+                                    <div>
+                                      Why speak/quiet:{' '}
+                                      {sanitizeAoiProposalDisplayText(item.whySpeakQuietLabel, 320)}
+                                    </div>
+                                    <div>
+                                      Cannot know:{' '}
+                                      {sanitizeAoiProposalDisplayText(item.cannotKnowLabel, 260)}
+                                    </div>
+                                    <div>
+                                      Effect:{' '}
+                                      {sanitizeAoiProposalDisplayText(
+                                        item.whyShowMoreLessLabel,
+                                        320,
+                                      )}
+                                    </div>
+                                    {item.evidenceRefs.slice(0, 4).map((ref, index) => (
+                                      <div key={`field-feedback-${item.id}-evidence-${index}`}>
+                                        Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                      </div>
+                                    ))}
+                                  </div>
+                                  <div className={styles.aoiAutonomyProposalActions}>
+                                    {item.labelActions.map((action) => (
+                                      <button
+                                        type="button"
+                                        key={action.id}
+                                        className={styles.inlineActionBtn}
+                                        onClick={() =>
+                                          void onRecordAoiFieldFeedback(item, action.feedbackLabel)
+                                        }
+                                        disabled={
+                                          action.disabled || aoiAutonomyActionId === action.id
+                                        }
+                                        title={action.title}
+                                      >
+                                        {action.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className={styles.modelHint}>
+                              No active field decisions need labels right now.
+                            </p>
                           )}
                         </div>
                       </div>

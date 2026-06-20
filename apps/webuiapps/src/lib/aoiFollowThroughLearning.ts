@@ -1026,7 +1026,10 @@ export function scoreAoiFollowThroughLearningForOpportunity(
   }
   for (const sensitivity of summary?.deliveryModeSensitivity ?? []) {
     if (sensitivity.mode === 'direct_chat') {
-      directChatFactor = Math.min(directChatFactor, sensitivity.factor);
+      directChatFactor =
+        sensitivity.factor >= 1
+          ? Math.max(directChatFactor, sensitivity.factor)
+          : Math.min(directChatFactor, sensitivity.factor);
       evidenceRefs.push(...sensitivity.evidenceRefs);
     }
   }
