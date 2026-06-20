@@ -10,6 +10,7 @@ import {
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
+  buildAoiAgendaNudgeDecisionFeedbackAudit,
   buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
@@ -999,6 +1000,21 @@ describe('Aoi autonomy UI helpers', () => {
       evidenceRefs: ['agenda-feedback:quieted'],
     });
     expect(gate.reasonLabels.join(' ')).toContain('quieted feedback');
+
+    const duplicateQuieted = recordAoiAgendaNudgeFeedback(quieted, {
+      kind: 'quieted',
+      now: 5500,
+      reason: 'enable_quiet_mode_again',
+      dedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+    expect(duplicateQuieted).toMatchObject({
+      updatedAt: 5000,
+      quietedCount: 1,
+      lastFeedbackKind: 'quieted',
+      lastFeedbackReason: 'enable_quiet_mode',
+      lastDedupeKey: 'proposal:aoi-proposal-ui-test-001',
+    });
+
     expect(
       selectAoiAgendaChatNudge({
         status: makeAutonomyStatus(),
@@ -1175,6 +1191,33 @@ describe('Aoi autonomy UI helpers', () => {
     expect(noisyCalibration.lastFeedbackReason).toContain('delivery decision ready');
     expect(noisyCalibration.lastDedupeKey).toContain('agenda-decision:ready');
     expect(noisyCalibration.mutedUntil).toBeGreaterThan(9700);
+    const tooMuchFeedbackAudit = buildAoiAgendaNudgeDecisionFeedbackAudit({
+      action: tooMuchFeedback,
+      now: 9800,
+    });
+    const feedbackAuditedReadySummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        agendaNudgeReadinessLastDecision: readyDeliveryAudit,
+        agendaNudgeReadinessLastDecisionFeedback: tooMuchFeedbackAudit,
+      },
+      options: {
+        now: 9900,
+      },
+    });
+    expect(feedbackAuditedReadySummary.lastDecisionFeedbackLabels.join(' ')).toContain('Too much');
+    expect(
+      feedbackAuditedReadySummary.decisionFeedbackActions.find(
+        (action) => action.id === 'mark_decision_too_much',
+      )?.disabled,
+    ).toBe(true);
+    expect(
+      feedbackAuditedReadySummary.decisionFeedbackActions.find(
+        (action) => action.id === 'mark_decision_useful',
+      )?.disabled,
+    ).toBe(false);
 
     const notificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1449,6 +1492,17 @@ describe('Aoi autonomy UI helpers', () => {
           safetyBoundary:
             'Local delivery decision audit only; no tools, app actions, policy bypass, or execution gates were run.',
         },
+        agendaNudgeReadinessLastDecisionFeedback: {
+          version: 1,
+          actionId: 'quiet_decision_nudges',
+          kind: 'quieted',
+          actionLabel: 'Quiet for now',
+          reason: 'delivery decision silent/no candidate',
+          dedupeKey: 'agenda-decision:silent:7100:no candidate',
+          recordedAt: 7200,
+          safetyBoundary:
+            'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
+        },
       },
       storageAdapter,
     );
@@ -1468,6 +1522,12 @@ describe('Aoi autonomy UI helpers', () => {
         statusLabel: 'no candidate',
         recordedAt: 7100,
         evidenceRefs: ['memory:agenda-decision'],
+      },
+      agendaNudgeReadinessLastDecisionFeedback: {
+        actionId: 'quiet_decision_nudges',
+        kind: 'quieted',
+        recordedAt: 7200,
+        dedupeKey: 'agenda-decision:silent:7100:no candidate',
       },
     });
     expect(storage.has(AOI_AUTONOMY_PANEL_SETTINGS_KEY)).toBe(true);

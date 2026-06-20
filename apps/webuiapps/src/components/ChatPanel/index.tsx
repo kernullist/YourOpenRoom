@@ -262,6 +262,7 @@ import {
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
+  buildAoiAgendaNudgeDecisionFeedbackAudit,
   buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
@@ -9254,6 +9255,9 @@ const SettingsModal: React.FC<{
       if (!action) {
         return;
       }
+      if (action.disabled) {
+        return;
+      }
 
       onUpdateAoiAutonomyPanelSettings({
         agendaNudgeCalibration: recordAoiAgendaNudgeFeedback(
@@ -9264,6 +9268,9 @@ const SettingsModal: React.FC<{
             dedupeKey: action.dedupeKey,
           },
         ),
+        agendaNudgeReadinessLastDecisionFeedback: buildAoiAgendaNudgeDecisionFeedbackAudit({
+          action,
+        }),
       });
     },
     [
@@ -11326,6 +11333,11 @@ const SettingsModal: React.FC<{
                                 <div key={`agenda-readiness-decision-audit-${index}`}>{label}</div>
                               ),
                             )}
+                            {aoiAgendaNudgeReadinessSummary.lastDecisionFeedbackLabels.map(
+                              (label, index) => (
+                                <div key={`agenda-readiness-feedback-audit-${index}`}>{label}</div>
+                              ),
+                            )}
                           </div>
                           {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (
                             <div className={styles.aoiInlineSuggestionActions}>
@@ -11352,6 +11364,7 @@ const SettingsModal: React.FC<{
                                     type="button"
                                     className={styles.inlineActionBtn}
                                     onClick={() => runAoiAgendaNudgeDecisionFeedback(action.id)}
+                                    disabled={action.disabled}
                                     title={action.title}
                                   >
                                     {action.label}
