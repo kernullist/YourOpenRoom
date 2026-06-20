@@ -6,6 +6,7 @@ import {
   appendAoiJarvisAutonomyGovernorAuditTrail,
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorAuditEvent,
+  buildAoiJarvisAutonomyGovernorAuditFreshnessReview,
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
   buildAoiJarvisAutonomyGovernorAuditResetAudit,
   buildAoiJarvisAutonomyGovernorCapabilityGaps,
@@ -513,6 +514,43 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(trail?.events[1]).toMatchObject({ mode: 'observe_only' });
   });
 
+  it('reviews whether the latest governor audit snapshot is current or stale', () => {
+    const staleGovernor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy({ enabled: false, previewMode: false }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const currentGovernor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 3000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const staleEvent = buildAoiJarvisAutonomyGovernorAuditEvent({ decision: staleGovernor });
+    const trail = appendAoiJarvisAutonomyGovernorAuditTrail(null, staleEvent);
+    const review = buildAoiJarvisAutonomyGovernorAuditFreshnessReview(currentGovernor, trail);
+    const summary = buildAoiJarvisAutonomyGovernorAuditPanelSummary(trail, null, currentGovernor);
+
+    expect(review).toMatchObject({
+      visible: true,
+      status: 'stale',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(review.label).toContain('Stale');
+    expect(review.reviewLabels.join(' ')).toContain('Mode changed from Observe only');
+    expect(review.reviewLabels.join(' ')).toContain('Allowed capability set changed');
+    expect(summary.freshnessLabel).toContain('Stale');
+    expect(summary.freshnessReviewLabels.join(' ')).toContain('Mode changed');
+  });
+
   it('keeps the governor audit trail bounded and summarizes recent decisions', () => {
     const events = Array.from(
       { length: AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX + 3 },
@@ -541,6 +579,7 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(summary.recentEventLabels.length).toBeGreaterThan(0);
     expect(summary.upgradePlanLabel).toContain('Direct chat targets Direct chat');
     expect(summary.upgradePlanStepLabels.join(' ')).toContain('Review Direct chat upgrade gate');
+    expect(summary.freshnessLabel).toContain('Audit freshness is unknown');
     expect(summary.safetyBoundaryLabel).toContain('display-only');
   });
 
@@ -616,6 +655,7 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(block).toContain('Do not treat this context as approval');
     expect(block).toContain('Current ceiling: Proactive brief');
     expect(block).toContain('Still gated: Direct chat');
+    expect(block).toContain('Audit freshness: Current');
     expect(block).toContain('plan Direct chat targets Direct chat');
     expect(block).toContain('Upgrade plan: Direct chat targets Direct chat');
     expect(block).toContain('Evidence step: Resolve Some sources are stale');

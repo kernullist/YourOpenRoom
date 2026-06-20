@@ -9575,10 +9575,12 @@ const SettingsModal: React.FC<{
       buildAoiJarvisAutonomyGovernorAuditPanelSummary(
         aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
         aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditLastReset,
+        aoiJarvisAutonomyGovernor,
       ),
     [
       aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditLastReset,
       aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
+      aoiJarvisAutonomyGovernor,
     ],
   );
   const restartAoiJarvisAutonomyGovernorAudit = useCallback(() => {
@@ -11642,6 +11644,20 @@ const SettingsModal: React.FC<{
                                     260,
                                   )}
                                 </div>
+                                <div>
+                                  Audit freshness:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorAuditSummary.freshnessLabel,
+                                    260,
+                                  )}
+                                </div>
+                                {aoiJarvisAutonomyGovernorAuditSummary.freshnessReviewLabels.map(
+                                  (label, index) => (
+                                    <div key={`jarvis-governor-audit-freshness-${index}`}>
+                                      Freshness: {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ),
+                                )}
                                 {aoiJarvisAutonomyGovernorAuditSummary.upgradePlanStepLabels.map(
                                   (label, index) => (
                                     <div key={`jarvis-governor-audit-plan-step-${index}`}>

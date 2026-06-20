@@ -216,6 +216,19 @@ export interface AoiJarvisAutonomyGovernorAuditTrail {
   mutationCount: 0;
 }
 
+export type AoiJarvisAutonomyGovernorAuditFreshnessStatus = 'missing' | 'current' | 'stale';
+
+export interface AoiJarvisAutonomyGovernorAuditFreshnessReview {
+  version: 1;
+  visible: boolean;
+  status: AoiJarvisAutonomyGovernorAuditFreshnessStatus;
+  label: string;
+  reviewLabels: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export interface AoiJarvisAutonomyGovernorAuditResetAudit {
   version: 1;
   id: string;
@@ -238,6 +251,8 @@ export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
   recentEventLabels: string[];
   upgradePlanLabel: string;
   upgradePlanStepLabels: string[];
+  freshnessLabel: string;
+  freshnessReviewLabels: string[];
   blockerLabels: string[];
   evidenceRefs: string[];
   safetyBoundaryLabel: string;
@@ -1593,12 +1608,127 @@ export function appendAoiJarvisAutonomyGovernorAuditTrail(
   });
 }
 
+export function buildAoiJarvisAutonomyGovernorAuditFreshnessReview(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
+): AoiJarvisAutonomyGovernorAuditFreshnessReview {
+  const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(trail);
+  if (!normalizedTrail) {
+    return {
+      version: 1,
+      visible: false,
+      status: 'missing',
+      label: 'No governor audit snapshot has been recorded yet.',
+      reviewLabels: [],
+      evidenceRefs: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const latest = normalizedTrail.events[0];
+  if (!decision) {
+    return {
+      version: 1,
+      visible: true,
+      status: 'stale',
+      label: 'Audit freshness is unknown because the current governor decision is unavailable.',
+      reviewLabels: [
+        'Refresh the current Aoi governor decision before relying on this audit snapshot.',
+      ],
+      evidenceRefs: uniqueLabels([...latest.evidenceRefs, ...latest.upgradePlanEvidenceRefs], 12),
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const currentDedupeKey = buildAoiJarvisAutonomyGovernorAuditDedupeKey(decision);
+  const currentAllowedCapabilityLabels = decision.allowedAutonomyBands
+    .filter((band) => band.allowed)
+    .map((band) => CAPABILITY_LABELS[band.capability]);
+  const currentBlockedCapabilityLabels = decision.allowedAutonomyBands
+    .filter((band) => !band.allowed)
+    .map((band) => CAPABILITY_LABELS[band.capability]);
+  const currentBlockerLabels = uniqueLabels(
+    decision.blockers.map((blocker) => `${blocker.label}: ${blocker.reason}`),
+    8,
+  );
+  const currentUpgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 4 });
+  const reviewLabels: string[] = [];
+  if (latest.mode !== decision.overallMode) {
+    reviewLabels.push(`Mode changed from ${latest.modeLabel} to ${decision.modeLabel}.`);
+  }
+  if (
+    latest.allowedCapabilityLabels.join('|') !==
+    uniqueLabels(currentAllowedCapabilityLabels, 10).join('|')
+  ) {
+    reviewLabels.push('Allowed capability set changed since the latest audit snapshot.');
+  }
+  if (
+    latest.blockedCapabilityLabels.join('|') !==
+    uniqueLabels(currentBlockedCapabilityLabels, 10).join('|')
+  ) {
+    reviewLabels.push('Blocked capability set changed since the latest audit snapshot.');
+  }
+  if (latest.blockerLabels.join('|') !== currentBlockerLabels.join('|')) {
+    reviewLabels.push('Active blocker set changed since the latest audit snapshot.');
+  }
+  if (latest.upgradePlanSummaryLabel !== currentUpgradePlan.summaryLabel) {
+    reviewLabels.push('Upgrade plan summary changed since the latest audit snapshot.');
+  }
+  const latestStepKeys = latest.upgradePlanStepLabels.map((label) =>
+    normalizeAuditLabel(label.replace(/\s+Safe:.+$/i, ''), '', 180),
+  );
+  const currentStepKeys = uniqueLabels(currentUpgradePlan.stepLabels, 6).map((label) =>
+    normalizeAuditLabel(label.replace(/\s+Safe:.+$/i, ''), '', 180),
+  );
+  if (latestStepKeys.join('|') !== currentStepKeys.join('|')) {
+    reviewLabels.push('Upgrade evidence steps changed since the latest audit snapshot.');
+  }
+
+  const isCurrent = latest.dedupeKey === currentDedupeKey || reviewLabels.length === 0;
+  return {
+    version: 1,
+    visible: true,
+    status: isCurrent ? 'current' : 'stale',
+    label: isCurrent
+      ? `Current: latest audit matches ${decision.modeLabel} and its upgrade plan.`
+      : `Stale: latest audit was ${latest.modeLabel}; current governor is ${decision.modeLabel}.`,
+    reviewLabels: isCurrent
+      ? [`Latest audit snapshot matches current decision ${decision.id}.`]
+      : uniqueLabels(
+          [
+            ...reviewLabels,
+            'Wait for automatic audit capture or restart the governor audit if this remains visible.',
+          ],
+          8,
+        ),
+    evidenceRefs: uniqueLabels(
+      [
+        ...latest.evidenceRefs,
+        ...latest.upgradePlanEvidenceRefs,
+        ...decision.evidenceRefs,
+        ...decision.nextUpgradeEvidenceRefs,
+        ...currentUpgradePlan.evidenceRefs,
+      ],
+      12,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
   trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
   lastReset?: AoiJarvisAutonomyGovernorAuditResetAudit | null,
+  decision?: AoiJarvisAutonomyGovernorDecision | null,
 ): AoiJarvisAutonomyGovernorAuditPanelSummary {
   const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(trail);
   const normalizedLastReset = normalizeAoiJarvisAutonomyGovernorAuditResetAudit(lastReset);
+  const freshnessReview = buildAoiJarvisAutonomyGovernorAuditFreshnessReview(
+    decision,
+    normalizedTrail,
+  );
   if (!normalizedTrail) {
     return {
       visible: false,
@@ -1607,6 +1737,8 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
       recentEventLabels: [],
       upgradePlanLabel: 'No upgrade plan recorded yet.',
       upgradePlanStepLabels: [],
+      freshnessLabel: freshnessReview.label,
+      freshnessReviewLabels: freshnessReview.reviewLabels,
       blockerLabels: [],
       evidenceRefs: [],
       safetyBoundaryLabel:
@@ -1638,8 +1770,13 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
     }),
     upgradePlanLabel: `${UPGRADE_PLAN_STATUS_LABELS[latest.upgradePlanStatus]}: ${latest.upgradePlanSummaryLabel}`,
     upgradePlanStepLabels: latest.upgradePlanStepLabels.slice(0, 3),
+    freshnessLabel: freshnessReview.label,
+    freshnessReviewLabels: freshnessReview.reviewLabels.slice(0, 4),
     blockerLabels: latest.blockerLabels,
-    evidenceRefs: uniqueLabels([...latest.evidenceRefs, ...latest.upgradePlanEvidenceRefs], 12),
+    evidenceRefs: uniqueLabels(
+      [...latest.evidenceRefs, ...latest.upgradePlanEvidenceRefs, ...freshnessReview.evidenceRefs],
+      12,
+    ),
     safetyBoundaryLabel: latest.safetyBoundary,
     resetLabel: 'Restart governor audit',
     resetTitle:
@@ -1679,7 +1816,21 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
   ];
 
   if (normalizedTrail) {
+    const freshnessReview = buildAoiJarvisAutonomyGovernorAuditFreshnessReview(
+      decision,
+      normalizedTrail,
+    );
     lines.push(`- Recent audit events: ${normalizedTrail.events.length} retained.`);
+    if (freshnessReview.visible) {
+      lines.push(
+        `- Audit freshness: ${normalizePromptLabel(freshnessReview.label, '', 220)} ${uniqueLabels(
+          freshnessReview.reviewLabels,
+          2,
+        )
+          .map((label) => normalizePromptLabel(label, '', 160))
+          .join(' ')}`,
+      );
+    }
     for (const event of normalizedTrail.events.slice(0, maxEvents)) {
       const reason = event.blockerLabels[0] ?? event.nextUpgradeAction;
       lines.push(
