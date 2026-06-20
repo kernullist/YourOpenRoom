@@ -57,6 +57,7 @@ import type {
   AoiMissionState,
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
+  AoiOpportunity,
   AoiOperatorDigest,
   AoiOperatorHealthState,
   AoiOperatorTimelineSummary,
@@ -538,6 +539,31 @@ export interface AoiAutonomyAgendaPanelSummary {
   safetyBoundaryLabel: string;
   approvalInboxLabel: string;
   phaseSummaries: AoiAutonomyAgendaPhaseSummary[];
+  evidenceRefs: string[];
+}
+
+export interface AoiOpportunityInboxPanelItem {
+  id: string;
+  titleLabel: string;
+  metaLabel: string;
+  curiosityLabel: string;
+  whyNowLabel: string;
+  evidenceNeedLabel: string;
+  nextActionLabel: string;
+  deliveryLabel: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiOpportunityInboxPanelSummary {
+  visible: boolean;
+  headlineLabel: string;
+  countLabel: string;
+  safetyBoundaryLabel: string;
+  activeCount: number;
+  snoozedCount: number;
+  archivedCount: number;
+  expiredCount: number;
+  itemLabels: AoiOpportunityInboxPanelItem[];
   evidenceRefs: string[];
 }
 
@@ -2417,6 +2443,105 @@ function collectAoiAgendaEvidenceRefs(...groups: Array<readonly string[] | undef
     }
   }
   return [...refs];
+}
+
+function sortAoiOpportunityInboxItems(opportunities: readonly AoiOpportunity[]): AoiOpportunity[] {
+  return [...opportunities].sort((left, right) => {
+    const urgencyDelta = right.urgency - left.urgency;
+    if (Math.abs(urgencyDelta) > 0.001) {
+      return urgencyDelta;
+    }
+    const confidenceDelta = right.confidence - left.confidence;
+    if (Math.abs(confidenceDelta) > 0.001) {
+      return confidenceDelta;
+    }
+    const noveltyDelta = right.novelty - left.novelty;
+    if (Math.abs(noveltyDelta) > 0.001) {
+      return noveltyDelta;
+    }
+    return right.updatedAt - left.updatedAt;
+  });
+}
+
+function formatAoiOpportunityTimeUntil(timestamp: number, now: number): string {
+  const deltaMs = Math.max(0, timestamp - now);
+  const minute = 60 * 1000;
+  const hour = 60 * minute;
+  const day = 24 * hour;
+  if (deltaMs < minute) {
+    return 'soon';
+  }
+  if (deltaMs < hour) {
+    return `in ${Math.max(1, Math.round(deltaMs / minute))}m`;
+  }
+  if (deltaMs < day) {
+    return `in ${Math.max(1, Math.round(deltaMs / hour))}h`;
+  }
+  return `in ${Math.max(1, Math.round(deltaMs / day))}d`;
+}
+
+export function buildAoiOpportunityInboxPanelSummary(params: {
+  active: readonly AoiOpportunity[];
+  archived?: readonly AoiOpportunity[];
+  status?: AoiAutonomyStatus | null;
+  now?: number;
+}): AoiOpportunityInboxPanelSummary {
+  const now = params.now ?? Date.now();
+  const active = params.active.filter(
+    (item) =>
+      item.actionAuthority === 'display_only' &&
+      item.expiresAt > now &&
+      (item.status === 'active' || item.status === 'snoozed'),
+  );
+  const archived = params.archived ?? [];
+  const snoozedCount = active.filter((item) => item.status === 'snoozed').length;
+  const expiredCount =
+    params.status?.expiredOpportunityCount ??
+    archived.filter((item) => item.status === 'expired').length;
+  const visibleItems = sortAoiOpportunityInboxItems(active).slice(0, 4);
+  const evidenceRefs = collectAoiAgendaEvidenceRefs(
+    visibleItems.flatMap((item) => item.evidenceRefs),
+    [`opportunity_inbox:active:${active.length}`],
+  );
+  const itemLabels = visibleItems.map((item): AoiOpportunityInboxPanelItem => {
+    const ageLabel = formatAoiAgendaAge(item.updatedAt, now);
+    const expiryLabel =
+      item.expiresAt > now
+        ? `expires ${formatAoiOpportunityTimeUntil(item.expiresAt, now)}`
+        : 'expired';
+    return {
+      id: item.id,
+      titleLabel: sanitizeAoiProposalDisplayText(item.title, 120),
+      metaLabel: `${item.sourceKind.replace(/_/g, ' ')} / ${item.risk} / confidence ${Math.round(
+        item.confidence * 100,
+      )}% / ${ageLabel} / ${expiryLabel}`,
+      curiosityLabel: sanitizeAoiProposalDisplayText(item.curiosityQuestion, 220),
+      whyNowLabel: sanitizeAoiProposalDisplayText(item.whyNow, 240),
+      evidenceNeedLabel: sanitizeAoiProposalDisplayText(item.evidenceNeed, 240),
+      nextActionLabel: sanitizeAoiProposalDisplayText(item.suggestedNextAction, 220),
+      deliveryLabel: `${item.deliveryRecommendation.replace(/_/g, ' ')} / ${item.status}`,
+      evidenceRefs: item.evidenceRefs
+        .slice(0, 4)
+        .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),
+    };
+  });
+
+  return {
+    visible: active.length > 0 || archived.length > 0 || Boolean(params.status?.lastOpportunityAt),
+    headlineLabel:
+      active.length > 0
+        ? `${active.length} opportunity${active.length === 1 ? '' : 'ies'} waiting for review`
+        : 'No active opportunities waiting',
+    countLabel: `active ${active.length}; snoozed ${snoozedCount}; archived ${params.status?.archivedOpportunityCount ?? archived.length}; expired ${expiredCount}`,
+    safetyBoundaryLabel:
+      'Display-only inbox: Aoi can record and explain opportunities here, but cannot mutate apps, run commands, start research, or create Kira work items from this panel.',
+    activeCount: active.length,
+    snoozedCount,
+    archivedCount: params.status?.archivedOpportunityCount ?? archived.length,
+    expiredCount,
+    itemLabels,
+    evidenceRefs,
+  };
 }
 
 function getAoiAgendaActionLabel(proposal: AoiProposal | undefined): string {

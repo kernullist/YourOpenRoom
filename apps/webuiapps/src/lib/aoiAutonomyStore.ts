@@ -40,6 +40,7 @@ import type {
   AoiObservation,
   AoiObservationIndex,
   AoiObservationIndexEntry,
+  AoiOpportunity,
   AoiProposal,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
@@ -53,6 +54,8 @@ const MAX_LIST_ITEMS = 200;
 const OBSERVATION_INDEX_FILE = 'index.json';
 const MAX_OBSERVATION_INDEX_ITEMS = 200;
 const MAX_OBSERVATION_AGE_MS = 90 * 24 * 60 * 60 * 1000;
+const AOI_OPPORTUNITY_DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
+const AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS = 24 * 60 * 60 * 1000;
 
 export interface AoiAutonomyPaths {
   root: string;
@@ -63,6 +66,9 @@ export interface AoiAutonomyPaths {
   proposalsDir: string;
   activeProposals: string;
   archivedProposals: string;
+  opportunitiesDir: string;
+  activeOpportunities: string;
+  archivedOpportunities: string;
   playbooksDir: string;
   activePlaybooks: string;
   archivedPlaybooks: string;
@@ -148,6 +154,42 @@ export interface AoiProposalDecisionResult {
   decision: AoiProposalDecision;
   activeProposals: AoiProposal[];
   archivedProposals: AoiProposal[];
+}
+
+export interface AoiOpportunityInbox {
+  sessionPath: string;
+  active: AoiOpportunity[];
+  archived: AoiOpportunity[];
+}
+
+export interface AoiOpportunityUpsertInput {
+  id?: unknown;
+  sourceKind?: unknown;
+  title?: unknown;
+  curiosityQuestion?: unknown;
+  whyNow?: unknown;
+  evidenceNeed?: unknown;
+  suggestedNextAction?: unknown;
+  risk?: unknown;
+  confidence?: unknown;
+  urgency?: unknown;
+  novelty?: unknown;
+  deliveryRecommendation?: unknown;
+  status?: unknown;
+  evidenceRefs?: unknown;
+  dedupeKey?: unknown;
+  createdAt?: unknown;
+  expiresAt?: unknown;
+  snoozedUntil?: unknown;
+}
+
+export interface AoiOpportunityUpsertResult extends AoiOpportunityInbox {
+  opportunity: AoiOpportunity;
+  created: boolean;
+}
+
+export interface AoiOpportunityStatusTransitionResult extends AoiOpportunityInbox {
+  opportunity: AoiOpportunity;
 }
 
 function isPathInsideRoot(root: string, target: string): boolean {
@@ -372,6 +414,7 @@ export function resolveAoiAutonomyPaths(
     throw new Error('Resolved Aoi autonomy path escaped the sessions directory.');
   }
   const proposalsDir = join(root, 'proposals');
+  const opportunitiesDir = join(root, 'opportunities');
   const playbooksDir = join(root, 'playbooks');
   const timelineDir = join(root, 'timeline');
   const fieldShadowDir = join(root, 'field-shadow');
@@ -389,6 +432,9 @@ export function resolveAoiAutonomyPaths(
     proposalsDir,
     activeProposals: join(proposalsDir, 'active.json'),
     archivedProposals: join(proposalsDir, 'archived.json'),
+    opportunitiesDir,
+    activeOpportunities: join(opportunitiesDir, 'active.json'),
+    archivedOpportunities: join(opportunitiesDir, 'archived.json'),
     playbooksDir,
     activePlaybooks: join(playbooksDir, 'active.json'),
     archivedPlaybooks: join(playbooksDir, 'archived.json'),
@@ -994,6 +1040,516 @@ export function saveAoiArchivedProposals(
   return normalized;
 }
 
+function isAoiOpportunitySourceKind(value: unknown): value is AoiOpportunity['sourceKind'] {
+  return (
+    value === 'memory' ||
+    value === 'interest' ||
+    value === 'workspace' ||
+    value === 'kira' ||
+    value === 'research' ||
+    value === 'app_state' ||
+    value === 'agenda' ||
+    value === 'manual'
+  );
+}
+
+function isAoiOpportunityDeliveryRecommendation(
+  value: unknown,
+): value is AoiOpportunity['deliveryRecommendation'] {
+  return (
+    value === 'dashboard' ||
+    value === 'inline_card' ||
+    value === 'quiet_notification' ||
+    value === 'direct_chat'
+  );
+}
+
+function isAoiOpportunityStatus(value: unknown): value is AoiOpportunity['status'] {
+  return (
+    value === 'active' ||
+    value === 'accepted' ||
+    value === 'dismissed' ||
+    value === 'snoozed' ||
+    value === 'converted' ||
+    value === 'expired' ||
+    value === 'archived'
+  );
+}
+
+function isAoiOpportunityRisk(value: unknown): value is AoiOpportunity['risk'] {
+  return value === 'low' || value === 'medium' || value === 'high';
+}
+
+function isArchivedAoiOpportunityStatus(status: AoiOpportunity['status']): boolean {
+  return (
+    status === 'accepted' ||
+    status === 'dismissed' ||
+    status === 'converted' ||
+    status === 'expired' ||
+    status === 'archived'
+  );
+}
+
+function normalizeAoiOpportunityScore(value: unknown, fallback: number): number {
+  const numeric = typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+  return Math.min(1, Math.max(0, numeric));
+}
+
+function normalizeAoiOpportunityTimestamp(value: unknown, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : fallback;
+}
+
+function normalizeAoiOpportunityRequiredText(
+  value: unknown,
+  fallback: string,
+  maxChars: number,
+): string {
+  return normalizeOptionalText(value, maxChars) ?? fallback;
+}
+
+function normalizeAoiOpportunityDedupeKey(value: unknown, fallback: string): string {
+  const normalized =
+    typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, 180) : fallback;
+  return normalized || fallback;
+}
+
+function buildAoiOpportunityDedupeFallback(
+  raw: Partial<AoiOpportunity>,
+  sourceKind: AoiOpportunity['sourceKind'],
+  id: string,
+): string {
+  const semanticParts = [
+    sourceKind,
+    normalizeOptionalText(raw.title, 80),
+    normalizeOptionalText(raw.curiosityQuestion, 120),
+    normalizeOptionalText(raw.suggestedNextAction, 80),
+  ].filter((part): part is string => Boolean(part));
+  const semanticKey = semanticParts
+    .join(':')
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 180);
+  return semanticKey ? `opportunity:${semanticKey}` : `opportunity:${sourceKind}:${id}`;
+}
+
+function normalizeAoiOpportunityRecord(
+  value: unknown,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunity | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  const raw = value as Partial<AoiOpportunity>;
+  const id = isValidAoiAutonomyId(raw.id) ? raw.id : createAoiAutonomyId('aoi-opportunity', now);
+  const sourceKind = isAoiOpportunitySourceKind(raw.sourceKind) ? raw.sourceKind : 'manual';
+  const fallbackDedupeKey = buildAoiOpportunityDedupeFallback(raw, sourceKind, id);
+  const status = isAoiOpportunityStatus(raw.status) ? raw.status : 'active';
+  const createdAt = normalizeAoiOpportunityTimestamp(raw.createdAt, now);
+  const updatedAt = normalizeAoiOpportunityTimestamp(raw.updatedAt, now);
+  const expiresAt = normalizeAoiOpportunityTimestamp(
+    raw.expiresAt,
+    createdAt + AOI_OPPORTUNITY_DEFAULT_TTL_MS,
+  );
+  const snoozedUntil =
+    status === 'snoozed'
+      ? normalizeAoiOpportunityTimestamp(raw.snoozedUntil, now + AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS)
+      : undefined;
+  const archivedAt = isArchivedAoiOpportunityStatus(status)
+    ? normalizeAoiOpportunityTimestamp(raw.archivedAt, updatedAt)
+    : undefined;
+
+  return {
+    version: 1,
+    id,
+    sessionPath,
+    sourceKind,
+    title: normalizeAoiOpportunityRequiredText(raw.title, 'Untitled opportunity', 160),
+    curiosityQuestion: normalizeAoiOpportunityRequiredText(
+      raw.curiosityQuestion,
+      'What should Aoi inspect next?',
+      240,
+    ),
+    whyNow: normalizeAoiOpportunityRequiredText(
+      raw.whyNow,
+      'Aoi recorded this as a proactive observation candidate.',
+      300,
+    ),
+    evidenceNeed: normalizeAoiOpportunityRequiredText(
+      raw.evidenceNeed,
+      'Needs evidence before becoming an action.',
+      300,
+    ),
+    suggestedNextAction: normalizeAoiOpportunityRequiredText(
+      raw.suggestedNextAction,
+      'Keep this visible in the Opportunity Inbox.',
+      260,
+    ),
+    risk: isAoiOpportunityRisk(raw.risk) ? raw.risk : 'low',
+    confidence: normalizeAoiOpportunityScore(raw.confidence, 0.5),
+    urgency: normalizeAoiOpportunityScore(raw.urgency, 0.4),
+    novelty: normalizeAoiOpportunityScore(raw.novelty, 0.5),
+    deliveryRecommendation: isAoiOpportunityDeliveryRecommendation(raw.deliveryRecommendation)
+      ? raw.deliveryRecommendation
+      : 'dashboard',
+    status,
+    evidenceRefs: normalizeStringList(raw.evidenceRefs, 24),
+    dedupeKey: normalizeAoiOpportunityDedupeKey(raw.dedupeKey, fallbackDedupeKey),
+    createdAt,
+    updatedAt,
+    expiresAt,
+    ...(snoozedUntil ? { snoozedUntil } : {}),
+    ...(archivedAt ? { archivedAt } : {}),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+function loadAoiOpportunityList(
+  filePath: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunity[] {
+  const parsed = readJson<unknown>(filePath);
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  return parsed
+    .map((item) => normalizeAoiOpportunityRecord(item, sessionPath, now))
+    .filter((item): item is AoiOpportunity => item !== null)
+    .slice(0, MAX_LIST_ITEMS);
+}
+
+function splitExpiredAoiOpportunities(
+  active: AoiOpportunity[],
+  archived: AoiOpportunity[],
+  now = Date.now(),
+): {
+  active: AoiOpportunity[];
+  archived: AoiOpportunity[];
+  changed: boolean;
+} {
+  const retainedActive: AoiOpportunity[] = [];
+  const expired: AoiOpportunity[] = [];
+  for (const opportunity of active) {
+    if (
+      opportunity.expiresAt <= now &&
+      (opportunity.status === 'active' || opportunity.status === 'snoozed')
+    ) {
+      expired.push({
+        ...opportunity,
+        status: 'expired',
+        updatedAt: Math.max(now, opportunity.updatedAt),
+        archivedAt: Math.max(now, opportunity.updatedAt),
+        snoozedUntil: undefined,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      });
+      continue;
+    }
+    retainedActive.push(opportunity);
+  }
+
+  if (expired.length === 0) {
+    return {
+      active,
+      archived,
+      changed: false,
+    };
+  }
+
+  const archivedById = new Map<string, AoiOpportunity>();
+  for (const item of [...archived, ...expired]) {
+    archivedById.set(item.id, item);
+  }
+  return {
+    active: retainedActive,
+    archived: [...archivedById.values()]
+      .sort((left, right) => right.updatedAt - left.updatedAt)
+      .slice(0, MAX_LIST_ITEMS),
+    changed: true,
+  };
+}
+
+function reconcileAoiOpportunityInbox(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunityInbox {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const active = loadAoiOpportunityList(paths.activeOpportunities, normalizedSessionPath, now);
+  const archived = loadAoiOpportunityList(paths.archivedOpportunities, normalizedSessionPath, now);
+  const reconciled = splitExpiredAoiOpportunities(active, archived, now);
+  if (reconciled.changed) {
+    writeJsonAtomic(paths.activeOpportunities, reconciled.active);
+    writeJsonAtomic(paths.archivedOpportunities, reconciled.archived);
+  }
+  return {
+    sessionPath: normalizedSessionPath,
+    active: reconciled.active,
+    archived: reconciled.archived,
+  };
+}
+
+export function loadAoiOpportunityInbox(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunityInbox {
+  return reconcileAoiOpportunityInbox(sessionsDir, sessionPath, now);
+}
+
+export function loadAoiActiveOpportunities(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunity[] {
+  return reconcileAoiOpportunityInbox(sessionsDir, sessionPath, now).active;
+}
+
+export function loadAoiArchivedOpportunities(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiOpportunity[] {
+  return reconcileAoiOpportunityInbox(sessionsDir, sessionPath, now).archived;
+}
+
+export function saveAoiActiveOpportunities(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunities: AoiOpportunity[],
+): AoiOpportunity[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const normalized = opportunities
+    .map((item) => normalizeAoiOpportunityRecord(item, normalizedSessionPath, item.updatedAt))
+    .filter((item): item is AoiOpportunity => item !== null)
+    .filter((item) => !isArchivedAoiOpportunityStatus(item.status))
+    .slice(0, MAX_LIST_ITEMS);
+  writeJsonAtomic(paths.activeOpportunities, normalized);
+  return normalized;
+}
+
+export function saveAoiArchivedOpportunities(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunities: AoiOpportunity[],
+): AoiOpportunity[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const normalized = opportunities
+    .map((item) => normalizeAoiOpportunityRecord(item, normalizedSessionPath, item.updatedAt))
+    .filter((item): item is AoiOpportunity => item !== null)
+    .filter((item) => isArchivedAoiOpportunityStatus(item.status))
+    .slice(0, MAX_LIST_ITEMS);
+  writeJsonAtomic(paths.archivedOpportunities, normalized);
+  return normalized;
+}
+
+function buildAoiOpportunityFromInput(
+  input: AoiOpportunityUpsertInput,
+  sessionPath: string,
+  now: number,
+  existing?: AoiOpportunity,
+): AoiOpportunity {
+  const nextStatus =
+    existing?.status === 'snoozed' && (existing.snoozedUntil ?? 0) > now
+      ? 'snoozed'
+      : input.status === 'snoozed'
+        ? 'snoozed'
+        : 'active';
+  const nextSnoozedUntil =
+    nextStatus === 'snoozed'
+      ? normalizeAoiOpportunityTimestamp(
+          input.snoozedUntil,
+          existing?.snoozedUntil && existing.snoozedUntil > now
+            ? existing.snoozedUntil
+            : now + AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS,
+        )
+      : undefined;
+  const normalized = normalizeAoiOpportunityRecord(
+    {
+      version: 1,
+      id: existing?.id ?? input.id,
+      sessionPath,
+      sourceKind: input.sourceKind ?? existing?.sourceKind,
+      title: input.title ?? existing?.title,
+      curiosityQuestion: input.curiosityQuestion ?? existing?.curiosityQuestion,
+      whyNow: input.whyNow ?? existing?.whyNow,
+      evidenceNeed: input.evidenceNeed ?? existing?.evidenceNeed,
+      suggestedNextAction: input.suggestedNextAction ?? existing?.suggestedNextAction,
+      risk: input.risk ?? existing?.risk,
+      confidence: input.confidence ?? existing?.confidence,
+      urgency: input.urgency ?? existing?.urgency,
+      novelty: input.novelty ?? existing?.novelty,
+      deliveryRecommendation: input.deliveryRecommendation ?? existing?.deliveryRecommendation,
+      status: nextStatus,
+      evidenceRefs: input.evidenceRefs ?? existing?.evidenceRefs,
+      dedupeKey: input.dedupeKey ?? existing?.dedupeKey,
+      createdAt: existing?.createdAt ?? input.createdAt ?? now,
+      updatedAt: now,
+      expiresAt: input.expiresAt ?? now + AOI_OPPORTUNITY_DEFAULT_TTL_MS,
+      snoozedUntil: nextSnoozedUntil,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+    sessionPath,
+    now,
+  );
+  if (!normalized) {
+    throw new Error('Invalid Aoi opportunity input.');
+  }
+  return normalized;
+}
+
+export function upsertAoiOpportunity(
+  sessionsDir: string,
+  sessionPath: string,
+  input: AoiOpportunityUpsertInput,
+  now = Date.now(),
+): AoiOpportunityUpsertResult {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const inbox = reconcileAoiOpportunityInbox(sessionsDir, normalizedSessionPath, now);
+  const probe = buildAoiOpportunityFromInput(input, normalizedSessionPath, now);
+  const existingIndex = inbox.active.findIndex(
+    (item) => item.dedupeKey === probe.dedupeKey && item.expiresAt > now,
+  );
+  const existing = existingIndex >= 0 ? inbox.active[existingIndex] : undefined;
+  const opportunity = buildAoiOpportunityFromInput(input, normalizedSessionPath, now, existing);
+  const nextActive =
+    existingIndex >= 0
+      ? inbox.active.map((item, index) => (index === existingIndex ? opportunity : item))
+      : [opportunity, ...inbox.active];
+  const sortedActive = nextActive
+    .sort((left, right) => right.updatedAt - left.updatedAt)
+    .slice(0, MAX_LIST_ITEMS);
+
+  saveAoiActiveOpportunities(sessionsDir, normalizedSessionPath, sortedActive);
+  saveAoiArchivedOpportunities(sessionsDir, normalizedSessionPath, inbox.archived);
+
+  return {
+    sessionPath: normalizedSessionPath,
+    opportunity,
+    created: existingIndex < 0,
+    active: sortedActive,
+    archived: inbox.archived,
+  };
+}
+
+function transitionAoiOpportunityStatus(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunityId: string,
+  status: AoiOpportunity['status'],
+  input: {
+    now?: number;
+    snoozeMs?: number;
+  } = {},
+): AoiOpportunityStatusTransitionResult {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  if (!isValidAoiAutonomyId(opportunityId)) {
+    throw new Error('Invalid or missing opportunityId.');
+  }
+  const now = input.now ?? Date.now();
+  const inbox = reconcileAoiOpportunityInbox(sessionsDir, normalizedSessionPath, now);
+  const activeIndex = inbox.active.findIndex((item) => item.id === opportunityId);
+  const archivedIndex = inbox.archived.findIndex((item) => item.id === opportunityId);
+  const current =
+    activeIndex >= 0
+      ? inbox.active[activeIndex]
+      : archivedIndex >= 0
+        ? inbox.archived[archivedIndex]
+        : null;
+  if (!current) {
+    throw new Error('Aoi opportunity not found.');
+  }
+  const nextSnoozedUntil =
+    status === 'snoozed'
+      ? now +
+        (input.snoozeMs && input.snoozeMs > 0 ? input.snoozeMs : AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS)
+      : undefined;
+  const next: AoiOpportunity = {
+    ...current,
+    status,
+    updatedAt: now,
+    ...(nextSnoozedUntil ? { snoozedUntil: nextSnoozedUntil } : { snoozedUntil: undefined }),
+    ...(isArchivedAoiOpportunityStatus(status) ? { archivedAt: now } : { archivedAt: undefined }),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+
+  let nextActive = inbox.active.filter((item) => item.id !== opportunityId);
+  let nextArchived = inbox.archived.filter((item) => item.id !== opportunityId);
+  if (isArchivedAoiOpportunityStatus(status)) {
+    nextArchived = [next, ...nextArchived].slice(0, MAX_LIST_ITEMS);
+  } else {
+    nextActive = [next, ...nextActive].slice(0, MAX_LIST_ITEMS);
+  }
+  saveAoiActiveOpportunities(sessionsDir, normalizedSessionPath, nextActive);
+  saveAoiArchivedOpportunities(sessionsDir, normalizedSessionPath, nextArchived);
+
+  return {
+    sessionPath: normalizedSessionPath,
+    opportunity: next,
+    active: nextActive,
+    archived: nextArchived,
+  };
+}
+
+export function archiveAoiOpportunity(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunityId: string,
+  now = Date.now(),
+): AoiOpportunityStatusTransitionResult {
+  return transitionAoiOpportunityStatus(sessionsDir, sessionPath, opportunityId, 'archived', {
+    now,
+  });
+}
+
+export function dismissAoiOpportunity(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunityId: string,
+  now = Date.now(),
+): AoiOpportunityStatusTransitionResult {
+  return transitionAoiOpportunityStatus(sessionsDir, sessionPath, opportunityId, 'dismissed', {
+    now,
+  });
+}
+
+export function snoozeAoiOpportunity(
+  sessionsDir: string,
+  sessionPath: string,
+  opportunityId: string,
+  input: {
+    now?: number;
+    snoozeMs?: number;
+  } = {},
+): AoiOpportunityStatusTransitionResult {
+  return transitionAoiOpportunityStatus(sessionsDir, sessionPath, opportunityId, 'snoozed', input);
+}
+
 export function appendAoiProposalDecision(
   sessionsDir: string,
   decision: AoiProposalDecision,
@@ -1518,6 +2074,7 @@ export function buildAoiAutonomyStatus(
   const policy = loadAoiAutonomyPolicy(sessionsDir, normalizedSessionPath);
   const activeProposals = loadAoiActiveProposals(sessionsDir, normalizedSessionPath);
   const archivedProposals = loadAoiArchivedProposals(sessionsDir, normalizedSessionPath);
+  const opportunities = loadAoiOpportunityInbox(sessionsDir, normalizedSessionPath, now);
   const observations = loadAoiObservations(sessionsDir, normalizedSessionPath);
   const reflections = loadAoiReflections(sessionsDir, normalizedSessionPath);
   const decisions = loadAoiProposalDecisions(sessionsDir, normalizedSessionPath);
@@ -1547,6 +2104,20 @@ export function buildAoiAutonomyStatus(
     blockedProposalCount: [...activeProposals, ...archivedProposals].filter(
       (proposal) => proposal.status === 'blocked',
     ).length,
+    activeOpportunityCount: opportunities.active.filter(
+      (opportunity) => opportunity.status === 'active',
+    ).length,
+    archivedOpportunityCount: opportunities.archived.length,
+    snoozedOpportunityCount: opportunities.active.filter(
+      (opportunity) => opportunity.status === 'snoozed',
+    ).length,
+    expiredOpportunityCount: opportunities.archived.filter(
+      (opportunity) => opportunity.status === 'expired',
+    ).length,
+    lastOpportunityAt: [...opportunities.active, ...opportunities.archived]
+      .map((opportunity) => opportunity.updatedAt)
+      .filter((updatedAt) => updatedAt > 0)
+      .sort((left, right) => right - left)[0],
     observationCount: observations.length,
     reflectionCount: reflections.length,
     decisionCount: decisions.length,

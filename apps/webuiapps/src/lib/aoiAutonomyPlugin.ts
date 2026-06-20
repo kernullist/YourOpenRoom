@@ -20,6 +20,8 @@ import {
   loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
+  loadAoiActiveOpportunities,
+  loadAoiArchivedOpportunities,
   loadAoiObservations,
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
@@ -463,6 +465,25 @@ async function handleAoiAutonomyRequest(
         sessionPath,
         active: loadAoiActiveProposals(sessionsDir, sessionPath),
         archived: includeArchived ? loadAoiArchivedProposals(sessionsDir, sessionPath) : [],
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/opportunities') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const includeArchived = url.searchParams.get('includeArchived') === 'true';
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        active: loadAoiActiveOpportunities(sessionsDir, sessionPath),
+        archived: includeArchived ? loadAoiArchivedOpportunities(sessionsDir, sessionPath) : [],
       });
       return true;
     }

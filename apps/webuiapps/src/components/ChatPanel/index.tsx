@@ -273,6 +273,7 @@ import {
   buildAoiBlockedProactiveExplanation,
   buildAoiAutonomySchedulerPanelSummary,
   buildAoiAutonomyNotificationBadge,
+  buildAoiOpportunityInboxPanelSummary,
   buildAoiContextSourcePanelSummaries,
   buildAoiEnvironmentSourcePanelSummaries,
   buildAoiMissionPanelSummary,
@@ -328,6 +329,7 @@ import {
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorPanelSummary,
+  buildAoiJarvisAutonomyGovernorRequestRoutingSummary,
   canAoiJarvisAutonomyUseCapability,
   type AoiJarvisAutonomyGovernorDecision,
 } from '@/lib/aoiJarvisAutonomyGovernor';
@@ -348,6 +350,7 @@ import type {
   AoiGoal,
   AoiMissionDecisionAction,
   AoiMissionState,
+  AoiOpportunity,
   AoiOperatorDigest,
   AoiOperatorHealthState,
   AoiOperatorVoiceEventCategory,
@@ -2526,6 +2529,8 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyArchivedProposals, setAoiAutonomyArchivedProposals] = useState<AoiProposal[]>(
     [],
   );
+  const [aoiActiveOpportunities, setAoiActiveOpportunities] = useState<AoiOpportunity[]>([]);
+  const [aoiArchivedOpportunities, setAoiArchivedOpportunities] = useState<AoiOpportunity[]>([]);
   const [aoiRecentProposalDecisions, setAoiRecentProposalDecisions] = useState<
     AoiProposalDecision[]
   >([]);
@@ -3321,6 +3326,8 @@ const ChatPanel: React.FC<{
       setAoiAutonomyStatus(snapshot.status);
       setAoiAutonomyActiveProposals(snapshot.proposals.active);
       setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
+      setAoiActiveOpportunities(snapshot.opportunities.active);
+      setAoiArchivedOpportunities(snapshot.opportunities.archived);
       setAoiRecentProposalDecisions(decisions.decisions);
       setAoiAutonomyActiveGoals(snapshot.goals.active);
       setAoiActivePlaybooks(snapshot.playbooks.active);
@@ -7173,6 +7180,14 @@ const ChatPanel: React.FC<{
       sessionPath,
     ],
   );
+  const aoiJarvisAutonomyGovernorRequestPreviewText = useMemo(() => {
+    const draft = input.trim();
+    if (draft) {
+      return draft;
+    }
+    const latestUserTurn = [...chatHistory].reverse().find((message) => message.role === 'user');
+    return latestUserTurn?.content ?? '';
+  }, [chatHistory, input]);
 
   useEffect(() => {
     const currentTrail =
@@ -8273,6 +8288,8 @@ const ChatPanel: React.FC<{
           aoiAutonomyStatus={aoiAutonomyStatus}
           aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
+          aoiActiveOpportunities={aoiActiveOpportunities}
+          aoiArchivedOpportunities={aoiArchivedOpportunities}
           aoiAutonomyActiveGoals={aoiAutonomyActiveGoals}
           aoiActivePlaybooks={aoiActivePlaybooks}
           aoiMissionState={aoiMissionState}
@@ -8284,6 +8301,7 @@ const ChatPanel: React.FC<{
           aoiOperatorDigest={aoiOperatorDigest}
           aoiOperatorHealth={aoiOperatorHealth}
           aoiJarvisAutonomyGovernor={aoiJarvisAutonomyGovernor}
+          aoiJarvisAutonomyGovernorRequestDraft={aoiJarvisAutonomyGovernorRequestPreviewText}
           aoiProactiveBriefPanel={aoiProactiveBriefPanel}
           aoiProactiveTrendAdvisor={aoiProactiveBriefs?.trendAdvisor ?? null}
           expandedAoiProactiveBriefId={expandedAoiProactiveBriefId}
@@ -8859,6 +8877,8 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus: AoiAutonomyStatus | null;
   aoiAutonomyActiveProposals: AoiProposal[];
   aoiAutonomyArchivedProposals: AoiProposal[];
+  aoiActiveOpportunities: AoiOpportunity[];
+  aoiArchivedOpportunities: AoiOpportunity[];
   aoiAutonomyActiveGoals: AoiGoal[];
   aoiActivePlaybooks: AoiPlaybook[];
   aoiMissionState: AoiMissionState | null;
@@ -8870,6 +8890,7 @@ const SettingsModal: React.FC<{
   aoiOperatorDigest: AoiOperatorDigest | null;
   aoiOperatorHealth: AoiOperatorHealthState | null;
   aoiJarvisAutonomyGovernor: AoiJarvisAutonomyGovernorDecision;
+  aoiJarvisAutonomyGovernorRequestDraft: string;
   aoiProactiveBriefPanel: AoiProactiveBriefPanelModel;
   aoiProactiveTrendAdvisor: AoiProactiveTrendAdvisorState | null;
   expandedAoiProactiveBriefId: string | null;
@@ -8975,6 +8996,8 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus,
   aoiAutonomyActiveProposals,
   aoiAutonomyArchivedProposals,
+  aoiActiveOpportunities,
+  aoiArchivedOpportunities,
   aoiAutonomyActiveGoals,
   aoiActivePlaybooks,
   aoiMissionState,
@@ -8986,6 +9009,7 @@ const SettingsModal: React.FC<{
   aoiOperatorDigest,
   aoiOperatorHealth,
   aoiJarvisAutonomyGovernor,
+  aoiJarvisAutonomyGovernorRequestDraft,
   aoiProactiveBriefPanel,
   aoiProactiveTrendAdvisor,
   expandedAoiProactiveBriefId,
@@ -9256,6 +9280,16 @@ const SettingsModal: React.FC<{
         aoiAutonomyStatus,
       ),
     [aoiAutonomyActiveProposals, aoiAutonomyArchivedProposals, aoiAutonomyStatus],
+  );
+  const aoiOpportunityInboxSummary = useMemo(
+    () =>
+      buildAoiOpportunityInboxPanelSummary({
+        active: aoiActiveOpportunities,
+        archived: aoiArchivedOpportunities,
+        status: aoiAutonomyStatus,
+        now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
+      }),
+    [aoiActiveOpportunities, aoiArchivedOpportunities, aoiAutonomyLastTickAt, aoiAutonomyStatus],
   );
   const aoiApprovalInboxProposalIds = useMemo(
     () => new Set((aoiOperatorDigest?.approvalInbox ?? []).map((item) => item.proposalId)),
@@ -9570,6 +9604,13 @@ const SettingsModal: React.FC<{
   const aoiJarvisAutonomyGovernorSummary = useMemo(
     () => buildAoiJarvisAutonomyGovernorPanelSummary(aoiJarvisAutonomyGovernor),
     [aoiJarvisAutonomyGovernor],
+  );
+  const aoiJarvisAutonomyGovernorRequestRoutingSummary = useMemo(
+    () =>
+      buildAoiJarvisAutonomyGovernorRequestRoutingSummary(aoiJarvisAutonomyGovernor, {
+        requestText: aoiJarvisAutonomyGovernorRequestDraft,
+      }),
+    [aoiJarvisAutonomyGovernor, aoiJarvisAutonomyGovernorRequestDraft],
   );
   const aoiJarvisAutonomyGovernorAuditSummary = useMemo(
     () =>
@@ -11473,6 +11514,13 @@ const SettingsModal: React.FC<{
                         <strong>{aoiAutonomyProposalCounts.active}</strong>
                       </div>
                       <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Opportunities</span>
+                        <strong>
+                          {aoiOpportunityInboxSummary.activeCount} /{' '}
+                          {aoiOpportunityInboxSummary.snoozedCount}
+                        </strong>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
                         <span className={styles.promptBudgetLabel}>Dismissed / snoozed</span>
                         <strong>
                           {aoiAutonomyProposalCounts.dismissed} /{' '}
@@ -11610,6 +11658,56 @@ const SettingsModal: React.FC<{
                                 </div>
                               ),
                             )}
+                            {aoiJarvisAutonomyGovernorRequestDraft.trim() ? (
+                              <div>
+                                Request preview:{' '}
+                                {sanitizeAoiProposalDisplayText(
+                                  aoiJarvisAutonomyGovernorRequestDraft,
+                                  260,
+                                )}
+                              </div>
+                            ) : (
+                              <div>Request routing: no current or recent user request</div>
+                            )}
+                            {aoiJarvisAutonomyGovernorRequestRoutingSummary.visible && (
+                              <>
+                                <div>
+                                  Request routing:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    `${aoiJarvisAutonomyGovernorRequestRoutingSummary.status}; ${aoiJarvisAutonomyGovernorRequestRoutingSummary.summaryLabel}`,
+                                    300,
+                                  )}
+                                </div>
+                                <div>
+                                  Request directive:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorRequestRoutingSummary.responseDirectiveLabel,
+                                    320,
+                                  )}
+                                </div>
+                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.allowedMatchedLabels.map(
+                                  (label, index) => (
+                                    <div key={`jarvis-governor-request-allowed-${index}`}>
+                                      Matched allowed: {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ),
+                                )}
+                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.blockedMatchedLabels.map(
+                                  (label, index) => (
+                                    <div key={`jarvis-governor-request-blocked-${index}`}>
+                                      Matched blocked: {sanitizeAoiProposalDisplayText(label, 300)}
+                                    </div>
+                                  ),
+                                )}
+                                {aoiJarvisAutonomyGovernorRequestRoutingSummary.evidenceRefs
+                                  .slice(0, 4)
+                                  .map((ref, index) => (
+                                    <div key={`jarvis-governor-request-evidence-${index}`}>
+                                      Request evidence: {sanitizeAoiProposalDisplayText(ref, 220)}
+                                    </div>
+                                  ))}
+                              </>
+                            )}
                             {aoiJarvisAutonomyGovernorSummary.requestScenarioLabels.map(
                               (label, index) => (
                                 <div key={`jarvis-governor-request-scenario-${index}`}>
@@ -11722,6 +11820,60 @@ const SettingsModal: React.FC<{
                               </div>
                             ))}
                           </div>
+                        </div>
+                      </div>
+                    )}
+
+                    {aoiOpportunityInboxSummary.visible && (
+                      <div
+                        className={styles.aoiAutonomyProposalSection}
+                        data-testid="aoi-opportunity-inbox"
+                      >
+                        <div className={styles.promptBudgetSectionTitle}>Opportunity inbox</div>
+                        <div className={styles.aoiAutonomyProposalItem}>
+                          <div className={styles.aoiAutonomyProposalMeta}>
+                            <span>{aoiOpportunityInboxSummary.countLabel}</span>
+                            <span>display-only</span>
+                          </div>
+                          <div className={styles.aoiAutonomyProposalTitle}>
+                            {sanitizeAoiProposalDisplayText(
+                              aoiOpportunityInboxSummary.headlineLabel,
+                              180,
+                            )}
+                          </div>
+                          <div className={styles.aoiAutonomyProposalReason}>
+                            {sanitizeAoiProposalDisplayText(
+                              aoiOpportunityInboxSummary.safetyBoundaryLabel,
+                              320,
+                            )}
+                          </div>
+                          {aoiOpportunityInboxSummary.itemLabels.length > 0 ? (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              {aoiOpportunityInboxSummary.itemLabels.map((item) => (
+                                <div key={item.id}>
+                                  <strong>{item.titleLabel}</strong>
+                                  <div>{item.metaLabel}</div>
+                                  <div>Question: {item.curiosityLabel}</div>
+                                  <div>Why now: {item.whyNowLabel}</div>
+                                  <div>Evidence need: {item.evidenceNeedLabel}</div>
+                                  <div>Next: {item.nextActionLabel}</div>
+                                  <div>Delivery: {item.deliveryLabel}</div>
+                                  {item.evidenceRefs.map((ref, index) => (
+                                    <div key={`${item.id}-evidence-${index}`}>Evidence: {ref}</div>
+                                  ))}
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className={styles.aoiAutonomyProposalDetails}>
+                              <div>No active display-only opportunities are waiting.</div>
+                              {aoiOpportunityInboxSummary.evidenceRefs.map((ref, index) => (
+                                <div key={`opportunity-inbox-evidence-${index}`}>
+                                  Evidence: {ref}
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       </div>
                     )}

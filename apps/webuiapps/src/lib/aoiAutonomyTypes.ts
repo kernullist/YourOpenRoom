@@ -64,6 +64,58 @@ export type AoiProposalStatus =
   | 'executed'
   | 'blocked';
 
+export type AoiOpportunitySourceKind =
+  | 'memory'
+  | 'interest'
+  | 'workspace'
+  | 'kira'
+  | 'research'
+  | 'app_state'
+  | 'agenda'
+  | 'manual';
+
+export type AoiOpportunityDeliveryRecommendation =
+  | 'dashboard'
+  | 'inline_card'
+  | 'quiet_notification'
+  | 'direct_chat';
+
+export type AoiOpportunityStatus =
+  | 'active'
+  | 'accepted'
+  | 'dismissed'
+  | 'snoozed'
+  | 'converted'
+  | 'expired'
+  | 'archived';
+
+export interface AoiOpportunity {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  sourceKind: AoiOpportunitySourceKind;
+  title: string;
+  curiosityQuestion: string;
+  whyNow: string;
+  evidenceNeed: string;
+  suggestedNextAction: string;
+  risk: AoiAutonomyRisk;
+  confidence: number;
+  urgency: number;
+  novelty: number;
+  deliveryRecommendation: AoiOpportunityDeliveryRecommendation;
+  status: AoiOpportunityStatus;
+  evidenceRefs: string[];
+  dedupeKey: string;
+  createdAt: number;
+  updatedAt: number;
+  expiresAt: number;
+  snoozedUntil?: number;
+  archivedAt?: number;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiObservationSource =
   | 'chat'
   | 'tool'
@@ -2250,6 +2302,11 @@ export interface AoiAutonomyStatus {
   acceptedProposalCount: number;
   snoozedProposalCount: number;
   blockedProposalCount: number;
+  activeOpportunityCount?: number;
+  archivedOpportunityCount?: number;
+  snoozedOpportunityCount?: number;
+  expiredOpportunityCount?: number;
+  lastOpportunityAt?: number;
   observationCount: number;
   reflectionCount: number;
   decisionCount: number;

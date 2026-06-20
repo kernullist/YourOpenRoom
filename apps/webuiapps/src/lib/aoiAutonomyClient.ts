@@ -24,6 +24,7 @@ import type {
   AoiOperatorTimelineSummary,
   AoiOperatorTraceExport,
   AoiOperatorHealthState,
+  AoiOpportunity,
   AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
   AoiPlaybook,
@@ -57,6 +58,12 @@ export interface AoiAutonomyProposalList {
   sessionPath: string;
   active: AoiProposal[];
   archived: AoiProposal[];
+}
+
+export interface AoiOpportunityInboxList {
+  sessionPath: string;
+  active: AoiOpportunity[];
+  archived: AoiOpportunity[];
 }
 
 export interface AoiAutonomyDecisionList {
@@ -171,6 +178,7 @@ export interface AoiAutonomyDashboardSnapshot {
   scheduler: AoiAutonomySchedulerState;
   health: AoiOperatorHealthState;
   playbooks: AoiAutonomyPlaybookList;
+  opportunities: AoiOpportunityInboxList;
   proactiveBriefs: AoiProactiveBriefListResponse;
 }
 
@@ -462,6 +470,26 @@ export async function fetchAoiAutonomyProposals(
     sessionPath: responseSessionPath,
     active: asArray<AoiProposal>(payload.active),
     archived: asArray<AoiProposal>(payload.archived),
+  };
+}
+
+export async function fetchAoiOpportunityInbox(
+  sessionPath: string,
+  includeArchived = true,
+): Promise<AoiOpportunityInboxList> {
+  const response = await fetch(
+    `${API_PREFIX}/opportunities?${sessionQuery(sessionPath)}&includeArchived=${includeArchived}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi opportunity inbox.');
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+
+  return {
+    sessionPath: responseSessionPath,
+    active: asArray<AoiOpportunity>(payload.active),
+    archived: asArray<AoiOpportunity>(payload.archived),
   };
 }
 
@@ -1181,6 +1209,7 @@ export async function fetchAoiAutonomyDashboard(
     scheduler,
     health,
     playbooks,
+    opportunities,
     proactiveBriefs,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
@@ -1195,6 +1224,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiAutonomyScheduler(sessionPath),
     fetchAoiOperatorHealth(sessionPath),
     fetchAoiPlaybooks(sessionPath, true),
+    fetchAoiOpportunityInbox(sessionPath, true),
     fetchAoiProactiveBriefs(sessionPath),
   ]);
 
@@ -1212,6 +1242,7 @@ export async function fetchAoiAutonomyDashboard(
     scheduler: scheduler.state,
     health: health.health,
     playbooks,
+    opportunities,
     proactiveBriefs,
   };
 }
