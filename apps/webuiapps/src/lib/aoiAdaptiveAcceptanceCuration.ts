@@ -13,7 +13,15 @@ import type {
   AoiFieldShadowRecordReport,
 } from './aoiFieldShadowDogfooding';
 import type { AoiOperatorFeedbackLabelAction } from './aoiOperatorFeedbackInbox';
-import type { AoiOperatorTimelineEvent, AoiOperatorTraceExport } from './aoiAutonomyTypes';
+import type {
+  AoiActionLadderDecision,
+  AoiDeliberationRun,
+  AoiInterruptionGovernorDecision,
+  AoiOperatorTimelineEvent,
+  AoiOperatorTraceExport,
+  AoiOpportunity,
+} from './aoiAutonomyTypes';
+import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 import type { AoiShadowDecisionLabel } from './aoiShadowModeEvaluation';
 
 const DEFAULT_CURATION_NOW = 1_800_000_000_000;
@@ -58,13 +66,13 @@ const FAILURE_LABELS = new Set<AoiShadowDecisionLabel>([
 ]);
 
 export type AoiAdaptiveAcceptanceDimension =
-  | 'usefulness'
-  | 'timing'
-  | 'source_selection'
-  | 'safety'
-  | 'context_coverage'
-  | 'privacy'
-  | 'mission_continuity';
+  | 'useful'
+  | 'timely'
+  | 'evidence_backed'
+  | 'non_intrusive'
+  | 'safe'
+  | 'source_honest'
+  | 'mission_aware';
 
 export type AoiAdaptiveAcceptancePrivacyStatus = 'passed' | 'needs_review' | 'blocked';
 
@@ -127,9 +135,15 @@ export interface AoiAdaptiveAcceptanceCandidate {
   createdAt: number;
   sourceDecisionRecordIds: string[];
   sourceDecisionIds: string[];
+  sourceFieldEventIds: string[];
   labelIds: string[];
   traceExportIds: string[];
   timelineEventIds: string[];
+  sourceFreshnessContractIds: string[];
+  opportunityIds: string[];
+  deliberationRunIds: string[];
+  deliveryDecisionIds: string[];
+  actionLadderDecisionIds: string[];
   labelCategory: AoiShadowDecisionLabel;
   acceptanceDimension: AoiAdaptiveAcceptanceDimension;
   privacyStatus: AoiAdaptiveAcceptancePrivacyStatus;
@@ -161,12 +175,14 @@ export interface AoiAdaptiveAcceptancePack {
   privacyFailCount: number;
   replayDraftCount: number;
   blockedCandidateCount: number;
+  needsReviewCandidateCount: number;
   deferredCandidateCount: number;
   promotedCandidateCount: number;
   wouldCatchPriorFailureCount: number;
   countsByLabel: Record<AoiShadowDecisionLabel, number>;
   countsByDimension: Record<AoiAdaptiveAcceptanceDimension, number>;
   countsByPrivacyStatus: Record<AoiAdaptiveAcceptancePrivacyStatus, number>;
+  countsByReviewStatus: Record<AoiAdaptiveAcceptanceReviewStatus, number>;
   topMissingEvidenceReasons: AoiAdaptiveAcceptanceMissingEvidenceReason[];
   metrics: AoiAdaptiveAcceptanceMetric[];
   candidates: AoiAdaptiveAcceptanceCandidate[];
@@ -180,6 +196,11 @@ export interface AoiAdaptiveAcceptancePackInput {
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
   labelActions: AoiOperatorFeedbackLabelAction[];
   traceExports: AoiOperatorTraceExport[];
+  sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
+  opportunities?: readonly AoiOpportunity[];
+  deliberationRuns?: readonly AoiDeliberationRun[];
+  interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
+  actionLadderDecisions?: readonly AoiActionLadderDecision[];
   reviewStates?: AoiAdaptiveAcceptanceReviewState[];
   now?: number;
   limit?: number;
@@ -259,13 +280,22 @@ function makeLabelCount(): Record<AoiShadowDecisionLabel, number> {
 
 function makeDimensionCount(): Record<AoiAdaptiveAcceptanceDimension, number> {
   return {
-    usefulness: 0,
-    timing: 0,
-    source_selection: 0,
-    safety: 0,
-    context_coverage: 0,
-    privacy: 0,
-    mission_continuity: 0,
+    useful: 0,
+    timely: 0,
+    evidence_backed: 0,
+    non_intrusive: 0,
+    safe: 0,
+    source_honest: 0,
+    mission_aware: 0,
+  };
+}
+
+function makeReviewCount(): Record<AoiAdaptiveAcceptanceReviewStatus, number> {
+  return {
+    needs_review: 0,
+    approved: 0,
+    deferred: 0,
+    rejected: 0,
   };
 }
 
@@ -281,35 +311,37 @@ function dimensionForLabel(
   label: AoiShadowDecisionLabel,
   record: AoiFieldShadowDecisionRecord,
 ): AoiAdaptiveAcceptanceDimension {
+  if (record.subsystemOrigin === 'mission_memory') {
+    return 'mission_aware';
+  }
   if (label === 'wrong_source') {
-    return 'source_selection';
+    return 'source_honest';
   }
   if (label === 'unsafe') {
-    return 'safety';
+    return 'safe';
   }
   if (label === 'missed_context') {
-    return 'context_coverage';
+    return 'evidence_backed';
+  }
+  if (label === 'should_have_spoken') {
+    return 'timely';
   }
   if (
     label === 'too_much' ||
     label === 'too_frequent' ||
     label === 'wrong_timing' ||
     label === 'show_less' ||
-    label === 'mute_topic' ||
-    label === 'should_have_spoken'
+    label === 'mute_topic'
   ) {
-    return 'timing';
-  }
-  if (record.subsystemOrigin === 'mission_memory') {
-    return 'mission_continuity';
+    return 'non_intrusive';
   }
   if (
     record.subsystemOrigin === 'source_consent' ||
     record.subsystemOrigin === 'personal_source_reality'
   ) {
-    return 'privacy';
+    return 'source_honest';
   }
-  return 'usefulness';
+  return 'useful';
 }
 
 function reasonForLabel(
@@ -366,7 +398,10 @@ function inspectRawPrivateText(value: string): string[] {
       value,
     ) ||
     /\[(?:redacted-)?private-body\]|\[private body withheld\]|\[redacted-body\]/i.test(value) ||
-    /\b(?:calendar|note|mail|email|message)\s+(?:body|content)\s*[:=]/i.test(value) ||
+    /\b(?:body|content|snippet|transcript|messageBody|rawText|calendarBody|noteContent)\s*[:=]/i.test(
+      value,
+    ) ||
+    /\b(?:calendar|note|mail|email|message)\s+(?:body|content|snippet)\s*[:=]/i.test(value) ||
     /\b(?:stdout|stderr|command output)\s*[:=]/i.test(value)
   ) {
     warnings.push('body-like or raw output marker remains in candidate source');
@@ -561,6 +596,153 @@ function missingEvidenceReasons(params: {
   return uniqueStrings(reasons, 8);
 }
 
+function normalizeContextKey(value: string | undefined): string {
+  return sanitizeCurationText(value ?? '', 180)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function contextHaystack(params: {
+  record: AoiFieldShadowDecisionRecord;
+  label: AoiOperatorFeedbackLabelAction;
+  traces: AoiOperatorTraceExport[];
+}): string {
+  return normalizeContextKey(
+    [
+      params.record.id,
+      params.record.decisionId,
+      params.record.fieldEventId,
+      params.record.opportunityId,
+      params.record.dedupeKey,
+      params.record.subsystemOrigin,
+      params.record.sourceSummary,
+      params.label.id,
+      params.label.fieldEventId,
+      params.label.opportunityId,
+      params.label.topicKey,
+      params.label.sourceKey,
+      ...params.record.sourceRefs,
+      ...params.record.evidenceRefs,
+      ...params.label.sourceKinds,
+      ...params.label.evidenceRefs,
+      ...params.traces.flatMap((trace) => [
+        trace.id,
+        ...trace.sourceEventIds,
+        ...trace.events.flatMap(eventRefs),
+      ]),
+    ].join(' '),
+  );
+}
+
+function contextKeyMatches(haystack: string, ...values: Array<string | undefined>): boolean {
+  return values.some((value) => {
+    const normalized = normalizeContextKey(value);
+    return Boolean(normalized) && haystack.includes(normalized);
+  });
+}
+
+function collectPromotionContext(params: {
+  record: AoiFieldShadowDecisionRecord;
+  label: AoiOperatorFeedbackLabelAction;
+  traces: AoiOperatorTraceExport[];
+  sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
+  opportunities?: readonly AoiOpportunity[];
+  deliberationRuns?: readonly AoiDeliberationRun[];
+  interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
+  actionLadderDecisions?: readonly AoiActionLadderDecision[];
+}): {
+  sourceFreshnessContractIds: string[];
+  opportunityIds: string[];
+  deliberationRunIds: string[];
+  deliveryDecisionIds: string[];
+  actionLadderDecisionIds: string[];
+  evidenceRefs: string[];
+} {
+  const haystack = contextHaystack(params);
+  const opportunityKeys = uniqueStrings([
+    params.record.opportunityId,
+    params.label.opportunityId,
+    params.record.dedupeKey,
+    params.label.topicKey,
+  ]);
+  const sourceContracts = (params.sourceFreshnessContracts ?? []).filter((contract) =>
+    contextKeyMatches(haystack, contract.id, contract.sourceId, contract.sourceKind),
+  );
+  const opportunities = (params.opportunities ?? []).filter(
+    (opportunity) =>
+      opportunity.sessionPath === params.record.sessionPath &&
+      (opportunityKeys.includes(opportunity.id) ||
+        opportunityKeys.includes(opportunity.dedupeKey) ||
+        contextKeyMatches(haystack, opportunity.id, opportunity.dedupeKey)),
+  );
+  const deliberationRuns = (params.deliberationRuns ?? []).filter(
+    (run) =>
+      run.sessionPath === params.record.sessionPath &&
+      (opportunityKeys.includes(run.opportunityId) ||
+        opportunityKeys.includes(run.opportunityDedupeKey) ||
+        contextKeyMatches(haystack, run.id, run.opportunityId, run.opportunityDedupeKey)),
+  );
+  const interruptionDecisions = (params.interruptionDecisions ?? []).filter(
+    (decision) =>
+      decision.sessionPath === params.record.sessionPath &&
+      (opportunityKeys.includes(decision.opportunityId) ||
+        opportunityKeys.includes(decision.opportunityDedupeKey) ||
+        contextKeyMatches(haystack, decision.id, decision.opportunityId, decision.cooldownKey)),
+  );
+  const actionLadderDecisions = (params.actionLadderDecisions ?? []).filter(
+    (decision) =>
+      decision.sessionPath === params.record.sessionPath &&
+      (opportunityKeys.includes(decision.opportunityId) ||
+        opportunityKeys.includes(decision.opportunityDedupeKey) ||
+        contextKeyMatches(haystack, decision.id, decision.opportunityId)),
+  );
+  return {
+    sourceFreshnessContractIds: uniqueStrings(
+      sourceContracts.map((contract) => contract.id),
+      8,
+    ),
+    opportunityIds: uniqueStrings(
+      opportunities.map((opportunity) => opportunity.id),
+      8,
+    ),
+    deliberationRunIds: uniqueStrings(
+      deliberationRuns.map((run) => run.id),
+      8,
+    ),
+    deliveryDecisionIds: uniqueStrings(
+      interruptionDecisions.map((decision) => decision.id),
+      8,
+    ),
+    actionLadderDecisionIds: uniqueStrings(
+      actionLadderDecisions.map((decision) => decision.id),
+      8,
+    ),
+    evidenceRefs: uniqueStrings(
+      [
+        ...sourceContracts.flatMap((contract) => [
+          `source-freshness:${contract.id}`,
+          ...contract.evidenceRefs,
+        ]),
+        ...opportunities.flatMap((opportunity) => [
+          `opportunity:${opportunity.id}`,
+          ...opportunity.evidenceRefs,
+        ]),
+        ...deliberationRuns.flatMap((run) => [`deliberation:${run.id}`, ...run.evidenceRefs]),
+        ...interruptionDecisions.flatMap((decision) => [
+          `interruption-decision:${decision.id}`,
+          ...decision.evidenceRefs,
+        ]),
+        ...actionLadderDecisions.flatMap((decision) => [
+          `action-ladder:${decision.id}`,
+          ...decision.evidenceRefs,
+        ]),
+      ],
+      16,
+    ),
+  };
+}
+
 function candidateId(params: {
   sessionPath: string;
   recordId: string;
@@ -630,6 +812,11 @@ function buildCandidate(params: {
   record: AoiFieldShadowDecisionRecord;
   label: AoiOperatorFeedbackLabelAction;
   traces: AoiOperatorTraceExport[];
+  sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
+  opportunities?: readonly AoiOpportunity[];
+  deliberationRuns?: readonly AoiDeliberationRun[];
+  interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
+  actionLadderDecisions?: readonly AoiActionLadderDecision[];
   reviewStates: AoiAdaptiveAcceptanceReviewState[];
   now: number;
 }): AoiAdaptiveAcceptanceCandidate {
@@ -649,6 +836,16 @@ function buildCandidate(params: {
     reviewStates: params.reviewStates,
   });
   const reviewStatus = reviewState?.status ?? 'needs_review';
+  const context = collectPromotionContext({
+    record: params.record,
+    label: params.label,
+    traces: params.traces,
+    sourceFreshnessContracts: params.sourceFreshnessContracts,
+    opportunities: params.opportunities,
+    deliberationRuns: params.deliberationRuns,
+    interruptionDecisions: params.interruptionDecisions,
+    actionLadderDecisions: params.actionLadderDecisions,
+  });
   const privacy = privacyForCandidate({
     record: params.record,
     label: params.label,
@@ -689,6 +886,7 @@ function buildCandidate(params: {
       ...params.label.evidenceRefs,
       ...params.traces.map((trace) => `trace-export:${trace.id}`),
       ...params.traces.flatMap((trace) => trace.events.flatMap((event) => event.evidenceRefs)),
+      ...context.evidenceRefs,
       ...(reviewState?.evidenceRefs ?? []),
     ],
     MAX_REFS,
@@ -704,9 +902,15 @@ function buildCandidate(params: {
     createdAt: params.now,
     sourceDecisionRecordIds: [params.record.id],
     sourceDecisionIds: [params.record.decisionId],
+    sourceFieldEventIds: uniqueStrings([params.record.fieldEventId, params.label.fieldEventId], 8),
     labelIds: [params.label.id],
     traceExportIds: traceIds,
     timelineEventIds,
+    sourceFreshnessContractIds: context.sourceFreshnessContractIds,
+    opportunityIds: context.opportunityIds,
+    deliberationRunIds: context.deliberationRunIds,
+    deliveryDecisionIds: context.deliveryDecisionIds,
+    actionLadderDecisionIds: context.actionLadderDecisionIds,
     labelCategory: params.label.label,
     acceptanceDimension: dimension,
     privacyStatus: privacy.status,
@@ -914,6 +1118,11 @@ export function buildAoiAdaptiveAcceptancePack(
         record,
         label,
         traces,
+        sourceFreshnessContracts: input.sourceFreshnessContracts,
+        opportunities: input.opportunities,
+        deliberationRuns: input.deliberationRuns,
+        interruptionDecisions: input.interruptionDecisions,
+        actionLadderDecisions: input.actionLadderDecisions,
         reviewStates: input.reviewStates ?? [],
         now: generatedAt,
       });
@@ -930,10 +1139,12 @@ export function buildAoiAdaptiveAcceptancePack(
   const countsByLabel = makeLabelCount();
   const countsByDimension = makeDimensionCount();
   const countsByPrivacyStatus = makePrivacyCount();
+  const countsByReviewStatus = makeReviewCount();
   for (const candidate of candidates) {
     countsByLabel[candidate.labelCategory] += 1;
     countsByDimension[candidate.acceptanceDimension] += 1;
     countsByPrivacyStatus[candidate.privacyStatus] += 1;
+    countsByReviewStatus[candidate.reviewStatus] += 1;
   }
   const evidenceRefs = uniqueStrings(
     [
@@ -963,6 +1174,7 @@ export function buildAoiAdaptiveAcceptancePack(
     blockedCandidateCount: candidates.filter(
       (candidate) => candidate.replayDraftStatus === 'blocked',
     ).length,
+    needsReviewCandidateCount: countsByReviewStatus.needs_review,
     deferredCandidateCount: candidates.filter(
       (candidate) => candidate.replayDraftStatus === 'deferred',
     ).length,
@@ -974,6 +1186,7 @@ export function buildAoiAdaptiveAcceptancePack(
     countsByLabel,
     countsByDimension,
     countsByPrivacyStatus,
+    countsByReviewStatus,
     topMissingEvidenceReasons: topReasons,
     metrics: buildMetrics(candidates, evidenceRefs),
     candidates,

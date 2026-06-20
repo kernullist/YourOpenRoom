@@ -24,8 +24,19 @@ const MAX_REFS = 24;
 export type AoiTracePromotionAction = 'promote' | 'defer' | 'reject';
 export type AoiTracePromotionPrivacyStatus = 'passed' | 'blocked' | 'needs_review';
 export type AoiTracePromotionAcceptanceDimension =
-  | AoiJarvisAcceptanceDimension
-  | 'source_selection';
+  | 'useful'
+  | 'timely'
+  | 'evidence_backed'
+  | 'non_intrusive'
+  | 'safe'
+  | 'source_honest'
+  | 'mission_aware';
+export type AoiTracePromotionReviewStatus =
+  | 'needs_review'
+  | 'promoted'
+  | 'deferred'
+  | 'rejected'
+  | 'blocked';
 
 export interface AoiTracePromotionCandidate {
   version: 1;
@@ -39,6 +50,8 @@ export interface AoiTracePromotionCandidate {
   acceptanceDimension: AoiTracePromotionAcceptanceDimension;
   jarvisDimension: AoiJarvisAcceptanceDimension;
   shadowDecisionIds: string[];
+  sourceFieldEventIds: string[];
+  sourceLabelIds: string[];
   timelineEventIds: string[];
   groupedEventKinds: string[];
   sourceEventRefs: string[];
@@ -47,6 +60,7 @@ export interface AoiTracePromotionCandidate {
   healthWarningRefs: string[];
   privacyStatus: AoiTracePromotionPrivacyStatus;
   privacyWarnings: string[];
+  reviewStatus: AoiTracePromotionReviewStatus;
   todoExpectations: string[];
   warnings: string[];
   evidenceRefs: string[];
@@ -93,7 +107,12 @@ export interface AoiTracePromotionReport {
   generatedAt: number;
   candidateCount: number;
   decisionCount: number;
+  promotedCandidateCount: number;
   promotedDraftCount: number;
+  needsReviewCandidateCount: number;
+  deferredCandidateCount: number;
+  rejectedCandidateCount: number;
+  blockedCandidateCount: number;
   blockedPromotionCount: number;
   candidates: AoiTracePromotionCandidate[];
   decisions: AoiTracePromotionDecision[];
@@ -178,29 +197,45 @@ function uniqueStrings(values: Array<string | undefined | null>, maxItems = MAX_
 
 function acceptanceDimensionForLabel(
   label: AoiShadowDecisionLabel,
+  decision?: AoiShadowDecision,
 ): AoiTracePromotionAcceptanceDimension {
-  if (label === 'wrong_source') {
-    return 'source_selection';
+  if (decision?.missionId || decision?.kind === 'would_prepare_work_order') {
+    return 'mission_aware';
   }
-  if (label === 'too_much' || label === 'should_have_spoken') {
-    return 'timing_interruption_control';
+  if (label === 'wrong_source') {
+    return 'source_honest';
+  }
+  if (label === 'too_much' || label === 'too_frequent' || label === 'show_less') {
+    return 'non_intrusive';
+  }
+  if (label === 'should_have_spoken' || label === 'wrong_timing') {
+    return 'timely';
   }
   if (label === 'unsafe') {
-    return 'safety_approval_boundaries';
+    return 'safe';
   }
   if (label === 'missed_context') {
-    return 'context_awareness';
+    return 'evidence_backed';
   }
-  return 'replayability_privacy';
+  return 'useful';
 }
 
 function jarvisDimensionForPromotion(
   dimension: AoiTracePromotionAcceptanceDimension,
 ): AoiJarvisAcceptanceDimension {
-  if (dimension === 'source_selection') {
+  if (dimension === 'source_honest' || dimension === 'evidence_backed') {
     return 'context_awareness';
   }
-  return dimension;
+  if (dimension === 'timely' || dimension === 'non_intrusive') {
+    return 'timing_interruption_control';
+  }
+  if (dimension === 'safe') {
+    return 'safety_approval_boundaries';
+  }
+  if (dimension === 'mission_aware') {
+    return 'playbook_coordination';
+  }
+  return 'replayability_privacy';
 }
 
 function eventRefs(event: AoiOperatorTimelineEvent): string[] {
@@ -334,6 +369,10 @@ function inspectRawPrivateText(value: string): string[] {
     /\b(?:do not leak|private|raw|full|secret)[^.!?]{0,100}\b(?:mail|email|calendar|event|note)?\s*body/i.test(
       value,
     ) ||
+    /\b(?:body|content|snippet|transcript|messageBody|rawText|calendarBody|noteContent)\s*[:=]/i.test(
+      value,
+    ) ||
+    /\b(?:calendar|note|mail|email|message)\s+(?:body|content|snippet)\s*[:=]/i.test(value) ||
     /\b(?:stdout|stderr|command output)\s*[:=]/i.test(value)
   ) {
     warnings.push('body-like or raw command output text remains in trace');
@@ -395,11 +434,12 @@ function privacyStatusForTrace(traceExport: AoiOperatorTraceExport): {
 function candidateId(params: {
   traceId: string;
   decisionId: string;
+  labelId: string;
   label: AoiShadowDecisionLabel;
   dimension: AoiTracePromotionAcceptanceDimension;
 }): string {
   return `aoi-trace-promotion-${hashText(
-    `${params.traceId}:${params.decisionId}:${params.label}:${params.dimension}`,
+    `${params.traceId}:${params.decisionId}:${params.labelId}:${params.label}:${params.dimension}`,
   )}`;
 }
 
@@ -410,7 +450,7 @@ function buildCandidate(params: {
   now: number;
 }): AoiTracePromotionCandidate {
   const { traceExport, label, decision, now } = params;
-  const acceptanceDimension = acceptanceDimensionForLabel(label.label);
+  const acceptanceDimension = acceptanceDimensionForLabel(label.label, decision);
   const jarvisDimension = jarvisDimensionForPromotion(acceptanceDimension);
   const privacy = privacyStatusForTrace(traceExport);
   const events = traceExport.events;
@@ -460,6 +500,7 @@ function buildCandidate(params: {
     id: candidateId({
       traceId: traceExport.id,
       decisionId: label.decisionId,
+      labelId: label.id,
       label: label.label,
       dimension: acceptanceDimension,
     }),
@@ -472,6 +513,8 @@ function buildCandidate(params: {
     acceptanceDimension,
     jarvisDimension,
     shadowDecisionIds: uniqueStrings([label.decisionId, decision?.id], 8),
+    sourceFieldEventIds: uniqueStrings([decision?.fieldEventId], 8),
+    sourceLabelIds: [label.id],
     timelineEventIds: uniqueStrings(
       events.map((event) => event.id),
       20,
@@ -483,6 +526,7 @@ function buildCandidate(params: {
     healthWarningRefs,
     privacyStatus: privacy.status,
     privacyWarnings: privacy.warnings,
+    reviewStatus: 'needs_review',
     todoExpectations: uniqueStrings(
       [
         `Review ${acceptanceDimension} expectation for ${label.label}.`,
@@ -632,6 +676,28 @@ export function createAoiTracePromotionFixtureDraft(params: {
   };
 }
 
+function traceReviewStatusForCandidate(
+  candidate: AoiTracePromotionCandidate,
+  decisions: readonly AoiTracePromotionDecision[],
+): AoiTracePromotionReviewStatus {
+  if (candidate.privacyStatus === 'blocked') {
+    return 'blocked';
+  }
+  const latest = decisions
+    .filter((decision) => decision.candidateId === candidate.id)
+    .sort((left, right) => right.createdAt - left.createdAt || right.id.localeCompare(left.id))[0];
+  if (!latest) {
+    return 'needs_review';
+  }
+  if (latest.action === 'promote') {
+    return 'promoted';
+  }
+  if (latest.action === 'defer') {
+    return 'deferred';
+  }
+  return 'rejected';
+}
+
 export function buildAoiTracePromotionReport(
   input: AoiTracePromotionReportInput,
 ): AoiTracePromotionReport {
@@ -653,6 +719,10 @@ export function buildAoiTracePromotionReport(
   const decisions = (input.promotionDecisions ?? []).filter((decision) =>
     candidateById.has(decision.candidateId),
   );
+  const reviewedCandidates = candidates.map((candidate) => ({
+    ...candidate,
+    reviewStatus: traceReviewStatusForCandidate(candidate, decisions),
+  }));
   const fixtureDrafts: AoiTracePromotionFixtureDraftOutput[] = [];
   const reportWarnings: string[] = [];
   let blockedPromotionCount = 0;
@@ -691,11 +761,26 @@ export function buildAoiTracePromotionReport(
     )}`,
     sessionPath,
     generatedAt,
-    candidateCount: candidates.length,
+    candidateCount: reviewedCandidates.length,
     decisionCount: decisions.length,
+    promotedCandidateCount: reviewedCandidates.filter(
+      (candidate) => candidate.reviewStatus === 'promoted',
+    ).length,
     promotedDraftCount: fixtureDrafts.length,
+    needsReviewCandidateCount: reviewedCandidates.filter(
+      (candidate) => candidate.reviewStatus === 'needs_review',
+    ).length,
+    deferredCandidateCount: reviewedCandidates.filter(
+      (candidate) => candidate.reviewStatus === 'deferred',
+    ).length,
+    rejectedCandidateCount: reviewedCandidates.filter(
+      (candidate) => candidate.reviewStatus === 'rejected',
+    ).length,
+    blockedCandidateCount: reviewedCandidates.filter(
+      (candidate) => candidate.reviewStatus === 'blocked',
+    ).length,
     blockedPromotionCount,
-    candidates,
+    candidates: reviewedCandidates,
     decisions,
     fixtureDrafts,
     warnings: uniqueStrings(

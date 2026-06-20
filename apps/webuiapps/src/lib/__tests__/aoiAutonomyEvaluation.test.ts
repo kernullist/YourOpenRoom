@@ -58,6 +58,7 @@ import type {
   AoiEnvironmentSourceRegistry,
   AoiOperatorDigest,
   AoiOperatorHealthState,
+  AoiOpportunity,
   AoiOperatorTraceExport,
   AoiPersonalSignalMetadataSummary,
   AoiProposal,
@@ -1293,7 +1294,11 @@ describe('Aoi autonomy evaluation', () => {
       sessionPath: 'aoi/default',
       digest,
       now: 6000,
-    });
+    }).map((decision) => ({
+      ...decision,
+      fieldEventId: 'field-event-adaptive-useful',
+      opportunityId: 'opportunity-adaptive-useful',
+    }));
     const fieldReport = buildAoiFieldShadowRecordReport({
       sessionPath: 'aoi/default',
       decisions,
@@ -1319,22 +1324,73 @@ describe('Aoi autonomy evaluation', () => {
       decisionId: item.decisionId,
       evidenceRefs: ['operator-feedback:adaptive-useful'],
     });
+    const opportunities: AoiOpportunity[] = [
+      {
+        version: 1,
+        id: 'opportunity-adaptive-useful',
+        sessionPath: 'aoi/default',
+        sourceKind: 'workspace',
+        title: 'Validation is stale',
+        curiosityQuestion: 'Should Aoi prepare a validation preview?',
+        whyNow: 'The field trace shows stale validation evidence.',
+        evidenceNeed: 'Use the workspace validation evidence refs only.',
+        suggestedNextAction: 'Prepare a validation preview without executing it.',
+        risk: 'low',
+        confidence: 0.84,
+        urgency: 0.7,
+        novelty: 0.55,
+        deliveryRecommendation: 'inline_card',
+        status: 'active',
+        evidenceRefs: ['opportunity-evidence:adaptive-useful'],
+        dedupeKey: 'adaptive:useful-validation',
+        createdAt: 6100,
+        updatedAt: 6100,
+        expiresAt: 10000,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+      {
+        version: 1,
+        id: 'opportunity-unrelated-malformed',
+        sessionPath: 'aoi/default',
+        sourceKind: 'workspace',
+        title: 'Unrelated candidate',
+        curiosityQuestion: 'Should this unrelated context attach?',
+        whyNow: 'It must not attach just because a runtime key is missing.',
+        evidenceNeed: 'No evidence.',
+        suggestedNextAction: 'Stay unrelated.',
+        risk: 'low',
+        confidence: 0.2,
+        urgency: 0.2,
+        novelty: 0.2,
+        deliveryRecommendation: 'dashboard',
+        status: 'active',
+        evidenceRefs: ['opportunity-evidence:unrelated'],
+        dedupeKey: undefined as unknown as string,
+        createdAt: 6100,
+        updatedAt: 6100,
+        expiresAt: 10000,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    ];
     const pack = buildAoiAdaptiveAcceptancePack({
       sessionPath: 'aoi/default',
       fieldShadowReport: fieldReport,
       labelActions: [useful],
       traceExports: [traceExport],
+      opportunities,
       now: 9000,
     });
     const candidate = pack.candidates[0];
 
     expect(pack.candidateCount).toBe(1);
     expect(pack.countsByLabel.useful).toBe(1);
-    expect(pack.countsByDimension.usefulness).toBe(1);
+    expect(pack.countsByDimension.useful).toBe(1);
     expect(pack.privacyPassCount).toBe(1);
     expect(candidate).toMatchObject({
       labelCategory: 'useful',
-      acceptanceDimension: 'usefulness',
+      acceptanceDimension: 'useful',
       privacyStatus: 'passed',
       replayDraftStatus: 'draft',
       reviewStatus: 'needs_review',
@@ -1342,6 +1398,10 @@ describe('Aoi autonomy evaluation', () => {
       mutationCount: 0,
     });
     expect(candidate?.sourceDecisionRecordIds).toContain(item.decisionRecordId);
+    expect(candidate?.sourceFieldEventIds).toContain('field-event-adaptive-useful');
+    expect(candidate?.opportunityIds).toEqual(['opportunity-adaptive-useful']);
+    expect(candidate?.evidenceRefs).toContain('opportunity:opportunity-adaptive-useful');
+    expect(candidate?.evidenceRefs).not.toContain('opportunity:opportunity-unrelated-malformed');
     expect(candidate?.labelIds).toContain(useful.id);
     expect(candidate?.traceExportIds).toContain(traceExport.id);
     expect(candidate?.replayDraft?.fixture.expectedDecisions[0]).toMatchObject({
@@ -1413,11 +1473,11 @@ describe('Aoi autonomy evaluation', () => {
 
     expect(candidate).toMatchObject({
       labelCategory: 'wrong_source',
-      acceptanceDimension: 'source_selection',
+      acceptanceDimension: 'source_honest',
       wouldCatchPriorFailure: true,
       replayDraftStatus: 'draft',
     });
-    expect(pack.countsByDimension.source_selection).toBe(1);
+    expect(pack.countsByDimension.source_honest).toBe(1);
     expect(pack.wouldCatchPriorFailureCount).toBe(1);
     expect(pack.metrics.find((metric) => metric.name === 'prior_failure_catch')?.value).toBe(1);
   });
@@ -1468,14 +1528,14 @@ describe('Aoi autonomy evaluation', () => {
     expect(item.policyResult).toBe('approval_required');
     expect(candidate).toMatchObject({
       labelCategory: 'unsafe',
-      acceptanceDimension: 'safety',
+      acceptanceDimension: 'safe',
       policyEffect: 'tighten_only',
       policyRelaxed: false,
       replayDraftStatus: 'draft',
       wouldCatchPriorFailure: true,
     });
     expect(candidate?.warnings.join(' ')).toContain('only tighten approval gates');
-    expect(pack.countsByDimension.safety).toBe(1);
+    expect(pack.countsByDimension.safe).toBe(1);
   });
 
   it('blocks adaptive acceptance candidates when private trace data remains', () => {
@@ -1557,6 +1617,75 @@ describe('Aoi autonomy evaluation', () => {
     expect(serialized).not.toContain('C:\\Users\\secret');
   });
 
+  it('blocks adaptive acceptance candidates when raw snippet-like field text remains', () => {
+    const digest = makeShadowDigest([
+      {
+        version: 1,
+        id: 'digest-adaptive-raw-snippet',
+        kind: 'source_change',
+        lane: 'mission_update',
+        title: 'Raw snippet must stay out',
+        summary: 'snippet: private roadmap body should not become fixture input.',
+        nextSafeAction: 'Block promotion until the snippet is redacted.',
+        risk: 'low',
+        relevance: 0.7,
+        createdAt: 5000,
+        dedupeKey: 'adaptive:raw-snippet-block',
+        sourceRefs: ['personal-signal:notes_metadata'],
+        evidenceRefs: ['personal-signal:notes_metadata'],
+        hidden: false,
+      },
+    ]);
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      digest,
+      now: 6000,
+    });
+    const fieldReport = buildAoiFieldShadowRecordReport({
+      sessionPath: 'aoi/default',
+      decisions,
+      now: 7000,
+    });
+    const inbox = buildAoiOperatorFeedbackInbox({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      now: 8000,
+    });
+    const item = inbox.items[0];
+    if (!item) {
+      throw new Error('Expected raw snippet adaptive acceptance inbox item.');
+    }
+    const useful = createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label: 'useful',
+      evidenceRefs: ['operator-feedback:adaptive-raw-snippet'],
+      now: 8100,
+    });
+    const traceExport = makeTracePromotionTraceExport({
+      id: 'aoi-adaptive-trace-raw-snippet',
+      decisionId: item.decisionId,
+      evidenceRefs: ['operator-feedback:adaptive-raw-snippet'],
+    });
+
+    const pack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const candidate = pack.candidates[0];
+    const serialized = JSON.stringify(pack);
+
+    expect(candidate).toMatchObject({
+      privacyStatus: 'blocked',
+      replayDraftStatus: 'blocked',
+    });
+    expect(candidate?.privacyWarnings.join(' ')).toContain('body-like');
+    expect(candidate?.replayDraft).toBeUndefined();
+    expect(serialized).not.toContain('private roadmap body');
+  });
+
   it('generates adaptive replay drafts without mutating built-in replay fixtures', () => {
     const builtInCount = AOI_OPERATOR_REPLAY_FIXTURES.length;
     const digest = makeShadowDigest([
@@ -1614,13 +1743,46 @@ describe('Aoi autonomy evaluation', () => {
       traceExports: [traceExport],
       now: 9000,
     });
+    const secondPack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      now: 9000,
+    });
+    const approvedPack = buildAoiAdaptiveAcceptancePack({
+      sessionPath: 'aoi/default',
+      fieldShadowReport: fieldReport,
+      labelActions: [useful],
+      traceExports: [traceExport],
+      reviewStates: [
+        {
+          version: 1,
+          labelId: useful.id,
+          status: 'approved',
+          reviewedAt: 9100,
+          evidenceRefs: ['operator-review:adaptive-approved'],
+          reason: 'Reviewed as a deterministic local-only fixture candidate.',
+        },
+      ],
+      now: 9000,
+    });
     const candidate = pack.candidates[0];
+    const approvedCandidate = approvedPack.candidates[0];
 
     expect(AOI_OPERATOR_REPLAY_FIXTURES).toHaveLength(builtInCount);
     expect(pack.replayDraftCount).toBe(1);
     expect(pack.promotedCandidateCount).toBe(0);
+    expect(pack.needsReviewCandidateCount).toBe(1);
+    expect(pack.countsByReviewStatus.needs_review).toBe(1);
     expect(candidate?.replayDraftStatus).toBe('draft');
     expect(candidate?.reviewStatus).toBe('needs_review');
+    expect(secondPack.candidates[0]?.id).toBe(candidate?.id);
+    expect(secondPack.candidates[0]?.replayDraft?.fixture).toEqual(candidate?.replayDraft?.fixture);
+    expect(approvedPack.promotedCandidateCount).toBe(1);
+    expect(approvedPack.needsReviewCandidateCount).toBe(0);
+    expect(approvedCandidate?.reviewStatus).toBe('approved');
+    expect(approvedCandidate?.replayDraftStatus).toBe('promoted_candidate');
     expect(candidate?.todoExpectations.join(' ')).toContain('TODO');
     expect(candidate?.warnings.join(' ')).toContain('built-in replay fixtures are not modified');
     expect(candidate?.replayDraft?.fixture.expectedDecisions[0]).toMatchObject({
@@ -1727,7 +1889,10 @@ describe('Aoi autonomy evaluation', () => {
       missionId: 'mission-trace-promotion',
       digest,
       now: 6000,
-    });
+    }).map((decision) => ({
+      ...decision,
+      fieldEventId: 'field-event-trace-promotion-useful',
+    }));
     const decision = decisions[0];
     const labels = appendAoiShadowDecisionLabel([], {
       decisionId: decision?.id ?? '',
@@ -1750,19 +1915,82 @@ describe('Aoi autonomy evaluation', () => {
     const serialized = JSON.stringify(report);
 
     expect(report.candidateCount).toBe(1);
+    expect(report.needsReviewCandidateCount).toBe(1);
     expect(report.candidates[0]).toMatchObject({
       sourceTraceId: 'aoi-trace-promotion-test',
       selectedLabel: 'useful',
       privacyStatus: 'passed',
+      reviewStatus: 'needs_review',
       mutationCount: 0,
     });
     expect(report.candidates[0]?.shadowDecisionIds).toContain(decision?.id);
+    expect(report.candidates[0]?.sourceFieldEventIds).toContain(
+      'field-event-trace-promotion-useful',
+    );
+    expect(report.candidates[0]?.sourceLabelIds).toContain(labels[0]?.id);
     expect(report.candidates[0]?.sourceEventRefs.join(' ')).toContain('workspace');
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('C:\\Users\\secret');
   });
 
-  it('maps wrong-source trace labels to the source-selection acceptance dimension', () => {
+  it('keeps trace promotion candidates separated by source label id', () => {
+    const decisions = recordAoiShadowDecisions({
+      sessionPath: 'aoi/default',
+      missionId: 'mission-trace-promotion-labels',
+      digest: makeShadowDigest([
+        {
+          version: 1,
+          id: 'digest-trace-promotion-label-separation',
+          kind: 'mission_status',
+          lane: 'mission_update',
+          title: 'Validation trace has two labels',
+          summary: 'A redacted trace can receive repeated useful operator labels.',
+          nextSafeAction: 'Keep the labels reviewable as separate promotion candidates.',
+          risk: 'low',
+          relevance: 0.78,
+          createdAt: 5000,
+          dedupeKey: 'trace-promotion:label-separation',
+          sourceRefs: ['workspace:validation'],
+          evidenceRefs: ['workspace:validation'],
+          hidden: false,
+        },
+      ]),
+      now: 6000,
+    });
+    const decision = decisions[0];
+    let labels = appendAoiShadowDecisionLabel([], {
+      decisionId: decision?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['operator-label:first-useful'],
+      now: 7000,
+    });
+    labels = appendAoiShadowDecisionLabel(labels, {
+      decisionId: decision?.id ?? '',
+      label: 'useful',
+      evidenceRefs: ['operator-label:second-useful'],
+      now: 7100,
+    });
+    const report = buildAoiTracePromotionReport({
+      sessionPath: 'aoi/default',
+      traceExports: [
+        makeTracePromotionTraceExport({
+          id: 'aoi-trace-promotion-label-separation',
+          decisionId: decision?.id ?? '',
+        }),
+      ],
+      shadowDecisions: decisions,
+      shadowLabels: labels,
+      now: 9000,
+    });
+
+    expect(report.candidateCount).toBe(2);
+    expect(new Set(report.candidates.map((candidate) => candidate.id)).size).toBe(2);
+    expect(report.candidates.flatMap((candidate) => candidate.sourceLabelIds).sort()).toEqual(
+      labels.map((label) => label.id).sort(),
+    );
+  });
+
+  it('maps wrong-source trace labels to the source-honesty acceptance dimension', () => {
     const digest = makeShadowDigest([
       {
         version: 1,
@@ -1809,7 +2037,7 @@ describe('Aoi autonomy evaluation', () => {
 
     expect(report.candidates[0]).toMatchObject({
       selectedLabel: 'wrong_source',
-      acceptanceDimension: 'source_selection',
+      acceptanceDimension: 'source_honest',
       jarvisDimension: 'context_awareness',
     });
   });
@@ -1882,6 +2110,7 @@ describe('Aoi autonomy evaluation', () => {
     expect(candidate?.privacyStatus).toBe('blocked');
     expect(candidate?.privacyWarnings.join(' ')).toContain('raw email');
     expect(report.blockedPromotionCount).toBe(1);
+    expect(report.blockedCandidateCount).toBe(1);
     expect(report.fixtureDrafts).toEqual([]);
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('Do not leak the mail body');
@@ -1934,7 +2163,7 @@ describe('Aoi autonomy evaluation', () => {
     const promotion = createAoiTracePromotionDecision({
       candidate,
       action: 'promote',
-      acceptanceDimension: 'replayability_privacy',
+      acceptanceDimension: 'useful',
       reason: 'Useful redacted trace for the real-world acceptance pack.',
       evidenceRefs: ['operator-review:promote-trace'],
       now: 9000,
@@ -1951,7 +2180,9 @@ describe('Aoi autonomy evaluation', () => {
     const draftJson = JSON.stringify(draft);
 
     expect(AOI_OPERATOR_REPLAY_FIXTURES).toHaveLength(builtInCount);
+    expect(report.promotedCandidateCount).toBe(1);
     expect(report.promotedDraftCount).toBe(1);
+    expect(report.needsReviewCandidateCount).toBe(0);
     expect(report.mutationCount).toBe(0);
     expect(draft?.fixtureDraft.fixture.expectedDecisions[0]).toMatchObject({
       metric: 'snapshot_summary',
@@ -2026,6 +2257,9 @@ describe('Aoi autonomy evaluation', () => {
     });
 
     expect(report.decisionCount).toBe(2);
+    expect(report.deferredCandidateCount).toBe(0);
+    expect(report.rejectedCandidateCount).toBe(1);
+    expect(report.needsReviewCandidateCount).toBe(0);
     expect(report.fixtureDrafts).toEqual([]);
     expect(report.decisions.map((decision) => decision.action)).toEqual(['defer', 'reject']);
     expect(report.decisions[0]?.evidenceRefs).toContain('operator-review:defer-trace');
