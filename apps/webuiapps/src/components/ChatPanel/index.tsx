@@ -259,6 +259,7 @@ import {
 } from '@/lib/aoiAutonomyClient';
 import {
   AOI_AUTONOMY_UI_LEVELS,
+  appendAoiAgendaNudgeDecisionFeedbackHistory,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
@@ -9259,6 +9260,9 @@ const SettingsModal: React.FC<{
         return;
       }
 
+      const audit = buildAoiAgendaNudgeDecisionFeedbackAudit({
+        action,
+      });
       onUpdateAoiAutonomyPanelSettings({
         agendaNudgeCalibration: recordAoiAgendaNudgeFeedback(
           aoiAutonomyPanelSettings.agendaNudgeCalibration,
@@ -9268,14 +9272,17 @@ const SettingsModal: React.FC<{
             dedupeKey: action.dedupeKey,
           },
         ),
-        agendaNudgeReadinessLastDecisionFeedback: buildAoiAgendaNudgeDecisionFeedbackAudit({
-          action,
-        }),
+        agendaNudgeReadinessLastDecisionFeedback: audit,
+        agendaNudgeReadinessDecisionFeedbackHistory: appendAoiAgendaNudgeDecisionFeedbackHistory(
+          aoiAutonomyPanelSettings.agendaNudgeReadinessDecisionFeedbackHistory,
+          audit,
+        ),
       });
     },
     [
       aoiAgendaNudgeReadinessSummary.decisionFeedbackActions,
       aoiAutonomyPanelSettings.agendaNudgeCalibration,
+      aoiAutonomyPanelSettings.agendaNudgeReadinessDecisionFeedbackHistory,
       onUpdateAoiAutonomyPanelSettings,
     ],
   );
@@ -11336,6 +11343,13 @@ const SettingsModal: React.FC<{
                             {aoiAgendaNudgeReadinessSummary.lastDecisionFeedbackLabels.map(
                               (label, index) => (
                                 <div key={`agenda-readiness-feedback-audit-${index}`}>{label}</div>
+                              ),
+                            )}
+                            {aoiAgendaNudgeReadinessSummary.decisionFeedbackHistoryLabels.map(
+                              (label, index) => (
+                                <div key={`agenda-readiness-feedback-history-${index}`}>
+                                  {label}
+                                </div>
                               ),
                             )}
                           </div>

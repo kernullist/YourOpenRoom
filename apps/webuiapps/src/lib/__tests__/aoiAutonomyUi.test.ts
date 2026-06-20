@@ -7,6 +7,7 @@ import { decideAoiMission } from '../aoiAutonomyClient';
 import { buildAoiContextPromptBlock, sanitizeAoiContextUrl } from '../aoiContextRouter';
 import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
+  appendAoiAgendaNudgeDecisionFeedbackHistory,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
   buildAoiAgendaNudgeDeliveryDecisionAudit,
@@ -1195,6 +1196,22 @@ describe('Aoi autonomy UI helpers', () => {
       action: tooMuchFeedback,
       now: 9800,
     });
+    const duplicateFeedbackHistory = appendAoiAgendaNudgeDecisionFeedbackHistory(
+      appendAoiAgendaNudgeDecisionFeedbackHistory(null, tooMuchFeedbackAudit),
+      tooMuchFeedbackAudit,
+    );
+    expect(duplicateFeedbackHistory).toHaveLength(1);
+    const usefulFeedback = auditedReadySummary.decisionFeedbackActions.find(
+      (action) => action.id === 'mark_decision_useful',
+    )!;
+    const usefulFeedbackAudit = buildAoiAgendaNudgeDecisionFeedbackAudit({
+      action: usefulFeedback,
+      now: 9900,
+    });
+    const feedbackHistory = appendAoiAgendaNudgeDecisionFeedbackHistory(
+      duplicateFeedbackHistory,
+      usefulFeedbackAudit,
+    );
     const feedbackAuditedReadySummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
       activeProposals: [proposal],
@@ -1202,12 +1219,17 @@ describe('Aoi autonomy UI helpers', () => {
         ...baseSettings,
         agendaNudgeReadinessLastDecision: readyDeliveryAudit,
         agendaNudgeReadinessLastDecisionFeedback: tooMuchFeedbackAudit,
+        agendaNudgeReadinessDecisionFeedbackHistory: feedbackHistory,
       },
       options: {
         now: 9900,
       },
     });
     expect(feedbackAuditedReadySummary.lastDecisionFeedbackLabels.join(' ')).toContain('Too much');
+    expect(feedbackAuditedReadySummary.decisionFeedbackHistoryLabels.join(' ')).toContain(
+      '2 recent calibration',
+    );
+    expect(feedbackAuditedReadySummary.decisionFeedbackHistoryLabels.join(' ')).toContain('Useful');
     expect(
       feedbackAuditedReadySummary.decisionFeedbackActions.find(
         (action) => action.id === 'mark_decision_too_much',
@@ -1460,6 +1482,17 @@ describe('Aoi autonomy UI helpers', () => {
         storage.set(key, value);
       },
     };
+    const feedbackHistory = Array.from({ length: 7 }, (_, index) => ({
+      version: 1 as const,
+      actionId: 'quiet_decision_nudges' as const,
+      kind: 'quieted' as const,
+      actionLabel: 'Quiet for now',
+      reason: `delivery decision silent/no candidate ${index}`,
+      dedupeKey: `agenda-decision:silent:${7200 + index}:no candidate`,
+      recordedAt: 7200 + index,
+      safetyBoundary:
+        'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
+    }));
 
     const saved = saveAoiAutonomyPanelSettings(
       {
@@ -1503,6 +1536,7 @@ describe('Aoi autonomy UI helpers', () => {
           safetyBoundary:
             'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
         },
+        agendaNudgeReadinessDecisionFeedbackHistory: feedbackHistory,
       },
       storageAdapter,
     );
@@ -1529,6 +1563,15 @@ describe('Aoi autonomy UI helpers', () => {
         recordedAt: 7200,
         dedupeKey: 'agenda-decision:silent:7100:no candidate',
       },
+    });
+    expect(saved.agendaNudgeReadinessDecisionFeedbackHistory).toHaveLength(5);
+    expect(saved.agendaNudgeReadinessDecisionFeedbackHistory?.[0]).toMatchObject({
+      recordedAt: 7206,
+      dedupeKey: 'agenda-decision:silent:7206:no candidate',
+    });
+    expect(saved.agendaNudgeReadinessDecisionFeedbackHistory?.[4]).toMatchObject({
+      recordedAt: 7202,
+      dedupeKey: 'agenda-decision:silent:7202:no candidate',
     });
     expect(storage.has(AOI_AUTONOMY_PANEL_SETTINGS_KEY)).toBe(true);
     expect(loadAoiAutonomyPanelSettings(storageAdapter)).toEqual(saved);

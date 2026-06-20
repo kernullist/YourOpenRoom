@@ -61,6 +61,7 @@ export const AOI_INLINE_SUGGESTION_COOLDOWN_MS = 30 * 60 * 1000;
 export const AOI_AGENDA_CHAT_NUDGE_COOLDOWN_MS = 45 * 60 * 1000;
 export const AOI_AGENDA_NUDGE_TOO_MUCH_MUTE_MS = 2 * 60 * 60 * 1000;
 export const AOI_AGENDA_NUDGE_QUIET_MUTE_MS = 6 * 60 * 60 * 1000;
+export const AOI_AGENDA_NUDGE_FEEDBACK_HISTORY_MAX = 5;
 export const AOI_INLINE_SUGGESTION_MAX_PER_SESSION = 3;
 export const AOI_AUTONOMY_PANEL_SETTINGS_KEY = 'openroom-aoi-autonomy-panel-settings';
 
@@ -217,6 +218,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   lastActionLabels: string[];
   lastDecisionLabels: string[];
   lastDecisionFeedbackLabels: string[];
+  decisionFeedbackHistoryLabels: string[];
   decisionFeedbackActions: AoiAgendaNudgeDecisionFeedbackAction[];
   evidenceRefs: string[];
   tone: 'ready' | 'waiting' | 'blocked';
@@ -263,6 +265,7 @@ export interface AoiAutonomyPanelSettings {
   agendaNudgeReadinessLastAction?: AoiAgendaNudgeReadinessActionAudit | null;
   agendaNudgeReadinessLastDecision?: AoiAgendaNudgeDeliveryDecisionAudit | null;
   agendaNudgeReadinessLastDecisionFeedback?: AoiAgendaNudgeDecisionFeedbackAudit | null;
+  agendaNudgeReadinessDecisionFeedbackHistory?: AoiAgendaNudgeDecisionFeedbackAudit[];
 }
 
 export interface AoiAutonomyNotificationBadge {
@@ -704,6 +707,7 @@ export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
   agendaNudgeReadinessLastAction: null,
   agendaNudgeReadinessLastDecision: null,
   agendaNudgeReadinessLastDecisionFeedback: null,
+  agendaNudgeReadinessDecisionFeedbackHistory: [],
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -940,6 +944,55 @@ export function normalizeAoiAgendaNudgeDecisionFeedbackAudit(
   };
 }
 
+function getAoiAgendaNudgeDecisionFeedbackAuditKey(
+  audit: AoiAgendaNudgeDecisionFeedbackAudit,
+): string {
+  return `${audit.actionId}:${audit.dedupeKey}`;
+}
+
+export function normalizeAoiAgendaNudgeDecisionFeedbackHistory(
+  value: unknown,
+): AoiAgendaNudgeDecisionFeedbackAudit[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const seen = new Set<string>();
+  return value
+    .map((item) => normalizeAoiAgendaNudgeDecisionFeedbackAudit(item))
+    .filter((item): item is AoiAgendaNudgeDecisionFeedbackAudit => Boolean(item))
+    .sort((left, right) => right.recordedAt - left.recordedAt)
+    .filter((item) => {
+      const key = getAoiAgendaNudgeDecisionFeedbackAuditKey(item);
+      if (seen.has(key)) {
+        return false;
+      }
+      seen.add(key);
+      return true;
+    })
+    .slice(0, AOI_AGENDA_NUDGE_FEEDBACK_HISTORY_MAX);
+}
+
+export function appendAoiAgendaNudgeDecisionFeedbackHistory(
+  history: AoiAgendaNudgeDecisionFeedbackAudit[] | null | undefined,
+  audit: AoiAgendaNudgeDecisionFeedbackAudit | null | undefined,
+): AoiAgendaNudgeDecisionFeedbackAudit[] {
+  const normalizedAudit = normalizeAoiAgendaNudgeDecisionFeedbackAudit(audit);
+  const normalizedHistory = normalizeAoiAgendaNudgeDecisionFeedbackHistory(history);
+  if (!normalizedAudit) {
+    return normalizedHistory;
+  }
+
+  const auditKey = getAoiAgendaNudgeDecisionFeedbackAuditKey(normalizedAudit);
+  if (
+    normalizedHistory.some((item) => getAoiAgendaNudgeDecisionFeedbackAuditKey(item) === auditKey)
+  ) {
+    return normalizedHistory;
+  }
+
+  return normalizeAoiAgendaNudgeDecisionFeedbackHistory([normalizedAudit, ...normalizedHistory]);
+}
+
 export function normalizeAoiAutonomyPanelSettings(
   value: unknown,
   fallback: AoiAutonomyPanelSettings = DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS,
@@ -948,6 +1001,13 @@ export function normalizeAoiAutonomyPanelSettings(
     value && typeof value === 'object' && !Array.isArray(value)
       ? (value as Partial<AoiAutonomyPanelSettings>)
       : {};
+  const hasDecisionFeedbackHistory = Object.prototype.hasOwnProperty.call(
+    raw,
+    'agendaNudgeReadinessDecisionFeedbackHistory',
+  );
+  const normalizedDecisionFeedbackHistory = normalizeAoiAgendaNudgeDecisionFeedbackHistory(
+    raw.agendaNudgeReadinessDecisionFeedbackHistory,
+  );
 
   return {
     panelExpanded: normalizeBoolean(raw.panelExpanded, fallback.panelExpanded),
@@ -973,6 +1033,11 @@ export function normalizeAoiAutonomyPanelSettings(
       normalizeAoiAgendaNudgeDecisionFeedbackAudit(raw.agendaNudgeReadinessLastDecisionFeedback) ??
       fallback.agendaNudgeReadinessLastDecisionFeedback ??
       null,
+    agendaNudgeReadinessDecisionFeedbackHistory: hasDecisionFeedbackHistory
+      ? normalizedDecisionFeedbackHistory
+      : normalizeAoiAgendaNudgeDecisionFeedbackHistory(
+          fallback.agendaNudgeReadinessDecisionFeedbackHistory,
+        ),
   };
 }
 
@@ -2880,6 +2945,23 @@ function buildAoiAgendaNudgeLastDecisionFeedbackLabels(
   ];
 }
 
+function buildAoiAgendaNudgeDecisionFeedbackHistoryLabels(
+  history: AoiAgendaNudgeDecisionFeedbackAudit[] | null | undefined,
+): string[] {
+  const normalized = normalizeAoiAgendaNudgeDecisionFeedbackHistory(history);
+  if (normalized.length === 0) {
+    return [];
+  }
+
+  return [
+    `Feedback trail: ${normalized.length} recent calibration event(s).`,
+    ...normalized.slice(0, 3).map((audit, index) => {
+      const kindLabel = audit.kind.replace(/_/g, ' ');
+      return `Feedback trail ${index + 1}: ${audit.actionLabel} (${kindLabel}) for ${audit.reason} at ${new Date(audit.recordedAt).toLocaleString()}.`;
+    }),
+  ];
+}
+
 export function buildAoiAgendaNudgeDecisionFeedbackAudit(params: {
   action: AoiAgendaNudgeDecisionFeedbackAction;
   now?: number;
@@ -2977,6 +3059,9 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
   const lastDecisionFeedbackLabels = buildAoiAgendaNudgeLastDecisionFeedbackLabels(
     settings.agendaNudgeReadinessLastDecisionFeedback,
   );
+  const decisionFeedbackHistoryLabels = buildAoiAgendaNudgeDecisionFeedbackHistoryLabels(
+    settings.agendaNudgeReadinessDecisionFeedbackHistory,
+  );
   const decisionFeedbackActions = buildAoiAgendaNudgeDecisionFeedbackActions(
     settings.agendaNudgeReadinessLastDecision,
     settings.agendaNudgeReadinessLastDecisionFeedback,
@@ -3007,6 +3092,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     lastActionLabels,
     lastDecisionLabels,
     lastDecisionFeedbackLabels,
+    decisionFeedbackHistoryLabels,
     decisionFeedbackActions,
     evidenceRefs,
     tone: 'blocked',
@@ -3203,6 +3289,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         lastActionLabels,
         lastDecisionLabels,
         lastDecisionFeedbackLabels,
+        decisionFeedbackHistoryLabels,
         decisionFeedbackActions,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
@@ -3235,6 +3322,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         lastActionLabels,
         lastDecisionLabels,
         lastDecisionFeedbackLabels,
+        decisionFeedbackHistoryLabels,
         decisionFeedbackActions,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
@@ -3261,6 +3349,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       lastActionLabels,
       lastDecisionLabels,
       lastDecisionFeedbackLabels,
+      decisionFeedbackHistoryLabels,
       decisionFeedbackActions,
       evidenceRefs: candidate.evidenceRefs,
       tone: 'ready',
@@ -3300,6 +3389,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     lastActionLabels,
     lastDecisionLabels,
     lastDecisionFeedbackLabels,
+    decisionFeedbackHistoryLabels,
     decisionFeedbackActions,
     evidenceRefs: [],
     tone: 'waiting',
