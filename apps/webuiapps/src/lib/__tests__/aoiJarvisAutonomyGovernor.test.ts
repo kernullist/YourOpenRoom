@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
 import {
+  AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX,
+  appendAoiJarvisAutonomyGovernorAuditTrail,
   buildAoiJarvisAutonomyGovernor,
+  buildAoiJarvisAutonomyGovernorAuditEvent,
+  buildAoiJarvisAutonomyGovernorAuditPanelSummary,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
 } from '../aoiJarvisAutonomyGovernor';
@@ -353,5 +357,104 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(panel.modeLabel).toBe('Proactive brief');
     expect(panel.blockerLabels.join(' ')).toContain('Direct chat opt-in is off');
     expect(panel.evidenceRefs).toContain('policy:directChatHookOptIn:false');
+  });
+
+  it('records display-only audit events and dedupes repeated governor decisions', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const event = buildAoiJarvisAutonomyGovernorAuditEvent({ decision: governor });
+
+    expect(event).toMatchObject({
+      kind: 'snapshot',
+      mode: 'approval_execution',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(event?.allowedCapabilityLabels).toContain('Approved command');
+
+    const trail = appendAoiJarvisAutonomyGovernorAuditTrail(null, event);
+    const repeatedTrail = appendAoiJarvisAutonomyGovernorAuditTrail(trail, event);
+
+    expect(trail?.events).toHaveLength(1);
+    expect(repeatedTrail?.events).toHaveLength(1);
+    expect(repeatedTrail?.actionAuthority).toBe('display_only');
+    expect(repeatedTrail?.mutationCount).toBe(0);
+  });
+
+  it('classifies mode changes when the governor ceiling changes', () => {
+    const blockedGovernor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy({ enabled: false, previewMode: false }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const blockedEvent = buildAoiJarvisAutonomyGovernorAuditEvent({
+      decision: blockedGovernor,
+    });
+    const readyGovernor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 3000,
+      policy: makePolicy(),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const readyEvent = buildAoiJarvisAutonomyGovernorAuditEvent({
+      decision: readyGovernor,
+      previousEvent: blockedEvent,
+    });
+    const trail = appendAoiJarvisAutonomyGovernorAuditTrail(
+      appendAoiJarvisAutonomyGovernorAuditTrail(null, blockedEvent),
+      readyEvent,
+    );
+
+    expect(blockedEvent?.mode).toBe('observe_only');
+    expect(readyEvent).toMatchObject({
+      kind: 'mode_change',
+      previousMode: 'observe_only',
+      mode: 'approval_execution',
+    });
+    expect(trail?.events[0]).toMatchObject({ mode: 'approval_execution' });
+    expect(trail?.events[1]).toMatchObject({ mode: 'observe_only' });
+  });
+
+  it('keeps the governor audit trail bounded and summarizes recent decisions', () => {
+    const events = Array.from(
+      { length: AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX + 3 },
+      (_, index) =>
+        buildAoiJarvisAutonomyGovernorAuditEvent({
+          decision: buildAoiJarvisAutonomyGovernor({
+            sessionPath: `aoi/session-${index}`,
+            now: 2000 + index,
+            policy: makePolicy({ level: index % 2 === 0 ? 'L3' : 'L5' }),
+            operatorHealth: makeHealth(),
+            sourceFreshnessContracts: [makeSource()],
+            proactiveTrendAdvisor: makeTrend(),
+            ttsEnabled: true,
+          }),
+        }),
+    );
+    const trail = events.reduce(
+      (currentTrail, event) => appendAoiJarvisAutonomyGovernorAuditTrail(currentTrail, event),
+      null as ReturnType<typeof appendAoiJarvisAutonomyGovernorAuditTrail>,
+    );
+    const summary = buildAoiJarvisAutonomyGovernorAuditPanelSummary(trail);
+
+    expect(trail?.events).toHaveLength(AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX);
+    expect(trail?.events[0].sessionPath).toBe('aoi/session-10');
+    expect(summary.visible).toBe(true);
+    expect(summary.recentEventLabels.length).toBeGreaterThan(0);
+    expect(summary.safetyBoundaryLabel).toContain('display-only');
   });
 });

@@ -25,7 +25,9 @@ import {
 import {
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorPanelSummary,
+  normalizeAoiJarvisAutonomyGovernorAuditTrail,
   type AoiJarvisAutonomyGovernorDecision,
+  type AoiJarvisAutonomyGovernorAuditTrail,
   type AoiJarvisAutonomyGovernorPanelSummary,
 } from './aoiJarvisAutonomyGovernor';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
@@ -272,6 +274,7 @@ export interface AoiAutonomyPanelSettings {
   agendaNudgeReadinessLastDecision?: AoiAgendaNudgeDeliveryDecisionAudit | null;
   agendaNudgeReadinessLastDecisionFeedback?: AoiAgendaNudgeDecisionFeedbackAudit | null;
   agendaNudgeReadinessDecisionFeedbackHistory?: AoiAgendaNudgeDecisionFeedbackAudit[];
+  jarvisAutonomyGovernorAuditTrail?: AoiJarvisAutonomyGovernorAuditTrail | null;
 }
 
 export interface AoiAutonomyNotificationBadge {
@@ -722,6 +725,7 @@ export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
   agendaNudgeReadinessLastDecision: null,
   agendaNudgeReadinessLastDecisionFeedback: null,
   agendaNudgeReadinessDecisionFeedbackHistory: [],
+  jarvisAutonomyGovernorAuditTrail: null,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -1032,8 +1036,15 @@ export function normalizeAoiAutonomyPanelSettings(
     raw,
     'agendaNudgeReadinessDecisionFeedbackHistory',
   );
+  const hasJarvisGovernorAuditTrail = Object.prototype.hasOwnProperty.call(
+    raw,
+    'jarvisAutonomyGovernorAuditTrail',
+  );
   const normalizedDecisionFeedbackHistory = normalizeAoiAgendaNudgeDecisionFeedbackHistory(
     raw.agendaNudgeReadinessDecisionFeedbackHistory,
+  );
+  const normalizedJarvisGovernorAuditTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(
+    raw.jarvisAutonomyGovernorAuditTrail,
   );
 
   return {
@@ -1065,6 +1076,9 @@ export function normalizeAoiAutonomyPanelSettings(
       : normalizeAoiAgendaNudgeDecisionFeedbackHistory(
           fallback.agendaNudgeReadinessDecisionFeedbackHistory,
         ),
+    jarvisAutonomyGovernorAuditTrail: hasJarvisGovernorAuditTrail
+      ? normalizedJarvisGovernorAuditTrail
+      : normalizeAoiJarvisAutonomyGovernorAuditTrail(fallback.jarvisAutonomyGovernorAuditTrail),
   };
 }
 

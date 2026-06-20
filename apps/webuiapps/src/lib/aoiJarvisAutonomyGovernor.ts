@@ -125,6 +125,56 @@ export interface AoiJarvisAutonomyGovernorPanelSummary {
   evidenceRefs: string[];
 }
 
+export type AoiJarvisAutonomyGovernorAuditEventKind =
+  | 'snapshot'
+  | 'mode_change'
+  | 'capability_change'
+  | 'blocker_change';
+
+export interface AoiJarvisAutonomyGovernorAuditEvent {
+  version: 1;
+  id: string;
+  dedupeKey: string;
+  kind: AoiJarvisAutonomyGovernorAuditEventKind;
+  sessionPath: string;
+  decisionId: string;
+  previousDecisionId: string | null;
+  recordedAt: number;
+  mode: AoiJarvisAutonomyMode;
+  modeLabel: string;
+  previousMode: AoiJarvisAutonomyMode | null;
+  previousModeLabel: string | null;
+  allowedCapabilityLabels: string[];
+  blockedCapabilityLabels: string[];
+  blockerLabels: string[];
+  whyNotJarvisYetLabels: string[];
+  nextUpgradeAction: string;
+  evidenceRefs: string[];
+  safetyBoundary: string;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiJarvisAutonomyGovernorAuditTrail {
+  version: 1;
+  updatedAt: number;
+  events: AoiJarvisAutonomyGovernorAuditEvent[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
+  visible: boolean;
+  headlineLabel: string;
+  latestLabel: string;
+  recentEventLabels: string[];
+  blockerLabels: string[];
+  evidenceRefs: string[];
+  safetyBoundaryLabel: string;
+}
+
+export const AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX = 8;
+
 const MODE_ORDER: Record<AoiJarvisAutonomyMode, number> = {
   observe_only: 0,
   suggest_quietly: 1,
@@ -217,6 +267,46 @@ function uniqueLabels(values: Array<string | undefined | null>, maxItems = 18): 
     }
   }
   return labels;
+}
+
+function normalizeAuditLabel(value: unknown, fallback = '', maxLength = 220): string {
+  if (typeof value !== 'string') {
+    return fallback;
+  }
+  const label = value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+  return label || fallback;
+}
+
+function normalizeAuditLabelList(value: unknown, maxItems: number): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  return uniqueLabels(
+    value.filter((item): item is string => typeof item === 'string'),
+    maxItems,
+  );
+}
+
+function normalizeAuditTimestamp(value: unknown): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    return null;
+  }
+  return Math.round(value);
+}
+
+function normalizeAuditMode(value: unknown): AoiJarvisAutonomyMode | null {
+  return typeof value === 'string' && Object.prototype.hasOwnProperty.call(MODE_ORDER, value)
+    ? (value as AoiJarvisAutonomyMode)
+    : null;
+}
+
+function normalizeAuditEventKind(value: unknown): AoiJarvisAutonomyGovernorAuditEventKind {
+  return value === 'snapshot' ||
+    value === 'mode_change' ||
+    value === 'capability_change' ||
+    value === 'blocker_change'
+    ? value
+    : 'snapshot';
 }
 
 function idPart(value: string): string {
@@ -872,5 +962,269 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
     whyNotJarvisYetLabels: decision.whyNotJarvisYetLabels,
     nextUpgradeActionLabel: decision.nextUpgradeAction,
     evidenceRefs: decision.evidenceRefs.slice(0, 8),
+  };
+}
+
+function buildAoiJarvisAutonomyGovernorAuditDedupeKey(
+  decision: AoiJarvisAutonomyGovernorDecision,
+): string {
+  return normalizeAuditLabel(
+    [
+      decision.sessionPath,
+      decision.overallMode,
+      decision.allowedAutonomyBands
+        .map((band) => `${band.capability}:${band.allowed ? 'allow' : 'block'}`)
+        .join(','),
+      decision.blockers
+        .map((blocker) => `${blocker.id}:${blocker.severity}:${blocker.reason}`)
+        .join(','),
+      decision.whyNotJarvisYetLabels.join(','),
+      decision.nextUpgradeAction,
+      decision.evidenceRefs.slice(0, 12).join(','),
+    ].join('|'),
+    '',
+    800,
+  );
+}
+
+function classifyAoiJarvisAutonomyGovernorAuditEvent(
+  decision: AoiJarvisAutonomyGovernorDecision,
+  previousEvent: AoiJarvisAutonomyGovernorAuditEvent | null,
+  allowedCapabilityLabels: string[],
+  blockerLabels: string[],
+): AoiJarvisAutonomyGovernorAuditEventKind {
+  if (!previousEvent) {
+    return 'snapshot';
+  }
+  if (previousEvent.mode !== decision.overallMode) {
+    return 'mode_change';
+  }
+  if (previousEvent.allowedCapabilityLabels.join('|') !== allowedCapabilityLabels.join('|')) {
+    return 'capability_change';
+  }
+  if (previousEvent.blockerLabels.join('|') !== blockerLabels.join('|')) {
+    return 'blocker_change';
+  }
+  return 'snapshot';
+}
+
+export function normalizeAoiJarvisAutonomyGovernorAuditEvent(
+  value: unknown,
+): AoiJarvisAutonomyGovernorAuditEvent | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiJarvisAutonomyGovernorAuditEvent>)
+      : null;
+  if (!raw) {
+    return null;
+  }
+
+  const mode = normalizeAuditMode(raw.mode);
+  const recordedAt = normalizeAuditTimestamp(raw.recordedAt);
+  const sessionPath = normalizeAuditLabel(raw.sessionPath, '', 180);
+  const dedupeKey = normalizeAuditLabel(raw.dedupeKey, '', 800);
+  if (!mode || !recordedAt || !sessionPath || !dedupeKey) {
+    return null;
+  }
+
+  const previousMode = normalizeAuditMode(raw.previousMode);
+  return {
+    version: 1,
+    id:
+      normalizeAuditLabel(raw.id, '', 180) ||
+      `aoi-jarvis-governor-audit-${idPart(sessionPath)}-${recordedAt}`,
+    dedupeKey,
+    kind: normalizeAuditEventKind(raw.kind),
+    sessionPath,
+    decisionId:
+      normalizeAuditLabel(raw.decisionId, '', 180) ||
+      `aoi-jarvis-governor-decision-${idPart(sessionPath)}-${recordedAt}`,
+    previousDecisionId: normalizeAuditLabel(raw.previousDecisionId, '', 180) || null,
+    recordedAt,
+    mode,
+    modeLabel: normalizeAuditLabel(raw.modeLabel, MODE_LABELS[mode], 120),
+    previousMode,
+    previousModeLabel: previousMode
+      ? normalizeAuditLabel(raw.previousModeLabel, MODE_LABELS[previousMode], 120)
+      : null,
+    allowedCapabilityLabels: normalizeAuditLabelList(raw.allowedCapabilityLabels, 10),
+    blockedCapabilityLabels: normalizeAuditLabelList(raw.blockedCapabilityLabels, 10),
+    blockerLabels: normalizeAuditLabelList(raw.blockerLabels, 8),
+    whyNotJarvisYetLabels: normalizeAuditLabelList(raw.whyNotJarvisYetLabels, 8),
+    nextUpgradeAction: normalizeAuditLabel(
+      raw.nextUpgradeAction,
+      'Refresh Aoi autonomy state.',
+      260,
+    ),
+    evidenceRefs: normalizeAuditLabelList(raw.evidenceRefs, 12),
+    safetyBoundary: normalizeAuditLabel(
+      raw.safetyBoundary,
+      'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
+      300,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+export function normalizeAoiJarvisAutonomyGovernorAuditTrail(
+  value: unknown,
+): AoiJarvisAutonomyGovernorAuditTrail | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiJarvisAutonomyGovernorAuditTrail>)
+      : null;
+  if (!raw || !Array.isArray(raw.events)) {
+    return null;
+  }
+
+  const seen = new Set<string>();
+  const events = raw.events
+    .map((event) => normalizeAoiJarvisAutonomyGovernorAuditEvent(event))
+    .filter((event): event is AoiJarvisAutonomyGovernorAuditEvent => Boolean(event))
+    .sort((left, right) => right.recordedAt - left.recordedAt)
+    .filter((event) => {
+      if (seen.has(event.dedupeKey)) {
+        return false;
+      }
+      seen.add(event.dedupeKey);
+      return true;
+    })
+    .slice(0, AOI_JARVIS_AUTONOMY_GOVERNOR_AUDIT_TRAIL_MAX);
+
+  if (events.length === 0) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    updatedAt: normalizeAuditTimestamp(raw.updatedAt) ?? events[0].recordedAt,
+    events,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+export function buildAoiJarvisAutonomyGovernorAuditEvent(params: {
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined;
+  previousEvent?: AoiJarvisAutonomyGovernorAuditEvent | null;
+}): AoiJarvisAutonomyGovernorAuditEvent | null {
+  const { decision } = params;
+  if (!decision) {
+    return null;
+  }
+
+  const previousEvent = normalizeAoiJarvisAutonomyGovernorAuditEvent(params.previousEvent);
+  const allowedCapabilityLabels = decision.allowedAutonomyBands
+    .filter((band) => band.allowed)
+    .map((band) => CAPABILITY_LABELS[band.capability]);
+  const blockedCapabilityLabels = decision.allowedAutonomyBands
+    .filter((band) => !band.allowed)
+    .map((band) => CAPABILITY_LABELS[band.capability]);
+  const blockerLabels = decision.blockers
+    .map((blocker) => `${blocker.label}: ${blocker.reason}`)
+    .slice(0, 8);
+  const dedupeKey = buildAoiJarvisAutonomyGovernorAuditDedupeKey(decision);
+  const kind = classifyAoiJarvisAutonomyGovernorAuditEvent(
+    decision,
+    previousEvent,
+    allowedCapabilityLabels,
+    blockerLabels,
+  );
+
+  return {
+    version: 1,
+    id: `aoi-jarvis-governor-audit-${idPart(decision.sessionPath)}-${decision.generatedAt}`,
+    dedupeKey,
+    kind,
+    sessionPath: decision.sessionPath,
+    decisionId: decision.id,
+    previousDecisionId: previousEvent?.decisionId ?? null,
+    recordedAt: decision.generatedAt,
+    mode: decision.overallMode,
+    modeLabel: decision.modeLabel,
+    previousMode: previousEvent?.mode ?? null,
+    previousModeLabel: previousEvent?.modeLabel ?? null,
+    allowedCapabilityLabels: uniqueLabels(allowedCapabilityLabels, 10),
+    blockedCapabilityLabels: uniqueLabels(blockedCapabilityLabels, 10),
+    blockerLabels: uniqueLabels(blockerLabels, 8),
+    whyNotJarvisYetLabels: uniqueLabels(decision.whyNotJarvisYetLabels, 8),
+    nextUpgradeAction: decision.nextUpgradeAction,
+    evidenceRefs: uniqueLabels([...decision.evidenceRefs, ...decision.nextUpgradeEvidenceRefs], 12),
+    safetyBoundary:
+      'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+export function appendAoiJarvisAutonomyGovernorAuditTrail(
+  trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
+  event: AoiJarvisAutonomyGovernorAuditEvent | null | undefined,
+): AoiJarvisAutonomyGovernorAuditTrail | null {
+  const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(trail);
+  const normalizedEvent = normalizeAoiJarvisAutonomyGovernorAuditEvent(event);
+  if (!normalizedEvent) {
+    return normalizedTrail;
+  }
+
+  const existingEvents = normalizedTrail?.events ?? [];
+  if (existingEvents.some((item) => item.dedupeKey === normalizedEvent.dedupeKey)) {
+    return (
+      normalizedTrail ?? {
+        version: 1,
+        updatedAt: normalizedEvent.recordedAt,
+        events: [normalizedEvent],
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      }
+    );
+  }
+
+  return normalizeAoiJarvisAutonomyGovernorAuditTrail({
+    version: 1,
+    updatedAt: normalizedEvent.recordedAt,
+    events: [normalizedEvent, ...existingEvents],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  });
+}
+
+export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
+  trail: AoiJarvisAutonomyGovernorAuditTrail | null | undefined,
+): AoiJarvisAutonomyGovernorAuditPanelSummary {
+  const normalizedTrail = normalizeAoiJarvisAutonomyGovernorAuditTrail(trail);
+  if (!normalizedTrail) {
+    return {
+      visible: false,
+      headlineLabel: 'No governor decisions recorded yet.',
+      latestLabel: 'Audit trail is empty.',
+      recentEventLabels: [],
+      blockerLabels: [],
+      evidenceRefs: [],
+      safetyBoundaryLabel:
+        'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
+    };
+  }
+
+  const latest = normalizedTrail.events[0];
+  const eventKindLabels: Record<AoiJarvisAutonomyGovernorAuditEventKind, string> = {
+    snapshot: 'Snapshot',
+    mode_change: 'Mode change',
+    capability_change: 'Capability change',
+    blocker_change: 'Blocker change',
+  };
+
+  return {
+    visible: true,
+    headlineLabel: `${latest.modeLabel}; ${normalizedTrail.events.length} recent governor decision(s).`,
+    latestLabel: `${eventKindLabels[latest.kind]} at ${latest.recordedAt}: ${latest.nextUpgradeAction}`,
+    recentEventLabels: normalizedTrail.events.slice(0, 4).map((event) => {
+      const primaryReason = event.blockerLabels[0] ?? event.nextUpgradeAction;
+      return `${eventKindLabels[event.kind]}: ${event.modeLabel}; ${primaryReason}`;
+    }),
+    blockerLabels: latest.blockerLabels,
+    evidenceRefs: latest.evidenceRefs,
+    safetyBoundaryLabel: latest.safetyBoundary,
   };
 }

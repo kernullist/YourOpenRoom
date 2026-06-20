@@ -321,6 +321,9 @@ import {
   type AoiProactiveTrendFollowUpSource,
 } from '@/lib/aoiProactiveTrendFollowUp';
 import {
+  appendAoiJarvisAutonomyGovernorAuditTrail,
+  buildAoiJarvisAutonomyGovernorAuditEvent,
+  buildAoiJarvisAutonomyGovernorAuditPanelSummary,
   buildAoiJarvisAutonomyGovernor,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
@@ -2607,6 +2610,7 @@ const ChatPanel: React.FC<{
   const aoiAgendaNudgeShownKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
+  const aoiJarvisAutonomyGovernorAuditKeyRef = useRef<string | null>(null);
   const aoiAutonomyActiveProposalsRef = useRef(aoiAutonomyActiveProposals);
   aoiAutonomyActiveProposalsRef.current = aoiAutonomyActiveProposals;
   const aoiAutonomyBlockedProposalsRef = useRef(aoiAutonomyBlockedProposals);
@@ -7159,6 +7163,36 @@ const ChatPanel: React.FC<{
       sessionPath,
     ],
   );
+
+  useEffect(() => {
+    const currentTrail =
+      aoiAutonomyPanelSettingsRef.current.jarvisAutonomyGovernorAuditTrail ?? null;
+    const event = buildAoiJarvisAutonomyGovernorAuditEvent({
+      decision: aoiJarvisAutonomyGovernor,
+      previousEvent: currentTrail?.events[0] ?? null,
+    });
+    if (!event) {
+      return;
+    }
+    if (aoiJarvisAutonomyGovernorAuditKeyRef.current === event.dedupeKey) {
+      return;
+    }
+    if (currentTrail?.events[0]?.dedupeKey === event.dedupeKey) {
+      aoiJarvisAutonomyGovernorAuditKeyRef.current = event.dedupeKey;
+      return;
+    }
+
+    const nextTrail = appendAoiJarvisAutonomyGovernorAuditTrail(currentTrail, event);
+    if (!nextTrail) {
+      return;
+    }
+
+    aoiJarvisAutonomyGovernorAuditKeyRef.current = event.dedupeKey;
+    updateAoiAutonomyPanelSettingsFromPanel({
+      jarvisAutonomyGovernorAuditTrail: nextTrail,
+    });
+  }, [aoiJarvisAutonomyGovernor, updateAoiAutonomyPanelSettingsFromPanel]);
+
   const aoiOperatorVoicePanelSummary = useMemo(
     () => buildAoiOperatorVoicePanelSummary(aoiLastOperatorVoiceDecision),
     [aoiLastOperatorVoiceDecision],
@@ -9527,6 +9561,13 @@ const SettingsModal: React.FC<{
     () => buildAoiJarvisAutonomyGovernorPanelSummary(aoiJarvisAutonomyGovernor),
     [aoiJarvisAutonomyGovernor],
   );
+  const aoiJarvisAutonomyGovernorAuditSummary = useMemo(
+    () =>
+      buildAoiJarvisAutonomyGovernorAuditPanelSummary(
+        aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail,
+      ),
+    [aoiAutonomyPanelSettings.jarvisAutonomyGovernorAuditTrail],
+  );
   const latestAoiPlaybook = useMemo(
     () =>
       aoiActivePlaybooks.slice().sort((left, right) => right.updatedAt - left.updatedAt)[0] ?? null,
@@ -11521,6 +11562,38 @@ const SettingsModal: React.FC<{
                                 260,
                               )}
                             </div>
+                            {aoiJarvisAutonomyGovernorAuditSummary.visible && (
+                              <>
+                                <div>
+                                  Audit:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorAuditSummary.headlineLabel,
+                                    220,
+                                  )}
+                                </div>
+                                <div>
+                                  Latest:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorAuditSummary.latestLabel,
+                                    260,
+                                  )}
+                                </div>
+                                {aoiJarvisAutonomyGovernorAuditSummary.recentEventLabels.map(
+                                  (label, index) => (
+                                    <div key={`jarvis-governor-audit-${index}`}>
+                                      Recent: {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ),
+                                )}
+                                <div>
+                                  Boundary:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorAuditSummary.safetyBoundaryLabel,
+                                    260,
+                                  )}
+                                </div>
+                              </>
+                            )}
                             {aoiJarvisAutonomyGovernorSummary.evidenceRefs.map((ref, index) => (
                               <div key={`jarvis-governor-evidence-${index}`}>
                                 Evidence: {sanitizeAoiProposalDisplayText(ref, 220)}

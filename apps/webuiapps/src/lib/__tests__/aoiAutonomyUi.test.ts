@@ -1560,6 +1560,38 @@ describe('Aoi autonomy UI helpers', () => {
       safetyBoundary:
         'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
     }));
+    const governorAuditTrail = {
+      version: 1 as const,
+      updatedAt: 7300,
+      events: [
+        {
+          version: 1 as const,
+          id: 'aoi-jarvis-governor-audit-aoi-default-7300',
+          dedupeKey: 'aoi/default|direct_chat|allow-direct-chat',
+          kind: 'mode_change' as const,
+          sessionPath: 'aoi/default',
+          decisionId: 'aoi-jarvis-governor-aoi-default-7300',
+          previousDecisionId: 'aoi-jarvis-governor-aoi-default-7200',
+          recordedAt: 7300,
+          mode: 'direct_chat' as const,
+          modeLabel: 'Direct chat',
+          previousMode: 'proactive_brief' as const,
+          previousModeLabel: 'Proactive brief',
+          allowedCapabilityLabels: ['Observe sources', 'Direct chat'],
+          blockedCapabilityLabels: ['Approved command'],
+          blockerLabels: ['Command execution waits for approval.'],
+          whyNotJarvisYetLabels: ['Execution remains approval-gated.'],
+          nextUpgradeAction: 'Collect review evidence before approval execution.',
+          evidenceRefs: ['governor-mode:direct_chat'],
+          safetyBoundary:
+            'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
+          actionAuthority: 'display_only' as const,
+          mutationCount: 0 as const,
+        },
+      ],
+      actionAuthority: 'display_only' as const,
+      mutationCount: 0 as const,
+    };
 
     const saved = saveAoiAutonomyPanelSettings(
       {
@@ -1604,6 +1636,7 @@ describe('Aoi autonomy UI helpers', () => {
             'Local delivery feedback only; no tools, app actions, policy bypass, or execution gates were run.',
         },
         agendaNudgeReadinessDecisionFeedbackHistory: feedbackHistory,
+        jarvisAutonomyGovernorAuditTrail: governorAuditTrail,
       },
       storageAdapter,
     );
@@ -1630,6 +1663,18 @@ describe('Aoi autonomy UI helpers', () => {
         recordedAt: 7200,
         dedupeKey: 'agenda-decision:silent:7100:no candidate',
       },
+      jarvisAutonomyGovernorAuditTrail: {
+        updatedAt: 7300,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    });
+    expect(saved.jarvisAutonomyGovernorAuditTrail?.events[0]).toMatchObject({
+      kind: 'mode_change',
+      mode: 'direct_chat',
+      previousMode: 'proactive_brief',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
     });
     expect(saved.agendaNudgeReadinessDecisionFeedbackHistory).toHaveLength(5);
     expect(saved.agendaNudgeReadinessDecisionFeedbackHistory?.[0]).toMatchObject({
