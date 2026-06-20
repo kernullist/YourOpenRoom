@@ -170,6 +170,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   statusLabel: string;
   summaryLabel: string;
   candidateLabel: string;
+  deliveryDecisionLabels: string[];
   reasonLabels: string[];
   nextActionLabels: string[];
   actions: AoiAgendaNudgeReadinessAction[];
@@ -2580,6 +2581,48 @@ function buildAoiAgendaNudgeReadinessAuditLabels(
   ];
 }
 
+function buildAoiAgendaNudgeDeliveryDecisionLabels(params: {
+  state: 'ready' | 'silent' | 'blocked';
+  reason: string;
+  now: number;
+  nextEligibleAt?: number | null;
+  nextEligibleReason?: string;
+}): string[] {
+  const prefix =
+    params.state === 'ready'
+      ? 'Delivery: ready to speak.'
+      : params.state === 'silent'
+        ? 'Delivery: silent.'
+        : 'Delivery: blocked.';
+  const labels = [`${prefix} ${sanitizeAoiProposalDisplayText(params.reason, 180)}`];
+
+  if (params.state === 'ready') {
+    labels.push('Next eligible: now.');
+  } else if (
+    typeof params.nextEligibleAt === 'number' &&
+    Number.isFinite(params.nextEligibleAt) &&
+    params.nextEligibleAt > params.now
+  ) {
+    labels.push(
+      `Next eligible: ${formatAoiAgendaNudgeWait(
+        params.nextEligibleAt - params.now,
+      )} (${new Date(params.nextEligibleAt).toLocaleString()}).`,
+    );
+  } else {
+    labels.push(
+      `Next eligible: ${
+        params.nextEligibleReason ||
+        'waits for a new qualifying agenda item or an operator settings change.'
+      }`,
+    );
+  }
+
+  labels.push(
+    'Boundary: direct agenda delivery only; no tools, app actions, policy bypass, or execution gates run from this decision.',
+  );
+  return labels;
+}
+
 export function buildAoiAgendaNudgeReadinessActionAudit(params: {
   action: AoiAgendaNudgeReadinessAction;
   summary: Pick<AoiAgendaNudgeReadinessPanelSummary, 'statusLabel' | 'candidateLabel'>;
@@ -2625,11 +2668,18 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     nextActionLabels: string[],
     evidenceRefs: string[] = [],
     actions: AoiAgendaNudgeReadinessAction[] = [],
+    deliveryReason = summaryLabel,
   ): AoiAgendaNudgeReadinessPanelSummary => ({
     visible: true,
     statusLabel,
     summaryLabel,
     candidateLabel: summaryCountLabel,
+    deliveryDecisionLabels: buildAoiAgendaNudgeDeliveryDecisionLabels({
+      state: 'blocked',
+      reason: deliveryReason,
+      now,
+      nextEligibleReason: 'waits for the blocking setting or policy gate to change.',
+    }),
     reasonLabels,
     nextActionLabels,
     actions,
@@ -2811,6 +2861,12 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         statusLabel: 'cooling down',
         summaryLabel: 'Aoi has a qualified agenda path, but direct chat nudges are cooling down.',
         candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+        deliveryDecisionLabels: buildAoiAgendaNudgeDeliveryDecisionLabels({
+          state: 'silent',
+          reason: 'A qualified agenda nudge is held by the cooldown gate.',
+          now,
+          nextEligibleAt: options.lastShownAt + cooldownMs,
+        }),
         reasonLabels: [`Cooldown remaining: ${formatAoiAgendaNudgeWait(waitMs)}.`],
         nextActionLabels: ['Aoi can speak again after the cooldown window expires.'],
         actions: [
@@ -2832,6 +2888,12 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         statusLabel: 'already shown',
         summaryLabel: 'Aoi already surfaced the top agenda nudge in this session.',
         candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+        deliveryDecisionLabels: buildAoiAgendaNudgeDeliveryDecisionLabels({
+          state: 'silent',
+          reason: 'Duplicate protection is holding the already-delivered agenda nudge.',
+          now,
+          nextEligibleReason: 'waits for a different proposal, approval gate, or blocked gate.',
+        }),
         reasonLabels: ['Duplicate protection blocks repeating the same direct agenda nudge.'],
         nextActionLabels: [
           'A new proposal, approval gate, or blocked gate can produce a fresh nudge.',
@@ -2854,6 +2916,11 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
       statusLabel: 'ready',
       summaryLabel: 'Aoi has a direct agenda chat nudge ready.',
       candidateLabel: `${reasonLabel}: ${candidate.dedupeKey}`,
+      deliveryDecisionLabels: buildAoiAgendaNudgeDeliveryDecisionLabels({
+        state: 'ready',
+        reason: 'All direct agenda delivery gates currently allow a compact chat nudge.',
+        now,
+      }),
       reasonLabels: [
         'Policy, quiet mode, notification, calibration, cooldown, and session gates all allow a nudge.',
       ],
@@ -2872,6 +2939,13 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     statusLabel: 'no candidate',
     summaryLabel: 'Aoi is allowed to speak, but no agenda item currently qualifies.',
     candidateLabel: summaryCountLabel,
+    deliveryDecisionLabels: buildAoiAgendaNudgeDeliveryDecisionLabels({
+      state: 'silent',
+      reason: 'Aoi is allowed to speak, but no agenda item currently qualifies.',
+      now,
+      nextEligibleReason:
+        'waits for stronger evidence, an approval-gated action, or a blocked safety gate.',
+    }),
     reasonLabels: [
       'No accepted action, approval gate, blocked gate, or high-signal low-risk proposal qualified.',
     ],

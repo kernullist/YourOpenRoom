@@ -11211,6 +11211,11 @@ const SettingsModal: React.FC<{
                             {aoiAgendaNudgeReadinessSummary.summaryLabel}
                           </div>
                           <div className={styles.aoiAutonomyProposalDetails}>
+                            {aoiAgendaNudgeReadinessSummary.deliveryDecisionLabels.map(
+                              (label, index) => (
+                                <div key={`agenda-readiness-delivery-${index}`}>{label}</div>
+                              ),
+                            )}
                             {aoiAgendaNudgeReadinessSummary.reasonLabels.map((label, index) => (
                               <div key={`agenda-readiness-reason-${index}`}>{label}</div>
                             ))}

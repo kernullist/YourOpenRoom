@@ -1126,6 +1126,9 @@ describe('Aoi autonomy UI helpers', () => {
       tone: 'ready',
     });
     expect(readySummary.candidateLabel).toContain('high-signal proposal');
+    expect(readySummary.deliveryDecisionLabels.join(' ')).toContain('Delivery: ready to speak');
+    expect(readySummary.deliveryDecisionLabels.join(' ')).toContain('Next eligible: now');
+    expect(readySummary.deliveryDecisionLabels.join(' ')).toContain('no tools');
     expect(readySummary.reasonLabels.join(' ')).toContain('gates all allow');
     expect(readySummary.evidenceRefs).toContain('memory:re-interest');
     expect(readySummary.actions).toEqual([]);
@@ -1145,6 +1148,7 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'notifications off',
       tone: 'blocked',
     });
+    expect(notificationSummary.deliveryDecisionLabels.join(' ')).toContain('Delivery: blocked');
     expect(notificationSummary.nextActionLabels.join(' ')).toContain('Turn on');
     expect(notificationSummary.actions.map((action) => action.id)).toEqual([
       'enable_notifications',
@@ -1250,6 +1254,8 @@ describe('Aoi autonomy UI helpers', () => {
       tone: 'waiting',
     });
     expect(cooldownSummary.candidateLabel).toContain('high-signal proposal');
+    expect(cooldownSummary.deliveryDecisionLabels.join(' ')).toContain('Delivery: silent');
+    expect(cooldownSummary.deliveryDecisionLabels.join(' ')).toContain('Next eligible:');
     expect(cooldownSummary.reasonLabels.join(' ')).toContain('Cooldown remaining');
     expect(cooldownSummary.actions.map((action) => action.id)).toEqual(['refresh_autonomy']);
 
@@ -1266,6 +1272,9 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'no candidate',
       tone: 'waiting',
     });
+    expect(noCandidateDuringCooldown.deliveryDecisionLabels.join(' ')).toContain(
+      'Delivery: silent',
+    );
     expect(noCandidateDuringCooldown.actions.map((action) => action.id)).toEqual([
       'run_check',
       'refresh_autonomy',
@@ -1284,6 +1293,7 @@ describe('Aoi autonomy UI helpers', () => {
       statusLabel: 'already shown',
       tone: 'waiting',
     });
+    expect(dedupeSummary.deliveryDecisionLabels.join(' ')).toContain('different proposal');
     expect(dedupeSummary.reasonLabels.join(' ')).toContain('Duplicate protection');
     expect(dedupeSummary.actions.map((action) => action.id)).toEqual(['run_check']);
   });
