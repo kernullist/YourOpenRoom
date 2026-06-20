@@ -365,6 +365,7 @@ import type {
   AoiProposalDecision,
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
+  AoiProactiveBriefFeedback,
   AoiProactiveBriefFeedbackCategory,
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryEventKind,
@@ -8308,6 +8309,7 @@ const ChatPanel: React.FC<{
           aoiJarvisAutonomyGovernor={aoiJarvisAutonomyGovernor}
           aoiJarvisAutonomyGovernorRequestDraft={aoiJarvisAutonomyGovernorRequestPreviewText}
           aoiProactiveBriefPanel={aoiProactiveBriefPanel}
+          aoiProactiveBriefFeedback={aoiProactiveBriefs?.feedback ?? []}
           aoiProactiveTrendAdvisor={aoiProactiveBriefs?.trendAdvisor ?? null}
           expandedAoiProactiveBriefId={expandedAoiProactiveBriefId}
           aoiOperatorVoicePolicy={aoiOperatorVoicePolicy}
@@ -8898,6 +8900,7 @@ const SettingsModal: React.FC<{
   aoiJarvisAutonomyGovernor: AoiJarvisAutonomyGovernorDecision;
   aoiJarvisAutonomyGovernorRequestDraft: string;
   aoiProactiveBriefPanel: AoiProactiveBriefPanelModel;
+  aoiProactiveBriefFeedback: AoiProactiveBriefFeedback[];
   aoiProactiveTrendAdvisor: AoiProactiveTrendAdvisorState | null;
   expandedAoiProactiveBriefId: string | null;
   aoiOperatorVoicePolicy: AoiOperatorVoicePolicy;
@@ -9018,6 +9021,7 @@ const SettingsModal: React.FC<{
   aoiJarvisAutonomyGovernor,
   aoiJarvisAutonomyGovernorRequestDraft,
   aoiProactiveBriefPanel,
+  aoiProactiveBriefFeedback,
   aoiProactiveTrendAdvisor,
   expandedAoiProactiveBriefId,
   aoiOperatorVoicePolicy,
@@ -9294,9 +9298,26 @@ const SettingsModal: React.FC<{
         active: aoiActiveOpportunities,
         archived: aoiArchivedOpportunities,
         status: aoiAutonomyStatus,
+        deliberationRuns: aoiDeliberationRuns,
+        proactiveTrendAdvisor: aoiProactiveTrendAdvisor,
+        proactiveBriefFeedback: aoiProactiveBriefFeedback,
+        settings: aoiAutonomyPanelSettings,
+        jarvisGovernor: aoiJarvisAutonomyGovernor,
+        inlineShownCount: aoiInlineShownCount,
         now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
       }),
-    [aoiActiveOpportunities, aoiArchivedOpportunities, aoiAutonomyLastTickAt, aoiAutonomyStatus],
+    [
+      aoiActiveOpportunities,
+      aoiArchivedOpportunities,
+      aoiAutonomyLastTickAt,
+      aoiAutonomyPanelSettings,
+      aoiAutonomyStatus,
+      aoiDeliberationRuns,
+      aoiInlineShownCount,
+      aoiJarvisAutonomyGovernor,
+      aoiProactiveBriefFeedback,
+      aoiProactiveTrendAdvisor,
+    ],
   );
   const aoiDeliberationRunSummary = useMemo(
     () =>
@@ -11873,6 +11894,13 @@ const SettingsModal: React.FC<{
                                   <div>Evidence need: {item.evidenceNeedLabel}</div>
                                   <div>Next: {item.nextActionLabel}</div>
                                   <div>Delivery: {item.deliveryLabel}</div>
+                                  <div>Governor: {item.interruptionModeLabel}</div>
+                                  <div>Governor reason: {item.interruptionSummaryLabel}</div>
+                                  {item.interruptionBlockedLabels.map((label, index) => (
+                                    <div key={`${item.id}-interruption-blocker-${index}`}>
+                                      Direct chat block: {label}
+                                    </div>
+                                  ))}
                                   {item.evidenceRefs.map((ref, index) => (
                                     <div key={`${item.id}-evidence-${index}`}>Evidence: {ref}</div>
                                   ))}

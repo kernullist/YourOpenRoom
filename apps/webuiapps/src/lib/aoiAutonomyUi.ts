@@ -32,6 +32,7 @@ import {
   type AoiJarvisAutonomyGovernorAuditTrail,
   type AoiJarvisAutonomyGovernorPanelSummary,
 } from './aoiJarvisAutonomyGovernor';
+import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
@@ -55,6 +56,7 @@ import type {
   AoiEnvironmentSource,
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
+  AoiInterruptionGovernorDecision,
   AoiMissionState,
   AoiApprovedCommandPolicy,
   AoiApprovedCommandResult,
@@ -64,6 +66,8 @@ import type {
   AoiOperatorTimelineSummary,
   AoiPreparedActionPlan,
   AoiPlaybook,
+  AoiProactiveBriefFeedback,
+  AoiProactiveTrendAdvisorState,
   AoiProposal,
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
@@ -552,6 +556,9 @@ export interface AoiOpportunityInboxPanelItem {
   evidenceNeedLabel: string;
   nextActionLabel: string;
   deliveryLabel: string;
+  interruptionModeLabel: string;
+  interruptionSummaryLabel: string;
+  interruptionBlockedLabels: string[];
   evidenceRefs: string[];
 }
 
@@ -2498,6 +2505,15 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
   active: readonly AoiOpportunity[];
   archived?: readonly AoiOpportunity[];
   status?: AoiAutonomyStatus | null;
+  deliberationRuns?: readonly AoiDeliberationRun[];
+  proactiveTrendAdvisor?: AoiProactiveTrendAdvisorState | null;
+  proactiveBriefFeedback?: readonly AoiProactiveBriefFeedback[];
+  settings?: AoiAutonomyPanelSettings | null;
+  jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
+  interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
+  inlineShownCount?: number;
+  directChatShownCount?: number;
+  recentDeliveryKeys?: ReadonlySet<string> | readonly string[];
   now?: number;
 }): AoiOpportunityInboxPanelSummary {
   const now = params.now ?? Date.now();
@@ -2513,11 +2529,36 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
     params.status?.expiredOpportunityCount ??
     archived.filter((item) => item.status === 'expired').length;
   const visibleItems = sortAoiOpportunityInboxItems(active).slice(0, 4);
+  const interruptionDecisions =
+    params.interruptionDecisions ??
+    buildAoiInterruptionGovernorDecisions({
+      sessionPath: params.status?.sessionPath ?? visibleItems[0]?.sessionPath ?? '',
+      opportunities: active,
+      deliberationRuns: params.deliberationRuns,
+      policy: params.status?.policy,
+      proactiveTrendAdvisor: params.proactiveTrendAdvisor,
+      feedback: params.proactiveBriefFeedback,
+      quietMode: params.settings?.quietMode,
+      notificationsEnabled: params.settings?.notificationsEnabled,
+      directChatOptIn: params.status?.policy.proactiveBriefing.directChatHookOptIn === true,
+      jarvisGovernor: params.jarvisGovernor,
+      inlineShownCount: params.inlineShownCount,
+      directChatShownCount: params.directChatShownCount,
+      maxInlineCardsPerSession: params.settings?.maxSuggestionsPerSession,
+      maxDirectChatsPerSession: 1,
+      recentDeliveryKeys: params.recentDeliveryKeys,
+      now,
+    });
+  const interruptionByOpportunityId = new Map(
+    interruptionDecisions.map((decision) => [decision.opportunityId, decision]),
+  );
   const evidenceRefs = collectAoiAgendaEvidenceRefs(
     visibleItems.flatMap((item) => item.evidenceRefs),
+    interruptionDecisions.flatMap((decision) => decision.evidenceRefs),
     [`opportunity_inbox:active:${active.length}`],
   );
   const itemLabels = visibleItems.map((item): AoiOpportunityInboxPanelItem => {
+    const interruptionDecision = interruptionByOpportunityId.get(item.id);
     const ageLabel = formatAoiAgendaAge(item.updatedAt, now);
     const expiryLabel =
       item.expiresAt > now
@@ -2534,6 +2575,20 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
       evidenceNeedLabel: sanitizeAoiProposalDisplayText(item.evidenceNeed, 240),
       nextActionLabel: sanitizeAoiProposalDisplayText(item.suggestedNextAction, 220),
       deliveryLabel: `${item.deliveryRecommendation.replace(/_/g, ' ')} / ${item.status}`,
+      interruptionModeLabel: sanitizeAoiProposalDisplayText(
+        interruptionDecision
+          ? `governor: ${interruptionDecision.modeLabel}; requested ${interruptionDecision.requestedMode.replace(/_/g, ' ')}`
+          : `governor: dashboard; requested ${item.deliveryRecommendation.replace(/_/g, ' ')}`,
+        180,
+      ),
+      interruptionSummaryLabel: sanitizeAoiProposalDisplayText(
+        interruptionDecision?.summaryLabel ??
+          'Dashboard-only until interruption governor evidence is available.',
+        260,
+      ),
+      interruptionBlockedLabels: (interruptionDecision?.blockedReasonLabels ?? [])
+        .slice(0, 4)
+        .map((label) => sanitizeAoiProposalDisplayText(label, 180)),
       evidenceRefs: item.evidenceRefs
         .slice(0, 4)
         .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),

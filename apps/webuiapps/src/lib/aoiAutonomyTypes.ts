@@ -211,6 +211,62 @@ export interface AoiDeliberationRun {
   mutationCount: 0;
 }
 
+export type AoiInterruptionDeliveryMode =
+  | 'hidden'
+  | 'dashboard'
+  | 'inline_card'
+  | 'quiet_notification'
+  | 'direct_chat';
+
+export type AoiInterruptionBlockedReason =
+  | 'policy_disabled'
+  | 'proactive_suggestions_disabled'
+  | 'opportunity_not_active'
+  | 'opportunity_expired'
+  | 'opportunity_snoozed'
+  | 'low_confidence'
+  | 'low_urgency'
+  | 'low_novelty'
+  | 'high_risk'
+  | 'missing_evidence'
+  | 'stale_source'
+  | 'failed_evidence'
+  | 'direct_chat_not_opted_in'
+  | 'quiet_mode'
+  | 'notifications_disabled'
+  | 'inline_session_limit_reached'
+  | 'direct_chat_session_limit_reached'
+  | 'recent_interruption_budget'
+  | 'duplicate_or_cooldown'
+  | 'recent_negative_feedback'
+  | 'too_frequent_feedback'
+  | 'jarvis_governor_blocks_direct_chat'
+  | 'trend_direct_chat_not_ready'
+  | 'trend_duplicate_suppressed';
+
+export interface AoiInterruptionGovernorDecision {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  opportunityId: string;
+  opportunityDedupeKey: string;
+  requestedMode: AoiOpportunityDeliveryRecommendation;
+  deliveryMode: AoiInterruptionDeliveryMode;
+  directChatAllowed: boolean;
+  score: number;
+  blockedReasons: AoiInterruptionBlockedReason[];
+  directChatBlockedReasons: AoiInterruptionBlockedReason[];
+  evidenceRefs: string[];
+  cooldownKey: string;
+  nextEligibleAt?: number;
+  modeLabel: string;
+  summaryLabel: string;
+  blockedReasonLabels: string[];
+  safetyBoundaryLabel: string;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiObservationSource =
   | 'chat'
   | 'tool'
