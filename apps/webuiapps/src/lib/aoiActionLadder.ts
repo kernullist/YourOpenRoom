@@ -22,12 +22,14 @@ import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyPolicy,
   AoiDeliberationRun,
+  AoiFollowThroughLearningSummary,
   AoiOpportunity,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
 } from './aoiAutonomyTypes';
+import { hasAoiFollowThroughUnsafeSignal } from './aoiFollowThroughLearning';
 
 const LEVEL_ORDER: Record<AoiActionLadderLevel, number> = {
   L1: 1,
@@ -56,6 +58,7 @@ export interface AoiActionLadderInput {
   approvalInbox?: readonly AoiApprovalInboxItem[];
   proposalDecisions?: readonly AoiProposalDecision[];
   boundedWorkOrders?: readonly AoiBoundedWorkOrder[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
   now?: number;
 }
 
@@ -447,6 +450,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
       ...opportunity.evidenceRefs,
       ...(input.deliberationRun?.evidenceRefs ?? []),
       ...(input.deliberationRun?.finding?.evidenceRefs ?? []),
+      ...(input.followThroughLearning?.evidenceRefs ?? []),
       ...(matchingProposal ? [`proposal:${matchingProposal.id}`] : []),
       ...(matchingProposal?.evidenceRefs ?? []),
       ...(matchingProposal?.artifactRefs ?? []),
@@ -459,6 +463,10 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
         : []),
     ],
     32,
+  );
+  const unsafeLearningSignal = hasAoiFollowThroughUnsafeSignal(
+    opportunity,
+    input.followThroughLearning,
   );
   const allowedActions: AoiActionLadderAction[] = [
     makeAction({
@@ -545,7 +553,9 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
 
   if (matchingProposal && preparedPlan) {
     const prepareReady =
-      preparedPlan.status === 'ready' && boundedWorkOrder?.policyResult.status !== 'blocked';
+      !unsafeLearningSignal &&
+      preparedPlan.status === 'ready' &&
+      boundedWorkOrder?.policyResult.status !== 'blocked';
     if (prepareReady) {
       reachedLevels.push('L4');
       allowedActions.push(
@@ -580,6 +590,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
                 (reason) => `work_order:${reason}`,
               ) ?? []),
               ...(previewEvaluation?.reasons.map((reason) => `proposal_policy:${reason}`) ?? []),
+              ...(unsafeLearningSignal ? ['follow_through_learning:unsafe_or_blocked'] : []),
             ],
             'Prepared action plan or bounded work order is not ready.',
           ),
@@ -648,7 +659,8 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
     const executeAllowed =
       executeEvaluation?.allowed === true &&
       governorAllowsExecution &&
-      boundedWorkOrder?.policyResult.status !== 'blocked';
+      boundedWorkOrder?.policyResult.status !== 'blocked' &&
+      !unsafeLearningSignal;
     if (executeAllowed) {
       reachedLevels.push('L5');
       allowedActions.push(
@@ -668,6 +680,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
         ...(boundedWorkOrder?.policyResult.status === 'blocked'
           ? boundedWorkOrder.policyResult.blockedReasons
           : []),
+        ...(unsafeLearningSignal ? ['follow_through_learning:unsafe_or_blocked'] : []),
       ];
       blockedActions.push(
         makeBlockedAction({

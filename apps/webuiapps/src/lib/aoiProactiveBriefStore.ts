@@ -7,10 +7,12 @@ import {
   type AoiMemoryEntry,
 } from './aoiMemoryShared';
 import {
+  appendAoiFollowThroughEvent,
   isValidAoiAutonomyId,
   normalizeAoiAutonomySessionPath,
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
+import { buildAoiFollowThroughEventFromProactiveBriefFeedback } from './aoiFollowThroughLearning';
 import { buildAoiInterestProfileFromMemories } from './aoiInterestProfile';
 import type {
   AoiAutonomyRisk,
@@ -2398,6 +2400,15 @@ export function recordAoiProactiveBriefFeedback(
     });
   }
   recordCalibrationLabelForFeedback(sessionsDir, normalized);
+  try {
+    appendAoiFollowThroughEvent(
+      sessionsDir,
+      buildAoiFollowThroughEventFromProactiveBriefFeedback(normalized, normalized.createdAt),
+      normalized.createdAt,
+    );
+  } catch {
+    // Follow-through learning must not block explicit proactive feedback recording.
+  }
   return normalized;
 }
 

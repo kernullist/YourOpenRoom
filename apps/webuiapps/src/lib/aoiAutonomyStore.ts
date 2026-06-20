@@ -13,6 +13,13 @@ import {
   evaluateAoiApprovedCommandPolicy,
   normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
+import {
+  buildAoiFollowThroughEventFromOpportunity,
+  buildAoiFollowThroughEventFromProposalDecision,
+  buildAoiFollowThroughLearningSummary,
+  buildAoiFollowThroughSummaryIndex,
+  normalizeAoiFollowThroughEvent,
+} from './aoiFollowThroughLearning';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import {
@@ -37,6 +44,9 @@ import type {
   AoiCommandAuditRecord,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
+  AoiFollowThroughEvent,
+  AoiFollowThroughLearningSummary,
+  AoiFollowThroughSummaryIndex,
   AoiObservation,
   AoiObservationIndex,
   AoiObservationIndexEntry,
@@ -56,6 +66,8 @@ const MAX_OBSERVATION_INDEX_ITEMS = 200;
 const MAX_OBSERVATION_AGE_MS = 90 * 24 * 60 * 60 * 1000;
 const AOI_OPPORTUNITY_DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS = 24 * 60 * 60 * 1000;
+const MAX_FOLLOW_THROUGH_EVENTS = 500;
+const MAX_FOLLOW_THROUGH_INDEX_ITEMS = 80;
 
 export interface AoiAutonomyPaths {
   root: string;
@@ -105,6 +117,9 @@ export interface AoiAutonomyPaths {
   proactiveTrendDeliveryEventsDir: string;
   proactiveTrendDeliveryEventIndex: string;
   proactiveTrendDeliveryEventRecordsDir: string;
+  followThroughDir: string;
+  followThroughEvents: string;
+  followThroughSummaryIndex: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -232,6 +247,34 @@ function listJsonFiles<T>(directory: string): T[] {
       .map((entry) => readJson<T>(join(directory, entry.name)))
       .filter((item): item is T => item !== null)
       .slice(0, MAX_LIST_ITEMS);
+  } catch {
+    return [];
+  }
+}
+
+function appendJsonLine(filePath: string, value: unknown): void {
+  ensureDirectory(filePath, true);
+  fs.appendFileSync(filePath, `${JSON.stringify(value)}\n`, 'utf-8');
+}
+
+function readJsonLines(filePath: string): unknown[] {
+  try {
+    if (!fs.existsSync(filePath)) {
+      return [];
+    }
+    return fs
+      .readFileSync(filePath, 'utf-8')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        try {
+          return JSON.parse(line) as unknown;
+        } catch {
+          return null;
+        }
+      })
+      .filter((item): item is unknown => item !== null);
   } catch {
     return [];
   }
@@ -423,6 +466,7 @@ export function resolveAoiAutonomyPaths(
   const proactiveBriefCalibrationLabelsDir = join(proactiveBriefsDir, 'calibration-labels');
   const proactiveTrendsDir = join(root, 'proactive-trends');
   const proactiveTrendDeliveryEventsDir = join(proactiveTrendsDir, 'delivery-events');
+  const followThroughDir = join(root, 'follow-through');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -471,6 +515,9 @@ export function resolveAoiAutonomyPaths(
     proactiveTrendDeliveryEventsDir,
     proactiveTrendDeliveryEventIndex: join(proactiveTrendDeliveryEventsDir, 'index.json'),
     proactiveTrendDeliveryEventRecordsDir: join(proactiveTrendDeliveryEventsDir, 'events'),
+    followThroughDir,
+    followThroughEvents: join(followThroughDir, 'events.jsonl'),
+    followThroughSummaryIndex: join(followThroughDir, 'summary-index.json'),
   };
 }
 
@@ -1507,6 +1554,14 @@ function transitionAoiOpportunityStatus(
   }
   saveAoiActiveOpportunities(sessionsDir, normalizedSessionPath, nextActive);
   saveAoiArchivedOpportunities(sessionsDir, normalizedSessionPath, nextArchived);
+  const followThroughEvent = buildAoiFollowThroughEventFromOpportunity(next, now);
+  if (followThroughEvent) {
+    try {
+      appendAoiFollowThroughEvent(sessionsDir, followThroughEvent, now);
+    } catch {
+      // Follow-through learning must not block the user's explicit inbox transition.
+    }
+  }
 
   return {
     sessionPath: normalizedSessionPath,
@@ -1548,6 +1603,131 @@ export function snoozeAoiOpportunity(
   } = {},
 ): AoiOpportunityStatusTransitionResult {
   return transitionAoiOpportunityStatus(sessionsDir, sessionPath, opportunityId, 'snoozed', input);
+}
+
+export function loadAoiFollowThroughEvents(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+  limit = MAX_FOLLOW_THROUGH_EVENTS,
+): AoiFollowThroughEvent[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  return readJsonLines(paths.followThroughEvents)
+    .map((item) =>
+      normalizeAoiFollowThroughEvent(
+        item as Partial<AoiFollowThroughEvent>,
+        normalizedSessionPath,
+        now,
+      ),
+    )
+    .filter((item): item is AoiFollowThroughEvent => item !== null)
+    .sort((left, right) => right.createdAt - left.createdAt)
+    .slice(0, Math.max(1, Math.min(MAX_FOLLOW_THROUGH_EVENTS, Math.trunc(limit))));
+}
+
+export function saveAoiFollowThroughSummaryIndex(
+  sessionsDir: string,
+  sessionPath: string,
+  index: AoiFollowThroughSummaryIndex,
+): AoiFollowThroughSummaryIndex {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const normalized: AoiFollowThroughSummaryIndex = {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    updatedAt: Number.isFinite(index.updatedAt) ? index.updatedAt : Date.now(),
+    entries: (index.entries ?? []).slice(0, MAX_FOLLOW_THROUGH_INDEX_ITEMS),
+    evidenceRefs: normalizeStringList(index.evidenceRefs, 24),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  writeJsonAtomic(paths.followThroughSummaryIndex, normalized);
+  return normalized;
+}
+
+export function loadAoiFollowThroughSummaryIndex(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiFollowThroughSummaryIndex | null {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const parsed = readJson<Partial<AoiFollowThroughSummaryIndex>>(paths.followThroughSummaryIndex);
+  if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+    return null;
+  }
+  return {
+    version: 1,
+    sessionPath: normalizedSessionPath,
+    updatedAt: Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0,
+    entries: parsed.entries.slice(0, MAX_FOLLOW_THROUGH_INDEX_ITEMS),
+    evidenceRefs: normalizeStringList(parsed.evidenceRefs, 24),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+export function loadAoiFollowThroughLearningSummary(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+): AoiFollowThroughLearningSummary {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  return buildAoiFollowThroughLearningSummary({
+    sessionPath: normalizedSessionPath,
+    followThroughEvents: loadAoiFollowThroughEvents(
+      sessionsDir,
+      normalizedSessionPath,
+      now,
+      MAX_FOLLOW_THROUGH_EVENTS,
+    ),
+    now,
+  });
+}
+
+export function appendAoiFollowThroughEvent(
+  sessionsDir: string,
+  event: Partial<AoiFollowThroughEvent>,
+  now = Date.now(),
+): AoiFollowThroughEvent {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(event.sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const normalized = normalizeAoiFollowThroughEvent(event, normalizedSessionPath, now);
+  if (!normalized) {
+    throw new Error('Invalid Aoi follow-through event.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  appendJsonLine(paths.followThroughEvents, normalized);
+  const summary = buildAoiFollowThroughLearningSummary({
+    sessionPath: normalizedSessionPath,
+    followThroughEvents: loadAoiFollowThroughEvents(
+      sessionsDir,
+      normalizedSessionPath,
+      now,
+      MAX_FOLLOW_THROUGH_EVENTS,
+    ),
+    now,
+  });
+  saveAoiFollowThroughSummaryIndex(
+    sessionsDir,
+    normalizedSessionPath,
+    buildAoiFollowThroughSummaryIndex(summary),
+  );
+  return normalized;
 }
 
 export function appendAoiProposalDecision(
@@ -1876,6 +2056,70 @@ export function loadAoiProposalDecisions(
     .sort((a, b) => b.createdAt - a.createdAt);
 }
 
+function findAoiFollowThroughOpportunityForProposal(
+  proposal: AoiProposal,
+  opportunities: readonly AoiOpportunity[],
+): AoiOpportunity | null {
+  const proposalRefs = new Set(
+    [
+      proposal.id,
+      `proposal:${proposal.id}`,
+      proposal.cooldownKey,
+      proposal.trigger,
+      ...proposal.evidenceRefs,
+      ...proposal.artifactRefs,
+      ...proposal.memoryIds.map((id) => `memory:${id}`),
+    ]
+      .map((value) => value.replace(/\s+/g, ' ').trim().toLowerCase())
+      .filter(Boolean),
+  );
+  return (
+    opportunities
+      .map((opportunity) => {
+        const refs = [
+          opportunity.id,
+          `opportunity:${opportunity.id}`,
+          opportunity.dedupeKey,
+          ...opportunity.evidenceRefs,
+        ]
+          .map((value) => value.replace(/\s+/g, ' ').trim().toLowerCase())
+          .filter(Boolean);
+        return {
+          opportunity,
+          score: refs.reduce((count, ref) => count + (proposalRefs.has(ref) ? 1 : 0), 0),
+        };
+      })
+      .filter((item) => item.score > 0)
+      .sort(
+        (left, right) =>
+          right.score - left.score || right.opportunity.updatedAt - left.opportunity.updatedAt,
+      )[0]?.opportunity ?? null
+  );
+}
+
+function recordAoiProposalFollowThroughEvent(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  decision: AoiProposalDecision;
+  now: number;
+}): void {
+  try {
+    const inbox = loadAoiOpportunityInbox(params.sessionsDir, params.sessionPath, params.now);
+    const opportunity = findAoiFollowThroughOpportunityForProposal(params.proposal, [
+      ...inbox.active,
+      ...inbox.archived,
+    ]);
+    appendAoiFollowThroughEvent(
+      params.sessionsDir,
+      buildAoiFollowThroughEventFromProposalDecision(params.decision, opportunity, params.now),
+      params.now,
+    );
+  } catch {
+    // Follow-through learning must not block the existing proposal decision path.
+  }
+}
+
 export function applyAoiProposalFeedback(
   sessionsDir: string,
   sessionPath: string,
@@ -1990,6 +2234,13 @@ export function applyAoiProposalDecision(
     decision,
     now,
   );
+  recordAoiProposalFollowThroughEvent({
+    sessionsDir,
+    sessionPath: normalizedSessionPath,
+    proposal: nextProposal,
+    decision,
+    now,
+  });
   return {
     proposal: nextProposal,
     decision,
@@ -2053,6 +2304,13 @@ export function applyAoiProposalExecutionTransition(
     decision,
     now,
   );
+  recordAoiProposalFollowThroughEvent({
+    sessionsDir,
+    sessionPath: normalizedSessionPath,
+    proposal: nextProposal,
+    decision,
+    now,
+  });
 
   return {
     proposal: nextProposal,

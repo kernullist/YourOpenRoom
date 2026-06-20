@@ -4,6 +4,7 @@ import type { AoiMemoryEntry } from './aoiMemoryShared';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import { createAoiAutonomyId } from './aoiAutonomyStore';
 import { applyAoiTrustCalibration } from './aoiTrustCalibration';
+import { scoreAoiFollowThroughLearningForKey } from './aoiFollowThroughLearning';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import type {
   AoiAttentionBrokerDecision,
@@ -13,6 +14,7 @@ import type {
   AoiAttentionLevel,
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
+  AoiFollowThroughLearningSummary,
   AoiGoal,
   AoiMissionState,
   AoiObservation,
@@ -42,6 +44,7 @@ export interface AoiAttentionBrokerInput {
   userIdleMs?: number;
   maxActionableEvents?: number;
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }
 
 export interface AoiAttentionBrokerResult {
@@ -459,7 +462,12 @@ export function scoreAoiAttentionEvent(
   event: AoiAttentionEvent,
   params: Pick<
     AoiAttentionBrokerInput,
-    'now' | 'recentDecisions' | 'activeProposals' | 'mission' | 'trustCalibrationProfile'
+    | 'now'
+    | 'recentDecisions'
+    | 'activeProposals'
+    | 'mission'
+    | 'trustCalibrationProfile'
+    | 'followThroughLearning'
   >,
 ): number {
   let score =
@@ -500,6 +508,19 @@ export function scoreAoiAttentionEvent(
   }
   if (hasRecentNegativeFeedback(event, params.recentDecisions)) {
     score -= 0.35;
+  }
+  const followThrough = scoreAoiFollowThroughLearningForKey(
+    eventFamily(event),
+    params.followThroughLearning,
+    params.now,
+  );
+  if (followThrough.suppressed) {
+    score -= 0.35;
+  } else if (followThrough.rankingFactor > 1) {
+    score += Math.min(0.08, (followThrough.rankingFactor - 1) * 0.4);
+  }
+  if (event.suggestedAttentionLevel === 'direct') {
+    score *= followThrough.directChatFactor;
   }
   if (event.risk === 'high') {
     score -= 0.35;

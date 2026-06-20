@@ -116,6 +116,116 @@ export interface AoiOpportunity {
   mutationCount: 0;
 }
 
+export type AoiFollowThroughAction =
+  | 'accepted'
+  | 'dismissed'
+  | 'snoozed'
+  | 'executed'
+  | 'blocked'
+  | 'failed'
+  | 'ignored';
+
+export type AoiFollowThroughResult =
+  | 'positive'
+  | 'negative'
+  | 'neutral'
+  | 'soft_negative'
+  | 'blocked'
+  | 'failed';
+
+export type AoiFollowThroughDeliveryMode =
+  | AoiOpportunityDeliveryRecommendation
+  | 'digest'
+  | 'chat_hook'
+  | 'hidden'
+  | 'blocked'
+  | 'unknown';
+
+export interface AoiFollowThroughEvent {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  opportunityId: string;
+  proposalId?: string;
+  deliberationRunId?: string;
+  sourceKind?: AoiOpportunitySourceKind | 'proactive_brief' | 'proactive_trend' | 'proposal';
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: AoiFollowThroughDeliveryMode;
+  action: AoiFollowThroughAction;
+  feedbackCategory?: string;
+  result: AoiFollowThroughResult;
+  timingLabel: string;
+  evidenceRefs: string[];
+  createdAt: number;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiFollowThroughLearningAdjustment {
+  key: string;
+  label: string;
+  score: number;
+  reason: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiFollowThroughDeliverySensitivity {
+  mode: AoiFollowThroughDeliveryMode;
+  factor: number;
+  cooldownMs: number;
+  reason: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiFollowThroughCooldownAdjustment {
+  key: string;
+  factor: number;
+  nextEligibleAt?: number;
+  reason: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiFollowThroughLearningSummary {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  eventCount: number;
+  latestEventAt?: number;
+  recentEvents: AoiFollowThroughEvent[];
+  latestByOpportunityId: Record<string, AoiFollowThroughEvent>;
+  topicBoosts: AoiFollowThroughLearningAdjustment[];
+  topicSuppressions: AoiFollowThroughLearningAdjustment[];
+  sourceBoosts: AoiFollowThroughLearningAdjustment[];
+  sourceSuppressions: AoiFollowThroughLearningAdjustment[];
+  deliveryModeSensitivity: AoiFollowThroughDeliverySensitivity[];
+  duplicateCooldownAdjustments: AoiFollowThroughCooldownAdjustment[];
+  trustCalibrationHints: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiFollowThroughSummaryIndexEntry {
+  key: string;
+  kind: 'topic' | 'source' | 'delivery' | 'cooldown' | 'trust';
+  direction: 'boost' | 'suppress' | 'neutral';
+  score: number;
+  reason: string;
+  evidenceRefs: string[];
+  updatedAt: number;
+}
+
+export interface AoiFollowThroughSummaryIndex {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  entries: AoiFollowThroughSummaryIndexEntry[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiDeliberationPhase =
   | 'queued'
   | 'planning'

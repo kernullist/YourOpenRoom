@@ -2,6 +2,7 @@ import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { loadAoiMissionState } from './aoiAutonomyMission';
 import {
   loadAoiActiveProposals,
+  loadAoiFollowThroughLearningSummary,
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
   upsertAoiOpportunity,
@@ -17,12 +18,14 @@ import type {
   AoiMissionState,
   AoiOpportunityDeliveryRecommendation,
   AoiOpportunitySourceKind,
+  AoiFollowThroughLearningSummary,
   AoiProactiveTrendAdvisorState,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalFeedbackCategory,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
+import { scoreAoiFollowThroughLearningForKey } from './aoiFollowThroughLearning';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import {
   redactAoiSensitiveContent,
@@ -140,6 +143,7 @@ export interface AoiCuriosityEngineInput {
   mission?: AoiMissionState | null;
   kiraOutcomes?: readonly AoiKiraOutcomeEvent[];
   proactiveTrendAdvisor?: AoiProactiveTrendAdvisorState | null;
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
   maxCandidates?: number;
 }
 
@@ -275,6 +279,7 @@ function feedbackFactor(
   cooldownKey: string,
   recentDecisions: readonly AoiProposalDecision[],
   now: number,
+  followThroughLearning?: AoiFollowThroughLearningSummary | null,
 ): { factor: number; suppressed: boolean; refs: string[] } {
   let factor = 1;
   let suppressed = false;
@@ -311,6 +316,10 @@ function feedbackFactor(
       factor = Math.min(factor, 0.62);
     }
   }
+  const learning = scoreAoiFollowThroughLearningForKey(cooldownKey, followThroughLearning, now);
+  factor = Math.max(0.1, Math.min(1.25, factor * learning.rankingFactor));
+  suppressed ||= learning.suppressed;
+  refs.push(...learning.evidenceRefs);
   return { factor, suppressed, refs: uniqueStrings(refs, 4) };
 }
 
@@ -413,6 +422,7 @@ function buildInterestCandidates(input: {
   profile?: AoiInterestProfile | null;
   memories: readonly AoiMemoryEntry[];
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const profile = input.profile;
   if (!profile || profile.topics.length === 0) {
@@ -437,7 +447,12 @@ function buildInterestCandidates(input: {
       ? ['private source body withheld; use metadata only until explicitly allowed']
       : [];
     const cooldownKey = topic.cooldownKey || `interest:${topic.normalizedLabel || topic.id}`;
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     return makeCandidate({
       sessionPath: input.sessionPath,
       now: input.now,
@@ -486,6 +501,7 @@ function buildMemoryCandidates(input: {
   now: number;
   memories: readonly AoiMemoryEntry[];
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const candidates: AoiCuriosityOpportunityCandidate[] = [];
   for (const memory of input.memories.slice(0, 16)) {
@@ -503,7 +519,12 @@ function buildMemoryCandidates(input: {
       continue;
     }
     const cooldownKey = `memory:${normalizeKey(signalLabel)}`;
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -571,6 +592,7 @@ function buildResearchCandidates(input: {
   now: number;
   runs: readonly AoiResearchRunSummary[];
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   return input.runs
     .filter((run) => run.sessionPath === input.sessionPath)
@@ -592,7 +614,12 @@ function buildResearchCandidates(input: {
           : []),
       ];
       const cooldownKey = `research:${normalizeKey(run.request || run.id)}`;
-      const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+      const feedback = feedbackFactor(
+        cooldownKey,
+        input.recentDecisions,
+        input.now,
+        input.followThroughLearning,
+      );
       return makeCandidate({
         sessionPath: input.sessionPath,
         now: input.now,
@@ -640,6 +667,7 @@ function buildKiraCandidates(input: {
   now: number;
   outcomes: readonly AoiKiraOutcomeEvent[];
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   return input.outcomes
     .filter((outcome) => outcome.sessionPath === input.sessionPath)
@@ -653,7 +681,12 @@ function buildKiraCandidates(input: {
     .map((outcome) => {
       const workTitle = sanitizeText(outcome.workTitle || outcome.workRef, 100) || 'Kira work';
       const cooldownKey = `kira:${normalizeKey(outcome.workId || outcome.dedupeKey)}`;
-      const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+      const feedback = feedbackFactor(
+        cooldownKey,
+        input.recentDecisions,
+        input.now,
+        input.followThroughLearning,
+      );
       return makeCandidate({
         sessionPath: input.sessionPath,
         now: input.now,
@@ -700,6 +733,7 @@ function buildWorkspaceCandidates(input: {
   now: number;
   snapshot?: AoiWorkspaceSnapshot | null;
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const snapshot = input.snapshot;
   if (!snapshot) {
@@ -714,7 +748,12 @@ function buildWorkspaceCandidates(input: {
     snapshot.freshness === 'failed';
   if (validationNeedsAttention) {
     const cooldownKey = 'workspace:validation';
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -756,7 +795,12 @@ function buildWorkspaceCandidates(input: {
   }
   if (snapshot.git?.isDirty && snapshot.git.changedFileCount > 0) {
     const cooldownKey = 'workspace:dirty-git';
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -798,11 +842,17 @@ function buildAgendaCandidates(input: {
   mission?: AoiMissionState | null;
   activeProposals: readonly AoiProposal[];
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const candidates: AoiCuriosityOpportunityCandidate[] = [];
   for (const goal of input.activeGoals.filter((item) => item.status === 'blocked').slice(0, 2)) {
     const cooldownKey = `goal:${goal.id}`;
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -836,7 +886,12 @@ function buildAgendaCandidates(input: {
   const mission = input.mission;
   if (mission && (mission.status === 'blocked' || mission.waitingOn !== 'none')) {
     const cooldownKey = `mission:${mission.status}:${mission.waitingOn}`;
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -877,7 +932,12 @@ function buildAgendaCandidates(input: {
       continue;
     }
     const cooldownKey = `proposal:${proposal.id}`;
-    const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+    const feedback = feedbackFactor(
+      cooldownKey,
+      input.recentDecisions,
+      input.now,
+      input.followThroughLearning,
+    );
     candidates.push(
       makeCandidate({
         sessionPath: input.sessionPath,
@@ -915,6 +975,7 @@ function buildAppStateCandidates(input: {
   now: number;
   advisor?: AoiProactiveTrendAdvisorState | null;
   recentDecisions: readonly AoiProposalDecision[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const advisor = input.advisor;
   if (!advisor) {
@@ -931,7 +992,12 @@ function buildAppStateCandidates(input: {
   }
   const card = advisor.inlineCard || advisor.directChatCard;
   const cooldownKey = `app_state:trend-advisor:${normalizeKey(card?.topicLabel || 'delivery')}`;
-  const feedback = feedbackFactor(cooldownKey, input.recentDecisions, input.now);
+  const feedback = feedbackFactor(
+    cooldownKey,
+    input.recentDecisions,
+    input.now,
+    input.followThroughLearning,
+  );
   return [
     makeCandidate({
       sessionPath: input.sessionPath,
@@ -1059,30 +1125,35 @@ export function buildAoiCuriosityCandidates(
       profile: input.interestProfile,
       memories,
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildMemoryCandidates({
       sessionPath,
       now,
       memories,
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildResearchCandidates({
       sessionPath,
       now,
       runs: input.researchRuns ?? [],
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildKiraCandidates({
       sessionPath,
       now,
       outcomes: input.kiraOutcomes ?? [],
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildWorkspaceCandidates({
       sessionPath,
       now,
       snapshot: input.workspaceSnapshot,
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildAgendaCandidates({
       sessionPath,
@@ -1091,12 +1162,14 @@ export function buildAoiCuriosityCandidates(
       mission: input.mission,
       activeProposals: input.activeProposals ?? [],
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
     ...buildAppStateCandidates({
       sessionPath,
       now,
       advisor: input.proactiveTrendAdvisor,
       recentDecisions,
+      followThroughLearning: input.followThroughLearning,
     }),
   ];
   const deduped = dedupeCandidates(candidates);
@@ -1189,6 +1262,10 @@ export function runAoiCuriosityEngineForSession(
     input.workspaceSnapshot === undefined
       ? loadAoiWorkspaceSnapshot(input.sessionsDir, sessionPath, now)
       : input.workspaceSnapshot;
+  const followThroughLearning =
+    input.followThroughLearning === undefined
+      ? loadAoiFollowThroughLearningSummary(input.sessionsDir, sessionPath, now)
+      : input.followThroughLearning;
   const result = buildAoiCuriosityCandidates({
     sessionPath,
     now,
@@ -1202,6 +1279,7 @@ export function runAoiCuriosityEngineForSession(
     mission,
     kiraOutcomes: input.kiraOutcomes,
     proactiveTrendAdvisor: input.proactiveTrendAdvisor,
+    followThroughLearning,
     maxCandidates: input.maxCandidates,
   });
   const upserted = result.candidates.map((candidate) =>

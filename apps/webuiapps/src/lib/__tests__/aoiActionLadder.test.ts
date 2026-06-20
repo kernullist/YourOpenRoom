@@ -5,6 +5,7 @@ import {
 } from '../aoiApprovedCommandPolicy';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import { decideAoiActionLadder } from '../aoiActionLadder';
+import { buildAoiFollowThroughLearningSummary } from '../aoiFollowThroughLearning';
 import type { AoiJarvisAutonomyGovernorDecision } from '../aoiJarvisAutonomyGovernor';
 import type {
   AoiApprovalInboxItem,
@@ -322,6 +323,56 @@ describe('Aoi Action Ladder', () => {
     expect(decision.approvalNeeds.map((need) => need.requiredAutonomyLevel)).toContain('L4');
     expect(decision.blockedActions.some((action) => action.level === 'L5')).toBe(true);
     expect(decision.connectionLabels.join(' ')).toContain('aoiKiraHandoff.ts');
+  });
+
+  it('blocks similar action escalation when follow-through learning marked it unsafe', () => {
+    const opportunity = makeOpportunity({ sourceKind: 'kira' });
+    const proposal = makeProposal(opportunity, 'create_kira_work');
+    const followThroughLearning = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: [
+        {
+          version: 1,
+          id: 'follow-through-unsafe-kira',
+          sessionPath: SESSION_PATH,
+          opportunityId: opportunity.id,
+          sourceKind: opportunity.sourceKind,
+          topicKey: opportunity.dedupeKey,
+          sourceKey: opportunity.sourceKind,
+          deliveryMode: 'dashboard',
+          action: 'blocked',
+          feedbackCategory: 'unsafe',
+          result: 'blocked',
+          timingLabel: 'unsafe in test',
+          evidenceRefs: ['test:unsafe-follow-through'],
+          createdAt: NOW - 1_000,
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        },
+      ],
+      now: NOW,
+    });
+    const decision = decideAoiActionLadder({
+      sessionPath: SESSION_PATH,
+      opportunity,
+      deliberationRun: makeDeliberationRun(opportunity),
+      policy: makePolicy({ level: 'L4' }),
+      jarvisGovernor: makeJarvisGovernor(),
+      activeProposals: [proposal],
+      approvalInbox: [makeApprovalInboxItem(proposal)],
+      followThroughLearning,
+      now: NOW,
+    });
+
+    expect(decision.currentLevel).not.toBe('L4');
+    expect(decision.allowedActions.map((action) => action.kind)).not.toContain(
+      'prepare_kira_handoff',
+    );
+    expect(decision.blockedActions.map((action) => action.reason).join(' ')).toContain(
+      'follow_through_learning:unsafe_or_blocked',
+    );
+    expect(decision.actionAuthority).toBe('display_only');
+    expect(decision.mutationCount).toBe(0);
   });
 
   it('blocks unsupported app-action preparation instead of inventing authority', () => {

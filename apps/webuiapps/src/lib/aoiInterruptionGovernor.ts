@@ -5,6 +5,7 @@ import {
 import type {
   AoiAutonomyPolicy,
   AoiDeliberationRun,
+  AoiFollowThroughLearningSummary,
   AoiInterruptionBlockedReason,
   AoiInterruptionDeliveryMode,
   AoiInterruptionGovernorDecision,
@@ -13,6 +14,7 @@ import type {
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryEvent,
 } from './aoiAutonomyTypes';
+import { scoreAoiFollowThroughLearningForOpportunity } from './aoiFollowThroughLearning';
 
 const DEFAULT_RECENT_FEEDBACK_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const DEFAULT_DIRECT_CHAT_COOLDOWN_MS = 6 * 60 * 60 * 1000;
@@ -38,6 +40,7 @@ export interface AoiInterruptionGovernorInput {
   proactiveTrendAdvisor?: AoiProactiveTrendAdvisorState | null;
   policy?: AoiAutonomyPolicy | null;
   feedback?: readonly AoiProactiveBriefFeedback[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
   quietMode?: boolean;
   notificationsEnabled?: boolean;
   directChatOptIn?: boolean;
@@ -316,6 +319,11 @@ export function decideAoiInterruptionDelivery(
     sessionPath: input.sessionPath,
     now,
   });
+  const learningScore = scoreAoiFollowThroughLearningForOpportunity(
+    opportunity,
+    input.followThroughLearning,
+    now,
+  );
   const tooFrequentFeedback = negativeFeedback.some((item) => item.category === 'too_frequent');
   const newestTrendDelivery = newestMatchingTrendDelivery({
     trendAdvisor: input.proactiveTrendAdvisor,
@@ -368,6 +376,7 @@ export function decideAoiInterruptionDelivery(
       ...(input.deliberationRun?.evidenceRefs ?? []),
       ...(input.deliberationRun?.finding?.evidenceRefs ?? []),
       ...(input.proactiveTrendAdvisor?.evidenceRefs ?? []),
+      ...learningScore.evidenceRefs,
     ],
     24,
   );
@@ -412,6 +421,16 @@ export function decideAoiInterruptionDelivery(
   if (negativeFeedback.length > 0) {
     directBlockers.push('recent_negative_feedback');
   }
+  if (learningScore.suppressed) {
+    directBlockers.push('recent_negative_feedback');
+  }
+  if (learningScore.directChatFactor < 0.5) {
+    directBlockers.push('too_frequent_feedback');
+  }
+  if (learningScore.nextEligibleAt && learningScore.nextEligibleAt > now) {
+    directBlockers.push('duplicate_or_cooldown');
+    nextEligibleCandidates.push(learningScore.nextEligibleAt);
+  }
   if (tooFrequentFeedback) {
     directBlockers.push('too_frequent_feedback');
   }
@@ -432,7 +451,8 @@ export function decideAoiInterruptionDelivery(
     directBlockers.push('jarvis_governor_blocks_direct_chat');
   }
   directBlockers.push(...evidenceReasons);
-  if (score < 0.72) {
+  const adjustedDirectScore = score * learningScore.directChatFactor;
+  if (adjustedDirectScore < 0.72) {
     directBlockers.push('low_confidence');
   }
 
@@ -500,7 +520,7 @@ export function decideAoiInterruptionDelivery(
     requestedMode: opportunity.deliveryRecommendation,
     deliveryMode,
     directChatAllowed,
-    score,
+    score: clampScore(adjustedDirectScore),
     blockedReasons,
     directChatBlockedReasons,
     evidenceRefs: allEvidenceRefs,

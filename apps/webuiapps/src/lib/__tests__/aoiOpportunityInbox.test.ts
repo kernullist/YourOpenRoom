@@ -13,6 +13,7 @@ import {
   upsertAoiOpportunity,
   type AoiOpportunityUpsertInput,
 } from '../aoiAutonomyStore';
+import type { AoiProposalDecision } from '../aoiAutonomyTypes';
 import { buildAoiOpportunityInboxPanelSummary } from '../aoiAutonomyUi';
 
 const tempRoots: string[] = [];
@@ -223,5 +224,40 @@ describe('Aoi Opportunity Inbox UI summary', () => {
     expect(summary.evidenceRefs).toEqual(
       expect.arrayContaining(['kira:validation-failure-001', 'memory:interest-re']),
     );
+  });
+
+  it('shows the latest follow-through result and learning summary', () => {
+    const root = makeTempRoot();
+    const stored = upsertAoiOpportunity(root, 'aoi/default', makeOpportunityInput(), 1000);
+    const active = loadAoiActiveOpportunities(root, 'aoi/default', 1200);
+    const status = buildAoiAutonomyStatus(root, 'aoi/default', 1200);
+    const decision: AoiProposalDecision = {
+      version: 1,
+      id: 'decision-follow-through-useful',
+      proposalId: 'proposal-follow-through-useful',
+      sessionPath: 'aoi/default',
+      cooldownKey: stored.opportunity.dedupeKey,
+      action: 'accept',
+      actor: 'user',
+      createdAt: 1150,
+      previousStatus: 'active',
+      nextStatus: 'accepted',
+      feedbackCategory: 'useful',
+      evidenceRefs: [`opportunity:${stored.opportunity.id}`],
+      suggestedTools: [],
+      memoryIds: [],
+    };
+    const summary = buildAoiOpportunityInboxPanelSummary({
+      active,
+      status,
+      proposalDecisions: [decision],
+      now: 1200,
+    });
+
+    expect(summary.learningSummaryLabel).toContain('follow-through signal');
+    expect(summary.learningAdjustmentLabels.join(' ')).toContain('positive');
+    expect(summary.itemLabels[0].followThroughLabel).toContain('accepted');
+    expect(summary.itemLabels[0].followThroughReasonLabel).toContain('show more');
+    expect(summary.safetyBoundaryLabel).toContain('cannot mutate apps');
   });
 });

@@ -11891,6 +11891,14 @@ const SettingsModal: React.FC<{
                               320,
                             )}
                           </div>
+                          <div className={styles.aoiAutonomyProposalDetails}>
+                            <div>{aoiOpportunityInboxSummary.learningSummaryLabel}</div>
+                            {aoiOpportunityInboxSummary.learningAdjustmentLabels.map(
+                              (label, index) => (
+                                <div key={`opportunity-learning-${index}`}>Learning: {label}</div>
+                              ),
+                            )}
+                          </div>
                           {aoiOpportunityInboxSummary.itemLabels.length > 0 ? (
                             <div className={styles.aoiAutonomyProposalDetails}>
                               {aoiOpportunityInboxSummary.itemLabels.map((item) => (
@@ -11921,6 +11929,8 @@ const SettingsModal: React.FC<{
                                       Action blocked: {label}
                                     </div>
                                   ))}
+                                  <div>Follow-through: {item.followThroughLabel}</div>
+                                  <div>Learning: {item.followThroughReasonLabel}</div>
                                   {item.evidenceRefs.map((ref, index) => (
                                     <div key={`${item.id}-evidence-${index}`}>Evidence: {ref}</div>
                                   ))}

@@ -4,10 +4,12 @@ import { isIP } from 'net';
 import { dirname, isAbsolute, join, relative, resolve } from 'path';
 import { redactAoiSensitiveContent } from './aoiMemoryShared';
 import {
+  appendAoiFollowThroughEvent,
   isValidAoiAutonomyId,
   normalizeAoiAutonomySessionPath,
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
+import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughLearning';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
@@ -2270,6 +2272,15 @@ export function recordAoiProactiveTrendDeliveryEventFromSnapshot(params: {
       ...index.entries.filter((entry) => entry.id !== event.id),
     ],
   });
+  try {
+    appendAoiFollowThroughEvent(
+      params.sessionsDir,
+      buildAoiFollowThroughEventFromTrendDelivery(event, now),
+      now,
+    );
+  } catch {
+    // Follow-through learning must not block trend delivery audit recording.
+  }
   return event;
 }
 

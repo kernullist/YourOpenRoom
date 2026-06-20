@@ -14,6 +14,7 @@ import {
   runAoiCuriosityEngineForSession,
   toAoiOpportunityUpsertInput,
 } from '../aoiCuriosityEngine';
+import { buildAoiFollowThroughLearningSummary } from '../aoiFollowThroughLearning';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiResearchRunSummary } from '../aoiResearchTypes';
 
@@ -197,6 +198,53 @@ describe('Aoi Curiosity Engine', () => {
       status: 'active',
       dedupeKey: 'curiosity:interest:reverse-engineering',
     });
+  });
+
+  it('boosts accepted follow-through signals in candidate ranking only', () => {
+    const baseline = buildAoiCuriosityCandidates({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      memories: [makeMemory()],
+      interestProfile: makeProfile(),
+      maxCandidates: 4,
+    }).candidates.find((item) => item.signalKind === 'interest');
+    const followThroughLearning = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: [
+        {
+          version: 1,
+          id: 'follow-through-accepted-re',
+          sessionPath: SESSION_PATH,
+          opportunityId: 'opp-re-accepted',
+          sourceKind: 'interest',
+          topicKey: 'interest:reverse-engineering',
+          sourceKey: 'interest',
+          deliveryMode: 'dashboard',
+          action: 'accepted',
+          feedbackCategory: 'useful',
+          result: 'positive',
+          timingLabel: 'accepted in test',
+          evidenceRefs: ['test:accepted-follow-through'],
+          createdAt: NOW - 1_000,
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        },
+      ],
+      now: NOW,
+    });
+    const learned = buildAoiCuriosityCandidates({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      memories: [makeMemory()],
+      interestProfile: makeProfile(),
+      followThroughLearning,
+      maxCandidates: 4,
+    }).candidates.find((item) => item.signalKind === 'interest');
+
+    expect(learned?.rank.feedbackFactor).toBeGreaterThan(baseline?.rank.feedbackFactor ?? 0);
+    expect(learned?.rank.score).toBeGreaterThan(baseline?.rank.score ?? 0);
+    expect(learned).not.toHaveProperty('actionAuthority');
+    expect(learned).not.toHaveProperty('mutationCount');
   });
 
   it('creates a stale research follow-up candidate with cannot-know evidence', () => {

@@ -34,6 +34,11 @@ import {
 } from './aoiJarvisAutonomyGovernor';
 import { buildAoiActionLadderDecisions } from './aoiActionLadder';
 import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
+import {
+  buildAoiFollowThroughLearningSummary,
+  latestAoiFollowThroughEventForOpportunity,
+  scoreAoiFollowThroughLearningForOpportunity,
+} from './aoiFollowThroughLearning';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
@@ -59,6 +64,7 @@ import type {
   AoiEnvironmentSource,
   AoiEnvironmentSourceOperation,
   AoiEnvironmentSourceRegistry,
+  AoiFollowThroughLearningSummary,
   AoiInterruptionGovernorDecision,
   AoiMissionState,
   AoiApprovedCommandPolicy,
@@ -566,6 +572,8 @@ export interface AoiOpportunityInboxPanelItem {
   actionLadderSummaryLabel: string;
   actionLadderApprovalLabels: string[];
   actionLadderBlockedLabels: string[];
+  followThroughLabel: string;
+  followThroughReasonLabel: string;
   evidenceRefs: string[];
 }
 
@@ -578,6 +586,8 @@ export interface AoiOpportunityInboxPanelSummary {
   snoozedCount: number;
   archivedCount: number;
   expiredCount: number;
+  learningSummaryLabel: string;
+  learningAdjustmentLabels: string[];
   itemLabels: AoiOpportunityInboxPanelItem[];
   evidenceRefs: string[];
 }
@@ -2473,8 +2483,24 @@ function collectAoiAgendaEvidenceRefs(...groups: Array<readonly string[] | undef
   return [...refs];
 }
 
-function sortAoiOpportunityInboxItems(opportunities: readonly AoiOpportunity[]): AoiOpportunity[] {
+function sortAoiOpportunityInboxItems(
+  opportunities: readonly AoiOpportunity[],
+  learningSummary: AoiFollowThroughLearningSummary | null | undefined,
+  now: number,
+): AoiOpportunity[] {
   return [...opportunities].sort((left, right) => {
+    const leftLearning = scoreAoiFollowThroughLearningForOpportunity(left, learningSummary, now);
+    const rightLearning = scoreAoiFollowThroughLearningForOpportunity(right, learningSummary, now);
+    const leftScore =
+      (left.urgency * 0.38 + left.confidence * 0.36 + left.novelty * 0.26) *
+      leftLearning.rankingFactor;
+    const rightScore =
+      (right.urgency * 0.38 + right.confidence * 0.36 + right.novelty * 0.26) *
+      rightLearning.rankingFactor;
+    const scoreDelta = rightScore - leftScore;
+    if (Math.abs(scoreDelta) > 0.001) {
+      return scoreDelta;
+    }
     const urgencyDelta = right.urgency - left.urgency;
     if (Math.abs(urgencyDelta) > 0.001) {
       return urgencyDelta;
@@ -2515,6 +2541,7 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
   deliberationRuns?: readonly AoiDeliberationRun[];
   proactiveTrendAdvisor?: AoiProactiveTrendAdvisorState | null;
   proactiveBriefFeedback?: readonly AoiProactiveBriefFeedback[];
+  followThroughLearning?: AoiFollowThroughLearningSummary | null;
   settings?: AoiAutonomyPanelSettings | null;
   jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
@@ -2540,7 +2567,19 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
   const expiredCount =
     params.status?.expiredOpportunityCount ??
     archived.filter((item) => item.status === 'expired').length;
-  const visibleItems = sortAoiOpportunityInboxItems(active).slice(0, 4);
+  const learningSummary =
+    params.followThroughLearning ??
+    buildAoiFollowThroughLearningSummary({
+      sessionPath: params.status?.sessionPath ?? active[0]?.sessionPath ?? '',
+      opportunities: active,
+      archivedOpportunities: archived,
+      deliberationRuns: params.deliberationRuns,
+      proposalDecisions: params.proposalDecisions,
+      proactiveBriefFeedback: params.proactiveBriefFeedback,
+      proactiveTrendAdvisor: params.proactiveTrendAdvisor,
+      now,
+    });
+  const visibleItems = sortAoiOpportunityInboxItems(active, learningSummary, now).slice(0, 4);
   const interruptionDecisions =
     params.interruptionDecisions ??
     buildAoiInterruptionGovernorDecisions({
@@ -2550,6 +2589,7 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
       policy: params.status?.policy,
       proactiveTrendAdvisor: params.proactiveTrendAdvisor,
       feedback: params.proactiveBriefFeedback,
+      followThroughLearning: learningSummary,
       quietMode: params.settings?.quietMode,
       notificationsEnabled: params.settings?.notificationsEnabled,
       directChatOptIn: params.status?.policy.proactiveBriefing.directChatHookOptIn === true,
@@ -2573,6 +2613,7 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
       blockedProposals: params.blockedProposals,
       approvalInbox: params.approvalInbox,
       proposalDecisions: params.proposalDecisions,
+      followThroughLearning: learningSummary,
       now,
     });
   const interruptionByOpportunityId = new Map(
@@ -2585,11 +2626,18 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
     visibleItems.flatMap((item) => item.evidenceRefs),
     interruptionDecisions.flatMap((decision) => decision.evidenceRefs),
     actionLadderDecisions.flatMap((decision) => decision.evidenceRefs),
+    learningSummary.evidenceRefs,
     [`opportunity_inbox:active:${active.length}`],
   );
   const itemLabels = visibleItems.map((item): AoiOpportunityInboxPanelItem => {
     const interruptionDecision = interruptionByOpportunityId.get(item.id);
     const actionLadderDecision = actionLadderByOpportunityId.get(item.id);
+    const followThroughEvent = latestAoiFollowThroughEventForOpportunity(item, learningSummary);
+    const followThroughScore = scoreAoiFollowThroughLearningForOpportunity(
+      item,
+      learningSummary,
+      now,
+    );
     const ageLabel = formatAoiAgendaAge(item.updatedAt, now);
     const expiryLabel =
       item.expiresAt > now
@@ -2648,6 +2696,20 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
         .map((action) =>
           sanitizeAoiProposalDisplayText(`${action.level} ${action.label}: ${action.reason}`, 240),
         ),
+      followThroughLabel: sanitizeAoiProposalDisplayText(
+        followThroughEvent
+          ? `last ${followThroughEvent.action} / ${followThroughEvent.result} / ${followThroughEvent.timingLabel}`
+          : 'no follow-through feedback yet',
+        220,
+      ),
+      followThroughReasonLabel: sanitizeAoiProposalDisplayText(
+        followThroughScore.reasonLabels.length > 0
+          ? followThroughScore.reasonLabels.join('; ')
+          : followThroughScore.rankingFactor > 1
+            ? 'show more because similar suggestions were accepted'
+            : 'show normally until feedback changes ranking or delivery sensitivity',
+        260,
+      ),
       evidenceRefs: item.evidenceRefs
         .slice(0, 4)
         .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),
@@ -2667,6 +2729,22 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
     snoozedCount,
     archivedCount: params.status?.archivedOpportunityCount ?? archived.length,
     expiredCount,
+    learningSummaryLabel:
+      learningSummary.eventCount > 0
+        ? `${learningSummary.eventCount} follow-through signal(s); latest ${formatAoiAgendaAge(
+            learningSummary.latestEventAt,
+            now,
+          )}; learning tunes ranking, cooldown, and delivery only.`
+        : 'No follow-through learning signals yet; ranking and delivery remain policy-based.',
+    learningAdjustmentLabels: [
+      ...learningSummary.topicBoosts.slice(0, 2).map((item) => item.reason),
+      ...learningSummary.topicSuppressions.slice(0, 2).map((item) => item.reason),
+      ...learningSummary.deliveryModeSensitivity.slice(0, 2).map((item) => item.reason),
+      ...learningSummary.trustCalibrationHints.slice(0, 2),
+    ]
+      .map((label) => sanitizeAoiProposalDisplayText(label, 220))
+      .filter(Boolean)
+      .slice(0, 6),
     itemLabels,
     evidenceRefs,
   };

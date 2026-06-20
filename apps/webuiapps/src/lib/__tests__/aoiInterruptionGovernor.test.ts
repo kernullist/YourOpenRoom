@@ -6,6 +6,7 @@ import {
   decideAoiInterruptionDelivery,
 } from '../aoiInterruptionGovernor';
 import type { AoiJarvisAutonomyGovernorDecision } from '../aoiJarvisAutonomyGovernor';
+import { buildAoiFollowThroughLearningSummary } from '../aoiFollowThroughLearning';
 import type {
   AoiAutonomyPolicy,
   AoiDeliberationRun,
@@ -309,6 +310,55 @@ describe('Aoi Interruption Governor', () => {
     expect(decision.directChatAllowed).toBe(false);
     expect(decision.directChatBlockedReasons).toEqual(
       expect.arrayContaining(['recent_negative_feedback', 'too_frequent_feedback']),
+    );
+  });
+
+  it('uses follow-through learning to reduce direct chat after too-frequent outcomes', () => {
+    const opportunity = makeOpportunity();
+    const followThroughLearning = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: [
+        {
+          version: 1,
+          id: 'follow-through-too-frequent',
+          sessionPath: SESSION_PATH,
+          opportunityId: opportunity.id,
+          sourceKind: opportunity.sourceKind,
+          topicKey: opportunity.dedupeKey,
+          sourceKey: opportunity.sourceKind,
+          deliveryMode: 'direct_chat',
+          action: 'dismissed',
+          feedbackCategory: 'too_frequent',
+          result: 'negative',
+          timingLabel: 'too frequent in test',
+          evidenceRefs: ['test:too-frequent-follow-through'],
+          createdAt: NOW - 30_000,
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        },
+      ],
+      now: NOW,
+    });
+    const decision = decideAoiInterruptionDelivery({
+      sessionPath: SESSION_PATH,
+      opportunity,
+      policy: makePolicy(),
+      followThroughLearning,
+      directChatOptIn: true,
+      quietMode: false,
+      notificationsEnabled: true,
+      jarvisGovernor: makeJarvisGovernor(true),
+      now: NOW,
+    });
+
+    expect(decision.deliveryMode).toBe('dashboard');
+    expect(decision.directChatAllowed).toBe(false);
+    expect(decision.directChatBlockedReasons).toEqual(
+      expect.arrayContaining([
+        'recent_negative_feedback',
+        'too_frequent_feedback',
+        'duplicate_or_cooldown',
+      ]),
     );
   });
 
