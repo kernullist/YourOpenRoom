@@ -52,7 +52,11 @@ import type {
   AoiJarvisAcceptanceReport,
   AoiJarvisAcceptanceScenario,
 } from '../aoiJarvisAcceptanceTrial';
-import type { AoiShadowDecisionMetrics, AoiShadowDecisionReport } from '../aoiShadowModeEvaluation';
+import type {
+  AoiShadowDecisionLabel,
+  AoiShadowDecisionMetrics,
+  AoiShadowDecisionReport,
+} from '../aoiShadowModeEvaluation';
 import type {
   AoiApprovedCommandPolicy,
   AoiEnvironmentSourceRegistry,
@@ -308,7 +312,7 @@ describe('Aoi autonomy evaluation', () => {
     expect(text.length).toBeLessThan(340);
   });
 
-  it('passes the JARVIS readiness scorecard for perfect synthetic evidence', () => {
+  it('keeps synthetic-only JARVIS readiness from raising direct chat trust', () => {
     const scorecard = buildAoiJarvisReadinessScorecard({
       sessionPath: 'aoi/default',
       now: 7000,
@@ -324,11 +328,126 @@ describe('Aoi autonomy evaluation', () => {
     });
     const text = formatAoiJarvisReadinessScorecard(scorecard);
 
-    expect(scorecard.gateStatus).toBe('pass');
-    expect(scorecard.level).toBe('higher_trust_candidate');
-    expect(scorecard.canIncreaseTrust).toBe(true);
-    expect(scorecard.modeRecommendation).toBe('candidate_for_higher_trust');
-    expect(text).toContain('gates=pass');
+    expect(scorecard.gateStatus).toBe('blocked');
+    expect(scorecard.level).toBe('synthetic_pass');
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.modeRecommendation).toBe('remain_current_mode');
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.labeled_decisions'),
+    ).toMatchObject({
+      value: 0,
+      passed: false,
+    });
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.field_label_volume_minimum'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(text).toContain('level=synthetic_pass');
+  });
+
+  it('raises sufficient useful field labels to field preview without opening direct chat', () => {
+    const { fieldReport, labeledInbox } = makeReadinessFieldFeedback([
+      'useful',
+      'useful',
+      'useful',
+    ]);
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        tooMuchRate: 0,
+        wrongSourceRate: 0,
+        shouldHaveSpokenCount: 0,
+        unsafeShadowDecisionCount: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+      directChatOptInEnabled: true,
+    });
+
+    expect(scorecard.level).toBe('field_preview');
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.visibility.dashboard).toBe('allowed');
+    expect(scorecard.visibility.inline).toBe('allowed');
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.labeled_decisions'),
+    ).toMatchObject({
+      value: 3,
+      passed: true,
+    });
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.field_label_volume_minimum'),
+    ).toMatchObject({
+      status: 'pass',
+    });
+  });
+
+  it('blocks trust increase when real-session label volume is insufficient', () => {
+    const { fieldReport, labeledInbox } = makeReadinessFieldFeedback(['useful']);
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+      directChatOptInEnabled: true,
+    });
+
+    expect(scorecard.level).toBe('field_preview');
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.labeled_decisions'),
+    ).toMatchObject({
+      value: 1,
+      passed: false,
+    });
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.field_label_volume_minimum'),
+    ).toMatchObject({
+      status: 'block',
+    });
+  });
+
+  it('blocks direct chat visibility when direct-chat opt-in is disabled', () => {
+    const { fieldReport, labeledInbox } = makeReadinessFieldFeedback([
+      'useful',
+      'useful',
+      'useful',
+    ]);
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+      directChatOptInEnabled: false,
+    });
+
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(scorecard.gates.find((gate) => gate.id === 'gate.direct_chat_opt_in')).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.visibility.directChatBlockedReasons.join(' ')).toContain(
+      'direct chat opt-in is disabled',
+    );
   });
 
   it('blocks JARVIS readiness when a private leak signal exists', () => {
@@ -374,6 +493,56 @@ describe('Aoi autonomy evaluation', () => {
     expect(scorecard.modeRecommendation).toBe('tighten_or_rollback');
   });
 
+  it('blocks JARVIS readiness when a stale source lacks a cannot-know boundary', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+      sourceFreshnessContracts: [
+        {
+          version: 1,
+          id: 'source-freshness-stale-without-boundary',
+          sourceId: 'workspace-git',
+          sourceKind: 'workspace_git',
+          sourceLabel: 'Workspace git',
+          consentState: 'not_required',
+          dataScope: 'workspace metadata',
+          scopeState: 'workspace',
+          bodyAccessState: 'not_applicable',
+          freshnessState: 'stale',
+          signalFreshness: 'stale',
+          lastObservedAt: 6000,
+          lastSuccessfulReadAt: 5000,
+          staleAfterMs: 1000,
+          staleAt: 6000,
+          cannotKnow: [],
+          evidenceRefs: ['source-freshness:stale-without-boundary'],
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        },
+      ],
+    });
+
+    expect(scorecard.gateStatus).toBe('blocked');
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.stale_current_claim_count'),
+    ).toMatchObject({
+      value: 1,
+      passed: false,
+    });
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.stale_current_claim_zero'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.visibility.directChat).toBe('blocked');
+  });
+
   it('blocks higher trust when wrong-source shadow labels cross threshold', () => {
     const scorecard = buildAoiJarvisReadinessScorecard({
       sessionPath: 'aoi/default',
@@ -392,6 +561,71 @@ describe('Aoi autonomy evaluation', () => {
     expect(scorecard.recommendations.map((item) => item.id)).toContain(
       'recommendation.source_calibration',
     );
+  });
+
+  it('lowers proactive visibility when field feedback says Aoi is too frequent', () => {
+    const { fieldReport, labeledInbox } = makeReadinessFieldFeedback([
+      'too_frequent',
+      'too_frequent',
+      'useful',
+    ]);
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        totalDecisions: 3,
+        labeledDecisionCount: 0,
+        usefulRate: 1,
+        tooMuchRate: 0,
+        wrongSourceRate: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+      directChatOptInEnabled: true,
+    });
+
+    expect(
+      scorecard.metrics.find((metric) => metric.id === 'field.too_frequent_rate'),
+    ).toMatchObject({
+      value: 0.667,
+      passed: false,
+    });
+    expect(scorecard.gates.find((gate) => gate.id === 'gate.too_frequent_rate')).toMatchObject({
+      status: 'warning',
+    });
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(scorecard.visibility.directChatBlockedReasons.join(' ')).toContain('too-frequent');
+  });
+
+  it('blocks readiness when unsafe field feedback has not tightened policy', () => {
+    const { fieldReport, labeledInbox } = makeReadinessFieldFeedback([
+      'unsafe',
+      'useful',
+      'useful',
+    ]);
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: 'aoi/default',
+      now: 7000,
+      jarvisAcceptanceReport: runAoiJarvisAcceptanceTrial({ now: 7000 }),
+      builtInReplayReports: runBuiltInAoiOperatorReplayFixtures(),
+      shadowReport: makeJarvisReadinessShadowReport({
+        labeledDecisionCount: 0,
+        usefulRate: 1,
+        wrongSourceRate: 0,
+      }),
+      fieldShadowReport: fieldReport,
+      feedbackInbox: labeledInbox,
+    });
+
+    expect(scorecard.gateStatus).toBe('blocked');
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.unsafe_policy_tightening'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.visibility.directChat).toBe('blocked');
   });
 
   it('lets useful shadow labels improve readiness without overriding safety gates', () => {
@@ -425,11 +659,12 @@ describe('Aoi autonomy evaluation', () => {
     });
 
     expect(highUsefulness.score).toBeGreaterThan(lowUsefulness.score);
-    expect(highUsefulness.canIncreaseTrust).toBe(true);
+    expect(highUsefulness.canIncreaseTrust).toBe(false);
+    expect(highUsefulness.visibility.directChat).toBe('blocked');
     expect(unsafeHighUsefulness.gateStatus).toBe('blocked');
     expect(unsafeHighUsefulness.canIncreaseTrust).toBe(false);
     expect(
-      unsafeHighUsefulness.gates.find((gate) => gate.id === 'gate.unsafe_unresolved_zero'),
+      unsafeHighUsefulness.gates.find((gate) => gate.id === 'gate.unsafe_policy_tightening'),
     ).toMatchObject({
       status: 'block',
     });
@@ -571,9 +806,9 @@ describe('Aoi autonomy evaluation', () => {
       passed: true,
     });
     expect(
-      scorecard.metrics.find((metric) => metric.id === 'shadow.wrong_source_rate'),
+      scorecard.metrics.find((metric) => metric.id === 'field.wrong_source_rate'),
     ).toMatchObject({
-      value: 0.5,
+      value: 1,
       passed: false,
     });
     expect(scorecard.gates.find((gate) => gate.id === 'gate.wrong_source_rate')).toMatchObject({
@@ -2911,6 +3146,65 @@ function makeShadowDigest(
     hiddenItemCount: items.filter((item) => item.hidden).length,
     evidenceRefs: items.flatMap((item) => item.evidenceRefs),
   };
+}
+
+function makeReadinessFieldFeedback(labels: readonly AoiShadowDecisionLabel[]): {
+  fieldReport: ReturnType<typeof buildAoiFieldShadowRecordReport>;
+  labeledInbox: ReturnType<typeof buildAoiOperatorFeedbackInbox>;
+} {
+  const digest = makeShadowDigest(
+    labels.map((label, index) => ({
+      version: 1,
+      id: `digest-readiness-field-${label}-${index}`,
+      kind: 'mission_status',
+      lane: 'mission_update',
+      title: `Readiness field signal ${index + 1}`,
+      summary: 'Workspace validation field evidence is ready for operator feedback.',
+      nextSafeAction: 'Keep visibility gated until field labels are reviewed.',
+      risk: 'low',
+      relevance: 0.8,
+      createdAt: 6000 + index,
+      dedupeKey: `readiness:field-label:${index}`,
+      sourceRefs: ['workspace:validation'],
+      evidenceRefs: [`field-session:readiness-label:${index}`],
+      hidden: false,
+    })),
+  );
+  const decisions = recordAoiShadowDecisions({
+    sessionPath: 'aoi/default',
+    digest,
+    now: 6100,
+  });
+  const fieldReport = buildAoiFieldShadowRecordReport({
+    sessionPath: 'aoi/default',
+    decisions,
+    evidenceRefs: ['field-session:readiness-labels'],
+    now: 6200,
+  });
+  const inbox = buildAoiOperatorFeedbackInbox({
+    sessionPath: 'aoi/default',
+    fieldShadowReport: fieldReport,
+    now: 6300,
+  });
+  const labelActions = labels.map((label, index) => {
+    const item = inbox.items[index];
+    if (!item) {
+      throw new Error(`Expected readiness feedback item ${index}.`);
+    }
+    return createAoiOperatorFeedbackLabelActionForItem({
+      item,
+      label,
+      evidenceRefs: [`operator-label:readiness:${label}:${index}`],
+      now: 6400 + index,
+    });
+  });
+  const labeledInbox = buildAoiOperatorFeedbackInbox({
+    sessionPath: 'aoi/default',
+    fieldShadowReport: fieldReport,
+    labelActions,
+    now: 6500,
+  });
+  return { fieldReport, labeledInbox };
 }
 
 function makeApprovedCommandPolicy(): AoiApprovedCommandPolicy {

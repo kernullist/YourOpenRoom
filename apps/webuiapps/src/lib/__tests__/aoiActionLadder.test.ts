@@ -325,6 +325,31 @@ describe('Aoi Action Ladder', () => {
     expect(decision.connectionLabels.join(' ')).toContain('aoiKiraHandoff.ts');
   });
 
+  it('keeps L4 preparation blocked when Jarvis readiness denies prepare actions', () => {
+    const opportunity = makeOpportunity({ sourceKind: 'kira' });
+    const proposal = makeProposal(opportunity, 'create_kira_work');
+    const decision = decideAoiActionLadder({
+      sessionPath: SESSION_PATH,
+      opportunity,
+      deliberationRun: makeDeliberationRun(opportunity),
+      policy: makePolicy({ level: 'L4' }),
+      jarvisGovernor: makeJarvisGovernor(['prepare_action']),
+      activeProposals: [proposal],
+      approvalInbox: [makeApprovalInboxItem(proposal)],
+      now: NOW,
+    });
+
+    expect(decision.currentLevel).not.toBe('L4');
+    expect(decision.allowedActions.map((action) => action.kind)).not.toContain(
+      'prepare_kira_handoff',
+    );
+    expect(decision.blockedActions.find((action) => action.level === 'L4')?.reason).toContain(
+      'jarvis_governor_blocks:prepare_action',
+    );
+    expect(decision.actionAuthority).toBe('display_only');
+    expect(decision.mutationCount).toBe(0);
+  });
+
   it('blocks similar action escalation when follow-through learning marked it unsafe', () => {
     const opportunity = makeOpportunity({ sourceKind: 'kira' });
     const proposal = makeProposal(opportunity, 'create_kira_work');

@@ -2,6 +2,7 @@ import {
   canAoiJarvisAutonomyUseCapability,
   type AoiJarvisAutonomyGovernorDecision,
 } from './aoiJarvisAutonomyGovernor';
+import type { AoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
 import type {
   AoiAutonomyPolicy,
   AoiDeliberationRun,
@@ -45,6 +46,7 @@ export interface AoiInterruptionGovernorInput {
   notificationsEnabled?: boolean;
   directChatOptIn?: boolean;
   jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
+  jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
   recentDeliveryKeys?: ReadonlySet<string> | readonly string[];
   recentInterruptionAt?: number | null;
   inlineShownCount?: number;
@@ -376,6 +378,8 @@ export function decideAoiInterruptionDelivery(
       ...(input.deliberationRun?.evidenceRefs ?? []),
       ...(input.deliberationRun?.finding?.evidenceRefs ?? []),
       ...(input.proactiveTrendAdvisor?.evidenceRefs ?? []),
+      ...(input.jarvisReadinessScorecard?.evidenceRefs ?? []),
+      ...(input.jarvisReadinessScorecard?.blockerRefs ?? []),
       ...learningScore.evidenceRefs,
     ],
     24,
@@ -448,6 +452,9 @@ export function decideAoiInterruptionDelivery(
     directBlockers.push('trend_duplicate_suppressed');
   }
   if (!canAoiJarvisAutonomyUseCapability(input.jarvisGovernor, 'direct_chat')) {
+    directBlockers.push('jarvis_governor_blocks_direct_chat');
+  }
+  if (input.jarvisReadinessScorecard?.visibility.directChat === 'blocked') {
     directBlockers.push('jarvis_governor_blocks_direct_chat');
   }
   directBlockers.push(...evidenceReasons);

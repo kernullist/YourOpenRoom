@@ -6,6 +6,7 @@ import {
   decideAoiInterruptionDelivery,
 } from '../aoiInterruptionGovernor';
 import type { AoiJarvisAutonomyGovernorDecision } from '../aoiJarvisAutonomyGovernor';
+import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
 import { buildAoiFollowThroughLearningSummary } from '../aoiFollowThroughLearning';
 import type {
   AoiAutonomyPolicy,
@@ -105,6 +106,42 @@ function makeJarvisGovernor(allowDirectChat = true): AoiJarvisAutonomyGovernorDe
     nextUpgradeEvidenceRefs: ['test:upgrade'],
     whyNotJarvisYetLabels: [],
     evidenceRefs: ['test:governor'],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+function makeReadinessScorecardBlockingDirectChat(): AoiJarvisReadinessScorecard {
+  return {
+    version: 1,
+    id: 'readiness-direct-chat-blocked-test',
+    sessionPath: SESSION_PATH,
+    generatedAt: NOW,
+    score: 72,
+    level: 'field_preview',
+    gateStatus: 'blocked',
+    canIncreaseTrust: false,
+    modeRecommendation: 'remain_current_mode',
+    visibility: {
+      version: 1,
+      dashboard: 'allowed',
+      inline: 'allowed',
+      directChat: 'blocked',
+      workOrderPrepare: 'blocked',
+      directChatBlockedReasons: ['field label volume 1/3 is too low for direct chat trust'],
+      workOrderPrepareBlockedReasons: [
+        'field label volume 1/3 is too low for supervised preparation',
+      ],
+      summary:
+        'Direct chat remains blocked; dashboard and inline visibility is the current ceiling.',
+      evidenceRefs: ['readiness:field-label-volume'],
+    },
+    metricGroups: [],
+    metrics: [],
+    gates: [],
+    recommendations: [],
+    evidenceRefs: ['readiness:field-label-volume'],
+    blockerRefs: ['gate.field_label_volume_minimum', 'field.labeled_decisions'],
     actionAuthority: 'display_only',
     mutationCount: 0,
   };
@@ -220,6 +257,25 @@ describe('Aoi Interruption Governor', () => {
     expect(decision.deliveryMode).not.toBe('direct_chat');
     expect(decision.directChatAllowed).toBe(false);
     expect(decision.directChatBlockedReasons).toContain('jarvis_governor_blocks_direct_chat');
+  });
+
+  it('blocks direct chat when readiness visibility denies the direct-chat surface', () => {
+    const decision = decideAoiInterruptionDelivery({
+      sessionPath: SESSION_PATH,
+      opportunity: makeOpportunity(),
+      policy: makePolicy(),
+      directChatOptIn: true,
+      quietMode: false,
+      jarvisGovernor: makeJarvisGovernor(true),
+      jarvisReadinessScorecard: makeReadinessScorecardBlockingDirectChat(),
+      now: NOW,
+    });
+
+    expect(decision.deliveryMode).not.toBe('direct_chat');
+    expect(decision.directChatAllowed).toBe(false);
+    expect(decision.directChatBlockedReasons).toContain('jarvis_governor_blocks_direct_chat');
+    expect(decision.evidenceRefs).toContain('readiness:field-label-volume');
+    expect(decision.evidenceRefs).toContain('gate.field_label_volume_minimum');
   });
 
   it('blocks direct chat when the session direct-chat cap is reached', () => {

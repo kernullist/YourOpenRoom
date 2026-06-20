@@ -708,6 +708,7 @@ export interface AoiJarvisReadinessPanel {
   levelLabel: string;
   scoreLabel: string;
   modeRecommendationLabel: string;
+  visibilityLabels: string[];
   gateLabels: string[];
   recommendationLabels: string[];
   evidenceRefs: string[];
@@ -5134,6 +5135,7 @@ function buildAoiJarvisReadinessPanel(
       levelLabel: 'Readiness level unavailable',
       scoreLabel: 'No readiness score',
       modeRecommendationLabel: 'Remain in current mode',
+      visibilityLabels: [],
       gateLabels: [],
       recommendationLabels: [],
       evidenceRefs: [],
@@ -5154,6 +5156,7 @@ function buildAoiJarvisReadinessPanel(
       missionControl: input.missionControl,
       boundedWorkOrders: input.boundedWorkOrders,
       promotedFixtureCandidates: input.promotedFixtureCandidates,
+      directChatOptInEnabled: input.policy?.proactiveBriefing.directChatHookOptIn ?? null,
     });
   const blockingOrWarningGates = scorecard.gates.filter((gate) => gate.status !== 'pass');
   const gateLabels = uniqueDashboardLabels(
@@ -5165,6 +5168,19 @@ function buildAoiJarvisReadinessPanel(
   const recommendationLabels = uniqueDashboardLabels(
     scorecard.recommendations.map((item) => `${item.severity}: ${item.label}; ${item.action}`),
     5,
+  );
+  const visibilityLabels = uniqueDashboardLabels(
+    [
+      `dashboard ${scorecard.visibility.dashboard}`,
+      `inline ${scorecard.visibility.inline}`,
+      `direct chat ${scorecard.visibility.directChat}: ${
+        scorecard.visibility.directChatBlockedReasons[0] ?? scorecard.visibility.summary
+      }`,
+      `work-order prepare ${scorecard.visibility.workOrderPrepare}: ${
+        scorecard.visibility.workOrderPrepareBlockedReasons[0] ?? scorecard.visibility.summary
+      }`,
+    ],
+    6,
   );
 
   return {
@@ -5182,6 +5198,7 @@ function buildAoiJarvisReadinessPanel(
       formatAoiJarvisModeRecommendation(scorecard.modeRecommendation),
       140,
     ),
+    visibilityLabels,
     gateLabels,
     recommendationLabels,
     evidenceRefs: dashboardRefs([
@@ -5411,6 +5428,7 @@ export function buildAoiOperatorAcceptanceDashboard(
       missionControl: input.missionControl,
       boundedWorkOrders: input.boundedWorkOrders,
       promotedFixtureCandidates: input.promotedFixtureCandidates,
+      directChatOptInEnabled: input.policy?.proactiveBriefing.directChatHookOptIn ?? null,
     });
   const jarvisAutonomyGovernor = buildAoiJarvisAutonomyGovernorPanel(
     input,

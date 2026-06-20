@@ -7165,9 +7165,12 @@ const ChatPanel: React.FC<{
         now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
         sourceFreshnessContracts: aoiSourceFreshnessContracts,
         missionControl: aoiMissionControlState,
+        directChatOptInEnabled:
+          aoiAutonomyStatus?.policy.proactiveBriefing.directChatHookOptIn ?? null,
       }),
     [
       aoiAutonomyLastTickAt,
+      aoiAutonomyStatus?.policy.proactiveBriefing.directChatHookOptIn,
       aoiAutonomyStatus?.updatedAt,
       aoiMissionControlState,
       aoiSourceFreshnessContracts,

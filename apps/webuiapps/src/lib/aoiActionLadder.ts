@@ -450,6 +450,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
       ...opportunity.evidenceRefs,
       ...(input.deliberationRun?.evidenceRefs ?? []),
       ...(input.deliberationRun?.finding?.evidenceRefs ?? []),
+      ...(input.jarvisGovernor?.evidenceRefs ?? []),
       ...(input.followThroughLearning?.evidenceRefs ?? []),
       ...(matchingProposal ? [`proposal:${matchingProposal.id}`] : []),
       ...(matchingProposal?.evidenceRefs ?? []),
@@ -552,8 +553,13 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
   }
 
   if (matchingProposal && preparedPlan) {
+    const governorAllowsPrepare = canAoiJarvisAutonomyUseCapability(
+      input.jarvisGovernor,
+      'prepare_action',
+    );
     const prepareReady =
       !unsafeLearningSignal &&
+      governorAllowsPrepare &&
       preparedPlan.status === 'ready' &&
       boundedWorkOrder?.policyResult.status !== 'blocked';
     if (prepareReady) {
@@ -591,6 +597,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
               ) ?? []),
               ...(previewEvaluation?.reasons.map((reason) => `proposal_policy:${reason}`) ?? []),
               ...(unsafeLearningSignal ? ['follow_through_learning:unsafe_or_blocked'] : []),
+              ...(governorAllowsPrepare ? [] : ['jarvis_governor_blocks:prepare_action']),
             ],
             'Prepared action plan or bounded work order is not ready.',
           ),

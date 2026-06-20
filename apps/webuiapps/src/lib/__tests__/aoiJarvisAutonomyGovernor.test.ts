@@ -134,10 +134,23 @@ function makeBlockedReadinessScorecard(): AoiJarvisReadinessScorecard {
     sessionPath: 'aoi/default',
     generatedAt: 1000,
     score: 58,
-    level: 'not_ready',
+    level: 'field_preview',
     gateStatus: 'blocked',
     canIncreaseTrust: false,
     modeRecommendation: 'tighten_or_rollback',
+    visibility: {
+      version: 1,
+      dashboard: 'downgraded',
+      inline: 'blocked',
+      directChat: 'blocked',
+      workOrderPrepare: 'blocked',
+      directChatBlockedReasons: ['hard safety or source-honesty gate blocks direct chat'],
+      workOrderPrepareBlockedReasons: [
+        'hard safety or source-honesty gate blocks work-order preparation',
+      ],
+      summary: 'Direct chat remains blocked; dashboard visibility is the current ceiling.',
+      evidenceRefs: ['readiness:stale-source-honesty'],
+    },
     metricGroups: [],
     metrics: [],
     gates: [
@@ -264,7 +277,7 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(false);
   });
 
-  it('uses readiness blockers to prevent execution without muting source-backed direct chat', () => {
+  it('uses readiness visibility to block direct chat and execution', () => {
     const governor = buildAoiJarvisAutonomyGovernor({
       sessionPath: 'aoi/default',
       now: 2000,
@@ -283,9 +296,16 @@ describe('Aoi Jarvis autonomy governor', () => {
       ttsEnabled: true,
     });
 
-    expect(governor.overallMode).toBe('direct_chat');
-    expect(canAoiJarvisAutonomyUseCapability(governor, 'direct_chat')).toBe(true);
+    expect(governor.overallMode).toBe('proactive_brief');
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'direct_chat')).toBe(false);
+    expect(canAoiJarvisAutonomyUseCapability(governor, 'prepare_action')).toBe(false);
     expect(canAoiJarvisAutonomyUseCapability(governor, 'command')).toBe(false);
+    expect(governor.blockers.map((blocker) => blocker.id)).toEqual(
+      expect.arrayContaining([
+        'aoi-jarvis-governor:jarvis-readiness-direct-chat-blocked',
+        'aoi-jarvis-governor:jarvis-readiness-work-order-blocked',
+      ]),
+    );
   });
 
   it('allows prepared actions but blocks command execution while mission control waits for approval', () => {
@@ -402,8 +422,8 @@ describe('Aoi Jarvis autonomy governor', () => {
       actionAuthority: 'display_only',
       mutationCount: 0,
     });
-    expect(commandGap?.reason).toContain('Jarvis readiness gate is blocked');
-    expect(commandGap?.nextAction).toContain('Source honesty needs more evidence');
+    expect(commandGap?.reason).toContain('Jarvis readiness blocks direct chat');
+    expect(commandGap?.nextAction).toContain('hard safety or source-honesty');
     expect(commandGap?.evidenceRefs).toContain('readiness:stale-source-honesty');
   });
 
@@ -430,15 +450,15 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(plan).toMatchObject({
       visible: true,
       status: 'collect_evidence',
-      currentMode: 'direct_chat',
-      targetMode: 'prepare_actions',
-      targetCapabilityLabel: 'Prepare action',
+      currentMode: 'proactive_brief',
+      targetMode: 'direct_chat',
+      targetCapabilityLabel: 'Direct chat',
       actionAuthority: 'display_only',
       mutationCount: 0,
     });
-    expect(plan.summaryLabel).toContain('Prepare action targets Prepare actions');
+    expect(plan.summaryLabel).toContain('Direct chat targets Direct chat');
     expect(plan.steps[0]).toMatchObject({
-      label: 'Resolve Jarvis readiness gate is blocked',
+      label: 'Resolve Jarvis readiness blocks direct chat',
       actionAuthority: 'display_only',
       mutationCount: 0,
     });

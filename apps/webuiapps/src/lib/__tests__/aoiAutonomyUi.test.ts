@@ -3986,10 +3986,11 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(dashboard.jarvisReadiness.visible).toBe(true);
     expect(dashboard.jarvisReadiness.statusLabel).toContain('blocked');
-    expect(dashboard.jarvisReadiness.levelLabel).toContain('not ready');
+    expect(dashboard.jarvisReadiness.levelLabel).toContain('synthetic pass');
     expect(dashboard.jarvisReadiness.modeRecommendationLabel).toBe(
       'Tighten or roll back current mode',
     );
+    expect(dashboard.jarvisReadiness.visibilityLabels.join(' ')).toContain('direct chat blocked');
     expect(dashboard.jarvisReadiness.gateLabels.join(' ')).toContain('Wrong-source rate');
     expect(dashboard.jarvisReadiness.recommendationLabels.join(' ')).toContain(
       'Run source calibration',
@@ -4000,7 +4001,7 @@ describe('Aoi autonomy UI helpers', () => {
     );
     expect(dashboard.jarvisAutonomyGovernor.visible).toBe(true);
     expect(dashboard.jarvisAutonomyGovernor.blockerLabels.join(' ')).toContain(
-      'Jarvis readiness gate is blocked',
+      'Jarvis readiness blocks direct chat',
     );
   });
 

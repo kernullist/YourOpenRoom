@@ -612,6 +612,42 @@ function collectReadinessBlockers(
 ): AoiJarvisAutonomyBlocker[] {
   const blockers: AoiJarvisAutonomyBlocker[] = [];
   if (scorecard) {
+    if (scorecard.visibility.directChat === 'blocked') {
+      blockers.push(
+        makeBlocker({
+          id: 'jarvis-readiness-direct-chat-blocked',
+          severity: 'warning',
+          label: 'Jarvis readiness blocks direct chat',
+          reason: scorecard.visibility.directChatBlockedReasons[0]
+            ? `${scorecard.score}/100 readiness; ${scorecard.visibility.directChatBlockedReasons[0]}.`
+            : `${scorecard.score}/100 readiness; direct chat is not within the readiness visibility ceiling.`,
+          affectedModes: ['direct_chat'],
+          evidenceRefs: [
+            ...scorecard.visibility.evidenceRefs,
+            ...scorecard.evidenceRefs,
+            ...scorecard.blockerRefs,
+          ],
+        }),
+      );
+    }
+    if (scorecard.visibility.workOrderPrepare === 'blocked') {
+      blockers.push(
+        makeBlocker({
+          id: 'jarvis-readiness-work-order-blocked',
+          severity: 'blocker',
+          label: 'Jarvis readiness blocks work-order preparation',
+          reason: scorecard.visibility.workOrderPrepareBlockedReasons[0]
+            ? `${scorecard.score}/100 readiness; ${scorecard.visibility.workOrderPrepareBlockedReasons[0]}.`
+            : `${scorecard.score}/100 readiness; work-order preparation is not within the readiness visibility ceiling.`,
+          affectedModes: ['prepare_actions', 'approval_execution'],
+          evidenceRefs: [
+            ...scorecard.visibility.evidenceRefs,
+            ...scorecard.evidenceRefs,
+            ...scorecard.blockerRefs,
+          ],
+        }),
+      );
+    }
     if (scorecard.gateStatus === 'blocked') {
       blockers.push(
         makeBlocker({
