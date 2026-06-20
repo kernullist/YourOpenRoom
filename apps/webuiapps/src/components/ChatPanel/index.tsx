@@ -11635,6 +11635,20 @@ const SettingsModal: React.FC<{
                                     260,
                                   )}
                                 </div>
+                                <div>
+                                  Audit plan:{' '}
+                                  {sanitizeAoiProposalDisplayText(
+                                    aoiJarvisAutonomyGovernorAuditSummary.upgradePlanLabel,
+                                    260,
+                                  )}
+                                </div>
+                                {aoiJarvisAutonomyGovernorAuditSummary.upgradePlanStepLabels.map(
+                                  (label, index) => (
+                                    <div key={`jarvis-governor-audit-plan-step-${index}`}>
+                                      Audit step: {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ),
+                                )}
                                 {aoiJarvisAutonomyGovernorAuditSummary.recentEventLabels.map(
                                   (label, index) => (
                                     <div key={`jarvis-governor-audit-${index}`}>

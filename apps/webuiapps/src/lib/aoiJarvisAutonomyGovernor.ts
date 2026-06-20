@@ -198,6 +198,10 @@ export interface AoiJarvisAutonomyGovernorAuditEvent {
   blockerLabels: string[];
   whyNotJarvisYetLabels: string[];
   nextUpgradeAction: string;
+  upgradePlanStatus: AoiJarvisAutonomyUpgradePlanStatus;
+  upgradePlanSummaryLabel: string;
+  upgradePlanStepLabels: string[];
+  upgradePlanEvidenceRefs: string[];
   evidenceRefs: string[];
   safetyBoundary: string;
   actionAuthority: 'display_only';
@@ -232,6 +236,8 @@ export interface AoiJarvisAutonomyGovernorAuditPanelSummary {
   headlineLabel: string;
   latestLabel: string;
   recentEventLabels: string[];
+  upgradePlanLabel: string;
+  upgradePlanStepLabels: string[];
   blockerLabels: string[];
   evidenceRefs: string[];
   safetyBoundaryLabel: string;
@@ -286,6 +292,12 @@ const CAPABILITY_LABELS: Record<AoiJarvisAutonomyCapability, string> = {
   prepare_action: 'Prepare action',
   app_action: 'Approved app action',
   command: 'Approved command',
+};
+
+const UPGRADE_PLAN_STATUS_LABELS: Record<AoiJarvisAutonomyUpgradePlanStatus, string> = {
+  steady: 'Steady',
+  collect_evidence: 'Collect evidence',
+  operator_review: 'Operator review',
 };
 
 const CAPABILITY_ORDER: AoiJarvisAutonomyCapability[] = [
@@ -374,6 +386,13 @@ function normalizeAuditMode(value: unknown): AoiJarvisAutonomyMode | null {
   return typeof value === 'string' && Object.prototype.hasOwnProperty.call(MODE_ORDER, value)
     ? (value as AoiJarvisAutonomyMode)
     : null;
+}
+
+function normalizeUpgradePlanStatus(value: unknown): AoiJarvisAutonomyUpgradePlanStatus {
+  return typeof value === 'string' &&
+    Object.prototype.hasOwnProperty.call(UPGRADE_PLAN_STATUS_LABELS, value)
+    ? (value as AoiJarvisAutonomyUpgradePlanStatus)
+    : 'steady';
 }
 
 function normalizeAuditEventKind(value: unknown): AoiJarvisAutonomyGovernorAuditEventKind {
@@ -1251,6 +1270,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
 function buildAoiJarvisAutonomyGovernorAuditDedupeKey(
   decision: AoiJarvisAutonomyGovernorDecision,
 ): string {
+  const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 4 });
   return normalizeAuditLabel(
     [
       decision.sessionPath,
@@ -1263,6 +1283,9 @@ function buildAoiJarvisAutonomyGovernorAuditDedupeKey(
         .join(','),
       decision.whyNotJarvisYetLabels.join(','),
       decision.nextUpgradeAction,
+      upgradePlan.status,
+      upgradePlan.summaryLabel,
+      upgradePlan.stepLabels.join(','),
       decision.evidenceRefs.slice(0, 12).join(','),
     ].join('|'),
     '',
@@ -1311,6 +1334,16 @@ export function normalizeAoiJarvisAutonomyGovernorAuditEvent(
   }
 
   const previousMode = normalizeAuditMode(raw.previousMode);
+  const nextUpgradeAction = normalizeAuditLabel(
+    raw.nextUpgradeAction,
+    'Refresh Aoi autonomy state.',
+    260,
+  );
+  const upgradePlanSummaryLabel = normalizeAuditLabel(
+    raw.upgradePlanSummaryLabel,
+    nextUpgradeAction,
+    280,
+  );
   return {
     version: 1,
     id:
@@ -1334,11 +1367,11 @@ export function normalizeAoiJarvisAutonomyGovernorAuditEvent(
     blockedCapabilityLabels: normalizeAuditLabelList(raw.blockedCapabilityLabels, 10),
     blockerLabels: normalizeAuditLabelList(raw.blockerLabels, 8),
     whyNotJarvisYetLabels: normalizeAuditLabelList(raw.whyNotJarvisYetLabels, 8),
-    nextUpgradeAction: normalizeAuditLabel(
-      raw.nextUpgradeAction,
-      'Refresh Aoi autonomy state.',
-      260,
-    ),
+    nextUpgradeAction,
+    upgradePlanStatus: normalizeUpgradePlanStatus(raw.upgradePlanStatus),
+    upgradePlanSummaryLabel,
+    upgradePlanStepLabels: normalizeAuditLabelList(raw.upgradePlanStepLabels, 6),
+    upgradePlanEvidenceRefs: normalizeAuditLabelList(raw.upgradePlanEvidenceRefs, 10),
     evidenceRefs: normalizeAuditLabelList(raw.evidenceRefs, 12),
     safetyBoundary: normalizeAuditLabel(
       raw.safetyBoundary,
@@ -1456,6 +1489,7 @@ export function buildAoiJarvisAutonomyGovernorAuditEvent(params: {
   const blockerLabels = decision.blockers
     .map((blocker) => `${blocker.label}: ${blocker.reason}`)
     .slice(0, 8);
+  const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 4 });
   const dedupeKey = buildAoiJarvisAutonomyGovernorAuditDedupeKey(decision);
   const kind = classifyAoiJarvisAutonomyGovernorAuditEvent(
     decision,
@@ -1482,7 +1516,14 @@ export function buildAoiJarvisAutonomyGovernorAuditEvent(params: {
     blockerLabels: uniqueLabels(blockerLabels, 8),
     whyNotJarvisYetLabels: uniqueLabels(decision.whyNotJarvisYetLabels, 8),
     nextUpgradeAction: decision.nextUpgradeAction,
-    evidenceRefs: uniqueLabels([...decision.evidenceRefs, ...decision.nextUpgradeEvidenceRefs], 12),
+    upgradePlanStatus: upgradePlan.status,
+    upgradePlanSummaryLabel: upgradePlan.summaryLabel,
+    upgradePlanStepLabels: uniqueLabels(upgradePlan.stepLabels, 6),
+    upgradePlanEvidenceRefs: uniqueLabels(upgradePlan.evidenceRefs, 10),
+    evidenceRefs: uniqueLabels(
+      [...decision.evidenceRefs, ...decision.nextUpgradeEvidenceRefs, ...upgradePlan.evidenceRefs],
+      12,
+    ),
     safetyBoundary:
       'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
     actionAuthority: 'display_only',
@@ -1564,6 +1605,8 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
       headlineLabel: 'No governor decisions recorded yet.',
       latestLabel: 'Audit trail is empty.',
       recentEventLabels: [],
+      upgradePlanLabel: 'No upgrade plan recorded yet.',
+      upgradePlanStepLabels: [],
       blockerLabels: [],
       evidenceRefs: [],
       safetyBoundaryLabel:
@@ -1591,10 +1634,12 @@ export function buildAoiJarvisAutonomyGovernorAuditPanelSummary(
     latestLabel: `${eventKindLabels[latest.kind]} at ${latest.recordedAt}: ${latest.nextUpgradeAction}`,
     recentEventLabels: normalizedTrail.events.slice(0, 4).map((event) => {
       const primaryReason = event.blockerLabels[0] ?? event.nextUpgradeAction;
-      return `${eventKindLabels[event.kind]}: ${event.modeLabel}; ${primaryReason}`;
+      return `${eventKindLabels[event.kind]}: ${event.modeLabel}; ${primaryReason}; Plan: ${event.upgradePlanSummaryLabel}`;
     }),
+    upgradePlanLabel: `${UPGRADE_PLAN_STATUS_LABELS[latest.upgradePlanStatus]}: ${latest.upgradePlanSummaryLabel}`,
+    upgradePlanStepLabels: latest.upgradePlanStepLabels.slice(0, 3),
     blockerLabels: latest.blockerLabels,
-    evidenceRefs: latest.evidenceRefs,
+    evidenceRefs: uniqueLabels([...latest.evidenceRefs, ...latest.upgradePlanEvidenceRefs], 12),
     safetyBoundaryLabel: latest.safetyBoundary,
     resetLabel: 'Restart governor audit',
     resetTitle:
@@ -1638,7 +1683,7 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
     for (const event of normalizedTrail.events.slice(0, maxEvents)) {
       const reason = event.blockerLabels[0] ?? event.nextUpgradeAction;
       lines.push(
-        `  - ${eventKindLabels[event.kind]} at ${event.recordedAt}: ${normalizePromptLabel(event.modeLabel, 'Unknown mode', 80)}; ${normalizePromptLabel(reason, '', 220)}.`,
+        `  - ${eventKindLabels[event.kind]} at ${event.recordedAt}: ${normalizePromptLabel(event.modeLabel, 'Unknown mode', 80)}; ${normalizePromptLabel(reason, '', 180)}; plan ${normalizePromptLabel(event.upgradePlanSummaryLabel, '', 180)}.`,
       );
     }
   }

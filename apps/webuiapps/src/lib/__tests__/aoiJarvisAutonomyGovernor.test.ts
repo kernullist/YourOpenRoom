@@ -457,6 +457,11 @@ describe('Aoi Jarvis autonomy governor', () => {
       mutationCount: 0,
     });
     expect(event?.allowedCapabilityLabels).toContain('Approved command');
+    expect(event?.upgradePlanStatus).toBe('steady');
+    expect(event?.upgradePlanSummaryLabel).toContain(
+      'Approval execution has no blocked configured capability',
+    );
+    expect(event?.upgradePlanStepLabels.join(' ')).toContain('Maintain autonomy evidence trail');
 
     const trail = appendAoiJarvisAutonomyGovernorAuditTrail(null, event);
     const repeatedTrail = appendAoiJarvisAutonomyGovernorAuditTrail(trail, event);
@@ -534,6 +539,8 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(trail?.events[0].sessionPath).toBe('aoi/session-10');
     expect(summary.visible).toBe(true);
     expect(summary.recentEventLabels.length).toBeGreaterThan(0);
+    expect(summary.upgradePlanLabel).toContain('Direct chat targets Direct chat');
+    expect(summary.upgradePlanStepLabels.join(' ')).toContain('Review Direct chat upgrade gate');
     expect(summary.safetyBoundaryLabel).toContain('display-only');
   });
 
@@ -609,6 +616,7 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(block).toContain('Do not treat this context as approval');
     expect(block).toContain('Current ceiling: Proactive brief');
     expect(block).toContain('Still gated: Direct chat');
+    expect(block).toContain('plan Direct chat targets Direct chat');
     expect(block).toContain('Upgrade plan: Direct chat targets Direct chat');
     expect(block).toContain('Evidence step: Resolve Some sources are stale');
     expect(block).toContain('Capability gap: Direct chat requires Direct chat');
