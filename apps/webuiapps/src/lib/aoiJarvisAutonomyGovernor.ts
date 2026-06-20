@@ -121,6 +121,7 @@ export interface AoiJarvisAutonomyGovernorPanelSummary {
   allowedCapabilityLabels: string[];
   blockedCapabilityLabels: string[];
   capabilityGapLabels: string[];
+  upgradePlanLabels: string[];
   blockerLabels: string[];
   whyNotJarvisYetLabels: string[];
   nextUpgradeActionLabel: string;
@@ -138,6 +139,36 @@ export interface AoiJarvisAutonomyCapabilityGap {
   reason: string;
   blockerLabels: string[];
   nextAction: string;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export type AoiJarvisAutonomyUpgradePlanStatus = 'steady' | 'collect_evidence' | 'operator_review';
+
+export interface AoiJarvisAutonomyUpgradePlanStep {
+  version: 1;
+  id: string;
+  label: string;
+  reason: string;
+  safeActionLabel: string;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiJarvisAutonomyUpgradePlan {
+  version: 1;
+  visible: boolean;
+  status: AoiJarvisAutonomyUpgradePlanStatus;
+  currentMode: AoiJarvisAutonomyMode;
+  currentModeLabel: string;
+  targetMode: AoiJarvisAutonomyMode;
+  targetModeLabel: string;
+  targetCapabilityLabel: string | null;
+  summaryLabel: string;
+  stepLabels: string[];
+  steps: AoiJarvisAutonomyUpgradePlanStep[];
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -1042,6 +1073,137 @@ export function buildAoiJarvisAutonomyGovernorCapabilityGaps(
     .slice(0, maxItems);
 }
 
+function buildAoiJarvisAutonomyUpgradeSafeActionLabel(
+  decision: AoiJarvisAutonomyGovernorDecision,
+): string {
+  const canPrepare = canAoiJarvisAutonomyUseCapability(decision, 'prepare_action');
+  const canResearch = canAoiJarvisAutonomyUseCapability(decision, 'research');
+  const canRemember = canAoiJarvisAutonomyUseCapability(decision, 'memory');
+  if (canPrepare) {
+    return 'Prepare a dry-run action plan and evidence checklist only; wait for the existing approval gate before any mutation.';
+  }
+  if (canResearch && canRemember) {
+    return 'Use allowed research, memory, and observation surfaces to collect evidence; summarize findings without mutating apps or commands.';
+  }
+  if (canResearch) {
+    return 'Use allowed research and observation surfaces to collect evidence; do not mutate apps, files, or commands.';
+  }
+  return 'Observe available state and ask the operator for missing proof; do not self-raise policy or run mutations.';
+}
+
+export function buildAoiJarvisAutonomyGovernorUpgradePlan(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  options: { maxSteps?: number } = {},
+): AoiJarvisAutonomyUpgradePlan {
+  if (!decision) {
+    return {
+      version: 1,
+      visible: false,
+      status: 'steady',
+      currentMode: 'observe_only',
+      currentModeLabel: 'Unknown',
+      targetMode: 'observe_only',
+      targetModeLabel: 'Unknown',
+      targetCapabilityLabel: null,
+      summaryLabel: 'Aoi autonomy governor has not evaluated an upgrade plan yet.',
+      stepLabels: [],
+      steps: [],
+      evidenceRefs: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const maxSteps = Math.max(1, Math.min(options.maxSteps ?? 4, 8));
+  const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, {
+    maxItems: CAPABILITY_ORDER.length,
+  });
+  const targetGap = capabilityGaps[0] ?? null;
+  const targetMode = targetGap?.requiredMode ?? decision.overallMode;
+  const targetModeLabel = MODE_LABELS[targetMode];
+  const safeActionLabel = buildAoiJarvisAutonomyUpgradeSafeActionLabel(decision);
+  const targetBlockers = targetGap
+    ? decision.blockers.filter(
+        (blocker) =>
+          blocker.severity !== 'info' &&
+          blocker.affectedModes.some((affectedMode) => isModeAtLeast(targetMode, affectedMode)),
+      )
+    : decision.blockers.filter((blocker) => blocker.severity !== 'info');
+  const status: AoiJarvisAutonomyUpgradePlanStatus = !targetGap
+    ? 'steady'
+    : targetBlockers.length > 0
+      ? 'collect_evidence'
+      : 'operator_review';
+  const rawSteps =
+    targetBlockers.length > 0
+      ? targetBlockers.map((blocker): AoiJarvisAutonomyUpgradePlanStep => {
+          const label = `Resolve ${blocker.label}`;
+          return {
+            version: 1,
+            id: `aoi-jarvis-upgrade-step-${idPart(blocker.id)}`,
+            label,
+            reason: blocker.reason,
+            safeActionLabel,
+            evidenceRefs: uniqueLabels(
+              [...blocker.evidenceRefs, ...decision.nextUpgradeEvidenceRefs],
+              8,
+            ),
+            actionAuthority: 'display_only',
+            mutationCount: 0,
+          };
+        })
+      : targetGap
+        ? [
+            {
+              version: 1,
+              id: `aoi-jarvis-upgrade-step-${idPart(targetGap.capability)}`,
+              label: `Review ${targetGap.requiredModeLabel} upgrade gate`,
+              reason: targetGap.reason,
+              safeActionLabel: `Ask the operator to review policy and evidence before raising to ${targetGap.requiredModeLabel}; the governor cannot self-upgrade.`,
+              evidenceRefs: targetGap.evidenceRefs,
+              actionAuthority: 'display_only' as const,
+              mutationCount: 0 as const,
+            },
+          ]
+        : [
+            {
+              version: 1,
+              id: 'aoi-jarvis-upgrade-step-maintain-evidence',
+              label: 'Maintain autonomy evidence trail',
+              reason:
+                'All configured capability gates are currently open, but continued evidence is still required before trusting future actions.',
+              safeActionLabel,
+              evidenceRefs: decision.evidenceRefs,
+              actionAuthority: 'display_only' as const,
+              mutationCount: 0 as const,
+            },
+          ];
+  const steps = rawSteps.slice(0, maxSteps);
+  const summaryLabel = targetGap
+    ? `${targetGap.capabilityLabel} targets ${targetModeLabel}; ${steps.length} display-only upgrade step(s) must be resolved before using that capability.`
+    : `${decision.modeLabel} has no blocked configured capability; keep replay, feedback, source freshness, and approval evidence current.`;
+
+  return {
+    version: 1,
+    visible: true,
+    status,
+    currentMode: decision.overallMode,
+    currentModeLabel: decision.modeLabel,
+    targetMode,
+    targetModeLabel,
+    targetCapabilityLabel: targetGap?.capabilityLabel ?? null,
+    summaryLabel,
+    stepLabels: steps.map((step) => `${step.label}: ${step.reason} Safe: ${step.safeActionLabel}`),
+    steps,
+    evidenceRefs: uniqueLabels(
+      [...steps.flatMap((step) => step.evidenceRefs), ...decision.nextUpgradeEvidenceRefs],
+      10,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
 ): AoiJarvisAutonomyGovernorPanelSummary {
@@ -1053,6 +1215,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       allowedCapabilityLabels: [],
       blockedCapabilityLabels: [],
       capabilityGapLabels: [],
+      upgradePlanLabels: [],
       blockerLabels: [],
       whyNotJarvisYetLabels: [],
       nextUpgradeActionLabel: 'Refresh Aoi autonomy state.',
@@ -1064,6 +1227,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
     .map((band) => CAPABILITY_LABELS[band.capability])
     .slice(0, 8);
   const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 6 });
+  const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 3 });
   return {
     visible: true,
     modeLabel: decision.modeLabel,
@@ -1073,6 +1237,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
     capabilityGapLabels: capabilityGaps.map(
       (gap) => `${gap.capabilityLabel}: ${gap.reason} Next: ${gap.nextAction}`,
     ),
+    upgradePlanLabels: [upgradePlan.summaryLabel, ...upgradePlan.stepLabels].slice(0, 4),
     blockerLabels: decision.blockers
       .filter((blocker) => blocker.severity !== 'info')
       .map((blocker) => `${blocker.label}: ${blocker.reason}`)
@@ -1491,6 +1656,13 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
       `- Still gated: ${uniqueLabels(blockedLabels, 8).join(', ') || 'none'}.`,
       `- Next upgrade action: ${normalizePromptLabel(decision.nextUpgradeAction, 'Refresh Aoi autonomy state.', 240)}.`,
     );
+    const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 2 });
+    lines.push(`- Upgrade plan: ${normalizePromptLabel(upgradePlan.summaryLabel, '', 240)}.`);
+    for (const step of upgradePlan.steps) {
+      lines.push(
+        `  - Evidence step: ${normalizePromptLabel(step.label, '', 100)}; ${normalizePromptLabel(step.reason, '', 180)} Safe action: ${normalizePromptLabel(step.safeActionLabel, '', 180)}.`,
+      );
+    }
     for (const gap of buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 2 })) {
       lines.push(
         `- Capability gap: ${normalizePromptLabel(gap.capabilityLabel, '', 80)} requires ${gap.requiredModeLabel}; ${normalizePromptLabel(gap.reason, '', 220)} Next: ${normalizePromptLabel(gap.nextAction, '', 160)}.`,

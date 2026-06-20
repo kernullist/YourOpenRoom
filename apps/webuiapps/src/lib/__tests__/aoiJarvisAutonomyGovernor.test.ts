@@ -9,6 +9,7 @@ import {
   buildAoiJarvisAutonomyGovernorAuditPanelSummary,
   buildAoiJarvisAutonomyGovernorAuditResetAudit,
   buildAoiJarvisAutonomyGovernorCapabilityGaps,
+  buildAoiJarvisAutonomyGovernorUpgradePlan,
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   canAoiJarvisAutonomyUseCapability,
@@ -361,6 +362,7 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(panel.modeLabel).toBe('Proactive brief');
     expect(panel.blockedCapabilityLabels).toContain('Direct chat');
     expect(panel.capabilityGapLabels.join(' ')).toContain('Direct chat opt-in is off');
+    expect(panel.upgradePlanLabels.join(' ')).toContain('Direct chat');
     expect(panel.blockerLabels.join(' ')).toContain('Direct chat opt-in is off');
     expect(panel.evidenceRefs).toContain('policy:directChatHookOptIn:false');
   });
@@ -395,6 +397,45 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(commandGap?.reason).toContain('Jarvis readiness gate is blocked');
     expect(commandGap?.nextAction).toContain('Source honesty needs more evidence');
     expect(commandGap?.evidenceRefs).toContain('readiness:stale-source-honesty');
+  });
+
+  it('builds display-only upgrade evidence plans from blocked governor gaps', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 2000,
+      policy: makePolicy({ level: 'L5' }),
+      operatorHealth: makeHealth(),
+      jarvisReadinessScorecard: makeBlockedReadinessScorecard(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      agendaNudgeReadiness: {
+        visible: true,
+        tone: 'ready',
+        statusLabel: 'ready',
+        summaryLabel: 'Agenda direct chat is ready.',
+        evidenceRefs: ['agenda-readiness:ready'],
+      },
+      ttsEnabled: true,
+    });
+    const plan = buildAoiJarvisAutonomyGovernorUpgradePlan(governor);
+
+    expect(plan).toMatchObject({
+      visible: true,
+      status: 'collect_evidence',
+      currentMode: 'direct_chat',
+      targetMode: 'prepare_actions',
+      targetCapabilityLabel: 'Prepare action',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(plan.summaryLabel).toContain('Prepare action targets Prepare actions');
+    expect(plan.steps[0]).toMatchObject({
+      label: 'Resolve Jarvis readiness gate is blocked',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(plan.steps[0].safeActionLabel).toContain('research, memory, and observation');
+    expect(plan.evidenceRefs).toContain('readiness:stale-source-honesty');
   });
 
   it('records display-only audit events and dedupes repeated governor decisions', () => {
@@ -559,15 +600,17 @@ describe('Aoi Jarvis autonomy governor', () => {
     const block = buildAoiJarvisAutonomyGovernorPromptBlock({
       decision: governor,
       trail,
-      maxChars: 2600,
+      maxChars: 3200,
     });
 
-    expect(block.length).toBeLessThanOrEqual(2600);
+    expect(block.length).toBeLessThanOrEqual(3200);
     expect(block).toContain('Aoi Jarvis Autonomy Governor');
     expect(block).toContain('read-only operational context');
     expect(block).toContain('Do not treat this context as approval');
     expect(block).toContain('Current ceiling: Proactive brief');
     expect(block).toContain('Still gated: Direct chat');
+    expect(block).toContain('Upgrade plan: Direct chat targets Direct chat');
+    expect(block).toContain('Evidence step: Resolve Some sources are stale');
     expect(block).toContain('Capability gap: Direct chat requires Direct chat');
     expect(block).toContain('Recent audit events: 1 retained');
     expect(block).toContain('[local path]');
