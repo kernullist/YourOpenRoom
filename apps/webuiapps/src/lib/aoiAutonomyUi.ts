@@ -32,6 +32,7 @@ import {
   type AoiJarvisAutonomyGovernorAuditTrail,
   type AoiJarvisAutonomyGovernorPanelSummary,
 } from './aoiJarvisAutonomyGovernor';
+import { buildAoiActionLadderDecisions } from './aoiActionLadder';
 import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
@@ -45,6 +46,8 @@ import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
+  AoiActionLadderDecision,
+  AoiApprovalInboxItem,
   AoiAutonomyBlockedProposal,
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
@@ -559,6 +562,10 @@ export interface AoiOpportunityInboxPanelItem {
   interruptionModeLabel: string;
   interruptionSummaryLabel: string;
   interruptionBlockedLabels: string[];
+  actionLadderLevelLabel: string;
+  actionLadderSummaryLabel: string;
+  actionLadderApprovalLabels: string[];
+  actionLadderBlockedLabels: string[];
   evidenceRefs: string[];
 }
 
@@ -2511,6 +2518,11 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
   settings?: AoiAutonomyPanelSettings | null;
   jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   interruptionDecisions?: readonly AoiInterruptionGovernorDecision[];
+  actionLadderDecisions?: readonly AoiActionLadderDecision[];
+  activeProposals?: readonly AoiProposal[];
+  blockedProposals?: readonly AoiAutonomyBlockedProposal[];
+  approvalInbox?: readonly AoiApprovalInboxItem[];
+  proposalDecisions?: readonly AoiProposalDecision[];
   inlineShownCount?: number;
   directChatShownCount?: number;
   recentDeliveryKeys?: ReadonlySet<string> | readonly string[];
@@ -2549,16 +2561,35 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
       recentDeliveryKeys: params.recentDeliveryKeys,
       now,
     });
+  const actionLadderDecisions =
+    params.actionLadderDecisions ??
+    buildAoiActionLadderDecisions({
+      sessionPath: params.status?.sessionPath ?? visibleItems[0]?.sessionPath ?? '',
+      opportunities: active,
+      deliberationRuns: params.deliberationRuns,
+      jarvisGovernor: params.jarvisGovernor,
+      policy: params.status?.policy,
+      activeProposals: params.activeProposals,
+      blockedProposals: params.blockedProposals,
+      approvalInbox: params.approvalInbox,
+      proposalDecisions: params.proposalDecisions,
+      now,
+    });
   const interruptionByOpportunityId = new Map(
     interruptionDecisions.map((decision) => [decision.opportunityId, decision]),
+  );
+  const actionLadderByOpportunityId = new Map(
+    actionLadderDecisions.map((decision) => [decision.opportunityId, decision]),
   );
   const evidenceRefs = collectAoiAgendaEvidenceRefs(
     visibleItems.flatMap((item) => item.evidenceRefs),
     interruptionDecisions.flatMap((decision) => decision.evidenceRefs),
+    actionLadderDecisions.flatMap((decision) => decision.evidenceRefs),
     [`opportunity_inbox:active:${active.length}`],
   );
   const itemLabels = visibleItems.map((item): AoiOpportunityInboxPanelItem => {
     const interruptionDecision = interruptionByOpportunityId.get(item.id);
+    const actionLadderDecision = actionLadderByOpportunityId.get(item.id);
     const ageLabel = formatAoiAgendaAge(item.updatedAt, now);
     const expiryLabel =
       item.expiresAt > now
@@ -2589,6 +2620,34 @@ export function buildAoiOpportunityInboxPanelSummary(params: {
       interruptionBlockedLabels: (interruptionDecision?.blockedReasonLabels ?? [])
         .slice(0, 4)
         .map((label) => sanitizeAoiProposalDisplayText(label, 180)),
+      actionLadderLevelLabel: sanitizeAoiProposalDisplayText(
+        actionLadderDecision
+          ? `${actionLadderDecision.levelLabel}${
+              actionLadderDecision.nextLevelLabel
+                ? `; next ${actionLadderDecision.nextLevelLabel}`
+                : ''
+            }`
+          : 'L1 observe; next L2 brief',
+        180,
+      ),
+      actionLadderSummaryLabel: sanitizeAoiProposalDisplayText(
+        actionLadderDecision?.summaryLabel ??
+          'Action ladder waits for evidence before escalating beyond observation.',
+        260,
+      ),
+      actionLadderApprovalLabels: (actionLadderDecision?.approvalNeeds ?? [])
+        .slice(0, 3)
+        .map((need) =>
+          sanitizeAoiProposalDisplayText(
+            `${need.label}${need.approvalFingerprint ? ` (${need.approvalFingerprint})` : ''}`,
+            220,
+          ),
+        ),
+      actionLadderBlockedLabels: (actionLadderDecision?.blockedActions ?? [])
+        .slice(0, 3)
+        .map((action) =>
+          sanitizeAoiProposalDisplayText(`${action.level} ${action.label}: ${action.reason}`, 240),
+        ),
       evidenceRefs: item.evidenceRefs
         .slice(0, 4)
         .map((ref) => sanitizeAoiProposalDisplayText(ref, 180)),

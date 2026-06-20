@@ -215,6 +215,10 @@ describe('Aoi Opportunity Inbox UI summary', () => {
       titleLabel: 'Inspect Kira validation failure',
       deliveryLabel: 'inline card / active',
     });
+    expect(summary.itemLabels[0].actionLadderLevelLabel).toContain('L3 research gate');
+    expect(summary.itemLabels[0].actionLadderBlockedLabels.join(' ')).toContain(
+      'No matching proposal',
+    );
     expect(summary.itemLabels[0].evidenceRefs).toEqual(['kira:validation-failure-001']);
     expect(summary.evidenceRefs).toEqual(
       expect.arrayContaining(['kira:validation-failure-001', 'memory:interest-re']),

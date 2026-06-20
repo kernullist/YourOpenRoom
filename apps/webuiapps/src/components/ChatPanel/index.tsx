@@ -9303,6 +9303,10 @@ const SettingsModal: React.FC<{
         proactiveBriefFeedback: aoiProactiveBriefFeedback,
         settings: aoiAutonomyPanelSettings,
         jarvisGovernor: aoiJarvisAutonomyGovernor,
+        activeProposals: aoiAutonomyActiveProposals,
+        blockedProposals: aoiAutonomyBlockedProposals,
+        approvalInbox: aoiOperatorDigest?.approvalInbox,
+        proposalDecisions: aoiRecentProposalDecisions,
         inlineShownCount: aoiInlineShownCount,
         now: aoiAutonomyStatus?.updatedAt ?? aoiAutonomyLastTickAt ?? Date.now(),
       }),
@@ -9312,11 +9316,15 @@ const SettingsModal: React.FC<{
       aoiAutonomyLastTickAt,
       aoiAutonomyPanelSettings,
       aoiAutonomyStatus,
+      aoiAutonomyActiveProposals,
+      aoiAutonomyBlockedProposals,
       aoiDeliberationRuns,
       aoiInlineShownCount,
       aoiJarvisAutonomyGovernor,
+      aoiOperatorDigest?.approvalInbox,
       aoiProactiveBriefFeedback,
       aoiProactiveTrendAdvisor,
+      aoiRecentProposalDecisions,
     ],
   );
   const aoiDeliberationRunSummary = useMemo(
@@ -11899,6 +11907,18 @@ const SettingsModal: React.FC<{
                                   {item.interruptionBlockedLabels.map((label, index) => (
                                     <div key={`${item.id}-interruption-blocker-${index}`}>
                                       Direct chat block: {label}
+                                    </div>
+                                  ))}
+                                  <div>Action ladder: {item.actionLadderLevelLabel}</div>
+                                  <div>Action boundary: {item.actionLadderSummaryLabel}</div>
+                                  {item.actionLadderApprovalLabels.map((label, index) => (
+                                    <div key={`${item.id}-action-ladder-approval-${index}`}>
+                                      Approval needed: {label}
+                                    </div>
+                                  ))}
+                                  {item.actionLadderBlockedLabels.map((label, index) => (
+                                    <div key={`${item.id}-action-ladder-blocked-${index}`}>
+                                      Action blocked: {label}
                                     </div>
                                   ))}
                                   {item.evidenceRefs.map((ref, index) => (

@@ -267,6 +267,80 @@ export interface AoiInterruptionGovernorDecision {
   mutationCount: 0;
 }
 
+export type AoiActionLadderLevel = 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
+
+export type AoiActionLadderExistingGate =
+  | 'none'
+  | 'opportunity_inbox'
+  | 'interruption_governor'
+  | 'deliberation_run'
+  | 'proposal_acceptance'
+  | 'research_gate'
+  | 'kira_handoff'
+  | 'safe_action_plan'
+  | 'bounded_work_order'
+  | 'approved_command_policy'
+  | 'autonomy_execution';
+
+export interface AoiActionLadderAction {
+  version: 1;
+  level: AoiActionLadderLevel;
+  kind: string;
+  label: string;
+  existingGate: AoiActionLadderExistingGate;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiActionLadderBlockedAction {
+  version: 1;
+  level: AoiActionLadderLevel;
+  kind: string;
+  label: string;
+  reason: string;
+  existingGate: AoiActionLadderExistingGate;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiActionLadderApprovalNeed {
+  version: 1;
+  level: AoiActionLadderLevel;
+  label: string;
+  requiredAutonomyLevel?: AoiAutonomyLevel;
+  approvalRef?: string;
+  approvalFingerprint?: string;
+  reason: string;
+  satisfied: boolean;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiActionLadderDecision {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  opportunityId: string;
+  opportunityDedupeKey: string;
+  currentLevel: AoiActionLadderLevel;
+  nextLevel?: AoiActionLadderLevel;
+  levelLabel: string;
+  nextLevelLabel?: string;
+  summaryLabel: string;
+  allowedActions: AoiActionLadderAction[];
+  blockedActions: AoiActionLadderBlockedAction[];
+  approvalNeeds: AoiActionLadderApprovalNeed[];
+  evidenceNeeds: string[];
+  safeFallback: string;
+  connectionLabels: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiObservationSource =
   | 'chat'
   | 'tool'
