@@ -123,6 +123,7 @@ export interface AoiJarvisAutonomyGovernorPanelSummary {
   capabilityGapLabels: string[];
   upgradePlanLabels: string[];
   responseContractLabels: string[];
+  requestScenarioLabels: string[];
   blockerLabels: string[];
   whyNotJarvisYetLabels: string[];
   nextUpgradeActionLabel: string;
@@ -185,6 +186,27 @@ export interface AoiJarvisAutonomyGovernorResponseContract {
   allowedResponseLabels: string[];
   blockedResponseLabels: string[];
   requiredDisclosureLabels: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export type AoiJarvisAutonomyGovernorRequestScenarioKind =
+  | 'capability_question'
+  | 'proactive_research'
+  | 'direct_chat_delivery'
+  | 'prepare_action'
+  | 'app_action'
+  | 'command_execution';
+
+export interface AoiJarvisAutonomyGovernorRequestScenarioGuidance {
+  version: 1;
+  kind: AoiJarvisAutonomyGovernorRequestScenarioKind;
+  requestLabel: string;
+  requiredCapability: AoiJarvisAutonomyCapability;
+  allowed: boolean;
+  responseLabel: string;
+  safeFallbackLabel: string;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -1339,6 +1361,121 @@ export function buildAoiJarvisAutonomyGovernorResponseContract(
   };
 }
 
+const REQUEST_SCENARIO_DEFINITIONS: Array<{
+  kind: AoiJarvisAutonomyGovernorRequestScenarioKind;
+  requestLabel: string;
+  requiredCapability: AoiJarvisAutonomyCapability;
+  allowedTemplate: string;
+  fallbackTemplate: string;
+}> = [
+  {
+    kind: 'capability_question',
+    requestLabel: 'When the user asks what Aoi can do now',
+    requiredCapability: 'observe',
+    allowedTemplate:
+      'Answer directly with the current ceiling, allowed capability list, blocked capability list, and next evidence step.',
+    fallbackTemplate:
+      'Explain that no current governor decision is available and ask to refresh Aoi autonomy state.',
+  },
+  {
+    kind: 'proactive_research',
+    requestLabel: 'When the user asks Aoi to research or monitor a topic',
+    requiredCapability: 'research',
+    allowedTemplate:
+      'Use allowed research/observation surfaces and summarize findings with evidence; avoid claiming background execution beyond configured schedulers.',
+    fallbackTemplate:
+      'Offer an evidence checklist or ask for permission to enable the required research surface.',
+  },
+  {
+    kind: 'direct_chat_delivery',
+    requestLabel: 'When the user asks Aoi to proactively message or interrupt',
+    requiredCapability: 'direct_chat',
+    allowedTemplate:
+      'Deliver a concise direct-chat style answer only when direct chat and source freshness gates are open.',
+    fallbackTemplate:
+      'Keep the response inline/quiet, name the direct-chat blocker, and offer the next evidence step.',
+  },
+  {
+    kind: 'prepare_action',
+    requestLabel: 'When the user asks Aoi to prepare a concrete action',
+    requiredCapability: 'prepare_action',
+    allowedTemplate:
+      'Prepare a dry-run plan, inputs, risks, and approval checklist without mutating apps or commands.',
+    fallbackTemplate:
+      'Explain why action preparation is gated and provide a smaller inspect-only or research-only plan.',
+  },
+  {
+    kind: 'app_action',
+    requestLabel: 'When the user asks Aoi to change an in-app setting or app state',
+    requiredCapability: 'app_action',
+    allowedTemplate:
+      'Use only existing approved app-action gates and name the exact app surface involved.',
+    fallbackTemplate:
+      'Do not say the whole app cannot be controlled; name the missing approved app-action gate and offer inspect or dry-run steps.',
+  },
+  {
+    kind: 'command_execution',
+    requestLabel: 'When the user asks Aoi to run a command or mutation',
+    requiredCapability: 'command',
+    allowedTemplate:
+      'Use existing explicit approval gates only; summarize command intent, scope, risk, and expected evidence first.',
+    fallbackTemplate:
+      'Refuse autonomous execution, explain the command gate, and offer a reviewable command plan.',
+  },
+];
+
+export function buildAoiJarvisAutonomyGovernorRequestScenarios(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  options: { maxItems?: number } = {},
+): AoiJarvisAutonomyGovernorRequestScenarioGuidance[] {
+  const maxItems = Math.max(
+    0,
+    Math.min(options.maxItems ?? 6, REQUEST_SCENARIO_DEFINITIONS.length),
+  );
+  if (!decision || maxItems === 0) {
+    return [];
+  }
+
+  const gaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, {
+    maxItems: CAPABILITY_ORDER.length,
+  });
+  return REQUEST_SCENARIO_DEFINITIONS.map(
+    (scenario): AoiJarvisAutonomyGovernorRequestScenarioGuidance => {
+      const allowed = canAoiJarvisAutonomyUseCapability(decision, scenario.requiredCapability);
+      const capabilityLabel = CAPABILITY_LABELS[scenario.requiredCapability];
+      const gap = gaps.find((item) => item.capability === scenario.requiredCapability);
+      const responseLabel = allowed
+        ? `${scenario.requestLabel}: ${scenario.allowedTemplate}`
+        : `${scenario.requestLabel}: blocked for ${capabilityLabel}. ${
+            gap?.reason ?? `${capabilityLabel} is not available at ${decision.modeLabel}.`
+          }`;
+      const safeFallbackLabel = allowed
+        ? `Still respect existing approval gates: ${scenario.allowedTemplate}`
+        : `${scenario.fallbackTemplate} Next: ${gap?.nextAction ?? decision.nextUpgradeAction}`;
+
+      return {
+        version: 1,
+        kind: scenario.kind,
+        requestLabel: scenario.requestLabel,
+        requiredCapability: scenario.requiredCapability,
+        allowed,
+        responseLabel,
+        safeFallbackLabel,
+        evidenceRefs: uniqueLabels(
+          [
+            ...(gap?.evidenceRefs ?? []),
+            ...decision.nextUpgradeEvidenceRefs,
+            ...decision.evidenceRefs,
+          ],
+          10,
+        ),
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      };
+    },
+  ).slice(0, maxItems);
+}
+
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
 ): AoiJarvisAutonomyGovernorPanelSummary {
@@ -1352,6 +1489,7 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       capabilityGapLabels: [],
       upgradePlanLabels: [],
       responseContractLabels: [],
+      requestScenarioLabels: [],
       blockerLabels: [],
       whyNotJarvisYetLabels: [],
       nextUpgradeActionLabel: 'Refresh Aoi autonomy state.',
@@ -1365,6 +1503,9 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
   const capabilityGaps = buildAoiJarvisAutonomyGovernorCapabilityGaps(decision, { maxItems: 6 });
   const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 3 });
   const responseContract = buildAoiJarvisAutonomyGovernorResponseContract(decision);
+  const requestScenarios = buildAoiJarvisAutonomyGovernorRequestScenarios(decision, {
+    maxItems: 6,
+  });
   return {
     visible: true,
     modeLabel: decision.modeLabel,
@@ -1381,6 +1522,14 @@ export function buildAoiJarvisAutonomyGovernorPanelSummary(
       ...responseContract.blockedResponseLabels,
       ...responseContract.requiredDisclosureLabels,
     ].slice(0, 6),
+    requestScenarioLabels: requestScenarios
+      .map(
+        (scenario) =>
+          `${scenario.allowed ? 'Allowed' : 'Blocked'} ${scenario.requestLabel}: ${
+            scenario.allowed ? scenario.responseLabel : scenario.safeFallbackLabel
+          }`,
+      )
+      .slice(0, 6),
     blockerLabels: decision.blockers
       .filter((blocker) => blocker.severity !== 'info')
       .map((blocker) => `${blocker.label}: ${blocker.reason}`)
@@ -1977,6 +2126,21 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
       4,
     )) {
       lines.push(`  - Response rule: ${normalizePromptLabel(label, '', 220)}.`);
+    }
+    for (const scenario of buildAoiJarvisAutonomyGovernorRequestScenarios(decision, {
+      maxItems: 4,
+    })) {
+      lines.push(
+        `- Request scenario: ${scenario.allowed ? 'allowed' : 'blocked'} ${normalizePromptLabel(
+          scenario.requestLabel,
+          '',
+          120,
+        )}; ${normalizePromptLabel(
+          scenario.allowed ? scenario.responseLabel : scenario.safeFallbackLabel,
+          '',
+          220,
+        )}.`,
+      );
     }
     const upgradePlan = buildAoiJarvisAutonomyGovernorUpgradePlan(decision, { maxSteps: 2 });
     lines.push(`- Upgrade plan: ${normalizePromptLabel(upgradePlan.summaryLabel, '', 240)}.`);

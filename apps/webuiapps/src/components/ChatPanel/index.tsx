@@ -11609,6 +11609,13 @@ const SettingsModal: React.FC<{
                                 </div>
                               ),
                             )}
+                            {aoiJarvisAutonomyGovernorSummary.requestScenarioLabels.map(
+                              (label, index) => (
+                                <div key={`jarvis-governor-request-scenario-${index}`}>
+                                  Scenario: {sanitizeAoiProposalDisplayText(label, 300)}
+                                </div>
+                              ),
+                            )}
                             {aoiJarvisAutonomyGovernorSummary.blockerLabels.map((label, index) => (
                               <div key={`jarvis-governor-blocker-${index}`}>
                                 Blocker: {sanitizeAoiProposalDisplayText(label, 260)}
