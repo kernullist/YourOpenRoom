@@ -215,6 +215,27 @@ export interface AoiJarvisAutonomyGovernorRequestScenarioGuidance {
   mutationCount: 0;
 }
 
+export type AoiJarvisAutonomyGovernorRequestRoutingStatus =
+  | 'missing_request'
+  | 'unmatched'
+  | 'single_intent'
+  | 'multi_intent';
+
+export interface AoiJarvisAutonomyGovernorRequestRoutingSummary {
+  version: 1;
+  visible: boolean;
+  status: AoiJarvisAutonomyGovernorRequestRoutingStatus;
+  primaryScenarioKind: AoiJarvisAutonomyGovernorRequestScenarioKind | null;
+  primaryCapability: AoiJarvisAutonomyCapability | null;
+  summaryLabel: string;
+  allowedMatchedLabels: string[];
+  blockedMatchedLabels: string[];
+  responseDirectiveLabel: string;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiJarvisAutonomyGovernorAuditEventKind =
   | 'snapshot'
   | 'mode_change'
@@ -1626,6 +1647,102 @@ export function buildAoiJarvisAutonomyGovernorRequestScenarios(
     .slice(0, maxItems);
 }
 
+export function buildAoiJarvisAutonomyGovernorRequestRoutingSummary(
+  decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
+  options: {
+    requestText?: string | null;
+    maxMatchedItems?: number;
+  } = {},
+): AoiJarvisAutonomyGovernorRequestRoutingSummary {
+  const requestText = normalizeAuditLabel(options.requestText, '', 600);
+  if (!decision || !requestText) {
+    return {
+      version: 1,
+      visible: false,
+      status: 'missing_request',
+      primaryScenarioKind: null,
+      primaryCapability: null,
+      summaryLabel: 'No latest user request was available for request routing.',
+      allowedMatchedLabels: [],
+      blockedMatchedLabels: [],
+      responseDirectiveLabel: 'Use the generic governor response contract.',
+      evidenceRefs: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const scenarios = buildAoiJarvisAutonomyGovernorRequestScenarios(decision, {
+    maxItems: REQUEST_SCENARIO_DEFINITIONS.length,
+    requestText,
+  });
+  const maxMatchedItems = Math.max(1, Math.min(options.maxMatchedItems ?? 4, 6));
+  const matchedScenarios = scenarios
+    .filter((scenario) => scenario.requestMatchScore > 0)
+    .slice(0, maxMatchedItems);
+  if (matchedScenarios.length === 0) {
+    return {
+      version: 1,
+      visible: true,
+      status: 'unmatched',
+      primaryScenarioKind: null,
+      primaryCapability: null,
+      summaryLabel: 'No governor request scenario directly matched the latest user request.',
+      allowedMatchedLabels: [],
+      blockedMatchedLabels: [],
+      responseDirectiveLabel:
+        'Ask a clarifying question or answer from the generic governor contract before claiming app, command, or proactive delivery capability.',
+      evidenceRefs: uniqueLabels(['request-routing:unmatched', ...decision.evidenceRefs], 10),
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const allowedMatched = matchedScenarios.filter((scenario) => scenario.allowed);
+  const blockedMatched = matchedScenarios.filter((scenario) => !scenario.allowed);
+  const primaryScenario = matchedScenarios[0];
+  const status: AoiJarvisAutonomyGovernorRequestRoutingStatus =
+    matchedScenarios.length > 1 ? 'multi_intent' : 'single_intent';
+  const allowedMatchedLabels = allowedMatched.map(
+    (scenario) =>
+      `${scenario.requestLabel} -> ${CAPABILITY_LABELS[scenario.requiredCapability]} allowed.`,
+  );
+  const blockedMatchedLabels = blockedMatched.map(
+    (scenario) =>
+      `${scenario.requestLabel} -> ${CAPABILITY_LABELS[scenario.requiredCapability]} blocked. ${scenario.safeFallbackLabel}`,
+  );
+  const responseDirectiveLabel =
+    allowedMatched.length > 0 && blockedMatched.length > 0
+      ? 'Decompose the request: handle only the allowed part within existing gates, explicitly name each blocked part, and offer the safe fallback for blocked app or command actions.'
+      : blockedMatched.length > 0
+        ? 'Do not execute the matched request. Name the blocked capability, explain the exact gate, and offer a dry-run, inspect-only, or approval checklist path.'
+        : 'Proceed only within the matched allowed capability and keep existing approval gates intact.';
+
+  return {
+    version: 1,
+    visible: true,
+    status,
+    primaryScenarioKind: primaryScenario.kind,
+    primaryCapability: primaryScenario.requiredCapability,
+    summaryLabel: `${status === 'multi_intent' ? 'Multiple' : 'Single'} matched request scenario(s): ${matchedScenarios
+      .map((scenario) => scenario.kind)
+      .join(', ')}.`,
+    allowedMatchedLabels: uniqueLabels(allowedMatchedLabels, maxMatchedItems),
+    blockedMatchedLabels: uniqueLabels(blockedMatchedLabels, maxMatchedItems),
+    responseDirectiveLabel,
+    evidenceRefs: uniqueLabels(
+      [
+        `request-routing:${status}`,
+        ...matchedScenarios.flatMap((scenario) => scenario.evidenceRefs),
+        ...decision.evidenceRefs,
+      ],
+      12,
+    ),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 export function buildAoiJarvisAutonomyGovernorPanelSummary(
   decision: AoiJarvisAutonomyGovernorDecision | null | undefined,
 ): AoiJarvisAutonomyGovernorPanelSummary {
@@ -2282,6 +2399,28 @@ export function buildAoiJarvisAutonomyGovernorPromptBlock(params: {
       lines.push(
         '- Latest request routing: prioritize matched request scenarios below; use unmatched scenarios only as fallback guidance.',
       );
+    }
+    const requestRoutingSummary = buildAoiJarvisAutonomyGovernorRequestRoutingSummary(decision, {
+      requestText: params.latestUserMessage,
+    });
+    if (requestRoutingSummary.visible) {
+      lines.push(
+        `- Request routing summary: ${requestRoutingSummary.status}; ${normalizePromptLabel(
+          requestRoutingSummary.summaryLabel,
+          '',
+          180,
+        )} Directive: ${normalizePromptLabel(
+          requestRoutingSummary.responseDirectiveLabel,
+          '',
+          260,
+        )}.`,
+      );
+      for (const label of uniqueLabels(requestRoutingSummary.allowedMatchedLabels, 2)) {
+        lines.push(`  - Matched allowed part: ${normalizePromptLabel(label, '', 220)}`);
+      }
+      for (const label of uniqueLabels(requestRoutingSummary.blockedMatchedLabels, 2)) {
+        lines.push(`  - Matched blocked part: ${normalizePromptLabel(label, '', 260)}`);
+      }
     }
     for (const scenario of buildAoiJarvisAutonomyGovernorRequestScenarios(decision, {
       maxItems: 4,

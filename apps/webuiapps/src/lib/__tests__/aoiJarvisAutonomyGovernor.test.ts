@@ -14,6 +14,7 @@ import {
   buildAoiJarvisAutonomyGovernorPromptBlock,
   buildAoiJarvisAutonomyGovernorPanelSummary,
   buildAoiJarvisAutonomyGovernorResponseContract,
+  buildAoiJarvisAutonomyGovernorRequestRoutingSummary,
   buildAoiJarvisAutonomyGovernorRequestScenarios,
   canAoiJarvisAutonomyUseCapability,
   normalizeAoiJarvisAutonomyGovernorAuditResetAudit,
@@ -548,6 +549,43 @@ describe('Aoi Jarvis autonomy governor', () => {
     expect(block).toContain('Latest request routing');
     expect(block).toContain('Matched request scenario: blocked When the user asks Aoi to change');
     expect(block).toContain('Do not say the whole app cannot be controlled');
+  });
+
+  it('summarizes mixed request routing without granting action authority', () => {
+    const governor = buildAoiJarvisAutonomyGovernor({
+      sessionPath: 'aoi/default',
+      now: 4000,
+      policy: makePolicy({ level: 'L3' }),
+      operatorHealth: makeHealth(),
+      sourceFreshnessContracts: [makeSource()],
+      proactiveTrendAdvisor: makeTrend(),
+      ttsEnabled: true,
+    });
+    const mixedRequest = 'RE 최신 동향을 조사하고 Kira 모델 설정도 변경해줘';
+    const summary = buildAoiJarvisAutonomyGovernorRequestRoutingSummary(governor, {
+      requestText: mixedRequest,
+    });
+    const block = buildAoiJarvisAutonomyGovernorPromptBlock({
+      decision: governor,
+      latestUserMessage: mixedRequest,
+      maxChars: 4600,
+    });
+
+    expect(summary).toMatchObject({
+      visible: true,
+      status: 'multi_intent',
+      primaryScenarioKind: 'app_action',
+      primaryCapability: 'app_action',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(summary.allowedMatchedLabels.join(' ')).toContain('Research allowed');
+    expect(summary.blockedMatchedLabels.join(' ')).toContain('Approved app action blocked');
+    expect(summary.responseDirectiveLabel).toContain('Decompose the request');
+    expect(summary.evidenceRefs).toContain('request-routing:multi_intent');
+    expect(block).toContain('Request routing summary: multi_intent');
+    expect(block).toContain('Matched allowed part');
+    expect(block).toContain('Matched blocked part');
   });
 
   it('records display-only audit events and dedupes repeated governor decisions', () => {
