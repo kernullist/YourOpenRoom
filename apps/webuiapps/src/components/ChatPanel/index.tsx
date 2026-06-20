@@ -261,6 +261,7 @@ import {
   AOI_AUTONOMY_UI_LEVELS,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
@@ -9123,10 +9124,23 @@ const SettingsModal: React.FC<{
   );
   const runAoiAgendaNudgeReadinessAction = useCallback(
     (actionId: AoiAgendaNudgeReadinessActionId) => {
+      const action = aoiAgendaNudgeReadinessSummary.actions.find((item) => item.id === actionId);
+      const audit = action
+        ? buildAoiAgendaNudgeReadinessActionAudit({
+            action,
+            summary: aoiAgendaNudgeReadinessSummary,
+          })
+        : null;
       if (actionId === 'enable_notifications') {
-        onUpdateAoiAutonomyPanelSettings({ notificationsEnabled: true });
+        onUpdateAoiAutonomyPanelSettings({
+          notificationsEnabled: true,
+          ...(audit ? { agendaNudgeReadinessLastAction: audit } : {}),
+        });
       } else if (actionId === 'disable_quiet_mode') {
-        onUpdateAoiAutonomyPanelSettings({ quietMode: false });
+        onUpdateAoiAutonomyPanelSettings({
+          quietMode: false,
+          ...(audit ? { agendaNudgeReadinessLastAction: audit } : {}),
+        });
       } else if (actionId === 'raise_session_cap') {
         onUpdateAoiAutonomyPanelSettings({
           maxSuggestionsPerSession: Math.min(
@@ -9137,16 +9151,27 @@ const SettingsModal: React.FC<{
               1,
             ),
           ),
+          ...(audit ? { agendaNudgeReadinessLastAction: audit } : {}),
         });
       } else if (actionId === 'reset_feedback_mute') {
-        onUpdateAoiAutonomyPanelSettings({ agendaNudgeCalibration: null });
+        onUpdateAoiAutonomyPanelSettings({
+          agendaNudgeCalibration: null,
+          ...(audit ? { agendaNudgeReadinessLastAction: audit } : {}),
+        });
       } else if (actionId === 'refresh_autonomy') {
+        if (audit) {
+          onUpdateAoiAutonomyPanelSettings({ agendaNudgeReadinessLastAction: audit });
+        }
         void onRefreshAoiAutonomy();
       } else if (actionId === 'run_check') {
+        if (audit) {
+          onUpdateAoiAutonomyPanelSettings({ agendaNudgeReadinessLastAction: audit });
+        }
         void onRunAoiAutonomyCheck();
       }
     },
     [
+      aoiAgendaNudgeReadinessSummary,
       aoiAutonomyPanelSettings.maxSuggestionsPerSession,
       aoiInlineShownCount,
       onRefreshAoiAutonomy,
@@ -11194,6 +11219,9 @@ const SettingsModal: React.FC<{
                             ))}
                             {aoiAgendaNudgeReadinessSummary.evidenceRefs.map((ref, index) => (
                               <div key={`agenda-readiness-evidence-${index}`}>Evidence: {ref}</div>
+                            ))}
+                            {aoiAgendaNudgeReadinessSummary.lastActionLabels.map((label, index) => (
+                              <div key={`agenda-readiness-audit-${index}`}>{label}</div>
                             ))}
                           </div>
                           {aoiAgendaNudgeReadinessSummary.actions.length > 0 && (

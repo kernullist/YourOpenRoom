@@ -155,6 +155,16 @@ export interface AoiAgendaNudgeReadinessAction {
   title: string;
 }
 
+export interface AoiAgendaNudgeReadinessActionAudit {
+  version: 1;
+  actionId: AoiAgendaNudgeReadinessActionId;
+  actionLabel: string;
+  recordedAt: number;
+  statusBefore: string;
+  candidateBefore: string;
+  safetyBoundary: string;
+}
+
 export interface AoiAgendaNudgeReadinessPanelSummary {
   visible: boolean;
   statusLabel: string;
@@ -163,6 +173,7 @@ export interface AoiAgendaNudgeReadinessPanelSummary {
   reasonLabels: string[];
   nextActionLabels: string[];
   actions: AoiAgendaNudgeReadinessAction[];
+  lastActionLabels: string[];
   evidenceRefs: string[];
   tone: 'ready' | 'waiting' | 'blocked';
 }
@@ -205,6 +216,7 @@ export interface AoiAutonomyPanelSettings {
   quietMode: boolean;
   maxSuggestionsPerSession: number;
   agendaNudgeCalibration?: AoiAgendaNudgeCalibrationState | null;
+  agendaNudgeReadinessLastAction?: AoiAgendaNudgeReadinessActionAudit | null;
 }
 
 export interface AoiAutonomyNotificationBadge {
@@ -643,6 +655,7 @@ export const DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS: AoiAutonomyPanelSettings = {
   quietMode: false,
   maxSuggestionsPerSession: AOI_INLINE_SUGGESTION_MAX_PER_SESSION,
   agendaNudgeCalibration: null,
+  agendaNudgeReadinessLastAction: null,
 };
 
 function clamp(value: number, min: number, max: number): number {
@@ -684,6 +697,19 @@ function normalizeAoiAgendaNudgeFeedbackKind(value: unknown): AoiAgendaNudgeFeed
     : null;
 }
 
+function normalizeAoiAgendaNudgeReadinessActionId(
+  value: unknown,
+): AoiAgendaNudgeReadinessActionId | null {
+  return value === 'enable_notifications' ||
+    value === 'disable_quiet_mode' ||
+    value === 'raise_session_cap' ||
+    value === 'reset_feedback_mute' ||
+    value === 'refresh_autonomy' ||
+    value === 'run_check'
+    ? value
+    : null;
+}
+
 export function normalizeAoiAgendaNudgeCalibration(
   value: unknown,
 ): AoiAgendaNudgeCalibrationState | null {
@@ -715,6 +741,46 @@ export function normalizeAoiAgendaNudgeCalibration(
   };
 }
 
+export function normalizeAoiAgendaNudgeReadinessActionAudit(
+  value: unknown,
+): AoiAgendaNudgeReadinessActionAudit | null {
+  const raw =
+    value && typeof value === 'object' && !Array.isArray(value)
+      ? (value as Partial<AoiAgendaNudgeReadinessActionAudit>)
+      : null;
+  if (!raw) {
+    return null;
+  }
+
+  const actionId = normalizeAoiAgendaNudgeReadinessActionId(raw.actionId);
+  const recordedAt = normalizeTimestampOrNull(raw.recordedAt);
+  if (!actionId || !recordedAt) {
+    return null;
+  }
+
+  return {
+    version: 1,
+    actionId,
+    actionLabel:
+      typeof raw.actionLabel === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.actionLabel, 120)
+        : actionId.replace(/_/g, ' '),
+    recordedAt,
+    statusBefore:
+      typeof raw.statusBefore === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.statusBefore, 120)
+        : 'unknown',
+    candidateBefore:
+      typeof raw.candidateBefore === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.candidateBefore, 180)
+        : 'unknown',
+    safetyBoundary:
+      typeof raw.safetyBoundary === 'string'
+        ? sanitizeAoiProposalDisplayText(raw.safetyBoundary, 240)
+        : 'Local readiness recovery only; no tools, app actions, policy bypass, or execution gates were run.',
+  };
+}
+
 export function normalizeAoiAutonomyPanelSettings(
   value: unknown,
   fallback: AoiAutonomyPanelSettings = DEFAULT_AOI_AUTONOMY_PANEL_SETTINGS,
@@ -735,6 +801,10 @@ export function normalizeAoiAutonomyPanelSettings(
     agendaNudgeCalibration:
       normalizeAoiAgendaNudgeCalibration(raw.agendaNudgeCalibration) ??
       fallback.agendaNudgeCalibration ??
+      null,
+    agendaNudgeReadinessLastAction:
+      normalizeAoiAgendaNudgeReadinessActionAudit(raw.agendaNudgeReadinessLastAction) ??
+      fallback.agendaNudgeReadinessLastAction ??
       null,
   };
 }
@@ -2494,6 +2564,39 @@ function formatAoiAgendaNudgeWait(waitMs: number): string {
   return `${hours} hour${hours === 1 ? '' : 's'}`;
 }
 
+function buildAoiAgendaNudgeReadinessAuditLabels(
+  audit: AoiAgendaNudgeReadinessActionAudit | null | undefined,
+): string[] {
+  const normalized = normalizeAoiAgendaNudgeReadinessActionAudit(audit);
+  if (!normalized) {
+    return [];
+  }
+
+  return [
+    `Last recovery: ${normalized.actionLabel} while ${normalized.statusBefore}.`,
+    `Candidate then: ${normalized.candidateBefore}.`,
+    `Boundary: ${normalized.safetyBoundary}`,
+    `Recorded: ${new Date(normalized.recordedAt).toLocaleString()}.`,
+  ];
+}
+
+export function buildAoiAgendaNudgeReadinessActionAudit(params: {
+  action: AoiAgendaNudgeReadinessAction;
+  summary: Pick<AoiAgendaNudgeReadinessPanelSummary, 'statusLabel' | 'candidateLabel'>;
+  now?: number;
+}): AoiAgendaNudgeReadinessActionAudit {
+  return {
+    version: 1,
+    actionId: params.action.id,
+    actionLabel: sanitizeAoiProposalDisplayText(params.action.label, 120),
+    recordedAt: Math.round(params.now ?? Date.now()),
+    statusBefore: sanitizeAoiProposalDisplayText(params.summary.statusLabel, 120),
+    candidateBefore: sanitizeAoiProposalDisplayText(params.summary.candidateLabel, 180),
+    safetyBoundary:
+      'Local readiness recovery only; no tools, app actions, policy bypass, or execution gates were run.',
+  };
+}
+
 export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
   status?: AoiAutonomyStatus | null;
   activeProposals?: AoiProposal[];
@@ -2511,6 +2614,9 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
   const blockedProposals = params.blockedProposals ?? [];
   const approvalCount = params.digest?.approvalInbox.length ?? 0;
   const summaryCountLabel = `${activeProposals.length} active, ${blockedProposals.length} blocked, ${approvalCount} approval`;
+  const lastActionLabels = buildAoiAgendaNudgeReadinessAuditLabels(
+    settings.agendaNudgeReadinessLastAction,
+  );
 
   const blockedSummary = (
     statusLabel: string,
@@ -2527,6 +2633,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
     reasonLabels,
     nextActionLabels,
     actions,
+    lastActionLabels,
     evidenceRefs,
     tone: 'blocked',
   });
@@ -2713,6 +2820,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
             title: 'Refresh Aoi autonomy state after waiting for cooldown',
           },
         ],
+        lastActionLabels,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -2735,6 +2843,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
             title: 'Run a bounded manual Aoi check for fresh agenda candidates',
           },
         ],
+        lastActionLabels,
         evidenceRefs: candidate.evidenceRefs,
         tone: 'waiting',
       };
@@ -2752,6 +2861,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         'Aoi can surface the nudge as a compact chat message without running tools or app actions.',
       ],
       actions: [],
+      lastActionLabels,
       evidenceRefs: candidate.evidenceRefs,
       tone: 'ready',
     };
@@ -2780,6 +2890,7 @@ export function buildAoiAgendaNudgeReadinessPanelSummary(params: {
         title: 'Refresh Aoi autonomy state before checking again',
       },
     ],
+    lastActionLabels,
     evidenceRefs: [],
     tone: 'waiting',
   };

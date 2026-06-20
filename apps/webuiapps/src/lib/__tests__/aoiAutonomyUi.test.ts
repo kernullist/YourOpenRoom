@@ -9,6 +9,7 @@ import {
   AOI_AUTONOMY_PANEL_SETTINGS_KEY,
   buildAoiAgendaChatFollowUpContext,
   buildAoiAgendaChatFollowUpResponse,
+  buildAoiAgendaNudgeReadinessActionAudit,
   buildAoiAgendaNudgeCalibrationPanelSummary,
   buildAoiAgendaNudgeReadinessPanelSummary,
   buildAoiAutonomyAgendaPanelSummary,
@@ -1148,6 +1149,35 @@ describe('Aoi autonomy UI helpers', () => {
     expect(notificationSummary.actions.map((action) => action.id)).toEqual([
       'enable_notifications',
     ]);
+    const notificationAudit = buildAoiAgendaNudgeReadinessActionAudit({
+      action: notificationSummary.actions[0],
+      summary: notificationSummary,
+      now: 7000,
+    });
+    expect(notificationAudit).toMatchObject({
+      actionId: 'enable_notifications',
+      actionLabel: 'Enable notifications',
+      statusBefore: 'notifications off',
+    });
+    expect(notificationAudit.safetyBoundary).toContain('no tools');
+    expect(notificationAudit.safetyBoundary).toContain('policy bypass');
+
+    const auditedNotificationSummary = buildAoiAgendaNudgeReadinessPanelSummary({
+      status: makeAutonomyStatus(),
+      activeProposals: [proposal],
+      settings: {
+        ...baseSettings,
+        notificationsEnabled: false,
+        agendaNudgeReadinessLastAction: notificationAudit,
+      },
+      options: {
+        now: 8000,
+      },
+    });
+    expect(auditedNotificationSummary.lastActionLabels.join(' ')).toContain('Enable notifications');
+    expect(auditedNotificationSummary.lastActionLabels.join(' ')).toContain(
+      'Local readiness recovery only',
+    );
 
     const quietSummary = buildAoiAgendaNudgeReadinessPanelSummary({
       status: makeAutonomyStatus(),
@@ -1341,6 +1371,16 @@ describe('Aoi autonomy UI helpers', () => {
         notificationsEnabled: true,
         quietMode: true,
         maxSuggestionsPerSession: 99,
+        agendaNudgeReadinessLastAction: {
+          version: 1,
+          actionId: 'disable_quiet_mode',
+          actionLabel: 'Leave quiet mode',
+          recordedAt: 7000,
+          statusBefore: 'quiet mode',
+          candidateBefore: '1 active, 0 blocked, 0 approval',
+          safetyBoundary:
+            'Local readiness recovery only; no tools, app actions, policy bypass, or execution gates were run.',
+        },
       },
       storageAdapter,
     );
@@ -1350,6 +1390,11 @@ describe('Aoi autonomy UI helpers', () => {
       notificationsEnabled: true,
       quietMode: true,
       maxSuggestionsPerSession: 12,
+      agendaNudgeReadinessLastAction: {
+        actionId: 'disable_quiet_mode',
+        actionLabel: 'Leave quiet mode',
+        recordedAt: 7000,
+      },
     });
     expect(storage.has(AOI_AUTONOMY_PANEL_SETTINGS_KEY)).toBe(true);
     expect(loadAoiAutonomyPanelSettings(storageAdapter)).toEqual(saved);
