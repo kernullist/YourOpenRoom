@@ -7,6 +7,8 @@ import {
   type AppIntentContract,
   type AppIntentExecutionKind,
 } from './appIntentContracts';
+import type { AoiEnvironmentSourceRegistry } from './aoiAutonomyTypes';
+import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 
 export type AoiCapabilityRisk = 'low' | 'medium' | 'high';
 
@@ -710,17 +712,66 @@ export function buildAoiCapabilityPrompt(toolNames: string[]): string {
 export type AoiCapabilityBrokerBand =
   | 'observe'
   | 'summarize'
+  | 'metadata_only'
+  | 'body_content'
   | 'prepare'
   | 'preview'
   | 'request_approval'
   | 'execute'
-  | 'rollback';
+  | 'rollback'
+  | 'audit';
 
 export type AoiCapabilityBrokerRollbackRequirement =
   | 'not_required'
   | 'required'
   | 'missing'
   | 'satisfied';
+
+export type AoiConnectorAuthoritySourceState =
+  | 'available'
+  | 'disconnected'
+  | 'revoked'
+  | 'disabled'
+  | 'stale'
+  | 'unknown';
+
+export type AoiConnectorAuthorityConsentState =
+  | 'not_required'
+  | 'required'
+  | 'missing'
+  | 'satisfied'
+  | 'revoked'
+  | 'disabled'
+  | 'disconnected';
+
+export interface AoiConnectorAuthorityConsentRequirement {
+  version: 1;
+  bodyContent: AoiConnectorAuthorityConsentState;
+  mutation: AoiConnectorAuthorityConsentState;
+  bodyContentReceiptRefs: string[];
+  mutationReceiptRefs: string[];
+  receiptRefs: string[];
+}
+
+export interface AoiConnectorAuthorityAuditEvent {
+  version: 1;
+  id: string;
+  decisionId: string;
+  connectorKind: 'app_capability' | 'personal_source' | 'unknown';
+  appName?: string;
+  sourceId?: string;
+  capabilityId?: string;
+  requestedBand: AoiCapabilityBrokerBand;
+  allowedBand: AoiCapabilityBrokerBand;
+  consentReceiptIds: string[];
+  mutationIntent: string;
+  expectedMutationCount: number;
+  mutationCount: 0;
+  blockedReasons: string[];
+  cannotKnow: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+}
 
 export interface AoiAppCapabilityDefinition {
   version: 1;
@@ -737,12 +788,16 @@ export interface AoiAppCapabilityDefinition {
   schemaId?: string;
   dataRoot?: string;
   supportedBands: AoiCapabilityBrokerBand[];
+  sourceState: AoiConnectorAuthoritySourceState;
+  bodyContentConsentReceiptRefs: string[];
+  mutationConsentReceiptRefs: string[];
   mutationCapable: boolean;
   destructive: boolean;
   external: boolean;
   requiresPreview: boolean;
   requiresApproval: boolean;
   rollbackEvidenceRequired: boolean;
+  auditRequired: boolean;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -770,7 +825,13 @@ export interface AoiCapabilityBrokerDecisionInput {
   requestedBand?: AoiCapabilityBrokerBand;
   approvalSatisfied?: boolean;
   approvalEvidenceRefs?: readonly string[];
+  previewEvidenceRefs?: readonly string[];
+  targetEvidenceRefs?: readonly string[];
   rollbackEvidenceRefs?: readonly string[];
+  consentReceiptRefs?: readonly string[];
+  bodyContentConsentReceiptRefs?: readonly string[];
+  mutationConsentReceiptRefs?: readonly string[];
+  additionalBlockedReasons?: readonly string[];
   evidenceRefs?: readonly string[];
   apps?: readonly (AppDef | AppIdentity)[];
 }
@@ -794,7 +855,13 @@ export interface AoiCapabilityBrokerDecision {
   approvalSatisfied: boolean;
   rollbackEvidenceRequirement: AoiCapabilityBrokerRollbackRequirement;
   rollbackEvidenceRefs: string[];
+  requiredConsent: AoiConnectorAuthorityConsentRequirement;
+  sourceState: AoiConnectorAuthoritySourceState;
   blockedReasons: string[];
+  cannotKnow: string[];
+  auditRequired: boolean;
+  authorityDecisionId: string;
+  auditEvent: AoiConnectorAuthorityAuditEvent;
   canExecute: boolean;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
@@ -817,24 +884,87 @@ export interface AoiAppCapabilityAuthoritySummary {
   unauthorizedMutationCount: 0;
 }
 
+export interface AoiConnectorAuthorityDecisionInput {
+  connectorKind: 'app_capability' | 'personal_source';
+  appReference?: string | number;
+  sourceId?: string;
+  capabilityId?: string;
+  intentReference?: string;
+  actionType?: string;
+  requestedOperation?: string;
+  requestedBand?: AoiCapabilityBrokerBand;
+  approvalSatisfied?: boolean;
+  approvalEvidenceRefs?: readonly string[];
+  previewEvidenceRefs?: readonly string[];
+  targetEvidenceRefs?: readonly string[];
+  rollbackEvidenceRefs?: readonly string[];
+  consentReceiptRefs?: readonly string[];
+  bodyContentConsentReceiptRefs?: readonly string[];
+  mutationConsentReceiptRefs?: readonly string[];
+  additionalBlockedReasons?: readonly string[];
+  evidenceRefs?: readonly string[];
+  apps?: readonly (AppDef | AppIdentity)[];
+  sourceRegistry?: AoiEnvironmentSourceRegistry | null;
+  sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
+}
+
+export interface AoiConnectorAuthorityDecision {
+  version: 1;
+  authorityDecisionId: string;
+  connectorKind: 'app_capability' | 'personal_source' | 'unknown';
+  appId: number | null;
+  appName: string;
+  displayName: string;
+  sourceId?: string;
+  sourceKind?: string;
+  capabilityId: string;
+  requestedOperation: string;
+  requestedBand: AoiCapabilityBrokerBand;
+  allowedBand: AoiCapabilityBrokerBand;
+  supportedBands: AoiCapabilityBrokerBand[];
+  sourceState: AoiConnectorAuthoritySourceState;
+  requiredConsent: AoiConnectorAuthorityConsentRequirement;
+  requiredApproval: boolean;
+  approvalSatisfied: boolean;
+  rollbackEvidenceRequirement: AoiCapabilityBrokerRollbackRequirement;
+  auditRequired: boolean;
+  auditEvent: AoiConnectorAuthorityAuditEvent;
+  blockedReasons: string[];
+  cannotKnow: string[];
+  canExecute: boolean;
+  bodyContentAuthorized: boolean;
+  mutationCapable: boolean;
+  mutationAuthorized: boolean;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+  unauthorizedMutationCount: 0;
+}
+
 export const AOI_CAPABILITY_BROKER_BANDS: AoiCapabilityBrokerBand[] = [
   'observe',
   'summarize',
+  'metadata_only',
+  'body_content',
   'prepare',
   'preview',
   'request_approval',
   'execute',
   'rollback',
+  'audit',
 ];
 
 const AOI_CAPABILITY_BROKER_BAND_ORDER: Record<AoiCapabilityBrokerBand, number> = {
   observe: 1,
   summarize: 2,
-  prepare: 3,
-  preview: 4,
-  request_approval: 5,
-  execute: 6,
-  rollback: 7,
+  metadata_only: 3,
+  body_content: 4,
+  prepare: 5,
+  preview: 6,
+  request_approval: 7,
+  execute: 8,
+  rollback: 9,
+  audit: 10,
 };
 
 function normalizeBrokerRef(value: unknown): string {
@@ -860,6 +990,97 @@ function uniqueBrokerStrings(values: Array<string | undefined | null>, limit = 2
     }
   }
   return result;
+}
+
+function stableAuthorityHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function makeAuthorityDecisionId(parts: Array<string | number | undefined | null>): string {
+  return `connector-authority:${stableAuthorityHash(parts.map((part) => String(part ?? '')).join('|'))}`;
+}
+
+function makeConsentRequirement(params: {
+  bodyContentState?: AoiConnectorAuthorityConsentState;
+  mutationState?: AoiConnectorAuthorityConsentState;
+  bodyContentReceiptRefs?: readonly string[];
+  mutationReceiptRefs?: readonly string[];
+  consentReceiptRefs?: readonly string[];
+}): AoiConnectorAuthorityConsentRequirement {
+  const bodyContentReceiptRefs = uniqueBrokerStrings(
+    [...(params.bodyContentReceiptRefs ?? []), ...(params.consentReceiptRefs ?? [])],
+    12,
+  );
+  const mutationReceiptRefs = uniqueBrokerStrings(
+    [...(params.mutationReceiptRefs ?? []), ...(params.consentReceiptRefs ?? [])],
+    12,
+  );
+  return {
+    version: 1,
+    bodyContent: params.bodyContentState ?? 'not_required',
+    mutation: params.mutationState ?? 'not_required',
+    bodyContentReceiptRefs,
+    mutationReceiptRefs,
+    receiptRefs: uniqueBrokerStrings([...bodyContentReceiptRefs, ...mutationReceiptRefs], 16),
+  };
+}
+
+function makeAuthorityAuditEvent(params: {
+  decisionId: string;
+  connectorKind: AoiConnectorAuthorityAuditEvent['connectorKind'];
+  appName?: string;
+  sourceId?: string;
+  capabilityId?: string;
+  requestedBand: AoiCapabilityBrokerBand;
+  allowedBand: AoiCapabilityBrokerBand;
+  requiredConsent: AoiConnectorAuthorityConsentRequirement;
+  mutationCapable?: boolean;
+  canExecute?: boolean;
+  blockedReasons?: readonly string[];
+  cannotKnow?: readonly string[];
+  evidenceRefs?: readonly string[];
+}): AoiConnectorAuthorityAuditEvent {
+  const blockedReasons = uniqueBrokerStrings([...(params.blockedReasons ?? [])], 24);
+  const evidenceRefs = uniqueBrokerStrings([...(params.evidenceRefs ?? [])], 24);
+  return {
+    version: 1,
+    id: `connector-authority-audit:${stableAuthorityHash(
+      [
+        params.decisionId,
+        params.connectorKind,
+        params.appName ?? '',
+        params.sourceId ?? '',
+        params.capabilityId ?? '',
+        params.requestedBand,
+        params.allowedBand,
+        blockedReasons.join(','),
+      ].join('|'),
+    )}`,
+    decisionId: params.decisionId,
+    connectorKind: params.connectorKind,
+    ...(params.appName ? { appName: params.appName } : {}),
+    ...(params.sourceId ? { sourceId: params.sourceId } : {}),
+    ...(params.capabilityId ? { capabilityId: params.capabilityId } : {}),
+    requestedBand: params.requestedBand,
+    allowedBand: params.allowedBand,
+    consentReceiptIds: params.requiredConsent.receiptRefs,
+    mutationIntent: params.mutationCapable
+      ? params.canExecute
+        ? 'execute_after_authority'
+        : 'mutation_requested_but_blocked'
+      : 'no_mutation_intent',
+    expectedMutationCount: params.mutationCapable ? 1 : 0,
+    mutationCount: 0,
+    blockedReasons,
+    cannotKnow: uniqueBrokerStrings([...(params.cannotKnow ?? [])], 12),
+    evidenceRefs,
+    actionAuthority: 'display_only',
+  };
 }
 
 function getAppField(app: AppDef | AppIdentity, field: 'aliases'): readonly string[] {
@@ -923,7 +1144,13 @@ function supportedBandsForContract(contract: AppIntentContract): AoiCapabilityBr
     contract.destructive ||
     contract.external ||
     contract.risk === 'high';
-  const bands = new Set<AoiCapabilityBrokerBand>(['observe', 'summarize', 'prepare']);
+  const bands = new Set<AoiCapabilityBrokerBand>([
+    'observe',
+    'summarize',
+    'metadata_only',
+    'prepare',
+    'audit',
+  ]);
 
   if (contract.execution.requires_preview || mutationCapable || isPreviewOnlyAppAction(contract)) {
     bands.add('preview');
@@ -963,6 +1190,9 @@ function capabilityFromContract(contract: AppIntentContract): AoiAppCapabilityDe
     ...(contract.execution.schema_id ? { schemaId: contract.execution.schema_id } : {}),
     ...(contract.execution.data_root ? { dataRoot: contract.execution.data_root } : {}),
     supportedBands: supportedBandsForContract(contract),
+    sourceState: 'available',
+    bodyContentConsentReceiptRefs: [],
+    mutationConsentReceiptRefs: [],
     mutationCapable,
     destructive: contract.destructive,
     external: contract.external,
@@ -970,6 +1200,7 @@ function capabilityFromContract(contract: AppIntentContract): AoiAppCapabilityDe
       contract.execution.requires_preview || (mutationCapable && !isPreviewOnlyAppAction(contract)),
     requiresApproval,
     rollbackEvidenceRequired: mutationCapable,
+    auditRequired: true,
     evidenceRefs: uniqueBrokerStrings(contract.evidence_refs, 12),
     actionAuthority: 'display_only',
     mutationCount: 0,
@@ -1027,6 +1258,15 @@ function inferRequestedBrokerBand(
 
   if (/\brollback|undo|revert|restore\b/i.test(operation)) {
     return 'rollback';
+  }
+  if (/\baudit|receipt|record\b/i.test(operation)) {
+    return 'audit';
+  }
+  if (/\bbody|content|message_text|full_text|raw_text|description\b/i.test(operation)) {
+    return 'body_content';
+  }
+  if (/\bmetadata|meta|state|count|status\b/i.test(operation)) {
+    return 'metadata_only';
   }
   if (
     /\bexecute|apply|save|create|update|delete|write|patch|run|start|switch|append|replace\b/i.test(
@@ -1086,6 +1326,8 @@ function safeBandAfterExecuteBlock(
 function buildUnknownCapabilityDecision(
   input: AoiCapabilityBrokerDecisionInput,
   requestedBand: AoiCapabilityBrokerBand,
+  app?: AoiAppCapabilityManifest | null,
+  reason = 'unknown_app_or_capability_manifest',
 ): AoiCapabilityBrokerDecision {
   const operation =
     input.requestedOperation ||
@@ -1093,11 +1335,42 @@ function buildUnknownCapabilityDecision(
     input.intentReference ||
     input.capabilityId ||
     'unknown';
+  const blockedReasons = uniqueBrokerStrings(
+    [reason, ...(input.additionalBlockedReasons ?? [])],
+    12,
+  );
+  const authorityDecisionId = makeAuthorityDecisionId([
+    app?.appName ?? input.appReference,
+    input.capabilityId ?? input.actionType ?? input.intentReference ?? 'unknown',
+    requestedBand,
+    blockedReasons.join(','),
+  ]);
+  const requiredConsent = makeConsentRequirement({});
+  const evidenceRefs = uniqueBrokerStrings(
+    [
+      ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...(app?.evidenceRefs ?? []),
+      `authority-decision:${authorityDecisionId}`,
+    ],
+    24,
+  );
+  const auditEvent = makeAuthorityAuditEvent({
+    decisionId: authorityDecisionId,
+    connectorKind: app ? 'app_capability' : 'unknown',
+    appName: app?.appName ?? String(input.appReference),
+    capabilityId: input.capabilityId ?? input.actionType ?? 'unknown',
+    requestedBand,
+    allowedBand: 'observe',
+    requiredConsent,
+    blockedReasons,
+    cannotKnow: ['Aoi cannot assume authority for an unregistered app capability.'],
+    evidenceRefs,
+  });
   return {
     version: 1,
-    appId: null,
-    appName: String(input.appReference),
-    displayName: String(input.appReference),
+    appId: app?.appId ?? null,
+    appName: app?.appName ?? String(input.appReference),
+    displayName: app?.displayName ?? String(input.appReference),
     capabilityId: input.capabilityId ?? 'unknown',
     requestedOperation: operation,
     requestedBand,
@@ -1110,9 +1383,15 @@ function buildUnknownCapabilityDecision(
     approvalSatisfied: false,
     rollbackEvidenceRequirement: 'not_required',
     rollbackEvidenceRefs: [],
-    blockedReasons: ['unknown_app_or_capability_manifest'],
+    requiredConsent,
+    sourceState: 'unknown',
+    blockedReasons,
+    cannotKnow: ['Aoi cannot assume authority for an unregistered app capability.'],
+    auditRequired: true,
+    authorityDecisionId,
+    auditEvent,
     canExecute: false,
-    evidenceRefs: uniqueBrokerStrings(input.evidenceRefs ? [...input.evidenceRefs] : [], 12),
+    evidenceRefs,
     actionAuthority: 'display_only',
     mutationCount: 0,
     unauthorizedMutationCount: 0,
@@ -1171,17 +1450,34 @@ export function decideAoiCapabilityBrokerAuthority(
     return buildUnknownCapabilityDecision(input, requestedBand);
   }
 
+  const explicitCapabilityRequest = [
+    input.capabilityId,
+    input.intentReference,
+    input.actionType,
+    input.requestedOperation,
+  ].some((value) => normalizeBrokerRef(value).length > 0);
+  const matchedCapability = manifest.capabilities.find((candidate) =>
+    capabilityMatchesRequest(candidate, input),
+  );
   const capability =
-    manifest.capabilities.find((candidate) => capabilityMatchesRequest(candidate, input)) ??
+    matchedCapability ??
     manifest.capabilities.find((candidate) => candidate.intent === 'inspect_state') ??
     manifest.capabilities[0] ??
     null;
   const finalRequestedBand = inferRequestedBrokerBand(input, capability);
+  if (!matchedCapability && explicitCapabilityRequest) {
+    return buildUnknownCapabilityDecision(
+      input,
+      finalRequestedBand,
+      manifest,
+      'unknown_capability',
+    );
+  }
   if (!capability) {
     return buildUnknownCapabilityDecision(input, finalRequestedBand);
   }
 
-  const blockedReasons: string[] = [];
+  const blockedReasons: string[] = [...(input.additionalBlockedReasons ?? [])];
   let allowedBand = finalRequestedBand;
   if (!capability.supportedBands.includes(finalRequestedBand)) {
     blockedReasons.push(`unsupported_band:${finalRequestedBand}`);
@@ -1189,11 +1485,40 @@ export function decideAoiCapabilityBrokerAuthority(
   }
 
   const approvalSatisfied = input.approvalSatisfied === true;
+  const approvalEvidenceRefs = uniqueBrokerStrings(
+    input.approvalEvidenceRefs ? [...input.approvalEvidenceRefs] : [],
+    12,
+  );
+  const previewEvidenceRefs = uniqueBrokerStrings(
+    input.previewEvidenceRefs ? [...input.previewEvidenceRefs] : [],
+    12,
+  );
+  const targetEvidenceRefs = uniqueBrokerStrings(
+    input.targetEvidenceRefs ? [...input.targetEvidenceRefs] : [],
+    12,
+  );
+  const bodyContentConsentReceiptRefs = uniqueBrokerStrings(
+    [
+      ...(input.bodyContentConsentReceiptRefs ?? []),
+      ...(input.consentReceiptRefs ?? []),
+      ...capability.bodyContentConsentReceiptRefs,
+    ],
+    12,
+  );
+  const mutationConsentReceiptRefs = uniqueBrokerStrings(
+    [
+      ...(input.mutationConsentReceiptRefs ?? []),
+      ...(input.consentReceiptRefs ?? []),
+      ...capability.mutationConsentReceiptRefs,
+    ],
+    12,
+  );
   const rollbackEvidenceRefs = uniqueBrokerStrings(
     input.rollbackEvidenceRefs ? [...input.rollbackEvidenceRefs] : [],
     12,
   );
   const executeLikeBand = finalRequestedBand === 'execute' || finalRequestedBand === 'rollback';
+  const bodyContentBand = finalRequestedBand === 'body_content';
   const rollbackEvidenceRequirement: AoiCapabilityBrokerRollbackRequirement =
     !capability.rollbackEvidenceRequired
       ? 'not_required'
@@ -1206,6 +1531,19 @@ export function decideAoiCapabilityBrokerAuthority(
   if (executeLikeBand && capability.requiresApproval && !approvalSatisfied) {
     blockedReasons.push('approval_required');
   }
+  if (executeLikeBand && capability.mutationCapable && mutationConsentReceiptRefs.length <= 0) {
+    blockedReasons.push('mutation_consent_receipt_required');
+  }
+  if (
+    executeLikeBand &&
+    capability.mutationCapable &&
+    approvalSatisfied &&
+    (approvalEvidenceRefs.length <= 0 ||
+      previewEvidenceRefs.length <= 0 ||
+      targetEvidenceRefs.length <= 0)
+  ) {
+    blockedReasons.push('approval_target_preview_mismatch');
+  }
   if (
     executeLikeBand &&
     capability.rollbackEvidenceRequired &&
@@ -1213,18 +1551,81 @@ export function decideAoiCapabilityBrokerAuthority(
   ) {
     blockedReasons.push('rollback_evidence_required');
   }
-  if (blockedReasons.length > 0 && executeLikeBand) {
+  if (bodyContentBand && bodyContentConsentReceiptRefs.length <= 0) {
+    blockedReasons.push('body_content_consent_receipt_required');
+  }
+  if (blockedReasons.length > 0 && (executeLikeBand || bodyContentBand)) {
     allowedBand = safeBandAfterExecuteBlock(capability.supportedBands, blockedReasons);
   }
 
   const requiredApproval =
     capability.requiresApproval || blockedReasons.includes('approval_required');
+  const requiredConsent = makeConsentRequirement({
+    bodyContentState: bodyContentBand
+      ? bodyContentConsentReceiptRefs.length > 0
+        ? 'satisfied'
+        : 'missing'
+      : 'not_required',
+    mutationState: !capability.mutationCapable
+      ? 'not_required'
+      : mutationConsentReceiptRefs.length > 0
+        ? 'satisfied'
+        : executeLikeBand
+          ? 'missing'
+          : 'required',
+    bodyContentReceiptRefs: bodyContentConsentReceiptRefs,
+    mutationReceiptRefs: mutationConsentReceiptRefs,
+  });
   const canExecute =
     finalRequestedBand === 'execute' &&
     allowedBand === 'execute' &&
     blockedReasons.length <= 0 &&
     (!requiredApproval || approvalSatisfied) &&
     rollbackEvidenceRequirement !== 'missing';
+  const finalBlockedReasons = uniqueBrokerStrings(blockedReasons, 12);
+  const authorityDecisionId = makeAuthorityDecisionId([
+    manifest.appName,
+    capability.id,
+    finalRequestedBand,
+    allowedBand,
+    finalBlockedReasons.join(','),
+    requiredConsent.receiptRefs.join(','),
+  ]);
+  const evidenceRefs = uniqueBrokerStrings(
+    [
+      `capability-broker-v3:${manifest.appName}:${capability.intent}`,
+      `authority-decision:${authorityDecisionId}`,
+      ...manifest.evidenceRefs,
+      ...capability.evidenceRefs,
+      ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...approvalEvidenceRefs,
+      ...previewEvidenceRefs,
+      ...targetEvidenceRefs,
+      ...rollbackEvidenceRefs,
+      ...requiredConsent.receiptRefs,
+    ],
+    24,
+  );
+  const cannotKnow =
+    finalBlockedReasons.length > 0
+      ? [
+          `Aoi cannot execute ${capability.title} until ${finalBlockedReasons.join(', ')} is resolved.`,
+        ]
+      : [];
+  const auditEvent = makeAuthorityAuditEvent({
+    decisionId: authorityDecisionId,
+    connectorKind: 'app_capability',
+    appName: manifest.appName,
+    capabilityId: capability.id,
+    requestedBand: finalRequestedBand,
+    allowedBand,
+    requiredConsent,
+    mutationCapable: capability.mutationCapable && executeLikeBand,
+    canExecute,
+    blockedReasons: finalBlockedReasons,
+    cannotKnow,
+    evidenceRefs,
+  });
 
   return {
     version: 1,
@@ -1246,23 +1647,297 @@ export function decideAoiCapabilityBrokerAuthority(
     approvalSatisfied,
     rollbackEvidenceRequirement,
     rollbackEvidenceRefs,
-    blockedReasons: uniqueBrokerStrings(blockedReasons, 8),
+    requiredConsent,
+    sourceState: capability.sourceState,
+    blockedReasons: finalBlockedReasons,
+    cannotKnow,
+    auditRequired: true,
+    authorityDecisionId,
+    auditEvent,
     canExecute,
-    evidenceRefs: uniqueBrokerStrings(
-      [
-        `capability-broker:${manifest.appName}:${capability.intent}`,
-        ...manifest.evidenceRefs,
-        ...capability.evidenceRefs,
-        ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
-        ...(input.approvalEvidenceRefs ? [...input.approvalEvidenceRefs] : []),
-        ...rollbackEvidenceRefs,
-      ],
-      24,
-    ),
+    evidenceRefs,
     actionAuthority: 'display_only',
     mutationCount: 0,
     unauthorizedMutationCount: 0,
   };
+}
+
+function sourceStateFromContract(
+  contract: AoiSourceFreshnessContract | undefined,
+): AoiConnectorAuthoritySourceState {
+  if (!contract) {
+    return 'unknown';
+  }
+  if (contract.consentState === 'disconnected' || contract.freshnessState === 'disconnected') {
+    return 'disconnected';
+  }
+  if (contract.consentState === 'revoked' || contract.freshnessState === 'revoked') {
+    return 'revoked';
+  }
+  if (contract.consentState === 'disabled' || contract.freshnessState === 'disabled') {
+    return 'disabled';
+  }
+  if (contract.freshnessState === 'stale' || contract.freshnessState === 'failed') {
+    return 'stale';
+  }
+  if (contract.freshnessState === 'unknown') {
+    return 'unknown';
+  }
+  return 'available';
+}
+
+function sourceConsentStateForBand(params: {
+  contract?: AoiSourceFreshnessContract;
+  requestedBand: AoiCapabilityBrokerBand;
+  receiptRefs: readonly string[];
+}): AoiConnectorAuthorityConsentState {
+  if (params.requestedBand !== 'body_content') {
+    return 'not_required';
+  }
+  const contract = params.contract;
+  if (!contract) {
+    return 'missing';
+  }
+  if (contract.consentState === 'revoked') {
+    return 'revoked';
+  }
+  if (contract.consentState === 'disabled') {
+    return 'disabled';
+  }
+  if (contract.consentState === 'disconnected') {
+    return 'disconnected';
+  }
+  if (
+    contract.bodyAccessState === 'body_disabled' ||
+    contract.bodyAccessState === 'metadata_only' ||
+    contract.bodyAccessState === 'withheld'
+  ) {
+    return 'missing';
+  }
+  return params.receiptRefs.length > 0 ? 'satisfied' : 'missing';
+}
+
+function supportedBandsForSource(
+  contract: AoiSourceFreshnessContract | undefined,
+): AoiCapabilityBrokerBand[] {
+  const bands = new Set<AoiCapabilityBrokerBand>([
+    'observe',
+    'summarize',
+    'metadata_only',
+    'audit',
+  ]);
+  if (contract?.bodyAccessState === 'not_applicable' && contract.consentState !== 'revoked') {
+    bands.add('body_content');
+  }
+  return AOI_CAPABILITY_BROKER_BANDS.filter((band) => bands.has(band));
+}
+
+function connectorDecisionFromBroker(
+  decision: AoiCapabilityBrokerDecision,
+): AoiConnectorAuthorityDecision {
+  return {
+    version: 1,
+    authorityDecisionId: decision.authorityDecisionId,
+    connectorKind: 'app_capability',
+    appId: decision.appId,
+    appName: decision.appName,
+    displayName: decision.displayName,
+    capabilityId: decision.capabilityId,
+    requestedOperation: decision.requestedOperation,
+    requestedBand: decision.requestedBand,
+    allowedBand: decision.allowedBand,
+    supportedBands: decision.supportedBands,
+    sourceState: decision.sourceState,
+    requiredConsent: decision.requiredConsent,
+    requiredApproval: decision.requiredApproval,
+    approvalSatisfied: decision.approvalSatisfied,
+    rollbackEvidenceRequirement: decision.rollbackEvidenceRequirement,
+    auditRequired: decision.auditRequired,
+    auditEvent: decision.auditEvent,
+    blockedReasons: decision.blockedReasons,
+    cannotKnow: decision.cannotKnow,
+    canExecute: decision.canExecute,
+    bodyContentAuthorized:
+      decision.requestedBand === 'body_content' &&
+      decision.requiredConsent.bodyContent === 'satisfied' &&
+      decision.blockedReasons.length <= 0,
+    mutationCapable: decision.mutationCapable,
+    mutationAuthorized: decision.canExecute && decision.mutationCapable,
+    evidenceRefs: decision.evidenceRefs,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    unauthorizedMutationCount: 0,
+  };
+}
+
+function decideAoiPersonalSourceConnectorAuthority(
+  input: AoiConnectorAuthorityDecisionInput,
+): AoiConnectorAuthorityDecision {
+  const sourceId = String(input.sourceId ?? '').trim();
+  const contract = input.sourceFreshnessContracts?.find((item) => item.sourceId === sourceId);
+  const source =
+    input.sourceRegistry?.sources.find((item) => item.id === sourceId) ??
+    (contract
+      ? {
+          id: contract.sourceId,
+          kind: contract.sourceKind,
+          label: contract.sourceLabel,
+        }
+      : null);
+  const requestedBand = input.requestedBand ?? 'metadata_only';
+  const supportedBands = supportedBandsForSource(contract);
+  const sourceState = sourceStateFromContract(contract);
+  const bodyContentReceiptRefs = uniqueBrokerStrings(
+    [
+      ...(input.bodyContentConsentReceiptRefs ?? []),
+      ...(input.consentReceiptRefs ?? []),
+      ...(contract?.consentState === 'granted' ? [`source-consent:${sourceId}`] : []),
+    ],
+    12,
+  );
+  const bodyConsentState = sourceConsentStateForBand({
+    contract,
+    requestedBand,
+    receiptRefs: bodyContentReceiptRefs,
+  });
+  const requiredConsent = makeConsentRequirement({
+    bodyContentState: bodyConsentState,
+    mutationState: 'not_required',
+    bodyContentReceiptRefs,
+  });
+  const blockedReasons: string[] = [...(input.additionalBlockedReasons ?? [])];
+  if (!sourceId || !source || !contract) {
+    blockedReasons.push('unknown_source');
+  }
+  if (!supportedBands.includes(requestedBand)) {
+    blockedReasons.push(`unsupported_band:${requestedBand}`);
+  }
+  if (sourceState === 'disconnected') {
+    blockedReasons.push('source_disconnected');
+  } else if (sourceState === 'revoked') {
+    blockedReasons.push('source_revoked');
+  } else if (sourceState === 'disabled') {
+    blockedReasons.push('source_disabled');
+  } else if (sourceState === 'stale') {
+    blockedReasons.push('source_stale');
+  } else if (sourceState === 'unknown') {
+    blockedReasons.push('source_unknown');
+  }
+  if (requestedBand === 'body_content' && bodyConsentState !== 'satisfied') {
+    blockedReasons.push('body_content_consent_required');
+  }
+
+  const finalBlockedReasons = uniqueBrokerStrings(blockedReasons, 12);
+  const allowedBand =
+    finalBlockedReasons.length > 0
+      ? supportedBands.includes('metadata_only') && sourceState === 'available'
+        ? 'metadata_only'
+        : 'observe'
+      : requestedBand;
+  const authorityDecisionId = makeAuthorityDecisionId([
+    'personal_source',
+    sourceId,
+    requestedBand,
+    allowedBand,
+    finalBlockedReasons.join(','),
+    requiredConsent.receiptRefs.join(','),
+  ]);
+  const cannotKnow = uniqueBrokerStrings(
+    [
+      ...(contract?.cannotKnow.map((item) => item.statement) ?? []),
+      ...(!contract
+        ? ['Aoi cannot know this source because no source freshness contract exists.']
+        : []),
+    ],
+    12,
+  );
+  const evidenceRefs = uniqueBrokerStrings(
+    [
+      `authority-decision:${authorityDecisionId}`,
+      ...(contract?.evidenceRefs ?? []),
+      ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...requiredConsent.receiptRefs,
+    ],
+    24,
+  );
+  const auditEvent = makeAuthorityAuditEvent({
+    decisionId: authorityDecisionId,
+    connectorKind: source ? 'personal_source' : 'unknown',
+    sourceId: sourceId || undefined,
+    capabilityId: requestedBand,
+    requestedBand,
+    allowedBand,
+    requiredConsent,
+    mutationCapable: false,
+    canExecute: false,
+    blockedReasons: finalBlockedReasons,
+    cannotKnow,
+    evidenceRefs,
+  });
+  return {
+    version: 1,
+    authorityDecisionId,
+    connectorKind: source ? 'personal_source' : 'unknown',
+    appId: null,
+    appName: source?.kind ?? 'unknown',
+    displayName: (source?.label ?? sourceId) || 'unknown source',
+    ...(sourceId ? { sourceId } : {}),
+    ...(source?.kind ? { sourceKind: source.kind } : {}),
+    capabilityId: `source:${sourceId || 'unknown'}:${requestedBand}`,
+    requestedOperation: input.requestedOperation ?? requestedBand,
+    requestedBand,
+    allowedBand,
+    supportedBands,
+    sourceState,
+    requiredConsent,
+    requiredApproval: false,
+    approvalSatisfied: false,
+    rollbackEvidenceRequirement: 'not_required',
+    auditRequired: true,
+    auditEvent,
+    blockedReasons: finalBlockedReasons,
+    cannotKnow,
+    canExecute: false,
+    bodyContentAuthorized:
+      requestedBand === 'body_content' &&
+      bodyConsentState === 'satisfied' &&
+      finalBlockedReasons.length <= 0,
+    mutationCapable: false,
+    mutationAuthorized: false,
+    evidenceRefs,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    unauthorizedMutationCount: 0,
+  };
+}
+
+export function decideAoiConnectorAuthority(
+  input: AoiConnectorAuthorityDecisionInput,
+): AoiConnectorAuthorityDecision {
+  if (input.connectorKind === 'personal_source') {
+    return decideAoiPersonalSourceConnectorAuthority(input);
+  }
+  return connectorDecisionFromBroker(
+    decideAoiCapabilityBrokerAuthority({
+      appReference: input.appReference ?? 'unknown',
+      capabilityId: input.capabilityId,
+      intentReference: input.intentReference,
+      actionType: input.actionType,
+      requestedOperation: input.requestedOperation,
+      requestedBand: input.requestedBand,
+      approvalSatisfied: input.approvalSatisfied,
+      approvalEvidenceRefs: input.approvalEvidenceRefs,
+      previewEvidenceRefs: input.previewEvidenceRefs,
+      targetEvidenceRefs: input.targetEvidenceRefs,
+      rollbackEvidenceRefs: input.rollbackEvidenceRefs,
+      consentReceiptRefs: input.consentReceiptRefs,
+      bodyContentConsentReceiptRefs: input.bodyContentConsentReceiptRefs,
+      mutationConsentReceiptRefs: input.mutationConsentReceiptRefs,
+      additionalBlockedReasons: input.additionalBlockedReasons,
+      evidenceRefs: input.evidenceRefs,
+      apps: input.apps,
+    }),
+  );
 }
 
 export function summarizeAoiAppCapabilityAuthority(
@@ -1332,9 +2007,10 @@ export function formatAoiCapabilityBrokerDecisionLine(
 function buildAoiAppCapabilityAuthorityPromptLines(): string[] {
   const summary = summarizeAoiAppCapabilityAuthority();
   return [
-    '- Capability Broker v2 is the structured source of truth for app authority. Use app manifests and get_app_intents contracts, not UI text guesses, to explain what Aoi can observe, summarize, prepare, preview, request approval for, execute, or roll back.',
-    `- Capability Broker v2 coverage: ${summary.appCount} apps, ${summary.capabilityCount} app capabilities, ${summary.approvalGatedMutationCount} approval-gated mutation capabilities, ${summary.rollbackRequiredCount} rollback-required capabilities.`,
-    '- App mutation execution is not authorized by capability discovery alone. Without explicit approval evidence and rollback/recovery evidence, the safe ceiling is preview or request approval, and mutationCount/unauthorizedMutationCount must remain 0.',
+    '- Connector Authority Registry v3 is the structured source of truth for app and personal-source authority. Use manifests, source freshness contracts, consent receipts, and audit decisions instead of UI text guesses.',
+    `- Connector Authority Registry v3 coverage: ${summary.appCount} apps, ${summary.capabilityCount} app capabilities, ${summary.approvalGatedMutationCount} approval-gated mutation capabilities, ${summary.rollbackRequiredCount} rollback-required capabilities.`,
+    '- App mutation execution is not authorized by capability discovery alone. Without matching approval, preview/target, consent, and rollback/recovery evidence, the safe ceiling is prepare, preview, or request approval, and mutationCount/unauthorizedMutationCount must remain 0.',
+    '- Metadata-only authority never grants body/content access. Disconnected, revoked, disabled, stale, or unknown sources must be described as blind spots with cannot-know statements.',
   ];
 }
 

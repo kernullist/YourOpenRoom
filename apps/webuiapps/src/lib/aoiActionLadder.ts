@@ -496,7 +496,7 @@ function buildConnectionLabels(
         ? 'L4/L5 command: apps/webuiapps/src/lib/aoiApprovedCommandPolicy.ts supplies the exact approval fingerprint.'
         : undefined,
       capabilityBrokerDecision
-        ? `Capability Broker v2: ${formatAoiCapabilityBrokerDecisionLine(capabilityBrokerDecision)}`
+        ? `Connector Authority Registry v3: ${formatAoiCapabilityBrokerDecisionLine(capabilityBrokerDecision)}`
         : undefined,
       'L5: apps/webuiapps/src/lib/aoiAutonomyPolicy.ts and apps/webuiapps/src/lib/aoiAutonomyExecution.ts remain the only execution gates.',
     ],
@@ -771,10 +771,10 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
           approvalRef: `proposal:${matchingProposal.id}`,
           reason:
             capabilityBrokerDecision.blockedReasons.length > 0
-              ? `Capability Broker v2 blocks execution: ${capabilityBrokerDecision.blockedReasons.join(
+              ? `Connector Authority Registry v3 blocks execution: ${capabilityBrokerDecision.blockedReasons.join(
                   ', ',
                 )}`
-              : 'Capability Broker v2 requires explicit approval evidence before app mutation execution.',
+              : 'Connector Authority Registry v3 requires explicit approval evidence before app mutation execution.',
           satisfied: capabilityBrokerDecision.approvalSatisfied,
           evidenceRefs: capabilityBrokerDecision.evidenceRefs,
         }),

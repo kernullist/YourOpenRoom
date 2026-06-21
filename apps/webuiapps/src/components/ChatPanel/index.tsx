@@ -78,7 +78,7 @@ import {
   formatAppReference,
   getOsActionTargetApp,
 } from '@/lib/appRegistry';
-import { parseAppActionToolParams } from '@/lib/appActionParams';
+import { parseAppActionToolParamsWithValidation } from '@/lib/appActionParams';
 import { shouldSuppressUserActionConversation } from '@/lib/chatActionSuppression';
 import { seedMetaFiles } from '@/lib/seedMeta';
 import { dispatchAgentAction, onUserAction } from '@/lib/vibeContainerMock';
@@ -216,8 +216,11 @@ import {
 import {
   AOI_DEFAULT_CAPABILITY_NAMES,
   buildAoiCapabilityPrompt,
+  decideAoiCapabilityBrokerAuthority,
+  formatAoiCapabilityBrokerDecisionLine,
   getAoiCapabilityRows,
   summarizeAoiCapabilityRegistry,
+  type AoiCapabilityBrokerDecision,
 } from '@/lib/aoiCapabilityRegistry';
 import {
   appendAoiRunLedgerEvent,
@@ -243,6 +246,7 @@ import {
   previewAoiProposalAction,
   recordAoiContextSourceFeedback,
   recordAoiFieldFeedback,
+  recordAoiOperatorFlightDecision,
   recordAoiOperatorVoiceDecision,
   recordAoiProactiveBriefFeedback,
   recordAoiProactiveTrendDeliveryEvent,
@@ -1698,8 +1702,8 @@ Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
 - For basic app window control, every non-OS app supports OPEN_APP_WINDOW, FOCUS_APP_WINDOW, and CLOSE_APP_WINDOW through app_action.
 - Treat list_apps/get_app_state capability inventory, get_app_intents contracts, and get_app_intents control_surfaces as the source of truth for which app surfaces are actually exposed. If a surface is partial or gap, name the exact missing action/schema/tool from control_surfaces.gaps instead of saying the whole app cannot be controlled.
-- Treat Capability Broker v2 app bands as the authority boundary: observe, summarize, prepare, preview, request approval, execute, rollback. Explain app authority from structured manifests and get_app_intents contracts, not from visible UI labels.
-- For app mutations, discovery is not execution approval. If approval or rollback/recovery evidence is missing, stop at preview or request approval and say exactly which broker evidence is missing.
+- Treat Connector Authority Registry v3 app/source bands as the authority boundary: observe, summarize, metadata-only, body/content, prepare, preview, request approval, execute, rollback, audit. Explain authority from structured manifests, source freshness contracts, consent receipts, and get_app_intents contracts, not from visible UI labels.
+- For app mutations, discovery is not execution approval. If approval, matching target/preview proof, consent receipt, or rollback/recovery evidence is missing, stop at prepare, preview, or request approval and say exactly which authority evidence is missing.
 - Before saying you cannot control an in-app surface, call get_app_intents for that app with include_surfaces=true. If a matching schema_file_write, schema_file_delete, state_file_write, window_action, app_action, or covered/partial control surface exists, use that contract or explain only the specific remaining gap.
 - For data mutation requests, prefer a get_app_intents schema-backed contract over a bare app_action that only refreshes the UI after files are changed.
 - When talking to the user about an app, use the app's displayName or appName from list_apps/event context. Do not call known apps by raw numeric app_id such as "app 22"; app_id is only a tool parameter.
@@ -1826,6 +1830,95 @@ function buildUserActionMessage(
   const source = `${app.displayName} (appName: ${app.appName}, appId: ${app.appId})`;
   const target = targetApp ? `, targetApp: ${formatAppReference(targetApp)}` : '';
   return `[User performed action in ${source}${target}] action_type: ${action.action_type}, params: ${JSON.stringify(action.params || {})}`;
+}
+
+function buildAoiAppActionAuthorityBlockedResult(decision: AoiCapabilityBrokerDecision): string {
+  return JSON.stringify({
+    ok: false,
+    error: 'connector_authority_blocked',
+    authority_registry: 'v3',
+    authority_decision_id: decision.authorityDecisionId,
+    audit_event_id: decision.auditEvent.id,
+    app: {
+      app_id: decision.appId,
+      app_name: decision.appName,
+      display_name: decision.displayName,
+    },
+    capability_id: decision.capabilityId,
+    requested_band: decision.requestedBand,
+    allowed_band: decision.allowedBand,
+    blocked_reasons: decision.blockedReasons,
+    required_consent: decision.requiredConsent,
+    required_approval: decision.requiredApproval,
+    rollback: decision.rollbackEvidenceRequirement,
+    cannot_know: decision.cannotKnow,
+    decision_line: formatAoiCapabilityBrokerDecisionLine(decision),
+    next_steps: [
+      'Use get_app_intents and prepare or preview the exact action instead of executing it.',
+      'Collect matching approval, target, preview, consent, and rollback evidence before mutation.',
+      'Do not fall back to free-form app_action params for mutation.',
+    ],
+  });
+}
+
+function recordAoiAppActionAuthorityDecision(
+  sessionPath: string,
+  decision: AoiCapabilityBrokerDecision,
+): void {
+  const state = decision.sourceState;
+  const freshness = state === 'available' ? 'fresh' : state === 'stale' ? 'stale' : 'unknown';
+  void recordAoiOperatorFlightDecision(sessionPath, {
+    signalClass: 'capability',
+    decisionLane: decision.blockedReasons.length > 0 ? 'blocked' : 'hidden',
+    sourceStates: [
+      {
+        sourceId: `app:${decision.appName}`,
+        label: decision.displayName,
+        kind: 'app_capability',
+        state,
+        freshness,
+        cannotKnow: decision.cannotKnow,
+        evidenceRefs: decision.evidenceRefs,
+      },
+    ],
+    evidenceRefs: decision.evidenceRefs,
+    whySpeak:
+      decision.blockedReasons.length > 0
+        ? [`Authority decision ${decision.authorityDecisionId} blocked app_action mutation.`]
+        : [],
+    whyQuiet:
+      decision.blockedReasons.length > 0
+        ? decision.blockedReasons.map((reason) => `connector_authority:${reason}`)
+        : ['Connector authority audit recorded without user-visible interruption.'],
+    preparedActionRefs: [
+      `authority-decision:${decision.authorityDecisionId}`,
+      `authority-audit:${decision.auditEvent.id}`,
+    ],
+    approvalState: {
+      status: decision.requiredApproval
+        ? decision.approvalSatisfied
+          ? 'approved'
+          : 'required'
+        : 'not_required',
+      required: decision.requiredApproval,
+      approvalRef: decision.requiredApproval
+        ? `authority-decision:${decision.authorityDecisionId}`
+        : undefined,
+      reason:
+        decision.blockedReasons.length > 0
+          ? decision.blockedReasons.join(', ')
+          : 'Connector authority allowed this non-mutating app action.',
+    },
+    hardFailCounters: {
+      privateLeakCount: 0,
+      unauthorizedMutationCount: 0,
+      staleCurrentClaimCount: 0,
+      approvalBypassCount: 0,
+    },
+    mutationCount: 0,
+  }).catch((error) => {
+    console.warn('[ChatPanel] failed to record app_action authority audit', error);
+  });
 }
 
 function formatReminderTime(dateTime: string, language: 'ko' | 'ja' | 'zh' | 'en'): string {
@@ -6823,10 +6916,43 @@ const ChatPanel: React.FC<{
 
         // ---- app_action ----
         if (tc.function.name === 'app_action') {
-          const appAction = parseAppActionToolParams(params);
+          const appAction = parseAppActionToolParamsWithValidation(params);
+          const authorityDecision = decideAoiCapabilityBrokerAuthority({
+            appReference: appAction.appName,
+            actionType: appAction.actionType,
+            requestedOperation: appAction.actionType,
+            requestedBand: 'execute',
+            additionalBlockedReasons: appAction.parseErrors.map(
+              (reason) => `app_action_params:${reason}`,
+            ),
+            evidenceRefs: [
+              'tool:app_action',
+              `app-action:${appAction.appName}:${appAction.actionType}`,
+            ],
+          });
+          recordAoiAppActionAuthorityDecision(sessionPathRef.current, authorityDecision);
+          if (authorityDecision.blockedReasons.length > 0) {
+            const result = buildAoiAppActionAuthorityBlockedResult(authorityDecision);
+            console.warn('[ChatPanel] app_action blocked by connector authority', {
+              appName: appAction.appName,
+              actionType: appAction.actionType,
+              authorityDecisionId: authorityDecision.authorityDecisionId,
+              blockedReasons: authorityDecision.blockedReasons,
+            });
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: summarizeToolResultForModel(tc.function.name, result),
+                tool_call_id: tc.id,
+              },
+            ];
+            continue;
+          }
+
           const resolved = resolveAppAction(appAction.appName, appAction.actionType);
           if (typeof resolved === 'string') {
-            console.error('[ChatPanel] app_action resolve failed', resolved);
+            console.error('[ChatPanel] app_action resolve failed after authority allow', resolved);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: resolved, tool_call_id: tc.id },

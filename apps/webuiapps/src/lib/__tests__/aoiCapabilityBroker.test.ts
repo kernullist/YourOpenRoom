@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildAoiCapabilityPrompt,
+  decideAoiConnectorAuthority,
   decideAoiCapabilityBrokerAuthority,
   getAoiAppCapabilityManifest,
   summarizeAoiAppCapabilityAuthority,
 } from '../aoiCapabilityRegistry';
+import type { AoiSourceFreshnessContract } from '../aoiSourceFreshnessContract';
 import type { AppDef } from '../appRegistry';
 
 const KIRA_APP: AppDef = {
@@ -89,6 +91,9 @@ describe('aoiCapabilityBroker', () => {
       requestedBand: 'execute',
       approvalSatisfied: true,
       approvalEvidenceRefs: ['approval:kira-settings-001'],
+      previewEvidenceRefs: ['preview:kira-settings-001'],
+      targetEvidenceRefs: ['target:kira-settings:model-settings'],
+      mutationConsentReceiptRefs: ['consent:kira-settings-001'],
       rollbackEvidenceRefs: ['rollback:kira-settings-001'],
       apps: [KIRA_APP],
     });
@@ -98,9 +103,49 @@ describe('aoiCapabilityBroker', () => {
       allowedBand: 'execute',
       rollbackEvidenceRequirement: 'satisfied',
       canExecute: true,
+      auditRequired: true,
       mutationCount: 0,
       unauthorizedMutationCount: 0,
     });
+    expect(decision.requiredConsent.mutation).toBe('satisfied');
+    expect(decision.auditEvent).toMatchObject({
+      decisionId: decision.authorityDecisionId,
+      connectorKind: 'app_capability',
+      mutationIntent: 'execute_after_authority',
+      mutationCount: 0,
+    });
+  });
+
+  it('rejects reused approval when target and preview proof do not match the mutation', () => {
+    const decision = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedOperation: 'apply Kira model settings',
+      requestedBand: 'execute',
+      approvalSatisfied: true,
+      approvalEvidenceRefs: ['approval:kira-settings-001'],
+      rollbackEvidenceRefs: ['rollback:kira-settings-001'],
+      apps: [KIRA_APP],
+    });
+
+    expect(decision.canExecute).toBe(false);
+    expect(decision.blockedReasons).toContain('approval_target_preview_mismatch');
+    expect(decision.auditEvent.blockedReasons).toContain('approval_target_preview_mismatch');
+  });
+
+  it('blocks missing app capabilities instead of falling back to inspect authority', () => {
+    const decision = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'NOT_A_REAL_ACTION',
+      requestedBand: 'execute',
+      apps: [KIRA_APP],
+    });
+
+    expect(decision.canExecute).toBe(false);
+    expect(decision.blockedReasons).toContain('unknown_capability');
+    expect(decision.sourceState).toBe('unknown');
+    expect(decision.cannotKnow.join(' ')).toContain('unregistered app capability');
+    expect(decision.auditEvent.blockedReasons).toContain('unknown_capability');
   });
 
   it('allows non-mutating window actions without inventing mutation authority', () => {
@@ -121,6 +166,97 @@ describe('aoiCapabilityBroker', () => {
       mutationCount: 0,
       unauthorizedMutationCount: 0,
     });
+    expect(decision.requiredConsent.mutation).toBe('not_required');
+  });
+
+  it('allows observe while execute remains blocked for a mutation-capable app capability', () => {
+    const observe = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedBand: 'observe',
+      apps: [KIRA_APP],
+    });
+    const execute = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedBand: 'execute',
+      apps: [KIRA_APP],
+    });
+
+    expect(observe.blockedReasons).toEqual([]);
+    expect(observe.allowedBand).toBe('observe');
+    expect(observe.canExecute).toBe(false);
+    expect(execute.blockedReasons).toEqual(
+      expect.arrayContaining(['approval_required', 'rollback_evidence_required']),
+    );
+    expect(execute.allowedBand).toBe('request_approval');
+  });
+
+  it('turns disconnected personal sources into blind spots with cannot-know audit evidence', () => {
+    const gmail = makeSourceContract({
+      sourceId: 'gmail-metadata',
+      sourceKind: 'gmail_metadata',
+      sourceLabel: 'Gmail metadata',
+      consentState: 'disconnected',
+      freshnessState: 'disconnected',
+      cannotKnow: [
+        {
+          version: 1,
+          code: 'source_disconnected',
+          statement:
+            'Aoi cannot know current Gmail metadata because Gmail is disconnected; disconnected is not evidence of an empty inbox.',
+          evidenceRefs: ['gmail:disconnected'],
+        },
+      ],
+    });
+
+    const decision = decideAoiConnectorAuthority({
+      connectorKind: 'personal_source',
+      sourceId: 'gmail-metadata',
+      requestedBand: 'metadata_only',
+      sourceFreshnessContracts: [gmail],
+    });
+
+    expect(decision.sourceState).toBe('disconnected');
+    expect(decision.blockedReasons).toContain('source_disconnected');
+    expect(decision.cannotKnow.join(' ')).toContain('not evidence of an empty inbox');
+    expect(decision.auditEvent.blockedReasons).toContain('source_disconnected');
+    expect(decision.bodyContentAuthorized).toBe(false);
+  });
+
+  it('blocks body access when personal source consent has been revoked', () => {
+    const notes = makeSourceContract({
+      sourceId: 'notes-metadata',
+      sourceKind: 'notes_metadata',
+      sourceLabel: 'Notes metadata',
+      consentState: 'revoked',
+      freshnessState: 'revoked',
+      bodyAccessState: 'body_disabled',
+      cannotKnow: [
+        {
+          version: 1,
+          code: 'consent_revoked',
+          statement: 'Aoi cannot use Notes metadata because source consent is revoked.',
+          evidenceRefs: ['notes:revoked'],
+        },
+      ],
+    });
+
+    const decision = decideAoiConnectorAuthority({
+      connectorKind: 'personal_source',
+      sourceId: 'notes-metadata',
+      requestedBand: 'body_content',
+      sourceFreshnessContracts: [notes],
+      bodyContentConsentReceiptRefs: ['old-revoked-receipt'],
+    });
+
+    expect(decision.sourceState).toBe('revoked');
+    expect(decision.requiredConsent.bodyContent).toBe('revoked');
+    expect(decision.blockedReasons).toEqual(
+      expect.arrayContaining(['source_revoked', 'body_content_consent_required']),
+    );
+    expect(decision.bodyContentAuthorized).toBe(false);
+    expect(JSON.stringify(decision)).not.toContain('private body text');
   });
 
   it('summarizes broker coverage for prompts without granting execution authority', () => {
@@ -135,7 +271,31 @@ describe('aoiCapabilityBroker', () => {
     });
     expect(summary.approvalGatedMutationCount).toBeGreaterThan(0);
     expect(summary.bandLabels).toContain('request approval');
-    expect(prompt).toContain('Capability Broker v2');
+    expect(prompt).toContain('Connector Authority Registry v3');
     expect(prompt).toContain('mutationCount/unauthorizedMutationCount must remain 0');
   });
 });
+
+function makeSourceContract(
+  partial: Partial<AoiSourceFreshnessContract>,
+): AoiSourceFreshnessContract {
+  return {
+    version: 1,
+    id: `source-freshness:${partial.sourceId ?? 'source'}`,
+    sourceId: partial.sourceId ?? 'source',
+    sourceKind: partial.sourceKind ?? 'gmail_metadata',
+    sourceLabel: partial.sourceLabel ?? 'Source',
+    consentState: partial.consentState ?? 'granted',
+    dataScope: partial.dataScope ?? 'metadata only',
+    scopeState: partial.scopeState ?? 'metadata_only',
+    bodyAccessState: partial.bodyAccessState ?? 'body_disabled',
+    freshnessState: partial.freshnessState ?? 'fresh',
+    signalFreshness: partial.signalFreshness ?? 'fresh',
+    staleAfterMs: partial.staleAfterMs ?? 60_000,
+    cannotKnow: partial.cannotKnow ?? [],
+    evidenceRefs: partial.evidenceRefs ?? ['source:test'],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    ...partial,
+  };
+}

@@ -4,6 +4,11 @@ export interface ParsedAppActionToolParams {
   params: Record<string, string>;
 }
 
+export interface ParsedAppActionToolParamsWithValidation extends ParsedAppActionToolParams {
+  parseErrors: string[];
+  paramsMalformed: boolean;
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -18,39 +23,79 @@ function stringifyActionParam(value: unknown): string {
 }
 
 export function normalizeAppActionParams(value: unknown): Record<string, string> {
+  return normalizeAppActionParamsWithValidation(value).params;
+}
+
+export function normalizeAppActionParamsWithValidation(value: unknown): {
+  params: Record<string, string>;
+  parseErrors: string[];
+  paramsMalformed: boolean;
+} {
   let rawParams: unknown = value;
+  const parseErrors: string[] = [];
 
   if (typeof rawParams === 'string') {
     const trimmed = rawParams.trim();
     if (!trimmed) {
-      return {};
+      return { params: {}, parseErrors, paramsMalformed: false };
     }
 
     try {
       rawParams = JSON.parse(trimmed);
     } catch {
-      return {};
+      parseErrors.push('params_malformed_json');
+      return { params: {}, parseErrors, paramsMalformed: true };
     }
   }
 
   const record = asRecord(rawParams);
   if (!record) {
-    return {};
+    if (rawParams !== undefined && rawParams !== null) {
+      parseErrors.push('params_not_object');
+    }
+    return { params: {}, parseErrors, paramsMalformed: parseErrors.length > 0 };
   }
 
-  return Object.fromEntries(
-    Object.entries(record)
-      .filter(([, entryValue]) => entryValue !== undefined)
-      .map(([entryKey, entryValue]) => [entryKey, stringifyActionParam(entryValue)]),
-  );
+  return {
+    params: Object.fromEntries(
+      Object.entries(record)
+        .filter(([, entryValue]) => entryValue !== undefined)
+        .map(([entryKey, entryValue]) => [entryKey, stringifyActionParam(entryValue)]),
+    ),
+    parseErrors,
+    paramsMalformed: parseErrors.length > 0,
+  };
 }
 
 export function parseAppActionToolParams(
   params: Record<string, unknown>,
 ): ParsedAppActionToolParams {
+  const parsed = parseAppActionToolParamsWithValidation(params);
   return {
-    appName: stringifyActionParam(params.app_name).trim(),
-    actionType: stringifyActionParam(params.action_type).trim(),
-    params: normalizeAppActionParams(params.params),
+    appName: parsed.appName,
+    actionType: parsed.actionType,
+    params: parsed.params,
+  };
+}
+
+export function parseAppActionToolParamsWithValidation(
+  params: Record<string, unknown>,
+): ParsedAppActionToolParamsWithValidation {
+  const normalizedParams = normalizeAppActionParamsWithValidation(params.params);
+  const appName = stringifyActionParam(params.app_name).trim();
+  const actionType = stringifyActionParam(params.action_type).trim();
+  const parseErrors = [...normalizedParams.parseErrors];
+  if (!appName) {
+    parseErrors.push('app_name_missing');
+  }
+  if (!actionType) {
+    parseErrors.push('action_type_missing');
+  }
+  return {
+    appName,
+    actionType,
+    params: normalizedParams.params,
+    parseErrors,
+    paramsMalformed: parseErrors.length > 0,
   };
 }

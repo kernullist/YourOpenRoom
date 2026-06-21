@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { normalizeAppActionParams, parseAppActionToolParams } from '../appActionParams';
+import {
+  normalizeAppActionParams,
+  parseAppActionToolParams,
+  parseAppActionToolParamsWithValidation,
+} from '../appActionParams';
 
 describe('appActionParams', () => {
   it('preserves JSON-string app action params', () => {
@@ -30,5 +34,17 @@ describe('appActionParams', () => {
         save: 'true',
       },
     });
+  });
+
+  it('reports malformed JSON params for authority-gated mutations', () => {
+    const parsed = parseAppActionToolParamsWithValidation({
+      app_name: 'kira',
+      action_type: 'APPLY_MODEL_SETTINGS',
+      params: '{"reasoningEffort":"high"',
+    });
+
+    expect(parsed.params).toEqual({});
+    expect(parsed.paramsMalformed).toBe(true);
+    expect(parsed.parseErrors).toContain('params_malformed_json');
   });
 });

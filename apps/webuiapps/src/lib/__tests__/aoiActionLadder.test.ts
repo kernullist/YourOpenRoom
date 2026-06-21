@@ -374,7 +374,7 @@ describe('Aoi Action Ladder', () => {
     );
     expect(decision.blockedActions.some((action) => action.level === 'L5')).toBe(true);
     expect(decision.connectionLabels.join(' ')).toContain('aoiKiraHandoff.ts');
-    expect(decision.connectionLabels.join(' ')).toContain('Capability Broker v2');
+    expect(decision.connectionLabels.join(' ')).toContain('Connector Authority Registry v3');
     expect(decision.preparedWorkOrder).toMatchObject({
       status: 'waiting_approval',
       actionAuthority: 'display_only',

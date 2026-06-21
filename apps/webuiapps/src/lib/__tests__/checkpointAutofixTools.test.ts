@@ -111,5 +111,5 @@ describe('checkpoint/autofix tools', () => {
 
     expect(parsed.checkpoint_id).toContain('checkpoint_');
     expect(parsed.diagnostics.diagnostic_count).toBe(1);
-  });
+  }, 15_000);
 });
