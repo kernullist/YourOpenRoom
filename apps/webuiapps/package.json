@@ -14,7 +14,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
-    "field-ci:gate": "vitest run src/lib/__tests__/aoiFieldCiGate.test.ts src/lib/__tests__/aoiFieldGroundedJarvisAcceptancePack.test.ts"
+    "field-ci:gate": "vitest run src/lib/__tests__/aoiFieldCiGate.test.ts src/lib/__tests__/aoiFieldGroundedJarvisAcceptancePack.test.ts src/lib/__tests__/aoiRealFieldOperationsAcceptancePack.test.ts"
   },
   "dependencies": {
     "framer-motion": "^12.34.0",

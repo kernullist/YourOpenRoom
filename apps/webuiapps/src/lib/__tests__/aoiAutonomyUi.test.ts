@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_AOI_AUTONOMY_POLICY,
@@ -85,6 +88,7 @@ import {
 } from '../aoiBoundedWorkOrder';
 import { runAoiFieldGroundedJarvisAcceptancePack } from '../aoiFieldGroundedJarvisAcceptancePack';
 import { runAoiJarvisAcceptanceTrial } from '../aoiJarvisAcceptanceTrial';
+import { runAoiRealFieldOperationsAcceptancePack } from '../aoiRealFieldOperationsAcceptancePack';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -110,6 +114,14 @@ import type {
   AoiProposalDecision,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
+
+const tempRoots: string[] = [];
+
+function makeTempRoot(): string {
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-autonomy-ui-real-field-test-'));
+  tempRoots.push(root);
+  return root;
+}
 
 function makePolicy(partial: Partial<AoiAutonomyPolicy> = {}): AoiAutonomyPolicy {
   return {
@@ -499,6 +511,9 @@ function makeProposalDecision(partial: Partial<AoiProposalDecision> = {}): AoiPr
 describe('Aoi autonomy UI helpers', () => {
   afterEach(() => {
     vi.restoreAllMocks();
+    for (const root of tempRoots.splice(0)) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('selects the highest-value active inline proposal', () => {
@@ -4284,6 +4299,48 @@ describe('Aoi autonomy UI helpers', () => {
     );
     expect(dashboard.jarvisReadiness.visible).toBe(true);
     expect(JSON.stringify(dashboard).toLowerCase()).not.toContain('fully autonomous');
+  });
+
+  it('surfaces real-field operations readiness and acceptance tier differences', async () => {
+    const realFieldOperationsAcceptanceReport = await runAoiRealFieldOperationsAcceptancePack({
+      sessionsDir: makeTempRoot(),
+      sessionPath: 'aoi/default',
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      realFieldOperationsAcceptanceReport,
+      now: 8000,
+    });
+
+    expect(dashboard.replayHealth.visible).toBe(true);
+    expect(dashboard.replayHealth.realFieldOperationsAcceptanceLabel).toContain('16/16');
+    expect(dashboard.replayHealth.realFieldOperationsAcceptanceLabel).toContain(
+      'real-field operations',
+    );
+    expect(dashboard.replayHealth.realFieldOperationsTierLabels).toHaveLength(3);
+    expect(dashboard.replayHealth.realFieldOperationsTierLabels.join(' ')).toContain(
+      'Synthetic acceptance checks isolated replay fixtures',
+    );
+    expect(dashboard.replayHealth.realFieldOperationsTierLabels.join(' ')).toContain(
+      'Real-field operations acceptance stitches capture',
+    );
+    expect(dashboard.replayHealth.realFieldOperationsHardFailLabels).toEqual([
+      'private leaks 0',
+      'unauthorized mutations 0',
+      'stale current claims 0',
+      'live shell 0',
+      'live network 0',
+      'live Gmail 0',
+      'live Calendar 0',
+      'live Kira mutation 0',
+    ]);
+    expect(dashboard.replayHealth.failedMetricIds).toEqual([]);
+    expect(dashboard.replayHealth.evidenceRefs).toEqual(
+      expect.arrayContaining(realFieldOperationsAcceptanceReport.evidenceRefs.slice(0, 1)),
+    );
+    expect(JSON.stringify(dashboard)).not.toContain('honey@example.com');
+    expect(JSON.stringify(dashboard)).not.toContain('C:\\Users\\secret');
   });
 
   it('summarizes scheduler wakeups and limits skipped source noise', () => {

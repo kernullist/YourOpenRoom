@@ -122,6 +122,8 @@ const LOCAL_DOCS_ONLY_REASON =
 const FIELD_CI_SELF_TEST = 'src/lib/__tests__/aoiFieldCiGate.test.ts';
 const FIELD_GROUNDED_ACCEPTANCE_TEST =
   'src/lib/__tests__/aoiFieldGroundedJarvisAcceptancePack.test.ts';
+const REAL_FIELD_OPERATIONS_ACCEPTANCE_TEST =
+  'src/lib/__tests__/aoiRealFieldOperationsAcceptancePack.test.ts';
 
 const TESTS_BY_CLASS: Record<AoiFieldCiChangedFileClass, readonly string[]> = {
   autonomy_core: [
@@ -141,6 +143,7 @@ const TESTS_BY_CLASS: Record<AoiFieldCiChangedFileClass, readonly string[]> = {
   ],
   field_grounded_acceptance: [
     FIELD_GROUNDED_ACCEPTANCE_TEST,
+    REAL_FIELD_OPERATIONS_ACCEPTANCE_TEST,
     'src/lib/__tests__/aoiRealFieldCapture.test.ts',
   ],
   local_docs_only: [],
@@ -242,6 +245,7 @@ export function classifyAoiFieldCiChangedFile(path: string): AoiFieldCiChangedFi
       hasAoiStem(lowerName, [
         'aoiFieldGroundedJarvisAcceptancePack',
         'aoiRealFieldCapture',
+        'aoiRealFieldOperationsAcceptancePack',
         'aoiShadowMode',
         'aoiTracePromotion',
       ])

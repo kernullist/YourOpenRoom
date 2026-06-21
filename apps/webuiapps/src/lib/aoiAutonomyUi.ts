@@ -57,6 +57,7 @@ import type { AoiReplayReport } from './aoiOperatorReplay';
 import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import type { AoiRealFieldCaptureResult } from './aoiRealFieldCapture';
+import type { AoiRealFieldOperationsAcceptanceReport } from './aoiRealFieldOperationsAcceptancePack';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
@@ -709,6 +710,10 @@ export interface AoiReplayHealthPanel {
   builtInReplayLabel: string;
   jarvisAcceptanceLabel: string;
   fieldGroundedAcceptanceLabel: string;
+  realFieldOperationsAcceptanceLabel: string;
+  realFieldOperationsTierLabels: string[];
+  realFieldOperationsHardFailLabels: string[];
+  realFieldOperationsNextGoalLabels: string[];
   fieldGroundedHardFailLabels: string[];
   fieldGroundedNextGoalLabels: string[];
   shadowLabel: string;
@@ -863,6 +868,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   builtInReplayReports?: AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   fieldGroundedAcceptanceReport?: AoiFieldGroundedJarvisAcceptanceReport | null;
+  realFieldOperationsAcceptanceReport?: AoiRealFieldOperationsAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
   realFieldCapture?: AoiRealFieldCaptureResult | null;
   feedbackCompression?: AoiFeedbackCompressionResult | null;
@@ -5152,6 +5158,34 @@ function buildAoiReplayHealthPanel(
   const fieldGroundedLabel = fieldGrounded
     ? `${fieldGrounded.passedScenarioCount}/${fieldGrounded.scenarioCount} field-grounded scenario(s); ${fieldGrounded.readinessSummary.label}`
     : 'No field-grounded acceptance report';
+  const realFieldOperations = input.realFieldOperationsAcceptanceReport;
+  const realFieldOperationsLabel = realFieldOperations
+    ? `${realFieldOperations.passedScenarioCount}/${realFieldOperations.scenarioCount} real-field operations scenario(s); ${realFieldOperations.readinessSummary.label}`
+    : 'No real-field operations acceptance report';
+  const realFieldOperationsTierLabels = uniqueDashboardLabels(
+    realFieldOperations?.acceptanceTierSummaries.map((tier) => `${tier.tier}: ${tier.boundary}`) ??
+      [],
+    3,
+  );
+  const realFieldOperationsHardFailLabels = uniqueDashboardLabels(
+    realFieldOperations
+      ? [
+          `private leaks ${realFieldOperations.privateLeakCount}`,
+          `unauthorized mutations ${realFieldOperations.unauthorizedMutationCount}`,
+          `stale current claims ${realFieldOperations.staleCurrentClaimCount}`,
+          `live shell ${realFieldOperations.liveOperationCounts.shell}`,
+          `live network ${realFieldOperations.liveOperationCounts.network}`,
+          `live Gmail ${realFieldOperations.liveOperationCounts.gmail}`,
+          `live Calendar ${realFieldOperations.liveOperationCounts.calendar}`,
+          `live Kira mutation ${realFieldOperations.liveOperationCounts.kiraMutation}`,
+        ]
+      : [],
+    8,
+  );
+  const realFieldOperationsNextGoalLabels = uniqueDashboardLabels(
+    realFieldOperations?.nextGoalCandidates ?? [],
+    4,
+  );
   const fieldGroundedHardFailLabels = uniqueDashboardLabels(
     fieldGrounded
       ? [
@@ -5191,6 +5225,18 @@ function buildAoiReplayHealthPanel(
       ...(fieldGrounded && fieldGrounded.staleCurrentClaimCount > 0
         ? ['field_grounded.stale_current_claim']
         : []),
+      ...(realFieldOperations?.failedScenarios.map(
+        (scenario) => `real_field_operations.${scenario.id}`,
+      ) ?? []),
+      ...(realFieldOperations && realFieldOperations.privateLeakCount > 0
+        ? ['real_field_operations.private_leak']
+        : []),
+      ...(realFieldOperations && realFieldOperations.unauthorizedMutationCount > 0
+        ? ['real_field_operations.unauthorized_mutation']
+        : []),
+      ...(realFieldOperations && realFieldOperations.staleCurrentClaimCount > 0
+        ? ['real_field_operations.stale_current_claim']
+        : []),
       ...(shadow
         ? [
             ...(shadow.metrics.unsafeShadowDecisionCount > 0 ? ['shadow.unsafe'] : []),
@@ -5215,6 +5261,7 @@ function buildAoiReplayHealthPanel(
       replayReports.length ||
       jarvis ||
       fieldGrounded ||
+      realFieldOperations ||
       shadow ||
       promotedFixtureLabels.length ||
       failedCount,
@@ -5224,6 +5271,13 @@ function buildAoiReplayHealthPanel(
     builtInReplayLabel: sanitizeAoiAcceptanceDashboardText(builtInReplayLabel, 140),
     jarvisAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(jarvisLabel, 160),
     fieldGroundedAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(fieldGroundedLabel, 220),
+    realFieldOperationsAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(
+      realFieldOperationsLabel,
+      260,
+    ),
+    realFieldOperationsTierLabels,
+    realFieldOperationsHardFailLabels,
+    realFieldOperationsNextGoalLabels,
     fieldGroundedHardFailLabels,
     fieldGroundedNextGoalLabels,
     shadowLabel: sanitizeAoiAcceptanceDashboardText(shadowLabel, 180),
@@ -5233,6 +5287,7 @@ function buildAoiReplayHealthPanel(
       ...replayReports.flatMap((report) => report.metrics.flatMap((metric) => metric.evidenceRefs)),
       ...(jarvis?.evidenceRefs ?? []),
       ...(fieldGrounded?.evidenceRefs ?? []),
+      ...(realFieldOperations?.evidenceRefs ?? []),
       ...(shadow?.evidenceRefs ?? []),
       ...(input.promotedFixtureCandidates?.flatMap((candidate) => candidate.evidenceRefs) ?? []),
       ...(realityContext?.evidenceRefs ?? []),
@@ -5248,6 +5303,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.fieldShadowReport ||
     input.jarvisAcceptanceReport ||
     input.fieldGroundedAcceptanceReport ||
+    input.realFieldOperationsAcceptanceReport ||
     input.personalSourceRealityCheck ||
     input.missionControl ||
     input.sourceRegistry ||
