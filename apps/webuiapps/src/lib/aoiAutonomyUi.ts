@@ -33,6 +33,12 @@ import {
   type AoiJarvisAutonomyGovernorPanelSummary,
 } from './aoiJarvisAutonomyGovernor';
 import { buildAoiActionLadderDecisions } from './aoiActionLadder';
+import {
+  formatAoiCapabilityBrokerDecisionLine,
+  getAoiCapabilityBrokerBandLabel,
+  summarizeAoiAppCapabilityAuthority,
+  type AoiCapabilityBrokerDecision,
+} from './aoiCapabilityRegistry';
 import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
 import {
   buildAoiFollowThroughLearningSummary,
@@ -795,6 +801,21 @@ export interface AoiOperatorFeedbackInboxPanelItem {
   mutationCount: 0;
 }
 
+export interface AoiCapabilityAuthorityPanel {
+  visible: boolean;
+  statusLabel: string;
+  bandLabels: string[];
+  appAuthorityLabels: string[];
+  decisionLabels: string[];
+  blockedReasonLabels: string[];
+  approvalRequirementLabels: string[];
+  rollbackRequirementLabels: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+  unauthorizedMutationCount: 0;
+}
+
 export interface AoiOperatorAcceptanceDashboard {
   version: 1;
   sessionPath: string;
@@ -814,6 +835,7 @@ export interface AoiOperatorAcceptanceDashboard {
   feedbackCompression: AoiFeedbackCompressionPanel;
   jarvisAutonomyGovernor: AoiJarvisAutonomyGovernorPanel;
   feedbackInbox: AoiOperatorFeedbackInboxPanel;
+  capabilityAuthority: AoiCapabilityAuthorityPanel;
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -849,6 +871,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   shadowReport?: AoiShadowDecisionReport | null;
   promotedFixtureCandidates?: AoiPromotedFixtureCandidateSummary[];
   feedbackInbox?: AoiOperatorFeedbackInbox | null;
+  capabilityBrokerDecisions?: readonly AoiCapabilityBrokerDecision[];
 }
 
 export interface AoiBlockedStateSummary {
@@ -5644,6 +5667,70 @@ function buildAoiJarvisAutonomyGovernorPanel(
   return buildAoiJarvisAutonomyGovernorPanelSummary(governor);
 }
 
+function buildAoiCapabilityAuthorityPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiCapabilityAuthorityPanel {
+  const summary = summarizeAoiAppCapabilityAuthority();
+  const decisions = input.capabilityBrokerDecisions ?? [];
+  const blockedDecisions = decisions.filter((decision) => decision.blockedReasons.length > 0);
+  const approvalDecisions = decisions.filter((decision) => decision.requiredApproval);
+  const rollbackDecisions = decisions.filter(
+    (decision) => decision.rollbackEvidenceRequirement !== 'not_required',
+  );
+  const decisionLabels = uniqueDashboardLabels(
+    decisions.map((decision) => formatAoiCapabilityBrokerDecisionLine(decision)),
+    8,
+  );
+  const blockedReasonLabels = uniqueDashboardLabels(
+    blockedDecisions.flatMap((decision) =>
+      decision.blockedReasons.map(
+        (reason) =>
+          `${decision.displayName} ${decision.requestedOperation}: ${reason}; safe band=${getAoiCapabilityBrokerBandLabel(
+            decision.allowedBand,
+          )}`,
+      ),
+    ),
+    8,
+  );
+  const approvalRequirementLabels = uniqueDashboardLabels(
+    approvalDecisions.map(
+      (decision) =>
+        `${decision.displayName} ${decision.requestedOperation}: approval ${
+          decision.approvalSatisfied ? 'satisfied' : 'required'
+        }; allowed=${getAoiCapabilityBrokerBandLabel(decision.allowedBand)}`,
+    ),
+    8,
+  );
+  const rollbackRequirementLabels = uniqueDashboardLabels(
+    rollbackDecisions.map(
+      (decision) =>
+        `${decision.displayName} ${decision.requestedOperation}: rollback ${decision.rollbackEvidenceRequirement}`,
+    ),
+    8,
+  );
+
+  return {
+    visible: summary.capabilityCount > 0 || decisions.length > 0,
+    statusLabel:
+      blockedDecisions.length > 0
+        ? `${blockedDecisions.length}/${decisions.length} broker decision(s) blocked`
+        : `${summary.appCount} app manifest(s), ${summary.approvalGatedMutationCount} approval-gated mutation capability(s)`,
+    bandLabels: uniqueDashboardLabels(summary.bandLabels, 8),
+    appAuthorityLabels: uniqueDashboardLabels(summary.appLabels, 8),
+    decisionLabels,
+    blockedReasonLabels,
+    approvalRequirementLabels,
+    rollbackRequirementLabels,
+    evidenceRefs: dashboardRefs([
+      ...summary.evidenceRefs,
+      ...decisions.flatMap((decision) => decision.evidenceRefs),
+    ]),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+    unauthorizedMutationCount: 0,
+  };
+}
+
 export function buildAoiOperatorAcceptanceDashboard(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiOperatorAcceptanceDashboard {
@@ -5689,6 +5776,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     jarvisReadinessScorecard,
   );
   const feedbackInbox = buildAoiOperatorFeedbackInboxPanel(input.feedbackInbox);
+  const capabilityAuthority = buildAoiCapabilityAuthorityPanel(input);
   const evidenceRefs = dashboardRefs([
     ...missionControl.evidenceRefs,
     ...currentBrief.evidenceRefs,
@@ -5704,6 +5792,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...feedbackCompression.evidenceRefs,
     ...jarvisAutonomyGovernor.evidenceRefs,
     ...feedbackInbox.evidenceRefs,
+    ...capabilityAuthority.evidenceRefs,
   ]);
 
   return {
@@ -5725,6 +5814,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     feedbackCompression,
     jarvisAutonomyGovernor,
     feedbackInbox,
+    capabilityAuthority,
     evidenceRefs,
     actionAuthority: 'display_only',
     mutationCount: 0,

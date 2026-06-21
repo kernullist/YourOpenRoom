@@ -1698,6 +1698,8 @@ Rules:
 - Always operate on the app the user specified. Do not redirect the operation to a different app or OS action.
 - For basic app window control, every non-OS app supports OPEN_APP_WINDOW, FOCUS_APP_WINDOW, and CLOSE_APP_WINDOW through app_action.
 - Treat list_apps/get_app_state capability inventory, get_app_intents contracts, and get_app_intents control_surfaces as the source of truth for which app surfaces are actually exposed. If a surface is partial or gap, name the exact missing action/schema/tool from control_surfaces.gaps instead of saying the whole app cannot be controlled.
+- Treat Capability Broker v2 app bands as the authority boundary: observe, summarize, prepare, preview, request approval, execute, rollback. Explain app authority from structured manifests and get_app_intents contracts, not from visible UI labels.
+- For app mutations, discovery is not execution approval. If approval or rollback/recovery evidence is missing, stop at preview or request approval and say exactly which broker evidence is missing.
 - Before saying you cannot control an in-app surface, call get_app_intents for that app with include_surfaces=true. If a matching schema_file_write, schema_file_delete, state_file_write, window_action, app_action, or covered/partial control surface exists, use that contract or explain only the specific remaining gap.
 - For data mutation requests, prefer a get_app_intents schema-backed contract over a bare app_action that only refreshes the UI after files are changed.
 - When talking to the user about an app, use the app's displayName or appName from list_apps/event context. Do not call known apps by raw numeric app_id such as "app 22"; app_id is only a tool parameter.

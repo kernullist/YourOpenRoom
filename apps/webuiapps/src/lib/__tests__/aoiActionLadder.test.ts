@@ -369,8 +369,12 @@ describe('Aoi Action Ladder', () => {
       true,
     );
     expect(decision.approvalNeeds.map((need) => need.requiredAutonomyLevel)).toContain('L4');
+    expect(decision.approvalNeeds.map((need) => need.label).join(' ')).toContain(
+      'App capability broker',
+    );
     expect(decision.blockedActions.some((action) => action.level === 'L5')).toBe(true);
     expect(decision.connectionLabels.join(' ')).toContain('aoiKiraHandoff.ts');
+    expect(decision.connectionLabels.join(' ')).toContain('Capability Broker v2');
     expect(decision.preparedWorkOrder).toMatchObject({
       status: 'waiting_approval',
       actionAuthority: 'display_only',

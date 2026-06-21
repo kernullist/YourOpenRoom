@@ -89,6 +89,8 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from '../aoiApprovedCommandPolicy';
+import { decideAoiCapabilityBrokerAuthority } from '../aoiCapabilityRegistry';
+import type { AppDef } from '../appRegistry';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiAutonomyPolicy,
@@ -3123,6 +3125,54 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.jarvisReadiness.visible).toBe(false);
     expect(dashboard.jarvisAutonomyGovernor.visible).toBe(true);
     expect(dashboard.jarvisAutonomyGovernor.modeLabel).toBe('Observe only');
+    expect(dashboard.capabilityAuthority.visible).toBe(true);
+    expect(dashboard.capabilityAuthority.unauthorizedMutationCount).toBe(0);
+  });
+
+  it('shows capability broker app authority and blocked mutation evidence', () => {
+    const kiraApp: AppDef = {
+      appId: 18,
+      appName: 'kira',
+      displayName: 'Kira',
+      route: '/kira',
+      actions: [
+        { name: 'OPEN_APP_WINDOW', description: 'Open Kira', params: [] },
+        {
+          name: 'APPLY_MODEL_SETTINGS',
+          description: 'Persist Kira model settings',
+          params: [],
+        },
+      ],
+    };
+    const brokerDecision = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedBand: 'execute',
+      apps: [kiraApp],
+      evidenceRefs: ['test:kira-settings-mutation'],
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      now: 5000,
+      capabilityBrokerDecisions: [brokerDecision],
+    });
+
+    expect(dashboard.capabilityAuthority.visible).toBe(true);
+    expect(dashboard.capabilityAuthority.statusLabel).toContain('broker decision');
+    expect(dashboard.capabilityAuthority.decisionLabels.join(' ')).toContain(
+      'kira:apply_model_settings',
+    );
+    expect(dashboard.capabilityAuthority.blockedReasonLabels.join(' ')).toContain(
+      'approval_required',
+    );
+    expect(dashboard.capabilityAuthority.approvalRequirementLabels.join(' ')).toContain(
+      'approval required',
+    );
+    expect(dashboard.capabilityAuthority.rollbackRequirementLabels.join(' ')).toContain(
+      'rollback missing',
+    );
+    expect(dashboard.capabilityAuthority.mutationCount).toBe(0);
+    expect(dashboard.capabilityAuthority.unauthorizedMutationCount).toBe(0);
   });
 
   it('uses mission memory to explain stale validation, pending external work, and approvals', () => {

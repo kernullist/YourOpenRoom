@@ -12,6 +12,11 @@ import {
   type AoiJarvisAutonomyCapability,
   type AoiJarvisAutonomyGovernorDecision,
 } from './aoiJarvisAutonomyGovernor';
+import {
+  decideAoiCapabilityBrokerAuthority,
+  formatAoiCapabilityBrokerDecisionLine,
+  type AoiCapabilityBrokerDecision,
+} from './aoiCapabilityRegistry';
 import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
 import type {
   AoiActionLadderAction,
@@ -313,6 +318,83 @@ function buildApprovedCommandPolicyForProposal(
   return evaluateAoiApprovedCommandPolicy(request);
 }
 
+function getNumberParam(params: Record<string, unknown> | undefined, key: string): number | null {
+  const value = params?.[key];
+  const parsed = typeof value === 'number' ? value : Number(typeof value === 'string' ? value : '');
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function getProposalAppReference(proposal: AoiProposal): string | number | null {
+  const kind = proposal.acceptAction?.kind;
+  const params = proposal.acceptAction?.params;
+  if (kind === 'create_kira_work' || kind === 'activate_goal') {
+    return 'kira';
+  }
+
+  const appId = getNumberParam(params, 'appId') ?? getNumberParam(params, 'app_id');
+  if (appId !== null) {
+    return appId;
+  }
+
+  return (
+    getStringParam(params, 'appName') ||
+    getStringParam(params, 'app_name') ||
+    getStringParam(params, 'targetApp') ||
+    getStringParam(params, 'target_app') ||
+    getStringParam(params, 'app') ||
+    null
+  );
+}
+
+function getProposalCapabilityIntent(proposal: AoiProposal): string {
+  const kind = proposal.acceptAction?.kind;
+  const params = proposal.acceptAction?.params;
+  if (kind === 'create_kira_work') {
+    return 'create_work';
+  }
+  if (kind === 'activate_goal') {
+    return 'update_state';
+  }
+  if (kind === 'open_app') {
+    return 'open_app_window';
+  }
+  return getStringParam(params, 'intent') || getStringParam(params, 'actionType') || kind || '';
+}
+
+function buildCapabilityBrokerDecisionForProposal(params: {
+  proposal: AoiProposal | null;
+  approvalSatisfied: boolean;
+  boundedWorkOrder: AoiBoundedWorkOrder | null;
+  evidenceRefs: readonly string[];
+}): AoiCapabilityBrokerDecision | null {
+  const proposal = params.proposal;
+  const appReference = proposal ? getProposalAppReference(proposal) : null;
+  if (!proposal || appReference === null) {
+    return null;
+  }
+
+  const kind = proposal.acceptAction?.kind;
+  if (kind !== 'create_kira_work' && kind !== 'open_app' && kind !== 'activate_goal') {
+    return null;
+  }
+
+  const rollbackEvidenceRefs =
+    params.boundedWorkOrder?.rollback.available === true
+      ? params.boundedWorkOrder.rollback.evidenceRefs
+      : [];
+
+  return decideAoiCapabilityBrokerAuthority({
+    appReference,
+    intentReference: getProposalCapabilityIntent(proposal),
+    requestedOperation: kind,
+    requestedBand: 'execute',
+    approvalSatisfied: params.approvalSatisfied,
+    approvalEvidenceRefs: params.approvalSatisfied ? [`proposal:${proposal.id}`] : [],
+    rollbackEvidenceRefs,
+    evidenceRefs: params.evidenceRefs,
+  });
+}
+
 function latestRunForOpportunity(
   runs: readonly AoiDeliberationRun[] | undefined,
   opportunityId: string,
@@ -398,7 +480,10 @@ function summarizeReasons(reasons: readonly string[], fallback: string): string 
   return reasons.slice(0, 5).join(', ');
 }
 
-function buildConnectionLabels(kind: string | undefined): string[] {
+function buildConnectionLabels(
+  kind: string | undefined,
+  capabilityBrokerDecision?: AoiCapabilityBrokerDecision | null,
+): string[] {
   return uniqueStrings(
     [
       'L1/L2: apps/webuiapps/src/lib/aoiAutonomyStore.ts and apps/webuiapps/src/lib/aoiAutonomyUi.ts keep opportunity handling display-only.',
@@ -409,6 +494,9 @@ function buildConnectionLabels(kind: string | undefined): string[] {
         : undefined,
       kind === 'run_command'
         ? 'L4/L5 command: apps/webuiapps/src/lib/aoiApprovedCommandPolicy.ts supplies the exact approval fingerprint.'
+        : undefined,
+      capabilityBrokerDecision
+        ? `Capability Broker v2: ${formatAoiCapabilityBrokerDecisionLine(capabilityBrokerDecision)}`
         : undefined,
       'L5: apps/webuiapps/src/lib/aoiAutonomyPolicy.ts and apps/webuiapps/src/lib/aoiAutonomyExecution.ts remain the only execution gates.',
     ],
@@ -480,6 +568,12 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
     opportunity,
     input.followThroughLearning,
   );
+  const capabilityBrokerDecision = buildCapabilityBrokerDecisionForProposal({
+    proposal: matchingProposal,
+    approvalSatisfied: executeEvaluation?.allowed === true,
+    boundedWorkOrder,
+    evidenceRefs,
+  });
   const allowedActions: AoiActionLadderAction[] = [
     makeAction({
       level: 'L1',
@@ -668,15 +762,36 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
         }),
       );
     }
+    if (capabilityBrokerDecision?.requiredApproval) {
+      approvalNeeds.push(
+        makeApprovalNeed({
+          level: 'L5',
+          label: `App capability broker: ${capabilityBrokerDecision.displayName} ${capabilityBrokerDecision.requestedOperation}`,
+          requiredAutonomyLevel: 'L5',
+          approvalRef: `proposal:${matchingProposal.id}`,
+          reason:
+            capabilityBrokerDecision.blockedReasons.length > 0
+              ? `Capability Broker v2 blocks execution: ${capabilityBrokerDecision.blockedReasons.join(
+                  ', ',
+                )}`
+              : 'Capability Broker v2 requires explicit approval evidence before app mutation execution.',
+          satisfied: capabilityBrokerDecision.approvalSatisfied,
+          evidenceRefs: capabilityBrokerDecision.evidenceRefs,
+        }),
+      );
+    }
 
     const capability = capabilityForActionKind(actionKind);
     const governorAllowsExecution = canAoiJarvisAutonomyUseCapability(
       input.jarvisGovernor,
       capability,
     );
+    const capabilityBrokerAllowsExecution =
+      !capabilityBrokerDecision || capabilityBrokerDecision.canExecute;
     const executeAllowed =
       executeEvaluation?.allowed === true &&
       governorAllowsExecution &&
+      capabilityBrokerAllowsExecution &&
       boundedWorkOrder?.policyResult.status !== 'blocked' &&
       !unsafeLearningSignal;
     if (executeAllowed) {
@@ -698,6 +813,9 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
         ...(boundedWorkOrder?.policyResult.status === 'blocked'
           ? boundedWorkOrder.policyResult.blockedReasons
           : []),
+        ...(capabilityBrokerAllowsExecution || !capabilityBrokerDecision
+          ? []
+          : capabilityBrokerDecision.blockedReasons.map((reason) => `capability_broker:${reason}`)),
         ...(unsafeLearningSignal ? ['follow_through_learning:unsafe_or_blocked'] : []),
       ];
       blockedActions.push(
@@ -798,7 +916,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
     ...(exposedPreparedWorkOrder ? { preparedWorkOrder: exposedPreparedWorkOrder } : {}),
     evidenceNeeds: uniqueStrings(evidenceNeeds, 6),
     safeFallback,
-    connectionLabels: buildConnectionLabels(actionKind),
+    connectionLabels: buildConnectionLabels(actionKind, capabilityBrokerDecision),
     evidenceRefs,
     actionAuthority: 'display_only',
     mutationCount: 0,
