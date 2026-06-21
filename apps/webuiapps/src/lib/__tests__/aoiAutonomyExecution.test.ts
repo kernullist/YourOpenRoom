@@ -408,12 +408,15 @@ describe('Aoi bounded autonomous work orders', () => {
       executionAllowed: false,
       canAutoRun: false,
     });
+    expect(order.status).toBe('draft');
     expect(order.risk).toMatchObject({
       mutationCapable: false,
       commandCapable: false,
     });
-    expect(order.actionAuthority).toBe('preview_only');
+    expect(order.actionAuthority).toBe('display_only');
     expect(order.mutationCount).toBe(0);
+    expect(order.expectedDiffShape.summary).toContain('No repository diff');
+    expect(order.sourceRefs).toContain(order.origin.ref);
   });
 
   it('requires approval for mutation-capable work with explicit file scope', () => {
@@ -455,8 +458,12 @@ describe('Aoi bounded autonomous work orders', () => {
     });
 
     expect(order.policyResult.status).toBe('approval_required');
+    expect(order.status).toBe('waiting_approval');
     expect(order.policyResult.reasons).toContain('approval_missing');
     expect(order.approval.required).toBe(true);
+    expect(order.reviewRequirement.operatorReviewRequired).toBe(true);
+    expect(order.reviewRequirement.commandApprovalRequired).toBe(true);
+    expect(order.stopConditions.join(' ')).toContain('approval');
     expect(order.policyResult.executionAllowed).toBe(false);
   });
 
@@ -607,6 +614,50 @@ describe('Aoi bounded autonomous work orders', () => {
     expect(order.policyResult.blockedReasons).toContain('missing_validation_command_preview');
   });
 
+  it('blocks mutation-capable work when checkpoint evidence is missing', () => {
+    const order = createAoiBoundedWorkOrder({
+      sessionPath: 'aoi/default',
+      objective: 'Patch one scoped Aoi helper with checkpoint review.',
+      affectedSurfaces: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      files: ['apps/webuiapps/src/lib/aoiBoundedWorkOrder.ts'],
+      allowedOperations: ['edit_file', 'run_validation_command'],
+      commands: [
+        {
+          command:
+            'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts',
+        },
+      ],
+      risk: {
+        level: 'low',
+        mutationCapable: true,
+      },
+      checkpoint: {
+        kind: 'existing_git_state',
+        required: true,
+        available: false,
+        summary: 'Checkpoint has not been captured yet.',
+        instructions: ['Capture git status before approval.'],
+        evidenceRefs: [],
+      },
+      rollback: {
+        kind: 'manual_revert_required',
+        available: true,
+        guarantee: 'none',
+        summary: 'Manual rollback is available.',
+        instructions: ['Use the reviewed diff for rollback.'],
+        evidenceRefs: [],
+      },
+      now: 3000,
+    });
+
+    expect(order.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain(
+      'missing_checkpoint_for_mutation_capable_work',
+    );
+    expect(order.stopConditions.join(' ')).toContain('checkpoint');
+    expect(order.policyResult.executionAllowed).toBe(false);
+  });
+
   it('invalidates prior approval when the validation command changes', () => {
     const base = createAoiBoundedWorkOrder({
       sessionPath: 'aoi/default',
@@ -664,6 +715,7 @@ describe('Aoi bounded autonomous work orders', () => {
     });
 
     expect(unchanged.policyResult.status).toBe('preview_only');
+    expect(unchanged.status).toBe('approved');
     expect(unchanged.approval.satisfied).toBe(true);
     expect(result.status).toBe('approval_required');
     expect(result.approvalInvalidationReasons).toContain('approval_command_changed');
@@ -709,6 +761,11 @@ describe('Aoi bounded autonomous work orders', () => {
     expect(order.risk.level).toBe('high');
     expect(order.risk.escalated).toBe(true);
     expect(order.risk.reasons.join(' ')).toContain('Rollback is unavailable');
+    expect(order.status).toBe('blocked');
+    expect(order.policyResult.blockedReasons).toContain(
+      'missing_rollback_for_mutation_capable_work',
+    );
+    expect(order.stopConditions.join(' ')).toContain('rollback');
   });
 
   it('requires Kira review for generated medium-risk mutation work', () => {
@@ -718,11 +775,13 @@ describe('Aoi bounded autonomous work orders', () => {
     });
 
     expect(order.policyResult.status).toBe('kira_review_required');
+    expect(order.status).toBe('waiting_approval');
     expect(order.policyResult.reasons).toContain(
       'generated_medium_or_high_risk_requires_kira_review',
     );
     expect(order.risk.commandCapable).toBe(true);
     expect(order.approval.approver).toBe('kira_reviewer');
+    expect(order.reviewRequirement.kiraReviewRequired).toBe(true);
     expect(order.policyResult.executionAllowed).toBe(false);
   });
 });

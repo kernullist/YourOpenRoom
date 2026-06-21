@@ -301,6 +301,54 @@ describe('Aoi Action Ladder', () => {
     expect(decision.safeFallback).toContain('research gate');
   });
 
+  it('prepares a draft bounded work order for a low-risk evidence-backed proposal', () => {
+    const opportunity = makeOpportunity({ risk: 'low' });
+    const proposal = makeProposal(opportunity, 'read_research_artifact', {
+      risk: 'low',
+      requiredAutonomyLevel: 'L3',
+      requiresUserApproval: false,
+      acceptAction: {
+        kind: 'read_research_artifact',
+        params: {
+          runId: 'research-run-action-ladder',
+          artifact: 'summary.md',
+        },
+      },
+    });
+    const decision = decideAoiActionLadder({
+      sessionPath: SESSION_PATH,
+      opportunity,
+      deliberationRun: makeDeliberationRun(opportunity),
+      policy: makePolicy({ level: 'L4' }),
+      jarvisGovernor: makeJarvisGovernor(),
+      activeProposals: [proposal],
+      now: NOW,
+    });
+
+    expect(decision.currentLevel).toBe('L4');
+    expect(decision.allowedActions.map((action) => action.kind)).toContain(
+      'prepare_bounded_work_order',
+    );
+    expect(decision.preparedWorkOrder).toMatchObject({
+      status: 'draft',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+      policyResult: {
+        status: 'preview_only',
+        executionAllowed: false,
+        canAutoRun: false,
+      },
+      reviewRequirement: {
+        operatorReviewRequired: false,
+        kiraReviewRequired: false,
+        commandApprovalRequired: false,
+      },
+    });
+    expect(decision.preparedWorkOrder?.sourceRefs).toEqual(
+      expect.arrayContaining([`proposal:${proposal.id}`, `opportunity:${opportunity.id}`]),
+    );
+  });
+
   it('opens prepare-only for a matching Kira handoff proposal', () => {
     const opportunity = makeOpportunity({ sourceKind: 'kira' });
     const proposal = makeProposal(opportunity, 'create_kira_work');
@@ -323,6 +371,19 @@ describe('Aoi Action Ladder', () => {
     expect(decision.approvalNeeds.map((need) => need.requiredAutonomyLevel)).toContain('L4');
     expect(decision.blockedActions.some((action) => action.level === 'L5')).toBe(true);
     expect(decision.connectionLabels.join(' ')).toContain('aoiKiraHandoff.ts');
+    expect(decision.preparedWorkOrder).toMatchObject({
+      status: 'waiting_approval',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+      reviewRequirement: {
+        kiraReviewRequired: true,
+      },
+      policyResult: {
+        executionAllowed: false,
+        canAutoRun: false,
+      },
+    });
+    expect(decision.preparedWorkOrder?.allowedOperations).toContain('create_kira_work');
   });
 
   it('keeps L4 preparation blocked when Jarvis readiness denies prepare actions', () => {
@@ -346,6 +407,7 @@ describe('Aoi Action Ladder', () => {
     expect(decision.blockedActions.find((action) => action.level === 'L4')?.reason).toContain(
       'jarvis_governor_blocks:prepare_action',
     );
+    expect(decision.preparedWorkOrder).toBeUndefined();
     expect(decision.actionAuthority).toBe('display_only');
     expect(decision.mutationCount).toBe(0);
   });
@@ -396,6 +458,7 @@ describe('Aoi Action Ladder', () => {
     expect(decision.blockedActions.map((action) => action.reason).join(' ')).toContain(
       'follow_through_learning:unsafe_or_blocked',
     );
+    expect(decision.preparedWorkOrder).toBeUndefined();
     expect(decision.actionAuthority).toBe('display_only');
     expect(decision.mutationCount).toBe(0);
   });
@@ -442,6 +505,18 @@ describe('Aoi Action Ladder', () => {
 
     expect(decision.currentLevel).toBe('L4');
     expect(decision.approvalNeeds.some((need) => Boolean(need.approvalFingerprint))).toBe(true);
+    expect(decision.preparedWorkOrder).toMatchObject({
+      status: 'waiting_approval',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+      reviewRequirement: {
+        commandApprovalRequired: true,
+      },
+      policyResult: {
+        executionAllowed: false,
+        canAutoRun: false,
+      },
+    });
     expect(decision.blockedActions.find((action) => action.level === 'L5')?.reason).toContain(
       'approval',
     );

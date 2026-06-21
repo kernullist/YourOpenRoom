@@ -217,6 +217,39 @@ function makeCommandProposal(opportunity: AoiOpportunity): AoiProposal {
   };
 }
 
+function makeReadProposal(opportunity: AoiOpportunity): AoiProposal {
+  return {
+    version: 1,
+    id: 'proposal-read-research-shadow',
+    sessionPath: SESSION_PATH,
+    status: 'active',
+    title: `Read research artifact for ${opportunity.title}`,
+    body: `Prepared read-only follow-up for ${opportunity.dedupeKey}.`,
+    reason: 'A matching opportunity needs a bounded read-only work order.',
+    trigger: 'field_shadow_bridge_test',
+    createdAt: NOW - 5_000,
+    updatedAt: NOW - 2_000,
+    expiresAt: NOW + DAY_MS,
+    cooldownKey: opportunity.dedupeKey,
+    confidence: 0.88,
+    risk: 'low',
+    requiredAutonomyLevel: 'L3',
+    requiresUserApproval: false,
+    suggestedTools: ['read_research_artifact'],
+    evidenceRefs: [`opportunity:${opportunity.id}`, ...opportunity.evidenceRefs],
+    memoryIds: [],
+    artifactRefs: [`opportunity:${opportunity.id}`],
+    riskSignals: [],
+    acceptAction: {
+      kind: 'read_research_artifact',
+      params: {
+        runId: 'research-run-shadow',
+        artifact: 'summary.md',
+      },
+    },
+  };
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -335,6 +368,55 @@ describe('Aoi Field Shadow Decision Bridge', () => {
     expect(result.summary.staleUnsafeDuplicateLabels.join(' ')).toContain('stale');
   });
 
+  it('records prepared bounded work orders as prepare-only field evidence', () => {
+    const opportunity = makeOpportunity({
+      id: 'opp-shadow-work-order',
+      deliveryRecommendation: 'dashboard',
+      risk: 'low',
+    });
+    const run = makeRun(opportunity);
+    const proposal = makeReadProposal(opportunity);
+    const ladder = decideAoiActionLadder({
+      sessionPath: SESSION_PATH,
+      opportunity,
+      deliberationRun: run,
+      policy: makePolicy({ level: 'L4' }),
+      jarvisGovernor: makeJarvisGovernor(true),
+      activeProposals: [proposal],
+      now: NOW,
+    });
+    const result = buildAoiFieldShadowDecisionBridge({
+      sessionPath: SESSION_PATH,
+      opportunities: [opportunity],
+      actionLadderDecisions: [ladder],
+      deliberationRuns: [run],
+      now: NOW,
+    });
+
+    expect(ladder.preparedWorkOrder).toMatchObject({
+      status: 'draft',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+      policyResult: {
+        executionAllowed: false,
+        canAutoRun: false,
+      },
+    });
+    expect(result.decisions[0]).toMatchObject({
+      kind: 'would_prepare_work_order',
+      policyResult: 'record_only',
+      actionLadderDecisionId: ladder.id,
+      mutationCount: 0,
+    });
+    expect(result.fieldEvents[0]).toMatchObject({
+      category: 'work_order_prepared',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(result.summary.workOrderPrepareCount).toBe(1);
+    expect(result.summary.zeroMutation).toBe(true);
+  });
+
   it('keeps unsafe command opportunities blocked instead of preparing a work order', () => {
     const opportunity = makeOpportunity({
       id: 'opp-shadow-command',
@@ -399,6 +481,7 @@ describe('Aoi Field Shadow Decision Bridge', () => {
     });
     expect(result.decisions[0].cannotKnow?.join(' ')).toContain('Unsafe');
     expect(result.fieldEvents[0].category).toBe('action_ladder_blocked');
+    expect(result.fieldEvents[0].mutationCount).toBe(0);
   });
 
   it('does not promote duplicate or cooldown items into direct-chat shadow speak', () => {

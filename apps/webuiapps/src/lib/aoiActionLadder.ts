@@ -3,7 +3,10 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
-import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+import {
+  buildAoiBoundedWorkOrderFromProposal,
+  type AoiBoundedWorkOrder,
+} from './aoiBoundedWorkOrder';
 import {
   canAoiJarvisAutonomyUseCapability,
   type AoiJarvisAutonomyCapability,
@@ -423,11 +426,19 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
   const preparedPlan: AoiPreparedActionPlan | null = matchingProposal
     ? buildAoiPreparedActionPlan(matchingProposal, { now, existingGitStateAvailable: true })
     : null;
-  const boundedWorkOrder = findMatchingWorkOrder(
+  const existingBoundedWorkOrder = findMatchingWorkOrder(
     opportunity,
     matchingProposal,
     input.boundedWorkOrders,
   );
+  const generatedBoundedWorkOrder =
+    matchingProposal && preparedPlan
+      ? buildAoiBoundedWorkOrderFromProposal(matchingProposal, {
+          now,
+          generated: matchingProposal.trigger !== 'manual',
+        })
+      : null;
+  const boundedWorkOrder = existingBoundedWorkOrder ?? generatedBoundedWorkOrder;
   const approvedCommandPolicy = buildApprovedCommandPolicyForProposal(matchingProposal, now);
   const previewEvaluation = matchingProposal
     ? evaluateAoiProposalExecution(matchingProposal, policy, {
@@ -757,6 +768,15 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
           : currentLevel === 'L2'
             ? 'Keep the item as a dashboard or inline brief until action evidence exists.'
             : 'Record the opportunity and collect evidence before interrupting or preparing actions.';
+  const exposedPreparedWorkOrder = allowedActions.some(
+    (action) =>
+      action.level === 'L4' &&
+      (action.kind === 'prepare_bounded_work_order' ||
+        action.kind === 'prepare_kira_handoff' ||
+        action.kind === 'prepare_command_plan'),
+  )
+    ? boundedWorkOrder
+    : null;
 
   return {
     version: 1,
@@ -775,6 +795,7 @@ export function decideAoiActionLadder(input: AoiActionLadderInput): AoiActionLad
     allowedActions,
     blockedActions: blockedActions.slice(0, 8),
     approvalNeeds: approvalNeeds.slice(0, 6),
+    ...(exposedPreparedWorkOrder ? { preparedWorkOrder: exposedPreparedWorkOrder } : {}),
     evidenceNeeds: uniqueStrings(evidenceNeeds, 6),
     safeFallback,
     connectionLabels: buildConnectionLabels(actionKind),

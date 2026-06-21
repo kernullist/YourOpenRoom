@@ -3767,6 +3767,11 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.boundedWorkOrders.exactNextApprovalLabels.join(' ')).toContain(
       eligibleOrder.approval.approvalFingerprint,
     );
+    expect(dashboard.boundedWorkOrders.expectedDiffShapeLabels.join(' ')).toContain(
+      eligibleOrder.expectedDiffShape.summary,
+    );
+    expect(dashboard.boundedWorkOrders.reviewRequirementLabels.join(' ')).toContain('command=true');
+    expect(dashboard.boundedWorkOrders.stopConditionLabels.join(' ')).toContain('approval');
     expect(dashboard.boundedWorkOrders.checkpointLabels.join(' ')).toContain('available');
     expect(dashboard.boundedWorkOrders.rollbackLabels.join(' ')).toContain('manual_revert');
     expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
@@ -3811,6 +3816,69 @@ describe('Aoi autonomy UI helpers', () => {
     expect(order.policyResult.status).toBe('kira_review_required');
     expect(dashboard.boundedWorkOrders.exactNextApprovalLabels.join(' ')).toContain('Kira review');
     expect(dashboard.pendingApproval.riskLabels.join(' ')).toContain('medium risk L4');
+  });
+
+  it('summarizes prepared work orders emitted by action ladder decisions', () => {
+    const order = buildAoiBoundedWorkOrderFromProposal(
+      makeProposal({
+        id: 'proposal-dashboard-ladder-work-order',
+        status: 'active',
+        title: 'Create Kira-reviewed work order from ladder',
+        risk: 'medium',
+        requiredAutonomyLevel: 'L4',
+        suggestedTools: ['create_kira_work'],
+        acceptAction: {
+          kind: 'create_kira_work',
+          params: {
+            title: 'Patch Aoi bounded work order panel',
+            objective: 'Patch one Aoi bounded work order dashboard helper.',
+            scope: ['apps/webuiapps/src/lib/aoiAutonomyUi.ts'],
+            modules: ['aoiAutonomyUi'],
+            validationProfile: 'aoi-autonomy',
+          },
+        },
+      }),
+      {
+        now: 7000,
+        generated: true,
+      },
+    );
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      actionLadderDecisions: [
+        {
+          version: 1,
+          id: 'aoi-action-ladder-dashboard-work-order',
+          sessionPath: 'aoi/default',
+          opportunityId: 'opp-dashboard-work-order',
+          opportunityDedupeKey: 'dashboard:work-order',
+          currentLevel: 'L4',
+          levelLabel: 'L4 prepare only',
+          summaryLabel: 'Prepare-only bounded work order is ready for review.',
+          allowedActions: [],
+          blockedActions: [],
+          approvalNeeds: [],
+          preparedWorkOrder: order,
+          evidenceNeeds: [],
+          safeFallback: 'Prepare-only; no execution authority.',
+          connectionLabels: ['aoiBoundedWorkOrder.ts'],
+          evidenceRefs: order.evidenceRefs,
+          actionAuthority: 'display_only',
+          mutationCount: 0,
+        },
+      ],
+      now: 8000,
+    });
+
+    expect(dashboard.boundedWorkOrders.visible).toBe(true);
+    expect(dashboard.boundedWorkOrders.eligibleWorkOrderLabels.join(' ')).toContain(
+      'Patch one Aoi bounded work order dashboard helper',
+    );
+    expect(dashboard.boundedWorkOrders.reviewRequirementLabels.join(' ')).toContain('kira=true');
+    expect(dashboard.pendingApproval.approvalLabels.join(' ')).toContain(
+      order.approval.approvalFingerprint,
+    );
+    expect(JSON.stringify(dashboard).toLowerCase()).not.toContain('executed');
   });
 
   it('summarizes replay health failures by metric id without long snapshots', () => {

@@ -3,7 +3,7 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
-import { normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
+import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
 import type {
@@ -55,6 +55,13 @@ export type AoiBoundedWorkOrderPolicyStatus =
   | 'approval_required'
   | 'kira_review_required'
   | 'blocked';
+
+export type AoiBoundedWorkOrderStatus =
+  | 'draft'
+  | 'waiting_approval'
+  | 'approved'
+  | 'blocked'
+  | 'archived';
 
 export interface AoiBoundedWorkOrderOrigin {
   version: 1;
@@ -152,27 +159,47 @@ export interface AoiBoundedWorkOrderPolicyResult {
   canAutoRun: false;
 }
 
+export interface AoiBoundedWorkOrderExpectedDiffShape {
+  version: 1;
+  summary: string;
+  allowedPatterns: string[];
+  forbiddenPatterns: string[];
+}
+
+export interface AoiBoundedWorkOrderReviewRequirement {
+  version: 1;
+  operatorReviewRequired: boolean;
+  kiraReviewRequired: boolean;
+  commandApprovalRequired: boolean;
+  approvalBoundary: string;
+}
+
 export interface AoiBoundedWorkOrder {
   version: 1;
   id: string;
   sessionPath: string;
+  status: AoiBoundedWorkOrderStatus;
   objective: string;
   owner: AoiBoundedWorkOrderOwner;
   origin: AoiBoundedWorkOrderOrigin;
+  sourceRefs: string[];
   scope: AoiBoundedWorkOrderScope;
   allowedOperations: AoiBoundedWorkOrderOperation[];
   forbiddenOperations: string[];
+  expectedDiffShape: AoiBoundedWorkOrderExpectedDiffShape;
   commands: AoiBoundedWorkOrderCommandPreview[];
   risk: AoiBoundedWorkOrderRisk;
   approval: AoiBoundedWorkOrderApproval;
   validation: AoiBoundedWorkOrderValidation;
   checkpoint: AoiBoundedWorkOrderCheckpoint;
   rollback: AoiBoundedWorkOrderRollback;
+  reviewRequirement: AoiBoundedWorkOrderReviewRequirement;
+  stopConditions: string[];
   policyResult: AoiBoundedWorkOrderPolicyResult;
   evidenceRefs: string[];
   createdAt: number;
   updatedAt: number;
-  actionAuthority: 'preview_only';
+  actionAuthority: 'display_only';
   mutationCount: 0;
 }
 
@@ -221,6 +248,10 @@ export interface AoiBoundedWorkOrderDraft {
   };
   checkpoint?: Partial<AoiCheckpointPlan>;
   rollback?: Partial<AoiRollbackPlan>;
+  sourceRefs?: string[];
+  expectedDiffShape?: Partial<AoiBoundedWorkOrderExpectedDiffShape>;
+  stopConditions?: string[];
+  reviewRequirement?: Partial<AoiBoundedWorkOrderReviewRequirement>;
   evidenceRefs?: string[];
   now?: number;
 }
@@ -614,8 +645,129 @@ function exactNextApproval(params: {
   return 'Preview only; no execution approval is required.';
 }
 
+function buildExpectedDiffShape(params: {
+  draftShape?: Partial<AoiBoundedWorkOrderExpectedDiffShape>;
+  mutationCapable: boolean;
+  files: string[];
+  modules: string[];
+  affectedSurfaces: string[];
+}): AoiBoundedWorkOrderExpectedDiffShape {
+  const scopedTargets = dedupeStrings(
+    [...params.files, ...params.modules, ...params.affectedSurfaces],
+    12,
+  );
+  return {
+    version: 1,
+    summary: sanitizeText(
+      params.draftShape?.summary,
+      params.mutationCapable
+        ? 'Expected diff is limited to the explicit file/module scope and remains un-applied until approval.'
+        : 'No repository diff is expected from prepare-only work.',
+      240,
+    ),
+    allowedPatterns: dedupeStrings(params.draftShape?.allowedPatterns ?? scopedTargets, 12),
+    forbiddenPatterns: dedupeStrings(
+      params.draftShape?.forbiddenPatterns ?? [
+        'No out-of-scope files or modules.',
+        'No package install, publish, deploy, push, or destructive filesystem operations.',
+        'No generated broad rewrite or repository-wide refactor.',
+      ],
+      12,
+    ),
+  };
+}
+
+function buildReviewRequirement(params: {
+  draftRequirement?: Partial<AoiBoundedWorkOrderReviewRequirement>;
+  approval: AoiBoundedWorkOrderApproval;
+  risk: AoiBoundedWorkOrderRisk;
+  policyResult: AoiBoundedWorkOrderPolicyResult;
+}): AoiBoundedWorkOrderReviewRequirement {
+  const kiraReviewRequired =
+    params.draftRequirement?.kiraReviewRequired ?? params.approval.approver === 'kira_reviewer';
+  const commandApprovalRequired =
+    params.draftRequirement?.commandApprovalRequired ?? params.risk.commandCapable;
+  const operatorReviewRequired =
+    params.draftRequirement?.operatorReviewRequired ??
+    (params.approval.required && params.approval.approver !== 'kira_reviewer');
+  return {
+    version: 1,
+    operatorReviewRequired,
+    kiraReviewRequired: kiraReviewRequired || params.policyResult.status === 'kira_review_required',
+    commandApprovalRequired,
+    approvalBoundary: sanitizeText(
+      params.draftRequirement?.approvalBoundary,
+      params.policyResult.exactNextApproval,
+      260,
+    ),
+  };
+}
+
+function buildStopConditions(params: {
+  draftConditions?: string[];
+  order: Omit<
+    AoiBoundedWorkOrder,
+    'status' | 'policyResult' | 'reviewRequirement' | 'stopConditions'
+  >;
+  policyResult: AoiBoundedWorkOrderPolicyResult;
+}): string[] {
+  const commandBlockers = params.order.commands.flatMap((command) =>
+    command.blockReasons.map(
+      (reason) => `Stop if command policy blocks ${command.command}: ${reason}.`,
+    ),
+  );
+  return dedupeStrings(
+    [
+      ...(params.draftConditions ?? []),
+      ...params.policyResult.blockedReasons.map(
+        (reason) => `Stop until blocked reason is resolved: ${reason}.`,
+      ),
+      ...params.policyResult.approvalInvalidationReasons.map(
+        (reason) => `Stop if approval no longer matches the exact work order: ${reason}.`,
+      ),
+      ...commandBlockers,
+      params.order.risk.mutationCapable && params.order.commands.length <= 0
+        ? 'Stop because mutation-capable work has no validation command preview.'
+        : undefined,
+      params.order.risk.mutationCapable &&
+      params.order.checkpoint.required &&
+      !params.order.checkpoint.available
+        ? 'Stop because checkpoint evidence is missing.'
+        : undefined,
+      params.order.risk.mutationCapable && !params.order.rollback.available
+        ? 'Stop because rollback is unavailable or unclear.'
+        : undefined,
+      'Stop if the objective, scope, command, checkpoint, rollback, or validation boundary changes before approval.',
+      'Stop if Kira, operator, or approved-command policy approval is missing for the exact next action.',
+    ],
+    16,
+  );
+}
+
+function statusFromPolicyResult(params: {
+  policyResult: AoiBoundedWorkOrderPolicyResult;
+  approval: AoiBoundedWorkOrderApproval;
+}): AoiBoundedWorkOrderStatus {
+  if (params.policyResult.status === 'blocked') {
+    return 'blocked';
+  }
+  if (params.approval.satisfied) {
+    return 'approved';
+  }
+  if (
+    params.policyResult.status === 'approval_required' ||
+    params.policyResult.status === 'kira_review_required'
+  ) {
+    return 'waiting_approval';
+  }
+  return 'draft';
+}
+
 function compareApprovalSnapshot(
-  order: Omit<AoiBoundedWorkOrder, 'policyResult'>,
+  order: Omit<
+    AoiBoundedWorkOrder,
+    'status' | 'policyResult' | 'reviewRequirement' | 'stopConditions'
+  >,
   snapshot: AoiBoundedWorkOrderApprovalSnapshot | null | undefined,
   now: number,
 ): string[] {
@@ -651,7 +803,10 @@ function compareApprovalSnapshot(
 }
 
 export function evaluateAoiBoundedWorkOrderPolicy(
-  order: Omit<AoiBoundedWorkOrder, 'policyResult'>,
+  order: Omit<
+    AoiBoundedWorkOrder,
+    'status' | 'policyResult' | 'reviewRequirement' | 'stopConditions'
+  >,
   options: AoiBoundedWorkOrderPolicyOptions = {},
 ): AoiBoundedWorkOrderPolicyResult {
   const now = options.now ?? order.updatedAt ?? DEFAULT_NOW;
@@ -681,6 +836,9 @@ export function evaluateAoiBoundedWorkOrderPolicy(
   }
   if (order.risk.mutationCapable && order.checkpoint.required && !order.checkpoint.available) {
     blockedReasons.push('missing_checkpoint_for_mutation_capable_work');
+  }
+  if (order.risk.mutationCapable && !order.rollback.available) {
+    blockedReasons.push('missing_rollback_for_mutation_capable_work');
   }
   const approvalInvalidationReasons = compareApprovalSnapshot(order, options.approvedSnapshot, now);
   const approvalSatisfied =
@@ -891,6 +1049,13 @@ export function createAoiBoundedWorkOrder(
     broadScopeDetected,
     unsafeScopeDetected,
   };
+  const expectedDiffShape = buildExpectedDiffShape({
+    draftShape: draft.expectedDiffShape,
+    mutationCapable: risk.mutationCapable,
+    files,
+    modules,
+    affectedSurfaces,
+  });
   const approval: AoiBoundedWorkOrderApproval = {
     version: 1,
     required: approvalRequired,
@@ -931,7 +1096,19 @@ export function createAoiBoundedWorkOrder(
     commands,
     expectedEvidenceRefs: dedupeStrings(draft.validation?.expectedEvidenceRefs ?? [], 12),
   };
-  const baseOrder: Omit<AoiBoundedWorkOrder, 'policyResult'> = {
+  const sourceRefs = dedupeStrings(
+    [
+      ...(draft.sourceRefs ?? []),
+      draft.origin?.ref,
+      ...evidenceRefs,
+      ...commands.map((command) => `approved-command:${command.approvalFingerprint}`),
+    ],
+    MAX_REFS,
+  );
+  const baseOrder: Omit<
+    AoiBoundedWorkOrder,
+    'status' | 'policyResult' | 'reviewRequirement' | 'stopConditions'
+  > = {
     version: 1,
     id: `aoi-work-order-${hashStable(`${sessionPath}:${objective}:${scopeHash}:${now}`)}`,
     sessionPath,
@@ -944,9 +1121,11 @@ export function createAoiBoundedWorkOrder(
       label: sanitizeText(draft.origin?.label, 'Manual bounded work order', 180),
       generated,
     },
+    sourceRefs,
     scope,
     allowedOperations,
     forbiddenOperations: scope.forbiddenOperations,
+    expectedDiffShape,
     commands,
     risk,
     approval,
@@ -956,22 +1135,40 @@ export function createAoiBoundedWorkOrder(
     evidenceRefs,
     createdAt: now,
     updatedAt: now,
-    actionAuthority: 'preview_only',
+    actionAuthority: 'display_only',
     mutationCount: 0,
   };
   const policyResult = evaluateAoiBoundedWorkOrderPolicy(baseOrder, options);
+  const approvalWithResult = {
+    ...baseOrder.approval,
+    exactNextApproval: policyResult.exactNextApproval,
+    satisfied:
+      baseOrder.approval.required &&
+      policyResult.status === 'preview_only' &&
+      policyResult.approvalInvalidationReasons.length <= 0 &&
+      Boolean(options.approvedSnapshot),
+    invalidationReasons: policyResult.approvalInvalidationReasons,
+  };
+  const reviewRequirement = buildReviewRequirement({
+    draftRequirement: draft.reviewRequirement,
+    approval: approvalWithResult,
+    risk,
+    policyResult,
+  });
+  const stopConditions = buildStopConditions({
+    draftConditions: draft.stopConditions,
+    order: baseOrder,
+    policyResult,
+  });
   return {
     ...baseOrder,
-    approval: {
-      ...baseOrder.approval,
-      exactNextApproval: policyResult.exactNextApproval,
-      satisfied:
-        baseOrder.approval.required &&
-        policyResult.status === 'preview_only' &&
-        policyResult.approvalInvalidationReasons.length <= 0 &&
-        Boolean(options.approvedSnapshot),
-      invalidationReasons: policyResult.approvalInvalidationReasons,
-    },
+    status: statusFromPolicyResult({
+      policyResult,
+      approval: approvalWithResult,
+    }),
+    approval: approvalWithResult,
+    reviewRequirement,
+    stopConditions,
     policyResult,
   };
 }

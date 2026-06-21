@@ -655,6 +655,9 @@ export interface AoiBoundedWorkOrderPanel {
   eligibleWorkOrderLabels: string[];
   blockedReasonLabels: string[];
   exactNextApprovalLabels: string[];
+  expectedDiffShapeLabels: string[];
+  reviewRequirementLabels: string[];
+  stopConditionLabels: string[];
   checkpointLabels: string[];
   rollbackLabels: string[];
   evidenceRefs: string[];
@@ -794,6 +797,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   boundedWorkOrders?: AoiBoundedWorkOrder[];
+  actionLadderDecisions?: readonly AoiActionLadderDecision[];
   playbooks?: AoiPlaybook[];
   missionControl?: AoiMissionControlState | null;
   missionMemory?: AoiMissionMemorySnapshot | null;
@@ -4626,10 +4630,29 @@ function formatAoiWorkOrderStatus(status: string): string {
   return status.replace(/_/g, ' ');
 }
 
+function resolveAoiBoundedWorkOrdersForDashboard(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiBoundedWorkOrder[] {
+  const orders = [
+    ...(input.boundedWorkOrders ?? []),
+    ...(input.actionLadderDecisions ?? [])
+      .map((decision) => decision.preparedWorkOrder)
+      .filter((order): order is AoiBoundedWorkOrder => Boolean(order)),
+  ];
+  const seen = new Set<string>();
+  return orders.filter((order) => {
+    if (seen.has(order.id)) {
+      return false;
+    }
+    seen.add(order.id);
+    return true;
+  });
+}
+
 function buildAoiBoundedWorkOrderPanel(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiBoundedWorkOrderPanel {
-  const workOrders = input.boundedWorkOrders ?? [];
+  const workOrders = resolveAoiBoundedWorkOrdersForDashboard(input);
   if (workOrders.length <= 0) {
     return {
       visible: false,
@@ -4637,6 +4660,9 @@ function buildAoiBoundedWorkOrderPanel(
       eligibleWorkOrderLabels: [],
       blockedReasonLabels: [],
       exactNextApprovalLabels: [],
+      expectedDiffShapeLabels: [],
+      reviewRequirementLabels: [],
+      stopConditionLabels: [],
       checkpointLabels: [],
       rollbackLabels: [],
       evidenceRefs: [],
@@ -4648,7 +4674,7 @@ function buildAoiBoundedWorkOrderPanel(
   const eligibleWorkOrderLabels = uniqueDashboardLabels(
     eligible.map(
       (order) =>
-        `${order.objective}: ${formatAoiWorkOrderStatus(order.policyResult.status)}; scope=${[
+        `${order.objective}: ${formatAoiWorkOrderStatus(order.status)} / ${formatAoiWorkOrderStatus(order.policyResult.status)}; scope=${[
           ...order.scope.files,
           ...order.scope.modules,
           ...order.scope.affectedSurfaces,
@@ -4671,6 +4697,23 @@ function buildAoiBoundedWorkOrderPanel(
         (order) =>
           `${order.objective}: ${order.policyResult.exactNextApproval}; fingerprint=${order.approval.approvalFingerprint}`,
       ),
+    8,
+  );
+  const expectedDiffShapeLabels = uniqueDashboardLabels(
+    workOrders.map((order) => `${order.objective}: ${order.expectedDiffShape.summary}`),
+    6,
+  );
+  const reviewRequirementLabels = uniqueDashboardLabels(
+    workOrders.map(
+      (order) =>
+        `${order.objective}: operator=${order.reviewRequirement.operatorReviewRequired}; kira=${order.reviewRequirement.kiraReviewRequired}; command=${order.reviewRequirement.commandApprovalRequired}; ${order.reviewRequirement.approvalBoundary}`,
+    ),
+    8,
+  );
+  const stopConditionLabels = uniqueDashboardLabels(
+    workOrders.flatMap((order) =>
+      order.stopConditions.slice(0, 3).map((condition) => `${order.objective}: ${condition}`),
+    ),
     8,
   );
   const checkpointLabels = uniqueDashboardLabels(
@@ -4699,12 +4742,16 @@ function buildAoiBoundedWorkOrderPanel(
     eligibleWorkOrderLabels,
     blockedReasonLabels,
     exactNextApprovalLabels,
+    expectedDiffShapeLabels,
+    reviewRequirementLabels,
+    stopConditionLabels,
     checkpointLabels,
     rollbackLabels,
     evidenceRefs: dashboardRefs([
       ...workOrders.flatMap((order) => [
         `work-order:${order.id}`,
         `work-order-approval:${order.approval.approvalFingerprint}`,
+        ...order.sourceRefs,
         ...order.evidenceRefs,
       ]),
     ]),
@@ -4904,6 +4951,7 @@ function buildAoiPendingApprovalPanel(
   const missionControl = input.missionControl;
   const missionMemory = input.missionMemory;
   const memoryContext = buildAoiMissionMemoryDashboardContext(missionMemory);
+  const boundedWorkOrders = resolveAoiBoundedWorkOrdersForDashboard(input);
   const missionControlApprovals =
     missionControl?.items
       .filter((item) => item.approvalRefs.length > 0 || item.status === 'waiting_on_approval')
@@ -4932,13 +4980,12 @@ function buildAoiPendingApprovalPanel(
         )
         .map((step) => `${playbook.title}: ${step.title}; ${step.executionBoundary.summary}`),
     ) ?? [];
-  const workOrderApprovals =
-    input.boundedWorkOrders
-      ?.filter((order) => order.approval.required || order.policyResult.status !== 'preview_only')
-      .map(
-        (order) =>
-          `${order.objective}: ${order.policyResult.exactNextApproval}; fingerprint=${order.approval.approvalFingerprint}`,
-      ) ?? [];
+  const workOrderApprovals = boundedWorkOrders
+    .filter((order) => order.approval.required || order.policyResult.status !== 'preview_only')
+    .map(
+      (order) =>
+        `${order.objective}: ${order.policyResult.exactNextApproval}; fingerprint=${order.approval.approvalFingerprint}`,
+    );
   const memoryApprovals = memoryContext?.pendingApprovalLabels ?? [];
   const labels = uniqueDashboardLabels(
     [
@@ -4969,12 +5016,12 @@ function buildAoiPendingApprovalPanel(
           )
           .map((step) => step.executionBoundary.summary),
       ) ?? []),
-      ...(input.boundedWorkOrders
-        ?.filter((order) => order.approval.required || order.policyResult.status !== 'preview_only')
+      ...boundedWorkOrders
+        .filter((order) => order.approval.required || order.policyResult.status !== 'preview_only')
         .map(
           (order) =>
             `${order.policyResult.exactNextApproval}; scope=${order.scope.scopeHash}; fingerprint=${order.approval.approvalFingerprint}`,
-        ) ?? []),
+        ),
       ...(memoryContext ? [memoryContext.boundaryLabel] : []),
     ],
     8,
@@ -4990,12 +5037,11 @@ function buildAoiPendingApprovalPanel(
           (item) => `${item.risk} risk ${item.requiredAutonomyLevel}`,
         ) ?? []),
         ...(input.approvedCommandPolicies?.map((policy) => `${policy.risk} risk L5`) ?? []),
-        ...(input.boundedWorkOrders
-          ?.filter(
+        ...boundedWorkOrders
+          .filter(
             (order) => order.approval.required || order.policyResult.status !== 'preview_only',
           )
-          .map((order) => `${order.risk.level} risk ${order.approval.requiredAutonomyLevel}`) ??
-          []),
+          .map((order) => `${order.risk.level} risk ${order.approval.requiredAutonomyLevel}`),
       ],
       6,
     ),
@@ -5013,11 +5059,12 @@ function buildAoiPendingApprovalPanel(
         `playbook:${playbook.id}`,
         ...playbook.evidenceRefs,
       ]) ?? []),
-      ...(input.boundedWorkOrders?.flatMap((order) => [
+      ...boundedWorkOrders.flatMap((order) => [
         `work-order:${order.id}`,
         `work-order-approval:${order.approval.approvalFingerprint}`,
+        ...order.sourceRefs,
         ...order.evidenceRefs,
-      ]) ?? []),
+      ]),
       ...(memoryContext?.evidenceRefs ?? []),
       missionControl ? `mission-control:${missionControl.id}` : undefined,
       missionMemory ? `mission-memory:${missionMemory.id}` : undefined,
@@ -5402,17 +5449,22 @@ function buildAoiJarvisAutonomyGovernorPanel(
 export function buildAoiOperatorAcceptanceDashboard(
   input: AoiOperatorAcceptanceDashboardInput,
 ): AoiOperatorAcceptanceDashboard {
+  const boundedWorkOrderList = resolveAoiBoundedWorkOrdersForDashboard(input);
+  const dashboardInput = {
+    ...input,
+    boundedWorkOrders: boundedWorkOrderList,
+  };
   const sourceFreshnessContracts = resolveAoiSourceFreshnessContracts(input);
   const missionControl = buildAoiMissionControlDashboardSummary(input.missionControl);
   const currentBrief = buildAoiCurrentBriefPanel(input);
   const blindSpots = buildAoiBlindSpotsPanel(input);
   const sourceFreshness = buildAoiSourceFreshnessPanel(input);
-  const boundedWorkOrders = buildAoiBoundedWorkOrderPanel(input);
+  const boundedWorkOrders = buildAoiBoundedWorkOrderPanel(dashboardInput);
   const nextSafeAction = buildAoiNextSafeActionPanel(input);
   const whyQuiet = buildAoiWhyQuietPanel(input);
-  const pendingApproval = buildAoiPendingApprovalPanel(input);
+  const pendingApproval = buildAoiPendingApprovalPanel(dashboardInput);
   const replayHealth = buildAoiReplayHealthPanel(input);
-  const jarvisReadiness = buildAoiJarvisReadinessPanel(input);
+  const jarvisReadiness = buildAoiJarvisReadinessPanel(dashboardInput);
   const jarvisReadinessScorecard =
     input.jarvisReadinessScorecard ??
     buildAoiJarvisReadinessScorecard({
@@ -5426,7 +5478,7 @@ export function buildAoiOperatorAcceptanceDashboard(
       personalSourceRealityCheck: input.personalSourceRealityCheck,
       sourceFreshnessContracts,
       missionControl: input.missionControl,
-      boundedWorkOrders: input.boundedWorkOrders,
+      boundedWorkOrders: boundedWorkOrderList,
       promotedFixtureCandidates: input.promotedFixtureCandidates,
       directChatOptInEnabled: input.policy?.proactiveBriefing.directChatHookOptIn ?? null,
     });

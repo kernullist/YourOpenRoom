@@ -8,6 +8,7 @@ import {
   normalizeAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomyPolicy,
 } from './aoiAutonomyPolicy';
+import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -68,6 +69,8 @@ const AOI_OPPORTUNITY_DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS = 24 * 60 * 60 * 1000;
 const MAX_FOLLOW_THROUGH_EVENTS = 500;
 const MAX_FOLLOW_THROUGH_INDEX_ITEMS = 80;
+
+export { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 
 export interface AoiAutonomyPaths {
   root: string;
@@ -412,26 +415,6 @@ function normalizeAoiObservation(observation: AoiObservation): AoiObservation {
     riskSignals: normalizeStringList(observation.riskSignals, 12),
     dedupeKey: normalizeObservationDedupeKey(observation.dedupeKey, observation.id),
   };
-}
-
-export function normalizeAoiAutonomySessionPath(value: unknown): string | null {
-  if (typeof value !== 'string') {
-    return null;
-  }
-  const normalized = value
-    .trim()
-    .replace(/\\/g, '/')
-    .replace(/^\/+|\/+$/g, '');
-  if (!normalized || normalized.includes('..')) {
-    return null;
-  }
-  if (!/^[a-zA-Z0-9._/-]+$/.test(normalized)) {
-    return null;
-  }
-  if (normalized.split('/').some((segment) => !segment || segment === '.' || segment === '..')) {
-    return null;
-  }
-  return normalized;
 }
 
 export function isValidAoiAutonomyId(value: unknown): value is string {

@@ -1,3 +1,5 @@
+import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+
 export type AoiAutonomyLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
 export type AoiAutonomyRisk = 'low' | 'medium' | 'high';
@@ -448,6 +450,7 @@ export interface AoiActionLadderDecision {
   allowedActions: AoiActionLadderAction[];
   blockedActions: AoiActionLadderBlockedAction[];
   approvalNeeds: AoiActionLadderApprovalNeed[];
+  preparedWorkOrder?: AoiBoundedWorkOrder;
   evidenceNeeds: string[];
   safeFallback: string;
   connectionLabels: string[];
