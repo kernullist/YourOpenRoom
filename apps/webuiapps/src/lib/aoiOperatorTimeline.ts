@@ -20,6 +20,7 @@ import type {
   AoiOperatorTimelineSummary,
   AoiOperatorTimelineVisibility,
   AoiOperatorTraceExport,
+  AoiOutcomeSignalRecord,
   AoiProposal,
   AoiProposalDecision,
   AoiTraceRedactionState,
@@ -56,6 +57,7 @@ const TIMELINE_MEANINGFUL_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'outcome_signal_recorded',
   'operator_voice_decision',
   'wakeup_recorded',
 ]);
@@ -78,6 +80,7 @@ const DEFAULT_TRACE_EXPORT_KINDS = new Set<AoiOperatorTimelineEventKind>([
   'approved_command_previewed',
   'approved_command_recorded',
   'feedback_recorded',
+  'outcome_signal_recorded',
   'operator_voice_decision',
   'wakeup_recorded',
 ]);
@@ -305,6 +308,7 @@ function isTimelineEventKind(value: unknown): value is AoiOperatorTimelineEventK
     value === 'approved_command_previewed' ||
     value === 'approved_command_recorded' ||
     value === 'feedback_recorded' ||
+    value === 'outcome_signal_recorded' ||
     value === 'operator_voice_decision' ||
     value === 'wakeup_recorded' ||
     value === 'trace_exported'
@@ -944,7 +948,7 @@ function timelineKindToReplayKind(kind: AoiOperatorTimelineEventKind): AoiReplay
   if (kind === 'goal_state_changed') {
     return 'active_goal';
   }
-  if (kind === 'feedback_recorded') {
+  if (kind === 'feedback_recorded' || kind === 'outcome_signal_recorded') {
     return 'context_feedback';
   }
   return 'environment_source';
@@ -1216,6 +1220,88 @@ export function recordAoiProposalFeedbackTimelineEvent(params: {
       feedbackCategory: params.decision.feedbackCategory,
     },
   });
+}
+
+function redactionStateForOutcome(outcome: AoiOutcomeSignalRecord): AoiTraceRedactionState {
+  if (outcome.privacyState === 'redacted' || outcome.privacyState === 'unknown') {
+    return 'redacted';
+  }
+  if (outcome.privacyState === 'synthetic') {
+    return 'synthetic';
+  }
+  return 'none';
+}
+
+export function buildAoiOutcomeSignalTimelineEventInput(
+  outcome: AoiOutcomeSignalRecord,
+): AoiOperatorTimelineEventInput {
+  const sourceRef =
+    outcome.sourceProposalId ??
+    outcome.sourceDecisionId ??
+    outcome.sourceWorkOrderId ??
+    outcome.sourceChatRef ??
+    outcome.eventId;
+  const targetLabel = outcome.sourceProposalId
+    ? `proposal ${outcome.sourceProposalId}`
+    : outcome.sourceWorkOrderId
+      ? `work order ${outcome.sourceWorkOrderId}`
+      : outcome.sourceChatRef
+        ? `chat ${outcome.sourceChatRef}`
+        : outcome.eventId;
+  return {
+    id: createAoiAutonomyId('aoi-timeline-outcome', outcome.createdAt),
+    sessionPath: outcome.sessionPath,
+    kind: 'outcome_signal_recorded',
+    visibility: 'dashboard_only',
+    createdAt: outcome.createdAt,
+    title: `Outcome recorded: ${outcome.outcomeKind.replace(/_/g, ' ')}`,
+    summary: `Previous suggestion ${targetLabel} led to ${outcome.outcomeKind.replace(
+      /_/g,
+      ' ',
+    )}; confidence ${outcome.confidence.toFixed(2)} is ${outcome.signalKind.replace(
+      /_/g,
+      ' ',
+    )} calibration only.`,
+    redactionState: redactionStateForOutcome(outcome),
+    evidenceRefs: outcome.evidenceRefs,
+    relatedRefs: [
+      `outcome:${outcome.id}`,
+      ...(outcome.sourceProposalId ? [`proposal:${outcome.sourceProposalId}`] : []),
+      ...(outcome.sourceDecisionId ? [`decision:${outcome.sourceDecisionId}`] : []),
+      ...(outcome.sourceWorkOrderId ? [`bounded-work-order:${outcome.sourceWorkOrderId}`] : []),
+      ...(outcome.explicitLabelRef ? [`explicit-label:${outcome.explicitLabelRef}`] : []),
+    ],
+    sourceRef,
+    sourceKind: 'outcome_learning',
+    proposalId: outcome.sourceProposalId,
+    decisionId: outcome.sourceDecisionId,
+    status: outcome.outcomeKind,
+    metrics: {
+      confidence: outcome.confidence,
+      learningMagnitude: outcome.inferredAdjustment.magnitude,
+      mutationCount: outcome.mutationCount,
+    },
+    metadata: {
+      outcomeId: outcome.id,
+      outcomeKind: outcome.outcomeKind,
+      signalKind: outcome.signalKind,
+      explicitLabelLinked: Boolean(outcome.explicitLabelRef),
+      adjustmentTarget: outcome.inferredAdjustment.target,
+      adjustmentDirection: outcome.inferredAdjustment.direction,
+      privacyState: outcome.privacyState,
+      result: outcome.result,
+    },
+  };
+}
+
+export function recordAoiOutcomeSignalTimelineEvent(params: {
+  sessionsDir: string;
+  outcome: AoiOutcomeSignalRecord;
+}): AoiOperatorTimelineEvent {
+  return recordAoiOperatorTimelineEvent(
+    params.sessionsDir,
+    buildAoiOutcomeSignalTimelineEventInput(params.outcome),
+  );
 }
 
 export function buildAoiContextRouterTimelineEvents(

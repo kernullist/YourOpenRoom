@@ -3,6 +3,7 @@ import { buildAoiFeedbackCompression } from '../aoiFeedbackCompression';
 import { buildAoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
 import { normalizeAoiFollowThroughEvent } from '../aoiFollowThroughLearning';
 import { createAoiOperatorFeedbackLabelAction } from '../aoiOperatorFeedbackInbox';
+import { buildAoiOutcomeLearningSummary } from '../aoiOutcomeLearning';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -90,5 +91,65 @@ describe('buildAoiJarvisReadinessScorecard feedback compression gate', () => {
     });
     expect(scorecard.actionAuthority).toBe('display_only');
     expect(scorecard.mutationCount).toBe(0);
+  });
+
+  it('blocks trust increase when outcome learning has only passive outcomes', () => {
+    const outcomeLearning = buildAoiOutcomeLearningSummary({
+      sessionPath: SESSION_PATH,
+      outcomes: [
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'outcome-opened-readiness',
+          sourceProposalId: 'proposal-readiness-outcome',
+          outcomeKind: 'proposal_opened',
+        },
+      ],
+      now: NOW,
+    });
+    const explicitOutcomeLearning = buildAoiOutcomeLearningSummary({
+      sessionPath: SESSION_PATH,
+      outcomes: [
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'outcome-approved-explicit-readiness',
+          sourceProposalId: 'proposal-readiness-explicit',
+          outcomeKind: 'work_order_approved',
+          explicitLabelRef: 'operator-feedback:useful-readiness',
+          explicitLabel: 'useful',
+        },
+      ],
+      now: NOW,
+    });
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      outcomeLearning,
+      directChatOptInEnabled: true,
+      now: NOW,
+    });
+    const explicitScorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      outcomeLearning: explicitOutcomeLearning,
+      directChatOptInEnabled: true,
+      now: NOW,
+    });
+
+    expect(outcomeLearning.trustIncreaseAllowed).toBe(false);
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.outcome_only_trust_increase_block'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(scorecard.visibility.directChatBlockedReasons.join(' ')).toContain(
+      'outcome-only learning cannot raise trust',
+    );
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.outcome_only_trust_gate',
+    );
+    expect(
+      explicitScorecard.gates.find((gate) => gate.id === 'gate.outcome_only_trust_increase_block'),
+    ).toMatchObject({
+      status: 'pass',
+    });
   });
 });

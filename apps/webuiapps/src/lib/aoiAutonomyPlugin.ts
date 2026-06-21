@@ -18,15 +18,19 @@ import {
   applyAoiProposalFeedback,
   applyAoiProposalDecision,
   buildAoiAutonomyStatus,
+  appendAoiOutcomeSignalRecord,
   loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiActiveOpportunities,
   loadAoiArchivedOpportunities,
+  loadAoiFollowThroughLearningSummary,
   loadAoiObservations,
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowRecordReport,
   loadAoiOperatorFeedbackLabelActions,
+  loadAoiOutcomeLearningSummary,
+  loadAoiOutcomeSignalRecords,
   loadAoiProposalDecisions,
   loadAoiReflections,
   normalizeAoiAutonomySessionPath,
@@ -53,6 +57,7 @@ import {
   loadAoiOperatorTimelineEvents,
   loadAoiOperatorTimelineSummary,
   recordAoiOperatorVoiceDecisionTimelineEvent,
+  recordAoiOutcomeSignalTimelineEvent,
   recordAoiOperatorTimelineEvent,
   recordAoiProposalDecisionTimelineEvent,
   recordAoiProposalFeedbackTimelineEvent,
@@ -98,8 +103,12 @@ import type {
   AoiCalibrationDimension,
   AoiAutonomyTickReason,
   AoiAutonomyWakeupBudget,
+  AoiFollowThroughDeliveryMode,
   AoiGoal,
+  AoiLearningSignalKind,
   AoiOperatorTimelineEventKind,
+  AoiOutcomePrivacyState,
+  AoiOutcomeSignalKind,
   AoiPlaybookEvidenceKind,
   AoiPlaybookStepRefs,
   AoiProposal,
@@ -201,6 +210,7 @@ function isAoiOperatorTimelineEventKind(value: unknown): value is AoiOperatorTim
     value === 'feedback_recorded' ||
     value === 'operator_voice_decision' ||
     value === 'wakeup_recorded' ||
+    value === 'outcome_signal_recorded' ||
     value === 'trace_exported'
   );
 }
@@ -268,6 +278,63 @@ function isAoiShadowDecisionLabel(value: unknown): value is AoiShadowDecisionLab
     value === 'mute_topic' ||
     value === 'pin_topic'
   );
+}
+
+function isAoiOutcomeSignalKind(value: unknown): value is AoiOutcomeSignalKind {
+  return (
+    value === 'proposal_opened' ||
+    value === 'proposal_ignored' ||
+    value === 'direct_chat_dismissed' ||
+    value === 'work_order_approved' ||
+    value === 'work_order_rejected' ||
+    value === 'validation_run' ||
+    value === 'commit_created' ||
+    value === 'user_correction'
+  );
+}
+
+function isAoiLearningSignalKind(value: unknown): value is AoiLearningSignalKind {
+  return (
+    value === 'explicit_label' || value === 'explicit_correction' || value === 'passive_outcome'
+  );
+}
+
+function isAoiOutcomePrivacyState(value: unknown): value is AoiOutcomePrivacyState {
+  return (
+    value === 'metadata_only' ||
+    value === 'redacted' ||
+    value === 'synthetic' ||
+    value === 'unknown'
+  );
+}
+
+function isAoiFollowThroughDeliveryMode(value: unknown): value is AoiFollowThroughDeliveryMode {
+  return (
+    value === 'dashboard' ||
+    value === 'inline_card' ||
+    value === 'quiet_notification' ||
+    value === 'direct_chat' ||
+    value === 'digest' ||
+    value === 'chat_hook' ||
+    value === 'hidden' ||
+    value === 'blocked' ||
+    value === 'unknown'
+  );
+}
+
+function getOptionalBodyString(value: unknown): string | undefined {
+  const normalized = typeof value === 'string' ? value.trim() : '';
+  return normalized ? normalized : undefined;
+}
+
+function getOptionalBodyStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+  const items = value
+    .map((item) => (typeof item === 'string' ? item.trim() : ''))
+    .filter((item) => item.length > 0);
+  return items.length > 0 ? items : undefined;
 }
 
 function buildAoiProactiveBriefResponse(params: {
@@ -389,6 +456,26 @@ function buildAoiFieldFeedbackResponse(params: {
     fieldShadowReport,
     labelActions,
     feedbackInbox,
+  };
+}
+
+function buildAoiOutcomeLearningResponse(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  now?: number;
+  fieldReadinessEvidence?: boolean;
+}) {
+  const now = params.now ?? Date.now();
+  return {
+    ok: true,
+    sessionPath: params.sessionPath,
+    outcomes: loadAoiOutcomeSignalRecords(params.sessionsDir, params.sessionPath, now),
+    summary: loadAoiOutcomeLearningSummary(
+      params.sessionsDir,
+      params.sessionPath,
+      now,
+      params.fieldReadinessEvidence === true,
+    ),
   };
 }
 
@@ -948,6 +1035,109 @@ async function handleAoiAutonomyRequest(
         writeJson(res, 400, {
           error: error instanceof Error ? error.message : String(error),
           code: 'invalid_field_feedback',
+        });
+      }
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/outcomes') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(
+        res,
+        200,
+        buildAoiOutcomeLearningResponse({
+          sessionsDir,
+          sessionPath,
+          fieldReadinessEvidence: url.searchParams.get('fieldReadinessEvidence') === 'true',
+        }),
+      );
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/outcomes') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      if (!isAoiOutcomeSignalKind(body.outcomeKind)) {
+        writeJson(res, 400, {
+          error: 'A supported outcomeKind is required.',
+          code: 'invalid_outcome_signal',
+        });
+        return true;
+      }
+      try {
+        const now = typeof body.now === 'number' ? body.now : Date.now();
+        const outcome = appendAoiOutcomeSignalRecord(
+          sessionsDir,
+          {
+            sessionPath,
+            id: getOptionalBodyString(body.id),
+            eventId: getOptionalBodyString(body.eventId),
+            sourceProposalId: getOptionalBodyString(body.sourceProposalId),
+            sourceDecisionId: getOptionalBodyString(body.sourceDecisionId),
+            sourceWorkOrderId: getOptionalBodyString(body.sourceWorkOrderId),
+            sourceValidationRef: getOptionalBodyString(body.sourceValidationRef),
+            sourceCommitRef: getOptionalBodyString(body.sourceCommitRef),
+            sourceChatRef: getOptionalBodyString(body.sourceChatRef),
+            outcomeKind: body.outcomeKind,
+            signalKind: isAoiLearningSignalKind(body.signalKind) ? body.signalKind : undefined,
+            confidence: typeof body.confidence === 'number' ? body.confidence : undefined,
+            explicitLabelRef: getOptionalBodyString(body.explicitLabelRef),
+            explicitLabel: getOptionalBodyString(body.explicitLabel),
+            topicKey: getOptionalBodyString(body.topicKey),
+            sourceKey: getOptionalBodyString(body.sourceKey),
+            deliveryMode: isAoiFollowThroughDeliveryMode(body.deliveryMode)
+              ? body.deliveryMode
+              : undefined,
+            validationPassed:
+              typeof body.validationPassed === 'boolean' ? body.validationPassed : undefined,
+            evidenceRefs: getOptionalBodyStringArray(body.evidenceRefs),
+            privacyState: isAoiOutcomePrivacyState(body.privacyState)
+              ? body.privacyState
+              : undefined,
+            createdAt: typeof body.createdAt === 'number' ? body.createdAt : undefined,
+          },
+          now,
+        );
+        recordAoiTimelineBestEffort(() => {
+          recordAoiOutcomeSignalTimelineEvent({
+            sessionsDir,
+            outcome,
+          });
+        });
+        writeJson(res, 200, {
+          ...buildAoiOutcomeLearningResponse({
+            sessionsDir,
+            sessionPath,
+            now: outcome.createdAt,
+            fieldReadinessEvidence: body.fieldReadinessEvidence === true,
+          }),
+          outcome,
+          followThroughLearning: loadAoiFollowThroughLearningSummary(
+            sessionsDir,
+            sessionPath,
+            outcome.createdAt,
+          ),
+          timeline: loadAoiOperatorTimelineSummary(sessionsDir, sessionPath),
+          evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'invalid_outcome_signal',
         });
       }
       return true;

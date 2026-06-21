@@ -6,6 +6,7 @@ import type {
   AoiOperatorHealthIssue,
   AoiOperatorHealthState,
   AoiOperatorTimelineEvent,
+  AoiOutcomeLearningSummary,
   AoiPlaybook,
   AoiTrustCalibrationProfile,
   AoiWorkspaceSnapshot,
@@ -27,6 +28,7 @@ export type AoiMissionMemorySignalKind =
   | 'next_approval'
   | 'preference_drift'
   | 'blind_spot'
+  | 'outcome_learning'
   | 'replay_trace_evidence'
   | 'needs_refresh';
 
@@ -58,6 +60,7 @@ export interface AoiMissionMemorySnapshot {
   nextApprovalRefs: string[];
   preferenceDriftRefs: string[];
   blindSpotRefs: string[];
+  outcomeLearningRefs: string[];
   replayTraceRefs: string[];
   evidenceRefs: string[];
   signals: AoiMissionMemorySignal[];
@@ -94,6 +97,7 @@ export interface AoiMissionMemorySnapshotInput {
   health?: AoiOperatorHealthState | null;
   trustCalibration?: AoiTrustCalibrationProfile | null;
   shadowReport?: AoiShadowDecisionReport | null;
+  outcomeLearning?: AoiOutcomeLearningSummary | null;
   traceExportRefs?: string[];
   previousSnapshot?: AoiMissionMemorySnapshot | null;
   now?: number;
@@ -159,10 +163,12 @@ interface DerivedMissionMemoryRefs {
   nextApprovalRefs: string[];
   preferenceDriftRefs: string[];
   blindSpotRefs: string[];
+  outcomeLearningRefs: string[];
   replayTraceRefs: string[];
   evidenceRefs: string[];
   hasValidationRefreshEvidence: boolean;
   hasBlindSpotRefreshEvidence: boolean;
+  hasOutcomeLearningEvidence: boolean;
   hasPreferenceRefreshEvidence: boolean;
 }
 
@@ -496,6 +502,26 @@ function collectReplayTraceRefs(
   return uniqueRefs([...(traceExportRefs ?? []), ...shadowRefs, ...timelineRefs]);
 }
 
+function collectOutcomeLearningRefs(
+  outcomeLearning: AoiOutcomeLearningSummary | null | undefined,
+): string[] {
+  if (!outcomeLearning || outcomeLearning.outcomeCount <= 0) {
+    return [];
+  }
+  return uniqueRefs([
+    `outcome-learning:${outcomeLearning.sessionPath}:${outcomeLearning.generatedAt}`,
+    `outcome-learning:outcome-count:${outcomeLearning.outcomeCount}`,
+    outcomeLearning.outcomeOnly ? 'outcome-learning:outcome-only' : undefined,
+    outcomeLearning.trustIncreaseAllowed
+      ? 'outcome-learning:trust-increase-allowed'
+      : 'outcome-learning:trust-increase-blocked',
+    ...outcomeLearning.evidenceRefs,
+    ...outcomeLearning.kindConfidenceLabels.map((label) => `outcome-confidence:${label}`),
+    ...outcomeLearning.learningEffectLabels.map((label) => `outcome-effect:${label}`),
+    ...outcomeLearning.previousSuggestionOutcomeLabels.map((label) => `outcome-history:${label}`),
+  ]);
+}
+
 function deriveRefs(
   input: AoiMissionMemorySnapshotInput,
   missionId: string,
@@ -528,6 +554,7 @@ function deriveRefs(
   );
   const preferenceDriftRefs = collectPreferenceDriftRefs(input.trustCalibration);
   const blindSpotRefs = collectBlindSpotRefs(input.health, input.timelineEvents);
+  const outcomeLearningRefs = collectOutcomeLearningRefs(input.outcomeLearning);
   const replayTraceRefs = collectReplayTraceRefs(
     input.shadowReport,
     input.traceExportRefs,
@@ -548,6 +575,7 @@ function deriveRefs(
     nextApprovalRefs,
     preferenceDriftRefs,
     blindSpotRefs,
+    outcomeLearningRefs,
     replayTraceRefs,
     evidenceRefs: uniqueRefs([
       ...stateEvidenceRefs,
@@ -556,6 +584,7 @@ function deriveRefs(
       ...nextApprovalRefs,
       ...preferenceDriftRefs,
       ...blindSpotRefs,
+      ...outcomeLearningRefs,
       ...replayTraceRefs,
       ...workspaceEvidence,
       ...healthEvidence,
@@ -563,6 +592,7 @@ function deriveRefs(
     ]),
     hasValidationRefreshEvidence: workspaceEvidence.length > 0,
     hasBlindSpotRefreshEvidence: Boolean(input.health) || Boolean(input.timelineEvents?.length),
+    hasOutcomeLearningEvidence: Boolean(input.outcomeLearning),
     hasPreferenceRefreshEvidence: Boolean(input.trustCalibration),
   };
 }
@@ -616,9 +646,10 @@ function buildSignal(
 function buildSignals(params: {
   snapshot: Omit<AoiMissionMemorySnapshot, 'signals'>;
   stateEvidenceRefs: string[];
+  outcomeLearningRefs: string[];
   now: number;
 }): AoiMissionMemorySignal[] {
-  const { snapshot, stateEvidenceRefs, now } = params;
+  const { snapshot, stateEvidenceRefs, outcomeLearningRefs, now } = params;
   const drafts: SignalDraft[] = [];
   drafts.push({
     kind: 'last_known_state',
@@ -674,6 +705,16 @@ function buildSignals(params: {
         'Some source, health, or consent evidence is missing, stale, disabled, or unknowable.',
       refs: snapshot.blindSpotRefs,
       evidenceRefs: snapshot.blindSpotRefs,
+    });
+  }
+  if (outcomeLearningRefs.length > 0) {
+    drafts.push({
+      kind: 'outcome_learning',
+      label: 'Previous suggestion outcomes remembered',
+      summary:
+        'Outcome learning is low-confidence calibration; it explains follow-through but cannot increase trust without explicit labels or field readiness.',
+      refs: outcomeLearningRefs,
+      evidenceRefs: outcomeLearningRefs,
     });
   }
   if (snapshot.replayTraceRefs.length > 0) {
@@ -742,6 +783,12 @@ export function buildAoiMissionMemorySnapshot(
     derived.hasBlindSpotRefreshEvidence,
     previousExpired,
   );
+  const outcomeLearningRefs = preserveRefs(
+    derived.outcomeLearningRefs,
+    previous?.outcomeLearningRefs,
+    derived.hasOutcomeLearningEvidence,
+    previousExpired,
+  );
   const replayTraceRefs = preserveRefs(
     derived.replayTraceRefs,
     previous?.replayTraceRefs,
@@ -750,6 +797,7 @@ export function buildAoiMissionMemorySnapshot(
   );
   const evidenceRefs = uniqueRefs([
     ...derived.evidenceRefs,
+    ...outcomeLearningRefs,
     ...(hasAnyNewEvidence ? [] : (previous?.evidenceRefs ?? [])),
     ...(previousExpired ? [`expired-at:${previous?.expiresAt ?? now}`] : []),
   ]);
@@ -780,6 +828,7 @@ export function buildAoiMissionMemorySnapshot(
     nextApprovalRefs,
     preferenceDriftRefs,
     blindSpotRefs,
+    outcomeLearningRefs,
     replayTraceRefs,
     evidenceRefs,
     updatedAt: now,
@@ -796,6 +845,7 @@ export function buildAoiMissionMemorySnapshot(
     signals: buildSignals({
       snapshot: snapshotBase,
       stateEvidenceRefs: derived.stateEvidenceRefs,
+      outcomeLearningRefs,
       now,
     }),
   };

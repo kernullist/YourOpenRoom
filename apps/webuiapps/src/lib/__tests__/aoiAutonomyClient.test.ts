@@ -3,11 +3,13 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   fetchAoiAutonomyDashboard,
   fetchAoiFieldFeedback,
+  fetchAoiOutcomeLearning,
   fetchAoiOperatorHealth,
   fetchAoiPlaybooks,
   fetchAoiProactiveBriefs,
   prepareAoiPlaybookPreview,
   recordAoiFieldFeedback,
+  recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   resetAoiProactiveBriefCooldown,
   runAoiAutonomyManualTick,
@@ -351,6 +353,62 @@ function makeFieldFeedbackPayload() {
   };
 }
 
+function makeOutcomeLearningPayload() {
+  const outcome = {
+    version: 1,
+    id: 'aoi-outcome-client-test',
+    sessionPath: 'aoi/default',
+    eventId: 'proposal:aoi-proposal-client-test',
+    sourceProposalId: 'aoi-proposal-client-test',
+    outcomeKind: 'proposal_opened',
+    signalKind: 'passive_outcome',
+    confidence: 0.24,
+    inferredAdjustment: {
+      version: 1,
+      target: 'topic',
+      direction: 'boost',
+      magnitude: 0.12,
+      reason: 'Proposal was opened by the operator.',
+    },
+    topicKey: 'topic:reverse-engineering',
+    sourceKey: 'browser_context',
+    deliveryMode: 'dashboard',
+    result: 'positive',
+    evidenceRefs: ['proposal:aoi-proposal-client-test'],
+    privacyState: 'metadata_only',
+    createdAt: 2000,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+  return {
+    ok: true,
+    sessionPath: 'aoi/default',
+    outcomes: [outcome],
+    summary: {
+      version: 1,
+      sessionPath: 'aoi/default',
+      generatedAt: 2000,
+      outcomeCount: 1,
+      explicitLabelLinkedCount: 0,
+      explicitCorrectionCount: 0,
+      passiveOutcomeCount: 1,
+      outcomeOnly: true,
+      trustIncreaseAllowed: false,
+      trustIncreaseBlockedReasons: [
+        'outcome-only signals cannot increase trust without explicit labels or field readiness',
+      ],
+      kindConfidenceLabels: ['proposal_opened: confidence 0.24 (passive_outcome)'],
+      learningEffectLabels: ['proposal_opened: topic boost x0.12'],
+      previousSuggestionOutcomeLabels: [
+        'proposal aoi-proposal-client-test -> proposal_opened (positive, confidence 0.24)',
+      ],
+      evidenceRefs: ['outcome-learning:v1', 'outcome:aoi-outcome-client-test'],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -474,6 +532,9 @@ describe('Aoi autonomy client dashboard', () => {
       if (url.startsWith('/api/aoi-autonomy/field-feedback?')) {
         return jsonResponse(makeFieldFeedbackPayload());
       }
+      if (url.startsWith('/api/aoi-autonomy/outcomes?')) {
+        return jsonResponse(makeOutcomeLearningPayload());
+      }
       throw new Error(`Unexpected URL: ${url}`);
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -491,7 +552,8 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.playbooks.active).toHaveLength(1);
     expect(snapshot.proactiveBriefs.candidates).toHaveLength(1);
     expect(snapshot.fieldFeedback.feedbackInbox.inboxCount).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(16);
+    expect(snapshot.outcomeLearning.summary.trustIncreaseAllowed).toBe(false);
+    expect(fetchMock).toHaveBeenCalledTimes(17);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -510,6 +572,7 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/deliberations?sessionPath=aoi%2Fdefault&limit=20',
         '/api/aoi-autonomy/proactive-briefs?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/field-feedback?sessionPath=aoi%2Fdefault',
+        '/api/aoi-autonomy/outcomes?sessionPath=aoi%2Fdefault',
       ]),
     );
   });
@@ -668,6 +731,83 @@ describe('Aoi autonomy client dashboard', () => {
         label: 'too_frequent',
         sourceKinds: ['browser_context'],
         evidenceRefs: ['field-shadow-record:field-shadow-record-client-test'],
+      },
+    ]);
+  });
+
+  it('fetches and records passive outcome learning signals', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('/api/aoi-autonomy/outcomes?')) {
+        return jsonResponse(makeOutcomeLearningPayload());
+      }
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      if (url === '/api/aoi-autonomy/outcomes') {
+        return jsonResponse({
+          ...makeOutcomeLearningPayload(),
+          outcome: makeOutcomeLearningPayload().outcomes[0],
+          followThroughLearning: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            generatedAt: 2000,
+            eventCount: 1,
+            acceptedCount: 1,
+            dismissedCount: 0,
+            executedCount: 0,
+            failedCount: 0,
+            pendingCount: 0,
+            topicScores: [],
+            sourceScores: [],
+            timingScores: [],
+            directChatSuppressionKeys: [],
+            cooldownHints: [],
+            rankingBoostHints: [],
+            trustAdjustmentHints: ['passive outcome signals are low-confidence calibration only'],
+            evidenceRefs: ['outcome:aoi-outcome-client-test'],
+          },
+          timeline: {
+            version: 1,
+            sessionPath: 'aoi/default',
+            newestMeaningfulEvents: [],
+            lastExportRedactionCount: 0,
+            totalEventCount: 1,
+            exportedTraceCount: 0,
+          },
+          evaluation: makeEvaluation(),
+        });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const list = await fetchAoiOutcomeLearning('aoi/default');
+    const result = await recordAoiOutcomeSignal('aoi/default', {
+      sourceProposalId: 'aoi-proposal-client-test',
+      outcomeKind: 'validation_run',
+      validationPassed: false,
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'browser_context',
+      deliveryMode: 'dashboard',
+      evidenceRefs: ['validation:pnpm-test'],
+      createdAt: 2000,
+    });
+
+    expect(list.summary.outcomeOnly).toBe(true);
+    expect(result.outcome.signalKind).toBe('passive_outcome');
+    expect(result.timeline?.totalEventCount).toBe(1);
+    expect(result.followThroughLearning?.eventCount).toBe(1);
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        sourceProposalId: 'aoi-proposal-client-test',
+        outcomeKind: 'validation_run',
+        validationPassed: false,
+        topicKey: 'topic:reverse-engineering',
+        sourceKey: 'browser_context',
+        deliveryMode: 'dashboard',
+        evidenceRefs: ['validation:pnpm-test'],
+        createdAt: 2000,
       },
     ]);
   });

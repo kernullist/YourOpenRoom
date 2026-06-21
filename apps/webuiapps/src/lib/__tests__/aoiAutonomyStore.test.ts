@@ -4,6 +4,7 @@ import { join, resolve } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   appendAoiObservation,
+  appendAoiOutcomeSignalRecord,
   appendAoiReflection,
   applyAoiProposalDecision,
   applyAoiProposalFeedback,
@@ -17,8 +18,12 @@ import {
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowDecisionRecords,
   loadAoiFieldShadowRecordReport,
+  loadAoiFollowThroughEvents,
+  loadAoiFollowThroughLearningSummary,
   loadAoiObservationIndex,
   loadAoiObservations,
+  loadAoiOutcomeLearningSummary,
+  loadAoiOutcomeSignalRecords,
   loadAoiOperatorFeedbackLabelActions,
   loadAoiProposalDecisions,
   loadAoiReflections,
@@ -166,6 +171,52 @@ describe('Aoi autonomy policy storage', () => {
       updatedAt: 1234,
     });
     expect(loadAoiAutonomyPolicy(root, 'aoi/default')).toMatchObject(saved);
+  });
+});
+
+describe('Aoi outcome learning storage', () => {
+  it('persists outcome signals and appends durable follow-through learning events', () => {
+    const root = makeTempRoot();
+    const outcome = appendAoiOutcomeSignalRecord(
+      root,
+      {
+        sessionPath: 'aoi/default',
+        eventId: 'outcome-work-order-approved',
+        sourceProposalId: 'proposal-outcome-store',
+        sourceWorkOrderId: 'work-order-outcome-store',
+        outcomeKind: 'work_order_approved',
+        topicKey: 'topic:reverse-engineering',
+        sourceKey: 'source:work-order',
+        evidenceRefs: ['proposal:proposal-outcome-store'],
+      },
+      2000,
+    );
+    const paths = resolveAoiAutonomyPaths(root, 'aoi/default');
+    const outcomes = loadAoiOutcomeSignalRecords(root, 'aoi/default', 3000);
+    const outcomeSummary = loadAoiOutcomeLearningSummary(root, 'aoi/default', 3000);
+    const followThroughEvents = loadAoiFollowThroughEvents(root, 'aoi/default', 3000);
+    const followThroughSummary = loadAoiFollowThroughLearningSummary(root, 'aoi/default', 3000);
+
+    expect(fs.existsSync(paths.outcomeSignals)).toBe(true);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      id: outcome.id,
+      outcomeKind: 'work_order_approved',
+      signalKind: 'passive_outcome',
+      confidence: 0.42,
+      mutationCount: 0,
+    });
+    expect(outcomeSummary.trustIncreaseAllowed).toBe(false);
+    expect(outcomeSummary.previousSuggestionOutcomeLabels.join(' ')).toContain(
+      'proposal proposal-outcome-store',
+    );
+    expect(followThroughEvents[0]).toMatchObject({
+      outcomeKind: 'work_order_approved',
+      learningSignalKind: 'passive_outcome',
+      outcomeSignalId: outcome.id,
+      confidence: 0.42,
+    });
+    expect(followThroughSummary.recentEvents[0]?.outcomeKind).toBe('work_order_approved');
   });
 });
 

@@ -303,6 +303,11 @@ describe('Aoi field feedback learning', () => {
     expect(result.summary.topicAdjustmentLabels.join(' ')).toContain('reverse engineering');
     expect(result.summary.executionPermissionRaised).toBe(false);
     expect(result.summary.actionAuthority).toBe('display_only');
+    expect(result.followThroughEvents[0]).toMatchObject({
+      learningSignalKind: 'explicit_label',
+      confidence: 0.84,
+      trustIncreaseEligible: true,
+    });
     expect(label.actionAuthority).toBe('display_only');
     expect(label.mutationCount).toBe(0);
   });
@@ -502,6 +507,8 @@ describe('Aoi field feedback learning', () => {
 
     expect(result.appendedFollowThroughEvents).toHaveLength(1);
     expect(events.map((event) => event.feedbackCategory)).toContain('too_frequent');
+    expect(events[0]?.learningSignalKind).toBe('explicit_label');
+    expect(events[0]?.trustIncreaseEligible).toBe(true);
     expect(events[0]?.actionAuthority).toBe('display_only');
     expect(events[0]?.mutationCount).toBe(0);
     expect(

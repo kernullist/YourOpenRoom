@@ -321,6 +321,9 @@ export function buildAoiFollowThroughEventsFromFieldFeedback(
           action: actionForLabel(label.label),
           result: resultForLabel(label.label),
           feedbackCategory: label.label,
+          learningSignalKind: 'explicit_label',
+          confidence: 0.84,
+          trustIncreaseEligible: true,
           timingLabel: `operator field feedback ${label.label}`,
           evidenceRefs: uniqueStrings(
             [

@@ -189,6 +189,60 @@ describe('Aoi Follow-through Learning', () => {
     expect(score.suppressed).toBe(false);
   });
 
+  it('applies passive outcome signals with lower confidence than explicit labels', () => {
+    const opportunity = makeOpportunity();
+    const passiveSummary = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: [
+        makeEvent({
+          id: 'passive-outcome-opened',
+          action: 'accepted',
+          result: 'positive',
+          feedbackCategory: 'outcome:proposal_opened',
+          learningSignalKind: 'passive_outcome',
+          outcomeKind: 'proposal_opened',
+          outcomeSignalId: 'outcome-opened',
+          confidence: 0.24,
+          trustIncreaseEligible: false,
+        }),
+      ],
+      now: NOW,
+    });
+    const explicitSummary = buildAoiFollowThroughLearningSummary({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: [
+        makeEvent({
+          id: 'explicit-label-useful',
+          action: 'accepted',
+          result: 'positive',
+          feedbackCategory: 'useful',
+          learningSignalKind: 'explicit_label',
+          confidence: 0.84,
+          trustIncreaseEligible: true,
+        }),
+      ],
+      now: NOW,
+    });
+    const passiveScore = scoreAoiFollowThroughLearningForOpportunity(
+      opportunity,
+      passiveSummary,
+      NOW,
+    );
+    const explicitScore = scoreAoiFollowThroughLearningForOpportunity(
+      opportunity,
+      explicitSummary,
+      NOW,
+    );
+
+    expect(passiveScore.rankingFactor).toBeGreaterThan(1);
+    expect(passiveScore.rankingFactor).toBeLessThan(1.05);
+    expect(explicitScore.rankingFactor).toBeGreaterThan(passiveScore.rankingFactor);
+    expect(passiveSummary.trustCalibrationHints.join(' ')).toContain('passive outcome signal');
+    expect(passiveSummary.trustCalibrationHints.join(' ')).toContain(
+      'never raise trust without explicit labels',
+    );
+  });
+
   it('keeps learning artifacts display-only and never grants execution authority', () => {
     const summary = buildAoiFollowThroughLearningSummary({
       sessionPath: SESSION_PATH,

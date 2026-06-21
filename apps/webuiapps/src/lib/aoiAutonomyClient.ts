@@ -14,10 +14,12 @@ import type {
   AoiContextSourceFeedback,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
+  AoiFollowThroughDeliveryMode,
   AoiFollowThroughLearningSummary,
   AoiGoal,
   AoiGoalProgressEvent,
   AoiInterestProfile,
+  AoiLearningSignalKind,
   AoiMissionDecisionAction,
   AoiMissionState,
   AoiObservation,
@@ -27,6 +29,10 @@ import type {
   AoiOperatorTraceExport,
   AoiOperatorHealthState,
   AoiOpportunity,
+  AoiOutcomeLearningSummary,
+  AoiOutcomePrivacyState,
+  AoiOutcomeSignalKind,
+  AoiOutcomeSignalRecord,
   AoiApprovedCommandPolicy,
   AoiPreparedActionPlan,
   AoiPlaybook,
@@ -199,6 +205,7 @@ export interface AoiAutonomyDashboardSnapshot {
   deliberations: AoiDeliberationRunList;
   proactiveBriefs: AoiProactiveBriefListResponse;
   fieldFeedback: AoiFieldFeedbackResponse;
+  outcomeLearning: AoiOutcomeLearningResponse;
 }
 
 export interface AoiFieldFeedbackInput {
@@ -229,6 +236,43 @@ export interface AoiFieldFeedbackRecordResponse extends AoiFieldFeedbackResponse
   labelAction: AoiOperatorFeedbackLabelAction;
   followThroughEvents: AoiFollowThroughEvent[];
   fieldEvents: AoiFieldEvent[];
+  evaluation?: AoiAutonomyEvaluationResult;
+}
+
+export interface AoiOutcomeSignalInput {
+  id?: string;
+  eventId?: string;
+  sourceProposalId?: string;
+  sourceDecisionId?: string;
+  sourceWorkOrderId?: string;
+  sourceValidationRef?: string;
+  sourceCommitRef?: string;
+  sourceChatRef?: string;
+  outcomeKind: AoiOutcomeSignalKind;
+  signalKind?: AoiLearningSignalKind;
+  confidence?: number;
+  explicitLabelRef?: string;
+  explicitLabel?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: AoiFollowThroughDeliveryMode;
+  validationPassed?: boolean;
+  evidenceRefs?: string[];
+  privacyState?: AoiOutcomePrivacyState;
+  createdAt?: number;
+}
+
+export interface AoiOutcomeLearningResponse {
+  ok: boolean;
+  sessionPath: string;
+  outcomes: AoiOutcomeSignalRecord[];
+  summary: AoiOutcomeLearningSummary;
+}
+
+export interface AoiOutcomeSignalRecordResponse extends AoiOutcomeLearningResponse {
+  outcome: AoiOutcomeSignalRecord;
+  followThroughLearning?: AoiFollowThroughLearningSummary;
+  timeline?: AoiOperatorTimelineSummary;
   evaluation?: AoiAutonomyEvaluationResult;
 }
 
@@ -422,6 +466,85 @@ export async function recordAoiFieldFeedback(
     ),
     followThroughEvents: asArray<AoiFollowThroughEvent>(payload.followThroughEvents),
     fieldEvents: asArray<AoiFieldEvent>(payload.fieldEvents),
+    ...(isRecord(payload.evaluation)
+      ? { evaluation: payload.evaluation as AoiAutonomyEvaluationResult }
+      : {}),
+  };
+}
+
+function parseAoiOutcomeLearningPayload(
+  payload: Record<string, unknown>,
+  sessionPath: string,
+): AoiOutcomeLearningResponse {
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    outcomes: asArray<AoiOutcomeSignalRecord>(payload.outcomes),
+    summary: requireRecordField<AoiOutcomeLearningSummary>(
+      payload,
+      'summary',
+      'Aoi outcome learning response was malformed.',
+    ),
+  };
+}
+
+export async function fetchAoiOutcomeLearning(
+  sessionPath: string,
+): Promise<AoiOutcomeLearningResponse> {
+  const response = await fetch(`${API_PREFIX}/outcomes?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi outcome learning.');
+  return parseAoiOutcomeLearningPayload(payload, sessionPath);
+}
+
+export async function recordAoiOutcomeSignal(
+  sessionPath: string,
+  input: AoiOutcomeSignalInput,
+): Promise<AoiOutcomeSignalRecordResponse> {
+  const response = await fetch(`${API_PREFIX}/outcomes`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      id: input.id,
+      eventId: input.eventId,
+      sourceProposalId: input.sourceProposalId,
+      sourceDecisionId: input.sourceDecisionId,
+      sourceWorkOrderId: input.sourceWorkOrderId,
+      sourceValidationRef: input.sourceValidationRef,
+      sourceCommitRef: input.sourceCommitRef,
+      sourceChatRef: input.sourceChatRef,
+      outcomeKind: input.outcomeKind,
+      signalKind: input.signalKind,
+      confidence: input.confidence,
+      explicitLabelRef: input.explicitLabelRef,
+      explicitLabel: input.explicitLabel,
+      topicKey: input.topicKey,
+      sourceKey: input.sourceKey,
+      deliveryMode: input.deliveryMode,
+      validationPassed: input.validationPassed,
+      evidenceRefs: input.evidenceRefs,
+      privacyState: input.privacyState,
+      createdAt: input.createdAt,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi outcome signal.');
+  return {
+    ...parseAoiOutcomeLearningPayload(payload, sessionPath),
+    outcome: requireRecordField<AoiOutcomeSignalRecord>(
+      payload,
+      'outcome',
+      'Aoi outcome signal record response was malformed.',
+    ),
+    ...(isRecord(payload.followThroughLearning)
+      ? { followThroughLearning: payload.followThroughLearning as AoiFollowThroughLearningSummary }
+      : {}),
+    ...(isRecord(payload.timeline)
+      ? { timeline: payload.timeline as AoiOperatorTimelineSummary }
+      : {}),
     ...(isRecord(payload.evaluation)
       ? { evaluation: payload.evaluation as AoiAutonomyEvaluationResult }
       : {}),
@@ -1358,6 +1481,7 @@ export async function fetchAoiAutonomyDashboard(
     deliberations,
     proactiveBriefs,
     fieldFeedback,
+    outcomeLearning,
   ] = await Promise.all([
     fetchAoiAutonomyStatus(sessionPath),
     fetchAoiAutonomyProposals(sessionPath, true),
@@ -1375,6 +1499,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiDeliberationRuns(sessionPath, 20),
     fetchAoiProactiveBriefs(sessionPath),
     fetchAoiFieldFeedback(sessionPath),
+    fetchAoiOutcomeLearning(sessionPath),
   ]);
 
   return {
@@ -1395,6 +1520,7 @@ export async function fetchAoiAutonomyDashboard(
     deliberations,
     proactiveBriefs,
     fieldFeedback,
+    outcomeLearning,
   };
 }
 

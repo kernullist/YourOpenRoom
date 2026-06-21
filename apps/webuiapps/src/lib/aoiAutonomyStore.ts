@@ -21,6 +21,12 @@ import {
   buildAoiFollowThroughSummaryIndex,
   normalizeAoiFollowThroughEvent,
 } from './aoiFollowThroughLearning';
+import {
+  buildAoiFollowThroughEventFromOutcomeSignal,
+  buildAoiOutcomeLearningSummary,
+  normalizeAoiOutcomeSignalRecord,
+  type AoiOutcomeSignalInput,
+} from './aoiOutcomeLearning';
 import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { recordAoiProposalDecisionRelations } from './aoiAutonomyRelations';
 import {
@@ -52,6 +58,8 @@ import type {
   AoiObservationIndex,
   AoiObservationIndexEntry,
   AoiOpportunity,
+  AoiOutcomeLearningSummary,
+  AoiOutcomeSignalRecord,
   AoiProposal,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
@@ -69,6 +77,7 @@ const AOI_OPPORTUNITY_DEFAULT_TTL_MS = 14 * 24 * 60 * 60 * 1000;
 const AOI_OPPORTUNITY_DEFAULT_SNOOZE_MS = 24 * 60 * 60 * 1000;
 const MAX_FOLLOW_THROUGH_EVENTS = 500;
 const MAX_FOLLOW_THROUGH_INDEX_ITEMS = 80;
+const MAX_OUTCOME_SIGNAL_RECORDS = 500;
 
 export { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 
@@ -123,6 +132,8 @@ export interface AoiAutonomyPaths {
   followThroughDir: string;
   followThroughEvents: string;
   followThroughSummaryIndex: string;
+  outcomeLearningDir: string;
+  outcomeSignals: string;
 }
 
 export interface AoiObservationUpsertResult {
@@ -450,6 +461,7 @@ export function resolveAoiAutonomyPaths(
   const proactiveTrendsDir = join(root, 'proactive-trends');
   const proactiveTrendDeliveryEventsDir = join(proactiveTrendsDir, 'delivery-events');
   const followThroughDir = join(root, 'follow-through');
+  const outcomeLearningDir = join(root, 'outcome-learning');
   return {
     root,
     policy: join(root, 'policy.json'),
@@ -501,6 +513,8 @@ export function resolveAoiAutonomyPaths(
     followThroughDir,
     followThroughEvents: join(followThroughDir, 'events.jsonl'),
     followThroughSummaryIndex: join(followThroughDir, 'summary-index.json'),
+    outcomeLearningDir,
+    outcomeSignals: join(outcomeLearningDir, 'signals.jsonl'),
   };
 }
 
@@ -1709,6 +1723,76 @@ export function appendAoiFollowThroughEvent(
     sessionsDir,
     normalizedSessionPath,
     buildAoiFollowThroughSummaryIndex(summary),
+  );
+  return normalized;
+}
+
+export function loadAoiOutcomeSignalRecords(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+  limit = MAX_OUTCOME_SIGNAL_RECORDS,
+): AoiOutcomeSignalRecord[] {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  return readJsonLines(paths.outcomeSignals)
+    .map((item) =>
+      normalizeAoiOutcomeSignalRecord(
+        item as Partial<AoiOutcomeSignalRecord>,
+        normalizedSessionPath,
+        now,
+      ),
+    )
+    .filter((item): item is AoiOutcomeSignalRecord => item !== null)
+    .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
+    .slice(0, Math.max(1, Math.min(MAX_OUTCOME_SIGNAL_RECORDS, Math.trunc(limit))));
+}
+
+export function loadAoiOutcomeLearningSummary(
+  sessionsDir: string,
+  sessionPath: string,
+  now = Date.now(),
+  fieldReadinessEvidence = false,
+): AoiOutcomeLearningSummary {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  return buildAoiOutcomeLearningSummary({
+    sessionPath: normalizedSessionPath,
+    outcomes: loadAoiOutcomeSignalRecords(
+      sessionsDir,
+      normalizedSessionPath,
+      now,
+      MAX_OUTCOME_SIGNAL_RECORDS,
+    ),
+    fieldReadinessEvidence,
+    now,
+  });
+}
+
+export function appendAoiOutcomeSignalRecord(
+  sessionsDir: string,
+  record: Partial<AoiOutcomeSignalRecord> & Partial<AoiOutcomeSignalInput>,
+  now = Date.now(),
+): AoiOutcomeSignalRecord {
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(record.sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const normalized = normalizeAoiOutcomeSignalRecord(record, normalizedSessionPath, now);
+  if (!normalized) {
+    throw new Error('Invalid Aoi outcome signal record.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  appendJsonLine(paths.outcomeSignals, normalized);
+  appendAoiFollowThroughEvent(
+    sessionsDir,
+    buildAoiFollowThroughEventFromOutcomeSignal(normalized, now),
+    now,
   );
   return normalized;
 }

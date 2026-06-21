@@ -15,6 +15,7 @@ import {
 } from '../aoiMissionMemory';
 import { buildAoiMissionControlState } from '../aoiMissionControlRuntime';
 import { loadAoiMissionMemoryReport, saveAoiMissionMemoryReport } from '../aoiMissionMemoryStore';
+import { buildAoiOutcomeLearningSummary } from '../aoiOutcomeLearning';
 import { ingestAoiObservation } from '../aoiAutonomyObserver';
 import type {
   AoiApprovedCommandPolicy,
@@ -510,6 +511,42 @@ describe('Aoi autonomy mission workspace signals', () => {
     expect(driftSignal?.summary).toContain('safety rules');
     expect(snapshot.nextApprovalRefs).toContain('command-approval:approval-mission-memory');
     expect(context?.boundaryLabel).toContain('display-only');
+  });
+
+  it('remembers previous suggestion outcomes as low-confidence mission context', () => {
+    const outcomeLearning = buildAoiOutcomeLearningSummary({
+      sessionPath: SESSION_PATH,
+      outcomes: [
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'outcome-commit-created',
+          sourceProposalId: 'proposal-mission-memory-outcome',
+          outcomeKind: 'commit_created',
+          confidence: 0.44,
+          inferredAdjustment: {
+            version: 1,
+            target: 'readiness',
+            direction: 'boost',
+            magnitude: 0.2,
+            reason: 'Commit created is a success signal but not a safety waiver.',
+          },
+          evidenceRefs: ['commit:mission-memory-outcome'],
+        },
+      ],
+      now: NOW + 1000,
+    });
+    const snapshot = buildAoiMissionMemorySnapshot({
+      sessionPath: SESSION_PATH,
+      mission: makeMission(),
+      outcomeLearning,
+      now: NOW + 2000,
+    });
+    const outcomeSignal = snapshot.signals.find((signal) => signal.kind === 'outcome_learning');
+
+    expect(snapshot.outcomeLearningRefs.join(' ')).toContain('outcome-learning');
+    expect(outcomeSignal?.summary).toContain('low-confidence calibration');
+    expect(outcomeSignal?.summary).toContain('cannot increase trust');
+    expect(snapshot.mutationCount).toBe(0);
   });
 });
 

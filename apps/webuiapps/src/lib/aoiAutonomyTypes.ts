@@ -135,6 +135,85 @@ export type AoiFollowThroughResult =
   | 'blocked'
   | 'failed';
 
+export type AoiLearningSignalKind = 'explicit_label' | 'explicit_correction' | 'passive_outcome';
+
+export type AoiOutcomeSignalKind =
+  | 'proposal_opened'
+  | 'proposal_ignored'
+  | 'direct_chat_dismissed'
+  | 'work_order_approved'
+  | 'work_order_rejected'
+  | 'validation_run'
+  | 'commit_created'
+  | 'user_correction';
+
+export type AoiOutcomePrivacyState = 'metadata_only' | 'redacted' | 'synthetic' | 'unknown';
+
+export type AoiOutcomeLearningDirection = 'boost' | 'suppress' | 'neutral' | 'risk_up';
+
+export type AoiOutcomeLearningTarget =
+  | 'topic'
+  | 'source'
+  | 'timing'
+  | 'readiness'
+  | 'trust'
+  | 'safety';
+
+export interface AoiOutcomeLearningAdjustment {
+  version: 1;
+  target: AoiOutcomeLearningTarget;
+  direction: AoiOutcomeLearningDirection;
+  magnitude: number;
+  reason: string;
+}
+
+export interface AoiOutcomeSignalRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  eventId: string;
+  sourceProposalId?: string;
+  sourceDecisionId?: string;
+  sourceWorkOrderId?: string;
+  sourceValidationRef?: string;
+  sourceCommitRef?: string;
+  sourceChatRef?: string;
+  outcomeKind: AoiOutcomeSignalKind;
+  signalKind: AoiLearningSignalKind;
+  confidence: number;
+  inferredAdjustment: AoiOutcomeLearningAdjustment;
+  explicitLabelRef?: string;
+  explicitLabel?: string;
+  topicKey?: string;
+  sourceKey?: string;
+  deliveryMode?: AoiFollowThroughDeliveryMode;
+  result: AoiFollowThroughResult;
+  evidenceRefs: string[];
+  privacyState: AoiOutcomePrivacyState;
+  createdAt: number;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiOutcomeLearningSummary {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  outcomeCount: number;
+  explicitLabelLinkedCount: number;
+  explicitCorrectionCount: number;
+  passiveOutcomeCount: number;
+  outcomeOnly: boolean;
+  trustIncreaseAllowed: boolean;
+  trustIncreaseBlockedReasons: string[];
+  kindConfidenceLabels: string[];
+  learningEffectLabels: string[];
+  previousSuggestionOutcomeLabels: string[];
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export type AoiFollowThroughDeliveryMode =
   | AoiOpportunityDeliveryRecommendation
   | 'digest'
@@ -161,6 +240,12 @@ export interface AoiFollowThroughEvent {
   deliveryMode?: AoiFollowThroughDeliveryMode;
   action: AoiFollowThroughAction;
   feedbackCategory?: string;
+  learningSignalKind?: AoiLearningSignalKind;
+  outcomeSignalId?: string;
+  outcomeKind?: AoiOutcomeSignalKind;
+  confidence?: number;
+  learningEffect?: AoiOutcomeLearningAdjustment;
+  trustIncreaseEligible?: boolean;
   result: AoiFollowThroughResult;
   timingLabel: string;
   evidenceRefs: string[];
@@ -1672,6 +1757,7 @@ export type AoiOperatorTimelineEventKind =
   | 'approved_command_previewed'
   | 'approved_command_recorded'
   | 'feedback_recorded'
+  | 'outcome_signal_recorded'
   | 'operator_voice_decision'
   | 'wakeup_recorded'
   | 'trace_exported';

@@ -1,4 +1,5 @@
 import type { AoiAdaptiveAcceptancePack } from './aoiAdaptiveAcceptanceCuration';
+import type { AoiOutcomeLearningSummary } from './aoiAutonomyTypes';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiFeedbackCompressionResult } from './aoiFeedbackCompression';
@@ -143,6 +144,7 @@ export interface AoiJarvisReadinessScorecardInput {
   shadowReport?: AoiShadowDecisionReport | null;
   feedbackInbox?: AoiOperatorFeedbackInbox | null;
   feedbackCompression?: AoiFeedbackCompressionResult | null;
+  outcomeLearning?: AoiOutcomeLearningSummary | null;
   builtInReplayReports?: readonly AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
@@ -820,6 +822,7 @@ function visibilityFor(params: {
   score: number;
   fieldLabelCount: number;
   feedbackCompressionTrustAllowed: boolean;
+  outcomeTrustIncreaseAllowed: boolean;
   directChatOptInEnabled?: boolean | null;
   evidenceRefs: string[];
 }): AoiJarvisReadinessVisibility {
@@ -843,6 +846,9 @@ function visibilityFor(params: {
       !params.feedbackCompressionTrustAllowed
         ? 'feedback compression requires explicit positive labels and no wrong-source or unsafe blocker before trust can rise'
         : undefined,
+      !params.outcomeTrustIncreaseAllowed
+        ? 'outcome-only learning cannot raise trust without explicit labels or field readiness'
+        : undefined,
       tooFrequentLimited ? 'too-frequent rate lowers direct chat visibility' : undefined,
       directOptInBlocked ? 'direct chat opt-in is disabled' : undefined,
       params.level !== 'trusted_operator'
@@ -862,6 +868,9 @@ function visibilityFor(params: {
       !params.feedbackCompressionTrustAllowed
         ? 'feedback compression requires explicit positive labels and no wrong-source or unsafe blocker before supervised preparation'
         : undefined,
+      !params.outcomeTrustIncreaseAllowed
+        ? 'outcome-only learning cannot prepare higher-trust work without explicit labels or field readiness'
+        : undefined,
       params.score < 75
         ? `readiness score ${params.score}/100 is too low for supervised preparation`
         : undefined,
@@ -876,10 +885,12 @@ function visibilityFor(params: {
   const workOrderPrepareAllowed =
     !hardSafetyBlocked &&
     params.feedbackCompressionTrustAllowed &&
+    params.outcomeTrustIncreaseAllowed &&
     (params.level === 'supervised_prepare' || params.level === 'trusted_operator');
   const directChatAllowed =
     params.level === 'trusted_operator' &&
     params.feedbackCompressionTrustAllowed &&
+    params.outcomeTrustIncreaseAllowed &&
     directChatBlockedReasons.length <= 0;
 
   return {
@@ -910,6 +921,7 @@ function buildRecommendations(params: {
   const shouldHaveSpoken = metricsById.get('field.should_have_spoken_count');
   const fieldLabelCount = metricsById.get('field.labeled_decisions');
   const compressionTrustAllowed = metricsById.get('field.feedback_compression_trust_allowed');
+  const outcomeTrustAllowed = metricsById.get('outcome.outcome_only_trust_allowed');
 
   if (wrongSource && wrongSource.value > WRONG_SOURCE_BLOCK_THRESHOLD) {
     recommendations.push(
@@ -974,6 +986,20 @@ function buildRecommendations(params: {
         action:
           'Label useful or should-have-spoken examples, then clear wrong-source and unsafe blockers through review evidence.',
         evidenceRefs: compressionTrustAllowed.evidenceRefs,
+      }),
+    );
+  }
+  if (outcomeTrustAllowed && !outcomeTrustAllowed.passed) {
+    recommendations.push(
+      recommendation({
+        id: 'recommendation.outcome_only_trust_gate',
+        severity: 'blocker',
+        label: 'Collect explicit labels before trusting outcome-only learning',
+        reason:
+          'Outcome signals explain whether prior suggestions led to work, but passive outcomes alone cannot raise trust.',
+        action:
+          'Link explicit useful or correction labels, or collect field-readiness evidence before increasing direct chat or work-order trust.',
+        evidenceRefs: outcomeTrustAllowed.evidenceRefs,
       }),
     );
   }
@@ -1070,6 +1096,7 @@ export function buildAoiJarvisReadinessScorecard(
       input.shadowReport,
       input.feedbackInbox,
       input.feedbackCompression,
+      input.outcomeLearning,
       input.fieldShadowReport,
       input.jarvisAcceptanceReport,
       input.personalSourceRealityCheck,
@@ -1087,6 +1114,15 @@ export function buildAoiJarvisReadinessScorecard(
   const feedbackCompressionEvidenceRefs = uniqueStrings([
     ...(input.feedbackCompression ? [`feedback-compression:${input.feedbackCompression.id}`] : []),
     ...(input.feedbackCompression?.evidenceRefs ?? []),
+  ]);
+  const outcomeTrustIncreaseAllowed = input.outcomeLearning?.trustIncreaseAllowed !== false;
+  const outcomeLearningEvidenceRefs = uniqueStrings([
+    ...(input.outcomeLearning
+      ? [
+          `outcome-learning:${input.outcomeLearning.sessionPath}:${input.outcomeLearning.generatedAt}`,
+        ]
+      : []),
+    ...(input.outcomeLearning?.evidenceRefs ?? []),
   ]);
 
   const metrics: AoiJarvisReadinessMetric[] = [
@@ -1121,6 +1157,17 @@ export function buildAoiJarvisReadinessScorecard(
       passed: feedbackCompressionTrustAllowed,
       evidenceRefs: feedbackCompressionEvidenceRefs,
       blockerRefs: feedbackCompressionTrustAllowed ? [] : ['gate.feedback_compression_trust_label'],
+    }),
+    metric({
+      id: 'outcome.outcome_only_trust_allowed',
+      group: 'shadow_usefulness',
+      label: 'Outcome-only trust increase allowed',
+      value: outcomeTrustIncreaseAllowed ? 1 : 0,
+      target: 1,
+      unit: 'boolean',
+      passed: outcomeTrustIncreaseAllowed,
+      evidenceRefs: outcomeLearningEvidenceRefs,
+      blockerRefs: outcomeTrustIncreaseAllowed ? [] : ['gate.outcome_only_trust_increase_block'],
     }),
     metric({
       id: 'field.useful_rate',
@@ -1676,6 +1723,19 @@ export function buildAoiJarvisReadinessScorecard(
         : ['feedback_compression.trust_increase_blocked'],
     }),
     gate({
+      id: 'gate.outcome_only_trust_increase_block',
+      label: 'Outcome-only trust increase blocked',
+      status: outcomeTrustIncreaseAllowed ? 'pass' : 'block',
+      reason: outcomeTrustIncreaseAllowed
+        ? input.outcomeLearning
+          ? 'Outcome learning is linked to explicit labels or field readiness.'
+          : 'No outcome-learning summary was provided; legacy field-label gates apply.'
+        : input.outcomeLearning?.trustIncreaseBlockedReasons.join('; ') ||
+          'Outcome-only learning cannot increase trust.',
+      evidenceRefs: outcomeLearningEvidenceRefs,
+      blockerRefs: outcomeTrustIncreaseAllowed ? [] : ['outcome_learning.trust_increase_blocked'],
+    }),
+    gate({
       id: 'gate.direct_chat_opt_in',
       label: 'Direct chat opt-in',
       status: directChatOptInEnabled === false ? 'block' : 'pass',
@@ -1724,6 +1784,7 @@ export function buildAoiJarvisReadinessScorecard(
     'gate.unsafe_policy_tightening',
     'gate.wrong_source_rate',
     'gate.feedback_compression_trust_label',
+    'gate.outcome_only_trust_increase_block',
   ].some((id) => gates.some((item) => item.id === id && item.status === 'block'));
   const level = levelFor({
     score,
@@ -1759,6 +1820,7 @@ export function buildAoiJarvisReadinessScorecard(
     score,
     fieldLabelCount: shadowLabels.fieldLabelCount,
     feedbackCompressionTrustAllowed,
+    outcomeTrustIncreaseAllowed,
     directChatOptInEnabled,
     evidenceRefs,
   });
@@ -1785,7 +1847,8 @@ export function buildAoiJarvisReadinessScorecard(
     canIncreaseTrust:
       visibility.directChat === 'allowed' &&
       level === 'trusted_operator' &&
-      feedbackCompressionTrustAllowed,
+      feedbackCompressionTrustAllowed &&
+      outcomeTrustIncreaseAllowed,
     modeRecommendation,
     visibility,
     metricGroups,

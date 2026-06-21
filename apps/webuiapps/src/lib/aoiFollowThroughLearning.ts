@@ -184,20 +184,107 @@ function resultForAction(action: AoiFollowThroughAction): AoiFollowThroughResult
   return 'neutral';
 }
 
-function resultWeight(result: AoiFollowThroughResult, action: AoiFollowThroughAction): number {
+function weightedResultWeight(
+  result: AoiFollowThroughResult,
+  action: AoiFollowThroughAction,
+  confidence: number,
+): number {
+  const safeConfidence = clampScore(confidence, 0.05, 1);
   if (result === 'positive') {
-    return action === 'executed' ? 1.2 : 1;
+    return (action === 'executed' ? 1.2 : 1) * safeConfidence;
   }
   if (result === 'negative') {
-    return -1;
+    return -1 * safeConfidence;
   }
   if (result === 'blocked' || result === 'failed') {
-    return -1.25;
+    return -1.25 * safeConfidence;
   }
   if (result === 'soft_negative') {
-    return -0.35;
+    return -0.35 * safeConfidence;
   }
-  return -0.05;
+  return -0.05 * safeConfidence;
+}
+
+function normalizeLearningSignalKind(value: unknown): AoiFollowThroughEvent['learningSignalKind'] {
+  if (
+    value === 'explicit_label' ||
+    value === 'explicit_correction' ||
+    value === 'passive_outcome'
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeOutcomeKind(value: unknown): AoiFollowThroughEvent['outcomeKind'] {
+  if (
+    value === 'proposal_opened' ||
+    value === 'proposal_ignored' ||
+    value === 'direct_chat_dismissed' ||
+    value === 'work_order_approved' ||
+    value === 'work_order_rejected' ||
+    value === 'validation_run' ||
+    value === 'commit_created' ||
+    value === 'user_correction'
+  ) {
+    return value;
+  }
+  return undefined;
+}
+
+function normalizeLearningEffect(
+  value: unknown,
+): AoiFollowThroughEvent['learningEffect'] | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const record = value as Partial<NonNullable<AoiFollowThroughEvent['learningEffect']>>;
+  const target =
+    record.target === 'topic' ||
+    record.target === 'source' ||
+    record.target === 'timing' ||
+    record.target === 'readiness' ||
+    record.target === 'trust' ||
+    record.target === 'safety'
+      ? record.target
+      : undefined;
+  const direction =
+    record.direction === 'boost' ||
+    record.direction === 'suppress' ||
+    record.direction === 'neutral' ||
+    record.direction === 'risk_up'
+      ? record.direction
+      : undefined;
+  if (!target || !direction) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    target,
+    direction,
+    magnitude: clampScore(Number(record.magnitude ?? 0), 0, 1),
+    reason: sanitizeText(record.reason, 'Outcome learning adjustment.', 220),
+  };
+}
+
+function eventConfidence(event: AoiFollowThroughEvent): number {
+  if (typeof event.confidence === 'number' && Number.isFinite(event.confidence)) {
+    return clampScore(
+      event.confidence,
+      0.05,
+      event.learningSignalKind === 'passive_outcome' ? 0.5 : 1,
+    );
+  }
+  if (event.learningSignalKind === 'passive_outcome') {
+    return 0.35;
+  }
+  if (event.learningSignalKind === 'explicit_correction') {
+    return 0.72;
+  }
+  if (event.learningSignalKind === 'explicit_label') {
+    return 0.84;
+  }
+  return 1;
 }
 
 function resultStrength(result: AoiFollowThroughResult): number {
@@ -366,6 +453,19 @@ export function normalizeAoiFollowThroughEvent(
     return null;
   }
   const createdAt = Number.isFinite(event.createdAt) ? Number(event.createdAt) : now;
+  const learningSignalKind = normalizeLearningSignalKind(event.learningSignalKind);
+  const outcomeKind = normalizeOutcomeKind(event.outcomeKind);
+  const learningEffect = normalizeLearningEffect(event.learningEffect);
+  const confidence =
+    typeof event.confidence === 'number' && Number.isFinite(event.confidence)
+      ? clampScore(event.confidence, 0.05, learningSignalKind === 'passive_outcome' ? 0.5 : 1)
+      : learningSignalKind === 'passive_outcome'
+        ? 0.35
+        : learningSignalKind === 'explicit_correction'
+          ? 0.72
+          : learningSignalKind === 'explicit_label'
+            ? 0.84
+            : undefined;
   const id =
     sanitizeText(event.id, '', 128) ||
     stableId('aoi-follow-through', [
@@ -399,6 +499,16 @@ export function normalizeAoiFollowThroughEvent(
     action,
     ...(sanitizeText(event.feedbackCategory, '', 120)
       ? { feedbackCategory: sanitizeText(event.feedbackCategory, '', 120) }
+      : {}),
+    ...(learningSignalKind ? { learningSignalKind } : {}),
+    ...(sanitizeText(event.outcomeSignalId, '', 128)
+      ? { outcomeSignalId: sanitizeText(event.outcomeSignalId, '', 128) }
+      : {}),
+    ...(outcomeKind ? { outcomeKind } : {}),
+    ...(confidence !== undefined ? { confidence } : {}),
+    ...(learningEffect ? { learningEffect } : {}),
+    ...(typeof event.trustIncreaseEligible === 'boolean'
+      ? { trustIncreaseEligible: event.trustIncreaseEligible }
       : {}),
     result,
     timingLabel: sanitizeText(event.timingLabel, `${action} recorded`, 160),
@@ -734,7 +844,7 @@ function summarizeByKey(
     if (!key) {
       continue;
     }
-    const weight = resultWeight(event.result, event.action);
+    const weight = weightedResultWeight(event.result, event.action, eventConfidence(event));
     const aggregate = aggregates.get(key) ?? {
       positive: 0,
       negative: 0,
@@ -788,7 +898,7 @@ function buildDeliverySensitivity(
       tooFrequent: false,
       evidenceRefs: [],
     };
-    aggregate.score += resultWeight(event.result, event.action);
+    aggregate.score += weightedResultWeight(event.result, event.action, eventConfidence(event));
     aggregate.unsafe ||= event.result === 'blocked' || event.feedbackCategory === 'unsafe';
     aggregate.tooFrequent ||=
       event.feedbackCategory === 'too_frequent' || event.feedbackCategory === 'too_much';
@@ -841,6 +951,7 @@ function buildCooldownAdjustments(
       const unsafe = event.result === 'blocked' || event.feedbackCategory === 'unsafe';
       const tooFrequent =
         event.feedbackCategory === 'too_frequent' || event.feedbackCategory === 'too_much';
+      const confidence = eventConfidence(event);
       const cooldownMs = unsafe
         ? UNSAFE_COOLDOWN_MS
         : tooFrequent
@@ -850,7 +961,14 @@ function buildCooldownAdjustments(
             : NEGATIVE_COOLDOWN_MS;
       return {
         key,
-        factor: event.result === 'soft_negative' ? 0.85 : unsafe ? 0.25 : tooFrequent ? 0.4 : 0.62,
+        factor:
+          event.result === 'soft_negative'
+            ? clampScore(1 - 0.15 * confidence, 0.75, 0.98)
+            : unsafe
+              ? 0.25
+              : tooFrequent
+                ? clampScore(1 - 0.6 * confidence, 0.4, 0.85)
+                : clampScore(1 - 0.38 * confidence, 0.62, 0.9),
         nextEligibleAt: Math.max(now, event.createdAt + cooldownMs),
         reason:
           event.result === 'soft_negative'
@@ -868,6 +986,12 @@ function buildTrustHints(events: readonly AoiFollowThroughEvent[]): string[] {
   const failedCount = events.filter((event) => event.result === 'failed').length;
   const ignoredCount = events.filter((event) => event.result === 'soft_negative').length;
   const positiveCount = events.filter((event) => event.result === 'positive').length;
+  const passiveOutcomeCount = events.filter(
+    (event) => event.learningSignalKind === 'passive_outcome',
+  ).length;
+  const explicitLabelCount = events.filter(
+    (event) => event.learningSignalKind === 'explicit_label',
+  ).length;
   return uniqueStrings(
     [
       unsafeCount > 0
@@ -881,6 +1005,12 @@ function buildTrustHints(events: readonly AoiFollowThroughEvent[]): string[] {
         : '',
       positiveCount > 0
         ? `${positiveCount} accepted/executed signal(s): rank similar evidence-backed opportunities slightly higher.`
+        : '',
+      passiveOutcomeCount > 0
+        ? `${passiveOutcomeCount} passive outcome signal(s): use as low-confidence calibration only and never raise trust without explicit labels or field readiness.`
+        : '',
+      explicitLabelCount > 0
+        ? `${explicitLabelCount} explicit label signal(s): may support trust calibration only after safety and field-readiness gates pass.`
         : '',
       'Learning may tune ranking, cooldown, and delivery sensitivity only; approval and execution gates remain unchanged.',
     ],
@@ -994,22 +1124,36 @@ export function scoreAoiFollowThroughLearningForOpportunity(
   for (const event of relatedEvents.slice(0, 12)) {
     evidenceRefs.push(...event.evidenceRefs, `follow-through:${event.id}`);
     if (event.result === 'positive') {
-      rankingFactor = Math.max(rankingFactor, event.action === 'executed' ? 1.18 : 1.12);
-      reasonLabels.push(`show more after ${event.action}`);
+      const confidence = eventConfidence(event);
+      const boost = event.action === 'executed' ? 0.18 : 0.12;
+      rankingFactor = Math.max(rankingFactor, 1 + boost * confidence);
+      reasonLabels.push(
+        event.learningSignalKind === 'passive_outcome'
+          ? `show more cautiously after low-confidence ${event.outcomeKind ?? event.action}`
+          : `show more after ${event.action}`,
+      );
       continue;
     }
     if (event.result === 'soft_negative') {
-      rankingFactor = Math.min(rankingFactor, 0.88);
-      directChatFactor = Math.min(directChatFactor, 0.8);
-      reasonLabels.push('show slightly less after ignored delivery');
+      const confidence = eventConfidence(event);
+      rankingFactor = Math.min(rankingFactor, 1 - 0.12 * confidence);
+      directChatFactor = Math.min(directChatFactor, 1 - 0.2 * confidence);
+      reasonLabels.push(
+        event.learningSignalKind === 'passive_outcome'
+          ? 'show slightly less after low-confidence ignored outcome'
+          : 'show slightly less after ignored delivery',
+      );
       continue;
     }
     suppressed = true;
+    const confidence = eventConfidence(event);
     const unsafe = event.result === 'blocked' || event.feedbackCategory === 'unsafe';
     const tooFrequent =
       event.feedbackCategory === 'too_frequent' || event.feedbackCategory === 'too_much';
-    rankingFactor = Math.min(rankingFactor, unsafe ? 0.25 : tooFrequent ? 0.42 : 0.62);
-    directChatFactor = Math.min(directChatFactor, unsafe ? 0.15 : tooFrequent ? 0.25 : 0.55);
+    const baseRanking = unsafe ? 0.25 : tooFrequent ? 0.42 : 0.62;
+    const baseDirectChat = unsafe ? 0.15 : tooFrequent ? 0.25 : 0.55;
+    rankingFactor = Math.min(rankingFactor, 1 - (1 - baseRanking) * confidence);
+    directChatFactor = Math.min(directChatFactor, 1 - (1 - baseDirectChat) * confidence);
     const cooldownMs = unsafe
       ? UNSAFE_COOLDOWN_MS
       : tooFrequent
