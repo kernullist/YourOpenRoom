@@ -123,14 +123,20 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 
 - **앱 런타임 툴**
   - `list_apps`, `app_action`, `get_app_state`, `get_app_intents`, `get_app_schema`
-  - `get_app_intents`는 자연어 앱 요청을 창 제어, 선언된 `app_action`, 스키마 기반 파일
-    쓰기/삭제, state 파일 수정, inspect-only 흐름 중 하나의 실행 계약으로 매핑합니다.
+  - `get_app_intents`는 자연어 앱 요청을 창 제어, 선언된 `app_action`, 스키마 기반 파일 쓰기/삭제,
+    state 파일 수정, inspect-only 흐름 중 하나의 실행 계약으로 매핑합니다.
   - `get_app_intents(app_name=..., include_surfaces=true)`는 앱별 control surface 감사도 함께
-    반환합니다. Aoi는 각 UI 표면이 `covered`, `partial`, `gap` 중 어디인지와, 빠진 action,
-    schema, tool 이 무엇인지 확인할 수 있습니다.
-  - Aoi는 인앱 표면을 제어할 수 없다고 답하기 전에 `get_app_intents`로 해당 앱의 실행
-    계약과 surface coverage 를 확인하도록 프롬프트됩니다. 부분 지원 표면은 일반적인 거절 대신
-    정확히 빠진 계약을 설명합니다.
+    반환합니다. Aoi는 각 UI 표면이 `covered`, `partial`, `gap` 중 어디인지와, 빠진 action, schema,
+    tool 이 무엇인지 확인할 수 있습니다.
+  - Aoi는 인앱 표면을 제어할 수 없다고 답하기 전에 `get_app_intents`로 해당 앱의 실행 계약과 surface
+    coverage 를 확인하도록 프롬프트됩니다. 부분 지원 표면은 일반적인 거절 대신 정확히 빠진 계약을
+    설명합니다.
+  - Kira `APPLY_MODEL_SETTINGS`, `APPLY_PROJECT_SETTINGS` 같은 앱 소유 설정/작업 action 은 raw
+    storage write 가 아니라 앱의 validation/persistence 경로를 통과합니다.
+  - mutation 이 가능한 app action 은 Aoi approval sandbox 를 공유합니다. 실행 전 target, preview,
+    authority decision, 예상 mutation 수, validation summary, rollback/recovery evidence 를
+    fingerprint 로 묶고, 승인 내용이 바뀌었거나 재사용되면 수동 클릭 안내가 아니라 구조화된 block
+    결과를 반환합니다.
   - `file_read`, `file_write`, `file_patch`, `file_list`, `file_delete`
 - **웹/콘텐츠 툴**
   - `search_web`
@@ -171,6 +177,9 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
     반영합니다
   - read-only research artifact/status 는 policy check 후 실행할 수 있고, research start, procedure
     저장, Kira handoff, command 실행은 preview/approval boundary 를 따릅니다
+  - bounded work order, safe action plan, Kira handoff, app-action mutation, approved command 실행은
+    모두 같은 approval sandbox 로 target, preview, authority, environment, rollback/recovery,
+    validation, expiry, audit evidence 를 다시 확인합니다
   - proactive interest briefing 은 eligible Aoi memory 에서 compact topic 을 만들고, policy-gated
     current-info scout 가 source-backed candidate 를 만들었을 때만 quiet dashboard/digest/inline
     card 로 보여줍니다. 카드에는 source freshness, cannot-know note, feedback control 이 함께
@@ -202,6 +211,10 @@ YourOpenRoom은 MiniMax OpenRoom 포크로 시작했지만, 현재 코드는 단
 - Aoi autonomy 는 사용자 승인 없이 고위험 mutation 을 실행하지 않습니다. Approved command 경로도 cwd
   guard, destructive pattern 차단, approval fingerprint, timeout, redacted audit record 를 다시
   확인합니다
+- 공유 approval sandbox 는 command, cwd, environment, target, preview, authority, rollback/recovery
+  evidence, validation summary, expiry 가 승인 당시와 달라지면 승인을 무효화합니다. workspace/app
+  mutation 은 예상 mutation 수와 복구 근거를 노출해야 하므로, 막힌 `app_action` 결과는 사용자가
+  설정을 직접 눌러야 한다고 말하는 대신 부족한 authority 를 정확히 설명할 수 있습니다.
 - Aoi research run 은 AOI main LLM 을 그대로 재사용하며, live web 수집에는 Tavily 설정이 필요합니다.
   산출물은 `sessions/<character>/<mod>/aoi-research/runs/<runId>/` 아래 `manifest.json`,
   `report.md`, `sources.json`, `evidence.json` 으로 저장됩니다. 보고서는 수집된 source claim 에서
@@ -244,17 +257,22 @@ Kira 는 앱 저장소에 work item 과 comment 를 저장하고, 설정된 로�
 
 **Aoi Will Take Care of It** discovery 는 todo 작업을 만들기 전에 프로젝트 discovery dossier 를 먼저
 저장합니다. 이 dossier 에는 deterministic scout, 깊이 점수, topology map, blind spot, 프로젝트
-fingerprint, evidence ledger, 후보 finding 이 들어갑니다. Kira 는 저장된 dossier 를 인앱에서 보여주므로
-사용자는 Aoi 가 실제로 얼마나 읽었는지 확인하고, 전체 dossier 또는 개별 finding 을 JSON 으로 복사하며,
-연결된 evidence 참조를 Aoi's IDE 에서 열거나 복사하고, 저장된 fingerprint 가 fresh/stale/unavailable 인지
-확인할 수 있습니다.
+fingerprint, evidence ledger, 후보 finding 이 들어갑니다. Kira 는 저장된 dossier 를 인앱에서
+보여주므로 사용자는 Aoi 가 실제로 얼마나 읽었는지 확인하고, 전체 dossier 또는 개별 finding 을 JSON
+으로 복사하며, 연결된 evidence 참조를 Aoi's IDE 에서 열거나 복사하고, 저장된 fingerprint 가
+fresh/stale/unavailable 인지 확인할 수 있습니다.
 
-Discovery finding 은 LLM 이 제안했다는 이유만으로 바로 신뢰하지 않습니다. 각 finding 은 연결된 evidence,
-실제 존재하는 파일, 안전한 validation command, scope 크기, stale fingerprint, blind spot overlap,
-중복된 열린 작업 여부를 기준으로 quality gate 를 통과해야 합니다. `ready` finding 만 todo 생성 대상으로
-선택할 수 있고, blocked finding 은 사람이 읽을 수 있는 차단 사유와 raw reason code 를 함께 UI에
-남깁니다. 생성된 work item 에는 Discovery Provenance 섹션이 들어가 worker 와 reviewer 가 파일을
-수정하기 전에 원본 분석을 다시 확인할 수 있습니다.
+Discovery finding 은 LLM 이 제안했다는 이유만으로 바로 신뢰하지 않습니다. 각 finding 은 연결된
+evidence, 실제 존재하는 파일, 안전한 validation command, scope 크기, stale fingerprint, blind spot
+overlap, 중복된 열린 작업 여부를 기준으로 quality gate 를 통과해야 합니다. `ready` finding 만 todo
+생성 대상으로 선택할 수 있고, blocked finding 은 사람이 읽을 수 있는 차단 사유와 raw reason code 를
+함께 UI에 남깁니다. 생성된 work item 에는 Discovery Provenance 섹션이 들어가 worker 와 reviewer 가
+파일을 수정하기 전에 원본 분석을 다시 확인할 수 있습니다.
+
+Aoi 에서 시작된 Kira handoff 는 사용자가 정확한 proposal 을 승인하기 전까지 prepare-only 상태로
+남습니다. 승인된 handoff 는 approval sandbox fingerprint, rollback/recovery 요약, validation
+evidence 를 work order 로 넘기므로 이후 worker/reviewer/integration 단계에서 stale authority 나 복구
+근거 누락을 감지할 수 있습니다.
 
 Clarification 은 worker 에게 일감이 넘어가기 전에 실행됩니다. 제목/설명에 제품 결정이나 구현 방향을
 바꿀 수 있는 모호함이 있으면 Kira 는 가능한 한 객관식 질문으로 사용자에게 확인하고, 답변은 work item
@@ -531,7 +549,8 @@ YourOpenRoom/
 
 - `components/`: 데스크톱 셸, 채팅 패널, 윈도우 컴포넌트
 - `pages/`: 내장 앱
-- `lib/`: 런타임 glue code, LLM 클라이언트, 툴, 앱 등록, IDE/Kira/Gmail 로직
+- `lib/`: 런타임 glue code, LLM 클라이언트, 툴, 앱 등록, IDE/Kira/Gmail 로직, Aoi autonomy, approval
+  sandbox, capability brokerage
 - `routers/`: standalone 모드 라우팅
 
 ## 개발 명령

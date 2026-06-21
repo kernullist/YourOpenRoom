@@ -130,6 +130,10 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
   - declared app-owned operation/settings actions, such as Kira `APPLY_MODEL_SETTINGS` and
     `APPLY_PROJECT_SETTINGS`, run through the app's validation and persistence paths instead of raw
     storage writes
+  - mutation-capable app actions share Aoi's approval sandbox: the proposed target, preview,
+    authority decision, expected mutation count, validation summary, and rollback/recovery evidence
+    are fingerprinted before execution, and changed or replayed approvals return a structured block
+    result instead of silently falling back to manual UI advice
   - every non-OS app exposes common `OPEN_APP_WINDOW`, `FOCUS_APP_WINDOW`, and `CLOSE_APP_WINDOW`
     controls that route through OS window actions, so Aoi can always open, restore, or close an
     in-app surface before using app-specific actions
@@ -196,6 +200,9 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     quiet-mode suppression
   - read-only research artifact/status actions can run after policy checks; research start,
     procedure saving, Kira handoff, and command execution use preview and approval boundaries
+  - bounded work orders, safe action plans, Kira handoffs, app-action mutations, and approved
+    command execution all reuse the same approval sandbox checks for target, preview, authority,
+    environment, rollback/recovery, validation, expiry, and audit evidence
   - field shadow dogfooding records and operator labels feed the JARVIS readiness scorecard, so
     real-session wrong-source, too-much, unsafe, and should-have-spoken feedback can block or warn
     before any higher-trust mode is considered
@@ -231,6 +238,11 @@ These tools are guarded by the current implementation:
 - Aoi autonomy does not run high-risk mutations without an explicit accepted proposal. Approved
   command execution still rechecks cwd boundaries, destructive command patterns, approval
   fingerprints, timeouts, and redacted audit records before spawning a process.
+- The shared approval sandbox invalidates approval when command, cwd, environment, target, preview,
+  authority, rollback/recovery evidence, validation summary, or expiry no longer matches the
+  accepted proposal. Workspace and app mutations must expose expected mutation count and recovery
+  evidence, so blocked `app_action` results can explain the exact missing authority instead of
+  telling the user to click through settings manually.
 - Aoi research runs reuse the main AOI LLM and require Tavily for live web collection. Artifacts are
   stored under `sessions/<character>/<mod>/aoi-research/runs/<runId>/` as `manifest.json`,
   `report.md`, `sources.json`, and `evidence.json`. Reports are generated from collected source
@@ -284,6 +296,11 @@ fingerprints, blind-spot overlap, and duplicate open work. Only `ready` findings
 todo creation; blocked findings keep human-readable reasons and raw reason codes in the UI. Created
 work items receive a Discovery Provenance section so the worker and reviewer can re-check the source
 analysis before editing files.
+
+Kira handoffs that originate from Aoi remain prepare-only until the operator accepts the exact
+proposal. The accepted handoff carries the approval sandbox fingerprint, rollback/recovery summary,
+and validation evidence into the work order so later worker, reviewer, and integration steps can
+detect stale authority or missing recovery context.
 
 Clarification runs before workers receive a task. If Kira determines that the title/description
 leave a material product or implementation choice open, the work is moved to `blocked` with
@@ -584,8 +601,8 @@ Inside `apps/webuiapps/src/`:
 
 - `components/` contains the desktop shell, chat panel, and app window chrome
 - `pages/` contains built-in apps
-- `lib/` contains the runtime glue: storage, LLM clients, tools, app registry, plugins, and IDE
-  helpers
+- `lib/` contains the runtime glue: storage, LLM clients, tools, app registry, plugins, IDE helpers,
+  Aoi autonomy modules, approval sandbox checks, capability brokerage, and Kira automation glue
 - `routers/` defines the browser routes used by the standalone shell
 
 ## Development

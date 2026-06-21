@@ -36,6 +36,11 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - `src/lib/appIntentContracts.ts` and `src/lib/appIntentTools.ts`
   - machine-readable intent contracts that map app requests to `app_action`, schema file
     write/delete, state-file update, window-control, or inspect-only execution paths
+- `src/lib/aoiApprovalSandbox.ts`
+  - shared proposal-to-execution guard for Aoi work orders, safe action plans, Kira handoffs,
+    app-action mutations, and approved command execution; it fingerprints target/preview/authority,
+    expected mutation count, validation summary, rollback or recovery evidence, expiry, and audit
+    context before allowing a mutation to run
 - `src/lib/fileTools.ts`
   - schema-aware app-storage read/write/patch/delete tools
 - `src/lib/workspaceTools.ts`
@@ -77,9 +82,9 @@ This package is **not** a stock Vite starter anymore. It is the app that current
 - `src/lib/aoiAutonomy*.ts`, `src/lib/aoiAttentionBroker.ts`, `src/lib/aoiContextRouter.ts`,
   `src/lib/aoiOperatorDigest.ts`, and `src/lib/aoiOperatorReplay.ts`
   - Aoi's governed-autonomy control plane: observations, reflections, proposal policy, mission and
-    goal state, workspace/context signals, attention routing, approval-aware action previews,
-    approved-command audit paths, operator digest, evaluation metrics, and deterministic replay
-    fixtures
+    goal state, workspace/context signals, attention routing, approval-aware action previews, shared
+    approval-sandbox validation, app-action authority blocks, approved-command audit paths, operator
+    digest, evaluation metrics, and deterministic replay fixtures
   - Field shadow dogfooding reports and operator feedback labels are folded into the JARVIS
     readiness scorecard so real-session labels can warn or block higher-trust recommendations before
     synthetic replay success is treated as operational evidence.
@@ -210,7 +215,8 @@ This app reads and writes to `~/.openroom/` in standalone mode:
     `sessions/aoi/memory-v2/` so later chat turns can recall the result and reopen the artifact
   - Aoi autonomy state lives under `sessions/<character>/<mod>/aoi-autonomy/`, including policy,
     observations, reflections, proposals, decisions, goals, relation data, workspace snapshots,
-    context feedback, and command audit records
+    context feedback, proposal/work-order approval sandbox fields, and command audit records with
+    sandbox preview hashes
   - proactive interest profiles, source-backed brief candidates, feedback, and cooldowns are stored
     under `sessions/<character>/<mod>/aoi-autonomy/proactive-briefs/` plus
     `proactive-interest-profile.json`
@@ -251,10 +257,12 @@ Session app data is accessed through `src/lib/diskStorage.ts`, which talks to `/
   evidence-backed proposals, learns from accept/dismiss/too-much feedback, and summarizes operator
   attention through digest lanes. Read-only research actions can be executed after policy checks;
   research start, procedure promotion, Kira handoff, and command execution require explicit proposal
-  decisions and narrower preview/approval paths. Approved commands are rechecked for cwd,
-  destructive patterns, approval fingerprint freshness, timeout, and audit logging before spawn.
-  `aoiOperatorReplay.ts` keeps representative operator scenarios deterministic without invoking
-  shell, network, or workspace mutations.
+  decisions and narrower preview/approval paths. The shared approval sandbox also covers app-action
+  mutations and bounded work orders, invalidating approvals when target, preview, authority,
+  environment, rollback/recovery evidence, validation, expiry, or audit context changes. Approved
+  commands are rechecked for cwd, destructive patterns, approval fingerprint freshness, timeout, and
+  audit logging before spawn. `aoiOperatorReplay.ts` keeps representative operator scenarios
+  deterministic without invoking shell, network, or workspace mutations.
 - Proactive interest briefings reuse that governed model. Memory-only topics cannot produce
   fresh/current claims; Tavily-backed public scouting is required for live source evidence, and the
   replay pack covers missing Tavily, stale sources, quiet mode, cooldown, feedback adaptation, and
