@@ -9,6 +9,7 @@ import {
 } from './appIntentContracts';
 import type { AoiEnvironmentSourceRegistry } from './aoiAutonomyTypes';
 import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
+import type { AoiUnifiedOperatorSnapshot } from './aoiUnifiedOperatorModel';
 
 export type AoiCapabilityRisk = 'low' | 'medium' | 'high';
 
@@ -833,6 +834,7 @@ export interface AoiCapabilityBrokerDecisionInput {
   mutationConsentReceiptRefs?: readonly string[];
   additionalBlockedReasons?: readonly string[];
   evidenceRefs?: readonly string[];
+  operatorSnapshot?: AoiUnifiedOperatorSnapshot | null;
   apps?: readonly (AppDef | AppIdentity)[];
 }
 
@@ -903,6 +905,7 @@ export interface AoiConnectorAuthorityDecisionInput {
   mutationConsentReceiptRefs?: readonly string[];
   additionalBlockedReasons?: readonly string[];
   evidenceRefs?: readonly string[];
+  operatorSnapshot?: AoiUnifiedOperatorSnapshot | null;
   apps?: readonly (AppDef | AppIdentity)[];
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
@@ -1003,6 +1006,24 @@ function stableAuthorityHash(value: string): string {
 
 function makeAuthorityDecisionId(parts: Array<string | number | undefined | null>): string {
   return `connector-authority:${stableAuthorityHash(parts.map((part) => String(part ?? '')).join('|'))}`;
+}
+
+function operatorSnapshotEvidenceRefs(
+  snapshot: AoiUnifiedOperatorSnapshot | null | undefined,
+): string[] {
+  if (!snapshot) {
+    return [];
+  }
+  return uniqueBrokerStrings([`operator-snapshot:${snapshot.id}`, ...snapshot.evidenceRefs], 12);
+}
+
+function operatorSnapshotCannotKnow(
+  snapshot: AoiUnifiedOperatorSnapshot | null | undefined,
+): string[] {
+  if (!snapshot) {
+    return [];
+  }
+  return uniqueBrokerStrings(snapshot.cannotKnow, 12);
 }
 
 function makeConsentRequirement(params: {
@@ -1346,13 +1367,20 @@ function buildUnknownCapabilityDecision(
     blockedReasons.join(','),
   ]);
   const requiredConsent = makeConsentRequirement({});
+  const snapshotEvidenceRefs = operatorSnapshotEvidenceRefs(input.operatorSnapshot);
+  const snapshotCannotKnow = operatorSnapshotCannotKnow(input.operatorSnapshot);
   const evidenceRefs = uniqueBrokerStrings(
     [
       ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
       ...(app?.evidenceRefs ?? []),
+      ...snapshotEvidenceRefs,
       `authority-decision:${authorityDecisionId}`,
     ],
     24,
+  );
+  const cannotKnow = uniqueBrokerStrings(
+    ['Aoi cannot assume authority for an unregistered app capability.', ...snapshotCannotKnow],
+    12,
   );
   const auditEvent = makeAuthorityAuditEvent({
     decisionId: authorityDecisionId,
@@ -1363,7 +1391,7 @@ function buildUnknownCapabilityDecision(
     allowedBand: 'observe',
     requiredConsent,
     blockedReasons,
-    cannotKnow: ['Aoi cannot assume authority for an unregistered app capability.'],
+    cannotKnow,
     evidenceRefs,
   });
   return {
@@ -1386,7 +1414,7 @@ function buildUnknownCapabilityDecision(
     requiredConsent,
     sourceState: 'unknown',
     blockedReasons,
-    cannotKnow: ['Aoi cannot assume authority for an unregistered app capability.'],
+    cannotKnow,
     auditRequired: true,
     authorityDecisionId,
     auditEvent,
@@ -1591,6 +1619,8 @@ export function decideAoiCapabilityBrokerAuthority(
     finalBlockedReasons.join(','),
     requiredConsent.receiptRefs.join(','),
   ]);
+  const snapshotEvidenceRefs = operatorSnapshotEvidenceRefs(input.operatorSnapshot);
+  const snapshotCannotKnow = operatorSnapshotCannotKnow(input.operatorSnapshot);
   const evidenceRefs = uniqueBrokerStrings(
     [
       `capability-broker-v3:${manifest.appName}:${capability.intent}`,
@@ -1598,6 +1628,7 @@ export function decideAoiCapabilityBrokerAuthority(
       ...manifest.evidenceRefs,
       ...capability.evidenceRefs,
       ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...snapshotEvidenceRefs,
       ...approvalEvidenceRefs,
       ...previewEvidenceRefs,
       ...targetEvidenceRefs,
@@ -1606,12 +1637,19 @@ export function decideAoiCapabilityBrokerAuthority(
     ],
     24,
   );
-  const cannotKnow =
-    finalBlockedReasons.length > 0
-      ? [
-          `Aoi cannot execute ${capability.title} until ${finalBlockedReasons.join(', ')} is resolved.`,
-        ]
-      : [];
+  const cannotKnow = uniqueBrokerStrings(
+    [
+      ...(finalBlockedReasons.length > 0
+        ? [
+            `Aoi cannot execute ${capability.title} until ${finalBlockedReasons.join(
+              ', ',
+            )} is resolved.`,
+          ]
+        : []),
+      ...snapshotCannotKnow,
+    ],
+    12,
+  );
   const auditEvent = makeAuthorityAuditEvent({
     decisionId: authorityDecisionId,
     connectorKind: 'app_capability',
@@ -1842,12 +1880,15 @@ function decideAoiPersonalSourceConnectorAuthority(
     finalBlockedReasons.join(','),
     requiredConsent.receiptRefs.join(','),
   ]);
+  const snapshotEvidenceRefs = operatorSnapshotEvidenceRefs(input.operatorSnapshot);
+  const snapshotCannotKnow = operatorSnapshotCannotKnow(input.operatorSnapshot);
   const cannotKnow = uniqueBrokerStrings(
     [
       ...(contract?.cannotKnow.map((item) => item.statement) ?? []),
       ...(!contract
         ? ['Aoi cannot know this source because no source freshness contract exists.']
         : []),
+      ...snapshotCannotKnow,
     ],
     12,
   );
@@ -1856,6 +1897,7 @@ function decideAoiPersonalSourceConnectorAuthority(
       `authority-decision:${authorityDecisionId}`,
       ...(contract?.evidenceRefs ?? []),
       ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...snapshotEvidenceRefs,
       ...requiredConsent.receiptRefs,
     ],
     24,
@@ -1935,6 +1977,7 @@ export function decideAoiConnectorAuthority(
       mutationConsentReceiptRefs: input.mutationConsentReceiptRefs,
       additionalBlockedReasons: input.additionalBlockedReasons,
       evidenceRefs: input.evidenceRefs,
+      operatorSnapshot: input.operatorSnapshot,
       apps: input.apps,
     }),
   );

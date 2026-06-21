@@ -7,6 +7,7 @@ import {
   getAoiAppCapabilityManifest,
   summarizeAoiAppCapabilityAuthority,
 } from '../aoiCapabilityRegistry';
+import { buildAoiUnifiedOperatorSnapshot } from '../aoiUnifiedOperatorModel';
 import type { AoiSourceFreshnessContract } from '../aoiSourceFreshnessContract';
 import type { AppDef } from '../appRegistry';
 
@@ -190,6 +191,47 @@ describe('aoiCapabilityBroker', () => {
       expect.arrayContaining(['approval_required', 'rollback_evidence_required']),
     );
     expect(execute.allowedBand).toBe('request_approval');
+  });
+
+  it('includes unified operator snapshot context without upgrading mutation authority', () => {
+    const gmail = makeSourceContract({
+      sourceId: 'gmail-metadata',
+      sourceKind: 'gmail_metadata',
+      sourceLabel: 'Gmail metadata for honey@example.com',
+      consentState: 'disconnected',
+      freshnessState: 'disconnected',
+      signalFreshness: 'unknown',
+      cannotKnow: [
+        {
+          version: 1,
+          code: 'gmail_disconnected',
+          statement: 'Aoi cannot know current Gmail metadata because Gmail is disconnected.',
+          evidenceRefs: ['gmail:disconnected'],
+        },
+      ],
+    });
+    const operatorSnapshot = buildAoiUnifiedOperatorSnapshot({
+      sessionPath: 'aoi/default',
+      now: 1_800_000_000_000,
+      sourceFreshnessContracts: [gmail],
+    });
+
+    const decision = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedOperation: 'apply Kira model settings',
+      requestedBand: 'execute',
+      apps: [KIRA_APP],
+      operatorSnapshot,
+    });
+
+    expect(decision.evidenceRefs).toContain(`operator-snapshot:${operatorSnapshot.id}`);
+    expect(decision.cannotKnow.join(' ')).toContain('Gmail');
+    expect(decision.canExecute).toBe(false);
+    expect(decision.allowedBand).toBe('request_approval');
+    expect(decision.mutationCount).toBe(0);
+    expect(decision.unauthorizedMutationCount).toBe(0);
+    expect(JSON.stringify(decision)).not.toContain('honey@example.com');
   });
 
   it('turns disconnected personal sources into blind spots with cannot-know audit evidence', () => {

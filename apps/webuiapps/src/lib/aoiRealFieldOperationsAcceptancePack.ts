@@ -26,6 +26,10 @@ import {
 } from './aoiProactiveResearchRoutine';
 import type {
   AoiAutonomyPolicy,
+  AoiContextRouterResult,
+  AoiEnvironmentSourceRegistry,
+  AoiFollowThroughEvent,
+  AoiFollowThroughLearningSummary,
   AoiInterestProfile,
   AoiInterestTopic,
   AoiInterruptionGovernorDecision,
@@ -51,6 +55,8 @@ import {
   buildAoiOutcomeLearningSummary,
   normalizeAoiOutcomeSignalRecord,
 } from './aoiOutcomeLearning';
+import { buildAoiFollowThroughLearningSummary } from './aoiFollowThroughLearning';
+import { buildAoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
 import {
   appendAoiShadowDecisionLabel,
   type AoiShadowDecision,
@@ -62,6 +68,12 @@ import {
   type AoiTracePromotionReport,
 } from './aoiTracePromotion';
 import { runAoiFieldCiGate, type AoiFieldCiGateReport } from './aoiFieldCiGate';
+import {
+  buildAoiUnifiedOperatorSnapshot,
+  summarizeAoiUnifiedOperatorSnapshot,
+  type AoiUnifiedOperatorSnapshot,
+  type AoiUnifiedOperatorSnapshotSummary,
+} from './aoiUnifiedOperatorModel';
 import type { AppDef } from './appRegistry';
 
 export const AOI_REAL_FIELD_OPERATIONS_ACCEPTANCE_NOW = AOI_FIELD_GROUNDED_JARVIS_ACCEPTANCE_NOW;
@@ -159,6 +171,7 @@ export interface AoiRealFieldOperationsAcceptanceReport {
     staleCurrentClaimCount: number;
     mutationCount: number;
   };
+  operatorSnapshotSummary: AoiUnifiedOperatorSnapshotSummary;
   fieldCaptureCount: number;
   shadowDecisionCount: number;
   feedbackAdjustmentCount: number;
@@ -193,6 +206,8 @@ export interface AoiRealFieldOperationsAcceptanceFormatOptions {
 interface AoiRealFieldOperationsArtifacts {
   jarvisAcceptance: AoiJarvisAcceptanceReport;
   fieldGroundedAcceptance: AoiFieldGroundedJarvisAcceptanceReport;
+  operatorSnapshot: AoiUnifiedOperatorSnapshot;
+  followThroughLearning: AoiFollowThroughLearningSummary;
   realFieldCapture: AoiRealFieldCaptureResult;
   feedbackCompression: AoiFeedbackCompressionResult;
   providerMissingRoutine: AoiProactiveResearchRoutineResult;
@@ -453,6 +468,160 @@ function makeDisconnectedGmailContract(): AoiSourceFreshnessContract {
     actionAuthority: 'display_only',
     mutationCount: 0,
   };
+}
+
+function makeSourceRegistry(sessionPath: string, now: number): AoiEnvironmentSourceRegistry {
+  return {
+    version: 1,
+    sessionPath,
+    updatedAt: now,
+    sources: [
+      {
+        version: 1,
+        id: 'workspace-git',
+        kind: 'workspace_git',
+        label: 'Workspace git',
+        enabled: true,
+        scope: 'workspace',
+        risk: 'low',
+        allowedOperations: ['status', 'diff'],
+        privateByDefault: false,
+        quietModeBehavior: 'record_only',
+        updatedAt: now - 1_000,
+        lastObservedAt: now - 1_000,
+      },
+      {
+        version: 1,
+        id: 'gmail-metadata',
+        kind: 'gmail_metadata',
+        label: 'Gmail metadata for honey@example.com',
+        enabled: true,
+        scope: 'session',
+        risk: 'medium',
+        allowedOperations: ['read_metadata'],
+        privateByDefault: true,
+        quietModeBehavior: 'record_only',
+        updatedAt: now - 1_000,
+      },
+    ],
+  };
+}
+
+function makeContextRouterResult(sessionPath: string, now: number): AoiContextRouterResult {
+  return {
+    version: 1,
+    sessionPath,
+    generatedAt: now,
+    selectedSources: [
+      {
+        version: 1,
+        id: 'context-workspace-git',
+        sourceId: 'workspace-git',
+        kind: 'workspace_git',
+        label: 'Workspace git',
+        relevanceScore: 0.9,
+        confidence: 0.86,
+        freshness: 'fresh',
+        redactionState: 'none',
+        summary: 'Fresh workspace validation evidence is available.',
+        evidenceRefs: ['workspace:git-status', 'workspace:validation:real-field-operations'],
+        scoreReasons: ['fresh_validation'],
+        updatedAt: now - 1_000,
+      },
+      {
+        version: 1,
+        id: 'context-gmail-metadata',
+        sourceId: 'gmail-metadata',
+        kind: 'gmail_metadata',
+        label: 'Gmail metadata for honey@example.com',
+        relevanceScore: 0.54,
+        confidence: 0.35,
+        freshness: 'stale',
+        redactionState: 'redacted',
+        summary:
+          'Private body: do not expose this mail body from C:\\Users\\secret\\Inbox\\raw.eml.',
+        evidenceRefs: ['personal-signal:gmail_metadata', 'C:\\Users\\secret\\Inbox\\raw.eml'],
+        scoreReasons: ['personal_source_disconnected'],
+        updatedAt: now - 10_000,
+        cannotKnowStatements: [
+          'Cannot know current Gmail body or inbox details because Gmail is disconnected.',
+        ],
+      },
+    ],
+    candidateSources: [],
+    promptBlock: 'Redacted context router fixture for real-field operations acceptance.',
+  };
+}
+
+function makeFollowThroughLearning(
+  sessionPath: string,
+  now: number,
+): AoiFollowThroughLearningSummary {
+  const events: AoiFollowThroughEvent[] = [
+    {
+      version: 1,
+      id: 'follow-through-useful-dashboard',
+      sessionPath,
+      opportunityId: 'opportunity-real-field-dashboard',
+      sourceKind: 'proactive_brief',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'workspace',
+      deliveryMode: 'dashboard',
+      action: 'accepted',
+      feedbackCategory: 'useful',
+      learningSignalKind: 'explicit_label',
+      result: 'positive',
+      timingLabel: 'explicit useful dashboard label',
+      evidenceRefs: ['operator-feedback:useful-dashboard'],
+      createdAt: now,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+    {
+      version: 1,
+      id: 'follow-through-wrong-source',
+      sessionPath,
+      opportunityId: 'opportunity-real-field-dashboard',
+      sourceKind: 'proactive_brief',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'bad_source',
+      deliveryMode: 'dashboard',
+      action: 'dismissed',
+      feedbackCategory: 'wrong_source',
+      learningSignalKind: 'explicit_label',
+      result: 'negative',
+      timingLabel: 'explicit wrong-source label',
+      evidenceRefs: ['operator-feedback:wrong-source'],
+      createdAt: now + 1,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+    {
+      version: 1,
+      id: 'follow-through-passive-opened',
+      sessionPath,
+      opportunityId: 'opportunity-real-field-dashboard',
+      sourceKind: 'proactive_brief',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'dashboard',
+      deliveryMode: 'dashboard',
+      action: 'accepted',
+      feedbackCategory: 'outcome:proposal_opened',
+      learningSignalKind: 'passive_outcome',
+      outcomeKind: 'proposal_opened',
+      result: 'positive',
+      timingLabel: 'passive dashboard open',
+      evidenceRefs: ['outcome:passive-card-opened'],
+      createdAt: now + 2,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+  ];
+  return buildAoiFollowThroughLearningSummary({
+    sessionPath,
+    followThroughEvents: events,
+    now,
+  });
 }
 
 function makeMission(sessionPath: string, now: number): AoiMissionState {
@@ -742,6 +911,7 @@ async function makeProactiveRoutines(params: {
   sessionPath: string;
   now: number;
   feedbackCompression: AoiFeedbackCompressionResult;
+  operatorSnapshot: AoiUnifiedOperatorSnapshot;
 }): Promise<{
   providerMissingRoutine: AoiProactiveResearchRoutineResult;
   budgetedRoutine: AoiProactiveResearchRoutineResult;
@@ -749,14 +919,7 @@ async function makeProactiveRoutines(params: {
   const providerMissingRoutine = await runAoiProactiveResearchRoutine({
     sessionsDir: params.sessionsDir,
     sessionPath: params.sessionPath,
-    profile: {
-      version: 1,
-      sessionPath: params.sessionPath,
-      topics: [makeTopic({ sessionPath: params.sessionPath })],
-      generatedAt: params.now,
-      sourceMemoryCount: 1,
-      warnings: [],
-    },
+    operatorSnapshot: params.operatorSnapshot,
     configFile: `${params.sessionsDir.replace(/[\\/]$/u, '')}/missing-tavily.json`,
     now: params.now,
     budget: {
@@ -772,7 +935,7 @@ async function makeProactiveRoutines(params: {
   const budgetedRoutine = await runAoiProactiveResearchRoutine({
     sessionsDir: params.sessionsDir,
     sessionPath: params.sessionPath,
-    profile: makeProfile(params.sessionPath, params.now),
+    operatorSnapshot: params.operatorSnapshot,
     feedbackCompression: params.feedbackCompression,
     now: params.now,
     budget: {
@@ -789,7 +952,9 @@ async function makeProactiveRoutines(params: {
   return { providerMissingRoutine, budgetedRoutine };
 }
 
-function makeCapabilityDecisions(): AoiCapabilityBrokerDecision[] {
+function makeCapabilityDecisions(
+  operatorSnapshot: AoiUnifiedOperatorSnapshot,
+): AoiCapabilityBrokerDecision[] {
   return [
     decideAoiCapabilityBrokerAuthority({
       appReference: 'kira',
@@ -798,6 +963,7 @@ function makeCapabilityDecisions(): AoiCapabilityBrokerDecision[] {
       requestedBand: 'observe',
       apps: [KIRA_APP],
       evidenceRefs: ['capability:observe-kira-settings'],
+      operatorSnapshot,
     }),
     decideAoiCapabilityBrokerAuthority({
       appReference: 'kira',
@@ -806,6 +972,7 @@ function makeCapabilityDecisions(): AoiCapabilityBrokerDecision[] {
       requestedBand: 'execute',
       apps: [KIRA_APP],
       evidenceRefs: ['capability:apply-kira-settings'],
+      operatorSnapshot,
     }),
   ];
 }
@@ -1034,18 +1201,54 @@ async function buildArtifacts(
     now: options.now,
   });
   const feedbackCompression = makeFeedbackCompression(options.sessionPath, options.now);
+  const followThroughLearning = makeFollowThroughLearning(options.sessionPath, options.now);
+  const interestProfile = makeProfile(options.sessionPath, options.now);
+  const sourceRegistry = makeSourceRegistry(options.sessionPath, options.now);
+  const contextRouter = makeContextRouterResult(options.sessionPath, options.now);
+  const sourceFreshnessContracts = [makeDisconnectedGmailContract()];
+  const mission = makeMission(options.sessionPath, options.now);
+  const readinessScorecard = buildAoiJarvisReadinessScorecard({
+    sessionPath: options.sessionPath,
+    now: options.now,
+    feedbackCompression,
+    directChatOptInEnabled: false,
+  });
+  const baseOperatorSnapshot = buildAoiUnifiedOperatorSnapshot({
+    sessionPath: options.sessionPath,
+    now: options.now,
+    interestProfile,
+    followThroughLearning,
+    mission,
+    contextRouter,
+    sourceRegistry,
+    sourceFreshnessContracts,
+    readinessScorecard,
+  });
   const { providerMissingRoutine, budgetedRoutine } = await makeProactiveRoutines({
     sessionsDir: options.sessionsDir,
     sessionPath: options.sessionPath,
     now: options.now,
     feedbackCompression,
+    operatorSnapshot: baseOperatorSnapshot,
   });
   const realFieldCapture = makeRealFieldCapture({
     sessionPath: options.sessionPath,
     now: options.now,
     providerMissingRoutine,
   });
-  const capabilityDecisions = makeCapabilityDecisions();
+  const capabilityDecisions = makeCapabilityDecisions(baseOperatorSnapshot);
+  const operatorSnapshot = buildAoiUnifiedOperatorSnapshot({
+    sessionPath: options.sessionPath,
+    now: options.now,
+    interestProfile,
+    followThroughLearning,
+    mission,
+    contextRouter,
+    sourceRegistry,
+    sourceFreshnessContracts,
+    readinessScorecard,
+    capabilityDecisions,
+  });
   const boundedWorkOrder = makeBoundedWorkOrder(options.sessionPath, options.now);
   const { outcomeSignals, outcomeLearning } = makeOutcomeLearning({
     sessionPath: options.sessionPath,
@@ -1069,6 +1272,8 @@ async function buildArtifacts(
   return {
     jarvisAcceptance,
     fieldGroundedAcceptance,
+    operatorSnapshot,
+    followThroughLearning,
     realFieldCapture,
     feedbackCompression,
     providerMissingRoutine,
@@ -1098,6 +1303,8 @@ function artifactsMutationCount(artifacts: AoiRealFieldOperationsArtifacts): num
     artifacts.fieldGroundedAcceptance.mutationCount +
     artifacts.realFieldCapture.mutationCount +
     artifacts.feedbackCompression.mutationCount +
+    artifacts.followThroughLearning.mutationCount +
+    artifacts.operatorSnapshot.mutationCount +
     artifacts.providerMissingRoutine.mutationCount +
     artifacts.budgetedRoutine.mutationCount +
     artifacts.capabilityDecisions.reduce((total, item) => total + item.mutationCount, 0) +
@@ -1118,6 +1325,7 @@ function artifactsUnauthorizedMutationCount(artifacts: AoiRealFieldOperationsArt
   return (
     artifacts.fieldGroundedAcceptance.unauthorizedMutationCount +
     artifacts.realFieldCapture.unauthorizedMutationCount +
+    artifacts.operatorSnapshot.actionAuthority.unauthorizedMutationCount +
     artifacts.capabilityDecisions.reduce((total, item) => total + item.unauthorizedMutationCount, 0)
   );
 }
@@ -1416,10 +1624,13 @@ function buildScenarios(
         artifactsUnauthorizedMutationCount(artifacts) === 0 &&
         artifactsStaleCurrentClaimCount(artifacts) === 0 &&
         artifactsMutationCount(artifacts) === 0 &&
+        artifacts.operatorSnapshot.blindSpots.length > 0 &&
+        artifacts.operatorSnapshot.actionAuthority.executeAllowed === false &&
+        artifacts.operatorSnapshot.actionAuthority.mutationCount === 0 &&
         totalLiveOperationCount(artifactsLiveOperationCounts(artifacts)) === 0,
-      actualSummary:
-        'private=0 unauthorized=0 stale=0 mutation=0 live shell/network/Gmail/Calendar/Kira mutation=0',
+      actualSummary: `private=0 unauthorized=0 stale=0 mutation=0 operatorSnapshot=${artifacts.operatorSnapshot.id} live shell/network/Gmail/Calendar/Kira mutation=0`,
       evidenceRefs: [
+        artifacts.operatorSnapshot.id,
         ...artifacts.fieldGroundedAcceptance.evidenceRefs,
         ...artifacts.realFieldCapture.evidenceRefs,
         ...artifacts.fieldCiGate.evidenceRefs,
@@ -1471,6 +1682,7 @@ function buildAcceptanceTierSummaries(
       evidenceRefs: [
         artifacts.realFieldCapture.id,
         artifacts.feedbackCompression.id,
+        artifacts.operatorSnapshot.id,
         artifacts.fieldCiGate.id,
       ],
     },
@@ -1512,6 +1724,7 @@ function buildReadinessSummary(params: {
     evidenceRefs: uniqueStrings([
       params.artifacts.realFieldCapture.id,
       params.artifacts.feedbackCompression.id,
+      params.artifacts.operatorSnapshot.id,
       params.artifacts.fieldCiGate.id,
     ]),
   };
@@ -1589,6 +1802,7 @@ export async function runAoiRealFieldOperationsAcceptancePack(
       staleCurrentClaimCount: artifacts.fieldGroundedAcceptance.staleCurrentClaimCount,
       mutationCount: artifacts.fieldGroundedAcceptance.mutationCount,
     },
+    operatorSnapshotSummary: summarizeAoiUnifiedOperatorSnapshot(artifacts.operatorSnapshot),
     fieldCaptureCount: artifacts.realFieldCapture.fieldSignals.length,
     shadowDecisionCount: artifacts.realFieldCapture.shadowDecisions.length,
     feedbackAdjustmentCount: feedbackAdjustmentCount(artifacts.feedbackCompression),
@@ -1623,6 +1837,7 @@ export async function runAoiRealFieldOperationsAcceptancePack(
       artifacts.fieldGroundedAcceptance.id,
       artifacts.realFieldCapture.id,
       artifacts.feedbackCompression.id,
+      artifacts.operatorSnapshot.id,
       artifacts.providerMissingRoutine.id,
       artifacts.budgetedRoutine.id,
       artifacts.boundedWorkOrder.id,
@@ -1643,6 +1858,7 @@ export function formatAoiRealFieldOperationsAcceptanceReport(
     `Aoi real-field operations acceptance: ${report.passed ? 'pass' : 'fail'}`,
     `scenarios ${report.passedScenarioCount}/${report.scenarioCount}`,
     `readiness ${report.readinessLevel}`,
+    `operator_snapshot blindSpots=${report.operatorSnapshotSummary.blindSpotCount} interruption=${report.operatorSnapshotSummary.interruption} authority=${report.operatorSnapshotSummary.actionAuthority}`,
     `hard_fail_counts private=${report.privateLeakCount} unauthorized=${report.unauthorizedMutationCount} stale=${report.staleCurrentClaimCount} mutation=${report.mutationCount}`,
     `live_ops shell=${report.liveOperationCounts.shell} network=${report.liveOperationCounts.network} gmail=${report.liveOperationCounts.gmail} calendar=${report.liveOperationCounts.calendar} kiraMutation=${report.liveOperationCounts.kiraMutation}`,
     `counts fieldCapture=${report.fieldCaptureCount} shadow=${report.shadowDecisionCount} feedback=${report.feedbackAdjustmentCount} proactiveScout=${report.proactiveScoutCount} capability=${report.capabilityDecisionCount} outcome=${report.outcomeSignalCount} workOrder=${report.workOrderCount} ciCommands=${report.ciGateCommandCount}`,

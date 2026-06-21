@@ -17,6 +17,7 @@ import {
   buildAoiProactiveResearchRoutineProfile,
   runAoiProactiveResearchRoutine,
 } from '../aoiProactiveResearchRoutine';
+import { buildAoiUnifiedOperatorSnapshot } from '../aoiUnifiedOperatorModel';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -257,6 +258,42 @@ describe('Aoi proactive research routine', () => {
     });
     expect(result.fieldEvents[0]?.category).toBe('deliberation_blocked');
     expect(result.staleCurrentClaimCount).toBe(0);
+  });
+
+  it('reads planned interests and evidence from a unified operator snapshot when profile is omitted', async () => {
+    const root = makeTempRoot();
+    const topic = makeTopic({ updatedAt: NOW - 123_456 });
+    const search = makeSearch();
+    const operatorSnapshot = buildAoiUnifiedOperatorSnapshot({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      interestProfile: makeProfile([topic]),
+    });
+
+    const result = await runAoiProactiveResearchRoutine({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      operatorSnapshot,
+      now: NOW,
+      budget: {
+        allowNetwork: true,
+        maxTopicsPerWakeup: 1,
+        maxNetworkCallsPerWakeup: 1,
+      },
+      dependencies: {
+        search,
+        loadPolicy: () => makePolicy(),
+      },
+    });
+
+    expect(search).toHaveBeenCalledTimes(1);
+    expect(result.selectedTopics[0]).toMatchObject({
+      topicId: 'topic-reverse-engineering',
+      topicLabel: 'Reverse Engineering',
+    });
+    expect(result.operatorSnapshotSummary?.id).toBe(operatorSnapshot.id);
+    expect(result.evidenceRefs).toContain(`operator-snapshot:${operatorSnapshot.id}`);
+    expect(result.gateSummary.evidenceRefs).toContain(`operator-snapshot:${operatorSnapshot.id}`);
   });
 
   it('does not call search when explicit network scout budget is exhausted', async () => {

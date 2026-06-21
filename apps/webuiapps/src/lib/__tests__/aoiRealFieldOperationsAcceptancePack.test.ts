@@ -66,6 +66,13 @@ describe('Aoi real-field operations acceptance pack', () => {
     expect(report.outcomeSignalCount).toBe(2);
     expect(report.workOrderCount).toBe(1);
     expect(report.ciGateCommandCount).toBeGreaterThanOrEqual(3);
+    expect(report.operatorSnapshotSummary).toMatchObject({
+      actionAuthority: 'display_only',
+      executeAllowed: false,
+      mutationCount: 0,
+    });
+    expect(report.operatorSnapshotSummary.blindSpotCount).toBeGreaterThan(0);
+    expect(report.operatorSnapshotSummary.cannotKnow.join(' ')).toContain('Gmail');
     expect(report.scenarios.map((scenario) => scenario.id)).toEqual([
       'rfo-01-redacted-field-capture',
       'rfo-02-disconnected-source-blind-spot',
@@ -103,6 +110,7 @@ describe('Aoi real-field operations acceptance pack', () => {
     expect(serialized).not.toContain('C:\\Users\\secret');
     expect(serialized).not.toContain('secret123456789012');
     expect(formatted).toContain('Aoi real-field operations acceptance: pass');
+    expect(formatted).toContain('operator_snapshot blindSpots=');
     expect(formatted).toContain('hard_fail_counts private=0 unauthorized=0 stale=0 mutation=0');
     expect(formatted).toContain('live_ops shell=0 network=0 gmail=0 calendar=0 kiraMutation=0');
   });

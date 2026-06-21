@@ -17,6 +17,12 @@ import {
   type AoiJarvisReadinessScorecard,
 } from './aoiJarvisReadinessScorecard';
 import {
+  buildAoiInterestProfileFromUnifiedOperatorSnapshot,
+  summarizeAoiUnifiedOperatorSnapshot,
+  type AoiUnifiedOperatorSnapshot,
+  type AoiUnifiedOperatorSnapshotSummary,
+} from './aoiUnifiedOperatorModel';
+import {
   planAoiProactiveBriefTopics,
   type AoiProactiveBriefPlannerBudget,
   type AoiProactiveBriefPlannedTopic,
@@ -95,6 +101,7 @@ export interface AoiProactiveResearchRoutineResult {
   cannotKnow: string[];
   staleCurrentClaimCount: number;
   gateSummary: AoiProactiveResearchRoutineGateSummary;
+  operatorSnapshotSummary?: AoiUnifiedOperatorSnapshotSummary;
   warnings: string[];
   evidenceRefs: string[];
   actionAuthority: 'display_only';
@@ -108,6 +115,7 @@ export interface RunAoiProactiveResearchRoutineInput {
   now?: number;
   topicId?: string;
   profile?: AoiInterestProfile | null;
+  operatorSnapshot?: AoiUnifiedOperatorSnapshot | null;
   feedbackCompression?: AoiFeedbackCompressionResult | null;
   readinessScorecard?: AoiJarvisReadinessScorecard | null;
   budget?: AoiProactiveBriefScoutBudget;
@@ -449,8 +457,12 @@ export async function runAoiProactiveResearchRoutine(
   const now = input.now ?? DEFAULT_PROACTIVE_RESEARCH_NOW;
   const loadPolicy = input.dependencies?.loadPolicy ?? loadAoiAutonomyPolicy;
   const policy: AoiAutonomyPolicy = loadPolicy(input.sessionsDir, sessionPath);
+  const operatorSnapshotSummary = input.operatorSnapshot
+    ? summarizeAoiUnifiedOperatorSnapshot(input.operatorSnapshot)
+    : undefined;
   const baseProfile =
     input.profile ??
+    buildAoiInterestProfileFromUnifiedOperatorSnapshot(input.operatorSnapshot ?? null) ??
     (input.dependencies?.loadInterestProfile ?? loadAoiInterestProfile)(
       input.sessionsDir,
       sessionPath,
@@ -561,6 +573,10 @@ export async function runAoiProactiveResearchRoutine(
     skippedTopicFromHonesty(skip, sourceHonestyRecords),
   );
   const cannotKnow = uniqueStrings(sourceHonestyRecords.flatMap((record) => record.cannotKnow));
+  const combinedCannotKnow = uniqueStrings([
+    ...cannotKnow,
+    ...(operatorSnapshotSummary?.cannotKnow ?? []),
+  ]);
   const currentClaimAllowed = sourceHonestyRecords.some((record) => record.currentClaimAllowed);
   const currentClaimBlockedReasons = uniqueStrings(
     sourceHonestyRecords.flatMap((record) => record.currentClaimBlockedReasons),
@@ -577,6 +593,9 @@ export async function runAoiProactiveResearchRoutine(
   const staleClaims = staleCurrentClaimCount(sourceHonestyRecords, fieldEvents);
   const provider = providerGateFromWarnings(warnings, input.dependencies);
   const evidenceRefs = uniqueStrings([
+    ...(operatorSnapshotSummary
+      ? [`operator-snapshot:${operatorSnapshotSummary.id}`, ...operatorSnapshotSummary.evidenceRefs]
+      : []),
     `jarvis-readiness:${readiness.id}`,
     ...selectedTopics.flatMap((topic) => topic.evidenceRefs),
     ...sourceHonestyRecords.flatMap((record) => record.evidenceRefs),
@@ -593,7 +612,16 @@ export async function runAoiProactiveResearchRoutine(
     directChatEligible,
     directChatBlockedReasons,
     scoutExecuted,
-    evidenceRefs: uniqueStrings([`jarvis-readiness:${readiness.id}`, ...readiness.evidenceRefs]),
+    evidenceRefs: uniqueStrings([
+      ...(operatorSnapshotSummary
+        ? [
+            `operator-snapshot:${operatorSnapshotSummary.id}`,
+            ...operatorSnapshotSummary.evidenceRefs,
+          ]
+        : []),
+      `jarvis-readiness:${readiness.id}`,
+      ...readiness.evidenceRefs,
+    ]),
   };
   return {
     version: 1,
@@ -620,9 +648,10 @@ export async function runAoiProactiveResearchRoutine(
     sourceHonestyRecords,
     fieldEvents,
     freshnessRecords,
-    cannotKnow,
+    cannotKnow: combinedCannotKnow,
     staleCurrentClaimCount: staleClaims,
     gateSummary,
+    ...(operatorSnapshotSummary ? { operatorSnapshotSummary } : {}),
     warnings,
     evidenceRefs,
     actionAuthority: 'display_only',
