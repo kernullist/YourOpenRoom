@@ -72,6 +72,7 @@ import { buildAoiMissionControlState } from '../aoiMissionControlRuntime';
 import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
+import { buildAoiRealFieldCapture } from '../aoiRealFieldCapture';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -3374,6 +3375,87 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.blindSpots.blindSpotLabels.join(' ')).toContain(
       'not evidence of an empty inbox',
     );
+  });
+
+  it('surfaces real field capture evidence as a display-only acceptance dashboard panel', () => {
+    const realFieldCapture = buildAoiRealFieldCapture({
+      sessionPath: 'aoi/default',
+      now: 6500,
+      workspaceSnapshots: [
+        makeWorkspaceSnapshot({
+          collectedAt: 6400,
+          freshness: 'fresh',
+          validation: {
+            version: 1,
+            command: 'pnpm exec vitest run src/lib/__tests__/aoiRealFieldCapture.test.ts',
+            result: 'passed',
+            completedAt: 6400,
+            touchedFileScopes: ['apps/webuiapps/src/lib'],
+            freshness: 'fresh',
+            evidenceRefs: ['workspace:real-field-validation'],
+          },
+          evidenceRefs: ['workspace:real-field-capture'],
+        }),
+      ],
+      researchSignals: [
+        {
+          sessionPath: 'aoi/default',
+          runId: 'research-stale-ui-panel',
+          title: 'Stale RE trend research',
+          summary: 'Stale research cannot support a current trend claim.',
+          freshness: 'stale',
+          completedAt: 1000,
+          evidenceRefs: ['research:stale-ui-panel'],
+          cannotKnow: ['Current state cannot be claimed from stale research.'],
+          risk: 'medium',
+        },
+      ],
+      personalMetadataSources: [
+        {
+          sessionPath: 'aoi/default',
+          sourceId: 'gmail-metadata',
+          label: 'Gmail metadata for private-roadmap@example.com',
+          kind: 'gmail_metadata',
+          consentState: 'disconnected',
+          freshness: 'unknown',
+          metadataSummary: 'Gmail connected=false; unread=unknown.',
+          bodyPreview: 'body: private mail body should stay hidden.',
+          observedAt: 6300,
+          evidenceRefs: ['personal:gmail-metadata'],
+          risk: 'medium',
+        },
+      ],
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      realFieldCapture,
+      now: 7000,
+    });
+    const serialized = JSON.stringify(dashboard.realFieldCapture);
+
+    expect(dashboard.realFieldCapture.visible).toBe(true);
+    expect(dashboard.realFieldCapture.statusLabel).toContain('signal');
+    expect(dashboard.realFieldCapture.signalLabels.join(' ')).toContain('workspace');
+    expect(dashboard.realFieldCapture.blindSpotLabels.join(' ')).toContain('cannot claim current');
+    expect(dashboard.realFieldCapture.hardFailLabels).toEqual([
+      'private leaks 0',
+      'unauthorized mutations 0',
+      'stale current claims 0',
+    ]);
+    expect(dashboard.realFieldCapture.liveOperationLabels).toEqual([
+      'shell 0',
+      'network 0',
+      'gmail 0',
+      'calendar 0',
+      'kira mutation 0',
+    ]);
+    expect(dashboard.realFieldCapture.evidenceRefs).toContain(
+      `real-field-capture:${realFieldCapture.id}`,
+    );
+    expect(dashboard.evidenceRefs).toContain(`real-field-capture:${realFieldCapture.id}`);
+    expect(dashboard.jarvisReadiness.visible).toBe(true);
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('private mail body');
   });
 
   it('feeds personal source reality checks into dashboard and shadow hooks', () => {

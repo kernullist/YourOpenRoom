@@ -49,6 +49,7 @@ import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCh
 import type { AoiReplayReport } from './aoiOperatorReplay';
 import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
+import type { AoiRealFieldCaptureResult } from './aoiRealFieldCapture';
 import type {
   AoiAutonomyVisibleState,
   AoiAutonomyLevel,
@@ -721,6 +722,18 @@ export interface AoiJarvisReadinessPanel {
   evidenceRefs: string[];
 }
 
+export interface AoiRealFieldCapturePanel {
+  visible: boolean;
+  statusLabel: string;
+  signalLabels: string[];
+  blindSpotLabels: string[];
+  whyQuietLabels: string[];
+  sourceHonestyLabels: string[];
+  hardFailLabels: string[];
+  liveOperationLabels: string[];
+  evidenceRefs: string[];
+}
+
 export type AoiJarvisAutonomyGovernorPanel = AoiJarvisAutonomyGovernorPanelSummary;
 
 export interface AoiOperatorFeedbackInboxPanel {
@@ -782,6 +795,7 @@ export interface AoiOperatorAcceptanceDashboard {
   pendingApproval: AoiPendingApprovalPanel;
   replayHealth: AoiReplayHealthPanel;
   jarvisReadiness: AoiJarvisReadinessPanel;
+  realFieldCapture: AoiRealFieldCapturePanel;
   jarvisAutonomyGovernor: AoiJarvisAutonomyGovernorPanel;
   feedbackInbox: AoiOperatorFeedbackInboxPanel;
   evidenceRefs: string[];
@@ -812,6 +826,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   fieldGroundedAcceptanceReport?: AoiFieldGroundedJarvisAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
+  realFieldCapture?: AoiRealFieldCaptureResult | null;
   jarvisAutonomyGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
   shadowReport?: AoiShadowDecisionReport | null;
@@ -5200,6 +5215,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.builtInReplayReports?.length ||
     input.boundedWorkOrders?.length ||
     input.sourceFreshnessContracts?.length ||
+    input.realFieldCapture ||
     input.promotedFixtureCandidates?.length,
   );
 }
@@ -5300,6 +5316,51 @@ function buildAoiJarvisReadinessPanel(
       `jarvis-readiness:${scorecard.id}`,
       ...scorecard.evidenceRefs,
       ...scorecard.blockerRefs,
+    ]),
+  };
+}
+
+function buildAoiRealFieldCapturePanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiRealFieldCapturePanel {
+  const capture = input.realFieldCapture;
+  if (!capture) {
+    return {
+      visible: false,
+      statusLabel: 'No real field capture report',
+      signalLabels: [],
+      blindSpotLabels: [],
+      whyQuietLabels: [],
+      sourceHonestyLabels: [],
+      hardFailLabels: [],
+      liveOperationLabels: [],
+      evidenceRefs: [],
+    };
+  }
+  const liveOperationLabels = uniqueDashboardLabels(
+    [
+      `shell ${capture.liveOperationCounts.shell}`,
+      `network ${capture.liveOperationCounts.network}`,
+      `gmail ${capture.liveOperationCounts.gmail}`,
+      `calendar ${capture.liveOperationCounts.calendar}`,
+      `kira mutation ${capture.liveOperationCounts.kiraMutation}`,
+    ],
+    5,
+  );
+
+  return {
+    visible: true,
+    statusLabel: sanitizeAoiAcceptanceDashboardText(capture.summary.statusLabel, 180),
+    signalLabels: uniqueDashboardLabels(capture.summary.signalLabels, 8),
+    blindSpotLabels: uniqueDashboardLabels(capture.summary.blindSpotLabels, 8),
+    whyQuietLabels: uniqueDashboardLabels(capture.summary.whyQuietLabels, 8),
+    sourceHonestyLabels: uniqueDashboardLabels(capture.summary.sourceHonestyLabels, 8),
+    hardFailLabels: uniqueDashboardLabels(capture.summary.hardFailLabels, 6),
+    liveOperationLabels,
+    evidenceRefs: dashboardRefs([
+      `real-field-capture:${capture.id}`,
+      ...capture.evidenceRefs,
+      ...capture.summary.evidenceRefs,
     ]),
   };
 }
@@ -5513,6 +5574,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const pendingApproval = buildAoiPendingApprovalPanel(dashboardInput);
   const replayHealth = buildAoiReplayHealthPanel(input);
   const jarvisReadiness = buildAoiJarvisReadinessPanel(dashboardInput);
+  const realFieldCapture = buildAoiRealFieldCapturePanel(input);
   const jarvisReadinessScorecard =
     input.jarvisReadinessScorecard ??
     buildAoiJarvisReadinessScorecard({
@@ -5547,6 +5609,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...pendingApproval.evidenceRefs,
     ...replayHealth.evidenceRefs,
     ...jarvisReadiness.evidenceRefs,
+    ...realFieldCapture.evidenceRefs,
     ...jarvisAutonomyGovernor.evidenceRefs,
     ...feedbackInbox.evidenceRefs,
   ]);
@@ -5566,6 +5629,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     pendingApproval,
     replayHealth,
     jarvisReadiness,
+    realFieldCapture,
     jarvisAutonomyGovernor,
     feedbackInbox,
     evidenceRefs,
