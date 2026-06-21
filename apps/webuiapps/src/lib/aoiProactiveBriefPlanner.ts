@@ -41,6 +41,7 @@ export type AoiProactiveBriefSkipReason =
   | 'network_budget_exhausted'
   | 'policy_disabled'
   | 'tavily_not_configured'
+  | 'readiness_gate_blocked'
   | 'low_evidence'
   | 'scout_failed';
 

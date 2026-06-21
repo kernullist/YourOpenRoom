@@ -23,7 +23,11 @@ import {
   type AoiProactiveBriefSearchAdapter,
   type AoiProactiveBriefSourceFreshness,
 } from './aoiProactiveBriefResearch';
-import type { AoiAutonomyPolicy, AoiProactiveBriefCandidate } from './aoiAutonomyTypes';
+import type {
+  AoiAutonomyPolicy,
+  AoiInterestProfile,
+  AoiProactiveBriefCandidate,
+} from './aoiAutonomyTypes';
 import {
   appendAoiFieldEvents,
   normalizeAoiFieldEvent,
@@ -50,6 +54,11 @@ export interface AoiProactiveBriefScoutDependencies {
   fetchImpl?: typeof fetch;
   loadTavilyConfig?: (configFile: string) => AoiResearchTavilyConfig | null;
   loadPolicy?: (sessionsDir: string, sessionPath: string) => AoiAutonomyPolicy;
+  loadInterestProfile?: (
+    sessionsDir: string,
+    sessionPath: string,
+    now: number,
+  ) => AoiInterestProfile;
 }
 
 export interface RunAoiProactiveBriefScoutInput {
@@ -61,22 +70,6 @@ export interface RunAoiProactiveBriefScoutInput {
   mode?: 'quick';
   budget?: AoiProactiveBriefScoutBudget;
   dependencies?: AoiProactiveBriefScoutDependencies;
-}
-
-export interface AoiProactiveBriefScoutResult {
-  ok: boolean;
-  sessionPath: string;
-  mode: 'quick';
-  createdCandidates: AoiProactiveBriefCandidate[];
-  skippedTopics: AoiProactiveBriefSkippedTopic[];
-  warnings: string[];
-  sourceFreshness: AoiProactiveBriefSourceFreshness[];
-  sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[];
-  fieldEvents: AoiFieldEvent[];
-  cannotKnow: string[];
-  currentClaimAllowed: boolean;
-  actionAuthority: 'display_only';
-  mutationCount: 0;
 }
 
 export type AoiProactiveBriefScoutSourceHonestyStatus =
@@ -101,6 +94,22 @@ export interface AoiProactiveBriefScoutSourceHonestyRecord {
   actionAuthority: 'display_only';
   mutationCount: 0;
   createdAt: number;
+}
+
+export interface AoiProactiveBriefScoutResult {
+  ok: boolean;
+  sessionPath: string;
+  mode: 'quick';
+  createdCandidates: AoiProactiveBriefCandidate[];
+  skippedTopics: AoiProactiveBriefSkippedTopic[];
+  warnings: string[];
+  sourceFreshness: AoiProactiveBriefSourceFreshness[];
+  sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[];
+  fieldEvents: AoiFieldEvent[];
+  cannotKnow: string[];
+  currentClaimAllowed: boolean;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
 }
 
 export interface AoiProactiveBriefScoutProviderMissingReplay {
@@ -308,6 +317,10 @@ function cannotKnowForSkip(skip: AoiProactiveBriefSkippedTopic): string[] {
     case 'tavily_not_configured':
       return [
         'Aoi cannot claim current public information because no approved current-info provider is configured.',
+      ];
+    case 'readiness_gate_blocked':
+      return [
+        'Aoi cannot scout or claim current public information because readiness does not allow dashboard visibility.',
       ];
     case 'network_disabled':
       return [
@@ -541,6 +554,7 @@ export async function runAoiProactiveBriefScout(
   const sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[] = [];
   const fieldEventInputs: AoiFieldEventInput[] = [];
   const recordedSkipKeys = new Set<string>();
+  const skippedTopics: AoiProactiveBriefSkippedTopic[] = [];
 
   function recordSkip(skip: AoiProactiveBriefSkippedTopic): void {
     const key = `${skip.topicId ?? ''}:${skip.reason}:${skip.detail}`;
@@ -611,7 +625,11 @@ export async function runAoiProactiveBriefScout(
   }
 
   const profile = applyAoiProactiveBriefingTopicControls(
-    loadAoiInterestProfile(input.sessionsDir, sessionPath, now),
+    (input.dependencies?.loadInterestProfile ?? loadAoiInterestProfile)(
+      input.sessionsDir,
+      sessionPath,
+      now,
+    ),
     policy.proactiveBriefing,
   );
   const cooldownState = loadAoiProactiveBriefCooldownState(input.sessionsDir, sessionPath, now);
@@ -624,7 +642,7 @@ export async function runAoiProactiveBriefScout(
     budget,
     topicId: input.topicId,
   });
-  const skippedTopics = [...plan.skippedTopics];
+  skippedTopics.push(...plan.skippedTopics);
   warnings.push(...plan.warnings);
 
   if (!policy.enabled || !policy.proactiveSuggestionsEnabled || !policy.proactiveBriefing.enabled) {
