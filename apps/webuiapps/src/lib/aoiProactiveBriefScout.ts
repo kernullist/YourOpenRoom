@@ -26,6 +26,7 @@ import {
 import type { AoiAutonomyPolicy, AoiProactiveBriefCandidate } from './aoiAutonomyTypes';
 import {
   appendAoiFieldEvents,
+  normalizeAoiFieldEvent,
   type AoiFieldEvent,
   type AoiFieldEventCategory,
   type AoiFieldEventInput,
@@ -100,6 +101,19 @@ export interface AoiProactiveBriefScoutSourceHonestyRecord {
   actionAuthority: 'display_only';
   mutationCount: 0;
   createdAt: number;
+}
+
+export interface AoiProactiveBriefScoutProviderMissingReplay {
+  version: 1;
+  sessionPath: string;
+  skippedTopics: AoiProactiveBriefSkippedTopic[];
+  warnings: string[];
+  sourceHonestyRecords: AoiProactiveBriefScoutSourceHonestyRecord[];
+  fieldEvents: AoiFieldEvent[];
+  cannotKnow: string[];
+  currentClaimAllowed: false;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
 }
 
 function normalizePositiveInteger(
@@ -367,12 +381,24 @@ function fieldCategoryForSkip(
   return 'deliberation_blocked';
 }
 
+function scoutEvidenceFingerprint(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
 function createSkipHonestyRecord(params: {
   sessionPath: string;
   skip: AoiProactiveBriefSkippedTopic;
   now: number;
 }): AoiProactiveBriefScoutSourceHonestyRecord {
   const cannotKnow = cannotKnowForSkip(params.skip);
+  const skipEvidenceRef = params.skip.topicId
+    ? `proactive-brief-scout:skip:${params.skip.reason}:${scoutEvidenceFingerprint(params.skip.topicId)}`
+    : `proactive-brief-scout:skip:${params.skip.reason}`;
   return {
     version: 1,
     sessionPath: params.sessionPath,
@@ -385,7 +411,7 @@ function createSkipHonestyRecord(params: {
     directChatCandidate: false,
     directChatRequiresReadinessGate: true,
     cannotKnow,
-    evidenceRefs: [],
+    evidenceRefs: [skipEvidenceRef],
     actionAuthority: 'display_only',
     mutationCount: 0,
     createdAt: params.now,
@@ -450,6 +476,47 @@ function createFieldEventFromHonestyRecord(
     cannotKnow: record.cannotKnow,
     createdAt: record.createdAt,
     dedupeKey: `proactive-brief-scout:${record.topicId ?? topic}:${record.reason}:${record.createdAt}`,
+  };
+}
+
+export function buildAoiProactiveBriefScoutProviderMissingReplay(params: {
+  sessionPath: string;
+  topicId?: string;
+  topicLabel?: string;
+  now?: number;
+}): AoiProactiveBriefScoutProviderMissingReplay {
+  const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const skip = makeSkip({
+    topicId: params.topicId,
+    topicLabel: params.topicLabel,
+    reason: 'tavily_not_configured',
+    detail: 'Tavily is not configured, so Aoi did not create a current-info brief.',
+  });
+  const record = createSkipHonestyRecord({
+    sessionPath,
+    skip,
+    now,
+  });
+  const eventInput = createFieldEventFromHonestyRecord(record, fieldCategoryForSkip(skip.reason));
+  const fieldEvent = normalizeAoiFieldEvent(eventInput, sessionPath, now);
+  if (!fieldEvent) {
+    throw new Error('Invalid provider-missing scout replay event.');
+  }
+  return {
+    version: 1,
+    sessionPath,
+    skippedTopics: [skip],
+    warnings: ['tavily_not_configured:cannot_refresh_current_info'],
+    sourceHonestyRecords: [record],
+    fieldEvents: [fieldEvent],
+    cannotKnow: record.cannotKnow,
+    currentClaimAllowed: false,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
   };
 }
 

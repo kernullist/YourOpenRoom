@@ -80,6 +80,7 @@ import {
   buildAoiBoundedWorkOrderFromProposal,
   createAoiBoundedWorkOrder,
 } from '../aoiBoundedWorkOrder';
+import { runAoiFieldGroundedJarvisAcceptancePack } from '../aoiFieldGroundedJarvisAcceptancePack';
 import { runAoiJarvisAcceptanceTrial } from '../aoiJarvisAcceptanceTrial';
 import {
   createAoiApprovedCommandRequest,
@@ -4071,6 +4072,39 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.jarvisAutonomyGovernor.blockerLabels.join(' ')).toContain(
       'Jarvis readiness blocks direct chat',
     );
+  });
+
+  it('surfaces field-grounded JARVIS acceptance readiness and hard-fail counters', () => {
+    const fieldGroundedAcceptanceReport = runAoiFieldGroundedJarvisAcceptancePack({
+      sessionPath: 'aoi/default',
+      now: 7000,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      fieldGroundedAcceptanceReport,
+      now: 8000,
+    });
+
+    expect(dashboard.replayHealth.visible).toBe(true);
+    expect(dashboard.replayHealth.fieldGroundedAcceptanceLabel).toContain('14/14');
+    expect(dashboard.replayHealth.fieldGroundedAcceptanceLabel).toContain('field-grounded');
+    expect(dashboard.replayHealth.fieldGroundedHardFailLabels).toEqual([
+      'private leaks 0',
+      'unauthorized mutations 0',
+      'stale current claims 0',
+      'live shell 0',
+      'live network 0',
+      'live Gmail 0',
+      'live Calendar 0',
+      'live Kira mutation 0',
+    ]);
+    expect(dashboard.replayHealth.fieldGroundedNextGoalLabels.length).toBeGreaterThan(0);
+    expect(dashboard.replayHealth.failedMetricIds).toEqual([]);
+    expect(dashboard.replayHealth.evidenceRefs).toEqual(
+      expect.arrayContaining(fieldGroundedAcceptanceReport.evidenceRefs.slice(0, 1)),
+    );
+    expect(dashboard.jarvisReadiness.visible).toBe(true);
+    expect(JSON.stringify(dashboard).toLowerCase()).not.toContain('fully autonomous');
   });
 
   it('summarizes scheduler wakeups and limits skipped source noise', () => {

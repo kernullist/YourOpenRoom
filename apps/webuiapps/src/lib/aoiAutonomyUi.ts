@@ -40,6 +40,7 @@ import {
   scoreAoiFollowThroughLearningForOpportunity,
 } from './aoiFollowThroughLearning';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+import type { AoiFieldGroundedJarvisAcceptanceReport } from './aoiFieldGroundedJarvisAcceptancePack';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
@@ -699,6 +700,9 @@ export interface AoiReplayHealthPanel {
   statusLabel: string;
   builtInReplayLabel: string;
   jarvisAcceptanceLabel: string;
+  fieldGroundedAcceptanceLabel: string;
+  fieldGroundedHardFailLabels: string[];
+  fieldGroundedNextGoalLabels: string[];
   shadowLabel: string;
   failedMetricIds: string[];
   promotedFixtureLabels: string[];
@@ -806,6 +810,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   approvedCommandResults?: AoiApprovedCommandResult[];
   builtInReplayReports?: AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
+  fieldGroundedAcceptanceReport?: AoiFieldGroundedJarvisAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
   jarvisAutonomyGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
@@ -5088,6 +5093,29 @@ function buildAoiReplayHealthPanel(
   const jarvisLabel = jarvis
     ? `${jarvis.passedMetricCount}/${jarvis.metricCount} JARVIS acceptance metrics passed`
     : 'No JARVIS acceptance report';
+  const fieldGrounded = input.fieldGroundedAcceptanceReport;
+  const fieldGroundedLabel = fieldGrounded
+    ? `${fieldGrounded.passedScenarioCount}/${fieldGrounded.scenarioCount} field-grounded scenario(s); ${fieldGrounded.readinessSummary.label}`
+    : 'No field-grounded acceptance report';
+  const fieldGroundedHardFailLabels = uniqueDashboardLabels(
+    fieldGrounded
+      ? [
+          `private leaks ${fieldGrounded.privateLeakCount}`,
+          `unauthorized mutations ${fieldGrounded.unauthorizedMutationCount}`,
+          `stale current claims ${fieldGrounded.staleCurrentClaimCount}`,
+          `live shell ${fieldGrounded.liveOperationCounts.shell}`,
+          `live network ${fieldGrounded.liveOperationCounts.network}`,
+          `live Gmail ${fieldGrounded.liveOperationCounts.gmail}`,
+          `live Calendar ${fieldGrounded.liveOperationCounts.calendar}`,
+          `live Kira mutation ${fieldGrounded.liveOperationCounts.kiraMutation}`,
+        ]
+      : [],
+    8,
+  );
+  const fieldGroundedNextGoalLabels = uniqueDashboardLabels(
+    fieldGrounded?.nextGoalCandidates ?? [],
+    4,
+  );
   const shadow = input.shadowReport;
   const shadowLabel = shadow
     ? `${shadow.metrics.labeledDecisionCount}/${shadow.metrics.totalDecisions} shadow decisions labeled; useful ${shadow.metrics.usefulRate}; wrong source ${shadow.metrics.wrongSourceRate}`
@@ -5098,6 +5126,16 @@ function buildAoiReplayHealthPanel(
         report.metrics.filter((metric) => !metric.passed).map((metric) => metric.id),
       ),
       ...(jarvis?.failedMetrics.map((metric) => metric.id) ?? []),
+      ...(fieldGrounded?.failedMetrics.map((metric) => metric.id) ?? []),
+      ...(fieldGrounded && fieldGrounded.privateLeakCount > 0
+        ? ['field_grounded.private_leak']
+        : []),
+      ...(fieldGrounded && fieldGrounded.unauthorizedMutationCount > 0
+        ? ['field_grounded.unauthorized_mutation']
+        : []),
+      ...(fieldGrounded && fieldGrounded.staleCurrentClaimCount > 0
+        ? ['field_grounded.stale_current_claim']
+        : []),
       ...(shadow
         ? [
             ...(shadow.metrics.unsafeShadowDecisionCount > 0 ? ['shadow.unsafe'] : []),
@@ -5119,18 +5157,27 @@ function buildAoiReplayHealthPanel(
 
   return {
     visible: Boolean(
-      replayReports.length || jarvis || shadow || promotedFixtureLabels.length || failedCount,
+      replayReports.length ||
+      jarvis ||
+      fieldGrounded ||
+      shadow ||
+      promotedFixtureLabels.length ||
+      failedCount,
     ),
     statusLabel:
       failedCount > 0 ? `${failedCount} replay issue(s)` : 'Replay health passing or unavailable',
     builtInReplayLabel: sanitizeAoiAcceptanceDashboardText(builtInReplayLabel, 140),
     jarvisAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(jarvisLabel, 160),
+    fieldGroundedAcceptanceLabel: sanitizeAoiAcceptanceDashboardText(fieldGroundedLabel, 220),
+    fieldGroundedHardFailLabels,
+    fieldGroundedNextGoalLabels,
     shadowLabel: sanitizeAoiAcceptanceDashboardText(shadowLabel, 180),
     failedMetricIds,
     promotedFixtureLabels,
     evidenceRefs: dashboardRefs([
       ...replayReports.flatMap((report) => report.metrics.flatMap((metric) => metric.evidenceRefs)),
       ...(jarvis?.evidenceRefs ?? []),
+      ...(fieldGrounded?.evidenceRefs ?? []),
       ...(shadow?.evidenceRefs ?? []),
       ...(input.promotedFixtureCandidates?.flatMap((candidate) => candidate.evidenceRefs) ?? []),
       ...(realityContext?.evidenceRefs ?? []),
@@ -5145,6 +5192,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.feedbackInbox ||
     input.fieldShadowReport ||
     input.jarvisAcceptanceReport ||
+    input.fieldGroundedAcceptanceReport ||
     input.personalSourceRealityCheck ||
     input.missionControl ||
     input.sourceRegistry ||
