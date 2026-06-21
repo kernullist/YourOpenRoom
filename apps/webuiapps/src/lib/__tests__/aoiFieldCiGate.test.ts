@@ -41,6 +41,7 @@ describe('Aoi Field CI Gate', () => {
       'apps/webuiapps/src/lib/aoiAutonomyPlugin.ts',
       'apps/webuiapps/src/lib/aoiJarvisReadinessScorecard.ts',
       'apps/webuiapps/src/lib/aoiFieldGroundedJarvisAcceptancePack.ts',
+      'apps/webuiapps/src/lib/aoiOperatorFlightRecorder.ts',
     ];
     const report = runAoiFieldCiGate({
       changedFiles,
@@ -55,6 +56,7 @@ describe('Aoi Field CI Gate', () => {
         'client_api',
         'field_feedback_learning',
         'field_grounded_acceptance',
+        'operator_trace',
         'readiness_gate',
       ]),
     );
@@ -67,6 +69,7 @@ describe('Aoi Field CI Gate', () => {
         'src/lib/__tests__/aoiAutonomyClient.test.ts',
         'src/lib/__tests__/aoiAutonomyPlugin.test.ts',
         'src/lib/__tests__/aoiJarvisReadinessScorecard.test.ts',
+        'src/lib/__tests__/aoiOperatorFlightRecorder.test.ts',
       ]),
     );
     expect(report.requiredTestCommands.map((command) => command.id)).toEqual([

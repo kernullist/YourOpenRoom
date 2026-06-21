@@ -124,6 +124,7 @@ const FIELD_GROUNDED_ACCEPTANCE_TEST =
   'src/lib/__tests__/aoiFieldGroundedJarvisAcceptancePack.test.ts';
 const REAL_FIELD_OPERATIONS_ACCEPTANCE_TEST =
   'src/lib/__tests__/aoiRealFieldOperationsAcceptancePack.test.ts';
+const OPERATOR_FLIGHT_RECORDER_TEST = 'src/lib/__tests__/aoiOperatorFlightRecorder.test.ts';
 
 const TESTS_BY_CLASS: Record<AoiFieldCiChangedFileClass, readonly string[]> = {
   autonomy_core: [
@@ -148,7 +149,11 @@ const TESTS_BY_CLASS: Record<AoiFieldCiChangedFileClass, readonly string[]> = {
   ],
   local_docs_only: [],
   non_autonomy: [],
-  operator_trace: [FIELD_GROUNDED_ACCEPTANCE_TEST, 'src/lib/__tests__/aoiRealFieldCapture.test.ts'],
+  operator_trace: [
+    FIELD_GROUNDED_ACCEPTANCE_TEST,
+    OPERATOR_FLIGHT_RECORDER_TEST,
+    'src/lib/__tests__/aoiRealFieldCapture.test.ts',
+  ],
   package_script: [FIELD_CI_SELF_TEST],
   proactive_autonomy: [
     'src/lib/__tests__/aoiProactiveBriefDelivery.test.ts',
@@ -271,7 +276,14 @@ export function classifyAoiFieldCiChangedFile(path: string): AoiFieldCiChangedFi
       addClass(classes, 'readiness_gate');
     }
 
-    if (hasAoiStem(lowerName, ['aoiMissionMemory', 'aoiOperatorTimeline', 'aoiContextRouter'])) {
+    if (
+      hasAoiStem(lowerName, [
+        'aoiMissionMemory',
+        'aoiOperatorFlightRecorder',
+        'aoiOperatorTimeline',
+        'aoiContextRouter',
+      ])
+    ) {
       addClass(classes, 'operator_trace');
     }
 

@@ -99,6 +99,42 @@ function makeEvaluation(): AoiAutonomyEvaluationResult {
   };
 }
 
+function makeFlightRecorderPayload() {
+  return {
+    ok: true,
+    sessionPath: 'aoi/default',
+    records: [],
+    replayDrafts: [],
+    summary: {
+      version: 1,
+      sessionPath: 'aoi/default',
+      generatedAt: 1000,
+      totalRecordCount: 0,
+      laneCounts: {
+        hidden: 0,
+        dashboard: 0,
+        digest: 0,
+        direct_chat: 0,
+        approval_request: 0,
+        blocked: 0,
+      },
+      hardFailCounters: {
+        privateLeakCount: 0,
+        unauthorizedMutationCount: 0,
+        staleCurrentClaimCount: 0,
+        approvalBypassCount: 0,
+      },
+      latestBlindSpotLabels: [],
+      latestSourceFreshnessGapLabels: [],
+      recentRecords: [],
+      evidenceRefs: [],
+      replayDraftCount: 0,
+      mutationCount: 0,
+      actionAuthority: 'display_only',
+    },
+  };
+}
+
 function makeHealth(): AoiOperatorHealthState {
   return {
     version: 1,
@@ -486,6 +522,9 @@ describe('Aoi autonomy client dashboard', () => {
           },
         });
       }
+      if (url.startsWith('/api/aoi-autonomy/flight-recorder?')) {
+        return jsonResponse(makeFlightRecorderPayload());
+      }
       if (url.startsWith('/api/aoi-autonomy/scheduler?')) {
         return jsonResponse({
           sessionPath: 'aoi/default',
@@ -547,13 +586,14 @@ describe('Aoi autonomy client dashboard', () => {
     expect(snapshot.goals.active).toHaveLength(1);
     expect(snapshot.evaluation.metrics.evidenceCoverage).toBe(1);
     expect(snapshot.timeline.totalEventCount).toBe(0);
+    expect(snapshot.flightRecorder.summary.totalRecordCount).toBe(0);
     expect(snapshot.scheduler.wakeupCount).toBe(0);
     expect(snapshot.health.overallStatus).toBe('limited');
     expect(snapshot.playbooks.active).toHaveLength(1);
     expect(snapshot.proactiveBriefs.candidates).toHaveLength(1);
     expect(snapshot.fieldFeedback.feedbackInbox.inboxCount).toBe(0);
     expect(snapshot.outcomeLearning.summary.trustIncreaseAllowed).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(17);
+    expect(fetchMock).toHaveBeenCalledTimes(18);
     expect(calledUrls).toEqual(
       expect.arrayContaining([
         '/api/aoi-autonomy/status?sessionPath=aoi%2Fdefault',
@@ -565,6 +605,7 @@ describe('Aoi autonomy client dashboard', () => {
         '/api/aoi-autonomy/context?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/evaluation?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/timeline?sessionPath=aoi%2Fdefault&limit=20',
+        '/api/aoi-autonomy/flight-recorder?sessionPath=aoi%2Fdefault&limit=20',
         '/api/aoi-autonomy/scheduler?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/health?sessionPath=aoi%2Fdefault',
         '/api/aoi-autonomy/playbooks?sessionPath=aoi%2Fdefault&includeArchived=true',

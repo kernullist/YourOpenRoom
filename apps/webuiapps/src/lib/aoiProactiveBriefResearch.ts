@@ -375,10 +375,12 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
     .slice(0, 3)
     .map((source) => `${source.title} (${source.host})`)
     .join('; ');
-  const currentInfoLabel =
-    input.evidence.cannotKnow.length === 0
-      ? 'source-backed current-info candidate'
-      : 'source-backed scout candidate';
+  const currentInfoBlockedByFreshness = input.evidence.cannotKnow.some((item) =>
+    /fresh current information|freshness window|publication dates|newest item/i.test(item),
+  );
+  const currentInfoLabel = currentInfoBlockedByFreshness
+    ? 'source-backed scout candidate'
+    : 'source-backed current-info candidate';
   const allowedModes = input.delivery?.allowedModes?.length
     ? input.delivery.allowedModes
     : ['dashboard'];

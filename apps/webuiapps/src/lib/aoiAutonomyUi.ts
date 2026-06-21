@@ -54,6 +54,7 @@ import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
 import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCheck';
 import type { AoiReplayReport } from './aoiOperatorReplay';
+import type { AoiOperatorFlightRecorderSummary } from './aoiOperatorFlightRecorder';
 import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import type { AoiRealFieldCaptureResult } from './aoiRealFieldCapture';
@@ -530,6 +531,20 @@ export interface AoiOperatorTimelinePanelSummary {
   redactionLabel: string;
 }
 
+export interface AoiRuntimeObservabilityPanelSummary {
+  visible: boolean;
+  statusLabel: string;
+  laneLabels: string[];
+  hardFailLabels: string[];
+  blindSpotLabels: string[];
+  sourceFreshnessGapLabels: string[];
+  latestDecisionLabels: string[];
+  replayDraftLabel: string;
+  evidenceRefs: string[];
+  actionAuthority: 'display_only';
+  mutationCount: number;
+}
+
 export interface AoiAutonomySchedulerPanelSummary {
   visible: boolean;
   summaryLabel: string;
@@ -836,6 +851,7 @@ export interface AoiOperatorAcceptanceDashboard {
   pendingApproval: AoiPendingApprovalPanel;
   replayHealth: AoiReplayHealthPanel;
   jarvisReadiness: AoiJarvisReadinessPanel;
+  runtimeObservability: AoiRuntimeObservabilityPanelSummary;
   realFieldCapture: AoiRealFieldCapturePanel;
   feedbackCompression: AoiFeedbackCompressionPanel;
   jarvisAutonomyGovernor: AoiJarvisAutonomyGovernorPanel;
@@ -855,6 +871,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   health?: AoiOperatorHealthState | null;
   digest?: AoiOperatorDigest | null;
   timelineSummary?: AoiOperatorTimelineSummary | null;
+  runtimeObservability?: AoiOperatorFlightRecorderSummary | null;
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   sourceFreshnessContracts?: AoiSourceFreshnessContract[];
   boundedWorkOrders?: AoiBoundedWorkOrder[];
@@ -4361,6 +4378,88 @@ export function buildAoiOperatorTimelinePanelSummary(
   };
 }
 
+export function buildAoiRuntimeObservabilityPanelSummary(
+  summary: AoiOperatorFlightRecorderSummary | null | undefined,
+  includeDetails = false,
+): AoiRuntimeObservabilityPanelSummary {
+  if (!summary || summary.totalRecordCount === 0) {
+    return {
+      visible: false,
+      statusLabel: 'No runtime flight records',
+      laneLabels: [],
+      hardFailLabels: [],
+      blindSpotLabels: [],
+      sourceFreshnessGapLabels: [],
+      latestDecisionLabels: [],
+      replayDraftLabel: 'No flight replay drafts',
+      evidenceRefs: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+
+  const hardFailCount =
+    summary.hardFailCounters.privateLeakCount +
+    summary.hardFailCounters.unauthorizedMutationCount +
+    summary.hardFailCounters.staleCurrentClaimCount +
+    summary.hardFailCounters.approvalBypassCount;
+  const laneLabels = uniqueDashboardLabels(
+    Object.entries(summary.laneCounts)
+      .filter(([, count]) => count > 0)
+      .map(([lane, count]) => `${lane.replace(/_/g, ' ')} ${count}`),
+    8,
+  );
+  const hardFailLabels = uniqueDashboardLabels(
+    [
+      `private leaks ${summary.hardFailCounters.privateLeakCount}`,
+      `unauthorized mutations ${summary.hardFailCounters.unauthorizedMutationCount}`,
+      `stale current claims ${summary.hardFailCounters.staleCurrentClaimCount}`,
+      `approval bypasses ${summary.hardFailCounters.approvalBypassCount}`,
+    ],
+    4,
+  );
+  const latestDecisionLabels = uniqueDashboardLabels(
+    summary.recentRecords.slice(0, includeDetails ? 8 : 4).map((record) => {
+      const reason = record.whySpeak[0] ?? record.whyQuiet[0] ?? 'no reason recorded';
+      return `${record.signalClass.replace(/_/g, ' ')} -> ${record.decisionLane.replace(
+        /_/g,
+        ' ',
+      )}: ${reason}`;
+    }),
+    includeDetails ? 8 : 4,
+  );
+
+  return {
+    visible: true,
+    statusLabel: sanitizeAoiAcceptanceDashboardText(
+      hardFailCount > 0
+        ? `${hardFailCount} runtime hard fail(s) require review`
+        : `${summary.totalRecordCount} runtime flight record(s), ${summary.replayDraftCount} replay draft(s)`,
+      140,
+    ),
+    laneLabels,
+    hardFailLabels,
+    blindSpotLabels: uniqueDashboardLabels(summary.latestBlindSpotLabels, includeDetails ? 8 : 4),
+    sourceFreshnessGapLabels: uniqueDashboardLabels(
+      summary.latestSourceFreshnessGapLabels,
+      includeDetails ? 8 : 4,
+    ),
+    latestDecisionLabels,
+    replayDraftLabel: sanitizeAoiAcceptanceDashboardText(
+      summary.replayDraftCount > 0
+        ? `${summary.replayDraftCount} replay draft(s) need review before promotion`
+        : 'No flight replay drafts',
+      120,
+    ),
+    evidenceRefs: dashboardRefs([
+      ...summary.evidenceRefs,
+      ...summary.recentRecords.map((record) => `flight-record:${record.id}`),
+    ]),
+    actionAuthority: 'display_only',
+    mutationCount: summary.mutationCount,
+  };
+}
+
 export function buildAoiAutonomySchedulerPanelSummary(
   state: AoiAutonomySchedulerState | null | undefined,
   includeDetails = false,
@@ -5311,6 +5410,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.builtInReplayReports?.length ||
     input.boundedWorkOrders?.length ||
     input.sourceFreshnessContracts?.length ||
+    input.runtimeObservability?.totalRecordCount ||
     input.realFieldCapture ||
     input.feedbackCompression ||
     input.promotedFixtureCandidates?.length,
@@ -5806,6 +5906,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const pendingApproval = buildAoiPendingApprovalPanel(dashboardInput);
   const replayHealth = buildAoiReplayHealthPanel(input);
   const jarvisReadiness = buildAoiJarvisReadinessPanel(dashboardInput);
+  const runtimeObservability = buildAoiRuntimeObservabilityPanelSummary(input.runtimeObservability);
   const realFieldCapture = buildAoiRealFieldCapturePanel(input);
   const feedbackCompression = buildAoiFeedbackCompressionPanel(input);
   const jarvisReadinessScorecard =
@@ -5844,6 +5945,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...pendingApproval.evidenceRefs,
     ...replayHealth.evidenceRefs,
     ...jarvisReadiness.evidenceRefs,
+    ...runtimeObservability.evidenceRefs,
     ...realFieldCapture.evidenceRefs,
     ...feedbackCompression.evidenceRefs,
     ...jarvisAutonomyGovernor.evidenceRefs,
@@ -5866,6 +5968,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     pendingApproval,
     replayHealth,
     jarvisReadiness,
+    runtimeObservability,
     realFieldCapture,
     feedbackCompression,
     jarvisAutonomyGovernor,

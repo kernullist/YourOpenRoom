@@ -63,6 +63,12 @@ import type { AoiFieldEvent } from './aoiFieldEventLedger';
 import type { AoiFieldFeedbackLearningSummary } from './aoiFieldFeedbackLearning';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
 import type {
+  AoiOperatorFlightRecord,
+  AoiOperatorFlightRecordInput,
+  AoiOperatorFlightRecorderSummary,
+  AoiOperatorFlightReplayDraft,
+} from './aoiOperatorFlightRecorder';
+import type {
   AoiOperatorFeedbackInbox,
   AoiOperatorFeedbackLabelAction,
 } from './aoiOperatorFeedbackInbox';
@@ -140,6 +146,22 @@ export interface AoiAutonomyTraceExportResponse {
   summary: AoiOperatorTimelineSummary;
 }
 
+export interface AoiOperatorFlightRecorderResponse {
+  ok: boolean;
+  sessionPath: string;
+  records: AoiOperatorFlightRecord[];
+  replayDrafts: AoiOperatorFlightReplayDraft[];
+  summary: AoiOperatorFlightRecorderSummary;
+}
+
+export interface AoiOperatorFlightRecordResponse extends AoiOperatorFlightRecorderResponse {
+  record: AoiOperatorFlightRecord;
+}
+
+export interface AoiOperatorFlightReplayDraftResponse extends AoiOperatorFlightRecorderResponse {
+  replayDraft: AoiOperatorFlightReplayDraft;
+}
+
 export interface AoiOperatorVoiceDecisionRecordResponse {
   ok: boolean;
   sessionPath: string;
@@ -198,6 +220,7 @@ export interface AoiAutonomyDashboardSnapshot {
   contextRouter: AoiContextRouterResult | null;
   evaluation: AoiAutonomyEvaluationResult;
   timeline: AoiOperatorTimelineSummary;
+  flightRecorder: AoiOperatorFlightRecorderResponse;
   scheduler: AoiAutonomySchedulerState;
   health: AoiOperatorHealthState;
   playbooks: AoiAutonomyPlaybookList;
@@ -1278,6 +1301,86 @@ export async function exportAoiAutonomyTrace(
   };
 }
 
+function parseAoiOperatorFlightRecorderPayload(
+  payload: Record<string, unknown>,
+  sessionPath: string,
+): AoiOperatorFlightRecorderResponse {
+  const responseSessionPath =
+    typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+      ? payload.sessionPath
+      : sessionPath;
+  return {
+    ok: payload.ok === true,
+    sessionPath: responseSessionPath,
+    records: asArray<AoiOperatorFlightRecord>(payload.records),
+    replayDrafts: asArray<AoiOperatorFlightReplayDraft>(payload.replayDrafts),
+    summary: requireRecordField<AoiOperatorFlightRecorderSummary>(
+      payload,
+      'summary',
+      'Aoi operator flight recorder response was malformed.',
+    ),
+  };
+}
+
+export async function fetchAoiOperatorFlightRecorder(
+  sessionPath: string,
+  options: { limit?: number } = {},
+): Promise<AoiOperatorFlightRecorderResponse> {
+  const limitQuery =
+    typeof options.limit === 'number' ? `&limit=${encodeURIComponent(String(options.limit))}` : '';
+  const response = await fetch(
+    `${API_PREFIX}/flight-recorder?${sessionQuery(sessionPath)}${limitQuery}`,
+  );
+  const payload = await readJsonRecord(response, 'Failed to load Aoi operator flight recorder.');
+  return parseAoiOperatorFlightRecorderPayload(payload, sessionPath);
+}
+
+export async function recordAoiOperatorFlightDecision(
+  sessionPath: string,
+  input: AoiOperatorFlightRecordInput,
+): Promise<AoiOperatorFlightRecordResponse> {
+  const response = await fetch(`${API_PREFIX}/flight-recorder`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      ...input,
+      sessionPath,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi operator flight decision.');
+  return {
+    ...parseAoiOperatorFlightRecorderPayload(payload, sessionPath),
+    record: requireRecordField<AoiOperatorFlightRecord>(
+      payload,
+      'record',
+      'Aoi operator flight record response was malformed.',
+    ),
+  };
+}
+
+export async function createAoiOperatorFlightReplayDraft(params: {
+  sessionPath: string;
+  recordId?: string;
+}): Promise<AoiOperatorFlightReplayDraftResponse> {
+  const response = await fetch(`${API_PREFIX}/flight-recorder/replay-draft`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath: params.sessionPath,
+      recordId: params.recordId,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to create Aoi flight replay draft.');
+  return {
+    ...parseAoiOperatorFlightRecorderPayload(payload, params.sessionPath),
+    replayDraft: requireRecordField<AoiOperatorFlightReplayDraft>(
+      payload,
+      'replayDraft',
+      'Aoi flight replay draft response was malformed.',
+    ),
+  };
+}
+
 export async function recordAoiOperatorVoiceDecision(
   sessionPath: string,
   decision: AoiVoiceRenderDecision,
@@ -1474,6 +1577,7 @@ export async function fetchAoiAutonomyDashboard(
     contextRouter,
     evaluation,
     timeline,
+    flightRecorder,
     scheduler,
     health,
     playbooks,
@@ -1492,6 +1596,7 @@ export async function fetchAoiAutonomyDashboard(
     fetchAoiContextRouter(sessionPath),
     fetchAoiAutonomyEvaluation(sessionPath),
     fetchAoiAutonomyTimeline(sessionPath, { limit: 20 }),
+    fetchAoiOperatorFlightRecorder(sessionPath, { limit: 20 }),
     fetchAoiAutonomyScheduler(sessionPath),
     fetchAoiOperatorHealth(sessionPath),
     fetchAoiPlaybooks(sessionPath, true),
@@ -1513,6 +1618,7 @@ export async function fetchAoiAutonomyDashboard(
     contextRouter: contextRouter.context,
     evaluation: evaluation.evaluation,
     timeline: timeline.summary,
+    flightRecorder,
     scheduler: scheduler.state,
     health: health.health,
     playbooks,

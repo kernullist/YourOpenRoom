@@ -33,6 +33,7 @@ import {
   buildAoiOperatorDigestPanelSummary,
   buildAoiOperatorAcceptanceDashboard,
   buildAoiOperatorTimelinePanelSummary,
+  buildAoiRuntimeObservabilityPanelSummary,
   buildAoiApprovedCommandPanelSummary,
   buildAoiPreferenceInfluencePanelSummary,
   buildAoiPreparedActionPlanPanelSummary,
@@ -4358,6 +4359,95 @@ describe('Aoi autonomy UI helpers', () => {
     expect(collapsed.warningLabels.join(' ')).toContain('[local path]');
     expect(expanded.skippedSourceLabels).toHaveLength(4);
     expect(expanded.evidenceRefs).toEqual(['wakeup:aoi-wakeup-ui-test']);
+  });
+
+  it('surfaces runtime flight recorder hard fails and replay draft readiness', () => {
+    const summary = {
+      version: 1 as const,
+      sessionPath: 'aoi/default',
+      generatedAt: 2000,
+      totalRecordCount: 2,
+      laneCounts: {
+        hidden: 1,
+        dashboard: 0,
+        digest: 0,
+        direct_chat: 0,
+        approval_request: 1,
+        blocked: 0,
+      },
+      hardFailCounters: {
+        privateLeakCount: 0,
+        unauthorizedMutationCount: 1,
+        staleCurrentClaimCount: 1,
+        approvalBypassCount: 0,
+      },
+      latestBlindSpotLabels: ['Gmail metadata: disconnected; Aoi cannot know inbox contents.'],
+      latestSourceFreshnessGapLabels: ['Research cache: stale freshness / stale state'],
+      recentRecords: [
+        {
+          version: 1 as const,
+          id: 'aoi-flight-ui-approval',
+          sessionPath: 'aoi/default',
+          createdAt: 2000,
+          signalClass: 'capability' as const,
+          decisionLane: 'approval_request' as const,
+          sourceStates: [],
+          evidenceRefs: ['capability:kira'],
+          whySpeak: ['Approval is required before mutation.'],
+          whyQuiet: [],
+          preparedActionRefs: ['work-order:kira'],
+          approvalState: {
+            status: 'required' as const,
+            required: true,
+          },
+          outcomeRefs: [],
+          hardFailCounters: {
+            privateLeakCount: 0,
+            unauthorizedMutationCount: 1,
+            staleCurrentClaimCount: 0,
+            approvalBypassCount: 0,
+          },
+          redaction: {
+            replacementCount: 0,
+            localPathCount: 0,
+            urlCount: 0,
+            emailCount: 0,
+            privateBodyCount: 0,
+            secretCount: 0,
+          },
+          mutationCount: 0,
+          actionAuthority: 'display_only' as const,
+        },
+      ],
+      evidenceRefs: ['flight-record:aoi-flight-ui-approval'],
+      replayDraftCount: 1,
+      mutationCount: 0,
+      actionAuthority: 'display_only' as const,
+    };
+
+    const panel = buildAoiRuntimeObservabilityPanelSummary(summary);
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      runtimeObservability: summary,
+      now: 2000,
+    });
+
+    expect(panel.visible).toBe(true);
+    expect(panel.statusLabel).toBe('2 runtime hard fail(s) require review');
+    expect(panel.laneLabels).toEqual(['hidden 1', 'approval request 1']);
+    expect(panel.hardFailLabels).toEqual([
+      'private leaks 0',
+      'unauthorized mutations 1',
+      'stale current claims 1',
+      'approval bypasses 0',
+    ]);
+    expect(panel.replayDraftLabel).toBe('1 replay draft(s) need review before promotion');
+    expect(panel.blindSpotLabels.join(' ')).toContain('Gmail metadata');
+    expect(dashboard.runtimeObservability.statusLabel).toBe(
+      '2 runtime hard fail(s) require review',
+    );
+    expect(dashboard.evidenceRefs).toContain('flight-record:aoi-flight-ui-approval');
+    expect(dashboard.runtimeObservability.actionAuthority).toBe('display_only');
   });
 
   it('sends pause and resume mission client calls without dropping evidence refs', async () => {

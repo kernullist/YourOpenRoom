@@ -39,6 +39,13 @@ import {
 } from './aoiAutonomyStore';
 import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
 import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
+import {
+  createAoiOperatorFlightReplayDraft,
+  loadAoiOperatorFlightRecords,
+  loadAoiOperatorFlightRecorderSummary,
+  loadAoiOperatorFlightReplayDrafts,
+  recordAoiOperatorFlightRecord,
+} from './aoiOperatorFlightRecorder';
 import { applyAoiMissionDecision, deriveAoiMissionState } from './aoiAutonomyMission';
 import {
   collectAndPersistAoiWorkspaceSnapshot,
@@ -479,6 +486,26 @@ function buildAoiOutcomeLearningResponse(params: {
   };
 }
 
+function buildAoiOperatorFlightRecorderResponse(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  now?: number;
+  limit?: number;
+}) {
+  const now = params.now ?? Date.now();
+  const limit =
+    typeof params.limit === 'number' && Number.isFinite(params.limit)
+      ? Math.min(Math.max(Math.trunc(params.limit), 1), 200)
+      : 50;
+  return {
+    ok: true,
+    sessionPath: params.sessionPath,
+    records: loadAoiOperatorFlightRecords(params.sessionsDir, params.sessionPath, now, limit),
+    replayDrafts: loadAoiOperatorFlightReplayDrafts(params.sessionsDir, params.sessionPath, 20),
+    summary: loadAoiOperatorFlightRecorderSummary(params.sessionsDir, params.sessionPath, now),
+  };
+}
+
 function getWakeupBudgetFromBody(value: unknown): Partial<AoiAutonomyWakeupBudget> | undefined {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return undefined;
@@ -725,6 +752,28 @@ async function handleAoiAutonomyRequest(
         }),
         summary: loadAoiOperatorTimelineSummary(sessionsDir, sessionPath),
       });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/flight-recorder') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const limit = Number.parseInt(url.searchParams.get('limit') || '50', 10);
+      writeJson(
+        res,
+        200,
+        buildAoiOperatorFlightRecorderResponse({
+          sessionsDir,
+          sessionPath,
+          limit,
+        }),
+      );
       return true;
     }
 
@@ -1625,6 +1674,85 @@ async function handleAoiAutonomyRequest(
         ok: true,
         sessionPath,
         event,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/flight-recorder') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const rawRecord =
+        body.record && typeof body.record === 'object' && !Array.isArray(body.record)
+          ? (body.record as Record<string, unknown>)
+          : body;
+      const record = recordAoiOperatorFlightRecord(sessionsDir, {
+        ...rawRecord,
+        sessionPath,
+      });
+      recordAoiTimelineBestEffort(() => {
+        recordAoiOperatorTimelineEvent(sessionsDir, {
+          sessionPath,
+          kind: 'observation_ingested',
+          visibility: record.decisionLane === 'hidden' ? 'hidden' : 'dashboard_only',
+          createdAt: record.createdAt,
+          title: 'Operator flight decision recorded',
+          summary: `${record.signalClass.replace(/_/g, ' ')} -> ${record.decisionLane.replace(
+            /_/g,
+            ' ',
+          )}; hard fails private=${record.hardFailCounters.privateLeakCount} unauthorized=${record.hardFailCounters.unauthorizedMutationCount} stale=${record.hardFailCounters.staleCurrentClaimCount} approval=${record.hardFailCounters.approvalBypassCount}`,
+          sourceRef: `flight-record:${record.id}`,
+          sourceKind: 'operator_flight_recorder',
+          status: record.decisionLane,
+          evidenceRefs: [`flight-record:${record.id}`, ...record.evidenceRefs],
+          relatedRefs: record.preparedActionRefs,
+          metrics: {
+            privateLeakCount: record.hardFailCounters.privateLeakCount,
+            unauthorizedMutationCount: record.hardFailCounters.unauthorizedMutationCount,
+            staleCurrentClaimCount: record.hardFailCounters.staleCurrentClaimCount,
+            approvalBypassCount: record.hardFailCounters.approvalBypassCount,
+            mutationCount: record.mutationCount,
+          },
+        });
+      });
+      writeJson(res, 200, {
+        ...buildAoiOperatorFlightRecorderResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+        record,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/flight-recorder/replay-draft') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const recordId = typeof body.recordId === 'string' ? body.recordId : undefined;
+      const replayDraft = createAoiOperatorFlightReplayDraft({
+        sessionsDir,
+        sessionPath,
+        recordId,
+      });
+      writeJson(res, 200, {
+        ...buildAoiOperatorFlightRecorderResponse({
+          sessionsDir,
+          sessionPath,
+        }),
+        replayDraft,
       });
       return true;
     }
