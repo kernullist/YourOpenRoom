@@ -58,6 +58,7 @@ import {
 import { buildAoiFieldShadowRecordReport } from '../aoiFieldShadowDogfooding';
 import {
   buildAoiOperatorFeedbackInbox,
+  createAoiOperatorFeedbackLabelAction,
   createAoiOperatorFeedbackLabelActionForItem,
 } from '../aoiOperatorFeedbackInbox';
 import {
@@ -73,6 +74,7 @@ import { buildAoiDigestTimelineEvents } from '../aoiOperatorTimeline';
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
 import { buildAoiRealFieldCapture } from '../aoiRealFieldCapture';
+import { buildAoiFeedbackCompression } from '../aoiFeedbackCompression';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
   buildAoiPreviewOnlyFileWorkPreparedActionPlan,
@@ -3456,6 +3458,51 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.jarvisReadiness.visible).toBe(true);
     expect(serialized).not.toContain('private-roadmap@example.com');
     expect(serialized).not.toContain('private mail body');
+  });
+
+  it('surfaces feedback compression adjustments without leaking private feedback notes', () => {
+    const tooFrequent = createAoiOperatorFeedbackLabelAction({
+      sessionPath: 'aoi/default',
+      decisionRecordId: 'record-feedback-compression-ui',
+      decisionId: 'decision-feedback-compression-ui',
+      opportunityId: 'opportunity-feedback-compression-ui',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'browser_context',
+      deliveryMode: 'direct_chat',
+      label: 'too_frequent',
+      sourceKinds: ['browser_context'],
+      evidenceRefs: ['operator-feedback:too-frequent-ui'],
+      note: 'body: private feedback note from private-roadmap@example.com',
+      now: 7200,
+    });
+    const feedbackCompression = buildAoiFeedbackCompression({
+      sessionPath: 'aoi/default',
+      labelActions: [tooFrequent],
+      now: 7300,
+    });
+    const dashboard = buildAoiOperatorAcceptanceDashboard({
+      sessionPath: 'aoi/default',
+      feedbackCompression,
+      now: 7400,
+    });
+    const serialized = JSON.stringify(dashboard.feedbackCompression);
+
+    expect(dashboard.feedbackCompression.visible).toBe(true);
+    expect(dashboard.feedbackCompression.statusLabel).toContain('1 explicit label');
+    expect(dashboard.feedbackCompression.timingAdjustmentLabels.join(' ')).toContain(
+      'Timing tolerance decrease',
+    );
+    expect(dashboard.feedbackCompression.directChatLabel).toContain('Direct chat x');
+    expect(dashboard.feedbackCompression.verbosityLabel).toContain('shorter');
+    expect(dashboard.feedbackCompression.trustLabels.join(' ')).toContain(
+      'explicit positive operator label required',
+    );
+    expect(dashboard.feedbackCompression.evidenceRefs).toContain(
+      `feedback-compression:${feedbackCompression.id}`,
+    );
+    expect(dashboard.evidenceRefs).toContain(`feedback-compression:${feedbackCompression.id}`);
+    expect(serialized).not.toContain('private-roadmap@example.com');
+    expect(serialized).not.toContain('private feedback note');
   });
 
   it('feeds personal source reality checks into dashboard and shadow hooks', () => {

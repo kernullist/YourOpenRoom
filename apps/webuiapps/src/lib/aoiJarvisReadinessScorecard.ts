@@ -1,6 +1,7 @@
 import type { AoiAdaptiveAcceptancePack } from './aoiAdaptiveAcceptanceCuration';
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
+import type { AoiFeedbackCompressionResult } from './aoiFeedbackCompression';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionControlState } from './aoiMissionControlRuntime';
 import type { AoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
@@ -141,6 +142,7 @@ export interface AoiJarvisReadinessScorecardInput {
   now?: number;
   shadowReport?: AoiShadowDecisionReport | null;
   feedbackInbox?: AoiOperatorFeedbackInbox | null;
+  feedbackCompression?: AoiFeedbackCompressionResult | null;
   builtInReplayReports?: readonly AoiReplayReport[];
   jarvisAcceptanceReport?: AoiJarvisAcceptanceReport | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
@@ -817,6 +819,7 @@ function visibilityFor(params: {
   gates: readonly AoiJarvisReadinessGate[];
   score: number;
   fieldLabelCount: number;
+  feedbackCompressionTrustAllowed: boolean;
   directChatOptInEnabled?: boolean | null;
   evidenceRefs: string[];
 }): AoiJarvisReadinessVisibility {
@@ -837,6 +840,9 @@ function visibilityFor(params: {
       fieldVolumeBlocked
         ? `field label volume ${params.fieldLabelCount}/${FIELD_LABEL_TRUST_MINIMUM} is too low for direct chat trust`
         : undefined,
+      !params.feedbackCompressionTrustAllowed
+        ? 'feedback compression requires explicit positive labels and no wrong-source or unsafe blocker before trust can rise'
+        : undefined,
       tooFrequentLimited ? 'too-frequent rate lowers direct chat visibility' : undefined,
       directOptInBlocked ? 'direct chat opt-in is disabled' : undefined,
       params.level !== 'trusted_operator'
@@ -853,6 +859,9 @@ function visibilityFor(params: {
       params.fieldLabelCount < FIELD_LABEL_TRUST_MINIMUM
         ? `field label volume ${params.fieldLabelCount}/${FIELD_LABEL_TRUST_MINIMUM} is too low for supervised preparation`
         : undefined,
+      !params.feedbackCompressionTrustAllowed
+        ? 'feedback compression requires explicit positive labels and no wrong-source or unsafe blocker before supervised preparation'
+        : undefined,
       params.score < 75
         ? `readiness score ${params.score}/100 is too low for supervised preparation`
         : undefined,
@@ -866,9 +875,12 @@ function visibilityFor(params: {
       params.level === 'trusted_operator');
   const workOrderPrepareAllowed =
     !hardSafetyBlocked &&
+    params.feedbackCompressionTrustAllowed &&
     (params.level === 'supervised_prepare' || params.level === 'trusted_operator');
   const directChatAllowed =
-    params.level === 'trusted_operator' && directChatBlockedReasons.length <= 0;
+    params.level === 'trusted_operator' &&
+    params.feedbackCompressionTrustAllowed &&
+    directChatBlockedReasons.length <= 0;
 
   return {
     version: 1,
@@ -897,6 +909,7 @@ function buildRecommendations(params: {
   const tooFrequent = metricsById.get('field.too_frequent_rate');
   const shouldHaveSpoken = metricsById.get('field.should_have_spoken_count');
   const fieldLabelCount = metricsById.get('field.labeled_decisions');
+  const compressionTrustAllowed = metricsById.get('field.feedback_compression_trust_allowed');
 
   if (wrongSource && wrongSource.value > WRONG_SOURCE_BLOCK_THRESHOLD) {
     recommendations.push(
@@ -947,6 +960,20 @@ function buildRecommendations(params: {
         action:
           'Label useful, too-much, wrong-source, unsafe, and should-have-spoken examples before increasing trust.',
         evidenceRefs: fieldLabelCount.evidenceRefs,
+      }),
+    );
+  }
+  if (compressionTrustAllowed && !compressionTrustAllowed.passed) {
+    recommendations.push(
+      recommendation({
+        id: 'recommendation.feedback_compression_trust_gate',
+        severity: 'blocker',
+        label: 'Collect explicit positive field labels before raising trust',
+        reason:
+          'Feedback compression blocks trust increase without explicit positive labels or when wrong-source/unsafe feedback is present.',
+        action:
+          'Label useful or should-have-spoken examples, then clear wrong-source and unsafe blockers through review evidence.',
+        evidenceRefs: compressionTrustAllowed.evidenceRefs,
       }),
     );
   }
@@ -1042,6 +1069,7 @@ export function buildAoiJarvisReadinessScorecard(
     [
       input.shadowReport,
       input.feedbackInbox,
+      input.feedbackCompression,
       input.fieldShadowReport,
       input.jarvisAcceptanceReport,
       input.personalSourceRealityCheck,
@@ -1055,6 +1083,11 @@ export function buildAoiJarvisReadinessScorecard(
     (input.promotedFixtureCandidates?.length ?? 0);
   const fieldLabelVolumePass = shadowLabels.fieldLabelCount >= FIELD_LABEL_TRUST_MINIMUM;
   const directChatOptInEnabled = input.directChatOptInEnabled;
+  const feedbackCompressionTrustAllowed = input.feedbackCompression?.trustIncreaseAllowed !== false;
+  const feedbackCompressionEvidenceRefs = uniqueStrings([
+    ...(input.feedbackCompression ? [`feedback-compression:${input.feedbackCompression.id}`] : []),
+    ...(input.feedbackCompression?.evidenceRefs ?? []),
+  ]);
 
   const metrics: AoiJarvisReadinessMetric[] = [
     metric({
@@ -1077,6 +1110,17 @@ export function buildAoiJarvisReadinessScorecard(
       passed: fieldLabelVolumePass,
       evidenceRefs: shadowLabels.evidenceRefs,
       blockerRefs: fieldLabelVolumePass ? [] : ['gate.field_label_volume_minimum'],
+    }),
+    metric({
+      id: 'field.feedback_compression_trust_allowed',
+      group: 'shadow_usefulness',
+      label: 'Feedback compression trust allowed',
+      value: feedbackCompressionTrustAllowed ? 1 : 0,
+      target: 1,
+      unit: 'boolean',
+      passed: feedbackCompressionTrustAllowed,
+      evidenceRefs: feedbackCompressionEvidenceRefs,
+      blockerRefs: feedbackCompressionTrustAllowed ? [] : ['gate.feedback_compression_trust_label'],
     }),
     metric({
       id: 'field.useful_rate',
@@ -1617,6 +1661,21 @@ export function buildAoiJarvisReadinessScorecard(
       blockerRefs: fieldLabelVolumePass ? [] : ['field.labeled_decisions'],
     }),
     gate({
+      id: 'gate.feedback_compression_trust_label',
+      label: 'Feedback compression trust label',
+      status: feedbackCompressionTrustAllowed ? 'pass' : 'block',
+      reason: feedbackCompressionTrustAllowed
+        ? input.feedbackCompression
+          ? 'Feedback compression has explicit positive trust evidence and no wrong-source or unsafe trust blocker.'
+          : 'No feedback compression model was provided; legacy field-label gates apply.'
+        : input.feedbackCompression?.trustIncreaseBlockedReasons.join('; ') ||
+          'Feedback compression blocks trust increase.',
+      evidenceRefs: feedbackCompressionEvidenceRefs,
+      blockerRefs: feedbackCompressionTrustAllowed
+        ? []
+        : ['feedback_compression.trust_increase_blocked'],
+    }),
+    gate({
       id: 'gate.direct_chat_opt_in',
       label: 'Direct chat opt-in',
       status: directChatOptInEnabled === false ? 'block' : 'pass',
@@ -1664,6 +1723,7 @@ export function buildAoiJarvisReadinessScorecard(
     'gate.stale_current_claim_zero',
     'gate.unsafe_policy_tightening',
     'gate.wrong_source_rate',
+    'gate.feedback_compression_trust_label',
   ].some((id) => gates.some((item) => item.id === id && item.status === 'block'));
   const level = levelFor({
     score,
@@ -1698,6 +1758,7 @@ export function buildAoiJarvisReadinessScorecard(
     gates,
     score,
     fieldLabelCount: shadowLabels.fieldLabelCount,
+    feedbackCompressionTrustAllowed,
     directChatOptInEnabled,
     evidenceRefs,
   });
@@ -1721,7 +1782,10 @@ export function buildAoiJarvisReadinessScorecard(
     score,
     level,
     gateStatus,
-    canIncreaseTrust: visibility.directChat === 'allowed' && level === 'trusted_operator',
+    canIncreaseTrust:
+      visibility.directChat === 'allowed' &&
+      level === 'trusted_operator' &&
+      feedbackCompressionTrustAllowed,
     modeRecommendation,
     visibility,
     metricGroups,

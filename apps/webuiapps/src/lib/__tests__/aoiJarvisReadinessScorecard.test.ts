@@ -1,0 +1,94 @@
+import { describe, expect, it } from 'vitest';
+import { buildAoiFeedbackCompression } from '../aoiFeedbackCompression';
+import { buildAoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
+import { normalizeAoiFollowThroughEvent } from '../aoiFollowThroughLearning';
+import { createAoiOperatorFeedbackLabelAction } from '../aoiOperatorFeedbackInbox';
+
+const SESSION_PATH = 'aoi/default';
+const NOW = 1_800_000_000_000;
+
+describe('buildAoiJarvisReadinessScorecard feedback compression gate', () => {
+  it('blocks trust increase when feedback compression only has passive outcomes', () => {
+    const passiveEvent = normalizeAoiFollowThroughEvent(
+      {
+        id: 'readiness-passive-positive',
+        opportunityId: 'opportunity-readiness-passive',
+        topicKey: 'topic:reverse-engineering',
+        sourceKey: 'browser_context',
+        deliveryMode: 'dashboard',
+        action: 'accepted',
+        result: 'positive',
+        timingLabel: 'operator opened card without explicit label',
+        evidenceRefs: ['passive:opened-card'],
+        createdAt: NOW - 1_000,
+      },
+      SESSION_PATH,
+      NOW,
+    );
+    const feedbackCompression = buildAoiFeedbackCompression({
+      sessionPath: SESSION_PATH,
+      followThroughEvents: passiveEvent ? [passiveEvent] : [],
+      now: NOW,
+    });
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      feedbackCompression,
+      directChatOptInEnabled: true,
+      now: NOW,
+    });
+
+    expect(feedbackCompression.trustIncreaseAllowed).toBe(false);
+    expect(scorecard.canIncreaseTrust).toBe(false);
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.feedback_compression_trust_label'),
+    ).toMatchObject({
+      status: 'block',
+    });
+    expect(scorecard.visibility.directChat).toBe('blocked');
+    expect(scorecard.visibility.directChatBlockedReasons.join(' ')).toContain(
+      'feedback compression requires explicit positive labels',
+    );
+    expect(scorecard.visibility.workOrderPrepareBlockedReasons.join(' ')).toContain(
+      'feedback compression requires explicit positive labels',
+    );
+    expect(scorecard.recommendations.map((item) => item.id)).toContain(
+      'recommendation.feedback_compression_trust_gate',
+    );
+  });
+
+  it('passes the compression trust gate for explicit useful labels without granting execution authority', () => {
+    const label = createAoiOperatorFeedbackLabelAction({
+      sessionPath: SESSION_PATH,
+      decisionRecordId: 'record-useful',
+      decisionId: 'decision-useful',
+      opportunityId: 'opportunity-useful',
+      topicKey: 'topic:reverse-engineering',
+      sourceKey: 'browser_context',
+      deliveryMode: 'direct_chat',
+      label: 'useful',
+      sourceKinds: ['browser_context'],
+      evidenceRefs: ['operator-feedback:useful'],
+      now: NOW,
+    });
+    const feedbackCompression = buildAoiFeedbackCompression({
+      sessionPath: SESSION_PATH,
+      labelActions: [label],
+      now: NOW,
+    });
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      feedbackCompression,
+      directChatOptInEnabled: true,
+      now: NOW,
+    });
+
+    expect(feedbackCompression.trustIncreaseAllowed).toBe(true);
+    expect(
+      scorecard.gates.find((gate) => gate.id === 'gate.feedback_compression_trust_label'),
+    ).toMatchObject({
+      status: 'pass',
+    });
+    expect(scorecard.actionAuthority).toBe('display_only');
+    expect(scorecard.mutationCount).toBe(0);
+  });
+});

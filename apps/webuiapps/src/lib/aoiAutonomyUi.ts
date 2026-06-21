@@ -42,6 +42,7 @@ import {
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiFieldGroundedJarvisAcceptanceReport } from './aoiFieldGroundedJarvisAcceptancePack';
 import type { AoiFieldShadowRecordReport } from './aoiFieldShadowDogfooding';
+import type { AoiFeedbackCompressionResult } from './aoiFeedbackCompression';
 import type { AoiMemoryEntry } from './aoiMemoryShared';
 import type { AoiJarvisAcceptanceReport } from './aoiJarvisAcceptanceTrial';
 import type { AoiMissionMemorySnapshot } from './aoiMissionMemory';
@@ -734,6 +735,20 @@ export interface AoiRealFieldCapturePanel {
   evidenceRefs: string[];
 }
 
+export interface AoiFeedbackCompressionPanel {
+  visible: boolean;
+  statusLabel: string;
+  topicAdjustmentLabels: string[];
+  sourceAdjustmentLabels: string[];
+  timingAdjustmentLabels: string[];
+  directChatLabel: string;
+  verbosityLabel: string;
+  unsafeBlockerLabels: string[];
+  shouldHaveSpokenLabels: string[];
+  trustLabels: string[];
+  evidenceRefs: string[];
+}
+
 export type AoiJarvisAutonomyGovernorPanel = AoiJarvisAutonomyGovernorPanelSummary;
 
 export interface AoiOperatorFeedbackInboxPanel {
@@ -796,6 +811,7 @@ export interface AoiOperatorAcceptanceDashboard {
   replayHealth: AoiReplayHealthPanel;
   jarvisReadiness: AoiJarvisReadinessPanel;
   realFieldCapture: AoiRealFieldCapturePanel;
+  feedbackCompression: AoiFeedbackCompressionPanel;
   jarvisAutonomyGovernor: AoiJarvisAutonomyGovernorPanel;
   feedbackInbox: AoiOperatorFeedbackInboxPanel;
   evidenceRefs: string[];
@@ -827,6 +843,7 @@ export interface AoiOperatorAcceptanceDashboardInput {
   fieldGroundedAcceptanceReport?: AoiFieldGroundedJarvisAcceptanceReport | null;
   jarvisReadinessScorecard?: AoiJarvisReadinessScorecard | null;
   realFieldCapture?: AoiRealFieldCaptureResult | null;
+  feedbackCompression?: AoiFeedbackCompressionResult | null;
   jarvisAutonomyGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   fieldShadowReport?: AoiFieldShadowRecordReport | null;
   shadowReport?: AoiShadowDecisionReport | null;
@@ -5216,6 +5233,7 @@ function hasAoiJarvisReadinessEvidence(input: AoiOperatorAcceptanceDashboardInpu
     input.boundedWorkOrders?.length ||
     input.sourceFreshnessContracts?.length ||
     input.realFieldCapture ||
+    input.feedbackCompression ||
     input.promotedFixtureCandidates?.length,
   );
 }
@@ -5259,6 +5277,7 @@ function buildAoiJarvisReadinessPanel(
       now: input.now,
       shadowReport: input.shadowReport,
       feedbackInbox: input.feedbackInbox,
+      feedbackCompression: input.feedbackCompression,
       fieldShadowReport: input.fieldShadowReport,
       builtInReplayReports: input.builtInReplayReports,
       jarvisAcceptanceReport: input.jarvisAcceptanceReport,
@@ -5361,6 +5380,76 @@ function buildAoiRealFieldCapturePanel(
       `real-field-capture:${capture.id}`,
       ...capture.evidenceRefs,
       ...capture.summary.evidenceRefs,
+    ]),
+  };
+}
+
+function buildAoiFeedbackCompressionPanel(
+  input: AoiOperatorAcceptanceDashboardInput,
+): AoiFeedbackCompressionPanel {
+  const compression = input.feedbackCompression;
+  if (!compression) {
+    return {
+      visible: false,
+      statusLabel: 'No feedback compression report',
+      topicAdjustmentLabels: [],
+      sourceAdjustmentLabels: [],
+      timingAdjustmentLabels: [],
+      directChatLabel: 'Direct chat sensitivity unchanged',
+      verbosityLabel: 'Verbosity preference unchanged',
+      unsafeBlockerLabels: [],
+      shouldHaveSpokenLabels: [],
+      trustLabels: [],
+      evidenceRefs: [],
+    };
+  }
+
+  return {
+    visible: true,
+    statusLabel: sanitizeAoiAcceptanceDashboardText(
+      `${compression.explicitLabelCount} explicit label(s), ${compression.passiveOutcomeCount} passive outcome(s), confidence ${compression.confidence.toFixed(
+        2,
+      )}`,
+      160,
+    ),
+    topicAdjustmentLabels: uniqueDashboardLabels(
+      compression.topicAdjustments.map((item) => `${item.direction}: ${item.label}`),
+      6,
+    ),
+    sourceAdjustmentLabels: uniqueDashboardLabels(
+      compression.sourceAdjustments.map((item) => `${item.direction}: ${item.label}`),
+      6,
+    ),
+    timingAdjustmentLabels: uniqueDashboardLabels(
+      compression.timingAdjustments.map((item) => `${item.direction}: ${item.label}`),
+      6,
+    ),
+    directChatLabel: sanitizeAoiAcceptanceDashboardText(
+      `Direct chat x${compression.directChatSensitivity.factor.toFixed(2)}; ${compression.directChatSensitivity.reasonLabels[0] ?? 'no direct-chat feedback'}`,
+      180,
+    ),
+    verbosityLabel: sanitizeAoiAcceptanceDashboardText(
+      `Verbosity ${compression.verbosityPreference.level} x${compression.verbosityPreference.factor.toFixed(2)}`,
+      140,
+    ),
+    unsafeBlockerLabels: uniqueDashboardLabels(
+      compression.unsafeBlockers.map((item) => item.reason),
+      6,
+    ),
+    shouldHaveSpokenLabels: uniqueDashboardLabels(
+      compression.shouldHaveSpokenHints.map((item) => item.reason),
+      6,
+    ),
+    trustLabels: uniqueDashboardLabels(
+      [
+        ...compression.trustAdjustments.map((item) => `${item.direction}: ${item.reason}`),
+        ...compression.trustIncreaseBlockedReasons,
+      ],
+      6,
+    ),
+    evidenceRefs: dashboardRefs([
+      `feedback-compression:${compression.id}`,
+      ...compression.evidenceRefs,
     ]),
   };
 }
@@ -5575,6 +5664,7 @@ export function buildAoiOperatorAcceptanceDashboard(
   const replayHealth = buildAoiReplayHealthPanel(input);
   const jarvisReadiness = buildAoiJarvisReadinessPanel(dashboardInput);
   const realFieldCapture = buildAoiRealFieldCapturePanel(input);
+  const feedbackCompression = buildAoiFeedbackCompressionPanel(input);
   const jarvisReadinessScorecard =
     input.jarvisReadinessScorecard ??
     buildAoiJarvisReadinessScorecard({
@@ -5582,6 +5672,7 @@ export function buildAoiOperatorAcceptanceDashboard(
       now: input.now,
       shadowReport: input.shadowReport,
       feedbackInbox: input.feedbackInbox,
+      feedbackCompression: input.feedbackCompression,
       builtInReplayReports: input.builtInReplayReports,
       jarvisAcceptanceReport: input.jarvisAcceptanceReport,
       fieldShadowReport: input.fieldShadowReport,
@@ -5610,6 +5701,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     ...replayHealth.evidenceRefs,
     ...jarvisReadiness.evidenceRefs,
     ...realFieldCapture.evidenceRefs,
+    ...feedbackCompression.evidenceRefs,
     ...jarvisAutonomyGovernor.evidenceRefs,
     ...feedbackInbox.evidenceRefs,
   ]);
@@ -5630,6 +5722,7 @@ export function buildAoiOperatorAcceptanceDashboard(
     replayHealth,
     jarvisReadiness,
     realFieldCapture,
+    feedbackCompression,
     jarvisAutonomyGovernor,
     feedbackInbox,
     evidenceRefs,

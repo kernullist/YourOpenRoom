@@ -14,6 +14,10 @@ import {
   normalizeAoiFollowThroughKey,
 } from './aoiFollowThroughLearning';
 import {
+  buildAoiFeedbackCompression,
+  type AoiFeedbackCompressionResult,
+} from './aoiFeedbackCompression';
+import {
   appendAoiFieldEvents,
   normalizeAoiFieldEvent,
   type AoiFieldEvent,
@@ -73,6 +77,7 @@ export interface AoiFieldFeedbackLearningResult {
   followThroughLearning: AoiFollowThroughLearningSummary;
   fieldEvents: AoiFieldEvent[];
   summary: AoiFieldFeedbackLearningSummary;
+  feedbackCompression: AoiFeedbackCompressionResult;
   executionPermissionRaised: false;
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -402,6 +407,7 @@ function buildSummary(params: {
   followThroughEvents: readonly AoiFollowThroughEvent[];
   learning: AoiFollowThroughLearningSummary;
   fieldEvents: readonly AoiFieldEvent[];
+  feedbackCompression: AoiFeedbackCompressionResult;
   now: number;
 }): AoiFieldFeedbackLearningSummary {
   const readinessWarningLabels = uniqueStrings(
@@ -419,6 +425,9 @@ function buildSummary(params: {
             `${label.label.replace(/_/g, ' ')} feedback cannot bypass quiet mode, source freshness, direct-chat opt-in, or approval gates.`,
         ),
       'Operator feedback has display-only authority and never raises execution permission.',
+      ...params.feedbackCompression.trustIncreaseBlockedReasons.map(
+        (reason) => `Feedback compression: ${reason}.`,
+      ),
     ],
     8,
   );
@@ -467,6 +476,7 @@ function buildSummary(params: {
     evidenceRefs: uniqueStrings(
       [
         ...params.learning.evidenceRefs,
+        ...params.feedbackCompression.evidenceRefs,
         ...params.fieldEvents.flatMap((event) => [
           `field-event:${event.id}`,
           ...event.evidenceRefs,
@@ -491,6 +501,13 @@ export function buildAoiFieldFeedbackLearning(
     followThroughEvents,
     now,
   });
+  const feedbackCompression = buildAoiFeedbackCompression({
+    sessionPath: input.sessionPath,
+    labelActions: labels,
+    followThroughEvents,
+    followThroughLearning,
+    now,
+  });
   const fieldEvents = buildAoiFieldFeedbackEvents({ ...input, labelActions: labels, now });
   const summary = buildSummary({
     input,
@@ -498,6 +515,7 @@ export function buildAoiFieldFeedbackLearning(
     followThroughEvents,
     learning: followThroughLearning,
     fieldEvents,
+    feedbackCompression,
     now,
   });
   return {
@@ -509,6 +527,7 @@ export function buildAoiFieldFeedbackLearning(
     followThroughLearning,
     fieldEvents,
     summary,
+    feedbackCompression,
     executionPermissionRaised: false,
     actionAuthority: 'display_only',
     mutationCount: 0,

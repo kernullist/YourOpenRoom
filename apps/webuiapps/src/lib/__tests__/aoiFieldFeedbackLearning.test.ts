@@ -326,6 +326,8 @@ describe('Aoi field feedback learning', () => {
     expect(score.nextEligibleAt).toBeGreaterThan(NOW);
     expect(result.summary.cooldownAdjustmentLabels.length).toBeGreaterThan(0);
     expect(result.followThroughLearning.deliveryModeSensitivity[0]?.factor).toBeLessThan(1);
+    expect(result.feedbackCompression.directChatSensitivity.factor).toBeLessThan(1);
+    expect(result.feedbackCompression.verbosityPreference.level).toBe('shorter');
   });
 
   it('lowers source confidence and emits readiness warnings for wrong source labels', () => {
@@ -351,6 +353,10 @@ describe('Aoi field feedback learning', () => {
     ).toBe(true);
     expect(result.summary.sourceAdjustmentLabels.join(' ')).toContain('browser context');
     expect(result.summary.readinessWarningLabels.join(' ')).toContain('wrong source');
+    expect(result.feedbackCompression.trustIncreaseAllowed).toBe(false);
+    expect(result.feedbackCompression.trustIncreaseBlockedReasons.join(' ')).toContain(
+      'wrong-source',
+    );
   });
 
   it('blocks action ladder escalation when unsafe feedback exists', () => {
@@ -375,6 +381,8 @@ describe('Aoi field feedback learning', () => {
     });
 
     expect(hasAoiFollowThroughUnsafeSignal(opportunity, result.followThroughLearning)).toBe(true);
+    expect(result.feedbackCompression.unsafeBlockers[0]?.blocksActionEscalation).toBe(true);
+    expect(result.feedbackCompression.trustIncreaseBlockedReasons.join(' ')).toContain('unsafe');
     expect(ladder.allowedActions.some((action) => action.level === 'L4')).toBe(false);
     expect(ladder.allowedActions.some((action) => action.level === 'L5')).toBe(false);
     expect(ladder.blockedActions.map((action) => action.reason).join(' ')).toContain(
@@ -448,6 +456,7 @@ describe('Aoi field feedback learning', () => {
     });
 
     expect(score.directChatFactor).toBeGreaterThan(1);
+    expect(result.feedbackCompression.shouldHaveSpokenHints[0]?.directChatCandidate).toBe(true);
     expect(optInBlocked.directChatAllowed).toBe(false);
     expect(optInBlocked.directChatBlockedReasons).toContain('direct_chat_not_opted_in');
     expect(quietBlocked.directChatAllowed).toBe(false);
