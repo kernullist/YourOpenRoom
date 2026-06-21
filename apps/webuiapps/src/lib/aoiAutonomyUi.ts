@@ -39,6 +39,7 @@ import {
   summarizeAoiAppCapabilityAuthority,
   type AoiCapabilityBrokerDecision,
 } from './aoiCapabilityRegistry';
+import { formatAoiApprovalSandboxSummary } from './aoiApprovalSandbox';
 import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
 import {
   buildAoiFollowThroughLearningSummary,
@@ -455,6 +456,7 @@ export interface AoiPreparedActionPlanPanelSummary {
   checkpointLabel: string;
   validationLabel: string;
   rollbackLabel: string;
+  approvalSandboxLabel: string;
   expectedChanges: string[];
   affectedSurfaces: string[];
   validationCommands: string[];
@@ -471,6 +473,7 @@ export interface AoiApprovedCommandPanelSummary {
   cwdLabel: string;
   riskLabel: string;
   reasonLabels: string[];
+  approvalSandboxLabel: string;
   resultLabel: string;
   stdoutExcerpt: string;
   stderrExcerpt: string;
@@ -685,6 +688,7 @@ export interface AoiBoundedWorkOrderPanel {
   stopConditionLabels: string[];
   checkpointLabels: string[];
   rollbackLabels: string[];
+  approvalSandboxLabels: string[];
   evidenceRefs: string[];
 }
 
@@ -830,6 +834,7 @@ export interface AoiCapabilityAuthorityPanel {
   blockedReasonLabels: string[];
   approvalRequirementLabels: string[];
   rollbackRequirementLabels: string[];
+  approvalSandboxLabels: string[];
   evidenceRefs: string[];
   actionAuthority: 'display_only';
   mutationCount: 0;
@@ -2238,6 +2243,7 @@ export function buildAoiPreparedActionPlanPanelSummary(
       checkpointLabel: '',
       validationLabel: '',
       rollbackLabel: '',
+      approvalSandboxLabel: '',
       expectedChanges: [],
       affectedSurfaces: [],
       validationCommands: [],
@@ -2262,6 +2268,9 @@ export function buildAoiPreparedActionPlanPanelSummary(
   const rollbackLabel = `${formatPreparedActionLabel(plan.rollback.kind)}; guarantee=${
     plan.rollback.guarantee
   }`;
+  const approvalSandboxLabel = plan.approvalSandbox
+    ? formatAoiApprovalSandboxSummary(plan.approvalSandbox, plan.approvalSandboxValidation)
+    : 'approval sandbox unavailable';
 
   return {
     visible: true,
@@ -2275,6 +2284,7 @@ export function buildAoiPreparedActionPlanPanelSummary(
     checkpointLabel: sanitizeAoiProposalDisplayText(checkpointLabel, 180),
     validationLabel: sanitizeAoiProposalDisplayText(validationLabel, 180),
     rollbackLabel: sanitizeAoiProposalDisplayText(rollbackLabel, 180),
+    approvalSandboxLabel: sanitizeAoiProposalDisplayText(approvalSandboxLabel, 220),
     expectedChanges: includeDetails
       ? plan.expectedChanges.slice(0, 8).map((item) => sanitizeAoiProposalDisplayText(item, 180))
       : plan.expectedChanges.slice(0, 2).map((item) => sanitizeAoiProposalDisplayText(item, 140)),
@@ -2320,6 +2330,7 @@ export function buildAoiApprovedCommandPanelSummary(params: {
       cwdLabel: '',
       riskLabel: '',
       reasonLabels: [],
+      approvalSandboxLabel: '',
       resultLabel: '',
       stdoutExcerpt: '',
       stderrExcerpt: '',
@@ -2342,6 +2353,11 @@ export function buildAoiApprovedCommandPanelSummary(params: {
       ? policy.rationale
       : policy.blockReasons.map((reason) => `blocked:${formatPreparedActionLabel(reason)}`)
     : [];
+  const approvalSandboxLabel = policy?.approvalSandbox
+    ? formatAoiApprovalSandboxSummary(policy.approvalSandbox)
+    : result?.auditRecord.approvalSandboxPreviewHash
+      ? `executed against sandbox preview ${result.auditRecord.approvalSandboxPreviewHash}; validation=${result.auditRecord.approvalSandboxValidationStatus ?? 'unknown'}`
+      : 'approval sandbox unavailable';
   const evidenceRefs = [
     ...new Set([
       ...(policy ? [`command-approval:${policy.approvalFingerprint}`] : []),
@@ -2366,6 +2382,7 @@ export function buildAoiApprovedCommandPanelSummary(params: {
     reasonLabels: (params.includeDetails ? reasonLabels.slice(0, 8) : reasonLabels.slice(0, 3)).map(
       (item) => sanitizeAoiProposalDisplayText(item, 180),
     ),
+    approvalSandboxLabel: sanitizeAoiProposalDisplayText(approvalSandboxLabel, 220),
     resultLabel: sanitizeAoiProposalDisplayText(resultLabel, 180),
     stdoutExcerpt:
       params.includeDetails && result
@@ -4830,6 +4847,7 @@ function buildAoiBoundedWorkOrderPanel(
       stopConditionLabels: [],
       checkpointLabels: [],
       rollbackLabels: [],
+      approvalSandboxLabels: [],
       evidenceRefs: [],
     };
   }
@@ -4897,6 +4915,12 @@ function buildAoiBoundedWorkOrderPanel(
     ),
     6,
   );
+  const approvalSandboxLabels = uniqueDashboardLabels(
+    workOrders.map(
+      (order) => `${order.objective}: ${formatAoiApprovalSandboxSummary(order.approvalSandbox)}`,
+    ),
+    6,
+  );
 
   return {
     visible: true,
@@ -4912,10 +4936,12 @@ function buildAoiBoundedWorkOrderPanel(
     stopConditionLabels,
     checkpointLabels,
     rollbackLabels,
+    approvalSandboxLabels,
     evidenceRefs: dashboardRefs([
       ...workOrders.flatMap((order) => [
         `work-order:${order.id}`,
         `work-order-approval:${order.approval.approvalFingerprint}`,
+        `approval-sandbox-preview:${order.approvalSandbox.previewHash}`,
         ...order.sourceRefs,
         ...order.evidenceRefs,
       ]),
@@ -5864,6 +5890,10 @@ function buildAoiCapabilityAuthorityPanel(
     ),
     8,
   );
+  const approvalSandboxLabels = uniqueDashboardLabels(
+    decisions.map((decision) => decision.approvalSandboxSummary),
+    8,
+  );
 
   return {
     visible: summary.capabilityCount > 0 || decisions.length > 0,
@@ -5877,9 +5907,13 @@ function buildAoiCapabilityAuthorityPanel(
     blockedReasonLabels,
     approvalRequirementLabels,
     rollbackRequirementLabels,
+    approvalSandboxLabels,
     evidenceRefs: dashboardRefs([
       ...summary.evidenceRefs,
-      ...decisions.flatMap((decision) => decision.evidenceRefs),
+      ...decisions.flatMap((decision) => [
+        ...decision.evidenceRefs,
+        `approval-sandbox-preview:${decision.approvalSandbox.previewHash}`,
+      ]),
     ]),
     actionAuthority: 'display_only',
     mutationCount: 0,

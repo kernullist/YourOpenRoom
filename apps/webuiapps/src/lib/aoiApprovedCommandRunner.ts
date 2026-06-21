@@ -3,11 +3,14 @@ import { spawn } from 'child_process';
 import { createHash } from 'crypto';
 import { isAbsolute, relative, resolve } from 'path';
 import {
+  AOI_APPROVED_COMMAND_ENV,
+  compareAoiApprovedCommandApproval,
   evaluateAoiApprovedCommandPolicy,
   normalizeAoiApprovedCommandCwd,
 } from './aoiApprovedCommandPolicy';
 import { redactAoiSensitiveContent } from './aoiMemoryShared';
 import type {
+  AoiApprovedCommandPolicy,
   AoiApprovedCommandRequest,
   AoiApprovedCommandResult,
   AoiCommandAuditRecord,
@@ -18,6 +21,7 @@ const MAX_OUTPUT_CHARS = 6000;
 
 export interface AoiApprovedCommandRunnerOptions {
   workspaceRoot: string;
+  approvedPolicy?: AoiApprovedCommandPolicy | null;
   now?: number;
   spawnImpl?: typeof spawn;
 }
@@ -99,6 +103,8 @@ function createAuditRecord(params: {
   stdoutTruncated?: boolean;
   stderrTruncated?: boolean;
   approvalFingerprint: string;
+  approvalSandboxPreviewHash?: string;
+  approvalSandboxValidationStatus?: AoiCommandAuditRecord['approvalSandboxValidationStatus'];
   cwdLabel: string;
   cwdHash: string;
 }): AoiCommandAuditRecord {
@@ -135,6 +141,12 @@ function createAuditRecord(params: {
       ]),
     ].slice(0, 24),
     approvalFingerprint: params.approvalFingerprint,
+    ...(params.approvalSandboxPreviewHash
+      ? { approvalSandboxPreviewHash: params.approvalSandboxPreviewHash }
+      : {}),
+    ...(params.approvalSandboxValidationStatus
+      ? { approvalSandboxValidationStatus: params.approvalSandboxValidationStatus }
+      : {}),
   };
 }
 
@@ -162,6 +174,11 @@ export function runAoiApprovedCommand(
 ): Promise<AoiApprovedCommandResult> {
   const startedAt = options.now ?? Date.now();
   const policy = evaluateAoiApprovedCommandPolicy(request);
+  const approvalReasons = compareAoiApprovedCommandApproval({
+    approved: options.approvedPolicy ?? undefined,
+    current: policy,
+    now: startedAt,
+  });
   const cwdResult = policy.allowed
     ? resolveApprovedCwd({
         workspaceRoot: options.workspaceRoot,
@@ -170,9 +187,15 @@ export function runAoiApprovedCommand(
     : null;
   const blockReasons = [
     ...policy.blockReasons,
+    ...approvalReasons,
     ...(cwdResult && !cwdResult.ok ? [cwdResult.reason] : []),
   ];
-  if (!policy.allowed || (cwdResult && !cwdResult.ok) || !policy.program) {
+  if (
+    !policy.allowed ||
+    approvalReasons.length > 0 ||
+    (cwdResult && !cwdResult.ok) ||
+    !policy.program
+  ) {
     const completedAt = startedAt;
     return Promise.resolve(
       resultFromAudit(
@@ -187,6 +210,9 @@ export function runAoiApprovedCommand(
           stdout: '',
           stderr: '',
           approvalFingerprint: policy.approvalFingerprint,
+          approvalSandboxPreviewHash: policy.approvalSandbox?.previewHash,
+          approvalSandboxValidationStatus:
+            approvalReasons.length > 0 ? 'blocked' : policy.allowed ? 'approved' : 'blocked',
           cwdLabel: policy.cwdLabel,
           cwdHash: policy.cwdHash,
         }),
@@ -204,7 +230,7 @@ export function runAoiApprovedCommand(
     let timedOut = false;
     const child = spawnImpl(policy.program, policy.args, {
       cwd: cwdResult.cwd,
-      env: { ...process.env, FORCE_COLOR: '0' },
+      env: { ...process.env, ...AOI_APPROVED_COMMAND_ENV },
       shell: false,
       windowsHide: true,
     });
@@ -242,6 +268,8 @@ export function runAoiApprovedCommand(
             stdoutTruncated,
             stderrTruncated,
             approvalFingerprint: policy.approvalFingerprint,
+            approvalSandboxPreviewHash: policy.approvalSandbox?.previewHash,
+            approvalSandboxValidationStatus: extraReasons.length <= 0 ? 'approved' : 'blocked',
             cwdLabel: policy.cwdLabel,
             cwdHash: policy.cwdHash,
           }),

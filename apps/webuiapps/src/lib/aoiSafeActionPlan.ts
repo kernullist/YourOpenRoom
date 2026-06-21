@@ -1,4 +1,8 @@
 import { buildAoiKiraHandoffPreview } from './aoiKiraHandoff';
+import {
+  createAoiApprovalSandboxPreview,
+  hasAoiApprovalSandboxRecoveryEvidence,
+} from './aoiApprovalSandbox';
 import type {
   AoiActionRisk,
   AoiApprovalRequirement,
@@ -10,6 +14,7 @@ import type {
   AoiRollbackPlan,
   AoiValidationPlan,
 } from './aoiAutonomyTypes';
+import type { AoiApprovalSandboxTargetKind } from './aoiApprovalSandbox';
 
 const DEFAULT_VALIDATION_COMMANDS = [
   'pnpm --filter @openroom/webuiapps test -- src/lib/__tests__/aoiAutonomyExecution.test.ts src/lib/__tests__/aoiAutonomyPolicy.test.ts src/lib/__tests__/aoiAutonomyUi.test.ts',
@@ -215,12 +220,93 @@ function makeRollback(params: {
   };
 }
 
+function sandboxTargetKind(actionKind: string): AoiApprovalSandboxTargetKind {
+  if (actionKind === 'create_kira_work') {
+    return 'kira';
+  }
+  if (actionKind === 'start_research') {
+    return 'research';
+  }
+  if (actionKind === 'run_validation_command') {
+    return 'command';
+  }
+  if (actionKind === 'preview_only_file_work') {
+    return 'workspace';
+  }
+  if (actionKind === 'save_memory') {
+    return 'memory';
+  }
+  return 'unknown';
+}
+
+function expectedMutationCountForPlan(
+  plan: Pick<AoiPreparedActionPlan, 'actionKind' | 'risk'>,
+): 0 | 1 {
+  if (
+    plan.actionKind === 'run_validation_command' ||
+    plan.actionKind === 'preview_only_file_work'
+  ) {
+    return 0;
+  }
+  return plan.risk.mutationCapable ||
+    plan.actionKind === 'create_kira_work' ||
+    plan.actionKind === 'start_research' ||
+    plan.actionKind === 'save_memory'
+    ? 1
+    : 0;
+}
+
+function buildPreparedActionSandbox(
+  plan: Omit<AoiPreparedActionPlan, 'status' | 'blockers' | 'approvalSandbox'>,
+) {
+  const firstCommand = plan.validation.commands[0];
+  return createAoiApprovalSandboxPreview({
+    targetKind: sandboxTargetKind(plan.actionKind),
+    targetId: `${plan.actionKind}:${plan.affectedSurfaces.join('|') || plan.objective}`,
+    intendedMutation: plan.expectedChanges.join(' / ') || plan.objective,
+    dryRunSummary: plan.objective,
+    requiredAuthorityDecisionId: plan.approval.required
+      ? `prepared-action:${plan.actionKind}:${plan.approval.requiredLevel}`
+      : `prepared-action:${plan.actionKind}:no-approval-required`,
+    expectedMutationCount: expectedMutationCountForPlan(plan),
+    beforeSnapshotRef: plan.checkpoint.evidenceRefs[0],
+    recoveryPlan: {
+      kind: plan.checkpoint.required
+        ? plan.checkpoint.available
+          ? 'before_snapshot'
+          : 'manual_recovery'
+        : 'not_applicable',
+      available: plan.checkpoint.available,
+      summary: plan.checkpoint.summary,
+      evidenceRefs: plan.checkpoint.evidenceRefs,
+    },
+    rollback: {
+      required: expectedMutationCountForPlan(plan) > 0,
+      note: [plan.rollback.summary, ...plan.rollback.instructions].join(' '),
+      evidenceRefs: plan.rollback.evidenceRefs,
+    },
+    postActionValidation: {
+      kind: firstCommand ? 'command' : plan.validation.required ? 'check' : 'not_applicable',
+      label: plan.validation.summary,
+      ...(firstCommand ? { command: firstCommand } : { check: plan.validation.summary }),
+      evidenceRefs: plan.validation.expectedEvidenceRefs,
+    },
+    command: firstCommand,
+    cwd: '.',
+    evidenceRefs: plan.evidenceRefs,
+  });
+}
+
 function finalizePlan(
   plan: Omit<AoiPreparedActionPlan, 'status' | 'blockers'> & {
     blockers?: string[];
   },
 ): AoiPreparedActionPlan {
   const blockers = [...(plan.blockers ?? [])];
+  const approvalSandbox = buildPreparedActionSandbox(plan);
+  if (!hasAoiApprovalSandboxRecoveryEvidence(approvalSandbox)) {
+    blockers.push('rollback_recovery_evidence_missing');
+  }
   if (plan.risk.level === 'high' && plan.checkpoint.required && !plan.checkpoint.available) {
     blockers.push('missing_checkpoint_for_risky_mutation');
   }
@@ -231,6 +317,7 @@ function finalizePlan(
   return {
     ...plan,
     status: uniqueBlockers.length > 0 ? 'blocked' : 'ready',
+    approvalSandbox,
     blockers: uniqueBlockers,
   };
 }

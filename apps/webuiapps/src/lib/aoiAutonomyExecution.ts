@@ -38,6 +38,7 @@ import {
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
+  normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
 import { runAoiApprovedCommand } from './aoiApprovedCommandRunner';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
@@ -103,6 +104,7 @@ export interface AoiProposalExecutionDependencies {
   }) => AoiKiraHandoffCreateResult;
   runApprovedCommand?: (params: {
     request: AoiApprovedCommandRequest;
+    approvedPolicy?: AoiApprovedCommandPolicy;
     workspaceRoot: string;
     now: number;
   }) => Promise<AoiApprovedCommandResult>;
@@ -421,6 +423,7 @@ async function executeAllowedProposalAction(params: {
   sessionPath: string;
   proposal: AoiProposal;
   decisionId?: string;
+  approvedCommandPolicy?: AoiApprovedCommandPolicy;
   dependencies: AoiProposalExecutionDependencies;
   now: number;
 }): Promise<Record<string, unknown>> {
@@ -612,13 +615,20 @@ async function executeAllowedProposalAction(params: {
     }
     const result = await (
       params.dependencies.runApprovedCommand ??
-      ((runnerParams: { request: AoiApprovedCommandRequest; workspaceRoot: string; now: number }) =>
+      ((runnerParams: {
+        request: AoiApprovedCommandRequest;
+        approvedPolicy?: AoiApprovedCommandPolicy;
+        workspaceRoot: string;
+        now: number;
+      }) =>
         runAoiApprovedCommand(runnerParams.request, {
+          ...(runnerParams.approvedPolicy ? { approvedPolicy: runnerParams.approvedPolicy } : {}),
           workspaceRoot: runnerParams.workspaceRoot,
           now: runnerParams.now,
         }))
     )({
       request,
+      ...(params.approvedCommandPolicy ? { approvedPolicy: params.approvedCommandPolicy } : {}),
       workspaceRoot: params.workspaceRoot,
       now: params.now,
     });
@@ -841,6 +851,17 @@ export async function executeAoiProposal(params: {
 
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const decisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  const approvedCommandPolicyForExecution =
+    proposal.acceptAction?.kind === 'run_command'
+      ? normalizeAoiApprovedCommandPolicy(
+          decisions.find(
+            (decision) =>
+              decision.proposalId === proposal.id &&
+              decision.action === 'accept' &&
+              (!params.decisionId || decision.id === params.decisionId),
+          )?.approvedCommand,
+        )
+      : undefined;
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -896,6 +917,9 @@ export async function executeAoiProposal(params: {
       sessionPath,
       proposal,
       decisionId: params.decisionId,
+      ...(approvedCommandPolicyForExecution
+        ? { approvedCommandPolicy: approvedCommandPolicyForExecution }
+        : {}),
       dependencies: params.dependencies ?? {},
       now,
     });

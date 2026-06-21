@@ -7,6 +7,14 @@ import {
   type AppIntentContract,
   type AppIntentExecutionKind,
 } from './appIntentContracts';
+import {
+  createAoiApprovalSandboxPreview,
+  formatAoiApprovalSandboxSummary,
+  validateAoiApprovalSandboxApproval,
+  type AoiApprovalSandboxApprovalReceipt,
+  type AoiApprovalSandboxPreview,
+  type AoiApprovalSandboxValidationResult,
+} from './aoiApprovalSandbox';
 import type { AoiEnvironmentSourceRegistry } from './aoiAutonomyTypes';
 import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 import type { AoiUnifiedOperatorSnapshot } from './aoiUnifiedOperatorModel';
@@ -826,6 +834,7 @@ export interface AoiCapabilityBrokerDecisionInput {
   requestedBand?: AoiCapabilityBrokerBand;
   approvalSatisfied?: boolean;
   approvalEvidenceRefs?: readonly string[];
+  approvalSandboxApproval?: AoiApprovalSandboxApprovalReceipt | null;
   previewEvidenceRefs?: readonly string[];
   targetEvidenceRefs?: readonly string[];
   rollbackEvidenceRefs?: readonly string[];
@@ -835,6 +844,7 @@ export interface AoiCapabilityBrokerDecisionInput {
   additionalBlockedReasons?: readonly string[];
   evidenceRefs?: readonly string[];
   operatorSnapshot?: AoiUnifiedOperatorSnapshot | null;
+  now?: number;
   apps?: readonly (AppDef | AppIdentity)[];
 }
 
@@ -855,6 +865,9 @@ export interface AoiCapabilityBrokerDecision {
   mutationCapable: boolean;
   requiredApproval: boolean;
   approvalSatisfied: boolean;
+  approvalSandbox: AoiApprovalSandboxPreview;
+  approvalSandboxValidation: AoiApprovalSandboxValidationResult;
+  approvalSandboxSummary: string;
   rollbackEvidenceRequirement: AoiCapabilityBrokerRollbackRequirement;
   rollbackEvidenceRefs: string[];
   requiredConsent: AoiConnectorAuthorityConsentRequirement;
@@ -897,6 +910,7 @@ export interface AoiConnectorAuthorityDecisionInput {
   requestedBand?: AoiCapabilityBrokerBand;
   approvalSatisfied?: boolean;
   approvalEvidenceRefs?: readonly string[];
+  approvalSandboxApproval?: AoiApprovalSandboxApprovalReceipt | null;
   previewEvidenceRefs?: readonly string[];
   targetEvidenceRefs?: readonly string[];
   rollbackEvidenceRefs?: readonly string[];
@@ -906,6 +920,7 @@ export interface AoiConnectorAuthorityDecisionInput {
   additionalBlockedReasons?: readonly string[];
   evidenceRefs?: readonly string[];
   operatorSnapshot?: AoiUnifiedOperatorSnapshot | null;
+  now?: number;
   apps?: readonly (AppDef | AppIdentity)[];
   sourceRegistry?: AoiEnvironmentSourceRegistry | null;
   sourceFreshnessContracts?: readonly AoiSourceFreshnessContract[];
@@ -929,6 +944,9 @@ export interface AoiConnectorAuthorityDecision {
   requiredConsent: AoiConnectorAuthorityConsentRequirement;
   requiredApproval: boolean;
   approvalSatisfied: boolean;
+  approvalSandbox?: AoiApprovalSandboxPreview;
+  approvalSandboxValidation?: AoiApprovalSandboxValidationResult;
+  approvalSandboxSummary?: string;
   rollbackEvidenceRequirement: AoiCapabilityBrokerRollbackRequirement;
   auditRequired: boolean;
   auditEvent: AoiConnectorAuthorityAuditEvent;
@@ -1332,7 +1350,15 @@ function safeBandAfterExecuteBlock(
   supportedBands: readonly AoiCapabilityBrokerBand[],
   blockedReasons: readonly string[],
 ): AoiCapabilityBrokerBand {
-  if (blockedReasons.includes('approval_required') && supportedBands.includes('request_approval')) {
+  if (
+    blockedReasons.some(
+      (reason) =>
+        reason === 'approval_required' ||
+        reason === 'approval_missing' ||
+        reason.startsWith('sandbox_approval_'),
+    ) &&
+    supportedBands.includes('request_approval')
+  ) {
     return 'request_approval';
   }
   if (supportedBands.includes('preview')) {
@@ -1367,6 +1393,40 @@ function buildUnknownCapabilityDecision(
     blockedReasons.join(','),
   ]);
   const requiredConsent = makeConsentRequirement({});
+  const approvalSandbox = createAoiApprovalSandboxPreview({
+    targetKind: app ? 'app' : 'unknown',
+    targetId: `${app?.appName ?? input.appReference}:${input.capabilityId ?? input.actionType ?? 'unknown'}`,
+    intendedMutation: operation,
+    dryRunSummary: `Unknown or unregistered capability cannot execute: ${operation}.`,
+    requiredAuthorityDecisionId: authorityDecisionId,
+    expectedMutationCount: 0,
+    recoveryPlan: {
+      kind: 'not_applicable',
+      available: true,
+      summary: 'No mutation is authorized for an unknown capability decision.',
+      evidenceRefs: [],
+    },
+    rollback: {
+      required: false,
+      note: 'No rollback is required because the unknown capability cannot execute.',
+      evidenceRefs: [],
+    },
+    postActionValidation: {
+      kind: 'not_applicable',
+      label: 'Unknown capability execution is blocked before mutation.',
+      evidenceRefs: [`authority-decision:${authorityDecisionId}`],
+    },
+    evidenceRefs: [
+      ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...(app?.evidenceRefs ?? []),
+    ],
+  });
+  const approvalSandboxValidation = validateAoiApprovalSandboxApproval({
+    preview: approvalSandbox,
+    approval: input.approvalSandboxApproval,
+    now: input.now ?? 0,
+    approvalRequired: false,
+  });
   const snapshotEvidenceRefs = operatorSnapshotEvidenceRefs(input.operatorSnapshot);
   const snapshotCannotKnow = operatorSnapshotCannotKnow(input.operatorSnapshot);
   const evidenceRefs = uniqueBrokerStrings(
@@ -1375,6 +1435,7 @@ function buildUnknownCapabilityDecision(
       ...(app?.evidenceRefs ?? []),
       ...snapshotEvidenceRefs,
       `authority-decision:${authorityDecisionId}`,
+      `approval-sandbox-preview:${approvalSandbox.previewHash}`,
     ],
     24,
   );
@@ -1409,6 +1470,12 @@ function buildUnknownCapabilityDecision(
     mutationCapable: false,
     requiredApproval: false,
     approvalSatisfied: false,
+    approvalSandbox,
+    approvalSandboxValidation,
+    approvalSandboxSummary: formatAoiApprovalSandboxSummary(
+      approvalSandbox,
+      approvalSandboxValidation,
+    ),
     rollbackEvidenceRequirement: 'not_required',
     rollbackEvidenceRefs: [],
     requiredConsent,
@@ -1512,7 +1579,7 @@ export function decideAoiCapabilityBrokerAuthority(
     allowedBand = highestSupportedBandAtOrBelow(capability.supportedBands, finalRequestedBand);
   }
 
-  const approvalSatisfied = input.approvalSatisfied === true;
+  const rawApprovalSatisfied = input.approvalSatisfied === true;
   const approvalEvidenceRefs = uniqueBrokerStrings(
     input.approvalEvidenceRefs ? [...input.approvalEvidenceRefs] : [],
     12,
@@ -1556,7 +1623,7 @@ export function decideAoiCapabilityBrokerAuthority(
           ? 'missing'
           : 'required';
 
-  if (executeLikeBand && capability.requiresApproval && !approvalSatisfied) {
+  if (executeLikeBand && capability.requiresApproval && !rawApprovalSatisfied) {
     blockedReasons.push('approval_required');
   }
   if (executeLikeBand && capability.mutationCapable && mutationConsentReceiptRefs.length <= 0) {
@@ -1565,7 +1632,7 @@ export function decideAoiCapabilityBrokerAuthority(
   if (
     executeLikeBand &&
     capability.mutationCapable &&
-    approvalSatisfied &&
+    rawApprovalSatisfied &&
     (approvalEvidenceRefs.length <= 0 ||
       previewEvidenceRefs.length <= 0 ||
       targetEvidenceRefs.length <= 0)
@@ -1582,10 +1649,6 @@ export function decideAoiCapabilityBrokerAuthority(
   if (bodyContentBand && bodyContentConsentReceiptRefs.length <= 0) {
     blockedReasons.push('body_content_consent_receipt_required');
   }
-  if (blockedReasons.length > 0 && (executeLikeBand || bodyContentBand)) {
-    allowedBand = safeBandAfterExecuteBlock(capability.supportedBands, blockedReasons);
-  }
-
   const requiredApproval =
     capability.requiresApproval || blockedReasons.includes('approval_required');
   const requiredConsent = makeConsentRequirement({
@@ -1604,6 +1667,75 @@ export function decideAoiCapabilityBrokerAuthority(
     bodyContentReceiptRefs: bodyContentConsentReceiptRefs,
     mutationReceiptRefs: mutationConsentReceiptRefs,
   });
+  const authorityDecisionId = makeAuthorityDecisionId([
+    manifest.appName,
+    capability.id,
+    finalRequestedBand,
+    requiredConsent.receiptRefs.join(','),
+  ]);
+  const approvalSandbox = createAoiApprovalSandboxPreview({
+    targetKind: 'app',
+    targetId: `${manifest.appName}:${capability.id}`,
+    intendedMutation: input.requestedOperation || input.actionType || capability.title,
+    dryRunSummary: `${manifest.displayName} ${capability.title}: requested=${finalRequestedBand}; operation=${
+      input.requestedOperation || input.actionType || capability.intent
+    }`,
+    requiredAuthorityDecisionId: authorityDecisionId,
+    expectedMutationCount: capability.mutationCapable && executeLikeBand ? 1 : 0,
+    recoveryPlan: {
+      kind: capability.rollbackEvidenceRequired ? 'manual_recovery' : 'not_applicable',
+      available: !capability.rollbackEvidenceRequired || rollbackEvidenceRefs.length > 0,
+      summary: capability.rollbackEvidenceRequired
+        ? rollbackEvidenceRefs.length > 0
+          ? `Rollback or recovery evidence is attached for ${capability.title}.`
+          : `Rollback or recovery evidence is required before ${capability.title} can execute.`
+        : 'No rollback evidence is required for this app capability.',
+      evidenceRefs: rollbackEvidenceRefs,
+    },
+    rollback: {
+      required: capability.rollbackEvidenceRequired && executeLikeBand,
+      note:
+        rollbackEvidenceRefs.length > 0
+          ? `Use attached rollback/recovery evidence before retrying or reverting ${capability.title}.`
+          : `Do not execute ${capability.title} until rollback/recovery evidence is attached.`,
+      evidenceRefs: rollbackEvidenceRefs,
+    },
+    postActionValidation: {
+      kind: 'check',
+      label: `Record connector authority audit ${authorityDecisionId} and validate mutation count.`,
+      check: 'App action result is recorded and mutationCount matches the expected sandbox count.',
+      evidenceRefs: [`authority-decision:${authorityDecisionId}`],
+    },
+    evidenceRefs: [
+      ...(input.evidenceRefs ? [...input.evidenceRefs] : []),
+      ...approvalEvidenceRefs,
+      ...previewEvidenceRefs,
+      ...targetEvidenceRefs,
+      ...rollbackEvidenceRefs,
+      ...requiredConsent.receiptRefs,
+    ],
+  });
+  const approvalSandboxValidation = validateAoiApprovalSandboxApproval({
+    preview: approvalSandbox,
+    approval: input.approvalSandboxApproval,
+    now: input.now ?? 0,
+    approvalRequired: executeLikeBand && capability.mutationCapable,
+    connectorAuthorityState:
+      input.additionalBlockedReasons?.some((reason) => reason.includes('source_revoked')) === true
+        ? 'revoked'
+        : capability.sourceState,
+  });
+  if (executeLikeBand && capability.mutationCapable && !approvalSandboxValidation.approved) {
+    blockedReasons.push(
+      ...approvalSandboxValidation.blockedReasons.map((reason) => `sandbox_${reason}`),
+    );
+  }
+  if (blockedReasons.length > 0 && (executeLikeBand || bodyContentBand)) {
+    allowedBand = safeBandAfterExecuteBlock(capability.supportedBands, blockedReasons);
+  }
+  const approvalSatisfied =
+    rawApprovalSatisfied &&
+    (!executeLikeBand || !capability.mutationCapable || approvalSandboxValidation.approved);
   const canExecute =
     finalRequestedBand === 'execute' &&
     allowedBand === 'execute' &&
@@ -1611,14 +1743,6 @@ export function decideAoiCapabilityBrokerAuthority(
     (!requiredApproval || approvalSatisfied) &&
     rollbackEvidenceRequirement !== 'missing';
   const finalBlockedReasons = uniqueBrokerStrings(blockedReasons, 12);
-  const authorityDecisionId = makeAuthorityDecisionId([
-    manifest.appName,
-    capability.id,
-    finalRequestedBand,
-    allowedBand,
-    finalBlockedReasons.join(','),
-    requiredConsent.receiptRefs.join(','),
-  ]);
   const snapshotEvidenceRefs = operatorSnapshotEvidenceRefs(input.operatorSnapshot);
   const snapshotCannotKnow = operatorSnapshotCannotKnow(input.operatorSnapshot);
   const evidenceRefs = uniqueBrokerStrings(
@@ -1634,6 +1758,8 @@ export function decideAoiCapabilityBrokerAuthority(
       ...targetEvidenceRefs,
       ...rollbackEvidenceRefs,
       ...requiredConsent.receiptRefs,
+      `approval-sandbox-preview:${approvalSandbox.previewHash}`,
+      ...approvalSandboxValidation.evidenceRefs,
     ],
     24,
   );
@@ -1683,6 +1809,12 @@ export function decideAoiCapabilityBrokerAuthority(
     mutationCapable: capability.mutationCapable,
     requiredApproval,
     approvalSatisfied,
+    approvalSandbox,
+    approvalSandboxValidation,
+    approvalSandboxSummary: formatAoiApprovalSandboxSummary(
+      approvalSandbox,
+      approvalSandboxValidation,
+    ),
     rollbackEvidenceRequirement,
     rollbackEvidenceRefs,
     requiredConsent,
@@ -1789,6 +1921,9 @@ function connectorDecisionFromBroker(
     requiredConsent: decision.requiredConsent,
     requiredApproval: decision.requiredApproval,
     approvalSatisfied: decision.approvalSatisfied,
+    approvalSandbox: decision.approvalSandbox,
+    approvalSandboxValidation: decision.approvalSandboxValidation,
+    approvalSandboxSummary: decision.approvalSandboxSummary,
     rollbackEvidenceRequirement: decision.rollbackEvidenceRequirement,
     auditRequired: decision.auditRequired,
     auditEvent: decision.auditEvent,
@@ -1969,6 +2104,7 @@ export function decideAoiConnectorAuthority(
       requestedBand: input.requestedBand,
       approvalSatisfied: input.approvalSatisfied,
       approvalEvidenceRefs: input.approvalEvidenceRefs,
+      approvalSandboxApproval: input.approvalSandboxApproval,
       previewEvidenceRefs: input.previewEvidenceRefs,
       targetEvidenceRefs: input.targetEvidenceRefs,
       rollbackEvidenceRefs: input.rollbackEvidenceRefs,
@@ -1978,6 +2114,7 @@ export function decideAoiConnectorAuthority(
       additionalBlockedReasons: input.additionalBlockedReasons,
       evidenceRefs: input.evidenceRefs,
       operatorSnapshot: input.operatorSnapshot,
+      now: input.now,
       apps: input.apps,
     }),
   );

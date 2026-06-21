@@ -7,6 +7,7 @@ import {
   getAoiAppCapabilityManifest,
   summarizeAoiAppCapabilityAuthority,
 } from '../aoiCapabilityRegistry';
+import { createAoiApprovalSandboxApprovalReceipt } from '../aoiApprovalSandbox';
 import { buildAoiUnifiedOperatorSnapshot } from '../aoiUnifiedOperatorModel';
 import type { AoiSourceFreshnessContract } from '../aoiSourceFreshnessContract';
 import type { AppDef } from '../appRegistry';
@@ -85,7 +86,7 @@ describe('aoiCapabilityBroker', () => {
   });
 
   it('allows mutation execution only after approval and rollback evidence are present', () => {
-    const decision = decideAoiCapabilityBrokerAuthority({
+    const prepared = decideAoiCapabilityBrokerAuthority({
       appReference: 'kira',
       actionType: 'APPLY_MODEL_SETTINGS',
       requestedOperation: 'apply Kira model settings',
@@ -97,17 +98,47 @@ describe('aoiCapabilityBroker', () => {
       mutationConsentReceiptRefs: ['consent:kira-settings-001'],
       rollbackEvidenceRefs: ['rollback:kira-settings-001'],
       apps: [KIRA_APP],
+      now: 2000,
+    });
+    const approvalSandboxApproval = createAoiApprovalSandboxApprovalReceipt(
+      prepared.approvalSandbox,
+      {
+        approvedAt: 2000,
+        expiresAt: 5000,
+        evidenceRefs: ['approval-sandbox:kira-settings-001'],
+      },
+    );
+    const decision = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedOperation: 'apply Kira model settings',
+      requestedBand: 'execute',
+      approvalSatisfied: true,
+      approvalEvidenceRefs: ['approval:kira-settings-001'],
+      approvalSandboxApproval,
+      previewEvidenceRefs: ['preview:kira-settings-001'],
+      targetEvidenceRefs: ['target:kira-settings:model-settings'],
+      mutationConsentReceiptRefs: ['consent:kira-settings-001'],
+      rollbackEvidenceRefs: ['rollback:kira-settings-001'],
+      apps: [KIRA_APP],
+      now: 2200,
     });
 
+    expect(prepared.canExecute).toBe(false);
+    expect(prepared.allowedBand).toBe('request_approval');
+    expect(prepared.blockedReasons).toContain('sandbox_approval_missing');
+    expect(prepared.approvalSandboxValidation.approved).toBe(false);
     expect(decision.blockedReasons).toEqual([]);
     expect(decision).toMatchObject({
       allowedBand: 'execute',
       rollbackEvidenceRequirement: 'satisfied',
+      approvalSatisfied: true,
       canExecute: true,
       auditRequired: true,
       mutationCount: 0,
       unauthorizedMutationCount: 0,
     });
+    expect(decision.approvalSandboxValidation.approved).toBe(true);
     expect(decision.requiredConsent.mutation).toBe('satisfied');
     expect(decision.auditEvent).toMatchObject({
       decisionId: decision.authorityDecisionId,
@@ -115,6 +146,53 @@ describe('aoiCapabilityBroker', () => {
       mutationIntent: 'execute_after_authority',
       mutationCount: 0,
     });
+  });
+
+  it('rejects reused approval when the sandbox preview changes after approval', () => {
+    const prepared = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedOperation: 'apply Kira model settings',
+      requestedBand: 'execute',
+      approvalSatisfied: true,
+      approvalEvidenceRefs: ['approval:kira-settings-001'],
+      previewEvidenceRefs: ['preview:kira-settings-001'],
+      targetEvidenceRefs: ['target:kira-settings:model-settings'],
+      mutationConsentReceiptRefs: ['consent:kira-settings-001'],
+      rollbackEvidenceRefs: ['rollback:kira-settings-001'],
+      apps: [KIRA_APP],
+      now: 2000,
+    });
+    const approvalSandboxApproval = createAoiApprovalSandboxApprovalReceipt(
+      prepared.approvalSandbox,
+      {
+        approvedAt: 2000,
+        expiresAt: 5000,
+      },
+    );
+    const changed = decideAoiCapabilityBrokerAuthority({
+      appReference: 'kira',
+      actionType: 'APPLY_MODEL_SETTINGS',
+      requestedOperation: 'apply Kira model settings and alter another provider',
+      requestedBand: 'execute',
+      approvalSatisfied: true,
+      approvalEvidenceRefs: ['approval:kira-settings-001'],
+      approvalSandboxApproval,
+      previewEvidenceRefs: ['preview:kira-settings-001'],
+      targetEvidenceRefs: ['target:kira-settings:model-settings'],
+      mutationConsentReceiptRefs: ['consent:kira-settings-001'],
+      rollbackEvidenceRefs: ['rollback:kira-settings-001'],
+      apps: [KIRA_APP],
+      now: 2200,
+    });
+
+    expect(changed.canExecute).toBe(false);
+    expect(changed.blockedReasons).toEqual(
+      expect.arrayContaining([
+        'sandbox_approval_preview_changed',
+        'sandbox_approval_fingerprint_changed',
+      ]),
+    );
   });
 
   it('rejects reused approval when target and preview proof do not match the mutation', () => {
@@ -167,6 +245,7 @@ describe('aoiCapabilityBroker', () => {
       mutationCount: 0,
       unauthorizedMutationCount: 0,
     });
+    expect(decision.approvalSandboxValidation.approved).toBe(true);
     expect(decision.requiredConsent.mutation).toBe('not_required');
   });
 

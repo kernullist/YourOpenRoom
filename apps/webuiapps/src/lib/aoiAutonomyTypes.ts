@@ -1,4 +1,8 @@
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+import type {
+  AoiApprovalSandboxPreview,
+  AoiApprovalSandboxValidationResult,
+} from './aoiApprovalSandbox';
 
 export type AoiAutonomyLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5';
 
@@ -2069,6 +2073,8 @@ export interface AoiPreparedActionPlan {
   checkpoint: AoiCheckpointPlan;
   rollback: AoiRollbackPlan;
   validation: AoiValidationPlan;
+  approvalSandbox?: AoiApprovalSandboxPreview;
+  approvalSandboxValidation?: AoiApprovalSandboxValidationResult;
   blockers: string[];
   nonGoals: string[];
 }
@@ -2217,6 +2223,16 @@ export type AoiCommandBlockReason =
   | 'approval_expired'
   | 'approval_command_changed'
   | 'approval_cwd_changed'
+  | 'approval_env_changed'
+  | 'approval_preview_changed'
+  | 'approval_target_changed'
+  | 'approval_authority_decision_changed'
+  | 'approval_rollback_plan_changed'
+  | 'approval_recovery_plan_changed'
+  | 'approval_validation_changed'
+  | 'approval_fingerprint_changed'
+  | 'approval_sandbox_missing'
+  | 'rollback_recovery_evidence_missing'
   | 'approval_risk_changed'
   | 'approval_purpose_changed'
   | 'workspace_cwd_missing'
@@ -2254,6 +2270,7 @@ export interface AoiApprovedCommandPolicy {
   requiredAutonomyLevel: 'L5';
   timeoutMs: number;
   approvalFingerprint: string;
+  approvalSandbox?: AoiApprovalSandboxPreview;
   expiresAt: number;
   rationale: string[];
 }
@@ -2282,6 +2299,8 @@ export interface AoiCommandAuditRecord {
   stderrTruncated: boolean;
   evidenceRefs: string[];
   approvalFingerprint: string;
+  approvalSandboxPreviewHash?: string;
+  approvalSandboxValidationStatus?: AoiApprovalSandboxValidationResult['state'];
 }
 
 export interface AoiApprovedCommandResult {

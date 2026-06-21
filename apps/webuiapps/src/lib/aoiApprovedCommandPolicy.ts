@@ -1,4 +1,9 @@
 import { tokenizeCommand } from './workspaceCommandPolicy';
+import {
+  compareAoiApprovalSandboxPreviews,
+  createAoiApprovalSandboxPreview,
+  normalizeAoiApprovalSandboxPreview,
+} from './aoiApprovalSandbox';
 import type {
   AoiApprovedCommandPolicy,
   AoiApprovedCommandRequest,
@@ -8,6 +13,9 @@ import type {
 
 export const AOI_APPROVED_COMMAND_TIMEOUT_MS = 30_000;
 export const AOI_COMMAND_APPROVAL_TTL_MS = 5 * 60 * 1000;
+export const AOI_APPROVED_COMMAND_ENV = {
+  FORCE_COLOR: '0',
+} as const;
 
 const MAX_COMMAND_CHARS = 320;
 const SHELL_METACHAR_REGEX = /[|&;<>`\r\n]/;
@@ -328,23 +336,6 @@ function validateGit(tokens: string[]): {
   return { args, reasons, rationale };
 }
 
-function buildFingerprint(params: {
-  command: string;
-  cwdHash: string;
-  purposeHash: string;
-  risk: AoiAutonomyRisk;
-}): string {
-  return hashStable(
-    [
-      'aoi-approved-command-v1',
-      params.command,
-      params.cwdHash,
-      params.purposeHash,
-      params.risk,
-    ].join('\n'),
-  );
-}
-
 export function createAoiApprovedCommandRequest(params: {
   sessionPath: string;
   proposalId?: string;
@@ -419,6 +410,38 @@ export function evaluateAoiApprovedCommandPolicy(
   }
 
   const blockReasons = dedupeReasons(reasons);
+  const approvalSandbox = createAoiApprovalSandboxPreview({
+    targetKind: 'command',
+    targetId: `${cwd}:${command || 'missing-command'}`,
+    intendedMutation: `Run approved validation command for ${purpose}.`,
+    dryRunSummary: `Would run "${command || 'missing command'}" from ${cwdLabel} with the approved command runner environment.`,
+    requiredAuthorityDecisionId: `approved-command:${hashStable(
+      [command, cwdHash, purposeHash, request.risk].join('|'),
+    )}`,
+    expectedMutationCount: 0,
+    recoveryPlan: {
+      kind: 'not_applicable',
+      available: true,
+      summary:
+        'Validation commands are expected to be read-only; unexpected mutations require manual recovery review.',
+      evidenceRefs: request.evidenceRefs,
+    },
+    rollback: {
+      required: false,
+      note: 'No rollback is promised for validation output; stop and review if the command mutates files.',
+      evidenceRefs: request.evidenceRefs,
+    },
+    postActionValidation: {
+      kind: 'check',
+      label: 'Capture exit code, stdout/stderr excerpts, timeout state, and command audit record.',
+      check: 'Command audit receipt is recorded after execution.',
+      evidenceRefs: request.evidenceRefs,
+    },
+    command,
+    cwd,
+    env: AOI_APPROVED_COMMAND_ENV,
+    evidenceRefs: request.evidenceRefs,
+  });
   return {
     version: 1,
     allowed: blockReasons.length === 0,
@@ -435,12 +458,8 @@ export function evaluateAoiApprovedCommandPolicy(
     risk: request.risk,
     requiredAutonomyLevel: 'L5',
     timeoutMs: request.timeoutMs,
-    approvalFingerprint: buildFingerprint({
-      command,
-      cwdHash,
-      purposeHash,
-      risk: request.risk,
-    }),
+    approvalFingerprint: approvalSandbox.approvalFingerprint,
+    approvalSandbox,
     expiresAt: request.requestedAt + AOI_COMMAND_APPROVAL_TTL_MS,
     rationale:
       rationale.length > 0
@@ -477,6 +496,7 @@ export function normalizeAoiApprovedCommandPolicy(
   ) {
     return undefined;
   }
+  const approvalSandbox = normalizeAoiApprovalSandboxPreview(raw.approvalSandbox);
   return {
     version: 1,
     allowed: raw.allowed,
@@ -496,6 +516,7 @@ export function normalizeAoiApprovedCommandPolicy(
     requiredAutonomyLevel: 'L5',
     timeoutMs: raw.timeoutMs,
     approvalFingerprint: raw.approvalFingerprint,
+    ...(approvalSandbox ? { approvalSandbox } : {}),
     expiresAt: raw.expiresAt,
     rationale: raw.rationale.filter((item): item is string => typeof item === 'string'),
   };
@@ -508,7 +529,7 @@ export function compareAoiApprovedCommandApproval(params: {
 }): AoiCommandBlockReason[] {
   const approved = params.approved;
   if (!approved) {
-    return ['approval_missing'];
+    return ['approval_missing', 'approval_sandbox_missing'];
   }
   const reasons: AoiCommandBlockReason[] = [];
   if (approved.expiresAt < params.now) {
@@ -526,9 +547,15 @@ export function compareAoiApprovedCommandApproval(params: {
   if (approved.purposeHash !== params.current.purposeHash) {
     reasons.push('approval_purpose_changed');
   }
+  for (const reason of compareAoiApprovalSandboxPreviews({
+    approved: approved.approvalSandbox,
+    current: params.current.approvalSandbox,
+  })) {
+    reasons.push(reason as AoiCommandBlockReason);
+  }
   if (approved.approvalFingerprint !== params.current.approvalFingerprint) {
     if (!reasons.includes('approval_command_changed')) {
-      reasons.push('approval_command_changed');
+      reasons.push('approval_fingerprint_changed');
     }
   }
   return dedupeReasons(reasons);

@@ -7,7 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
 import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
-import { buildAoiKiraHandoffPreparedActionPlan } from '../aoiSafeActionPlan';
+import {
+  buildAoiKiraHandoffPreparedActionPlan,
+  buildAoiResearchStartPreparedActionPlan,
+} from '../aoiSafeActionPlan';
 import {
   buildAoiBoundedWorkOrderFromProposal,
   createAoiBoundedWorkOrder,
@@ -32,7 +35,10 @@ import {
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
 import { loadAoiWorkspaceSnapshot } from '../aoiWorkspaceSignals';
-import { AOI_COMMAND_APPROVAL_TTL_MS } from '../aoiApprovedCommandPolicy';
+import {
+  AOI_COMMAND_APPROVAL_TTL_MS,
+  evaluateAoiApprovedCommandPolicy,
+} from '../aoiApprovedCommandPolicy';
 import { runAoiApprovedCommand } from '../aoiApprovedCommandRunner';
 import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
 import type {
@@ -345,26 +351,25 @@ describe('runAoiApprovedCommand()', () => {
       Parameters<typeof runAoiApprovedCommand>[1]['spawnImpl']
     >;
 
-    const resultPromise = runAoiApprovedCommand(
-      {
-        version: 1,
-        sessionPath: 'aoi/default',
-        proposalId: 'proposal-command-output-001',
-        decisionId: 'decision-command-output-001',
-        command: 'git diff --check',
-        cwd: '.',
-        purpose: 'Validate current diff whitespace.',
-        risk: 'high',
-        timeoutMs: 15_000,
-        requestedAt: 3000,
-        evidenceRefs: ['goal:aoi-command-output'],
-      },
-      {
-        workspaceRoot: root,
-        now: 3000,
-        spawnImpl,
-      },
-    );
+    const request: AoiApprovedCommandRequest = {
+      version: 1,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-command-output-001',
+      decisionId: 'decision-command-output-001',
+      command: 'git diff --check',
+      cwd: '.',
+      purpose: 'Validate current diff whitespace.',
+      risk: 'high',
+      timeoutMs: 15_000,
+      requestedAt: 3000,
+      evidenceRefs: ['goal:aoi-command-output'],
+    };
+    const resultPromise = runAoiApprovedCommand(request, {
+      workspaceRoot: root,
+      now: 3000,
+      spawnImpl,
+      approvedPolicy: evaluateAoiApprovedCommandPolicy(request),
+    });
 
     stdout.emit('data', `api_key=super-secret-value\n${'a'.repeat(6100)}`);
     stderr.emit('data', 'password=another-secret-value\n');
@@ -393,6 +398,37 @@ describe('runAoiApprovedCommand()', () => {
     expect(result.stderrExcerpt).toContain('password=[redacted_secret]');
     expect(result.stderrExcerpt).not.toContain('another-secret-value');
     expect(result.auditRecord.stdoutTruncated).toBe(true);
+  });
+
+  it('blocks runner execution without an approved sandbox policy snapshot', async () => {
+    const root = makeTempRoot();
+    const spawnImpl = vi.fn() as unknown as NonNullable<
+      Parameters<typeof runAoiApprovedCommand>[1]['spawnImpl']
+    >;
+    const request: AoiApprovedCommandRequest = {
+      version: 1,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-command-output-002',
+      decisionId: 'decision-command-output-002',
+      command: 'git diff --check',
+      cwd: '.',
+      purpose: 'Validate current diff whitespace.',
+      risk: 'high',
+      timeoutMs: 15_000,
+      requestedAt: 3000,
+      evidenceRefs: ['goal:aoi-command-output'],
+    };
+
+    const result = await runAoiApprovedCommand(request, {
+      workspaceRoot: root,
+      now: 3000,
+      spawnImpl,
+    });
+
+    expect(spawnImpl).not.toHaveBeenCalled();
+    expect(result.ok).toBe(false);
+    expect(result.auditRecord.blockReasons).toContain('approval_sandbox_missing');
+    expect(result.auditRecord.approvalSandboxValidationStatus).toBe('blocked');
   });
 });
 
@@ -815,6 +851,30 @@ describe('executeAoiProposal()', () => {
     expect(plan.validation.commands.length).toBeGreaterThan(0);
     expect(plan.rollback.instructions.join(' ')).toMatch(/review|reject/i);
     expect(plan.rollback.instructions.join(' ')).not.toMatch(/\bguaranteed\b/i);
+  });
+
+  it('treats approved research starts as artifact mutations in the approval sandbox', () => {
+    const plan = buildAoiResearchStartPreparedActionPlan(
+      makeProposal({
+        status: 'active',
+        requiredAutonomyLevel: 'L4',
+        requiresUserApproval: true,
+        suggestedTools: ['start_research'],
+        acceptAction: {
+          kind: 'start_research',
+          params: {
+            request: 'Investigate ETW telemetry changes.',
+            mode: 'standard',
+          },
+        },
+      }),
+    );
+
+    expect(plan.approvalSandbox).toMatchObject({
+      targetKind: 'research',
+      expectedMutationCount: 1,
+    });
+    expect(plan.blockers).toEqual([]);
   });
 
   it('executes accepted read-only artifact proposals at L3 with capped output', async () => {
@@ -1442,6 +1502,10 @@ describe('executeAoiProposal()', () => {
         cwd: '.',
         purpose: 'Validate Aoi autonomy execution changes.',
       },
+    });
+    expect(runApprovedCommand.mock.calls[0][0].approvedPolicy.approvalSandbox).toMatchObject({
+      targetKind: 'command',
+      expectedMutationCount: 0,
     });
     expect(audits).toHaveLength(1);
     expect(audits[0].evidenceRefs.some((ref) => ref.startsWith('decision:'))).toBe(true);

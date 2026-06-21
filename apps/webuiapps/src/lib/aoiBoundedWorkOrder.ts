@@ -3,6 +3,10 @@ import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
+import {
+  createAoiApprovalSandboxPreview,
+  hasAoiApprovalSandboxRecoveryEvidence,
+} from './aoiApprovalSandbox';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import { buildAoiPreparedActionPlan } from './aoiSafeActionPlan';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
@@ -18,6 +22,7 @@ import type {
 } from './aoiAutonomyTypes';
 import type { AoiMissionControlItem, AoiMissionControlState } from './aoiMissionControlRuntime';
 import type { AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
+import type { AoiApprovalSandboxPreview, AoiApprovalSandboxTargetKind } from './aoiApprovalSandbox';
 
 const DEFAULT_NOW = 1_800_000_000_000;
 const MAX_TEXT = 260;
@@ -193,6 +198,7 @@ export interface AoiBoundedWorkOrder {
   validation: AoiBoundedWorkOrderValidation;
   checkpoint: AoiBoundedWorkOrderCheckpoint;
   rollback: AoiBoundedWorkOrderRollback;
+  approvalSandbox: AoiApprovalSandboxPreview;
   reviewRequirement: AoiBoundedWorkOrderReviewRequirement;
   stopConditions: string[];
   policyResult: AoiBoundedWorkOrderPolicyResult;
@@ -210,6 +216,12 @@ export interface AoiBoundedWorkOrderApprovalSnapshot {
   cwdHashes: string[];
   scopeHash: string;
   fileScopeHash: string;
+  sandboxPreviewHash: string;
+  sandboxAuthorityDecisionId: string;
+  sandboxRecoveryHash: string;
+  sandboxRollbackHash: string;
+  sandboxValidationHash: string;
+  sandboxEnvHash: string;
   riskLevel: AoiAutonomyRisk;
   approvedAt: number;
   expiresAt: number;
@@ -623,6 +635,40 @@ function buildApprovalFingerprint(params: {
   );
 }
 
+function sandboxTargetKindForWorkOrder(
+  operations: readonly AoiBoundedWorkOrderOperation[],
+  commandCapable: boolean,
+): AoiApprovalSandboxTargetKind {
+  if (operations.includes('create_kira_work')) {
+    return 'kira';
+  }
+  if (operations.includes('start_research')) {
+    return 'research';
+  }
+  if (operations.includes('save_memory')) {
+    return 'memory';
+  }
+  if (commandCapable) {
+    return 'command';
+  }
+  return 'workspace';
+}
+
+function expectedSandboxMutationCountForWorkOrder(params: {
+  operations: readonly AoiBoundedWorkOrderOperation[];
+  mutationCapable: boolean;
+}): number {
+  if (
+    params.mutationCapable ||
+    params.operations.includes('create_kira_work') ||
+    params.operations.includes('start_research') ||
+    params.operations.includes('save_memory')
+  ) {
+    return 1;
+  }
+  return 0;
+}
+
 function exactNextApproval(params: {
   status?: AoiBoundedWorkOrderPolicyStatus;
   mutationCapable: boolean;
@@ -796,6 +842,26 @@ function compareApprovalSnapshot(
   if (snapshot.fileScopeHash !== fileScopeHash) {
     reasons.push('approval_files_changed');
   }
+  if (snapshot.sandboxPreviewHash !== order.approvalSandbox.previewHash) {
+    reasons.push('approval_preview_changed');
+  }
+  if (snapshot.sandboxAuthorityDecisionId !== order.approvalSandbox.requiredAuthorityDecisionId) {
+    reasons.push('approval_authority_decision_changed');
+  }
+  if (snapshot.sandboxRecoveryHash !== order.approvalSandbox.recoveryPlan.recoveryHash) {
+    reasons.push('approval_recovery_plan_changed');
+  }
+  if (snapshot.sandboxRollbackHash !== order.approvalSandbox.rollback.rollbackHash) {
+    reasons.push('approval_rollback_plan_changed');
+  }
+  if (
+    snapshot.sandboxValidationHash !== order.approvalSandbox.postActionValidation.validationHash
+  ) {
+    reasons.push('approval_validation_changed');
+  }
+  if (snapshot.sandboxEnvHash !== order.approvalSandbox.envHash) {
+    reasons.push('approval_env_changed');
+  }
   if (snapshot.riskLevel !== order.risk.level) {
     reasons.push('approval_risk_changed');
   }
@@ -839,6 +905,9 @@ export function evaluateAoiBoundedWorkOrderPolicy(
   }
   if (order.risk.mutationCapable && !order.rollback.available) {
     blockedReasons.push('missing_rollback_for_mutation_capable_work');
+  }
+  if (!hasAoiApprovalSandboxRecoveryEvidence(order.approvalSandbox)) {
+    blockedReasons.push('rollback_recovery_evidence_missing');
   }
   const approvalInvalidationReasons = compareApprovalSnapshot(order, options.approvedSnapshot, now);
   const approvalSatisfied =
@@ -1015,7 +1084,7 @@ export function createAoiBoundedWorkOrder(
           evidenceRefs,
         });
   const fileScopeHash = buildFileScopeHash(files, modules);
-  const approvalFingerprint = buildApprovalFingerprint({
+  const approvalBaseFingerprint = buildApprovalFingerprint({
     objective,
     scopeHash,
     fileScopeHash,
@@ -1056,6 +1125,67 @@ export function createAoiBoundedWorkOrder(
     modules,
     affectedSurfaces,
   });
+  const validationRequired =
+    risk.mutationCapable || draft.validation?.required === true || commands.length > 0;
+  const validationSummary = sanitizeText(
+    draft.validation?.summary,
+    commands.length > 0
+      ? 'Validation commands are previewed but not run by the work order.'
+      : risk.mutationCapable
+        ? 'A validation command preview is required before mutation-capable work can proceed.'
+        : 'No validation command is required for this read-only preview.',
+    220,
+  );
+  const validationExpectedEvidenceRefs = dedupeStrings(
+    draft.validation?.expectedEvidenceRefs ?? [],
+    12,
+  );
+  const firstCommand = commands[0];
+  const expectedSandboxMutationCount = expectedSandboxMutationCountForWorkOrder({
+    operations: allowedOperations,
+    mutationCapable: risk.mutationCapable,
+  });
+  const approvalSandbox = createAoiApprovalSandboxPreview({
+    targetKind: sandboxTargetKindForWorkOrder(allowedOperations, risk.commandCapable),
+    targetId: `${sessionPath}:${scopeHash}:${fileScopeHash}`,
+    intendedMutation: risk.mutationCapable
+      ? expectedDiffShape.summary
+      : risk.commandCapable
+        ? `Run validation command preview: ${firstCommand?.command ?? 'no command'}`
+        : objective,
+    dryRunSummary: `${objective}; scope=${scopeHash}; files=${fileScopeHash}; expected=${expectedDiffShape.summary}`,
+    requiredAuthorityDecisionId: `bounded-work-order:${approvalBaseFingerprint}`,
+    expectedMutationCount: expectedSandboxMutationCount,
+    beforeSnapshotRef: checkpoint.evidenceRefs[0],
+    recoveryPlan: {
+      kind: checkpoint.required
+        ? checkpoint.available
+          ? 'before_snapshot'
+          : 'manual_recovery'
+        : 'not_applicable',
+      available: checkpoint.available,
+      summary: checkpoint.summary,
+      evidenceRefs: checkpoint.evidenceRefs,
+    },
+    rollback: {
+      required: expectedSandboxMutationCount > 0,
+      note: [rollback.summary, ...rollback.instructions].join(' '),
+      evidenceRefs: rollback.evidenceRefs,
+    },
+    postActionValidation: {
+      kind: firstCommand ? 'command' : validationRequired ? 'check' : 'not_applicable',
+      label: validationSummary,
+      ...(firstCommand ? { command: firstCommand.command } : { check: validationSummary }),
+      evidenceRefs: validationExpectedEvidenceRefs,
+    },
+    command: firstCommand?.command,
+    cwd: firstCommand?.cwd,
+    evidenceRefs: [
+      ...evidenceRefs,
+      ...commands.map((command) => `approved-command:${command.approvalFingerprint}`),
+    ],
+  });
+  const approvalFingerprint = approvalSandbox.approvalFingerprint;
   const approval: AoiBoundedWorkOrderApproval = {
     version: 1,
     required: approvalRequired,
@@ -1082,19 +1212,11 @@ export function createAoiBoundedWorkOrder(
   };
   const validation: AoiBoundedWorkOrderValidation = {
     version: 1,
-    required: risk.mutationCapable || draft.validation?.required === true || commands.length > 0,
+    required: validationRequired,
     approvalRequiredBeforeRun: draft.validation?.approvalRequiredBeforeRun ?? commands.length > 0,
-    summary: sanitizeText(
-      draft.validation?.summary,
-      commands.length > 0
-        ? 'Validation commands are previewed but not run by the work order.'
-        : risk.mutationCapable
-          ? 'A validation command preview is required before mutation-capable work can proceed.'
-          : 'No validation command is required for this read-only preview.',
-      220,
-    ),
+    summary: validationSummary,
     commands,
-    expectedEvidenceRefs: dedupeStrings(draft.validation?.expectedEvidenceRefs ?? [], 12),
+    expectedEvidenceRefs: validationExpectedEvidenceRefs,
   };
   const sourceRefs = dedupeStrings(
     [
@@ -1132,6 +1254,7 @@ export function createAoiBoundedWorkOrder(
     validation,
     checkpoint,
     rollback,
+    approvalSandbox,
     evidenceRefs,
     createdAt: now,
     updatedAt: now,
@@ -1581,6 +1704,12 @@ export function createAoiBoundedWorkOrderApprovalSnapshot(
     cwdHashes: order.commands.map((command) => command.cwdHash),
     scopeHash: order.scope.scopeHash,
     fileScopeHash: buildFileScopeHash(order.scope.files, order.scope.modules),
+    sandboxPreviewHash: order.approvalSandbox.previewHash,
+    sandboxAuthorityDecisionId: order.approvalSandbox.requiredAuthorityDecisionId,
+    sandboxRecoveryHash: order.approvalSandbox.recoveryPlan.recoveryHash,
+    sandboxRollbackHash: order.approvalSandbox.rollback.rollbackHash,
+    sandboxValidationHash: order.approvalSandbox.postActionValidation.validationHash,
+    sandboxEnvHash: order.approvalSandbox.envHash,
     riskLevel: order.risk.level,
     approvedAt,
     expiresAt: params.expiresAt ?? approvedAt + AOI_COMMAND_APPROVAL_TTL_MS,

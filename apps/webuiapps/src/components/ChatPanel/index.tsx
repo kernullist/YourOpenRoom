@@ -1850,6 +1850,17 @@ function buildAoiAppActionAuthorityBlockedResult(decision: AoiCapabilityBrokerDe
     blocked_reasons: decision.blockedReasons,
     required_consent: decision.requiredConsent,
     required_approval: decision.requiredApproval,
+    approval_sandbox: {
+      summary: decision.approvalSandboxSummary,
+      preview_hash: decision.approvalSandbox.previewHash,
+      approval_fingerprint: decision.approvalSandbox.approvalFingerprint,
+      expected_mutation_count: decision.approvalSandbox.expectedMutationCount,
+      validation_state: decision.approvalSandboxValidation.state,
+      validation_reasons: decision.approvalSandboxValidation.blockedReasons,
+      required_authority_decision_id: decision.approvalSandbox.requiredAuthorityDecisionId,
+      rollback_required: decision.approvalSandbox.rollback.required,
+      recovery_available: decision.approvalSandbox.recoveryPlan.available,
+    },
     rollback: decision.rollbackEvidenceRequirement,
     cannot_know: decision.cannotKnow,
     decision_line: formatAoiCapabilityBrokerDecisionLine(decision),
@@ -6929,6 +6940,7 @@ const ChatPanel: React.FC<{
               'tool:app_action',
               `app-action:${appAction.appName}:${appAction.actionType}`,
             ],
+            now: Date.now(),
           });
           recordAoiAppActionAuthorityDecision(sessionPathRef.current, authorityDecision);
           if (authorityDecision.blockedReasons.length > 0) {
