@@ -18,6 +18,7 @@ import {
   normalizeAoiProactiveBriefCandidate,
   recordAoiProactiveBriefCalibrationLabel,
   recordAoiProactiveBriefDeliveryFieldEvents,
+  recordAoiProactiveBriefFeedback,
   recordAoiProactiveBriefFieldEvent,
   rebuildAndSaveAoiInterestProfile,
   resolveAoiProactiveBriefPaths,
@@ -366,6 +367,9 @@ describe('Aoi proactive brief candidate storage', () => {
       createdAt: 2200,
     });
     const metrics = loadAoiProactiveBriefFieldMetrics(root, 'aoi/default', 2300);
+    const shown = loadAoiProactiveBriefFieldEvents(root, 'aoi/default', 2300).find(
+      (event) => event.kind === 'shown_digest',
+    );
 
     expect(metrics.consideredCount).toBe(2);
     expect(metrics.shownByDeliveryMode.digest).toBe(1);
@@ -373,6 +377,8 @@ describe('Aoi proactive brief candidate storage', () => {
     expect(metrics.suppressionCounts.missing_sources).toBe(1);
     expect(metrics.feedbackRecordedCount).toBe(1);
     expect(metrics.tooFrequentCount).toBe(1);
+    expect(shown?.suppressionReasons).toContain('quiet_mode_suppresses_chat_hook');
+    expect(shown?.policyReason).toContain('direct_chat_suppressed');
   });
 
   it('persists append-only calibration labels and derives inbox tuning from field events', () => {
@@ -432,6 +438,46 @@ describe('Aoi proactive brief candidate storage', () => {
       0,
     );
     expect(tuning.sourceTuning['example.com']!.preferenceDelta).toBeGreaterThan(0);
+  });
+
+  it('turns wrong-source feedback into source trust tuning without execute authority', () => {
+    const root = makeTempRoot();
+    const upserted = upsertAoiProactiveBriefCandidate(root, makeCandidate(), 3600);
+    const decision = decideAoiProactiveBriefDelivery({
+      candidate: upserted.candidate,
+      context: {
+        now: 3650,
+      },
+    });
+
+    recordAoiProactiveBriefDeliveryFieldEvents({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      candidates: [upserted.candidate],
+      decisions: [decision],
+      now: 3650,
+    });
+    recordAoiProactiveBriefFeedback(root, {
+      version: 1,
+      briefId: upserted.candidate.id,
+      topicId: upserted.candidate.topicId,
+      sessionPath: 'aoi/default',
+      category: 'wrong_source',
+      note: 'The source was not the right evidence for this topic.',
+      createdAt: 3700,
+    });
+
+    const tuning = loadAoiProactiveBriefCalibrationTuning(root, 'aoi/default', 3800);
+    const topicTuning = tuning.topicTuning[upserted.candidate.topicId]!;
+    const sourceTuning = tuning.sourceTuning['example.com']!;
+
+    expect(tuning.labelDistribution.wrong_source).toBe(1);
+    expect(topicTuning.sourcePreferenceDelta).toBeLessThan(0);
+    expect(topicTuning.conservativeReasons).toContain('wrong_source');
+    expect(sourceTuning.preferenceDelta).toBeLessThan(0);
+    expect(sourceTuning.directChatBlocked).toBe(true);
+    expect(decision.ladder.steps.execute_after_approval.allowed).toBe(false);
+    expect(decision.ladder.actionAuthority).toBe('display_only');
   });
 
   it('lets latest topic mute and pin calibration labels supersede topic state', () => {

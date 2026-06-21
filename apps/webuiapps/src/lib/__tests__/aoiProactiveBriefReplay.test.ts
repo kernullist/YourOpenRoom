@@ -517,6 +517,7 @@ describe('Aoi proactive brief replay hardening', () => {
           show_less: 0,
           too_frequent: 0,
           wrong_topic: 0,
+          wrong_source: 0,
           wrong_timing: 0,
           stale: 1,
           unsafe: 1,

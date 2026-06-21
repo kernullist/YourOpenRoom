@@ -187,6 +187,8 @@ function labelExpectedOutcome(label: AoiProactiveBriefCalibrationLabel): string 
       return 'Too-frequent feedback keeps cooldown or recent-negative suppression active.';
     case 'wrong_topic':
       return 'Wrong-topic feedback lowers delivery relevance under deterministic replay.';
+    case 'wrong_source':
+      return 'Wrong-source feedback lowers source trust without granting action authority.';
     case 'wrong_timing':
       return 'Wrong-timing feedback lowers direct interruption confidence.';
     case 'stale':
@@ -211,7 +213,7 @@ function scenarioForLabel(
   if (label === 'stale' || label === 'unsafe') {
     return 'stale_sources';
   }
-  if (label === 'wrong_topic') {
+  if (label === 'wrong_topic' || label === 'wrong_source') {
     return 'wrong_topic_feedback';
   }
   if (label === 'useful' || label === 'show_more' || label === 'pin_topic') {
@@ -394,6 +396,7 @@ function cooldownStateForReplayLabel(params: {
     'useful',
     'show_more',
     'too_frequent',
+    'wrong_source',
     'wrong_timing',
     'stale',
     'unsafe',

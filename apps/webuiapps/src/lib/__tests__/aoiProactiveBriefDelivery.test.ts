@@ -165,6 +165,12 @@ describe('Aoi proactive brief delivery policy', () => {
     expect(decision.compactCardVisible).toBe(true);
     expect(decision.chatHook.allowed).toBe(false);
     expect(decision.chatHook.reasons).toContain('quiet_mode_suppresses_chat_hook');
+    expect(decision.ladder.selectedLane).toBe('digest');
+    expect(decision.ladder.steps.direct_chat.allowed).toBe(false);
+    expect(decision.ladder.steps.direct_chat.reasons).toContain('quiet_mode_suppresses_chat_hook');
+    expect(decision.ladder.steps.execute_after_approval.allowed).toBe(false);
+    expect(decision.ladder.actionAuthority).toBe('display_only');
+    expect(decision.ladder.mutationCount).toBe(0);
   });
 
   it('allows one short chat hook only after explicit opt-in', () => {
@@ -268,6 +274,13 @@ describe('Aoi proactive brief feedback adaptation', () => {
     expect(afterProfile.topics[0].importance).toBeGreaterThan(0.82);
     expect(afterProfile.topics[0].currentInfoPreference).toBeGreaterThan(0.9);
     expect(after.deliveryScore).toBeGreaterThan(before.deliveryScore);
+    expect(after.ladder.steps.dashboard.allowed).toBe(true);
+    expect(after.ladder.steps.execute_after_approval.allowed).toBe(false);
+    expect(after.ladder.steps.execute_after_approval.reasons).toEqual(
+      expect.arrayContaining(['approval_sandbox_required', 'authority_registry_proof_required']),
+    );
+    expect(after.ladder.actionAuthority).toBe('display_only');
+    expect(after.ladder.mutationCount).toBe(0);
     expect(loadAoiProactiveBriefCooldownState(root, SESSION_PATH, NOW + 2000).cooldowns).toEqual(
       {},
     );
@@ -499,8 +512,16 @@ describe('Aoi proactive brief feedback adaptation', () => {
     expect(tuning.unsafeLabelCount).toBe(1);
     expect(decision.chatHook.allowed).toBe(false);
     expect(decision.modeReasons.chat_hook).toContain('calibration_unsafe_direct_chat_block');
+    expect(decision.ladder.steps.direct_chat.allowed).toBe(false);
+    expect(decision.ladder.steps.approval_request.allowed).toBe(false);
+    expect(decision.ladder.steps.approval_request.reasons).toContain(
+      'unsafe_feedback_blocks_approval_request',
+    );
+    expect(decision.ladder.steps.execute_after_approval.allowed).toBe(false);
     expect(panel.calibrationSummaryLabels.length).toBeGreaterThan(0);
     expect(panel.cards[0]?.tuningLabels).toContain('Topic tuning: unsafe');
+    expect(panel.cards[0]?.deliveryLadderLabels.join(' ')).toContain('Execute blocked');
+    expect(panel.cards[0]?.actionAuthorityLabel).toContain('display_only');
     expect(JSON.stringify(panel)).not.toContain('C:\\Users\\operator\\secret.txt');
   });
 

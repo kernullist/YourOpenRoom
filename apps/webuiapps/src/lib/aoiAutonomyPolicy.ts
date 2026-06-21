@@ -203,6 +203,8 @@ export const DEFAULT_AOI_PROACTIVE_BRIEFING_CONTROLS: AoiProactiveBriefScheduler
   allowBackgroundScout: false,
   maxScoutRunsPerDay: 3,
   maxScoutRunsPerSession: 5,
+  maxTopicsPerWakeup: 1,
+  maxNetworkCallsPerWakeup: 1,
   minScoutCooldownMs: 30 * 60 * 1000,
   maxSessionIdleMs: 30 * 60 * 1000,
   quietWindow: {
@@ -473,6 +475,12 @@ export function normalizeAoiProactiveBriefingControls(
     ),
     maxScoutRunsPerSession: Math.round(
       clampNumber(raw.maxScoutRunsPerSession, fallback.maxScoutRunsPerSession, 0, 48),
+    ),
+    maxTopicsPerWakeup: Math.round(
+      clampNumber(raw.maxTopicsPerWakeup, fallback.maxTopicsPerWakeup, 0, 5),
+    ),
+    maxNetworkCallsPerWakeup: Math.round(
+      clampNumber(raw.maxNetworkCallsPerWakeup, fallback.maxNetworkCallsPerWakeup, 0, 5),
     ),
     minScoutCooldownMs: Math.round(
       clampNumber(raw.minScoutCooldownMs, fallback.minScoutCooldownMs, 0, 24 * 60 * 60 * 1000),

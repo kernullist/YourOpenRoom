@@ -297,6 +297,7 @@ function isFeedbackCategory(value: unknown): value is AoiProactiveBriefFeedbackC
     value === 'show_more' ||
     value === 'show_less' ||
     value === 'wrong_topic' ||
+    value === 'wrong_source' ||
     value === 'wrong_timing' ||
     value === 'too_frequent' ||
     value === 'stale' ||
@@ -1227,6 +1228,7 @@ const CALIBRATION_LABELS: readonly AoiProactiveBriefCalibrationLabel[] = [
   'show_less',
   'too_frequent',
   'wrong_topic',
+  'wrong_source',
   'wrong_timing',
   'stale',
   'unsafe',
@@ -1516,6 +1518,12 @@ export function buildAoiProactiveBriefCalibrationTuning(
         current.sourcePreferenceDelta -= 0.08;
         current.conservativeReasons.push('wrong_topic');
       }
+      if (label.label === 'wrong_source') {
+        current.sourcePreferenceDelta -= 0.18;
+        current.chatHookThresholdDelta += 0.12;
+        current.preferDigestOrDashboard = true;
+        current.conservativeReasons.push('wrong_source');
+      }
       if (label.label === 'wrong_timing') {
         current.chatHookThresholdDelta += 0.18;
         current.preferDigestOrDashboard = true;
@@ -1583,10 +1591,15 @@ export function buildAoiProactiveBriefCalibrationTuning(
       if (
         label.label === 'show_less' ||
         label.label === 'wrong_topic' ||
+        label.label === 'wrong_source' ||
         label.label === 'wrong_timing' ||
         label.label === 'too_frequent'
       ) {
         current.preferenceDelta -= 0.06;
+      }
+      if (label.label === 'wrong_source') {
+        current.preferenceDelta -= 0.18;
+        current.directChatBlocked = true;
       }
       if (label.label === 'stale') {
         current.preferenceDelta -= 0.14;
@@ -1806,7 +1819,15 @@ function suggestedCalibrationLabels(
   if (event.kind === 'feedback_recorded' && event.feedbackCategory) {
     return [event.feedbackCategory as AoiProactiveBriefCalibrationLabel].filter(isCalibrationLabel);
   }
-  return ['useful', 'show_more', 'show_less', 'too_frequent', 'wrong_topic', 'wrong_timing'];
+  return [
+    'useful',
+    'show_more',
+    'show_less',
+    'too_frequent',
+    'wrong_topic',
+    'wrong_source',
+    'wrong_timing',
+  ];
 }
 
 function makeCalibrationInboxItem(
@@ -2157,6 +2178,32 @@ function shownKindForMode(mode: AoiProactiveBriefDeliveryMode): AoiProactiveBrie
   return 'shown_dashboard';
 }
 
+function directChatSuppressionReasonsForShownMode(
+  mode: AoiProactiveBriefDeliveryMode | null,
+  decision: AoiProactiveBriefDeliveryDecision,
+): string[] {
+  if (!mode || mode === 'chat_hook' || decision.chatHook.allowed) {
+    return [];
+  }
+  return [
+    ...new Set(
+      decision.chatHook.reasons.filter(
+        (reason) =>
+          reason === 'chat_hook_not_opted_in' ||
+          reason === 'quiet_mode_suppresses_chat_hook' ||
+          reason === 'chat_hook_mode_not_allowed' ||
+          reason === 'stale_source' ||
+          reason === 'topic_cooldown_active' ||
+          reason === 'global_cooldown_active' ||
+          reason === 'recent_negative_feedback' ||
+          reason === 'calibration_stale_direct_chat_block' ||
+          reason === 'calibration_unsafe_direct_chat_block' ||
+          reason === 'calibration_timing_prefers_digest',
+      ),
+    ),
+  ];
+}
+
 export function recordAoiProactiveBriefDeliveryFieldEvents(
   input: AoiProactiveBriefDeliveryFieldEventInput,
 ): AoiProactiveBriefFieldEvent[] {
@@ -2179,13 +2226,18 @@ export function recordAoiProactiveBriefDeliveryFieldEvents(
       ]),
     ];
     const kind = mode ? shownKindForMode(mode) : suppressionKindForDecision(decision);
-    const policyReason = mode ? `${mode}_allowed` : reasons[0];
+    const directChatSuppressionReasons = directChatSuppressionReasonsForShownMode(mode, decision);
+    const policyReason = mode
+      ? directChatSuppressionReasons.length > 0
+        ? `${mode}_allowed; direct_chat_suppressed:${directChatSuppressionReasons.join(',')}`
+        : `${mode}_allowed`
+      : reasons[0];
     events.push(
       recordAoiProactiveBriefFieldEvent(input.sessionsDir, {
         ...candidateFieldEventInput(candidate, kind, now),
         deliveryMode: mode ?? undefined,
         policyReason,
-        suppressionReasons: mode ? [] : reasons,
+        suppressionReasons: mode ? directChatSuppressionReasons : reasons,
         dedupeKey: `${kind}:${candidate.id}:${mode ?? (reasons.join('|') || 'policy')}`,
       }),
     );

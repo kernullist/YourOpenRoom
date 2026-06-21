@@ -115,6 +115,8 @@ describe('Aoi autonomy policy defaults', () => {
           allowBackgroundScout: true,
           maxScoutRunsPerDay: 99,
           maxScoutRunsPerSession: 99,
+          maxTopicsPerWakeup: 99,
+          maxNetworkCallsPerWakeup: 99,
           minScoutCooldownMs: -1,
           maxSessionIdleMs: 1,
           quietWindow: {
@@ -165,6 +167,8 @@ describe('Aoi autonomy policy defaults', () => {
       allowBackgroundScout: true,
       maxScoutRunsPerDay: 24,
       maxScoutRunsPerSession: 48,
+      maxTopicsPerWakeup: 5,
+      maxNetworkCallsPerWakeup: 5,
       minScoutCooldownMs: 0,
       maxSessionIdleMs: 60_000,
       quietWindow: {

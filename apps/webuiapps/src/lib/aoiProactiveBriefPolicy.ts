@@ -17,6 +17,7 @@ const NEGATIVE_FEEDBACK = new Set<AoiProactiveBriefFeedback['category']>([
   'not_useful',
   'show_less',
   'wrong_topic',
+  'wrong_source',
   'wrong_timing',
   'too_frequent',
   'stale',
@@ -54,6 +55,31 @@ export type AoiProactiveBriefDeliverySuppressionReason =
   | 'calibration_unsafe_direct_chat_block'
   | 'calibration_timing_prefers_digest';
 
+export type AoiProactiveBriefDeliveryLadderLane =
+  | 'hidden'
+  | 'dashboard'
+  | 'digest'
+  | 'direct_chat'
+  | 'approval_request'
+  | 'execute_after_approval';
+
+export interface AoiProactiveBriefDeliveryLadderStep {
+  lane: AoiProactiveBriefDeliveryLadderLane;
+  allowed: boolean;
+  reasons: string[];
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+export interface AoiProactiveBriefDeliveryLadderDecision {
+  version: 1;
+  selectedLane: AoiProactiveBriefDeliveryLadderLane;
+  steps: Record<AoiProactiveBriefDeliveryLadderLane, AoiProactiveBriefDeliveryLadderStep>;
+  approvalRequired: boolean;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
 export interface AoiProactiveBriefDeliveryContext {
   quietMode?: boolean;
   directChatOptIn?: boolean;
@@ -79,6 +105,7 @@ export interface AoiProactiveBriefDeliveryDecision {
     text: string;
     reasons: AoiProactiveBriefDeliverySuppressionReason[];
   };
+  ladder: AoiProactiveBriefDeliveryLadderDecision;
 }
 
 export interface DecideAoiProactiveBriefDeliveryInput {
@@ -107,6 +134,10 @@ function uniqueReasons(
   values: AoiProactiveBriefDeliverySuppressionReason[],
 ): AoiProactiveBriefDeliverySuppressionReason[] {
   return [...new Set(values)];
+}
+
+function uniqueReasonText(values: Array<string | undefined | null>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))].slice(0, 24);
 }
 
 function findTopic(
@@ -283,6 +314,73 @@ function addReason(
   }
 }
 
+function ladderStep(
+  lane: AoiProactiveBriefDeliveryLadderLane,
+  allowed: boolean,
+  reasons: Array<string | undefined | null>,
+): AoiProactiveBriefDeliveryLadderStep {
+  return {
+    lane,
+    allowed,
+    reasons: uniqueReasonText(reasons),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+function buildDeliveryLadder(params: {
+  compactCardVisible: boolean;
+  digestVisible: boolean;
+  chatHookAllowed: boolean;
+  selectedMode: AoiProactiveBriefDeliveryMode | null;
+  baseReasons: AoiProactiveBriefDeliverySuppressionReason[];
+  modeReasons: Record<AoiProactiveBriefDeliveryMode, AoiProactiveBriefDeliverySuppressionReason[]>;
+  chatHookReasons: AoiProactiveBriefDeliverySuppressionReason[];
+  sourceStale: boolean;
+  unsafeFeedback: boolean;
+  unsafeCalibration: boolean;
+}): AoiProactiveBriefDeliveryLadderDecision {
+  const selectedLane: AoiProactiveBriefDeliveryLadderLane = params.chatHookAllowed
+    ? 'direct_chat'
+    : params.selectedMode === 'digest'
+      ? 'digest'
+      : params.compactCardVisible
+        ? 'dashboard'
+        : 'hidden';
+  const approvalReasons = uniqueReasonText([
+    'no_prepared_action',
+    params.unsafeFeedback || params.unsafeCalibration
+      ? 'unsafe_feedback_blocks_approval_request'
+      : undefined,
+    params.sourceStale ? 'stale_source_blocks_approval_request' : undefined,
+  ]);
+  const executeReasons = uniqueReasonText([
+    'approval_sandbox_required',
+    'authority_registry_proof_required',
+    'approval_request_not_allowed',
+  ]);
+
+  return {
+    version: 1,
+    selectedLane,
+    steps: {
+      hidden: ladderStep('hidden', !params.compactCardVisible, [
+        params.compactCardVisible ? undefined : 'record_only_hidden',
+        ...params.baseReasons,
+        ...params.modeReasons.dashboard,
+      ]),
+      dashboard: ladderStep('dashboard', params.compactCardVisible, params.modeReasons.dashboard),
+      digest: ladderStep('digest', params.digestVisible, params.modeReasons.digest),
+      direct_chat: ladderStep('direct_chat', params.chatHookAllowed, params.chatHookReasons),
+      approval_request: ladderStep('approval_request', false, approvalReasons),
+      execute_after_approval: ladderStep('execute_after_approval', false, executeReasons),
+    },
+    approvalRequired: false,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 function modeAllowed(
   candidate: AoiProactiveBriefCandidate,
   mode: AoiProactiveBriefDeliveryMode,
@@ -307,6 +405,10 @@ export function decideAoiProactiveBriefDelivery(
   const topic = findTopic(input.profile, candidate);
   const calibrationTuning = input.calibrationTuning ?? null;
   const topicCalibration = calibrationTuning?.topicTuning[candidate.topicId];
+  const chatCalibrationReasons = calibrationChatHookReasons({
+    tuning: calibrationTuning,
+    candidate,
+  });
   const sourceStale = isSourceStale(
     candidate,
     now,
@@ -314,6 +416,10 @@ export function decideAoiProactiveBriefDelivery(
   );
   const recentFeedback = recentFeedbackForCandidate(input.feedback, candidate, now);
   const hasNegativeFeedback = recentFeedback.some((item) => NEGATIVE_FEEDBACK.has(item.category));
+  const hasUnsafeFeedback = recentFeedback.some((item) => item.category === 'unsafe');
+  const hasUnsafeCalibration = chatCalibrationReasons.includes(
+    'calibration_unsafe_direct_chat_block',
+  );
   const baseReasons: AoiProactiveBriefDeliverySuppressionReason[] = [];
 
   if (!isCandidateActive(candidate)) {
@@ -401,11 +507,7 @@ export function decideAoiProactiveBriefDelivery(
   if (context.quietMode) {
     inlineReasons.push('quiet_mode_suppresses_inline_card');
   }
-  if (
-    calibrationChatHookReasons({ tuning: calibrationTuning, candidate }).includes(
-      'calibration_unsafe_direct_chat_block',
-    )
-  ) {
+  if (chatCalibrationReasons.includes('calibration_unsafe_direct_chat_block')) {
     inlineReasons.push('calibration_unsafe_direct_chat_block');
   }
   modeReasons.inline_card = uniqueReasons([
@@ -427,7 +529,7 @@ export function decideAoiProactiveBriefDelivery(
   if (sourceStale) {
     chatHookReasons.push('stale_source');
   }
-  chatHookReasons.push(...calibrationChatHookReasons({ tuning: calibrationTuning, candidate }));
+  chatHookReasons.push(...chatCalibrationReasons);
   modeReasons.chat_hook = uniqueReasons([
     ...dashboardBlocking,
     ...attentionBlocking,
@@ -467,6 +569,19 @@ export function decideAoiProactiveBriefDelivery(
         : compactCardVisible
           ? 'dashboard'
           : null;
+  const chatHookReasonList = modeReasons.chat_hook;
+  const ladder = buildDeliveryLadder({
+    compactCardVisible,
+    digestVisible,
+    chatHookAllowed,
+    selectedMode,
+    baseReasons: uniqueReasons(baseReasons),
+    modeReasons,
+    chatHookReasons: chatHookReasonList,
+    sourceStale,
+    unsafeFeedback: hasUnsafeFeedback,
+    unsafeCalibration: hasUnsafeCalibration,
+  });
 
   return {
     candidateId: candidate.id,
@@ -482,7 +597,8 @@ export function decideAoiProactiveBriefDelivery(
     chatHook: {
       allowed: chatHookAllowed,
       text: chatHookAllowed ? chatHookText(candidate) : '',
-      reasons: modeReasons.chat_hook,
+      reasons: chatHookReasonList,
     },
+    ladder,
   };
 }

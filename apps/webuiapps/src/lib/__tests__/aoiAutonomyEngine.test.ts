@@ -40,6 +40,7 @@ import {
   loadAoiProactiveBriefFieldEvents,
   saveAoiInterestProfile,
 } from '../aoiProactiveBriefStore';
+import type { RunAoiProactiveBriefScoutInput } from '../aoiProactiveBriefScout';
 import { loadAoiProactiveTrendSnapshots } from '../aoiProactiveTrendAdvisor';
 import type {
   AoiGoal,
@@ -2114,6 +2115,177 @@ describe('runAoiAutonomyWakeup()', () => {
       capability: 'research',
       severity: 'warning',
     });
+  });
+
+  it('does not run proactive scouts when scheduler controls are disabled', async () => {
+    const root = makeTempRoot();
+    const scout = vi.fn(async () => ({
+      ok: true,
+      sessionPath: SESSION_PATH,
+      mode: 'quick' as const,
+      createdCandidates: [],
+      skippedTopics: [],
+      warnings: [],
+      sourceFreshness: [],
+    }));
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: false,
+          allowBackgroundScout: true,
+          directChatHookOptIn: false,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).not.toHaveBeenCalled();
+    expect(result.record.proactiveScout).toMatchObject({
+      requested: true,
+      runNow: true,
+      status: 'blocked',
+      controlSnapshot: {
+        enabled: false,
+        allowBackgroundScout: true,
+        directChatHookOptIn: false,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    });
+    expect(result.record.proactiveScout?.blockedReasons).toContain('proactive_scouting_disabled');
+    expect(
+      loadAoiProactiveBriefFieldEvents(root, SESSION_PATH, NOW + 1).some(
+        (event) =>
+          event.policyReason === 'scheduler:blocked' &&
+          event.suppressionReasons.includes('proactive_scouting_disabled'),
+      ),
+    ).toBe(true);
+  });
+
+  it('keeps quiet-window proactive scouts dashboard-only while recording direct-chat suppression', async () => {
+    const root = makeTempRoot();
+    const candidate = makeProactiveBriefCandidate({
+      delivery: {
+        allowedModes: ['dashboard'],
+        quietModeSuppressed: true,
+      },
+    });
+    const scout = vi.fn(async (input: RunAoiProactiveBriefScoutInput) => {
+      expect(input.budget?.quietMode).toBe(true);
+      expect(input.budget?.directChatHookOptIn).toBe(true);
+      expect(input.budget?.maxTopicsPerWakeup).toBe(2);
+      expect(input.budget?.maxNetworkCallsPerWakeup).toBe(2);
+      return {
+        ok: true,
+        sessionPath: SESSION_PATH,
+        mode: 'quick' as const,
+        createdCandidates: [candidate],
+        skippedTopics: [],
+        warnings: [],
+        sourceFreshness: [],
+      };
+    });
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        confidenceFloor: 0.55,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          directChatHookOptIn: true,
+          minScoutCooldownMs: 0,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 5,
+          maxTopicsPerWakeup: 2,
+          maxNetworkCallsPerWakeup: 2,
+          quietWindow: {
+            version: 1,
+            enabled: true,
+            startMinuteOfDay: 0,
+            endMinuteOfDay: 0,
+          },
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).toHaveBeenCalledTimes(1);
+    expect(result.record.proactiveScout).toMatchObject({
+      status: 'scouted',
+      createdCandidateCount: 1,
+      controlSnapshot: {
+        enabled: true,
+        directChatHookOptIn: true,
+        quietWindowEnabled: true,
+        quietWindowActive: true,
+        maxTopicsPerWakeup: 2,
+        maxNetworkCallsPerWakeup: 2,
+        actionAuthority: 'display_only',
+        mutationCount: 0,
+      },
+    });
+    expect(result.record.proactiveScout?.warnings).toContain(
+      'quiet_window_active:direct_chat_suppressed',
+    );
+    expect(result.record.proactiveScout?.trendDirectChatReadyCount).toBe(0);
   });
 
   it('persists trend snapshots when a run-now proactive scout creates candidates', async () => {

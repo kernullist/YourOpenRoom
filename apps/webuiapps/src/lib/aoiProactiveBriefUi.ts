@@ -21,6 +21,7 @@ export type AoiProactiveBriefUiAction =
   | 'show_more'
   | 'show_less'
   | 'wrong_topic'
+  | 'wrong_source'
   | 'wrong_timing'
   | 'too_frequent'
   | 'stale'
@@ -65,6 +66,9 @@ export interface AoiProactiveBriefCardModel {
   sources: AoiProactiveBriefSourceDisplay[];
   feedbackActions: AoiProactiveBriefFeedbackActionDisplay[];
   delivery: AoiProactiveBriefDeliveryDecision;
+  deliveryLadderLabels: string[];
+  directChatSuppressionLabels: string[];
+  actionAuthorityLabel: string;
   directChatHook: string;
   expandedSummaryLabel: string;
   tuningLabels: string[];
@@ -188,6 +192,12 @@ function buildFeedbackActions(
       tone: 'negative',
     },
     {
+      action: 'wrong_source',
+      label: 'Source',
+      title: 'Lower trust for these sources without lowering execute authority.',
+      tone: 'negative',
+    },
+    {
       action: 'mute_topic',
       label: 'Mute',
       title: 'Mute this topic for future proactive briefs.',
@@ -230,6 +240,10 @@ function buildCard(params: {
     candidate.memoryIds.map((id) => `memory:${id}`),
     8,
   );
+  const ladder = params.decision.ladder;
+  const directChatSuppressionLabels = ladder.steps.direct_chat.allowed
+    ? []
+    : ladder.steps.direct_chat.reasons.map((reason) => `Direct chat blocked: ${reason}`);
   return {
     id: candidate.id,
     topicId: candidate.topicId,
@@ -250,6 +264,20 @@ function buildCard(params: {
     sources: buildSources(candidate),
     feedbackActions: buildFeedbackActions(candidate),
     delivery: params.decision,
+    deliveryLadderLabels: uniqueLabels(
+      [
+        `Delivery ladder: ${ladder.selectedLane}`,
+        ladder.steps.approval_request.allowed
+          ? 'Approval request available for a prepared action'
+          : `Approval request blocked: ${ladder.steps.approval_request.reasons.join(', ')}`,
+        ladder.steps.execute_after_approval.allowed
+          ? 'Execute after approval available'
+          : `Execute blocked: ${ladder.steps.execute_after_approval.reasons.join(', ')}`,
+      ],
+      4,
+    ),
+    directChatSuppressionLabels: uniqueLabels(directChatSuppressionLabels, 6),
+    actionAuthorityLabel: `${ladder.actionAuthority}; ${ladder.mutationCount} mutations`,
     directChatHook: params.decision.chatHook.text,
     expandedSummaryLabel: truncateText(
       `${candidate.summary} ${candidate.whyForOperator} ${candidate.noveltyReason}`,

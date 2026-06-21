@@ -13010,6 +13010,20 @@ const SettingsModal: React.FC<{
                                       Calibration: {sanitizeAoiProposalDisplayText(label, 260)}
                                     </div>
                                   ))}
+                                  <div>
+                                    Authority:{' '}
+                                    {sanitizeAoiProposalDisplayText(card.actionAuthorityLabel, 180)}
+                                  </div>
+                                  {card.deliveryLadderLabels.map((label, index) => (
+                                    <div key={`brief-${card.id}-ladder-${index}`}>
+                                      {sanitizeAoiProposalDisplayText(label, 280)}
+                                    </div>
+                                  ))}
+                                  {card.directChatSuppressionLabels.map((label, index) => (
+                                    <div key={`brief-${card.id}-chat-suppression-${index}`}>
+                                      {sanitizeAoiProposalDisplayText(label, 260)}
+                                    </div>
+                                  ))}
                                   {expanded && (
                                     <>
                                       <div>

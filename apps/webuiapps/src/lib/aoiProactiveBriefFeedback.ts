@@ -95,6 +95,14 @@ function updateTopicForFeedback(
       updatedAt: now,
     };
   }
+  if (category === 'wrong_source') {
+    return {
+      ...topic,
+      currentInfoPreference: clampScore(topic.currentInfoPreference - 0.08),
+      evidenceRefs: [...new Set([...topic.evidenceRefs, `feedback:${feedbackId}`])].slice(0, 24),
+      updatedAt: now,
+    };
+  }
   if (
     category === 'not_useful' ||
     category === 'show_less' ||
@@ -141,6 +149,7 @@ function updateCandidateForFeedback(
     category === 'not_useful' ||
     category === 'show_less' ||
     category === 'wrong_topic' ||
+    category === 'wrong_source' ||
     category === 'wrong_timing' ||
     category === 'too_frequent' ||
     category === 'stale'
@@ -183,6 +192,7 @@ function cooldownMsForFeedback(
     category === 'show_less' ||
     category === 'wrong_timing' ||
     category === 'wrong_topic' ||
+    category === 'wrong_source' ||
     category === 'unsafe' ||
     category === 'mute_topic'
   ) {

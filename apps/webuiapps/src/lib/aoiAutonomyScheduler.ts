@@ -392,6 +392,12 @@ function normalizeProactiveScoutRunRecord(
       : 'blocked';
   const budget =
     raw.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget) ? raw.budget : {};
+  const controlSnapshot =
+    raw.controlSnapshot &&
+    typeof raw.controlSnapshot === 'object' &&
+    !Array.isArray(raw.controlSnapshot)
+      ? raw.controlSnapshot
+      : undefined;
   return {
     version: 1,
     requested: raw.requested === true,
@@ -415,6 +421,62 @@ function normalizeProactiveScoutRunRecord(
       runsThisSession: clampNumber(budget.runsThisSession, 0, 0, 100_000),
       maxRunsPerSession: clampNumber(budget.maxRunsPerSession, 0, 0, 100_000),
     },
+    ...(controlSnapshot
+      ? {
+          controlSnapshot: {
+            version: 1,
+            enabled: controlSnapshot.enabled === true,
+            allowBackgroundScout: controlSnapshot.allowBackgroundScout === true,
+            directChatHookOptIn: controlSnapshot.directChatHookOptIn === true,
+            quietWindowEnabled: controlSnapshot.quietWindowEnabled === true,
+            quietWindowActive: controlSnapshot.quietWindowActive === true,
+            maxScoutRunsPerDay: clampNumber(controlSnapshot.maxScoutRunsPerDay, 0, 0, 100_000),
+            maxScoutRunsPerSession: clampNumber(
+              controlSnapshot.maxScoutRunsPerSession,
+              0,
+              0,
+              100_000,
+            ),
+            maxTopicsPerWakeup: clampNumber(controlSnapshot.maxTopicsPerWakeup, 0, 0, 100_000),
+            maxNetworkCallsPerWakeup: clampNumber(
+              controlSnapshot.maxNetworkCallsPerWakeup,
+              0,
+              0,
+              100_000,
+            ),
+            minScoutCooldownMs: clampNumber(
+              controlSnapshot.minScoutCooldownMs,
+              0,
+              0,
+              24 * 60 * 60 * 1000,
+            ),
+            maxSessionIdleMs: clampNumber(
+              controlSnapshot.maxSessionIdleMs,
+              0,
+              0,
+              24 * 60 * 60 * 1000,
+            ),
+            topicControlCount: clampNumber(controlSnapshot.topicControlCount, 0, 0, 100_000),
+            allowedTopicCount: clampNumber(controlSnapshot.allowedTopicCount, 0, 0, 100_000),
+            mutedTopicCount: clampNumber(controlSnapshot.mutedTopicCount, 0, 0, 100_000),
+            sourceHostControlCount: clampNumber(
+              controlSnapshot.sourceHostControlCount,
+              0,
+              0,
+              100_000,
+            ),
+            allowedSourceHostCount: clampNumber(
+              controlSnapshot.allowedSourceHostCount,
+              0,
+              0,
+              100_000,
+            ),
+            mutedSourceHostCount: clampNumber(controlSnapshot.mutedSourceHostCount, 0, 0, 100_000),
+            actionAuthority: 'display_only',
+            mutationCount: 0,
+          },
+        }
+      : {}),
     evidenceRefs: normalizeStringList(raw.evidenceRefs, 24),
   };
 }
@@ -918,6 +980,44 @@ function sourceHostControlLists(
   };
 }
 
+function proactiveScoutControlSnapshot(params: {
+  controls: NonNullable<ReturnType<typeof loadAoiAutonomyPolicy>['proactiveBriefing']>;
+  quietWindowActive: boolean;
+}): NonNullable<AoiProactiveBriefSchedulerRunRecord['controlSnapshot']> {
+  const topicControls = Object.values(params.controls.topicControls);
+  const sourceHostControls = Object.values(params.controls.sourceHostControls);
+  return {
+    version: 1,
+    enabled: params.controls.enabled,
+    allowBackgroundScout: params.controls.allowBackgroundScout,
+    directChatHookOptIn: params.controls.directChatHookOptIn,
+    quietWindowEnabled: params.controls.quietWindow.enabled,
+    quietWindowActive: params.quietWindowActive,
+    maxScoutRunsPerDay: params.controls.maxScoutRunsPerDay,
+    maxScoutRunsPerSession: params.controls.maxScoutRunsPerSession,
+    maxTopicsPerWakeup: params.controls.maxTopicsPerWakeup,
+    maxNetworkCallsPerWakeup: params.controls.maxNetworkCallsPerWakeup,
+    minScoutCooldownMs: params.controls.minScoutCooldownMs,
+    maxSessionIdleMs: params.controls.maxSessionIdleMs,
+    topicControlCount: topicControls.length,
+    allowedTopicCount: topicControls.filter(
+      (control) => control.allowed === true && control.muted !== true,
+    ).length,
+    mutedTopicCount: topicControls.filter(
+      (control) => control.muted === true || control.allowed === false,
+    ).length,
+    sourceHostControlCount: sourceHostControls.length,
+    allowedSourceHostCount: sourceHostControls.filter(
+      (control) => control.allowed === true && control.muted !== true,
+    ).length,
+    mutedSourceHostCount: sourceHostControls.filter(
+      (control) => control.muted === true || control.allowed === false,
+    ).length,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
 function proactiveScoutFieldEventKind(
   status: AoiProactiveBriefSchedulerRunRecord['status'],
   reasons: string[],
@@ -1023,6 +1123,11 @@ async function runProactiveScoutForWakeup(params: {
     runsThisSession: scoutBudget.runsThisSession,
     maxRunsPerSession: controls.maxScoutRunsPerSession,
   };
+  const quietWindowActive = isAoiProactiveBriefQuietWindowActive(controls, params.now);
+  const controlSnapshot = proactiveScoutControlSnapshot({
+    controls,
+    quietWindowActive,
+  });
 
   const makeRecord = (
     status: AoiProactiveBriefSchedulerRunRecord['status'],
@@ -1049,6 +1154,7 @@ async function runProactiveScoutForWakeup(params: {
     blockedReasons: [...new Set(blockedReasons)].slice(0, 24),
     warnings: [],
     budget: budgetSnapshot,
+    controlSnapshot,
     evidenceRefs: ['scheduler:proactive-scout'],
     ...extra,
   });
@@ -1092,7 +1198,6 @@ async function runProactiveScoutForWakeup(params: {
   if (scoutCooldownReason) {
     blockedReasons.push(scoutCooldownReason);
   }
-  const quietWindowActive = isAoiProactiveBriefQuietWindowActive(controls, params.now);
   const tuning = loadAoiProactiveBriefCalibrationTuning(
     params.input.sessionsDir,
     sessionPath,
@@ -1126,8 +1231,8 @@ async function runProactiveScoutForWakeup(params: {
     budget: {
       allowNetwork: true,
       quietMode: params.budget.quietMode || quietWindowActive,
-      maxTopicsPerWakeup: 1,
-      maxNetworkCallsPerWakeup: 1,
+      maxTopicsPerWakeup: controls.maxTopicsPerWakeup,
+      maxNetworkCallsPerWakeup: controls.maxNetworkCallsPerWakeup,
       directChatHookOptIn: controls.directChatHookOptIn,
       globalCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
       topicCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
@@ -1186,8 +1291,8 @@ async function runProactiveScoutForWakeup(params: {
       budget: {
         allowNetwork: params.budget.allowNetwork,
         quietMode: params.budget.quietMode || quietWindowActive,
-        maxTopicsPerWakeup: 1,
-        maxNetworkCallsPerWakeup: 1,
+        maxTopicsPerWakeup: controls.maxTopicsPerWakeup,
+        maxNetworkCallsPerWakeup: controls.maxNetworkCallsPerWakeup,
         globalCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
         topicCooldownMs: Math.max(controls.minScoutCooldownMs, 0),
         directChatHookOptIn: controls.directChatHookOptIn,

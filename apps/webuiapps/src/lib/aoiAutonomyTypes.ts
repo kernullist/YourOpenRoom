@@ -942,6 +942,7 @@ export type AoiProactiveBriefFeedbackCategory =
   | 'show_more'
   | 'show_less'
   | 'wrong_topic'
+  | 'wrong_source'
   | 'wrong_timing'
   | 'too_frequent'
   | 'stale'
@@ -1105,6 +1106,7 @@ export type AoiProactiveBriefCalibrationLabel =
   | 'show_less'
   | 'too_frequent'
   | 'wrong_topic'
+  | 'wrong_source'
   | 'wrong_timing'
   | 'stale'
   | 'unsafe'
@@ -1265,6 +1267,8 @@ export interface AoiProactiveBriefSchedulerControls {
   allowBackgroundScout: boolean;
   maxScoutRunsPerDay: number;
   maxScoutRunsPerSession: number;
+  maxTopicsPerWakeup: number;
+  maxNetworkCallsPerWakeup: number;
   minScoutCooldownMs: number;
   maxSessionIdleMs: number;
   quietWindow: AoiProactiveBriefQuietWindow;
@@ -1315,6 +1319,28 @@ export interface AoiProactiveBriefSchedulerRunRecord {
     maxRunsPerDay: number;
     runsThisSession: number;
     maxRunsPerSession: number;
+  };
+  controlSnapshot?: {
+    version: 1;
+    enabled: boolean;
+    allowBackgroundScout: boolean;
+    directChatHookOptIn: boolean;
+    quietWindowEnabled: boolean;
+    quietWindowActive: boolean;
+    maxScoutRunsPerDay: number;
+    maxScoutRunsPerSession: number;
+    maxTopicsPerWakeup: number;
+    maxNetworkCallsPerWakeup: number;
+    minScoutCooldownMs: number;
+    maxSessionIdleMs: number;
+    topicControlCount: number;
+    allowedTopicCount: number;
+    mutedTopicCount: number;
+    sourceHostControlCount: number;
+    allowedSourceHostCount: number;
+    mutedSourceHostCount: number;
+    actionAuthority: 'display_only';
+    mutationCount: 0;
   };
   evidenceRefs: string[];
 }
