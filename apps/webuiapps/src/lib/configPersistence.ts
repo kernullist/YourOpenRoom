@@ -10,6 +10,10 @@
 import type { LLMConfig } from './llmModels';
 import type { ImageGenConfig } from './imageGenClient';
 import type { AoiOperatorVoicePolicy } from './aoiAutonomyTypes';
+import {
+  normalizeAoiMcpConnectorsConfig,
+  type AoiMcpConnectorsConfig,
+} from './aoiMcpConnectorRegistry';
 
 export interface AlbumConfig {
   photoDirectory?: string;
@@ -133,6 +137,10 @@ export interface PersistedConfig {
   gmail?: GmailConfig;
   idaPe?: IdaPeConfig;
   aoiEmbedding?: AoiEmbeddingConfig;
+  // Server-readable trusted-connector allow-list for Aoi live MCP RPC. The
+  // server resolves a connector by id from here; the proposal never supplies a
+  // raw endpoint. See aoiMcpConnectorRegistry.ts.
+  aoiMcpConnectors?: AoiMcpConnectorsConfig;
 }
 
 const CONFIG_API = '/api/llm-config';
@@ -152,6 +160,7 @@ const KNOWN_CONFIG_KEYS = [
   'gmail',
   'idaPe',
   'aoiEmbedding',
+  'aoiMcpConnectors',
 ];
 
 export function normalizeUserProfileDisplayName(raw: string | null | undefined): string {
@@ -286,6 +295,25 @@ export async function saveAoiEmbeddingConfig(
     next.aoiEmbedding = normalized;
   } else {
     delete next.aoiEmbedding;
+  }
+  await savePersistedConfig(next);
+}
+
+/**
+ * Read-modify-write just the Aoi MCP connector allow-list, preserving every
+ * other persisted field. An empty allow-list clears the block. The list is
+ * normalized (deduped by id, host-validated lazily by consumers) on write.
+ */
+export async function saveAoiMcpConnectorsConfig(
+  config: Partial<AoiMcpConnectorsConfig> | null,
+): Promise<void> {
+  const normalized = normalizeAoiMcpConnectorsConfig(config);
+  const existing = (await loadPersistedConfig()) ?? {};
+  const next: PersistedConfig = { ...existing };
+  if (normalized.connectors.length > 0) {
+    next.aoiMcpConnectors = normalized;
+  } else {
+    delete next.aoiMcpConnectors;
   }
   await savePersistedConfig(next);
 }
