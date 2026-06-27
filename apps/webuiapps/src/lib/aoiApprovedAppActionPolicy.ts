@@ -309,9 +309,9 @@ export function evaluateAoiApprovedAppActionPolicy(
       filePolicy.contentHash,
     ].join('|');
   } else if (resolvedRouting === 'app_operation' && !capabilityUnknown && routing) {
-    // Pure app operation: not server-executable. Recovery is the app's own undo
-    // via a Kira-style review handoff, wired in a follow-up commit.
-    blockReasons.push('app_action_review_handoff_required');
+    // Pure app operation: the server cannot dispatch a live app operation, so it
+    // is handed off to a Kira-style review. No server-side file mutation; recovery
+    // is the app's own undo. The operation is bound by action + operation params.
     operationHashSeed = [
       appName,
       capabilityId,
@@ -324,12 +324,15 @@ export function evaluateAoiApprovedAppActionPolicy(
   }
 
   const operationHash = hashAoiAppActionOperation(operationHashSeed);
-  const expectedMutationCount = resolvedRouting === 'file_backed' ? 1 : mutationCapable ? 1 : 0;
+  // file_backed mutates one dataRoot file on the server. app_operation makes no
+  // direct server mutation (it produces a Kira review artifact), so it stays 0
+  // and the display_only / mutationCount:0 invariant holds for the live app op.
+  const expectedMutationCount = resolvedRouting === 'file_backed' ? 1 : 0;
   const operationLabel = `${decision.displayName} ${capabilityId} (${executionKind})`;
   const dryRunSummary =
     resolvedRouting === 'file_backed'
       ? `Would apply an approved ${executionKind} mutation to ${fileMutation?.pathLabel ?? 'an app dataRoot file'} (op hash ${operationHash}).`
-      : `Would trigger app operation ${capabilityId} (${executionKind}); recovery is the app's own undo via a Kira-style review.`;
+      : `Would hand off app operation ${capabilityId} (${executionKind}) to a Kira-style review; recovery is the app's own undo.`;
 
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'app',

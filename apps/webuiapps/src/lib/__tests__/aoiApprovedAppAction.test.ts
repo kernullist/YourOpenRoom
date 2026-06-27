@@ -88,7 +88,7 @@ describe('evaluateAoiApprovedAppActionPolicy', () => {
     expect(policy.blockReasons).toContain('path_outside_data_root');
   });
 
-  it('routes a pure app/window operation to a review handoff (not server-executable yet)', () => {
+  it('allows a pure app/window operation and routes it to a review handoff', () => {
     const policy = evaluateAoiApprovedAppActionPolicy(
       createAoiApprovedAppActionRequest({
         sessionPath: 'aoi/default',
@@ -102,8 +102,12 @@ describe('evaluateAoiApprovedAppActionPolicy', () => {
       { apps: APPS },
     );
     expect(policy.routing).toBe('app_operation');
-    expect(policy.allowed).toBe(false);
-    expect(policy.blockReasons).toContain('app_action_review_handoff_required');
+    expect(policy.executionKind).toBe('window_action');
+    expect(policy.allowed).toBe(true);
+    expect(policy.blockReasons).toEqual([]);
+    // The server makes no direct app mutation; the live op is reviewed via Kira.
+    expect(policy.approvalSandbox?.expectedMutationCount).toBe(0);
+    expect(policy.fileMutation).toBeUndefined();
   });
 
   it('blocks an unknown app or capability', () => {
@@ -261,7 +265,33 @@ describe('applyAoiApprovedAppAction', () => {
     expect(fs.existsSync(join(root, 'apps/twitter/data/posts/p1.json'))).toBe(false);
   });
 
-  it('blocks a pure app/window operation (review handoff required) without touching disk', () => {
+  it('hands a pure app/window operation to a review handoff without touching disk', () => {
+    const root = makeTempRoot();
+    const request = createAoiApprovedAppActionRequest({
+      sessionPath: 'aoi/default',
+      appReference: 'twitter',
+      actionType: 'OPEN_APP_WINDOW',
+      purpose: 'Open the Twitter window',
+      risk: 'low',
+      requestedAt: 1000,
+      evidenceRefs: ['memory:m1'],
+    });
+    const approved = evaluateAoiApprovedAppActionPolicy(request, { apps: APPS });
+    const result = applyAoiApprovedAppAction(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      apps: APPS,
+      now: 2000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.applied).toBe(false);
+    expect(result.reviewHandoff).toBe(true);
+    expect(result.routing).toBe('app_operation');
+    expect(result.auditRecord.reviewHandoff).toBe(true);
+    expect(result.blockReasons).toEqual([]);
+  });
+
+  it('blocks a pure app/window operation when its approval is missing', () => {
     const root = makeTempRoot();
     const request = createAoiApprovedAppActionRequest({
       sessionPath: 'aoi/default',
@@ -278,7 +308,7 @@ describe('applyAoiApprovedAppAction', () => {
       now: 2000,
     });
     expect(result.ok).toBe(false);
-    expect(result.applied).toBe(false);
-    expect(result.blockReasons).toContain('app_action_review_handoff_required');
+    expect(result.reviewHandoff).toBe(false);
+    expect(result.blockReasons).toContain('approval_missing');
   });
 });

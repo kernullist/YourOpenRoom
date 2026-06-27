@@ -1371,22 +1371,62 @@ export async function executeAoiProposal(params: {
       if (!isAoiApprovedAppActionResult(appActionResult)) {
         throw new Error('App action result was missing from execution output.');
       }
+      // app_operation routing cannot be dispatched server-side, so it is handed
+      // off to a Kira-style review; file_backed routing already mutated on disk.
+      let kiraWorkRef: string | undefined;
+      if (appActionResult.reviewHandoff) {
+        try {
+          const preview = buildAoiKiraHandoffPreview(proposal, { now });
+          const createKiraWork =
+            params.dependencies?.createKiraWork ?? createDefaultKiraWorkFromPreview;
+          const kiraWork = createKiraWork({
+            sessionsDir: params.sessionsDir,
+            sessionPath,
+            proposal,
+            preview,
+            now,
+          });
+          kiraWorkRef = kiraWork.work.ref;
+          recordAoiKiraHandoffRelations({
+            sessionsDir: params.sessionsDir,
+            sessionPath,
+            proposal,
+            workRef: kiraWork.work.ref,
+            workTitle: kiraWork.work.title,
+            decisionId: transition.decision.id,
+            evidenceRefs: [...preview.evidenceRefs],
+            goalRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs].filter(
+              (ref) => ref.startsWith('goal:') || ref.startsWith('plan-step:'),
+            ),
+            now,
+          });
+        } catch (error) {
+          console.warn(
+            '[AoiAutonomyExecution] Failed to create Kira review handoff for app action',
+            error,
+          );
+        }
+      }
       const audit = appendAoiAppActionAuditRecord(params.sessionsDir, {
         ...appActionResult.auditRecord,
+        ...(kiraWorkRef ? { kiraWorkRef } : {}),
         evidenceRefs: [
           ...new Set([
             ...appActionResult.auditRecord.evidenceRefs,
             `decision:${transition.decision.id}`,
+            ...(kiraWorkRef ? [kiraWorkRef] : []),
             ...proposal.evidenceRefs,
             ...proposal.artifactRefs,
           ]),
         ].slice(0, 24),
       });
-      const appActionStatusLabel = appActionResult.ok
-        ? 'applied'
-        : appActionResult.rolledBack
-          ? 'rolled back'
-          : 'blocked';
+      const appActionStatusLabel = appActionResult.reviewHandoff
+        ? 'handed off to Kira review'
+        : appActionResult.ok
+          ? 'applied'
+          : appActionResult.rolledBack
+            ? 'rolled back'
+            : 'blocked';
       recordServerAoiRunLedgerEvent({
         sessionsDir: params.sessionsDir,
         sessionPath,
@@ -1411,6 +1451,7 @@ export async function executeAoiProposal(params: {
             artifactRefs: [
               `aoi-app-action-audit:${audit.id}`,
               `decision:${transition.decision.id}`,
+              ...(kiraWorkRef ? [kiraWorkRef] : []),
               ...(appActionResult.checkpointId
                 ? [`aoi-action-checkpoint:${appActionResult.checkpointId}`]
                 : []),
@@ -1420,7 +1461,11 @@ export async function executeAoiProposal(params: {
             riskSignals: [
               'app-action',
               `app-action:${appActionResult.routing}`,
-              appActionResult.ok ? 'app-action:applied' : 'app-action:failed',
+              appActionResult.reviewHandoff
+                ? 'app-action:review-handoff'
+                : appActionResult.ok
+                  ? 'app-action:applied'
+                  : 'app-action:failed',
               ...(appActionResult.rolledBack ? ['app-action:rolled-back'] : []),
             ],
           },

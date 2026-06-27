@@ -63,7 +63,9 @@ function buildResult(params: {
   outcome: AppActionOutcome;
 }): AoiApprovedAppActionResult {
   const { request, policy, outcome } = params;
-  const ok = outcome.applied && outcome.blockReasons.length === 0;
+  // A successful outcome is either an applied file mutation or an authorized
+  // review handoff (app_operation), both with no block reasons.
+  const ok = (outcome.applied || outcome.reviewHandoff) && outcome.blockReasons.length === 0;
   const fileResult = outcome.fileMutationResult;
   const auditRecord: AoiAppActionAuditRecord = {
     version: 1,
@@ -179,9 +181,9 @@ export function applyAoiApprovedAppAction(
     });
   }
 
-  // app_operation routing is not server-executable in this commit; the policy
-  // already blocks it with app_action_review_handoff_required, so this is a
-  // defensive fallthrough.
+  // app_operation routing cannot be dispatched server-side, so it is handed off
+  // to a Kira-style review by the execution layer. No file checkpoint here;
+  // recovery is the app's own undo. The runner records the authorized handoff.
   return buildResult({
     request,
     policy,
@@ -190,8 +192,8 @@ export function applyAoiApprovedAppAction(
     outcome: {
       applied: false,
       rolledBack: false,
-      reviewHandoff: false,
-      blockReasons: ['app_action_review_handoff_required'],
+      reviewHandoff: true,
+      blockReasons: [],
     },
   });
 }

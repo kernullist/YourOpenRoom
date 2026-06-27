@@ -194,7 +194,7 @@ describe('executeAoiProposal() app actions', () => {
     expect(fs.existsSync(join(root, 'apps/twitter/data/posts/p1.json'))).toBe(false);
   });
 
-  it('blocks a pure window app action pending a Kira-style review handoff', async () => {
+  it('hands a pure window app action to a Kira-style review under L5', async () => {
     const root = makeTempRoot();
     saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
     saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
@@ -212,10 +212,38 @@ describe('executeAoiProposal() app actions', () => {
       sessionPath: 'aoi/default',
       proposalId: 'proposal-aa-win-001',
       decisionId: accepted.decision.id,
+      dependencies: {
+        createKiraWork: ({ preview }) => ({
+          kind: 'create_kira_work',
+          preview,
+          work: {
+            id: 'w1',
+            ref: 'kira-work:w1',
+            title: 'Review the Twitter window app action',
+            projectName: 'aoi',
+            status: 'todo',
+          },
+          reviewRequired: true,
+          route: '/kira',
+          openPayload: { workId: 'w1', focusType: 'work' },
+        }),
+      },
       now: 3000,
     });
 
-    expect(result.executed).toBe(false);
-    expect(result.reasons.join(',')).toContain('app_action_review_handoff_required');
+    expect(result).toMatchObject({
+      executed: true,
+      outcome: 'executed',
+      result: {
+        kind: 'app_action',
+        appActionResult: { ok: true, reviewHandoff: true, routing: 'app_operation' },
+      },
+    });
+    const audits = loadAoiAppActionAuditRecords(root, 'aoi/default');
+    expect(audits).toHaveLength(1);
+    expect(audits[0].reviewHandoff).toBe(true);
+    expect(audits[0].kiraWorkRef).toBe('kira-work:w1');
+    // A pure app operation never mutates an app dataRoot file on the server.
+    expect(audits[0].applied).toBe(false);
   });
 });
