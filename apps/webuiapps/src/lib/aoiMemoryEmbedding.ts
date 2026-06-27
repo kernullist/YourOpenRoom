@@ -85,6 +85,72 @@ export async function embedAoiQuery(
   }
 }
 
+export const AOI_DEFAULT_OPENAI_EMBEDDING_MODEL = 'text-embedding-3-small';
+
+interface OpenAiEmbeddingResponse {
+  data?: Array<{ embedding?: number[]; index?: number }>;
+}
+
+// OpenAI-compatible /v1/embeddings provider. Works with OpenAI directly
+// (baseUrl https://api.openai.com/v1, model text-embedding-3-small) and with any
+// OpenAI-compatible host that exposes /embeddings -- notably OpenRouter
+// (baseUrl https://openrouter.ai/api/v1, model openai/text-embedding-3-small) and
+// local llama.cpp servers. Best-effort like the Gemini provider: a failed
+// request or empty input yields [] for the affected items and never throws.
+export function createAoiOpenAiCompatibleEmbeddingProvider(options: {
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+  fetchImpl?: typeof fetch;
+  headers?: Record<string, string>;
+}): AoiEmbeddingProvider {
+  const baseUrl = (options.baseUrl ?? 'https://api.openai.com/v1').replace(/\/+$/, '');
+  const model = options.model ?? AOI_DEFAULT_OPENAI_EMBEDDING_MODEL;
+  const fetchImpl = options.fetchImpl ?? fetch;
+  return {
+    async embed(texts: string[]): Promise<number[][]> {
+      const results: number[][] = texts.map(() => []);
+      // The endpoint rejects empty strings, so only send non-empty inputs and
+      // map each returned vector back to its original position.
+      const nonEmpty: Array<{ position: number; text: string }> = [];
+      texts.forEach((text, position) => {
+        const trimmed = text.trim();
+        if (trimmed) {
+          nonEmpty.push({ position, text: trimmed });
+        }
+      });
+      if (nonEmpty.length === 0) {
+        return results;
+      }
+      try {
+        const response = await fetchImpl(`${baseUrl}/embeddings`, {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            authorization: `Bearer ${options.apiKey}`,
+            ...(options.headers ?? {}),
+          },
+          body: JSON.stringify({ model, input: nonEmpty.map((item) => item.text) }),
+        });
+        if (!response.ok) {
+          return results;
+        }
+        const json = (await response.json()) as OpenAiEmbeddingResponse;
+        const data = Array.isArray(json.data) ? json.data : [];
+        data.forEach((item, order) => {
+          const mapped = nonEmpty[typeof item.index === 'number' ? item.index : order];
+          if (mapped && Array.isArray(item.embedding) && item.embedding.length > 0) {
+            results[mapped.position] = item.embedding;
+          }
+        });
+      } catch {
+        // Best-effort: leave the affected items as empty vectors.
+      }
+      return results;
+    },
+  };
+}
+
 interface GeminiEmbeddingResponse {
   embedding?: { values?: number[] };
 }

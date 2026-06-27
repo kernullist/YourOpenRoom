@@ -3,6 +3,7 @@ import {
   attachAoiMemoryEmbeddings,
   cosineSimilarity,
   createAoiGeminiEmbeddingProvider,
+  createAoiOpenAiCompatibleEmbeddingProvider,
   embedAoiQuery,
 } from '../aoiMemoryEmbedding';
 import { scoreAoiMemoryForQuery, type AoiMemoryEntry } from '../aoiMemoryManager';
@@ -71,7 +72,7 @@ describe('scoreAoiMemoryForQuery semantic fusion', () => {
 
 describe('attachAoiMemoryEmbeddings', () => {
   it('attaches a vector to a memory that lacks one', async () => {
-    const memories = [{ content: 'hello world' }];
+    const memories: Array<{ content: string; embedding?: number[] }> = [{ content: 'hello world' }];
     await attachAoiMemoryEmbeddings(memories, {
       embed: async (texts) => texts.map(() => [1, 0, 0]),
     });
@@ -79,7 +80,9 @@ describe('attachAoiMemoryEmbeddings', () => {
   });
 
   it('skips a memory that already carries a vector', async () => {
-    const memories = [{ content: 'x', embedding: [9, 9] }];
+    const memories: Array<{ content: string; embedding?: number[] }> = [
+      { content: 'x', embedding: [9, 9] },
+    ];
     const embed = vi.fn(async (texts: string[]) => texts.map(() => [1]));
     await attachAoiMemoryEmbeddings(memories, { embed });
     expect(memories[0].embedding).toEqual([9, 9]);
@@ -141,5 +144,52 @@ describe('createAoiGeminiEmbeddingProvider', () => {
         }) as unknown as Response) as typeof fetch,
     });
     expect(await provider.embed(['hello'])).toEqual([[0.1, 0.2, 0.3]]);
+  });
+});
+
+describe('createAoiOpenAiCompatibleEmbeddingProvider', () => {
+  it('returns empty vectors on a failed response without throwing', async () => {
+    const provider = createAoiOpenAiCompatibleEmbeddingProvider({
+      apiKey: 'k',
+      fetchImpl: (async () => ({ ok: false }) as Response) as typeof fetch,
+    });
+    expect(await provider.embed(['hello'])).toEqual([[]]);
+  });
+
+  it('skips blank inputs and position-maps results by index', async () => {
+    let sentBody: { input?: string[]; model?: string } = {};
+    const provider = createAoiOpenAiCompatibleEmbeddingProvider({
+      apiKey: 'k',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'openai/text-embedding-3-small',
+      fetchImpl: (async (_url: string, init?: RequestInit) => {
+        sentBody = JSON.parse(String(init?.body ?? '{}'));
+        return {
+          ok: true,
+          json: async () => ({
+            data: [
+              { index: 1, embedding: [0.4, 0.5] },
+              { index: 0, embedding: [0.1, 0.2] },
+            ],
+          }),
+        } as unknown as Response;
+      }) as typeof fetch,
+    });
+    const out = await provider.embed(['alpha', '   ', 'beta']);
+    expect(sentBody.input).toEqual(['alpha', 'beta']);
+    expect(sentBody.model).toBe('openai/text-embedding-3-small');
+    // Returned index 0 -> 'alpha' (position 0); index 1 -> 'beta' (position 2);
+    // the blank middle input stays an empty vector.
+    expect(out).toEqual([[0.1, 0.2], [], [0.4, 0.5]]);
+  });
+
+  it('makes no request and returns empties when every input is blank', async () => {
+    const fetchImpl = vi.fn();
+    const provider = createAoiOpenAiCompatibleEmbeddingProvider({
+      apiKey: 'k',
+      fetchImpl: fetchImpl as unknown as typeof fetch,
+    });
+    expect(await provider.embed(['', '  '])).toEqual([[], []]);
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });
