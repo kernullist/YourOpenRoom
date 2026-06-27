@@ -1,5 +1,6 @@
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiActionCheckpoint } from './aoiActionCheckpoint';
+import type { AppIntentExecutionKind } from './appIntentContracts';
 import type {
   AoiApprovalSandboxPreview,
   AoiApprovalSandboxValidationResult,
@@ -1997,6 +1998,7 @@ export type AoiProposalAcceptActionKind =
   | 'file_write'
   | 'file_patch'
   | 'file_delete'
+  | 'app_action'
   | 'open_app'
   | 'save_memory'
   | 'activate_goal';
@@ -2458,6 +2460,152 @@ export interface AoiApprovedFileMutationResult {
   evidenceRefs: string[];
 }
 
+// ============ Approved Aoi App Action (capability-broker execute band) ============
+//
+// The app_action proposal capability flows through the capability broker
+// (decideAoiCapabilityBrokerAuthority), which classifies an executionKind. The
+// runner branches on that classification:
+//  - file_backed (schema_file_write / schema_file_delete / state_file_write):
+//    a real, reversible mutation of an app dataRoot file, executed by reusing the
+//    file-mutation checkpoint + runner.
+//  - app_operation (app_action / window_action): a live app operation the server
+//    cannot dispatch and cannot file-checkpoint; recovery is the app's own undo
+//    via a Kira-style review handoff (wired in a follow-up commit).
+export type AoiAppActionRouting = 'file_backed' | 'app_operation';
+
+export type AoiAppActionBlockReason =
+  | 'missing_app_reference'
+  | 'missing_capability_reference'
+  | 'unknown_app_or_capability'
+  | 'unsupported_execution_kind'
+  | 'broker_execution_blocked'
+  | 'app_action_review_handoff_required'
+  | 'missing_data_root'
+  | 'path_outside_data_root'
+  | 'file_mutation_blocked'
+  | 'approval_missing'
+  | 'approval_expired'
+  | 'approval_app_changed'
+  | 'approval_capability_changed'
+  | 'approval_execution_kind_changed'
+  | 'approval_operation_changed'
+  | 'approval_risk_changed'
+  | 'approval_purpose_changed'
+  | 'approval_preview_changed'
+  | 'approval_target_changed'
+  | 'approval_authority_decision_changed'
+  | 'approval_rollback_plan_changed'
+  | 'approval_recovery_plan_changed'
+  | 'approval_validation_changed'
+  | 'approval_fingerprint_changed'
+  | 'approval_sandbox_missing'
+  | 'rollback_recovery_evidence_missing'
+  | 'execution_failed';
+
+export interface AoiApprovedAppActionRequest {
+  version: 1;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  // App name (preferred) or numeric appId stringified.
+  appReference: string;
+  // One or more capability references; the broker matches by id/intent/action.
+  capabilityId?: string;
+  intentReference?: string;
+  actionType?: string;
+  requestedOperation?: string;
+  // Pure app-operation params (Branch B). Filesystem-shaped fields below drive
+  // the file_backed branch.
+  operationParams?: Record<string, string>;
+  path?: string;
+  content?: string;
+  patchOps?: AoiFileMutationPatchOp[];
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  requestedAt: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiApprovedAppActionPolicy {
+  version: 1;
+  allowed: boolean;
+  blockReasons: AoiAppActionBlockReason[];
+  appId: number | null;
+  appName: string;
+  capabilityId: string;
+  executionKind: AppIntentExecutionKind | 'unknown';
+  routing: AoiAppActionRouting;
+  mutationCapable: boolean;
+  dataRoot?: string;
+  // file_backed routing only: the embedded approved file-mutation policy the
+  // runner applies behind a pre-change checkpoint.
+  fileMutation?: AoiApprovedFileMutationPolicy;
+  // Content-addressed hash of the app operation spec (app + capability +
+  // executionKind + operation params or file content). Binds the approval.
+  operationHash: string;
+  purpose: string;
+  purposeHash: string;
+  risk: AoiAutonomyRisk;
+  requiredAutonomyLevel: 'L5';
+  approvalFingerprint: string;
+  approvalSandbox?: AoiApprovalSandboxPreview;
+  expiresAt: number;
+  rationale: string[];
+}
+
+export interface AoiAppActionAuditRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  appName: string;
+  capabilityId: string;
+  executionKind: AppIntentExecutionKind | 'unknown';
+  routing: AoiAppActionRouting;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  allowed: boolean;
+  blockReasons: AoiAppActionBlockReason[];
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  applied: boolean;
+  rolledBack: boolean;
+  reviewHandoff: boolean;
+  operationHash: string;
+  // file_backed routing: links to the underlying file-mutation audit/checkpoint.
+  fileMutationAuditId?: string;
+  pathLabel?: string;
+  checkpointId?: string;
+  // app_operation routing (Kira-style review handoff): the created work item ref.
+  kiraWorkRef?: string;
+  evidenceRefs: string[];
+  approvalFingerprint: string;
+  approvalSandboxPreviewHash?: string;
+  approvalSandboxValidationStatus?: AoiApprovalSandboxValidationResult['state'];
+}
+
+export interface AoiApprovedAppActionResult {
+  version: 1;
+  ok: boolean;
+  appName: string;
+  capabilityId: string;
+  executionKind: AppIntentExecutionKind | 'unknown';
+  routing: AoiAppActionRouting;
+  applied: boolean;
+  rolledBack: boolean;
+  reviewHandoff: boolean;
+  // file_backed routing only:
+  fileMutationResult?: AoiApprovedFileMutationResult;
+  pathLabel?: string;
+  checkpointId?: string;
+  checkpoint?: AoiActionCheckpoint;
+  blockReasons: AoiAppActionBlockReason[];
+  auditRecord: AoiAppActionAuditRecord;
+  evidenceRefs: string[];
+}
+
 export interface AoiRecoveryPreviewAction {
   kind: AoiRecoveryActionKind;
   label: string;
@@ -2878,6 +3026,7 @@ export interface AoiProposalDecision {
   memoryIds?: string[];
   approvedCommand?: AoiApprovedCommandPolicy;
   approvedFileMutation?: AoiApprovedFileMutationPolicy;
+  approvedAppAction?: AoiApprovedAppActionPolicy;
 }
 
 export interface AoiAutonomyToolPolicy {

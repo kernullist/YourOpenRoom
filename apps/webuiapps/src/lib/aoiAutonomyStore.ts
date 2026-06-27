@@ -20,6 +20,11 @@ import {
   normalizeAoiApprovedFileMutationPolicy,
 } from './aoiApprovedFileMutationPolicy';
 import {
+  createAoiApprovedAppActionRequest,
+  evaluateAoiApprovedAppActionPolicy,
+  normalizeAoiApprovedAppActionPolicy,
+} from './aoiApprovedAppActionPolicy';
+import {
   buildAoiFollowThroughEventFromOpportunity,
   buildAoiFollowThroughEventFromProposalDecision,
   buildAoiFollowThroughLearningSummary,
@@ -55,6 +60,7 @@ import type {
   AoiAutonomyTickState,
   AoiCommandAuditRecord,
   AoiFileMutationAuditRecord,
+  AoiAppActionAuditRecord,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiFollowThroughEvent,
@@ -105,6 +111,7 @@ export interface AoiAutonomyPaths {
   decisionsDir: string;
   commandAuditDir: string;
   fileMutationAuditDir: string;
+  appActionAuditDir: string;
   tickState: string;
   evalDir: string;
   environmentSources: string;
@@ -528,6 +535,7 @@ export function resolveAoiAutonomyPaths(
     decisionsDir: join(root, 'decisions'),
     commandAuditDir: join(root, 'command-audit'),
     fileMutationAuditDir: join(root, 'file-mutation-audit'),
+    appActionAuditDir: join(root, 'app-action-audit'),
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
@@ -762,6 +770,28 @@ function makeAoiProposalDecisionRecord(params: {
           }),
         )
       : undefined;
+  const approvedAppAction =
+    params.action === 'accept' && params.proposal.acceptAction?.kind === 'app_action'
+      ? evaluateAoiApprovedAppActionPolicy(
+          createAoiApprovedAppActionRequest({
+            sessionPath: params.sessionPath,
+            proposalId: params.proposal.id,
+            appReference: actionParams.appReference ?? actionParams.appName ?? actionParams.app,
+            capabilityId: actionParams.capabilityId,
+            intentReference: actionParams.intentReference ?? actionParams.intent,
+            actionType: actionParams.actionType ?? actionParams.action,
+            requestedOperation: actionParams.requestedOperation ?? actionParams.operation,
+            operationParams: actionParams.operationParams ?? actionParams.actionParams,
+            path: actionParams.path,
+            content: actionParams.content,
+            patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+            purpose: actionParams.purpose ?? params.proposal.title,
+            risk: params.proposal.risk,
+            requestedAt: params.now,
+            evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+          }),
+        )
+      : undefined;
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-decision', params.now),
@@ -785,6 +815,7 @@ function makeAoiProposalDecisionRecord(params: {
     memoryIds: normalizeStringList(params.proposal.memoryIds, 24),
     ...(approvedCommand ? { approvedCommand } : {}),
     ...(approvedFileMutation ? { approvedFileMutation } : {}),
+    ...(approvedAppAction ? { approvedAppAction } : {}),
   };
 }
 
@@ -2018,6 +2049,70 @@ export function loadAoiFileMutationAuditRecords(
     .sort((a, b) => b.completedAt - a.completedAt);
 }
 
+function isAoiAppActionAuditRecord(value: unknown): value is AoiAppActionAuditRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiAppActionAuditRecord>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    typeof record.appName === 'string' &&
+    typeof record.capabilityId === 'string' &&
+    typeof record.executionKind === 'string' &&
+    (record.routing === 'file_backed' || record.routing === 'app_operation') &&
+    typeof record.purpose === 'string' &&
+    (record.risk === 'low' || record.risk === 'medium' || record.risk === 'high') &&
+    typeof record.allowed === 'boolean' &&
+    Array.isArray(record.blockReasons) &&
+    typeof record.startedAt === 'number' &&
+    typeof record.completedAt === 'number' &&
+    typeof record.durationMs === 'number' &&
+    typeof record.applied === 'boolean' &&
+    typeof record.rolledBack === 'boolean' &&
+    typeof record.reviewHandoff === 'boolean' &&
+    typeof record.operationHash === 'string' &&
+    Array.isArray(record.evidenceRefs) &&
+    typeof record.approvalFingerprint === 'string'
+  );
+}
+
+export function appendAoiAppActionAuditRecord(
+  sessionsDir: string,
+  record: AoiAppActionAuditRecord,
+): AoiAppActionAuditRecord {
+  if (!isAoiAppActionAuditRecord(record)) {
+    throw new Error('Invalid Aoi app action audit record.');
+  }
+  const sessionPath = normalizeAoiAutonomySessionPath(record.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const item: AoiAppActionAuditRecord = {
+    ...record,
+    sessionPath,
+    evidenceRefs: normalizeStringList(record.evidenceRefs, 24),
+    blockReasons: normalizeStringList(
+      record.blockReasons,
+      24,
+    ) as AoiAppActionAuditRecord['blockReasons'],
+  };
+  writeJsonAtomic(join(paths.appActionAuditDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiAppActionAuditRecords(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiAppActionAuditRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.appActionAuditDir)
+    .filter(isAoiAppActionAuditRecord)
+    .sort((a, b) => b.completedAt - a.completedAt);
+}
+
 function loadAoiFieldShadowRecordList(
   filePath: string,
   sessionPath: string,
@@ -2193,6 +2288,10 @@ function isAoiProposalAcceptActionKind(value: unknown): value is AoiProposalAcce
     value === 'start_research' ||
     value === 'create_kira_work' ||
     value === 'run_command' ||
+    value === 'file_write' ||
+    value === 'file_patch' ||
+    value === 'file_delete' ||
+    value === 'app_action' ||
     value === 'open_app' ||
     value === 'save_memory' ||
     value === 'activate_goal'
@@ -2221,6 +2320,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
   const feedbackCategory = normalizeAoiProposalFeedbackCategory(item.feedbackCategory);
   const approvedCommand = normalizeAoiApprovedCommandPolicy(item.approvedCommand);
   const approvedFileMutation = normalizeAoiApprovedFileMutationPolicy(item.approvedFileMutation);
+  const approvedAppAction = normalizeAoiApprovedAppActionPolicy(item.approvedAppAction);
   return {
     version: 1,
     id: item.id,
@@ -2254,6 +2354,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     memoryIds: normalizeStringList(item.memoryIds, 24),
     ...(approvedCommand ? { approvedCommand } : {}),
     ...(approvedFileMutation ? { approvedFileMutation } : {}),
+    ...(approvedAppAction ? { approvedAppAction } : {}),
   };
 }
 

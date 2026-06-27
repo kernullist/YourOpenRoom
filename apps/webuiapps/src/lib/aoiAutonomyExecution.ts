@@ -4,6 +4,7 @@ import {
   buildAoiAutonomyStatus,
   appendAoiCommandAuditRecord,
   appendAoiFileMutationAuditRecord,
+  appendAoiAppActionAuditRecord,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
@@ -48,6 +49,12 @@ import {
   normalizeAoiApprovedFileMutationPolicy,
 } from './aoiApprovedFileMutationPolicy';
 import { applyAoiApprovedFileMutation } from './aoiApprovedFileMutationRunner';
+import {
+  createAoiApprovedAppActionRequest,
+  evaluateAoiApprovedAppActionPolicy,
+  normalizeAoiApprovedAppActionPolicy,
+} from './aoiApprovedAppActionPolicy';
+import { applyAoiApprovedAppAction } from './aoiApprovedAppActionRunner';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
@@ -63,6 +70,9 @@ import type {
   AoiApprovedFileMutationPolicy,
   AoiApprovedFileMutationRequest,
   AoiApprovedFileMutationResult,
+  AoiApprovedAppActionPolicy,
+  AoiApprovedAppActionRequest,
+  AoiApprovedAppActionResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
@@ -299,6 +309,33 @@ function buildApprovedFileMutationRequestFromProposal(params: {
   });
 }
 
+function buildApprovedAppActionRequestFromProposal(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  decisionId?: string;
+  now: number;
+}): AoiApprovedAppActionRequest {
+  const actionParams = params.proposal.acceptAction?.params ?? {};
+  return createAoiApprovedAppActionRequest({
+    sessionPath: params.sessionPath,
+    proposalId: params.proposal.id,
+    decisionId: params.decisionId,
+    appReference: actionParams.appReference ?? actionParams.appName ?? actionParams.app,
+    capabilityId: actionParams.capabilityId,
+    intentReference: actionParams.intentReference ?? actionParams.intent,
+    actionType: actionParams.actionType ?? actionParams.action,
+    requestedOperation: actionParams.requestedOperation ?? actionParams.operation,
+    operationParams: actionParams.operationParams ?? actionParams.actionParams,
+    path: actionParams.path,
+    content: actionParams.content,
+    patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+    purpose: actionParams.purpose ?? params.proposal.title,
+    risk: params.proposal.risk,
+    requestedAt: params.now,
+    evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+  });
+}
+
 function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown> {
   return {
     id: memory.id,
@@ -397,6 +434,24 @@ function isAoiApprovedFileMutationResult(value: unknown): value is AoiApprovedFi
   );
 }
 
+function isAoiApprovedAppActionResult(value: unknown): value is AoiApprovedAppActionResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Partial<AoiApprovedAppActionResult>;
+  return (
+    result.version === 1 &&
+    typeof result.ok === 'boolean' &&
+    typeof result.appName === 'string' &&
+    typeof result.capabilityId === 'string' &&
+    (result.routing === 'file_backed' || result.routing === 'app_operation') &&
+    typeof result.applied === 'boolean' &&
+    typeof result.rolledBack === 'boolean' &&
+    Boolean(result.auditRecord) &&
+    Array.isArray(result.evidenceRefs)
+  );
+}
+
 function normalizeValidationScopes(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -481,6 +536,7 @@ async function executeAllowedProposalAction(params: {
   decisionId?: string;
   approvedCommandPolicy?: AoiApprovedCommandPolicy;
   approvedFileMutationPolicy?: AoiApprovedFileMutationPolicy;
+  approvedAppActionPolicy?: AoiApprovedAppActionPolicy;
   dependencies: AoiProposalExecutionDependencies;
   now: number;
 }): Promise<Record<string, unknown>> {
@@ -727,6 +783,30 @@ async function executeAllowedProposalAction(params: {
     } as unknown as Record<string, unknown>;
   }
 
+  if (action.kind === 'app_action') {
+    const request = buildApprovedAppActionRequestFromProposal({
+      proposal: params.proposal,
+      sessionPath: params.sessionPath,
+      decisionId: params.decisionId,
+      now: params.now,
+    });
+    const policy = evaluateAoiApprovedAppActionPolicy(request, { now: params.now });
+    if (!policy.allowed) {
+      throw new Error(`app_action_blocked:${policy.blockReasons.join(',')}`);
+    }
+    const result = applyAoiApprovedAppAction(request, {
+      workspaceRoot: params.workspaceRoot,
+      ...(params.approvedAppActionPolicy ? { approvedPolicy: params.approvedAppActionPolicy } : {}),
+      now: params.now,
+    });
+    return {
+      kind: action.kind,
+      policy,
+      appActionResult: result,
+      auditRecord: result.auditRecord,
+    } as unknown as Record<string, unknown>;
+  }
+
   throw new Error(`Unsupported proposal action kind: ${action.kind}`);
 }
 
@@ -962,6 +1042,17 @@ export async function executeAoiProposal(params: {
           )?.approvedFileMutation,
         )
       : undefined;
+  const approvedAppActionPolicyForExecution =
+    proposal.acceptAction?.kind === 'app_action'
+      ? normalizeAoiApprovedAppActionPolicy(
+          decisions.find(
+            (decision) =>
+              decision.proposalId === proposal.id &&
+              decision.action === 'accept' &&
+              (!params.decisionId || decision.id === params.decisionId),
+          )?.approvedAppAction,
+        )
+      : undefined;
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -1022,6 +1113,9 @@ export async function executeAoiProposal(params: {
         : {}),
       ...(approvedFileMutationPolicyForExecution
         ? { approvedFileMutationPolicy: approvedFileMutationPolicyForExecution }
+        : {}),
+      ...(approvedAppActionPolicyForExecution
+        ? { approvedAppActionPolicy: approvedAppActionPolicyForExecution }
         : {}),
       dependencies: params.dependencies ?? {},
       now,
@@ -1270,6 +1364,70 @@ export async function executeAoiProposal(params: {
         );
       } catch (error) {
         console.warn('[AoiAutonomyExecution] Failed to ingest file mutation observation', error);
+      }
+    }
+    if (proposal.acceptAction?.kind === 'app_action') {
+      const appActionResult = result.appActionResult;
+      if (!isAoiApprovedAppActionResult(appActionResult)) {
+        throw new Error('App action result was missing from execution output.');
+      }
+      const audit = appendAoiAppActionAuditRecord(params.sessionsDir, {
+        ...appActionResult.auditRecord,
+        evidenceRefs: [
+          ...new Set([
+            ...appActionResult.auditRecord.evidenceRefs,
+            `decision:${transition.decision.id}`,
+            ...proposal.evidenceRefs,
+            ...proposal.artifactRefs,
+          ]),
+        ].slice(0, 24),
+      });
+      const appActionStatusLabel = appActionResult.ok
+        ? 'applied'
+        : appActionResult.rolledBack
+          ? 'rolled back'
+          : 'blocked';
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'app_action_executed',
+        message: `App action ${appActionResult.capabilityId} (${appActionResult.executionKind}) ${appActionStatusLabel}.`,
+        goalSummary: `Aoi app action: ${proposal.title}`,
+        toolNames: [proposal.acceptAction.kind],
+        status: appActionResult.ok ? 'completed' : 'failed',
+        now,
+      });
+      try {
+        ingestAoiObservation(
+          params.sessionsDir,
+          {
+            source: 'tool',
+            sessionPath,
+            stableKey: `app-action:${audit.id}`,
+            createdAt: audit.completedAt,
+            summary: `App action ${appActionResult.capabilityId} (${appActionResult.executionKind}) ${appActionStatusLabel}.`,
+            payloadRef: `aoi-app-action-audit:${audit.id}`,
+            memoryIds: [],
+            artifactRefs: [
+              `aoi-app-action-audit:${audit.id}`,
+              `decision:${transition.decision.id}`,
+              ...(appActionResult.checkpointId
+                ? [`aoi-action-checkpoint:${appActionResult.checkpointId}`]
+                : []),
+              ...audit.evidenceRefs,
+            ],
+            proposalIds: [proposal.id],
+            riskSignals: [
+              'app-action',
+              `app-action:${appActionResult.routing}`,
+              appActionResult.ok ? 'app-action:applied' : 'app-action:failed',
+              ...(appActionResult.rolledBack ? ['app-action:rolled-back'] : []),
+            ],
+          },
+          { now: audit.completedAt },
+        );
+      } catch (error) {
+        console.warn('[AoiAutonomyExecution] Failed to ingest app action observation', error);
       }
     }
     if (proposal.acceptAction?.kind === 'create_kira_work') {

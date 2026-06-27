@@ -12,6 +12,7 @@ export type AoiRunLedgerEventType =
   | 'proposal_execution_blocked'
   | 'approved_command_executed'
   | 'file_mutation_executed'
+  | 'app_action_executed'
   | 'kira_handoff_preview_created'
   | 'kira_handoff_execution_approved'
   | 'kira_work_item_created'
