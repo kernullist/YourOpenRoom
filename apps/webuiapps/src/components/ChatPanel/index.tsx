@@ -2740,8 +2740,9 @@ const ChatPanel: React.FC<{
   aoiAutonomyActiveProposalsRef.current = aoiAutonomyActiveProposals;
   const aoiAutonomyBlockedProposalsRef = useRef(aoiAutonomyBlockedProposals);
   aoiAutonomyBlockedProposalsRef.current = aoiAutonomyBlockedProposals;
-  const aoiOperatorDigestRef = useRef(aoiOperatorDigest);
-  aoiOperatorDigestRef.current = aoiOperatorDigest;
+  // Mirror ref created here so callbacks above can read it; the value is assigned
+  // after aoiOperatorDigest is declared below, to avoid a const TDZ ReferenceError.
+  const aoiOperatorDigestRef = useRef<AoiOperatorDigest | null>(null);
 
   // Debounced save
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -7228,6 +7229,8 @@ const ChatPanel: React.FC<{
       sessionPath,
     ],
   );
+  // Keep the mirror ref in sync now that aoiOperatorDigest is initialized.
+  aoiOperatorDigestRef.current = aoiOperatorDigest;
 
   const aoiSourceFreshnessContracts = useMemo(
     () =>
@@ -7730,7 +7733,7 @@ const ChatPanel: React.FC<{
       assistantMessage: aoiAgendaChatNudge.chatText,
       toolCalls: [`direct:aoi_agenda_nudge:${aoiAgendaChatNudge.dedupeKey}`],
       source: 'direct_action',
-      llmConfig: selectedConfig,
+      llmConfig: configRef.current ?? undefined,
     });
   }, [
     aoiAgendaChatNudge,
@@ -7738,7 +7741,6 @@ const ChatPanel: React.FC<{
     loading,
     recordAoiMemoryTurn,
     registerAoiAgendaSuggestedReplies,
-    selectedConfig,
     updateAoiAutonomyPanelSettingsFromPanel,
     visible,
   ]);
@@ -8479,6 +8481,7 @@ const ChatPanel: React.FC<{
           aoiAutonomyStatus={aoiAutonomyStatus}
           aoiAutonomyActiveProposals={aoiAutonomyActiveProposals}
           aoiAutonomyArchivedProposals={aoiAutonomyArchivedProposals}
+          aoiRecentProposalDecisions={aoiRecentProposalDecisions}
           aoiActiveOpportunities={aoiActiveOpportunities}
           aoiArchivedOpportunities={aoiArchivedOpportunities}
           aoiDeliberationRuns={aoiDeliberationRuns}
@@ -9072,6 +9075,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus: AoiAutonomyStatus | null;
   aoiAutonomyActiveProposals: AoiProposal[];
   aoiAutonomyArchivedProposals: AoiProposal[];
+  aoiRecentProposalDecisions: AoiProposalDecision[];
   aoiActiveOpportunities: AoiOpportunity[];
   aoiArchivedOpportunities: AoiOpportunity[];
   aoiDeliberationRuns: AoiDeliberationRun[];
@@ -9198,6 +9202,7 @@ const SettingsModal: React.FC<{
   aoiAutonomyStatus,
   aoiAutonomyActiveProposals,
   aoiAutonomyArchivedProposals,
+  aoiRecentProposalDecisions,
   aoiActiveOpportunities,
   aoiArchivedOpportunities,
   aoiDeliberationRuns,

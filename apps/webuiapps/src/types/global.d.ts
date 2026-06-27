@@ -22,15 +22,15 @@ declare global {
     };
     onYouTubeIframeAPIReady?: () => void;
   }
-}
 
-interface YoutubeVideoData {
-  video_id?: string;
-}
+  interface YoutubeVideoData {
+    video_id?: string;
+  }
 
-interface YoutubeIframePlayer {
-  destroy: () => void;
-  getVideoData: () => YoutubeVideoData;
+  interface YoutubeIframePlayer {
+    destroy: () => void;
+    getVideoData: () => YoutubeVideoData;
+  }
 }
 
 export {};

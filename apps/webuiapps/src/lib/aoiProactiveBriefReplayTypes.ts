@@ -13,6 +13,7 @@ import type {
   AoiProactiveBriefFeedback,
 } from './aoiAutonomyTypes';
 import type {
+  AoiProactiveBriefDeliveryContext,
   AoiProactiveBriefDeliveryDecision,
   AoiProactiveBriefDeliverySuppressionReason,
 } from './aoiProactiveBriefPolicy';
