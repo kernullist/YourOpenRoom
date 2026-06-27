@@ -252,11 +252,9 @@ function boundaryFromPreparedPlan(
       ? 'kira_handoff'
       : kind === 'start_research'
         ? 'research_approval'
-        : kind === 'run_approved_command'
-          ? 'approved_command'
-          : plan.approval.required
-            ? 'proposal_acceptance'
-            : 'none';
+        : plan.approval.required
+          ? 'proposal_acceptance'
+          : 'none';
   return boundary({
     kind,
     risk: plan.risk.level,
@@ -682,7 +680,7 @@ function applyHealthPrerequisites(
       status: 'blocked' as const,
       blockedReasons: dedupeStrings([...step.blockedReasons, ...reasons], MAX_NOTES),
       evidenceRefs: dedupeStrings([...step.evidenceRefs, ...issues.map(healthIssueRef)], MAX_REFS),
-      updatedAt: Math.max(step.updatedAt, health?.updatedAt ?? step.updatedAt),
+      updatedAt: Math.max(step.updatedAt, health?.generatedAt ?? step.updatedAt),
     };
   });
   return {

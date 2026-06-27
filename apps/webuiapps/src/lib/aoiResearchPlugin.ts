@@ -347,7 +347,9 @@ export function readAoiResearchRunArtifact(
   if (typeof resolved === 'string') {
     throw new Error(resolved);
   }
-  if (!isAoiResearchArtifactName(artifactRaw)) {
+  // Normalize the request-boundary value to a string before the artifact-name guard.
+  const artifactName = typeof artifactRaw === 'string' ? artifactRaw : '';
+  if (!isAoiResearchArtifactName(artifactName)) {
     throw new Error('artifact must be one of manifest, report, sources, evidence');
   }
   const existing = readManifest(resolved.paths.manifest);
@@ -357,9 +359,9 @@ export function readAoiResearchRunArtifact(
   return {
     runId: resolved.runId,
     run: existing,
-    artifact: artifactRaw,
-    contentType: artifactRaw === 'report' ? 'text/markdown' : 'application/json',
-    content: readArtifactContent(resolved.paths, artifactRaw),
+    artifact: artifactName,
+    contentType: artifactName === 'report' ? 'text/markdown' : 'application/json',
+    content: readArtifactContent(resolved.paths, artifactName),
   };
 }
 

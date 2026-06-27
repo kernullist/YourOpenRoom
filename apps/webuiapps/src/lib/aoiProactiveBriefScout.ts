@@ -243,7 +243,7 @@ function wrapSearchWithSourceControls(
     return {
       ...response,
       results: response.results.filter((result) => {
-        const host = hostFromUrl(result.url);
+        const host = hostFromUrl(result.url ?? '');
         if (!host) {
           return false;
         }
@@ -536,10 +536,11 @@ export function buildAoiProactiveBriefScoutProviderMissingReplay(params: {
 export async function runAoiProactiveBriefScout(
   input: RunAoiProactiveBriefScoutInput,
 ): Promise<AoiProactiveBriefScoutResult> {
-  const sessionPath = normalizeAoiAutonomySessionPath(input.sessionPath);
-  if (!sessionPath) {
+  const resolvedSessionPath = normalizeAoiAutonomySessionPath(input.sessionPath);
+  if (!resolvedSessionPath) {
     throw new Error('Invalid or missing sessionPath.');
   }
+  const sessionPath: string = resolvedSessionPath;
   if (input.mode && input.mode !== 'quick') {
     throw new Error('Only quick proactive brief scouting is supported.');
   }

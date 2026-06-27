@@ -340,10 +340,7 @@ function createReadinessBlockedHonestyRecord(params: {
   scorecard: AoiJarvisReadinessScorecard;
   now: number;
 }): AoiProactiveBriefScoutSourceHonestyRecord {
-  const topic =
-    'topic' in (params.topic ?? {})
-      ? (params.topic as AoiProactiveBriefPlannedTopic).topic
-      : params.topic;
+  const topic = params.topic && 'topic' in params.topic ? params.topic.topic : params.topic;
   const cannotKnow = readinessBlockedCannotKnow(params.scorecard);
   return {
     version: 1,

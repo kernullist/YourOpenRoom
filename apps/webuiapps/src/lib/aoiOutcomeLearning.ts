@@ -452,7 +452,7 @@ export function buildAoiOutcomeLearningSummary(params: {
   const now = params.now ?? DEFAULT_NOW;
   const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath) ?? params.sessionPath;
   const outcomes = params.outcomes
-    .map((item) => normalizeAoiOutcomeSignalRecord(item, sessionPath, now))
+    .map((item) => normalizeAoiOutcomeSignalRecord(item as RawOutcomeSignalInput, sessionPath, now))
     .filter((item): item is AoiOutcomeSignalRecord => item !== null)
     .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
   const explicitLabelLinkedCount = outcomes.filter((item) => item.explicitLabelRef).length;

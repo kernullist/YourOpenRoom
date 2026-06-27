@@ -193,7 +193,8 @@ export function runAoiApprovedCommand(
   if (
     !policy.allowed ||
     approvalReasons.length > 0 ||
-    (cwdResult && !cwdResult.ok) ||
+    !cwdResult ||
+    !cwdResult.ok ||
     !policy.program
   ) {
     const completedAt = startedAt;
@@ -220,6 +221,7 @@ export function runAoiApprovedCommand(
     );
   }
 
+  const program = policy.program;
   return new Promise((resolveResult) => {
     const spawnImpl = options.spawnImpl ?? spawn;
     let stdout = '';
@@ -228,7 +230,7 @@ export function runAoiApprovedCommand(
     let stderrTruncated = false;
     let finished = false;
     let timedOut = false;
-    const child = spawnImpl(policy.program, policy.args, {
+    const child = spawnImpl(program, policy.args, {
       cwd: cwdResult.cwd,
       env: { ...process.env, ...AOI_APPROVED_COMMAND_ENV },
       shell: false,

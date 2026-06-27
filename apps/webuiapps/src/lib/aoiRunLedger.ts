@@ -10,6 +10,7 @@ export type AoiRunLedgerEventType =
   | 'proposal_execution_completed'
   | 'proposal_execution_failed'
   | 'proposal_execution_blocked'
+  | 'approved_command_executed'
   | 'kira_handoff_preview_created'
   | 'kira_handoff_execution_approved'
   | 'kira_work_item_created'

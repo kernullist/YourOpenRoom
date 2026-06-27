@@ -262,7 +262,7 @@ export function buildAoiOperatorHealthState(params: {
         ...buildAoiProactiveBriefSchedulerDiagnostics({
           policy,
           scheduler,
-          tavilyConfigured: config.tavilyConfigured,
+          tavilyConfigured: config.tavilyConfigured ?? false,
           now,
         }),
         ...buildAoiProactiveTrendAdvisorDiagnostics({

@@ -121,7 +121,9 @@ export function ingestAoiObservation(
   } = {},
 ): AoiObservationIngestResult {
   const observation =
-    'version' in input && input.version === 1 ? input : createAoiObservation(input);
+    'version' in input && input.version === 1
+      ? (input as AoiObservation)
+      : createAoiObservation(input as AoiObservationInput);
   const stored = upsertAoiObservation(sessionsDir, observation);
   const warnings: string[] = [];
   const recordRelations = options.recordRelations ?? recordAoiObservationRelations;

@@ -461,7 +461,7 @@ export function decideAoiProactiveBriefDelivery(
       feedbackAdjustment(recentFeedback) +
       calibrationScoreAdjustment({ tuning: calibrationTuning, candidate }),
   );
-  const dashboardBlocking = baseReasons.filter(
+  const dashboardBlocking: AoiProactiveBriefDeliverySuppressionReason[] = baseReasons.filter(
     (reason) =>
       reason === 'candidate_not_active' ||
       reason === 'policy_disabled' ||

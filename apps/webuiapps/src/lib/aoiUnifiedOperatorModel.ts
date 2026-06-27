@@ -578,7 +578,7 @@ function buildInterestSnapshots(params: {
     }
 
     return {
-      version: 1,
+      version: 1 as const,
       id: `operator-interest:${topic.id}`,
       topicId: topic.id,
       label: topic.label,
@@ -787,7 +787,7 @@ function buildProjectState(params: {
   const selectedSources = params.contextRouter?.selectedSources ?? [];
   const freshness = selectedSources.some((source) => source.freshness === 'fresh')
     ? 'fresh'
-    : selectedSources.some((source) => source.freshness === 'recent')
+    : selectedSources.some((source) => (source.freshness as string) === 'recent')
       ? 'recent'
       : selectedSources.some((source) => source.freshness === 'stale')
         ? 'stale'
@@ -962,7 +962,7 @@ function buildReadinessState(
       ),
       ...scorecard.recommendations
         .filter((recommendation) => recommendation.severity === 'blocker')
-        .map((recommendation) => recommendation.summary),
+        .map((recommendation) => recommendation.label),
     ]),
   };
 }
@@ -1288,7 +1288,7 @@ export function summarizeAoiUnifiedOperatorSnapshot(
 export function buildAoiInterestProfileFromUnifiedOperatorSnapshot(
   snapshot: AoiUnifiedOperatorSnapshot | null | undefined,
 ): AoiInterestProfile | null {
-  return snapshot.interestProfile ?? null;
+  return snapshot?.interestProfile ?? null;
 }
 
 export function formatAoiUnifiedOperatorSnapshotForOperator(

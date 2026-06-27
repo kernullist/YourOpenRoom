@@ -390,8 +390,9 @@ function normalizeProactiveScoutRunRecord(
     raw.status === 'failed'
       ? raw.status
       : 'blocked';
-  const budget =
-    raw.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget) ? raw.budget : {};
+  const budget = (
+    raw.budget && typeof raw.budget === 'object' && !Array.isArray(raw.budget) ? raw.budget : {}
+  ) as Partial<NonNullable<AoiProactiveBriefSchedulerRunRecord['budget']>>;
   const controlSnapshot =
     raw.controlSnapshot &&
     typeof raw.controlSnapshot === 'object' &&
@@ -494,7 +495,7 @@ function normalizeWakeupRecord(value: unknown): AoiAutonomyWakeupRecord | null {
   const selectedSourceIds = normalizeStringList(record.selectedSourceIds);
   const refreshedSourceIds = normalizeStringList(record.refreshedSourceIds);
   const skippedSources = Array.isArray(record.skippedSources)
-    ? record.skippedSources
+    ? (record.skippedSources as unknown[])
         .filter(
           (item): item is { sourceId?: unknown; reasons?: unknown } =>
             Boolean(item) && typeof item === 'object',

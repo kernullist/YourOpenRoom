@@ -1287,7 +1287,7 @@ export function buildAoiJarvisAutonomyGovernorUpgradePlan(
       : targetGap
         ? [
             {
-              version: 1,
+              version: 1 as const,
               id: `aoi-jarvis-upgrade-step-${idPart(targetGap.capability)}`,
               label: `Review ${targetGap.requiredModeLabel} upgrade gate`,
               reason: targetGap.reason,
@@ -1299,7 +1299,7 @@ export function buildAoiJarvisAutonomyGovernorUpgradePlan(
           ]
         : [
             {
-              version: 1,
+              version: 1 as const,
               id: 'aoi-jarvis-upgrade-step-maintain-evidence',
               label: 'Maintain autonomy evidence trail',
               reason:

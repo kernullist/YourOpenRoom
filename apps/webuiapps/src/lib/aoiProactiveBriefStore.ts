@@ -580,7 +580,9 @@ function normalizeFreshness(
   value: Partial<AoiProactiveBriefCandidate>['freshness'],
   now: number,
 ): AoiProactiveBriefCandidate['freshness'] {
-  const raw = value && typeof value === 'object' ? value : {};
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<
+    NonNullable<AoiProactiveBriefCandidate['freshness']>
+  >;
   return {
     searchedAt: normalizeTimestamp(raw.searchedAt, now),
     ...(normalizeText(raw.newestSourceAt, 64)
@@ -593,7 +595,9 @@ function normalizeFreshness(
 function normalizeDelivery(
   value: Partial<AoiProactiveBriefCandidate>['delivery'],
 ): AoiProactiveBriefCandidate['delivery'] {
-  const raw = value && typeof value === 'object' ? value : {};
+  const raw = (value && typeof value === 'object' ? value : {}) as Partial<
+    NonNullable<AoiProactiveBriefCandidate['delivery']>
+  >;
   const allowedModes = normalizeDeliveryModes(raw.allowedModes);
   const selectedMode = isDeliveryMode(raw.selectedMode) ? raw.selectedMode : undefined;
   return {

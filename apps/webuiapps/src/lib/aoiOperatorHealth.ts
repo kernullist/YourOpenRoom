@@ -257,7 +257,7 @@ function buildSourceFailureHints(
   scheduler?: AoiAutonomySchedulerState | null,
 ): AoiSourceFreshnessFailureHint[] {
   return (registry?.sources ?? [])
-    .map((source) => {
+    .map((source): AoiSourceFreshnessFailureHint | null => {
       const reasons = sourceRefreshFailed(source.id, scheduler);
       if (reasons.length === 0) {
         return null;

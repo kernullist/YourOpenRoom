@@ -432,7 +432,7 @@ function parseAoiFieldFeedbackPayload(
     ok: payload.ok === true,
     sessionPath: responseSessionPath,
     fieldShadowReport: isRecord(payload.fieldShadowReport)
-      ? (payload.fieldShadowReport as AoiFieldShadowRecordReport)
+      ? (payload.fieldShadowReport as unknown as AoiFieldShadowRecordReport)
       : null,
     labelActions: asArray<AoiOperatorFeedbackLabelAction>(payload.labelActions),
     feedbackInbox: requireRecordField<AoiOperatorFeedbackInbox>(
@@ -441,10 +441,13 @@ function parseAoiFieldFeedbackPayload(
       'Aoi field feedback response was malformed.',
     ),
     ...(isRecord(payload.learningSummary)
-      ? { learningSummary: payload.learningSummary as AoiFieldFeedbackLearningSummary }
+      ? { learningSummary: payload.learningSummary as unknown as AoiFieldFeedbackLearningSummary }
       : {}),
     ...(isRecord(payload.followThroughLearning)
-      ? { followThroughLearning: payload.followThroughLearning as AoiFollowThroughLearningSummary }
+      ? {
+          followThroughLearning:
+            payload.followThroughLearning as unknown as AoiFollowThroughLearningSummary,
+        }
       : {}),
   };
 }
@@ -490,7 +493,7 @@ export async function recordAoiFieldFeedback(
     followThroughEvents: asArray<AoiFollowThroughEvent>(payload.followThroughEvents),
     fieldEvents: asArray<AoiFieldEvent>(payload.fieldEvents),
     ...(isRecord(payload.evaluation)
-      ? { evaluation: payload.evaluation as AoiAutonomyEvaluationResult }
+      ? { evaluation: payload.evaluation as unknown as AoiAutonomyEvaluationResult }
       : {}),
   };
 }
@@ -563,13 +566,16 @@ export async function recordAoiOutcomeSignal(
       'Aoi outcome signal record response was malformed.',
     ),
     ...(isRecord(payload.followThroughLearning)
-      ? { followThroughLearning: payload.followThroughLearning as AoiFollowThroughLearningSummary }
+      ? {
+          followThroughLearning:
+            payload.followThroughLearning as unknown as AoiFollowThroughLearningSummary,
+        }
       : {}),
     ...(isRecord(payload.timeline)
-      ? { timeline: payload.timeline as AoiOperatorTimelineSummary }
+      ? { timeline: payload.timeline as unknown as AoiOperatorTimelineSummary }
       : {}),
     ...(isRecord(payload.evaluation)
-      ? { evaluation: payload.evaluation as AoiAutonomyEvaluationResult }
+      ? { evaluation: payload.evaluation as unknown as AoiAutonomyEvaluationResult }
       : {}),
   };
 }
@@ -779,7 +785,7 @@ export async function fetchAoiDeliberationRuns(
 
   return {
     sessionPath: responseSessionPath,
-    latest: isRecord(payload.latest) ? (payload.latest as AoiDeliberationRun) : null,
+    latest: isRecord(payload.latest) ? (payload.latest as unknown as AoiDeliberationRun) : null,
     runs: asArray<AoiDeliberationRun>(payload.runs),
   };
 }
@@ -915,17 +921,25 @@ function parseAoiProactiveBriefListPayload(
     profile,
     cooldownState,
     ...(isRecord(payload.fieldMetrics)
-      ? { fieldMetrics: payload.fieldMetrics as AoiProactiveBriefFieldMetrics }
+      ? { fieldMetrics: payload.fieldMetrics as unknown as AoiProactiveBriefFieldMetrics }
       : {}),
     ...(isRecord(payload.calibrationInbox)
-      ? { calibrationInbox: payload.calibrationInbox as AoiProactiveBriefCalibrationInbox }
+      ? {
+          calibrationInbox:
+            payload.calibrationInbox as unknown as AoiProactiveBriefCalibrationInbox,
+        }
       : {}),
     ...(isRecord(payload.calibrationTuning)
-      ? { calibrationTuning: payload.calibrationTuning as AoiProactiveBriefCalibrationTuning }
+      ? {
+          calibrationTuning:
+            payload.calibrationTuning as unknown as AoiProactiveBriefCalibrationTuning,
+        }
       : {}),
-    ...(isRecord(payload.panel) ? { panel: payload.panel as AoiProactiveBriefPanelModel } : {}),
+    ...(isRecord(payload.panel)
+      ? { panel: payload.panel as unknown as AoiProactiveBriefPanelModel }
+      : {}),
     ...(isRecord(payload.trendAdvisor)
-      ? { trendAdvisor: payload.trendAdvisor as AoiProactiveTrendAdvisorState }
+      ? { trendAdvisor: payload.trendAdvisor as unknown as AoiProactiveTrendAdvisorState }
       : {}),
   };
 }
@@ -1178,8 +1192,8 @@ export async function fetchAoiMissionState(
 
   return {
     sessionPath: responseSessionPath,
-    mission: isRecord(payload.mission) ? (payload.mission as AoiMissionState) : null,
-    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+    mission: isRecord(payload.mission) ? (payload.mission as unknown as AoiMissionState) : null,
+    status: isRecord(payload.status) ? (payload.status as unknown as AoiAutonomyStatus) : undefined,
   };
 }
 
@@ -1221,7 +1235,9 @@ export async function fetchAoiWorkspaceSnapshot(
   return {
     ok: payload.ok === true,
     sessionPath: responseSessionPath,
-    snapshot: isRecord(payload.snapshot) ? (payload.snapshot as AoiWorkspaceSnapshot) : null,
+    snapshot: isRecord(payload.snapshot)
+      ? (payload.snapshot as unknown as AoiWorkspaceSnapshot)
+      : null,
   };
 }
 
@@ -1243,7 +1259,9 @@ export async function fetchAoiContextRouter(
   return {
     ok: payload.ok === true,
     sessionPath: responseSessionPath,
-    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+    context: isRecord(payload.context)
+      ? (payload.context as unknown as AoiContextRouterResult)
+      : null,
   };
 }
 
@@ -1528,7 +1546,9 @@ export async function recordAoiBrowserContext(
       'browserContext',
       'Aoi browser context response was malformed.',
     ),
-    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+    context: isRecord(payload.context)
+      ? (payload.context as unknown as AoiContextRouterResult)
+      : null,
   };
 }
 
@@ -1560,7 +1580,9 @@ export async function recordAoiContextSourceFeedback(
       'feedback',
       'Aoi context feedback response was malformed.',
     ),
-    context: isRecord(payload.context) ? (payload.context as AoiContextRouterResult) : null,
+    context: isRecord(payload.context)
+      ? (payload.context as unknown as AoiContextRouterResult)
+      : null,
   };
 }
 
@@ -1681,7 +1703,7 @@ export async function updateAoiEnvironmentSource(
       'registry',
       'Aoi environment source response was malformed.',
     ),
-    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+    status: isRecord(payload.status) ? (payload.status as unknown as AoiAutonomyStatus) : undefined,
   };
 }
 
@@ -1749,7 +1771,7 @@ export async function decideAoiProposal(
       'decision',
       'Aoi proposal decision response was malformed.',
     ),
-    goal: isRecord(payload.goal) ? (payload.goal as AoiGoal) : null,
+    goal: isRecord(payload.goal) ? (payload.goal as unknown as AoiGoal) : null,
     active: asArray<AoiProposal>(payload.active),
     archived: asArray<AoiProposal>(payload.archived),
     executed: false,
@@ -1783,7 +1805,7 @@ export async function recordAoiProposalFeedback(
       'Aoi proposal feedback response was malformed.',
     ),
     evaluation: isRecord(payload.evaluation)
-      ? (payload.evaluation as AoiAutonomyEvaluationResult)
+      ? (payload.evaluation as unknown as AoiAutonomyEvaluationResult)
       : undefined,
   };
 }
@@ -1813,12 +1835,14 @@ export async function decideAoiGoal(
 
   return {
     sessionPath: responseSessionPath,
-    goal: isRecord(payload.goal) ? (payload.goal as AoiGoal) : null,
+    goal: isRecord(payload.goal) ? (payload.goal as unknown as AoiGoal) : null,
     active: asArray<AoiGoal>(payload.active),
     archived: asArray<AoiGoal>(payload.archived),
-    proposal: isRecord(payload.proposal) ? (payload.proposal as AoiProposal) : undefined,
-    decision: isRecord(payload.decision) ? (payload.decision as AoiProposalDecision) : undefined,
-    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+    proposal: isRecord(payload.proposal) ? (payload.proposal as unknown as AoiProposal) : undefined,
+    decision: isRecord(payload.decision)
+      ? (payload.decision as unknown as AoiProposalDecision)
+      : undefined,
+    status: isRecord(payload.status) ? (payload.status as unknown as AoiAutonomyStatus) : undefined,
   };
 }
 
@@ -1844,8 +1868,8 @@ export async function decideAoiMission(
 
   return {
     sessionPath: responseSessionPath,
-    mission: isRecord(payload.mission) ? (payload.mission as AoiMissionState) : null,
-    status: isRecord(payload.status) ? (payload.status as AoiAutonomyStatus) : undefined,
+    mission: isRecord(payload.mission) ? (payload.mission as unknown as AoiMissionState) : null,
+    status: isRecord(payload.status) ? (payload.status as unknown as AoiAutonomyStatus) : undefined,
   };
 }
 

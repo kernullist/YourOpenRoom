@@ -309,7 +309,7 @@ function resultFromProposalDecision(decision: AoiProposalDecision): AoiFollowThr
   }
   if (decision.action === 'execute' || decision.action === 'accept') {
     if (decision.feedbackCategory && NEGATIVE_PROPOSAL_FEEDBACK.has(decision.feedbackCategory)) {
-      return decision.feedbackCategory === 'unsafe' ? 'blocked' : 'negative';
+      return (decision.feedbackCategory as string) === 'unsafe' ? 'blocked' : 'negative';
     }
     return 'positive';
   }

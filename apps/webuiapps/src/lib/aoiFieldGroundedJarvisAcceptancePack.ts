@@ -1156,7 +1156,7 @@ function scenarioTooFrequentFeedback(sessionPath: string, now: number) {
         dimension: 'feedback_learning',
         passed:
           score.directChatFactor < 1 &&
-          score.nextEligibleAt > now &&
+          (score.nextEligibleAt ?? 0) > now &&
           learning.summary.cooldownAdjustmentLabels.length > 0,
         actualSummary: learning.summary.cooldownAdjustmentLabels.join('; '),
         evidenceRefs: learning.summary.evidenceRefs,

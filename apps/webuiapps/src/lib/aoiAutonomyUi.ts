@@ -5709,7 +5709,7 @@ function buildAoiOperatorFeedbackInboxPanel(
   };
 }
 
-const AOI_FIELD_FEEDBACK_PANEL_ACTIONS: readonly Array<{
+const AOI_FIELD_FEEDBACK_PANEL_ACTIONS: ReadonlyArray<{
   feedbackLabel: AoiShadowDecisionLabel;
   label: string;
   title: string;
@@ -6123,7 +6123,7 @@ export function buildAoiMissionPanelSummary(
     evidenceRefs: includeEvidence ? mission.evidenceRefs.slice(0, 8) : [],
     canPause,
     canResume: mission.status === 'paused',
-    canClear: mission.status !== 'none',
+    canClear: (mission.status as string) !== 'none',
     pauseLabel: 'Pause this goal',
     pauseTitle: 'Pause this goal while keeping evidence and source references.',
     resumeLabel: 'Resume',

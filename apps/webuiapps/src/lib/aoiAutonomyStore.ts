@@ -1665,7 +1665,10 @@ export function loadAoiFollowThroughSummaryIndex(
   return {
     version: 1,
     sessionPath: normalizedSessionPath,
-    updatedAt: Number.isFinite(parsed.updatedAt) ? parsed.updatedAt : 0,
+    updatedAt:
+      typeof parsed.updatedAt === 'number' && Number.isFinite(parsed.updatedAt)
+        ? parsed.updatedAt
+        : 0,
     entries: parsed.entries.slice(0, MAX_FOLLOW_THROUGH_INDEX_ITEMS),
     evidenceRefs: normalizeStringList(parsed.evidenceRefs, 24),
     actionAuthority: 'display_only',

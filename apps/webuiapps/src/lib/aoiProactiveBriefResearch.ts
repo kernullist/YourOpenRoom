@@ -381,7 +381,7 @@ export function buildAoiProactiveBriefCandidateFromEvidence(
   const currentInfoLabel = currentInfoBlockedByFreshness
     ? 'source-backed scout candidate'
     : 'source-backed current-info candidate';
-  const allowedModes = input.delivery?.allowedModes?.length
+  const allowedModes: AoiProactiveBriefDeliveryMode[] = input.delivery?.allowedModes?.length
     ? input.delivery.allowedModes
     : ['dashboard'];
 

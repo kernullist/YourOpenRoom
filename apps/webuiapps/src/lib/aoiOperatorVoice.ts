@@ -204,7 +204,10 @@ export function normalizeAoiOperatorVoicePolicy(
   if (!isRecord(value)) {
     return defaults;
   }
-  const rawAllowed = isRecord(value.allowedCategories) ? value.allowedCategories : {};
+  const rawAllowed = (isRecord(value.allowedCategories) ? value.allowedCategories : {}) as Record<
+    string,
+    unknown
+  >;
   const allowedCategories = VOICE_CATEGORY_ORDER.reduce(
     (acc, category) => ({
       ...acc,

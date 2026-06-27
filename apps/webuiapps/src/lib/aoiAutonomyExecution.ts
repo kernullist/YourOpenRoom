@@ -348,7 +348,7 @@ function normalizeValidationScopes(value: unknown): string[] {
   return [
     ...new Set(
       value
-        .filter((item): item is string => typeof item === 'string' && item.trim())
+        .filter((item): item is string => typeof item === 'string' && item.trim() !== '')
         .map((item) => item.replace(/\\/g, '/').trim().slice(0, 160)),
     ),
   ].slice(0, 12);

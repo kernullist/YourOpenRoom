@@ -974,7 +974,7 @@ export function buildAoiOperatorFeedbackContextFeedback(params: {
         id: `aoi-feedback-context-${hashText(`${label.id}:${sourceKind}`)}`,
         sessionPath,
         sourceId: sourceKind.replace(/_/g, '-'),
-        feedbackCategory: label.label,
+        feedbackCategory: label.label as AoiProposalFeedbackCategory,
         ...(label.note ? { feedbackNote: label.note } : {}),
         evidenceRefs: uniqueStrings(
           [

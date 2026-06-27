@@ -2846,6 +2846,7 @@ export interface AoiAutonomyBlockedProposal {
   requiresUserApproval?: boolean;
   risk?: AoiAutonomyRisk;
   safeAlternative?: string;
+  dedupeKey?: string;
 }
 
 export interface AoiAutonomyTickResult {

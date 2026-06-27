@@ -231,7 +231,7 @@ function scoreForLabel(label: string): number {
   return 0;
 }
 
-function scoreForPassiveOutcome(event: AoiFollowThroughEvent): number {
+function scoreForPassiveOutcome(event: { result: string }): number {
   if (event.result === 'positive') {
     return 0.22;
   }
