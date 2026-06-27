@@ -45,6 +45,13 @@ import {
   evaluateAoiApprovedAppActionPolicy,
   normalizeAoiApprovedAppActionPolicy,
 } from './aoiApprovedAppActionPolicy';
+import {
+  compareAoiApprovedConnectorCallApproval,
+  createAoiApprovedConnectorCallRequest,
+  evaluateAoiApprovedConnectorCallPolicy,
+  normalizeAoiApprovedConnectorCallPolicy,
+} from './aoiApprovedConnectorCallPolicy';
+import type { AoiMcpConnectorsConfig } from './aoiMcpConnectorRegistry';
 import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 
 export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
@@ -352,11 +359,14 @@ const EXECUTABLE_PROPOSAL_ACTIONS = new Set([
   'file_patch',
   'file_delete',
   'app_action',
+  'connector_call',
 ]);
 
 const FILE_MUTATION_PROPOSAL_ACTIONS = new Set(['file_write', 'file_patch', 'file_delete']);
 
 const APP_ACTION_PROPOSAL_ACTIONS = new Set(['app_action']);
+
+const CONNECTOR_CALL_PROPOSAL_ACTIONS = new Set(['connector_call']);
 
 function fileMutationOperationFromActionKind(
   kind: string | undefined,
@@ -1054,6 +1064,45 @@ function findAppActionApprovalDecision(params: {
   });
 }
 
+function getAoiApprovedConnectorCallPolicyForProposal(
+  proposal: AoiProposal,
+  now: number,
+  connectors: AoiMcpConnectorsConfig | null | undefined,
+) {
+  const params = proposal.acceptAction?.params ?? {};
+  return evaluateAoiApprovedConnectorCallPolicy(
+    createAoiApprovedConnectorCallRequest({
+      sessionPath: proposal.sessionPath,
+      proposalId: proposal.id,
+      connectorRef: params.connectorRef ?? params.connectorId ?? params.connector,
+      toolName: params.toolName ?? params.tool,
+      resourceUri: params.resourceUri ?? params.resource_uri ?? params.uri,
+      args: params.args ?? params.arguments ?? params.toolArgs,
+      purpose: params.purpose ?? proposal.title,
+      risk: proposal.risk,
+      requestedAt: now,
+      evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+    }),
+    { connectors: connectors ?? null, now },
+  );
+}
+
+function findConnectorCallApprovalDecision(params: {
+  proposal: AoiProposal;
+  decisions: AoiProposalDecision[] | undefined;
+  decisionId?: string;
+}): AoiProposalDecision | undefined {
+  return params.decisions?.find((decision) => {
+    if (decision.proposalId !== params.proposal.id || decision.action !== 'accept') {
+      return false;
+    }
+    if (params.decisionId && decision.id !== params.decisionId) {
+      return false;
+    }
+    return Boolean(normalizeAoiApprovedConnectorCallPolicy(decision.approvedConnectorCall));
+  });
+}
+
 function hasExplicitAcceptDecision(params: {
   proposal: AoiProposal;
   decisions: AoiProposalDecision[] | undefined;
@@ -1114,6 +1163,7 @@ export function evaluateAoiProposalExecution(
   const kiraHandoff = actionKind === 'create_kira_work';
   const fileMutation = FILE_MUTATION_PROPOSAL_ACTIONS.has(actionKind);
   const appAction = APP_ACTION_PROPOSAL_ACTIONS.has(actionKind);
+  const connectorCall = CONNECTOR_CALL_PROPOSAL_ACTIONS.has(actionKind);
   const approvedCommandPolicy =
     actionKind === 'run_command' ? getAoiApprovedCommandPolicyForProposal(proposal, now) : null;
   const approvedFileMutationPolicy = fileMutation
@@ -1121,6 +1171,9 @@ export function evaluateAoiProposalExecution(
     : null;
   const approvedAppActionPolicy = appAction
     ? getAoiApprovedAppActionPolicyForProposal(proposal, now)
+    : null;
+  const approvedConnectorCallPolicy = connectorCall
+    ? getAoiApprovedConnectorCallPolicyForProposal(proposal, now, context.connectors)
     : null;
   const requiresFreshAcceptance =
     context.executionMode === 'preview'
@@ -1177,6 +1230,19 @@ export function evaluateAoiProposalExecution(
     if (approvedAppActionPolicy && !approvedAppActionPolicy.allowed) {
       for (const reason of approvedAppActionPolicy.blockReasons) {
         reasons.push(`app_action_blocked:${reason}`);
+      }
+    }
+  }
+  if (connectorCall) {
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('connector_call_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('connector_call_proposal_must_require_l5');
+    }
+    if (approvedConnectorCallPolicy && !approvedConnectorCallPolicy.allowed) {
+      for (const reason of approvedConnectorCallPolicy.blockReasons) {
+        reasons.push(`connector_call_blocked:${reason}`);
       }
     }
   }
@@ -1246,10 +1312,26 @@ export function evaluateAoiProposalExecution(
       reasons.push(`app_action_${reason}`);
     }
   }
+  if (connectorCall && context.executionMode !== 'preview' && approvedConnectorCallPolicy) {
+    const approvalDecision = findConnectorCallApprovalDecision({
+      proposal,
+      decisions: context.decisions,
+      decisionId: context.decisionId,
+    });
+    const approvalReasons = compareAoiApprovedConnectorCallApproval({
+      approved: normalizeAoiApprovedConnectorCallPolicy(approvalDecision?.approvedConnectorCall),
+      current: approvedConnectorCallPolicy,
+      now,
+    });
+    for (const reason of approvalReasons) {
+      reasons.push(`connector_call_${reason}`);
+    }
+  }
   if (
     actionKind !== 'run_command' &&
     !fileMutation &&
     !appAction &&
+    !connectorCall &&
     valueContainsFilesystemPath(proposal.acceptAction?.params ?? {})
   ) {
     reasons.push('action_params_include_filesystem_path');
@@ -1278,6 +1360,12 @@ export function evaluateAoiProposalExecution(
     if (name === 'app_action' && actionKind === 'app_action') {
       if (!approvedAppActionPolicy?.allowed) {
         reasons.push('tool_blocked:app_action');
+      }
+      return;
+    }
+    if (name === 'connector_call' && actionKind === 'connector_call') {
+      if (!approvedConnectorCallPolicy?.allowed) {
+        reasons.push('tool_blocked:connector_call');
       }
       return;
     }
@@ -1634,6 +1722,24 @@ export function checkAoiProposalPolicy(
       }
     }
   }
+  if (proposal.acceptAction && CONNECTOR_CALL_PROPOSAL_ACTIONS.has(proposal.acceptAction.kind)) {
+    const approvedConnectorCallPolicy = getAoiApprovedConnectorCallPolicyForProposal(
+      proposal,
+      now,
+      input.connectors,
+    );
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('connector_call_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('connector_call_proposal_must_require_l5');
+    }
+    if (!approvedConnectorCallPolicy.allowed) {
+      for (const reason of approvedConnectorCallPolicy.blockReasons) {
+        reasons.push(`connector_call_blocked:${reason}`);
+      }
+    }
+  }
 
   for (const toolName of proposal.suggestedTools) {
     if (toolName === 'run_command' && proposal.acceptAction?.kind === 'run_command') {
@@ -1654,6 +1760,17 @@ export function checkAoiProposalPolicy(
       const approvedAppActionPolicy = getAoiApprovedAppActionPolicyForProposal(proposal, now);
       if (!approvedAppActionPolicy.allowed) {
         reasons.push('tool_blocked:app_action');
+      }
+      continue;
+    }
+    if (toolName === 'connector_call' && proposal.acceptAction?.kind === 'connector_call') {
+      const approvedConnectorCallPolicy = getAoiApprovedConnectorCallPolicyForProposal(
+        proposal,
+        now,
+        input.connectors,
+      );
+      if (!approvedConnectorCallPolicy.allowed) {
+        reasons.push('tool_blocked:connector_call');
       }
       continue;
     }

@@ -1,3 +1,4 @@
+import * as fs from 'fs';
 import { evaluateAoiProposalExecution } from './aoiAutonomyPolicy';
 import {
   applyAoiProposalExecutionTransition,
@@ -5,6 +6,7 @@ import {
   appendAoiCommandAuditRecord,
   appendAoiFileMutationAuditRecord,
   appendAoiAppActionAuditRecord,
+  appendAoiConnectorCallAuditRecord,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
@@ -55,6 +57,16 @@ import {
   normalizeAoiApprovedAppActionPolicy,
 } from './aoiApprovedAppActionPolicy';
 import { applyAoiApprovedAppAction } from './aoiApprovedAppActionRunner';
+import {
+  createAoiApprovedConnectorCallRequest,
+  evaluateAoiApprovedConnectorCallPolicy,
+  normalizeAoiApprovedConnectorCallPolicy,
+} from './aoiApprovedConnectorCallPolicy';
+import { applyAoiApprovedConnectorCall } from './aoiApprovedConnectorCallRunner';
+import {
+  normalizeAoiMcpConnectorsConfig,
+  type AoiMcpConnectorsConfig,
+} from './aoiMcpConnectorRegistry';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
@@ -73,6 +85,9 @@ import type {
   AoiApprovedAppActionPolicy,
   AoiApprovedAppActionRequest,
   AoiApprovedAppActionResult,
+  AoiApprovedConnectorCallPolicy,
+  AoiApprovedConnectorCallRequest,
+  AoiApprovedConnectorCallResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
@@ -128,6 +143,12 @@ export interface AoiProposalExecutionDependencies {
     workspaceRoot: string;
     now: number;
   }) => Promise<AoiApprovedCommandResult>;
+  runApprovedConnectorCall?: (params: {
+    request: AoiApprovedConnectorCallRequest;
+    approvedPolicy?: AoiApprovedConnectorCallPolicy;
+    connectors: AoiMcpConnectorsConfig | null;
+    now: number;
+  }) => Promise<AoiApprovedConnectorCallResult>;
 }
 
 export interface AoiProposalExecutionResult {
@@ -336,6 +357,50 @@ function buildApprovedAppActionRequestFromProposal(params: {
   });
 }
 
+function buildApprovedConnectorCallRequestFromProposal(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  decisionId?: string;
+  now: number;
+}): AoiApprovedConnectorCallRequest {
+  const actionParams = params.proposal.acceptAction?.params ?? {};
+  return createAoiApprovedConnectorCallRequest({
+    sessionPath: params.sessionPath,
+    proposalId: params.proposal.id,
+    decisionId: params.decisionId,
+    connectorRef: actionParams.connectorRef ?? actionParams.connectorId ?? actionParams.connector,
+    toolName: actionParams.toolName ?? actionParams.tool,
+    resourceUri: actionParams.resourceUri ?? actionParams.resource_uri ?? actionParams.uri,
+    args: actionParams.args ?? actionParams.arguments ?? actionParams.toolArgs,
+    purpose: actionParams.purpose ?? params.proposal.title,
+    risk: params.proposal.risk,
+    requestedAt: params.now,
+    evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+  });
+}
+
+// Read the server-readable trusted MCP connector allow-list from the persisted
+// config file. This is the SINGLE trust source for a live connector RPC: the
+// endpoint is resolved by id from here, never from the proposal. Fail-closed to
+// an empty list if the file is missing or unreadable.
+function loadAoiMcpConnectorsFromConfigFile(configFile: string): AoiMcpConnectorsConfig {
+  try {
+    if (!configFile || !fs.existsSync(configFile)) {
+      return { connectors: [] };
+    }
+    const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as {
+      aoiMcpConnectors?: unknown;
+    } | null;
+    const raw =
+      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed.aoiMcpConnectors as Partial<AoiMcpConnectorsConfig> | undefined)
+        : undefined;
+    return normalizeAoiMcpConnectorsConfig(raw ?? null);
+  } catch {
+    return { connectors: [] };
+  }
+}
+
 function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown> {
   return {
     id: memory.id,
@@ -452,6 +517,25 @@ function isAoiApprovedAppActionResult(value: unknown): value is AoiApprovedAppAc
   );
 }
 
+function isAoiApprovedConnectorCallResult(value: unknown): value is AoiApprovedConnectorCallResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Partial<AoiApprovedConnectorCallResult>;
+  return (
+    result.version === 1 &&
+    typeof result.ok === 'boolean' &&
+    typeof result.connectorId === 'string' &&
+    typeof result.toolName === 'string' &&
+    (result.routing === 'live_read_only' ||
+      result.routing === 'side_effecting' ||
+      result.routing === 'unknown') &&
+    typeof result.applied === 'boolean' &&
+    Boolean(result.auditRecord) &&
+    Array.isArray(result.evidenceRefs)
+  );
+}
+
 function normalizeValidationScopes(value: unknown): string[] {
   if (!Array.isArray(value)) {
     return [];
@@ -537,6 +621,8 @@ async function executeAllowedProposalAction(params: {
   approvedCommandPolicy?: AoiApprovedCommandPolicy;
   approvedFileMutationPolicy?: AoiApprovedFileMutationPolicy;
   approvedAppActionPolicy?: AoiApprovedAppActionPolicy;
+  approvedConnectorCallPolicy?: AoiApprovedConnectorCallPolicy;
+  connectors?: AoiMcpConnectorsConfig | null;
   dependencies: AoiProposalExecutionDependencies;
   now: number;
 }): Promise<Record<string, unknown>> {
@@ -807,6 +893,50 @@ async function executeAllowedProposalAction(params: {
     } as unknown as Record<string, unknown>;
   }
 
+  if (action.kind === 'connector_call') {
+    const request = buildApprovedConnectorCallRequestFromProposal({
+      proposal: params.proposal,
+      sessionPath: params.sessionPath,
+      decisionId: params.decisionId,
+      now: params.now,
+    });
+    const connectors = params.connectors ?? null;
+    const policy = evaluateAoiApprovedConnectorCallPolicy(request, {
+      connectors,
+      now: params.now,
+    });
+    if (!policy.allowed) {
+      throw new Error(`connector_call_blocked:${policy.blockReasons.join(',')}`);
+    }
+    const result = await (
+      params.dependencies.runApprovedConnectorCall ??
+      ((runnerParams: {
+        request: AoiApprovedConnectorCallRequest;
+        approvedPolicy?: AoiApprovedConnectorCallPolicy;
+        connectors: AoiMcpConnectorsConfig | null;
+        now: number;
+      }) =>
+        applyAoiApprovedConnectorCall(runnerParams.request, {
+          connectors: runnerParams.connectors,
+          ...(runnerParams.approvedPolicy ? { approvedPolicy: runnerParams.approvedPolicy } : {}),
+          now: runnerParams.now,
+        }))
+    )({
+      request,
+      ...(params.approvedConnectorCallPolicy
+        ? { approvedPolicy: params.approvedConnectorCallPolicy }
+        : {}),
+      connectors,
+      now: params.now,
+    });
+    return {
+      kind: action.kind,
+      policy,
+      connectorCallResult: result,
+      auditRecord: result.auditRecord,
+    } as unknown as Record<string, unknown>;
+  }
+
   throw new Error(`Unsupported proposal action kind: ${action.kind}`);
 }
 
@@ -1053,10 +1183,25 @@ export async function executeAoiProposal(params: {
           )?.approvedAppAction,
         )
       : undefined;
+  const approvedConnectorCallPolicyForExecution =
+    proposal.acceptAction?.kind === 'connector_call'
+      ? normalizeAoiApprovedConnectorCallPolicy(
+          decisions.find(
+            (decision) =>
+              decision.proposalId === proposal.id &&
+              decision.action === 'accept' &&
+              (!params.decisionId || decision.id === params.decisionId),
+          )?.approvedConnectorCall,
+        )
+      : undefined;
+  // Server-readable trusted connector allow-list; the live trust authority for a
+  // connector_call. Read once and shared by the execution gate and the runner.
+  const connectors = loadAoiMcpConnectorsFromConfigFile(params.configFile);
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
     decisionId: params.decisionId,
+    connectors,
   });
   if (!evaluation.allowed) {
     if (proposal.acceptAction?.kind === 'create_kira_work') {
@@ -1117,6 +1262,10 @@ export async function executeAoiProposal(params: {
       ...(approvedAppActionPolicyForExecution
         ? { approvedAppActionPolicy: approvedAppActionPolicyForExecution }
         : {}),
+      ...(approvedConnectorCallPolicyForExecution
+        ? { approvedConnectorCallPolicy: approvedConnectorCallPolicyForExecution }
+        : {}),
+      connectors,
       dependencies: params.dependencies ?? {},
       now,
     });
@@ -1473,6 +1622,70 @@ export async function executeAoiProposal(params: {
         );
       } catch (error) {
         console.warn('[AoiAutonomyExecution] Failed to ingest app action observation', error);
+      }
+    }
+    if (proposal.acceptAction?.kind === 'connector_call') {
+      const connectorCallResult = result.connectorCallResult;
+      if (!isAoiApprovedConnectorCallResult(connectorCallResult)) {
+        throw new Error('Connector call result was missing from execution output.');
+      }
+      const audit = appendAoiConnectorCallAuditRecord(params.sessionsDir, {
+        ...connectorCallResult.auditRecord,
+        evidenceRefs: [
+          ...new Set([
+            ...connectorCallResult.auditRecord.evidenceRefs,
+            `decision:${transition.decision.id}`,
+            ...proposal.evidenceRefs,
+            ...proposal.artifactRefs,
+          ]),
+        ].slice(0, 24),
+      });
+      const connectorStatusLabel = connectorCallResult.applied
+        ? 'invoked'
+        : connectorCallResult.blockReasons.includes('execution_failed')
+          ? 'failed'
+          : 'blocked';
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'connector_call_executed',
+        message: `Connector call ${connectorCallResult.toolName} on ${connectorCallResult.connectorId} (${connectorCallResult.routing}) ${connectorStatusLabel}.`,
+        goalSummary: `Aoi connector call: ${proposal.title}`,
+        toolNames: [proposal.acceptAction.kind],
+        status: connectorCallResult.ok ? 'completed' : 'failed',
+        now,
+      });
+      try {
+        ingestAoiObservation(
+          params.sessionsDir,
+          {
+            source: 'tool',
+            sessionPath,
+            stableKey: `connector-call:${audit.id}`,
+            createdAt: audit.completedAt,
+            summary: `Connector call ${connectorCallResult.toolName} on ${connectorCallResult.connectorId} (${connectorCallResult.routing}) ${connectorStatusLabel}.`,
+            payloadRef: `aoi-connector-call-audit:${audit.id}`,
+            memoryIds: [],
+            artifactRefs: [
+              `aoi-connector-call-audit:${audit.id}`,
+              `decision:${transition.decision.id}`,
+              ...audit.evidenceRefs,
+            ],
+            proposalIds: [proposal.id],
+            riskSignals: [
+              'connector-call',
+              `connector-call:${connectorCallResult.routing}`,
+              connectorCallResult.applied
+                ? 'connector-call:invoked'
+                : connectorCallResult.blockReasons.includes('execution_failed')
+                  ? 'connector-call:failed'
+                  : 'connector-call:blocked',
+            ],
+          },
+          { now: audit.completedAt },
+        );
+      } catch (error) {
+        console.warn('[AoiAutonomyExecution] Failed to ingest connector call observation', error);
       }
     }
     if (proposal.acceptAction?.kind === 'create_kira_work') {

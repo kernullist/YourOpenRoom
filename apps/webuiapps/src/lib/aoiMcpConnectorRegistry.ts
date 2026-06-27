@@ -84,7 +84,11 @@ function truncateSingleLine(value: string, maxChars: number): string {
   return `${normalized.slice(0, Math.max(0, maxChars - 1)).trimEnd()}...`;
 }
 
-function slugifyConnectorId(value: string): string {
+// Canonical connector id derived from any reference string. Exported so the
+// approved-connector-call policy can bind its content-addressed fingerprint to a
+// stable key (the same canonical id whether or not the allow-list resolves at the
+// time), keeping accept-time and execute-time bindings identical.
+export function canonicalAoiMcpConnectorId(value: string): string {
   return (
     value
       .toLowerCase()
@@ -246,7 +250,7 @@ export function normalizeAoiMcpConnectorEntry(value: unknown): AoiMcpConnectorEn
     return null;
   }
   const rawId = typeof record.id === 'string' && record.id.trim() ? record.id.trim() : name;
-  const id = slugifyConnectorId(rawId);
+  const id = canonicalAoiMcpConnectorId(rawId);
   return {
     id,
     name: name || id,
@@ -300,7 +304,7 @@ export function resolveTrustedAoiMcpConnector(
   if (!ref || !config) {
     return null;
   }
-  const target = slugifyConnectorId(ref);
+  const target = canonicalAoiMcpConnectorId(ref);
   const entry = config.connectors.find((candidate) => candidate.id === target);
   if (!entry || !isAoiMcpConnectorServerCallable(entry)) {
     return null;

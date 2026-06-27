@@ -4,6 +4,7 @@ import {
   normalizeAoiApprovalSandboxPreview,
 } from './aoiApprovalSandbox';
 import {
+  canonicalAoiMcpConnectorId,
   classifyAoiMcpConnectorTool,
   resolveTrustedAoiMcpConnector,
   validateAoiMcpConnectorEndpointHost,
@@ -179,14 +180,19 @@ export function evaluateAoiApprovedConnectorCallPolicy(
     blockReasons.push('unknown_or_untrusted_connector');
   }
 
-  let connectorId = '';
+  // The connector id is canonical and resolution-independent, so the approval
+  // binding (operationHash, sandbox, fingerprint) is identical whether or not the
+  // allow-list is present when the policy is evaluated: accept captures a binding
+  // receipt without the server allow-list, and execute re-evaluates with it. The
+  // trust/routing fields below ARE resolution-dependent and are enforced live at
+  // execute by both the execution gate and the runner.
+  const connectorId = connectorRef ? canonicalAoiMcpConnectorId(connectorRef) : '';
   let connectorName = '';
   let endpointHost = '';
   let routing: AoiConnectorCallRouting = 'unknown';
   let readOnly = false;
 
   if (entry && toolName) {
-    connectorId = entry.id;
     connectorName = entry.name;
     const hostCheck = validateAoiMcpConnectorEndpointHost(entry.endpointUrl, {
       allowPrivateHost: entry.allowPrivateHost,
@@ -221,26 +227,23 @@ export function evaluateAoiApprovedConnectorCallPolicy(
 
   const resourceUri = normalizeReference(request.resourceUri);
   const argsHash = hashAoiConnectorCallContent(stableStringifyConnectorArgs(request.args ?? null));
+  // Binding seed uses only resolution-independent fields (canonical id + tool +
+  // resourceUri + args), never the resolved routing/name, so accept and execute
+  // produce the same operationHash and approval fingerprint.
   const operationHash = hashAoiConnectorCallContent(
-    [connectorId || connectorRef, toolName, resourceUri, argsHash].join('|'),
+    [connectorId, toolName, resourceUri, argsHash].join('|'),
   );
 
   // External calls make no local file mutation, so the display_only /
   // mutationCount:0 invariant holds even for a live read-only RPC.
   const expectedMutationCount = 0;
-  const operationLabel = `${connectorName || connectorRef} ${toolName} (${routing})`;
-  const dryRunSummary =
-    routing === 'live_read_only'
-      ? `Would invoke read-only connector tool ${toolName} on ${connectorName || connectorRef} (op hash ${operationHash}); no local mutation.`
-      : `Connector tool ${toolName} on ${connectorName || connectorRef} is not eligible for live RPC (${routing}).`;
-
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'command',
-    targetId: `${connectorId || connectorRef}:${toolName}`,
-    intendedMutation: `${operationLabel} op hash ${operationHash}`,
-    dryRunSummary,
+    targetId: `${connectorId}:${toolName}`,
+    intendedMutation: `Connector call ${toolName} on ${connectorId} (op hash ${operationHash})`,
+    dryRunSummary: `Would invoke approved read-only connector tool ${toolName} on connector ${connectorId} (op hash ${operationHash}); no local mutation.`,
     requiredAuthorityDecisionId: `approved-connector-call:${hashStable(
-      [connectorId || connectorRef, toolName, operationHash, request.risk].join('|'),
+      [connectorId, toolName, operationHash, request.risk].join('|'),
     )}`,
     expectedMutationCount,
     recoveryPlan: {

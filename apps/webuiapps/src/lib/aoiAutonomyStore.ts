@@ -25,6 +25,11 @@ import {
   normalizeAoiApprovedAppActionPolicy,
 } from './aoiApprovedAppActionPolicy';
 import {
+  createAoiApprovedConnectorCallRequest,
+  evaluateAoiApprovedConnectorCallPolicy,
+  normalizeAoiApprovedConnectorCallPolicy,
+} from './aoiApprovedConnectorCallPolicy';
+import {
   buildAoiFollowThroughEventFromOpportunity,
   buildAoiFollowThroughEventFromProposalDecision,
   buildAoiFollowThroughLearningSummary,
@@ -61,6 +66,7 @@ import type {
   AoiCommandAuditRecord,
   AoiFileMutationAuditRecord,
   AoiAppActionAuditRecord,
+  AoiConnectorCallAuditRecord,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiFollowThroughEvent,
@@ -112,6 +118,7 @@ export interface AoiAutonomyPaths {
   commandAuditDir: string;
   fileMutationAuditDir: string;
   appActionAuditDir: string;
+  connectorCallAuditDir: string;
   tickState: string;
   evalDir: string;
   environmentSources: string;
@@ -536,6 +543,7 @@ export function resolveAoiAutonomyPaths(
     commandAuditDir: join(root, 'command-audit'),
     fileMutationAuditDir: join(root, 'file-mutation-audit'),
     appActionAuditDir: join(root, 'app-action-audit'),
+    connectorCallAuditDir: join(root, 'connector-call-audit'),
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
@@ -792,6 +800,29 @@ function makeAoiProposalDecisionRecord(params: {
           }),
         )
       : undefined;
+  // Connector-call approval is a content-addressed binding receipt: it is
+  // evaluated without the server allow-list here (the binding fields are
+  // resolution-independent), and trust is enforced live at execute by the
+  // execution gate and the runner, both of which re-evaluate with the allow-list.
+  const approvedConnectorCall =
+    params.action === 'accept' && params.proposal.acceptAction?.kind === 'connector_call'
+      ? evaluateAoiApprovedConnectorCallPolicy(
+          createAoiApprovedConnectorCallRequest({
+            sessionPath: params.sessionPath,
+            proposalId: params.proposal.id,
+            connectorRef:
+              actionParams.connectorRef ?? actionParams.connectorId ?? actionParams.connector,
+            toolName: actionParams.toolName ?? actionParams.tool,
+            resourceUri: actionParams.resourceUri ?? actionParams.resource_uri ?? actionParams.uri,
+            args: actionParams.args ?? actionParams.arguments ?? actionParams.toolArgs,
+            purpose: actionParams.purpose ?? params.proposal.title,
+            risk: params.proposal.risk,
+            requestedAt: params.now,
+            evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+          }),
+          { now: params.now },
+        )
+      : undefined;
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-decision', params.now),
@@ -816,6 +847,7 @@ function makeAoiProposalDecisionRecord(params: {
     ...(approvedCommand ? { approvedCommand } : {}),
     ...(approvedFileMutation ? { approvedFileMutation } : {}),
     ...(approvedAppAction ? { approvedAppAction } : {}),
+    ...(approvedConnectorCall ? { approvedConnectorCall } : {}),
   };
 }
 
@@ -2113,6 +2145,73 @@ export function loadAoiAppActionAuditRecords(
     .sort((a, b) => b.completedAt - a.completedAt);
 }
 
+function isAoiConnectorCallAuditRecord(value: unknown): value is AoiConnectorCallAuditRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiConnectorCallAuditRecord>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    typeof record.connectorId === 'string' &&
+    typeof record.connectorName === 'string' &&
+    typeof record.endpointHost === 'string' &&
+    typeof record.toolName === 'string' &&
+    (record.routing === 'live_read_only' ||
+      record.routing === 'side_effecting' ||
+      record.routing === 'unknown') &&
+    typeof record.readOnly === 'boolean' &&
+    typeof record.purpose === 'string' &&
+    (record.risk === 'low' || record.risk === 'medium' || record.risk === 'high') &&
+    typeof record.allowed === 'boolean' &&
+    Array.isArray(record.blockReasons) &&
+    typeof record.startedAt === 'number' &&
+    typeof record.completedAt === 'number' &&
+    typeof record.durationMs === 'number' &&
+    typeof record.applied === 'boolean' &&
+    typeof record.operationHash === 'string' &&
+    typeof record.argsHash === 'string' &&
+    Array.isArray(record.evidenceRefs) &&
+    typeof record.approvalFingerprint === 'string'
+  );
+}
+
+export function appendAoiConnectorCallAuditRecord(
+  sessionsDir: string,
+  record: AoiConnectorCallAuditRecord,
+): AoiConnectorCallAuditRecord {
+  if (!isAoiConnectorCallAuditRecord(record)) {
+    throw new Error('Invalid Aoi connector call audit record.');
+  }
+  const sessionPath = normalizeAoiAutonomySessionPath(record.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const item: AoiConnectorCallAuditRecord = {
+    ...record,
+    sessionPath,
+    evidenceRefs: normalizeStringList(record.evidenceRefs, 24),
+    blockReasons: normalizeStringList(
+      record.blockReasons,
+      24,
+    ) as AoiConnectorCallAuditRecord['blockReasons'],
+  };
+  writeJsonAtomic(join(paths.connectorCallAuditDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiConnectorCallAuditRecords(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiConnectorCallAuditRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.connectorCallAuditDir)
+    .filter(isAoiConnectorCallAuditRecord)
+    .sort((a, b) => b.completedAt - a.completedAt);
+}
+
 function loadAoiFieldShadowRecordList(
   filePath: string,
   sessionPath: string,
@@ -2292,6 +2391,7 @@ function isAoiProposalAcceptActionKind(value: unknown): value is AoiProposalAcce
     value === 'file_patch' ||
     value === 'file_delete' ||
     value === 'app_action' ||
+    value === 'connector_call' ||
     value === 'open_app' ||
     value === 'save_memory' ||
     value === 'activate_goal'
@@ -2321,6 +2421,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
   const approvedCommand = normalizeAoiApprovedCommandPolicy(item.approvedCommand);
   const approvedFileMutation = normalizeAoiApprovedFileMutationPolicy(item.approvedFileMutation);
   const approvedAppAction = normalizeAoiApprovedAppActionPolicy(item.approvedAppAction);
+  const approvedConnectorCall = normalizeAoiApprovedConnectorCallPolicy(item.approvedConnectorCall);
   return {
     version: 1,
     id: item.id,
@@ -2355,6 +2456,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     ...(approvedCommand ? { approvedCommand } : {}),
     ...(approvedFileMutation ? { approvedFileMutation } : {}),
     ...(approvedAppAction ? { approvedAppAction } : {}),
+    ...(approvedConnectorCall ? { approvedConnectorCall } : {}),
   };
 }
 

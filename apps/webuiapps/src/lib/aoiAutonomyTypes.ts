@@ -1,5 +1,6 @@
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
 import type { AoiActionCheckpoint } from './aoiActionCheckpoint';
+import type { AoiMcpConnectorsConfig } from './aoiMcpConnectorRegistry';
 import type { AppIntentExecutionKind } from './appIntentContracts';
 import type {
   AoiApprovalSandboxPreview,
@@ -3249,6 +3250,10 @@ export interface AoiProposalPolicyCheckInput {
   activeProposals?: AoiProposal[];
   recentDecisions?: AoiProposalDecision[];
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
+  // Server-readable trusted MCP connector allow-list, used to evaluate a
+  // connector_call proposal's policy. Absent on client/preview paths (the
+  // connector policy then fails closed); the server passes it from config.
+  connectors?: AoiMcpConnectorsConfig | null;
   now?: number;
 }
 
@@ -3292,6 +3297,10 @@ export interface AoiProposalExecutionPolicyContext {
   decisionId?: string;
   freshAcceptanceMs?: number;
   executionMode?: 'preview' | 'execute';
+  // Server-readable trusted MCP connector allow-list for a connector_call
+  // proposal. The server passes it from config; absent on client/preview paths
+  // (the connector policy then fails closed).
+  connectors?: AoiMcpConnectorsConfig | null;
 }
 
 export interface AoiProposalExecutionPolicyResult {
