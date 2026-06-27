@@ -437,6 +437,47 @@ export function createAoiAutonomyId(prefix: string, now = Date.now()): string {
   return `${safePrefix}-${now.toString(36)}-${randomUUID().slice(0, 8)}`;
 }
 
+// Discover every session under sessionsDir that has an initialized Aoi
+// autonomy store (an aoi-autonomy/policy.json). Used by the background runner
+// to know which sessions to tick on its own. Bounded by maxDepth and never
+// descends into the autonomy data dir itself.
+export function listAoiAutonomySessionPaths(
+  sessionsDir: string,
+  options: { maxDepth?: number } = {},
+): string[] {
+  const root = resolve(sessionsDir);
+  const maxDepth = Math.max(1, options.maxDepth ?? 6);
+  const found = new Set<string>();
+  const walk = (dir: string, depth: number): void => {
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      if (entry.name === AUTONOMY_ROOT_DIR) {
+        if (fs.existsSync(join(dir, AUTONOMY_ROOT_DIR, 'policy.json'))) {
+          const rel = relative(root, dir).replace(/\\/g, '/');
+          const normalized = normalizeAoiAutonomySessionPath(rel);
+          if (normalized) {
+            found.add(normalized);
+          }
+        }
+        continue;
+      }
+      if (depth < maxDepth) {
+        walk(join(dir, entry.name), depth + 1);
+      }
+    }
+  };
+  walk(root, 1);
+  return [...found];
+}
+
 export function resolveAoiAutonomyPaths(
   sessionsDir: string,
   sessionPath: string,

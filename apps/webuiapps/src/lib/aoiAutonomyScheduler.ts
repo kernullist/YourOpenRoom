@@ -202,7 +202,8 @@ function normalizeWakeupReason(value: unknown): AoiAutonomyWakeupReason | null {
     value === 'mission_waiting_too_long' ||
     value === 'kira_event' ||
     value === 'research_event' ||
-    value === 'health_check'
+    value === 'health_check' ||
+    value === 'scheduled_background'
   ) {
     return value;
   }
@@ -217,7 +218,11 @@ function mapWakeupReasonToTickReason(reason: AoiAutonomyWakeupReason): AoiAutono
   if (reason === 'manual_refresh') {
     return 'manual';
   }
-  if (reason === 'source_ttl_expired' || reason === 'health_check') {
+  if (
+    reason === 'source_ttl_expired' ||
+    reason === 'health_check' ||
+    reason === 'scheduled_background'
+  ) {
     return 'periodic';
   }
   if (reason === 'kira_event') {

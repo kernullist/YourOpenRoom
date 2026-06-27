@@ -1387,7 +1387,8 @@ export type AoiAutonomyWakeupReason =
   | 'mission_waiting_too_long'
   | 'kira_event'
   | 'research_event'
-  | 'health_check';
+  | 'health_check'
+  | 'scheduled_background';
 
 export type AoiAttentionEventKind =
   | 'kira_work_status_changed'

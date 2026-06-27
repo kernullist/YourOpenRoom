@@ -3,6 +3,11 @@ import { resolve } from 'path';
 import type { Plugin } from 'vite';
 import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
+import {
+  resolveAoiAutonomyBackgroundConfigFromEnv,
+  startAoiAutonomyBackgroundRunner,
+  type AoiAutonomyBackgroundRunnerHandle,
+} from './aoiAutonomyBackgroundRunner';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
 import { resetAoiTrustCalibrationCategory } from './aoiTrustCalibrationStore';
@@ -2359,13 +2364,40 @@ export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
     });
   };
 
+  // Self-initiating background autonomy loop (OFF unless opted in via env).
+  // This is what lets Aoi "wake itself up" instead of only ticking on an
+  // inbound request. Started once; stopped on server close.
+  const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(process.env);
+  let backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null = null;
+  const startBackground = (
+    httpServer: { on?: (event: string, listener: () => void) => void } | null | undefined,
+  ): void => {
+    if (!backgroundConfig.enabled || backgroundHandle) {
+      return;
+    }
+    backgroundHandle = startAoiAutonomyBackgroundRunner({
+      sessionsDir,
+      configFile,
+      workspaceRoot,
+      intervalMs: backgroundConfig.intervalMs,
+      allowNetwork: backgroundConfig.allowNetwork,
+      maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
+    });
+    httpServer?.on?.('close', () => {
+      backgroundHandle?.stop();
+      backgroundHandle = null;
+    });
+  };
+
   return {
     name: 'aoi-autonomy',
     configureServer(server) {
       mount(server.middlewares);
+      startBackground(server.httpServer);
     },
     configurePreviewServer(server) {
       mount(server.middlewares);
+      startBackground(server.httpServer);
     },
   };
 }
