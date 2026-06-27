@@ -1999,6 +1999,7 @@ export type AoiProposalAcceptActionKind =
   | 'file_patch'
   | 'file_delete'
   | 'app_action'
+  | 'connector_call'
   | 'open_app'
   | 'save_memory'
   | 'activate_goal';
@@ -2606,6 +2607,136 @@ export interface AoiApprovedAppActionResult {
   evidenceRefs: string[];
 }
 
+// Connector-call (MCP RPC) types -- the connector analog of the app_action /
+// file-mutation families. Unlike app_action's live op (browser-only postMessage),
+// an HTTP MCP backend IS reachable from the Node server, so this is a real
+// server-side live RPC. The endpoint is never proposal-controlled: the runner
+// resolves a trusted connector by id from the server-readable allow-list
+// (aoiMcpConnectorRegistry). External side effects are not reversible, so live
+// execution is gated to read-only tools (and gated resources/read) this cut;
+// side-effecting tools are recognized but blocked from live RPC for now.
+export type AoiConnectorCallRouting = 'live_read_only' | 'side_effecting' | 'unknown';
+
+export type AoiConnectorCallBlockReason =
+  | 'missing_connector_reference'
+  | 'missing_tool_name'
+  | 'unknown_or_untrusted_connector'
+  | 'endpoint_not_server_callable'
+  | 'tool_not_allow_listed'
+  | 'read_resource_not_allowed'
+  | 'side_effecting_live_rpc_not_enabled'
+  | 'approval_missing'
+  | 'approval_expired'
+  | 'approval_connector_changed'
+  | 'approval_tool_changed'
+  | 'approval_operation_changed'
+  | 'approval_risk_changed'
+  | 'approval_purpose_changed'
+  | 'approval_preview_changed'
+  | 'approval_target_changed'
+  | 'approval_authority_decision_changed'
+  | 'approval_rollback_plan_changed'
+  | 'approval_recovery_plan_changed'
+  | 'approval_validation_changed'
+  | 'approval_fingerprint_changed'
+  | 'approval_sandbox_missing'
+  | 'execution_failed';
+
+export interface AoiApprovedConnectorCallRequest {
+  version: 1;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  // Connector id; the server resolves the endpoint from the trusted allow-list.
+  connectorRef: string;
+  // MCP tool name, or the 'resources/read' method sentinel.
+  toolName: string;
+  // For resources/read: the resource URI to read.
+  resourceUri?: string;
+  // Tool arguments. Canonicalized (sorted keys) for the content-addressed hash.
+  args?: Record<string, unknown>;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  requestedAt: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiApprovedConnectorCallPolicy {
+  version: 1;
+  allowed: boolean;
+  blockReasons: AoiConnectorCallBlockReason[];
+  connectorRef: string;
+  // Resolved trusted-connector id ('' when unresolved/untrusted).
+  connectorId: string;
+  connectorName: string;
+  // Resolved endpoint hostname for audit/preview ('' when unresolved).
+  endpointHost: string;
+  toolName: string;
+  routing: AoiConnectorCallRouting;
+  readOnly: boolean;
+  // Content-addressed hash of connector + tool + canonical args (+ resourceUri).
+  operationHash: string;
+  argsHash: string;
+  purpose: string;
+  purposeHash: string;
+  risk: AoiAutonomyRisk;
+  requiredAutonomyLevel: 'L5';
+  approvalFingerprint: string;
+  approvalSandbox?: AoiApprovalSandboxPreview;
+  expiresAt: number;
+  rationale: string[];
+}
+
+export interface AoiConnectorCallAuditRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  connectorId: string;
+  connectorName: string;
+  endpointHost: string;
+  toolName: string;
+  routing: AoiConnectorCallRouting;
+  readOnly: boolean;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  allowed: boolean;
+  blockReasons: AoiConnectorCallBlockReason[];
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  // True when the live RPC fired. External RPCs are not rolled back (best-effort).
+  applied: boolean;
+  // Bounded digest of the response for audit -- never the full payload.
+  resultDigest?: string;
+  operationHash: string;
+  argsHash: string;
+  evidenceRefs: string[];
+  approvalFingerprint: string;
+  approvalSandboxPreviewHash?: string;
+  approvalSandboxValidationStatus?: AoiApprovalSandboxValidationResult['state'];
+}
+
+export interface AoiApprovedConnectorCallResult {
+  version: 1;
+  ok: boolean;
+  connectorId: string;
+  connectorName: string;
+  endpointHost: string;
+  toolName: string;
+  routing: AoiConnectorCallRouting;
+  readOnly: boolean;
+  applied: boolean;
+  // The unwrapped tool/resource result. The execution layer compacts it before
+  // persisting; this carries the live value for the immediate caller.
+  result?: unknown;
+  resultDigest?: string;
+  blockReasons: AoiConnectorCallBlockReason[];
+  auditRecord: AoiConnectorCallAuditRecord;
+  evidenceRefs: string[];
+}
+
 export interface AoiRecoveryPreviewAction {
   kind: AoiRecoveryActionKind;
   label: string;
@@ -3027,6 +3158,7 @@ export interface AoiProposalDecision {
   approvedCommand?: AoiApprovedCommandPolicy;
   approvedFileMutation?: AoiApprovedFileMutationPolicy;
   approvedAppAction?: AoiApprovedAppActionPolicy;
+  approvedConnectorCall?: AoiApprovedConnectorCallPolicy;
 }
 
 export interface AoiAutonomyToolPolicy {
