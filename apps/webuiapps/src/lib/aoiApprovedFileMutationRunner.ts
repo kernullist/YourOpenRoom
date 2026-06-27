@@ -4,6 +4,7 @@ import { dirname, isAbsolute, relative, resolve } from 'path';
 import {
   compareAoiApprovedFileMutationApproval,
   evaluateAoiApprovedFileMutationPolicy,
+  hashAoiFileMutationContent,
 } from './aoiApprovedFileMutationPolicy';
 import {
   AoiActionCheckpointError,
@@ -256,7 +257,7 @@ export function applyAoiApprovedFileMutation(
       fs.mkdirSync(dirname(target), { recursive: true });
       fs.writeFileSync(target, content, 'utf8');
       const after = fs.readFileSync(target, 'utf8');
-      if (sha256Hex(after) !== policy.contentHash) {
+      if (hashAoiFileMutationContent(after) !== policy.contentHash) {
         return failWithRollback('verification_failed');
       }
     } else if (policy.operation === 'patch') {

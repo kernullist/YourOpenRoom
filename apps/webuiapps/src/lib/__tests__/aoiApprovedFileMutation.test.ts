@@ -55,7 +55,7 @@ describe('evaluateAoiApprovedFileMutationPolicy', () => {
     const policy = evaluateAoiApprovedFileMutationPolicy(writeRequest('apps/x/data/a.json', '{}'));
     expect(policy.allowed).toBe(true);
     expect(policy.requiredAutonomyLevel).toBe('L5');
-    expect(policy.contentHash).toMatch(/^[0-9a-f]{64}$/);
+    expect(policy.contentHash).toMatch(/^[0-9a-f]{16}$/);
     expect(policy.approvalFingerprint.length).toBeGreaterThan(0);
     expect(policy.approvalSandbox?.expectedMutationCount).toBe(1);
   });

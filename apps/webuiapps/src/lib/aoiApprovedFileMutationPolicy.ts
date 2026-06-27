@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import {
   compareAoiApprovalSandboxPreviews,
   createAoiApprovalSandboxPreview,
@@ -29,12 +28,31 @@ const MAX_PURPOSE_CHARS = 180;
 const SAFE_RELATIVE_FILE_PATH = /^[A-Za-z0-9._/-]+$/;
 const PROTECTED_SEGMENTS = new Set(['.git', 'node_modules', '.ssh', '.aws']);
 
-function sha256(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
+// Browser-safe hashing. This module is reachable from the client bundle via
+// aoiAutonomyPolicy, so it must not import Node 'crypto' (the approved-command
+// policy and approval sandbox use the same FNV approach for the same reason).
+function hashStable(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
 }
 
-function sha256Short(value: string): string {
-  return sha256(value).slice(0, 16);
+// Wider (64-bit) content hash from two independent FNV-1a passes, so the
+// content-addressed approval binding has a low collision rate without 'crypto'.
+// Exported so the runner verifies a write against the exact same digest.
+export function hashAoiFileMutationContent(value: string): string {
+  let h1 = 0x811c9dc5;
+  let h2 = (0x811c9dc5 ^ 0x5bd1e995) >>> 0;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ code, 0x85ebca6b) >>> 0;
+  }
+  return `${h1.toString(16).padStart(8, '0')}${h2.toString(16).padStart(8, '0')}`;
 }
 
 function normalizeWhitespace(value: string): string {
@@ -119,20 +137,28 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
 } {
   if (request.operation === 'write') {
     if (typeof request.content !== 'string') {
-      return { reasons: ['missing_content'], contentHash: sha256(''), byteLength: 0 };
+      return {
+        reasons: ['missing_content'],
+        contentHash: hashAoiFileMutationContent(''),
+        byteLength: 0,
+      };
     }
     const byteLength = Buffer.byteLength(request.content, 'utf8');
     const reasons: AoiFileMutationBlockReason[] = [];
     if (byteLength > AOI_MAX_FILE_MUTATION_CONTENT_BYTES) {
       reasons.push('content_too_large');
     }
-    return { reasons, contentHash: sha256(request.content), byteLength };
+    return { reasons, contentHash: hashAoiFileMutationContent(request.content), byteLength };
   }
 
   if (request.operation === 'patch') {
     const ops = normalizePatchOps(request.patchOps);
     if (!Array.isArray(request.patchOps) || request.patchOps.length === 0) {
-      return { reasons: ['missing_patch_ops'], contentHash: sha256('[]'), byteLength: 0 };
+      return {
+        reasons: ['missing_patch_ops'],
+        contentHash: hashAoiFileMutationContent('[]'),
+        byteLength: 0,
+      };
     }
     const reasons: AoiFileMutationBlockReason[] = [];
     if (ops.length !== request.patchOps.length || ops.some((op) => op.find.length === 0)) {
@@ -151,7 +177,7 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
     }
     return {
       reasons,
-      contentHash: sha256(JSON.stringify(ops)),
+      contentHash: hashAoiFileMutationContent(JSON.stringify(ops)),
       byteLength,
       patchOps: ops,
     };
@@ -159,10 +185,14 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
 
   if (request.operation === 'delete') {
     // A delete is fully specified by its path; there is no content to bind.
-    return { reasons: [], contentHash: sha256(''), byteLength: 0 };
+    return { reasons: [], contentHash: hashAoiFileMutationContent(''), byteLength: 0 };
   }
 
-  return { reasons: ['unsupported_operation'], contentHash: sha256(''), byteLength: 0 };
+  return {
+    reasons: ['unsupported_operation'],
+    contentHash: hashAoiFileMutationContent(''),
+    byteLength: 0,
+  };
 }
 
 export function createAoiApprovedFileMutationRequest(params: {
@@ -201,8 +231,8 @@ export function evaluateAoiApprovedFileMutationPolicy(
   const operation = normalizeOperation(request.operation);
   const pathLabel = normalizeAoiFileMutationPath(request.path);
   const purpose = normalizePurpose(request.purpose);
-  const purposeHash = sha256Short(purpose);
-  const pathHash = sha256Short(pathLabel || 'missing-path');
+  const purposeHash = hashStable(purpose);
+  const pathHash = hashStable(pathLabel || 'missing-path');
 
   const reasons: AoiFileMutationBlockReason[] = [];
   if (!operation) {
@@ -229,12 +259,9 @@ export function evaluateAoiApprovedFileMutationPolicy(
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'workspace',
     targetId: `${resolvedOperation}:${safePathLabel}`,
-    intendedMutation: `${operationLabel} ${safePathLabel} (${byteLength} bytes, content sha256 ${contentHash.slice(
-      0,
-      16,
-    )}).`,
+    intendedMutation: `${operationLabel} ${safePathLabel} (${byteLength} bytes, content hash ${contentHash}).`,
     dryRunSummary,
-    requiredAuthorityDecisionId: `approved-file-mutation:${sha256Short(
+    requiredAuthorityDecisionId: `approved-file-mutation:${hashStable(
       [resolvedOperation, pathHash, contentHash, request.risk].join('|'),
     )}`,
     expectedMutationCount: 1,
