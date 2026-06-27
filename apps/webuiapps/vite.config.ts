@@ -1,5 +1,5 @@
 import { UserConfigExport, ConfigEnv, loadEnv } from 'vite';
-import type { PluginOption, Plugin } from 'vite';
+import type { PluginOption, Plugin, IndexHtmlTransformContext } from 'vite';
 import { spawn } from 'child_process';
 import legacy from '@vitejs/plugin-legacy';
 import react from '@vitejs/plugin-react-swc';
@@ -4103,6 +4103,18 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
       srcDir: resolve(__dirname, 'src'),
     }),
     react(),
+    {
+      // The dev server injects an inline react-refresh preamble that a strict
+      // script-src 'self' CSP would block, so strip the CSP meta in dev only.
+      // The production build keeps the strict policy declared in index.html.
+      name: 'html-csp-dev-strip',
+      transformIndexHtml(html: string, ctx: IndexHtmlTransformContext) {
+        if (ctx.server) {
+          return html.replace(/\s*<meta[^>]*http-equiv=["']Content-Security-Policy["'][^>]*>/i, '');
+        }
+        return html;
+      },
+    } as Plugin,
     ...(skipLegacy
       ? []
       : [
