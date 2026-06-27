@@ -772,9 +772,11 @@ export function buildAoiGoalProposalFromUserMessage(params: {
   }
   const sourceRefs = normalizeStringArray(params.sourceRefs ?? ['observation:latest-user-message']);
   const goalId = `goal-candidate-${hashPart(`${params.sessionPath}:${message}`)}`;
-  const risk = (
-    /(?:보안|security|driver|kernel|커널|위험|배포|release)/i.test(message) ? 'medium' : 'low'
-  ) as AoiAutonomyRisk;
+  const risk: AoiAutonomyRisk = /(?:보안|security|driver|kernel|커널|위험|배포|release)/i.test(
+    message,
+  )
+    ? 'medium'
+    : 'low';
   const plan = buildAoiPlanForGoal({
     goalId,
     sessionPath: params.sessionPath,
@@ -810,7 +812,7 @@ export function buildAoiGoalProposalFromUserMessage(params: {
     cooldownKey: `goal-candidate:${hashPart(`${params.sessionPath}:${message}`)}`,
     confidence: 0.78,
     risk,
-    requiredAutonomyLevel: risk === 'high' ? 'L4' : 'L2',
+    requiredAutonomyLevel: 'L1',
     requiresUserApproval: true,
     suggestedTools: [],
     evidenceRefs: sourceRefs,
