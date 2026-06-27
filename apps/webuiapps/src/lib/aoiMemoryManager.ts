@@ -1,5 +1,6 @@
 import type { LLMConfig } from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
+import { cosineSimilarity } from './aoiMemoryEmbedding';
 import {
   buildAoiKiraAutomationMemoryCandidates,
   containsAoiSensitiveContent,
@@ -65,6 +66,9 @@ export interface AoiMemoryEntry {
   projectKey?: string;
   tags: string[];
   entities: string[];
+  // Optional semantic embedding of `content` for vector recall. Best-effort:
+  // absent when no embedding provider ran, in which case scoring stays lexical.
+  embedding?: number[];
 }
 
 export interface AoiMemoryEpisode {
@@ -1166,7 +1170,12 @@ function isPromptEligible(memory: AoiMemoryEntry, now: number): boolean {
   return true;
 }
 
-export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, now = Date.now()) {
+export function scoreAoiMemoryForQuery(
+  memory: AoiMemoryEntry,
+  query: string,
+  now = Date.now(),
+  queryEmbedding?: number[] | null,
+) {
   const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
   const recency = memory.permanent ? 0.85 : Math.max(0, 1 - ageDays / 90);
   const queryTokens = tokenize(query);
@@ -1174,11 +1183,20 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
     `${memory.content} ${memory.tags.join(' ')} ${memory.entities.join(' ')}`,
   );
   const lexical = overlapScore(queryTokens, memoryTokens);
+  // Semantic recall: when both sides carry an embedding, cosine similarity
+  // catches paraphrases/synonyms (incl. cross-lingual) that share no tokens.
+  // Fuse by taking the stronger of lexical and semantic so neither is lost;
+  // when there is no embedding this reduces to the original lexical score.
+  const semantic =
+    queryEmbedding && memory.embedding && memory.embedding.length === queryEmbedding.length
+      ? Math.max(0, cosineSimilarity(memory.embedding, queryEmbedding))
+      : 0;
+  const relevance = Math.max(lexical, semantic);
   const hitBoost = Math.min(0.12, memory.hits * 0.015);
   const scopeBoost = memory.scope === 'user' || memory.scope === 'agent' ? 0.06 : 0;
   const conversationContextBoost = scoreConversationContextPromptBoost(memory, query);
   const permanentBoost = memory.permanent
-    ? queryLooksForConversationContext(query) || lexical > 0
+    ? queryLooksForConversationContext(query) || relevance > 0
       ? PERMANENT_MEMORY_SCORE_BOOST
       : PERMANENT_MEMORY_SCORE_BOOST * 0.45
     : 0;
@@ -1186,7 +1204,7 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
     memory.importance * 0.34 +
     memory.confidence * 0.28 +
     recency * 0.12 +
-    lexical * 0.22 +
+    relevance * 0.22 +
     hitBoost +
     scopeBoost +
     conversationContextBoost +
@@ -1197,16 +1215,17 @@ export function scoreAoiMemoryForQuery(memory: AoiMemoryEntry, query: string, no
 export function selectAoiMemoriesForPrompt(
   memories: AoiMemoryEntry[],
   query: string,
-  options?: { now?: number; limit?: number; maxChars?: number },
+  options?: { now?: number; limit?: number; maxChars?: number; queryEmbedding?: number[] | null },
 ): AoiMemoryEntry[] {
   const now = options?.now ?? Date.now();
   const limit = options?.limit ?? MAX_PROMPT_MEMORY_ENTRIES;
   const maxChars = options?.maxChars ?? MAX_PROMPT_MEMORY_CHARS;
+  const queryEmbedding = options?.queryEmbedding ?? null;
   const ranked = memories
     .filter((memory) => isPromptEligible(memory, now))
     .map((memory) => ({
       memory,
-      score: scoreAoiMemoryForQuery(memory, query, now),
+      score: scoreAoiMemoryForQuery(memory, query, now, queryEmbedding),
     }))
     .sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt);
 
