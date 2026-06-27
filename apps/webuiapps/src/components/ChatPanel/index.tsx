@@ -434,8 +434,12 @@ import {
   normalizeResponseLanguageMode,
   loadUserProfileConfigSync,
   normalizeUserProfileDisplayName,
+  normalizeAoiEmbeddingConfig,
+  saveAoiEmbeddingConfig,
   saveConversationPreferences,
   saveUserProfileConfig,
+  AOI_EMBEDDING_DEFAULT_BASE_URL,
+  AOI_EMBEDDING_DEFAULT_MODEL,
   type AoiEmbeddingConfig,
   type ConversationPreferencesConfig,
   type DialogLlmConfig,
@@ -8577,6 +8581,14 @@ const ChatPanel: React.FC<{
           onMarkAoiMemoryTemporary={markAoiMemoryTemporaryEntry}
           onArchiveAoiMemory={archiveAoiMemoryEntry}
           onDeleteAoiMemory={deleteAoiMemoryEntry}
+          aoiEmbeddingConfig={aoiEmbeddingConfig}
+          onSaveAoiEmbeddingConfig={(cfg) => {
+            const normalized = normalizeAoiEmbeddingConfig(cfg);
+            setAoiEmbeddingConfig(normalized);
+            void saveAoiEmbeddingConfig(cfg).catch((error) => {
+              console.warn('[ChatPanel] Failed to save Aoi embedding config', error);
+            });
+          }}
           onResetAll={handleResetSessionHistory}
           onSave={(
             c,
@@ -9195,6 +9207,8 @@ const SettingsModal: React.FC<{
   onMarkAoiMemoryTemporary: (memoryId: string) => Promise<void>;
   onArchiveAoiMemory: (memoryId: string) => Promise<void>;
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
+  aoiEmbeddingConfig: AoiEmbeddingConfig | null;
+  onSaveAoiEmbeddingConfig: (config: AoiEmbeddingConfig | null) => void;
   onResetAll: () => void;
   onSave: (
     _config: LLMConfig,
@@ -9296,6 +9310,8 @@ const SettingsModal: React.FC<{
   onMarkAoiMemoryTemporary,
   onArchiveAoiMemory,
   onDeleteAoiMemory,
+  aoiEmbeddingConfig,
+  onSaveAoiEmbeddingConfig,
   onResetAll,
   onSave,
   onClose,
@@ -9307,6 +9323,26 @@ const SettingsModal: React.FC<{
     config?.baseUrl || getDefaultProviderConfig('openrouter').baseUrl,
   );
   const [model, setModel] = useState(config?.model || getDefaultProviderConfig('openrouter').model);
+  // Aoi semantic-memory embedding key (optional; reuses an OpenRouter/OpenAI key).
+  const [aoiEmbeddingApiKey, setAoiEmbeddingApiKey] = useState(aoiEmbeddingConfig?.apiKey || '');
+  const [aoiEmbeddingBaseUrl, setAoiEmbeddingBaseUrl] = useState(
+    aoiEmbeddingConfig?.baseUrl || AOI_EMBEDDING_DEFAULT_BASE_URL,
+  );
+  const [aoiEmbeddingModel, setAoiEmbeddingModel] = useState(
+    aoiEmbeddingConfig?.model || AOI_EMBEDDING_DEFAULT_MODEL,
+  );
+  const persistAoiEmbeddingConfig = () => {
+    const key = aoiEmbeddingApiKey.trim();
+    onSaveAoiEmbeddingConfig(
+      key
+        ? {
+            apiKey: key,
+            baseUrl: aoiEmbeddingBaseUrl.trim() || AOI_EMBEDDING_DEFAULT_BASE_URL,
+            model: aoiEmbeddingModel.trim() || AOI_EMBEDDING_DEFAULT_MODEL,
+          }
+        : null,
+    );
+  };
   const [command, setCommand] = useState(
     config?.command ||
       (isLoginCliProvider(config?.provider || 'codex-cli')
@@ -11321,6 +11357,43 @@ const SettingsModal: React.FC<{
                     />
                   </div>
                 ) : null}
+
+                <div className={styles.field}>
+                  <label className={styles.label}>Aoi Memory Embedding Key (optional)</label>
+                  <input
+                    className={styles.fieldInput}
+                    type="password"
+                    value={aoiEmbeddingApiKey}
+                    onChange={(e) => setAoiEmbeddingApiKey(e.target.value)}
+                    onBlur={persistAoiEmbeddingConfig}
+                    placeholder="OpenRouter/OpenAI key for semantic memory recall"
+                  />
+                  <span className={styles.modelHint}>
+                    Optional. An OpenAI-compatible key (e.g. OpenRouter) lets Aoi memory recall
+                    match paraphrases that share no keywords. Leave empty to keep keyword-only
+                    recall. Saved separately from the chat model.
+                  </span>
+                </div>
+                <div className={styles.field}>
+                  <label className={styles.label}>Embedding Base URL</label>
+                  <input
+                    className={styles.fieldInput}
+                    value={aoiEmbeddingBaseUrl}
+                    onChange={(e) => setAoiEmbeddingBaseUrl(e.target.value)}
+                    onBlur={persistAoiEmbeddingConfig}
+                    placeholder={AOI_EMBEDDING_DEFAULT_BASE_URL}
+                  />
+                </div>
+                <div className={styles.field}>
+                  <label className={styles.label}>Embedding Model</label>
+                  <input
+                    className={styles.fieldInput}
+                    value={aoiEmbeddingModel}
+                    onChange={(e) => setAoiEmbeddingModel(e.target.value)}
+                    onBlur={persistAoiEmbeddingConfig}
+                    placeholder={AOI_EMBEDDING_DEFAULT_MODEL}
+                  />
+                </div>
               </div>
 
               <div className={styles.settingsSectionCard}>
