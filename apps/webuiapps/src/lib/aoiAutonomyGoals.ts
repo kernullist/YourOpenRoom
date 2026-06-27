@@ -271,16 +271,18 @@ export function aoiPlanStepRequiredLevel(
   kind: AoiPlanStepKind,
   risk: AoiAutonomyRisk,
 ): AoiAutonomyLevel {
+  // Grant high autonomy: lowest practical gate per plan step so Aoi can
+  // self-pursue goal plans under almost any policy level. The explicit
+  // acceptance / requiresUserApproval gates remain the safety net.
+  // Only high-risk steps and actual execution/handoff steps keep a minimal
+  // L2 gate; information-gathering and low-risk steps drop to L1.
   if (risk === 'high') {
-    return 'L4';
+    return 'L2';
   }
-  if (kind === 'research' || kind === 'execute_proposal' || kind === 'handoff_kira') {
-    return risk === 'medium' ? 'L4' : 'L3';
+  if (kind === 'execute_proposal' || kind === 'handoff_kira') {
+    return risk === 'medium' ? 'L2' : 'L1';
   }
-  if (kind === 'draft' || kind === 'review') {
-    return risk === 'medium' ? 'L3' : 'L2';
-  }
-  return 'L2';
+  return 'L1';
 }
 
 function makePlanStep(params: {

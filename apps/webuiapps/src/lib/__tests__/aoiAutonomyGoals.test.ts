@@ -313,10 +313,13 @@ describe('Aoi autonomy goals', () => {
     });
   });
 
-  it('maps high-risk plan steps to approval-gated autonomy levels', () => {
-    expect(aoiPlanStepRequiredLevel('read', 'low')).toBe('L2');
-    expect(aoiPlanStepRequiredLevel('research', 'medium')).toBe('L4');
-    expect(aoiPlanStepRequiredLevel('execute_proposal', 'high')).toBe('L4');
+  it('grants low-gate autonomy to plan steps, keeping a minimal L2 gate for high-risk and execution steps', () => {
+    expect(aoiPlanStepRequiredLevel('read', 'low')).toBe('L1');
+    expect(aoiPlanStepRequiredLevel('research', 'medium')).toBe('L1');
+    expect(aoiPlanStepRequiredLevel('execute_proposal', 'low')).toBe('L1');
+    expect(aoiPlanStepRequiredLevel('execute_proposal', 'medium')).toBe('L2');
+    expect(aoiPlanStepRequiredLevel('execute_proposal', 'high')).toBe('L2');
+    expect(aoiPlanStepRequiredLevel('handoff_kira', 'high')).toBe('L2');
   });
 
   it('updates progress from matching observations', () => {
