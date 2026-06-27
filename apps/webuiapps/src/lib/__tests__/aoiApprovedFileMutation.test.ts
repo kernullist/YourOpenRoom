@@ -329,3 +329,83 @@ describe('applyAoiApprovedFileMutation', () => {
     expect(result.blockReasons).toContain('workspace_root_missing');
   });
 });
+
+function deleteRequest(path: string, now = 1000): AoiApprovedFileMutationRequest {
+  return createAoiApprovedFileMutationRequest({
+    sessionPath: 'aoi/default',
+    proposalId: 'proposal-1',
+    decisionId: 'decision-1',
+    operation: 'delete',
+    path,
+    purpose: 'Remove a stale reviewed file',
+    risk: 'high',
+    requestedAt: now,
+    evidenceRefs: ['memory:m1'],
+  });
+}
+
+describe('approved file delete', () => {
+  it('allows a safe delete with no content requirement', () => {
+    const policy = evaluateAoiApprovedFileMutationPolicy(deleteRequest('apps/x/data/a.json'));
+    expect(policy.allowed).toBe(true);
+    expect(policy.operation).toBe('delete');
+    expect(policy.byteLength).toBe(0);
+  });
+
+  it('round-trips a delete policy through normalization', () => {
+    const policy = evaluateAoiApprovedFileMutationPolicy(deleteRequest('apps/x/data/a.json'));
+    const restored = normalizeAoiApprovedFileMutationPolicy(JSON.parse(JSON.stringify(policy)));
+    expect(restored?.operation).toBe('delete');
+    expect(restored?.approvalFingerprint).toBe(policy.approvalFingerprint);
+  });
+
+  it('deletes an approved existing file behind a checkpoint', () => {
+    const root = makeTempRoot();
+    fs.mkdirSync(join(root, 'apps/x/data'), { recursive: true });
+    fs.writeFileSync(join(root, 'apps/x/data/a.json'), 'stale');
+    const request = deleteRequest('apps/x/data/a.json');
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.applied).toBe(true);
+    expect(result.bytesBefore).toBe('stale'.length);
+    expect(result.checkpoint).toBeTruthy();
+    expect(fs.existsSync(join(root, 'apps/x/data/a.json'))).toBe(false);
+  });
+
+  it('blocks a delete when the target is missing', () => {
+    const root = makeTempRoot();
+    const request = deleteRequest('apps/x/data/ghost.json');
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.applied).toBe(false);
+    expect(result.blockReasons).toContain('delete_target_missing');
+  });
+
+  it('blocks a delete when the content-addressed approval is for a different operation', () => {
+    const root = makeTempRoot();
+    fs.mkdirSync(join(root, 'apps/x/data'), { recursive: true });
+    fs.writeFileSync(join(root, 'apps/x/data/a.json'), 'stale');
+    // Approval was captured for a write, but a delete is attempted.
+    const writeApproval = evaluateAoiApprovedFileMutationPolicy(
+      writeRequest('apps/x/data/a.json', 'stale'),
+    );
+    const result = applyAoiApprovedFileMutation(deleteRequest('apps/x/data/a.json'), {
+      workspaceRoot: root,
+      approvedPolicy: writeApproval,
+      now: 2000,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.blockReasons).toContain('approval_operation_changed');
+    expect(fs.existsSync(join(root, 'apps/x/data/a.json'))).toBe(true);
+  });
+});

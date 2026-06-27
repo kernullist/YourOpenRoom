@@ -283,7 +283,12 @@ function buildApprovedFileMutationRequestFromProposal(params: {
     sessionPath: params.sessionPath,
     proposalId: params.proposal.id,
     decisionId: params.decisionId,
-    operation: params.proposal.acceptAction?.kind === 'file_patch' ? 'patch' : 'write',
+    operation:
+      params.proposal.acceptAction?.kind === 'file_patch'
+        ? 'patch'
+        : params.proposal.acceptAction?.kind === 'file_delete'
+          ? 'delete'
+          : 'write',
     path: actionParams.path,
     content: actionParams.content,
     patchOps: actionParams.patchOps ?? actionParams.patch_ops,
@@ -381,7 +386,9 @@ function isAoiApprovedFileMutationResult(value: unknown): value is AoiApprovedFi
   return (
     result.version === 1 &&
     typeof result.ok === 'boolean' &&
-    (result.operation === 'write' || result.operation === 'patch') &&
+    (result.operation === 'write' ||
+      result.operation === 'patch' ||
+      result.operation === 'delete') &&
     typeof result.pathLabel === 'string' &&
     typeof result.applied === 'boolean' &&
     typeof result.rolledBack === 'boolean' &&
@@ -690,7 +697,11 @@ async function executeAllowedProposalAction(params: {
     } as unknown as Record<string, unknown>;
   }
 
-  if (action.kind === 'file_write' || action.kind === 'file_patch') {
+  if (
+    action.kind === 'file_write' ||
+    action.kind === 'file_patch' ||
+    action.kind === 'file_delete'
+  ) {
     const request = buildApprovedFileMutationRequestFromProposal({
       proposal: params.proposal,
       sessionPath: params.sessionPath,
@@ -939,7 +950,9 @@ export async function executeAoiProposal(params: {
         )
       : undefined;
   const approvedFileMutationPolicyForExecution =
-    proposal.acceptAction?.kind === 'file_write' || proposal.acceptAction?.kind === 'file_patch'
+    proposal.acceptAction?.kind === 'file_write' ||
+    proposal.acceptAction?.kind === 'file_patch' ||
+    proposal.acceptAction?.kind === 'file_delete'
       ? normalizeAoiApprovedFileMutationPolicy(
           decisions.find(
             (decision) =>
@@ -1195,7 +1208,8 @@ export async function executeAoiProposal(params: {
     }
     if (
       proposal.acceptAction?.kind === 'file_write' ||
-      proposal.acceptAction?.kind === 'file_patch'
+      proposal.acceptAction?.kind === 'file_patch' ||
+      proposal.acceptAction?.kind === 'file_delete'
     ) {
       const mutationResult = result.mutationResult;
       if (!isAoiApprovedFileMutationResult(mutationResult)) {

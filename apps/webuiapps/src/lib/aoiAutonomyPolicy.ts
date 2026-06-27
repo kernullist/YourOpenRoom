@@ -338,9 +338,22 @@ const EXECUTABLE_PROPOSAL_ACTIONS = new Set([
   'run_command',
   'file_write',
   'file_patch',
+  'file_delete',
 ]);
 
-const FILE_MUTATION_PROPOSAL_ACTIONS = new Set(['file_write', 'file_patch']);
+const FILE_MUTATION_PROPOSAL_ACTIONS = new Set(['file_write', 'file_patch', 'file_delete']);
+
+function fileMutationOperationFromActionKind(
+  kind: string | undefined,
+): 'write' | 'patch' | 'delete' {
+  if (kind === 'file_patch') {
+    return 'patch';
+  }
+  if (kind === 'file_delete') {
+    return 'delete';
+  }
+  return 'write';
+}
 
 const READ_ONLY_PROPOSAL_ACTIONS = new Set([
   'open_research_artifact',
@@ -959,7 +972,7 @@ function getAoiApprovedFileMutationPolicyForProposal(proposal: AoiProposal, now:
     createAoiApprovedFileMutationRequest({
       sessionPath: proposal.sessionPath,
       proposalId: proposal.id,
-      operation: proposal.acceptAction?.kind === 'file_patch' ? 'patch' : 'write',
+      operation: fileMutationOperationFromActionKind(proposal.acceptAction?.kind),
       path: params.path,
       content: params.content,
       patchOps: params.patchOps ?? params.patch_ops,

@@ -935,32 +935,11 @@ describe('evaluateAoiProposalExecution()', () => {
   });
 
   it('blocks file writes, patches, deletes, unsafe commands, unknown actions, missing evidence, and filesystem path params', () => {
-    // file_delete is still an unwired, fully blocked action kind.
-    const deleteResult = evaluateAoiProposalExecution(
-      makeProposal({
-        status: 'accepted',
-        suggestedTools: ['file_delete'],
-        acceptAction: {
-          kind: 'file_delete' as never,
-          params: { file_path: 'F:\\secret\\out.txt' },
-        },
-      }),
-      policy,
-      { now: 3000, decisions: [acceptDecision] },
-    );
-    expect(deleteResult.reasons).toEqual(
-      expect.arrayContaining([
-        'unknown_action_kind:file_delete',
-        'tool_blocked:file_delete',
-        'action_params_include_filesystem_path',
-      ]),
-    );
-
-    // file_write / file_patch are gated-executable: they require L5 plus a fresh,
-    // content-addressed approval and a safe relative path. An L4 policy with an
-    // absolute path and no approval is still blocked -- but never via
-    // unknown_action_kind or the generic filesystem-path guard.
-    for (const fileTool of ['file_write', 'file_patch'] as const) {
+    // file_write / file_patch / file_delete are gated-executable: they require
+    // L5 plus a fresh, content-addressed approval and a safe relative path. An
+    // L4 policy with an absolute path and no approval is still blocked -- but
+    // never via unknown_action_kind or the generic filesystem-path guard.
+    for (const fileTool of ['file_write', 'file_patch', 'file_delete'] as const) {
       const result = evaluateAoiProposalExecution(
         makeProposal({
           status: 'accepted',

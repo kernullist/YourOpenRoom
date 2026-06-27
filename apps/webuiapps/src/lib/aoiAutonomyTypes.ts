@@ -1996,6 +1996,7 @@ export type AoiProposalAcceptActionKind =
   | 'run_command'
   | 'file_write'
   | 'file_patch'
+  | 'file_delete'
   | 'open_app'
   | 'save_memory'
   | 'activate_goal';
@@ -2328,7 +2329,7 @@ export interface AoiApprovedCommandResult {
 // computed from the operation, normalized path, and content/patch bytes, stored
 // on the accept decision, and re-validated at execution time. Every mutation is
 // guarded by a pre-change checkpoint (see aoiActionCheckpoint.ts).
-export type AoiFileMutationOperation = 'write' | 'patch';
+export type AoiFileMutationOperation = 'write' | 'patch' | 'delete';
 
 export interface AoiFileMutationPatchOp {
   find: string;
@@ -2371,6 +2372,7 @@ export type AoiFileMutationBlockReason =
   | 'checkpoint_failed'
   | 'patch_target_missing'
   | 'patch_anchor_mismatch'
+  | 'delete_target_missing'
   | 'execution_failed'
   | 'verification_failed';
 

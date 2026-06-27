@@ -80,6 +80,22 @@ function makeFilePatchProposal(partial: Partial<AoiProposal> = {}): AoiProposal 
   });
 }
 
+function makeFileDeleteProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+  return makeFileWriteProposal({
+    id: 'proposal-fd-001',
+    title: 'Delete a stale reviewed file',
+    suggestedTools: ['file_delete'],
+    acceptAction: {
+      kind: 'file_delete',
+      params: {
+        path: 'apps/sample/data/seed.json',
+        purpose: 'Remove the stale reviewed seed file',
+      },
+    },
+    ...partial,
+  });
+}
+
 describe('executeAoiProposal() file mutations', () => {
   it('writes an approved file under L5 and records the audit', async () => {
     const root = makeTempRoot();
@@ -219,5 +235,39 @@ describe('executeAoiProposal() file mutations', () => {
     expect(fs.readFileSync(join(root, 'apps/sample/data/seed.json'), 'utf8')).toBe(
       '{"version":2,"items":[]}',
     );
+  });
+
+  it('deletes an approved file under L5 and records the audit', async () => {
+    const root = makeTempRoot();
+    fs.mkdirSync(join(root, 'apps/sample/data'), { recursive: true });
+    fs.writeFileSync(join(root, 'apps/sample/data/seed.json'), '{"version":1,"items":[]}');
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeFileDeleteProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-fd-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-fd-001',
+      decisionId: accepted.decision.id,
+      now: 3000,
+    });
+
+    expect(result).toMatchObject({
+      executed: true,
+      result: { kind: 'file_delete', mutationResult: { ok: true, operation: 'delete' } },
+    });
+    expect(fs.existsSync(join(root, 'apps/sample/data/seed.json'))).toBe(false);
+    const audits = loadAoiFileMutationAuditRecords(root, 'aoi/default');
+    expect(audits).toHaveLength(1);
+    expect(audits[0].operation).toBe('delete');
+    expect(audits[0].applied).toBe(true);
   });
 });

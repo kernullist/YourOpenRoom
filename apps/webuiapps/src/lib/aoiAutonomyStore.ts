@@ -736,15 +736,22 @@ function makeAoiProposalDecisionRecord(params: {
           }),
         )
       : undefined;
+  const fileMutationKind = params.proposal.acceptAction?.kind;
   const approvedFileMutation =
     params.action === 'accept' &&
-    (params.proposal.acceptAction?.kind === 'file_write' ||
-      params.proposal.acceptAction?.kind === 'file_patch')
+    (fileMutationKind === 'file_write' ||
+      fileMutationKind === 'file_patch' ||
+      fileMutationKind === 'file_delete')
       ? evaluateAoiApprovedFileMutationPolicy(
           createAoiApprovedFileMutationRequest({
             sessionPath: params.sessionPath,
             proposalId: params.proposal.id,
-            operation: params.proposal.acceptAction.kind === 'file_patch' ? 'patch' : 'write',
+            operation:
+              fileMutationKind === 'file_patch'
+                ? 'patch'
+                : fileMutationKind === 'file_delete'
+                  ? 'delete'
+                  : 'write',
             path: actionParams.path,
             content: actionParams.content,
             patchOps: actionParams.patchOps ?? actionParams.patch_ops,
@@ -1956,7 +1963,9 @@ function isAoiFileMutationAuditRecord(value: unknown): value is AoiFileMutationA
     record.version === 1 &&
     typeof record.id === 'string' &&
     typeof record.sessionPath === 'string' &&
-    (record.operation === 'write' || record.operation === 'patch') &&
+    (record.operation === 'write' ||
+      record.operation === 'patch' ||
+      record.operation === 'delete') &&
     typeof record.pathLabel === 'string' &&
     typeof record.pathHash === 'string' &&
     typeof record.purpose === 'string' &&

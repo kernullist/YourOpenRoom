@@ -259,7 +259,7 @@ export function applyAoiApprovedFileMutation(
       if (sha256Hex(after) !== policy.contentHash) {
         return failWithRollback('verification_failed');
       }
-    } else {
+    } else if (policy.operation === 'patch') {
       if (!entry || !entry.existedBefore) {
         return failWithRollback('patch_target_missing');
       }
@@ -272,6 +272,30 @@ export function applyAoiApprovedFileMutation(
         text = text.split(op.find).join(op.replace);
       }
       fs.writeFileSync(target, text, 'utf8');
+    } else {
+      // delete
+      if (!entry || !entry.existedBefore) {
+        // Nothing to delete; the checkpoint captured an absent file so no state
+        // changed. Report blocked without framing it as a rollback.
+        return buildResult({
+          request,
+          policy,
+          startedAt,
+          completedAt: options.now ?? startedAt,
+          outcome: {
+            applied: false,
+            rolledBack: false,
+            bytesBefore,
+            bytesAfter: null,
+            blockReasons: ['delete_target_missing'],
+            checkpoint,
+          },
+        });
+      }
+      fs.unlinkSync(target);
+      if (fs.existsSync(target)) {
+        return failWithRollback('verification_failed');
+      }
     }
   } catch {
     return failWithRollback('execution_failed');

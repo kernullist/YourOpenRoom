@@ -58,7 +58,7 @@ export function normalizeAoiFileMutationPath(value: unknown): string {
 }
 
 function normalizeOperation(value: unknown): AoiFileMutationOperation | '' {
-  return value === 'write' || value === 'patch' ? value : '';
+  return value === 'write' || value === 'patch' || value === 'delete' ? value : '';
 }
 
 function normalizePatchOps(value: unknown): AoiFileMutationPatchOp[] {
@@ -157,6 +157,11 @@ function collectContentBlockReasons(request: AoiApprovedFileMutationRequest): {
     };
   }
 
+  if (request.operation === 'delete') {
+    // A delete is fully specified by its path; there is no content to bind.
+    return { reasons: [], contentHash: sha256(''), byteLength: 0 };
+  }
+
   return { reasons: ['unsupported_operation'], contentHash: sha256(''), byteLength: 0 };
 }
 
@@ -211,19 +216,24 @@ export function evaluateAoiApprovedFileMutationPolicy(
   const resolvedOperation: AoiFileMutationOperation = operation || 'write';
   const contentHash = contentResult.contentHash;
   const byteLength = contentResult.byteLength;
+  const safePathLabel = pathLabel || 'missing-path';
+  const operationLabel =
+    resolvedOperation === 'write' ? 'Write' : resolvedOperation === 'patch' ? 'Patch' : 'Delete';
+  const dryRunSummary =
+    resolvedOperation === 'write'
+      ? `Would create or replace ${safePathLabel} with ${byteLength} bytes of approved content.`
+      : resolvedOperation === 'patch'
+        ? `Would apply ${contentResult.patchOps?.length ?? 0} anchored text patch op(s) to ${safePathLabel}.`
+        : `Would delete ${safePathLabel}; a pre-change checkpoint is captured for rollback.`;
 
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'workspace',
-    targetId: `${resolvedOperation}:${pathLabel || 'missing-path'}`,
-    intendedMutation: `${resolvedOperation === 'write' ? 'Write' : 'Patch'} ${
-      pathLabel || 'missing-path'
-    } (${byteLength} bytes, content sha256 ${contentHash.slice(0, 16)}).`,
-    dryRunSummary:
-      resolvedOperation === 'write'
-        ? `Would create or replace ${pathLabel || 'missing-path'} with ${byteLength} bytes of approved content.`
-        : `Would apply ${contentResult.patchOps?.length ?? 0} anchored text patch op(s) to ${
-            pathLabel || 'missing-path'
-          }.`,
+    targetId: `${resolvedOperation}:${safePathLabel}`,
+    intendedMutation: `${operationLabel} ${safePathLabel} (${byteLength} bytes, content sha256 ${contentHash.slice(
+      0,
+      16,
+    )}).`,
+    dryRunSummary,
     requiredAuthorityDecisionId: `approved-file-mutation:${sha256Short(
       [resolvedOperation, pathHash, contentHash, request.risk].join('|'),
     )}`,
@@ -286,7 +296,7 @@ export function normalizeAoiApprovedFileMutationPolicy(
     raw.version !== 1 ||
     typeof raw.allowed !== 'boolean' ||
     !Array.isArray(raw.blockReasons) ||
-    (raw.operation !== 'write' && raw.operation !== 'patch') ||
+    (raw.operation !== 'write' && raw.operation !== 'patch' && raw.operation !== 'delete') ||
     typeof raw.path !== 'string' ||
     typeof raw.pathLabel !== 'string' ||
     typeof raw.pathHash !== 'string' ||
