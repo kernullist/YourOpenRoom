@@ -33,6 +33,12 @@ import {
   evaluateAoiApprovedCommandPolicy,
   normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
+import {
+  compareAoiApprovedFileMutationApproval,
+  createAoiApprovedFileMutationRequest,
+  evaluateAoiApprovedFileMutationPolicy,
+  normalizeAoiApprovedFileMutationPolicy,
+} from './aoiApprovedFileMutationPolicy';
 import { applyAoiTrustCalibration } from './aoiTrustCalibration';
 
 export const AOI_AUTONOMY_LEVEL_ORDER: Record<AoiAutonomyLevel, number> = {
@@ -330,7 +336,11 @@ const EXECUTABLE_PROPOSAL_ACTIONS = new Set([
   'save_memory',
   'create_kira_work',
   'run_command',
+  'file_write',
+  'file_patch',
 ]);
+
+const FILE_MUTATION_PROPOSAL_ACTIONS = new Set(['file_write', 'file_patch']);
 
 const READ_ONLY_PROPOSAL_ACTIONS = new Set([
   'open_research_artifact',
@@ -943,6 +953,40 @@ function findCommandApprovalDecision(params: {
   });
 }
 
+function getAoiApprovedFileMutationPolicyForProposal(proposal: AoiProposal, now: number) {
+  const params = proposal.acceptAction?.params ?? {};
+  return evaluateAoiApprovedFileMutationPolicy(
+    createAoiApprovedFileMutationRequest({
+      sessionPath: proposal.sessionPath,
+      proposalId: proposal.id,
+      operation: proposal.acceptAction?.kind === 'file_patch' ? 'patch' : 'write',
+      path: params.path,
+      content: params.content,
+      patchOps: params.patchOps ?? params.patch_ops,
+      purpose: params.purpose ?? proposal.title,
+      risk: proposal.risk,
+      requestedAt: now,
+      evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+    }),
+  );
+}
+
+function findFileMutationApprovalDecision(params: {
+  proposal: AoiProposal;
+  decisions: AoiProposalDecision[] | undefined;
+  decisionId?: string;
+}): AoiProposalDecision | undefined {
+  return params.decisions?.find((decision) => {
+    if (decision.proposalId !== params.proposal.id || decision.action !== 'accept') {
+      return false;
+    }
+    if (params.decisionId && decision.id !== params.decisionId) {
+      return false;
+    }
+    return Boolean(normalizeAoiApprovedFileMutationPolicy(decision.approvedFileMutation));
+  });
+}
+
 function hasExplicitAcceptDecision(params: {
   proposal: AoiProposal;
   decisions: AoiProposalDecision[] | undefined;
@@ -1001,8 +1045,12 @@ export function evaluateAoiProposalExecution(
   const toolName = actionKind ? actionKindToToolName(actionKind) : undefined;
   const readOnly = actionKind ? READ_ONLY_PROPOSAL_ACTIONS.has(actionKind) : false;
   const kiraHandoff = actionKind === 'create_kira_work';
+  const fileMutation = FILE_MUTATION_PROPOSAL_ACTIONS.has(actionKind);
   const approvedCommandPolicy =
     actionKind === 'run_command' ? getAoiApprovedCommandPolicyForProposal(proposal, now) : null;
+  const approvedFileMutationPolicy = fileMutation
+    ? getAoiApprovedFileMutationPolicyForProposal(proposal, now)
+    : null;
   const requiresFreshAcceptance =
     context.executionMode === 'preview'
       ? false
@@ -1032,6 +1080,19 @@ export function evaluateAoiProposalExecution(
     if (approvedCommandPolicy && !approvedCommandPolicy.allowed) {
       for (const reason of approvedCommandPolicy.blockReasons) {
         reasons.push(`approved_command_blocked:${reason}`);
+      }
+    }
+  }
+  if (fileMutation) {
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('file_mutation_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('file_mutation_proposal_must_require_l5');
+    }
+    if (approvedFileMutationPolicy && !approvedFileMutationPolicy.allowed) {
+      for (const reason of approvedFileMutationPolicy.blockReasons) {
+        reasons.push(`file_mutation_blocked:${reason}`);
       }
     }
   }
@@ -1071,8 +1132,24 @@ export function evaluateAoiProposalExecution(
       reasons.push(`approved_command_${reason}`);
     }
   }
+  if (fileMutation && context.executionMode !== 'preview' && approvedFileMutationPolicy) {
+    const approvalDecision = findFileMutationApprovalDecision({
+      proposal,
+      decisions: context.decisions,
+      decisionId: context.decisionId,
+    });
+    const approvalReasons = compareAoiApprovedFileMutationApproval({
+      approved: normalizeAoiApprovedFileMutationPolicy(approvalDecision?.approvedFileMutation),
+      current: approvedFileMutationPolicy,
+      now,
+    });
+    for (const reason of approvalReasons) {
+      reasons.push(`file_mutation_${reason}`);
+    }
+  }
   if (
     actionKind !== 'run_command' &&
+    !fileMutation &&
     valueContainsFilesystemPath(proposal.acceptAction?.params ?? {})
   ) {
     reasons.push('action_params_include_filesystem_path');
@@ -1089,6 +1166,12 @@ export function evaluateAoiProposalExecution(
     if (name === 'run_command' && actionKind === 'run_command') {
       if (!approvedCommandPolicy?.allowed) {
         reasons.push('tool_blocked:run_command');
+      }
+      return;
+    }
+    if (FILE_MUTATION_PROPOSAL_ACTIONS.has(name) && name === actionKind) {
+      if (!approvedFileMutationPolicy?.allowed) {
+        reasons.push(`tool_blocked:${name}`);
       }
       return;
     }
@@ -1417,12 +1500,33 @@ export function checkAoiProposalPolicy(
       }
     }
   }
+  if (proposal.acceptAction && FILE_MUTATION_PROPOSAL_ACTIONS.has(proposal.acceptAction.kind)) {
+    const approvedFileMutationPolicy = getAoiApprovedFileMutationPolicyForProposal(proposal, now);
+    if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
+      reasons.push('file_mutation_requires_l5');
+    }
+    if (proposal.requiredAutonomyLevel !== 'L5') {
+      reasons.push('file_mutation_proposal_must_require_l5');
+    }
+    if (!approvedFileMutationPolicy.allowed) {
+      for (const reason of approvedFileMutationPolicy.blockReasons) {
+        reasons.push(`file_mutation_blocked:${reason}`);
+      }
+    }
+  }
 
   for (const toolName of proposal.suggestedTools) {
     if (toolName === 'run_command' && proposal.acceptAction?.kind === 'run_command') {
       const approvedCommandPolicy = getAoiApprovedCommandPolicyForProposal(proposal, now);
       if (!approvedCommandPolicy.allowed) {
         reasons.push('tool_blocked:run_command');
+      }
+      continue;
+    }
+    if (FILE_MUTATION_PROPOSAL_ACTIONS.has(toolName) && proposal.acceptAction?.kind === toolName) {
+      const approvedFileMutationPolicy = getAoiApprovedFileMutationPolicyForProposal(proposal, now);
+      if (!approvedFileMutationPolicy.allowed) {
+        reasons.push(`tool_blocked:${toolName}`);
       }
       continue;
     }

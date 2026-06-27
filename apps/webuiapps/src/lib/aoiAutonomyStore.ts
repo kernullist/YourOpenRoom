@@ -15,6 +15,11 @@ import {
   normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
 import {
+  createAoiApprovedFileMutationRequest,
+  evaluateAoiApprovedFileMutationPolicy,
+  normalizeAoiApprovedFileMutationPolicy,
+} from './aoiApprovedFileMutationPolicy';
+import {
   buildAoiFollowThroughEventFromOpportunity,
   buildAoiFollowThroughEventFromProposalDecision,
   buildAoiFollowThroughLearningSummary,
@@ -49,6 +54,7 @@ import type {
   AoiAutonomyTickReason,
   AoiAutonomyTickState,
   AoiCommandAuditRecord,
+  AoiFileMutationAuditRecord,
   AoiEnvironmentSource,
   AoiEnvironmentSourceRegistry,
   AoiFollowThroughEvent,
@@ -98,6 +104,7 @@ export interface AoiAutonomyPaths {
   archivedPlaybooks: string;
   decisionsDir: string;
   commandAuditDir: string;
+  fileMutationAuditDir: string;
   tickState: string;
   evalDir: string;
   environmentSources: string;
@@ -520,6 +527,7 @@ export function resolveAoiAutonomyPaths(
     archivedPlaybooks: join(playbooksDir, 'archived.json'),
     decisionsDir: join(root, 'decisions'),
     commandAuditDir: join(root, 'command-audit'),
+    fileMutationAuditDir: join(root, 'file-mutation-audit'),
     tickState: join(root, 'tick-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
@@ -728,6 +736,25 @@ function makeAoiProposalDecisionRecord(params: {
           }),
         )
       : undefined;
+  const approvedFileMutation =
+    params.action === 'accept' &&
+    (params.proposal.acceptAction?.kind === 'file_write' ||
+      params.proposal.acceptAction?.kind === 'file_patch')
+      ? evaluateAoiApprovedFileMutationPolicy(
+          createAoiApprovedFileMutationRequest({
+            sessionPath: params.sessionPath,
+            proposalId: params.proposal.id,
+            operation: params.proposal.acceptAction.kind === 'file_patch' ? 'patch' : 'write',
+            path: actionParams.path,
+            content: actionParams.content,
+            patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+            purpose: actionParams.purpose ?? params.proposal.title,
+            risk: params.proposal.risk,
+            requestedAt: params.now,
+            evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+          }),
+        )
+      : undefined;
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-decision', params.now),
@@ -750,6 +777,7 @@ function makeAoiProposalDecisionRecord(params: {
     evidenceRefs: normalizeStringList(params.proposal.evidenceRefs, 24),
     memoryIds: normalizeStringList(params.proposal.memoryIds, 24),
     ...(approvedCommand ? { approvedCommand } : {}),
+    ...(approvedFileMutation ? { approvedFileMutation } : {}),
   };
 }
 
@@ -1919,6 +1947,68 @@ export function loadAoiCommandAuditRecords(
     .sort((a, b) => b.completedAt - a.completedAt);
 }
 
+function isAoiFileMutationAuditRecord(value: unknown): value is AoiFileMutationAuditRecord {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiFileMutationAuditRecord>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    (record.operation === 'write' || record.operation === 'patch') &&
+    typeof record.pathLabel === 'string' &&
+    typeof record.pathHash === 'string' &&
+    typeof record.purpose === 'string' &&
+    (record.risk === 'low' || record.risk === 'medium' || record.risk === 'high') &&
+    typeof record.allowed === 'boolean' &&
+    Array.isArray(record.blockReasons) &&
+    typeof record.startedAt === 'number' &&
+    typeof record.completedAt === 'number' &&
+    typeof record.durationMs === 'number' &&
+    typeof record.applied === 'boolean' &&
+    typeof record.rolledBack === 'boolean' &&
+    typeof record.contentHash === 'string' &&
+    Array.isArray(record.evidenceRefs) &&
+    typeof record.approvalFingerprint === 'string'
+  );
+}
+
+export function appendAoiFileMutationAuditRecord(
+  sessionsDir: string,
+  record: AoiFileMutationAuditRecord,
+): AoiFileMutationAuditRecord {
+  if (!isAoiFileMutationAuditRecord(record)) {
+    throw new Error('Invalid Aoi file mutation audit record.');
+  }
+  const sessionPath = normalizeAoiAutonomySessionPath(record.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const item: AoiFileMutationAuditRecord = {
+    ...record,
+    sessionPath,
+    evidenceRefs: normalizeStringList(record.evidenceRefs, 24),
+    blockReasons: normalizeStringList(
+      record.blockReasons,
+      24,
+    ) as AoiFileMutationAuditRecord['blockReasons'],
+  };
+  writeJsonAtomic(join(paths.fileMutationAuditDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiFileMutationAuditRecords(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiFileMutationAuditRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.fileMutationAuditDir)
+    .filter(isAoiFileMutationAuditRecord)
+    .sort((a, b) => b.completedAt - a.completedAt);
+}
+
 function loadAoiFieldShadowRecordList(
   filePath: string,
   sessionPath: string,
@@ -2121,6 +2211,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
   }
   const feedbackCategory = normalizeAoiProposalFeedbackCategory(item.feedbackCategory);
   const approvedCommand = normalizeAoiApprovedCommandPolicy(item.approvedCommand);
+  const approvedFileMutation = normalizeAoiApprovedFileMutationPolicy(item.approvedFileMutation);
   return {
     version: 1,
     id: item.id,
@@ -2153,6 +2244,7 @@ function normalizeLoadedAoiProposalDecision(value: unknown): AoiProposalDecision
     evidenceRefs: normalizeStringList(item.evidenceRefs, 24),
     memoryIds: normalizeStringList(item.memoryIds, 24),
     ...(approvedCommand ? { approvedCommand } : {}),
+    ...(approvedFileMutation ? { approvedFileMutation } : {}),
   };
 }
 

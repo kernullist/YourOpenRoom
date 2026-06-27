@@ -3,6 +3,7 @@ import {
   applyAoiProposalExecutionTransition,
   buildAoiAutonomyStatus,
   appendAoiCommandAuditRecord,
+  appendAoiFileMutationAuditRecord,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
@@ -41,6 +42,12 @@ import {
   normalizeAoiApprovedCommandPolicy,
 } from './aoiApprovedCommandPolicy';
 import { runAoiApprovedCommand } from './aoiApprovedCommandRunner';
+import {
+  createAoiApprovedFileMutationRequest,
+  evaluateAoiApprovedFileMutationPolicy,
+  normalizeAoiApprovedFileMutationPolicy,
+} from './aoiApprovedFileMutationPolicy';
+import { applyAoiApprovedFileMutation } from './aoiApprovedFileMutationRunner';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
@@ -53,6 +60,9 @@ import type {
   AoiApprovedCommandPolicy,
   AoiApprovedCommandRequest,
   AoiApprovedCommandResult,
+  AoiApprovedFileMutationPolicy,
+  AoiApprovedFileMutationRequest,
+  AoiApprovedFileMutationResult,
   AoiPreparedActionPlan,
   AoiProposal,
   AoiProposalDecision,
@@ -262,6 +272,28 @@ function buildApprovedCommandRequestFromProposal(params: {
   });
 }
 
+function buildApprovedFileMutationRequestFromProposal(params: {
+  proposal: AoiProposal;
+  sessionPath: string;
+  decisionId?: string;
+  now: number;
+}): AoiApprovedFileMutationRequest {
+  const actionParams = params.proposal.acceptAction?.params ?? {};
+  return createAoiApprovedFileMutationRequest({
+    sessionPath: params.sessionPath,
+    proposalId: params.proposal.id,
+    decisionId: params.decisionId,
+    operation: params.proposal.acceptAction?.kind === 'file_patch' ? 'patch' : 'write',
+    path: actionParams.path,
+    content: actionParams.content,
+    patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+    purpose: actionParams.purpose ?? params.proposal.title,
+    risk: params.proposal.risk,
+    requestedAt: params.now,
+    evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+  });
+}
+
 function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown> {
   return {
     id: memory.id,
@@ -336,6 +368,23 @@ function isAoiApprovedCommandResult(value: unknown): value is AoiApprovedCommand
     typeof result.stderrExcerpt === 'string' &&
     typeof result.stdoutTruncated === 'boolean' &&
     typeof result.stderrTruncated === 'boolean' &&
+    Boolean(result.auditRecord) &&
+    Array.isArray(result.evidenceRefs)
+  );
+}
+
+function isAoiApprovedFileMutationResult(value: unknown): value is AoiApprovedFileMutationResult {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const result = value as Partial<AoiApprovedFileMutationResult>;
+  return (
+    result.version === 1 &&
+    typeof result.ok === 'boolean' &&
+    (result.operation === 'write' || result.operation === 'patch') &&
+    typeof result.pathLabel === 'string' &&
+    typeof result.applied === 'boolean' &&
+    typeof result.rolledBack === 'boolean' &&
     Boolean(result.auditRecord) &&
     Array.isArray(result.evidenceRefs)
   );
@@ -424,6 +473,7 @@ async function executeAllowedProposalAction(params: {
   proposal: AoiProposal;
   decisionId?: string;
   approvedCommandPolicy?: AoiApprovedCommandPolicy;
+  approvedFileMutationPolicy?: AoiApprovedFileMutationPolicy;
   dependencies: AoiProposalExecutionDependencies;
   now: number;
 }): Promise<Record<string, unknown>> {
@@ -636,6 +686,32 @@ async function executeAllowedProposalAction(params: {
       kind: action.kind,
       policy,
       commandResult: result,
+      auditRecord: result.auditRecord,
+    } as unknown as Record<string, unknown>;
+  }
+
+  if (action.kind === 'file_write' || action.kind === 'file_patch') {
+    const request = buildApprovedFileMutationRequestFromProposal({
+      proposal: params.proposal,
+      sessionPath: params.sessionPath,
+      decisionId: params.decisionId,
+      now: params.now,
+    });
+    const policy = evaluateAoiApprovedFileMutationPolicy(request);
+    if (!policy.allowed) {
+      throw new Error(`file_mutation_blocked:${policy.blockReasons.join(',')}`);
+    }
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: params.workspaceRoot,
+      ...(params.approvedFileMutationPolicy
+        ? { approvedPolicy: params.approvedFileMutationPolicy }
+        : {}),
+      now: params.now,
+    });
+    return {
+      kind: action.kind,
+      policy,
+      mutationResult: result,
       auditRecord: result.auditRecord,
     } as unknown as Record<string, unknown>;
   }
@@ -862,6 +938,17 @@ export async function executeAoiProposal(params: {
           )?.approvedCommand,
         )
       : undefined;
+  const approvedFileMutationPolicyForExecution =
+    proposal.acceptAction?.kind === 'file_write' || proposal.acceptAction?.kind === 'file_patch'
+      ? normalizeAoiApprovedFileMutationPolicy(
+          decisions.find(
+            (decision) =>
+              decision.proposalId === proposal.id &&
+              decision.action === 'accept' &&
+              (!params.decisionId || decision.id === params.decisionId),
+          )?.approvedFileMutation,
+        )
+      : undefined;
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -919,6 +1006,9 @@ export async function executeAoiProposal(params: {
       decisionId: params.decisionId,
       ...(approvedCommandPolicyForExecution
         ? { approvedCommandPolicy: approvedCommandPolicyForExecution }
+        : {}),
+      ...(approvedFileMutationPolicyForExecution
+        ? { approvedFileMutationPolicy: approvedFileMutationPolicyForExecution }
         : {}),
       dependencies: params.dependencies ?? {},
       now,
@@ -1101,6 +1191,71 @@ export async function executeAoiProposal(params: {
         );
       } catch (error) {
         console.warn('[AoiAutonomyExecution] Failed to ingest approved command observation', error);
+      }
+    }
+    if (
+      proposal.acceptAction?.kind === 'file_write' ||
+      proposal.acceptAction?.kind === 'file_patch'
+    ) {
+      const mutationResult = result.mutationResult;
+      if (!isAoiApprovedFileMutationResult(mutationResult)) {
+        throw new Error('File mutation result was missing from execution output.');
+      }
+      const audit = appendAoiFileMutationAuditRecord(params.sessionsDir, {
+        ...mutationResult.auditRecord,
+        evidenceRefs: [
+          ...new Set([
+            ...mutationResult.auditRecord.evidenceRefs,
+            `decision:${transition.decision.id}`,
+            ...proposal.evidenceRefs,
+            ...proposal.artifactRefs,
+          ]),
+        ].slice(0, 24),
+      });
+      recordServerAoiRunLedgerEvent({
+        sessionsDir: params.sessionsDir,
+        sessionPath,
+        type: 'file_mutation_executed',
+        message: `File ${mutationResult.operation} ${
+          mutationResult.ok ? 'applied' : mutationResult.rolledBack ? 'rolled back' : 'blocked'
+        }: ${mutationResult.pathLabel}`,
+        goalSummary: `Aoi file mutation: ${proposal.title}`,
+        toolNames: [proposal.acceptAction.kind],
+        status: mutationResult.ok ? 'completed' : 'failed',
+        now,
+      });
+      try {
+        ingestAoiObservation(
+          params.sessionsDir,
+          {
+            source: 'tool',
+            sessionPath,
+            stableKey: `file-mutation:${audit.id}`,
+            createdAt: audit.completedAt,
+            summary: `File ${mutationResult.operation} ${
+              mutationResult.ok ? 'applied' : mutationResult.rolledBack ? 'rolled back' : 'blocked'
+            }: ${mutationResult.pathLabel}`,
+            payloadRef: `aoi-file-mutation-audit:${audit.id}`,
+            memoryIds: [],
+            artifactRefs: [
+              `aoi-file-mutation-audit:${audit.id}`,
+              `decision:${transition.decision.id}`,
+              ...(mutationResult.checkpointId
+                ? [`aoi-action-checkpoint:${mutationResult.checkpointId}`]
+                : []),
+              ...audit.evidenceRefs,
+            ],
+            proposalIds: [proposal.id],
+            riskSignals: [
+              'file-mutation',
+              mutationResult.ok ? 'file-mutation:applied' : 'file-mutation:failed',
+              ...(mutationResult.rolledBack ? ['file-mutation:rolled-back'] : []),
+            ],
+          },
+          { now: audit.completedAt },
+        );
+      } catch (error) {
+        console.warn('[AoiAutonomyExecution] Failed to ingest file mutation observation', error);
       }
     }
     if (proposal.acceptAction?.kind === 'create_kira_work') {
