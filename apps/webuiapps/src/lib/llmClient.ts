@@ -158,6 +158,7 @@ export async function saveConfig(
       ? { conversationPreferences: existing.conversationPreferences }
       : {}),
     ...(existing?.gmail ? { gmail: existing.gmail } : {}),
+    ...(existing?.aoiEmbedding ? { aoiEmbedding: existing.aoiEmbedding } : {}),
   };
   if (dialogLlmConfig && Object.keys(dialogLlmConfig).length > 0) {
     persisted.dialogLlm = dialogLlmConfig;

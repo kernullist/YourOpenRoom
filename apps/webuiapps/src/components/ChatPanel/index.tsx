@@ -109,6 +109,11 @@ import {
   type AoiMemoryEpisodeSource,
   type AoiMemoryType,
 } from '@/lib/aoiMemoryManager';
+import {
+  createAoiEmbeddingProviderFromConfig,
+  embedAoiQuery,
+  type AoiEmbeddingProvider,
+} from '@/lib/aoiMemoryEmbedding';
 import { logger } from '@/lib/logger';
 import {
   condenseConversationHistory,
@@ -431,6 +436,7 @@ import {
   normalizeUserProfileDisplayName,
   saveConversationPreferences,
   saveUserProfileConfig,
+  type AoiEmbeddingConfig,
   type ConversationPreferencesConfig,
   type DialogLlmConfig,
   type IdaPeConfig,
@@ -2430,6 +2436,10 @@ const ChatPanel: React.FC<{
   const [dialogLlmConfig, setDialogLlmConfig] = useState<DialogLlmConfig | null>(null);
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
   const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
+  const [aoiEmbeddingConfig, setAoiEmbeddingConfig] = useState<AoiEmbeddingConfig | null>(null);
+  // Best-effort embedding provider for Aoi semantic memory, rebuilt whenever the
+  // saved embedding config changes. Null keeps capture/recall lexical-only.
+  const aoiEmbeddingProviderRef = useRef<AoiEmbeddingProvider | null>(null);
   const [persistedConfigLoaded, setPersistedConfigLoaded] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfileConfig | null>(
     loadUserProfileConfigSync,
@@ -2984,6 +2994,7 @@ const ChatPanel: React.FC<{
           setIdaPeConfig(persisted.idaPe);
         }
         setKiraConfig(persisted?.kira ?? null);
+        setAoiEmbeddingConfig(persisted?.aoiEmbedding ?? null);
         const nextUserProfile = persisted
           ? (persisted.userProfile ?? null)
           : loadUserProfileConfigSync();
@@ -3276,6 +3287,7 @@ const ChatPanel: React.FC<{
 
   const configRef = useRef(config);
   configRef.current = config;
+  aoiEmbeddingProviderRef.current = createAoiEmbeddingProviderFromConfig(aoiEmbeddingConfig);
   const dialogLlmConfigRef = useRef(dialogLlmConfig);
   dialogLlmConfigRef.current = dialogLlmConfig;
   const imageGenConfigRef = useRef(imageGenConfig);
@@ -3359,6 +3371,7 @@ const ChatPanel: React.FC<{
         toolCalls: params.toolCalls,
         source: params.source,
         llmConfig: params.llmConfig,
+        embeddingProvider: aoiEmbeddingProviderRef.current,
       })
         .then(setAoiMemories)
         .catch((error) => {
@@ -5450,7 +5463,16 @@ const ChatPanel: React.FC<{
       }
       console.warn('[ChatPanel] Failed to refresh Aoi memories before prompt build', error);
     }
-    const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage);
+    // Best-effort semantic recall: embed the query so paraphrases retrieve the
+    // right memory. Null provider / failure falls back to lexical ranking.
+    const aoiQueryEmbedding = await embedAoiQuery(
+      latestUserMessage,
+      aoiEmbeddingProviderRef.current,
+    );
+    throwIfConversationAborted(options.signal);
+    const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage, {
+      queryEmbedding: aoiQueryEmbedding,
+    });
     let currentAoiMissionPrompt = '';
     try {
       updateStatus('Refreshing mission state');
