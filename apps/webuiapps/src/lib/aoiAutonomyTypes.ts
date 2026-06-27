@@ -1,4 +1,5 @@
 import type { AoiBoundedWorkOrder } from './aoiBoundedWorkOrder';
+import type { AoiActionCheckpoint } from './aoiActionCheckpoint';
 import type {
   AoiApprovalSandboxPreview,
   AoiApprovalSandboxValidationResult,
@@ -1993,6 +1994,8 @@ export type AoiProposalAcceptActionKind =
   | 'start_research'
   | 'create_kira_work'
   | 'run_command'
+  | 'file_write'
+  | 'file_patch'
   | 'open_app'
   | 'save_memory'
   | 'activate_goal';
@@ -2317,6 +2320,139 @@ export interface AoiApprovedCommandResult {
   stdoutTruncated: boolean;
   stderrTruncated: boolean;
   auditRecord: AoiCommandAuditRecord;
+  evidenceRefs: string[];
+}
+
+// Approved file-mutation capability (file_write / file_patch). Mirrors the
+// approved-command subsystem: a content-addressed approval fingerprint is
+// computed from the operation, normalized path, and content/patch bytes, stored
+// on the accept decision, and re-validated at execution time. Every mutation is
+// guarded by a pre-change checkpoint (see aoiActionCheckpoint.ts).
+export type AoiFileMutationOperation = 'write' | 'patch';
+
+export interface AoiFileMutationPatchOp {
+  find: string;
+  replace: string;
+  // Exact number of non-overlapping occurrences of `find` expected in the file.
+  // Defaults to 1 so a patch anchors unambiguously; a mismatch aborts the apply.
+  expectedCount?: number;
+}
+
+export type AoiFileMutationBlockReason =
+  | 'missing_path'
+  | 'path_not_relative'
+  | 'path_escapes_workspace'
+  | 'unsafe_path'
+  | 'protected_path'
+  | 'missing_content'
+  | 'content_too_large'
+  | 'missing_patch_ops'
+  | 'too_many_patch_ops'
+  | 'invalid_patch_op'
+  | 'patch_op_too_large'
+  | 'unsupported_operation'
+  | 'approval_missing'
+  | 'approval_expired'
+  | 'approval_path_changed'
+  | 'approval_operation_changed'
+  | 'approval_content_changed'
+  | 'approval_risk_changed'
+  | 'approval_purpose_changed'
+  | 'approval_preview_changed'
+  | 'approval_target_changed'
+  | 'approval_authority_decision_changed'
+  | 'approval_rollback_plan_changed'
+  | 'approval_recovery_plan_changed'
+  | 'approval_validation_changed'
+  | 'approval_fingerprint_changed'
+  | 'approval_sandbox_missing'
+  | 'rollback_recovery_evidence_missing'
+  | 'workspace_root_missing'
+  | 'checkpoint_failed'
+  | 'patch_target_missing'
+  | 'patch_anchor_mismatch'
+  | 'execution_failed'
+  | 'verification_failed';
+
+export interface AoiApprovedFileMutationRequest {
+  version: 1;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  operation: AoiFileMutationOperation;
+  path: string;
+  content?: string;
+  patchOps?: AoiFileMutationPatchOp[];
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  requestedAt: number;
+  evidenceRefs: string[];
+}
+
+export interface AoiApprovedFileMutationPolicy {
+  version: 1;
+  allowed: boolean;
+  blockReasons: AoiFileMutationBlockReason[];
+  operation: AoiFileMutationOperation;
+  path: string;
+  pathLabel: string;
+  pathHash: string;
+  // sha256 of the post-change content (write) or of the normalized patch ops
+  // (patch). Binds the approval to exact bytes.
+  contentHash: string;
+  byteLength: number;
+  patchOps?: AoiFileMutationPatchOp[];
+  purpose: string;
+  purposeHash: string;
+  risk: AoiAutonomyRisk;
+  requiredAutonomyLevel: 'L5';
+  approvalFingerprint: string;
+  approvalSandbox?: AoiApprovalSandboxPreview;
+  expiresAt: number;
+  rationale: string[];
+}
+
+export interface AoiFileMutationAuditRecord {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  proposalId?: string;
+  decisionId?: string;
+  operation: AoiFileMutationOperation;
+  pathLabel: string;
+  pathHash: string;
+  purpose: string;
+  risk: AoiAutonomyRisk;
+  allowed: boolean;
+  blockReasons: AoiFileMutationBlockReason[];
+  startedAt: number;
+  completedAt: number;
+  durationMs: number;
+  applied: boolean;
+  rolledBack: boolean;
+  bytesBefore: number | null;
+  bytesAfter: number | null;
+  contentHash: string;
+  checkpointId?: string;
+  evidenceRefs: string[];
+  approvalFingerprint: string;
+  approvalSandboxPreviewHash?: string;
+  approvalSandboxValidationStatus?: AoiApprovalSandboxValidationResult['state'];
+}
+
+export interface AoiApprovedFileMutationResult {
+  version: 1;
+  ok: boolean;
+  operation: AoiFileMutationOperation;
+  pathLabel: string;
+  applied: boolean;
+  rolledBack: boolean;
+  bytesBefore: number | null;
+  bytesAfter: number | null;
+  checkpointId?: string;
+  checkpoint?: AoiActionCheckpoint;
+  blockReasons: AoiFileMutationBlockReason[];
+  auditRecord: AoiFileMutationAuditRecord;
   evidenceRefs: string[];
 }
 
@@ -2739,6 +2875,7 @@ export interface AoiProposalDecision {
   evidenceRefs?: string[];
   memoryIds?: string[];
   approvedCommand?: AoiApprovedCommandPolicy;
+  approvedFileMutation?: AoiApprovedFileMutationPolicy;
 }
 
 export interface AoiAutonomyToolPolicy {
