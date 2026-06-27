@@ -41,6 +41,7 @@ import {
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
+  loadAoiFollowThroughLearningSummary,
   loadAoiObservations,
   loadAoiProposalDecisions,
   markAoiAutonomyTickSkipped,
@@ -69,6 +70,7 @@ import type {
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
   AoiTrustCalibrationProfile,
+  AoiFollowThroughLearningSummary,
   AoiReflection,
 } from './aoiAutonomyTypes';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
@@ -92,6 +94,7 @@ import {
 } from './aoiOperatorTimeline';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from './aoiTrustCalibration';
 import { loadAoiTrustCalibrationResets } from './aoiTrustCalibrationStore';
+import { getAoiFollowThroughProposalBoost } from './aoiFollowThroughLearning';
 
 const MAX_OBSERVATIONS_PER_TICK = 24;
 const MAX_MEMORY_OBSERVATIONS = 12;
@@ -1804,20 +1807,42 @@ function proposalTrustPriorityAdjustment(
   );
 }
 
+// Map a proposal to the opportunity-source vocabulary used by follow-through
+// learning (memory/research/kira/workspace/app_state), so its recent engagement
+// can nudge ranking. Returns undefined when there is no confident mapping.
+function proposalFollowThroughSourceKey(proposal: AoiProposal): string | undefined {
+  switch (sourceKindFromProposal(proposal)) {
+    case 'research_runs':
+      return 'research';
+    case 'kira_board':
+      return 'kira';
+    case 'workspace_git':
+    case 'workspace_build':
+      return 'workspace';
+    case 'app_state':
+      return 'app_state';
+    default:
+      return undefined;
+  }
+}
+
 function sortProposalPriority(
   a: AoiProposal,
   b: AoiProposal,
   recentDecisions: AoiProposalDecision[],
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null,
+  followThroughSummary?: AoiFollowThroughLearningSummary | null,
 ): number {
   const leftScore =
     a.confidence +
     getAoiProposalFeedbackPriorityBoost(a, recentDecisions) +
-    proposalTrustPriorityAdjustment(a, trustCalibrationProfile);
+    proposalTrustPriorityAdjustment(a, trustCalibrationProfile) +
+    getAoiFollowThroughProposalBoost(followThroughSummary, proposalFollowThroughSourceKey(a));
   const rightScore =
     b.confidence +
     getAoiProposalFeedbackPriorityBoost(b, recentDecisions) +
-    proposalTrustPriorityAdjustment(b, trustCalibrationProfile);
+    proposalTrustPriorityAdjustment(b, trustCalibrationProfile) +
+    getAoiFollowThroughProposalBoost(followThroughSummary, proposalFollowThroughSourceKey(b));
   return rightScore - leftScore || a.createdAt - b.createdAt;
 }
 
@@ -2020,6 +2045,13 @@ export async function runAoiAutonomyTick(
     resets: loadAoiTrustCalibrationResets(params.sessionsDir, sessionPath),
     now,
   });
+  // Follow-through learning: a secondary, source-keyed ranking signal distinct
+  // from trust calibration (which keys on proposal decisions).
+  const followThroughLearningSummary = loadAoiFollowThroughLearningSummary(
+    params.sessionsDir,
+    sessionPath,
+    now,
+  );
   if (workspaceSnapshot) {
     bundle.observations.push(
       ...createAoiWorkspaceObservations({
@@ -2209,7 +2241,13 @@ export async function runAoiAutonomyTick(
   ]
     .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
     .sort((left, right) =>
-      sortProposalPriority(left, right, recentDecisions, trustCalibrationProfile),
+      sortProposalPriority(
+        left,
+        right,
+        recentDecisions,
+        trustCalibrationProfile,
+        followThroughLearningSummary,
+      ),
     );
   const blockedProposals: AoiAutonomyBlockedProposal[] = [];
   const acceptedProposals: AoiProposal[] = [];

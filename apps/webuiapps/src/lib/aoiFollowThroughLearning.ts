@@ -1062,6 +1062,37 @@ export function buildAoiFollowThroughLearningSummary(
   };
 }
 
+// Secondary ranking signal: how a proposal's source has been engaged vs ignored
+// in recent follow-through. Distinct from trust calibration (which keys on
+// proposal decisions); this keys on opportunity follow-through by source. Bounded
+// and best-effort -- an unmatched key yields 0, so it never dominates confidence,
+// feedback, or trust adjustments.
+export function getAoiFollowThroughProposalBoost(
+  summary: AoiFollowThroughLearningSummary | null | undefined,
+  sourceKey: string | null | undefined,
+): number {
+  if (!summary) {
+    return 0;
+  }
+  const key = normalizeAoiFollowThroughKey(sourceKey ?? undefined);
+  if (!key) {
+    return 0;
+  }
+  let raw = 0;
+  for (const adjustment of summary.sourceBoosts) {
+    if (normalizeAoiFollowThroughKey(adjustment.key) === key) {
+      raw += adjustment.score;
+    }
+  }
+  for (const adjustment of summary.sourceSuppressions) {
+    // Suppression scores are already negative.
+    if (normalizeAoiFollowThroughKey(adjustment.key) === key) {
+      raw += adjustment.score;
+    }
+  }
+  return Math.max(-0.15, Math.min(0.15, raw * 0.15));
+}
+
 function keyMatches(left: string | undefined, right: string | undefined): boolean {
   const leftKey = normalizeAoiFollowThroughKey(left);
   const rightKey = normalizeAoiFollowThroughKey(right);

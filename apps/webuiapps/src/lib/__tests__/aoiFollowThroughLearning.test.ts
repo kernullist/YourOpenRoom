@@ -19,8 +19,10 @@ import {
   buildAoiFollowThroughEventFromDeliberationRun,
   buildAoiFollowThroughEventFromTrendDelivery,
   buildAoiFollowThroughLearningSummary,
+  getAoiFollowThroughProposalBoost,
   scoreAoiFollowThroughLearningForOpportunity,
 } from '../aoiFollowThroughLearning';
+import type { AoiFollowThroughLearningSummary } from '../aoiAutonomyTypes';
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -403,5 +405,62 @@ describe('Aoi Follow-through Learning', () => {
       actionAuthority: 'display_only',
       mutationCount: 0,
     });
+  });
+});
+
+describe('getAoiFollowThroughProposalBoost', () => {
+  const makeSummary = (
+    sourceBoosts: Array<{ key: string; score: number }>,
+    sourceSuppressions: Array<{ key: string; score: number }>,
+  ): AoiFollowThroughLearningSummary => ({
+    version: 1,
+    sessionPath: SESSION_PATH,
+    generatedAt: NOW,
+    eventCount: 0,
+    recentEvents: [],
+    latestByOpportunityId: {},
+    topicBoosts: [],
+    topicSuppressions: [],
+    sourceBoosts: sourceBoosts.map((entry) => ({
+      key: entry.key,
+      label: entry.key,
+      score: entry.score,
+      reason: 'test',
+      evidenceRefs: [],
+    })),
+    sourceSuppressions: sourceSuppressions.map((entry) => ({
+      key: entry.key,
+      label: entry.key,
+      score: entry.score,
+      reason: 'test',
+      evidenceRefs: [],
+    })),
+    deliveryModeSensitivity: [],
+    duplicateCooldownAdjustments: [],
+    trustCalibrationHints: [],
+    evidenceRefs: [],
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  });
+
+  it('returns 0 for a null summary or an unmatched / empty key', () => {
+    expect(getAoiFollowThroughProposalBoost(null, 'research')).toBe(0);
+    expect(getAoiFollowThroughProposalBoost(makeSummary([], []), 'research')).toBe(0);
+    expect(
+      getAoiFollowThroughProposalBoost(makeSummary([{ key: 'kira', score: 0.6 }], []), ''),
+    ).toBe(0);
+  });
+
+  it('boosts an engaged source and suppresses an ignored one (bounded)', () => {
+    const summary = makeSummary([{ key: 'research', score: 0.6 }], [{ key: 'kira', score: -0.8 }]);
+    expect(getAoiFollowThroughProposalBoost(summary, 'research')).toBeCloseTo(0.09);
+    expect(getAoiFollowThroughProposalBoost(summary, 'kira')).toBeCloseTo(-0.12);
+  });
+
+  it('clamps the adjustment so it never dominates the base score', () => {
+    const summary = makeSummary([{ key: 'research', score: 1 }], []);
+    expect(getAoiFollowThroughProposalBoost(summary, 'research')).toBeLessThanOrEqual(0.15);
+    const suppressed = makeSummary([], [{ key: 'research', score: -1 }]);
+    expect(getAoiFollowThroughProposalBoost(suppressed, 'research')).toBeGreaterThanOrEqual(-0.15);
   });
 });
