@@ -187,7 +187,11 @@ function validateCalendarEvent(record: JsonRecord, filePath: string) {
   const warnings: string[] = [];
   const startAt = record.startAt;
   if (!isIsoDateTime(startAt)) errors.push('startAt must be a valid ISO datetime string');
-  const normalized = {
+  const normalized: JsonRecord & {
+    remindBeforeMinutes: number;
+    completed: boolean;
+    lastReminderSentAt?: number;
+  } = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     title: requireString(record, 'title', errors),
@@ -227,7 +231,7 @@ function validateCalendarState(record: JsonRecord) {
 
 function validateDiaryEntry(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
-  const normalized = {
+  const normalized: JsonRecord & { mood?: string; weather?: string } = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     date: isDateString(record.date)
@@ -692,7 +696,7 @@ function validateCyberNewsCase(record: JsonRecord, filePath: string) {
 
 function validateEvidenceVaultFile(record: JsonRecord, filePath: string) {
   const errors: string[] = [];
-  const normalized = {
+  const normalized: JsonRecord & { vindicateText?: string; exposeText?: string } = {
     ...record,
     id: validateIdMatchesFile(record, filePath, errors),
     title: requireString(record, 'title', errors),

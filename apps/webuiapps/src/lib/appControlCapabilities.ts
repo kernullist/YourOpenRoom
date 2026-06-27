@@ -1,7 +1,18 @@
-import type { AppActionDef, AppDef, AppIdentity } from './appRegistry';
+import type { AppActionDef } from './appRegistry';
 import { listSchemasForApp } from './appSchemaRegistry';
 
 export type AppControlStatus = 'tool-backed' | 'inspectable' | 'window-only';
+
+// Minimal structural input accepted by capability builders. Covers AppIdentity
+// (no actions), AppDef (actions required), and the static registry shape
+// (actions absent). actions is read defensively via an 'actions' in app guard.
+export interface AppControlCapabilityInput {
+  appId: number;
+  appName: string;
+  route: string;
+  displayName: string;
+  actions?: AppActionDef[];
+}
 
 export interface AppControlCapabilities {
   app_id: number;
@@ -66,7 +77,7 @@ export function hasBespokeAppStateSummary(appName: string): boolean {
   return BESPOKE_STATE_SUMMARY_APPS.has(appName);
 }
 
-function getDeclaredActions(app: AppIdentity | AppDef): AppActionDef[] {
+function getDeclaredActions(app: AppControlCapabilityInput): AppActionDef[] {
   if ('actions' in app && Array.isArray(app.actions)) {
     return app.actions;
   }
@@ -99,7 +110,9 @@ function isExternalAction(actionName: string): boolean {
   return /(?:EXTERNAL|SEND_EMAIL|OPEN_URL)/i.test(actionName);
 }
 
-export function buildAppControlCapabilities(app: AppIdentity | AppDef): AppControlCapabilities {
+export function buildAppControlCapabilities(
+  app: AppControlCapabilityInput,
+): AppControlCapabilities {
   const isOs = app.appName === 'os';
   const actions = getDeclaredActions(app);
   const actionNames = actions.map((action) => action.name);

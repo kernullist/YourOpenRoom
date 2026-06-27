@@ -40,6 +40,10 @@ function compactIntent(contract: AppIntentContract): Record<string, unknown> {
   };
 }
 
+function fullSurface(contract: AppControlSurfaceContract): Record<string, unknown> {
+  return { ...contract };
+}
+
 function compactSurface(contract: AppControlSurfaceContract): Record<string, unknown> {
   return {
     id: contract.id,
@@ -210,7 +214,7 @@ export async function executeAppIntentTool(params: Record<string, unknown>): Pro
       control_surfaces: includeSurfaces
         ? controlSurfaces
             .filter((surface) => surface.backing_intent_ids.includes(match.id))
-            .map(includeDetails ? (surface) => surface : compactSurface)
+            .map(includeDetails ? fullSurface : compactSurface)
         : [],
     });
   }

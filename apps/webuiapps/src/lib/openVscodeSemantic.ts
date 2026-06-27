@@ -608,7 +608,7 @@ export function buildRenamePreview(options: {
         item.previews.push({
           line: reference.line,
           kind: reference.kind,
-          preview: reference.preview.replaceAll(options.symbol, options.newName),
+          preview: reference.preview.split(options.symbol).join(options.newName),
         });
       }
     }
@@ -655,7 +655,7 @@ export function buildRenamePreview(options: {
       item.previews.push({
         line: reference.line,
         kind: reference.kind,
-        preview: reference.preview.replaceAll(options.symbol, options.newName),
+        preview: reference.preview.split(options.symbol).join(options.newName),
       });
     }
   }
@@ -726,7 +726,7 @@ export function applyWorkspaceRename(options: {
         path: toRelativePath(rootDir, fileName),
         replacements: refs.length,
         before_preview: refs[0]?.preview ?? '',
-        after_preview: refs[0]?.preview.replaceAll(options.symbol, options.newName) ?? '',
+        after_preview: refs[0]?.preview.split(options.symbol).join(options.newName) ?? '',
       });
     }
 
@@ -783,7 +783,7 @@ export function applyWorkspaceRename(options: {
       path: file.relativePath,
       replacements: refs.length,
       before_preview: refs[0]?.preview ?? '',
-      after_preview: refs[0]?.preview.replaceAll(options.symbol, options.newName) ?? '',
+      after_preview: refs[0]?.preview.split(options.symbol).join(options.newName) ?? '',
     });
   }
 

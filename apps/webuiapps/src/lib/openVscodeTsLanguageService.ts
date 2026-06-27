@@ -14,7 +14,7 @@ interface TsProjectContext {
 }
 
 function findTsConfig(startDir: string): string | null {
-  return ts.findConfigFile(startDir, ts.sys.fileExists, 'tsconfig.json');
+  return ts.findConfigFile(startDir, ts.sys.fileExists, 'tsconfig.json') ?? null;
 }
 
 function createProjectContext(rootDir: string, directory = ''): TsProjectContext | null {

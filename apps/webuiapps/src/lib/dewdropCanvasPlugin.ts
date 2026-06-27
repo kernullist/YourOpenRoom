@@ -240,11 +240,19 @@ function loadActiveProject(dataDir: string, projectsDir: string, lang: string): 
   return createDefaultProject(dataDir, projectsDir, lang);
 }
 
-function listProjects(projectsDir: string): Array<Record<string, unknown>> {
+interface DewdropProjectSummary {
+  id: string;
+  title: string;
+  date: string;
+  memoCount: number;
+  updatedAt: string;
+}
+
+function listProjects(projectsDir: string): DewdropProjectSummary[] {
   return fs
     .readdirSync(projectsDir)
     .filter((fileName) => fileName.endsWith('.json'))
-    .map((fileName) => {
+    .map((fileName): DewdropProjectSummary | null => {
       const parsed = readJsonFile<DewdropProject>(join(projectsDir, fileName));
       if (!parsed) return null;
       return {
@@ -255,10 +263,10 @@ function listProjects(projectsDir: string): Array<Record<string, unknown>> {
         updatedAt: parsed.updatedAt || parsed.date || '',
       };
     })
-    .filter((item): item is Record<string, unknown> => Boolean(item))
+    .filter((item): item is DewdropProjectSummary => item !== null)
     .sort((a, b) => {
-      const left = new Date(String(a.updatedAt || a.date || '')).getTime() || 0;
-      const right = new Date(String(b.updatedAt || b.date || '')).getTime() || 0;
+      const left = new Date(a.updatedAt || a.date || '').getTime() || 0;
+      const right = new Date(b.updatedAt || b.date || '').getTime() || 0;
       return right - left;
     });
 }
@@ -1364,7 +1372,7 @@ async function handleDewdropApi(
 
 function handleDewdropStatic(
   sourceRoot: string,
-  req: IncomingMessage,
+  _req: IncomingMessage,
   res: ServerResponse,
   url: URL,
 ): boolean {

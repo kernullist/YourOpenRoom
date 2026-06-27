@@ -18084,7 +18084,7 @@ function buildAttemptComparisonReviewPrompt(
         `Validation failed:\n${formatList(attempt.validationReruns.failed, 'No validation reruns failed')}`,
         formatKiraCommandLifecycle(
           'Worker command lifecycle',
-          attempt.toolCommandEvents ?? attempt.attemptState.commandEvents,
+          attempt.toolCommandEvents ?? attempt.attemptState?.commandEvents,
         ),
         formatRiskReviewPolicy(attempt.contextScan.riskPolicy),
         formatRuntimeValidationResult(attempt.runtimeValidation),
