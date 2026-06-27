@@ -813,11 +813,7 @@ const GomokuApp: React.FC = () => {
             return 'error: invalid position';
           }
           if (gameState.phase !== 'playing') {
-            // Retry: refresh state and check again
-            await loadAppState();
-            if (gameState.phase !== 'playing') {
-              return 'error: game not in playing phase';
-            }
+            return 'error: game not in playing phase';
           }
           if (gameState.currentTurn !== gameState.agentColor) {
             return `error: not agent turn, current turn is ${gameState.currentTurn}, agent color is ${gameState.agentColor}`;

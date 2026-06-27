@@ -175,13 +175,21 @@ function createEmptyForm(dateKey: string): EventFormState {
 function parseEventContent(raw: unknown): CalendarEvent | null {
   if (!raw) return null;
   const parsed =
-    typeof raw === 'string' ? (JSON.parse(raw) as CalendarEvent) : (raw as CalendarEvent);
+    typeof raw === 'string'
+      ? (JSON.parse(raw) as Partial<CalendarEvent>)
+      : (raw as Partial<CalendarEvent>);
   if (!parsed?.id || !parsed?.title || !parsed?.startAt) return null;
+  const now = Date.now();
   return {
-    notes: '',
-    remindBeforeMinutes: DEFAULT_REMINDER_MINUTES,
-    completed: false,
-    ...parsed,
+    id: parsed.id,
+    title: parsed.title,
+    startAt: parsed.startAt,
+    notes: parsed.notes ?? '',
+    remindBeforeMinutes: parsed.remindBeforeMinutes ?? DEFAULT_REMINDER_MINUTES,
+    completed: parsed.completed ?? false,
+    createdAt: parsed.createdAt ?? now,
+    updatedAt: parsed.updatedAt ?? now,
+    lastReminderSentAt: parsed.lastReminderSentAt,
   };
 }
 

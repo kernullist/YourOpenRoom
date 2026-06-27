@@ -89,6 +89,7 @@ const DewdropCanvas: React.FC = () => {
           url: window.location.href,
           type: 'page',
           name: 'Dewdrop Canvas',
+          windowStyle: { width: 960, height: 640 },
         });
         reportLifecycle(AppLifecycle.DOM_READY);
         await refreshStatus();

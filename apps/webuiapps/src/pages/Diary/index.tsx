@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, type Variants } from 'framer-motion';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeRaw from 'rehype-raw';
@@ -649,7 +649,7 @@ const formatTime = (timestamp: number): string => {
 };
 
 // ============ Page Turn Animation Variants ============
-const pageVariants = {
+const pageVariants: Variants = {
   enter: (direction: number) => ({
     x: direction > 0 ? 80 : -80,
     opacity: 0,

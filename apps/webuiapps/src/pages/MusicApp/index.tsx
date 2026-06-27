@@ -1057,7 +1057,7 @@ const YouTubeApp: React.FC = () => {
             onReady: syncCurrentVideoId,
             onStateChange: (event) => {
               if (!window.YT?.PlayerState) return;
-              const trackedStates = [
+              const trackedStates: number[] = [
                 window.YT.PlayerState.PLAYING,
                 window.YT.PlayerState.BUFFERING,
                 window.YT.PlayerState.PAUSED,

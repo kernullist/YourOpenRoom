@@ -41,8 +41,6 @@ const READER_FETCH_TIMEOUT_MS = 10000;
 const browserFileApi = createAppFileApi(APP_NAME);
 const notesFileApi = createAppFileApi('notes');
 
-type ViewMode = 'browse' | 'reader';
-
 interface BookmarkItem {
   id: string;
   url: string;

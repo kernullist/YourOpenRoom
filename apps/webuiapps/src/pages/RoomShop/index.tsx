@@ -298,6 +298,7 @@ const RoomShop: React.FC = () => {
           url: window.location.href,
           type: 'page',
           name: 'Room Shop',
+          windowStyle: { width: 960, height: 640 },
         });
         reportLifecycle(AppLifecycle.DOM_READY);
         await fetchVibeInfo().catch((error) =>

@@ -94,6 +94,7 @@ const WrittenByMe: React.FC = () => {
           url: window.location.href,
           type: 'page',
           name: 'Written By Me',
+          windowStyle: { width: 960, height: 640 },
         });
         reportLifecycle(AppLifecycle.DOM_READY);
         await refreshStatus();

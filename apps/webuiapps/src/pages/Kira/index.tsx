@@ -3642,10 +3642,7 @@ const KiraPage: React.FC = () => {
     </div>
   );
 
-  const renderDiscoveryEvidence = (
-    finding: KiraDiscoveryFinding,
-    evidence: KiraProjectDiscoveryEvidence[],
-  ) => {
+  const renderDiscoveryEvidence = (evidence: KiraProjectDiscoveryEvidence[]) => {
     if (evidence.length === 0) {
       return <div className={styles.discoveryMuted}>{t('discovery.noEvidenceLedger')}</div>;
     }
@@ -3787,7 +3784,7 @@ const KiraPage: React.FC = () => {
 
         <details className={styles.discoveryEvidenceDetails}>
           <summary>{t('discovery.evidenceLedger')}</summary>
-          {renderDiscoveryEvidence(finding, evidence)}
+          {renderDiscoveryEvidence(evidence)}
         </details>
       </article>
     );

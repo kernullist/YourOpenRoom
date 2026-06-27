@@ -3171,7 +3171,7 @@ const OpenVSCodePage: React.FC = () => {
         'REPLACE_ACTIVE_FILE',
         'REPLACE_ACTIVE_SELECTION',
       ]);
-      if (!reversibleActiveActions.has(action.action_type)) {
+      if (!reversibleActiveActions.has(action.action_type ?? '')) {
         return null;
       }
 
@@ -3199,12 +3199,13 @@ const OpenVSCodePage: React.FC = () => {
     ) => {
       const status: ModelActionStatus = /^error:/i.test(result) ? 'error' : 'success';
       const path = undoSnapshot?.path ?? getActionPathFromResult(result);
+      const actionType = action.action_type ?? '';
       const entry: ModelActionLogEntry = {
         id: createModelActionId(),
-        actionType: action.action_type,
+        actionType,
         status,
         path,
-        summary: status === 'success' ? action.action_type : result.replace(/^error:\s*/i, ''),
+        summary: status === 'success' ? actionType : result.replace(/^error:\s*/i, ''),
         resultPreview: buildActionResultPreview(result),
         createdAt: Date.now(),
         durationMs: Math.max(0, Date.now() - startedAt),

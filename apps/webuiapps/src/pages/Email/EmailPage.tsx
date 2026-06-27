@@ -144,18 +144,21 @@ function getEmailFilePath(emailId: string): string {
 
 function normalizeEmail(raw: unknown): Email | null {
   if (!raw) return null;
-  const email = typeof raw === 'string' ? (JSON.parse(raw) as Email) : (raw as Email);
+  const email =
+    typeof raw === 'string' ? (JSON.parse(raw) as Partial<Email>) : (raw as Partial<Email>);
   if (!email?.id || !email?.folder) return null;
   return {
-    from: { name: '', address: 'unknown@example.com' },
-    to: [],
-    cc: [],
-    subject: '',
-    content: '',
-    isRead: false,
-    isStarred: false,
-    timestamp: Date.now(),
     ...email,
+    id: email.id,
+    folder: email.folder,
+    from: email.from ?? { name: '', address: 'unknown@example.com' },
+    to: email.to ?? [],
+    cc: email.cc ?? [],
+    subject: email.subject ?? '',
+    content: email.content ?? '',
+    isRead: email.isRead ?? false,
+    isStarred: email.isStarred ?? false,
+    timestamp: email.timestamp ?? Date.now(),
   };
 }
 

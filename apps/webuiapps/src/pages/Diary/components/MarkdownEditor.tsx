@@ -2,7 +2,16 @@ import React, { useEffect, useRef } from 'react';
 import { useEditor, EditorContent } from '@tiptap/react';
 import StarterKit from '@tiptap/starter-kit';
 import Placeholder from '@tiptap/extension-placeholder';
-import { Markdown } from 'tiptap-markdown';
+import { Markdown, type MarkdownStorage } from 'tiptap-markdown';
+
+// tiptap-markdown 0.9.0 ships MarkdownStorage but does not augment the core
+// Storage interface, so editor.storage.markdown is otherwise untyped. Declare
+// the augmentation here (page-local) instead of touching shared type files.
+declare module '@tiptap/core' {
+  interface Storage {
+    markdown: MarkdownStorage;
+  }
+}
 
 interface MarkdownEditorProps {
   content: string;
