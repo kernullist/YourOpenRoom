@@ -917,7 +917,9 @@ function canExecuteAoiProposalAtCurrentLevel(
   }
 
   const tools = new Set<string>(proposal.suggestedTools);
-  tools.add(actionKind);
+  if (actionKind) {
+    tools.add(actionKind);
+  }
   return [...tools].every((tool) => isAoiToolAllowedAtLevel(tool, policy.level));
 }
 

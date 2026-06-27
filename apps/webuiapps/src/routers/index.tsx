@@ -217,8 +217,9 @@ interface RouterItemConfig {
 }
 
 const generateRootRouter = (list: RouterItemConfig[]): RouteObject[] => {
-  const traverse = (config: RouterItemConfig) => {
-    const temp = cleanNil({
+  const traverse = (config: RouterItemConfig): RouteObject => {
+    const children = config?.children?.length ? config.children.map(traverse) : undefined;
+    return cleanNil({
       path: config?.path,
       element: config?.element,
       index: config?.index,
@@ -227,12 +228,8 @@ const generateRootRouter = (list: RouterItemConfig[]): RouteObject[] => {
             meta: config.meta,
           }
         : undefined,
-    });
-    if (!config?.children?.length) {
-      return temp;
-    }
-    temp.children = config.children.map(traverse);
-    return temp;
+      ...(children ? { children } : {}),
+    }) as RouteObject;
   };
   return list.map(traverse);
 };

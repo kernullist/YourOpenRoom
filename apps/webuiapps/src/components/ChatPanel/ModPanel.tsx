@@ -270,7 +270,7 @@ const ModEditor: React.FC<{
 
   const updateStage = (index: number, field: keyof EditableStage, value: string) => {
     const updated = [...stages];
-    (updated[index] as Record<string, unknown>)[field] = value;
+    (updated[index] as unknown as Record<string, unknown>)[field] = value;
     setStages(updated);
   };
 
