@@ -1075,7 +1075,7 @@ describe('chat()', () => {
     it('returns toolCalls when response includes tool_calls', async () => {
       const mockToolCall = {
         id: 'call_123',
-        type: 'function',
+        type: 'function' as const,
         function: { name: 'get_weather', arguments: '{"city":"SF"}' },
       };
       globalThis.fetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('', [mockToolCall]));
@@ -1089,7 +1089,7 @@ describe('chat()', () => {
     it('preserves reasoning_content for Kimi-style multi-step tool calls', async () => {
       const mockToolCall = {
         id: 'call_123',
-        type: 'function',
+        type: 'function' as const,
         function: { name: 'get_weather', arguments: '{"city":"SF"}' },
       };
       const mockFetch = vi
@@ -1122,7 +1122,7 @@ describe('chat()', () => {
     it('adds fallback reasoning_content for Kimi tool-call history when the provider omitted it', async () => {
       const mockToolCall = {
         id: 'call_123',
-        type: 'function',
+        type: 'function' as const,
         function: { name: 'get_weather', arguments: '{"city":"SF"}' },
       };
       const mockFetch = vi.fn().mockResolvedValueOnce(makeOpenAIResponse('ok'));

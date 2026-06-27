@@ -5,7 +5,11 @@ import { join } from 'path';
 import { PassThrough } from 'stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
-import { executeAoiProposal, previewAoiProposal } from '../aoiAutonomyExecution';
+import {
+  executeAoiProposal,
+  previewAoiProposal,
+  type AoiProposalExecutionDependencies,
+} from '../aoiAutonomyExecution';
 import { buildAoiFailureRecoveryProposal, classifyAoiFailure } from '../aoiAutonomyRecovery';
 import {
   buildAoiKiraHandoffPreparedActionPlan,
@@ -1411,10 +1415,9 @@ describe('executeAoiProposal()', () => {
       health: {
         version: 1,
         sessionPath: 'aoi/default',
+        generatedAt: 4000,
         overallStatus: 'blocked',
         summary: 'Approved command runner is unavailable.',
-        updatedAt: 4000,
-        issueCounts: { info: 0, warning: 0, error: 0, blocker: 1 },
         userBlockingIssueCount: 1,
         capabilities: [],
         issues: [
@@ -1427,11 +1430,12 @@ describe('executeAoiProposal()', () => {
             title: 'Approved command runner unavailable',
             summary: 'Aoi cannot run approved commands.',
             cannotKnow: 'Aoi cannot know validation output until the runner is available.',
+            observedAt: 4000,
             evidenceRefs: ['health:approved-command-runner'],
             recommendation: {
-              action: 'configure_source',
+              version: 1,
+              action: 'review_approved_command_policy',
               label: 'Repair approved command runner.',
-              reason: 'Validation command execution is blocked.',
             },
           },
         ],
@@ -1452,8 +1456,10 @@ describe('executeAoiProposal()', () => {
 
   it('executes one exactly approved command and records audit, relations, and validation freshness', async () => {
     const root = makeTempRoot();
-    const runApprovedCommand = vi.fn(async ({ request }: { request: AoiApprovedCommandRequest }) =>
-      makeApprovedCommandResult(request),
+    const runApprovedCommand = vi.fn(
+      async (
+        params: Parameters<NonNullable<AoiProposalExecutionDependencies['runApprovedCommand']>>[0],
+      ) => makeApprovedCommandResult(params.request),
     );
     saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
     saveAoiActiveProposals(root, 'aoi/default', [makeCommandProposal()]);
@@ -1503,7 +1509,7 @@ describe('executeAoiProposal()', () => {
         purpose: 'Validate Aoi autonomy execution changes.',
       },
     });
-    expect(runApprovedCommand.mock.calls[0][0].approvedPolicy.approvalSandbox).toMatchObject({
+    expect(runApprovedCommand.mock.calls[0]?.[0].approvedPolicy?.approvalSandbox).toMatchObject({
       targetKind: 'command',
       expectedMutationCount: 0,
     });

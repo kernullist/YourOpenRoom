@@ -40,7 +40,10 @@ import {
   loadAoiProactiveBriefFieldEvents,
   saveAoiInterestProfile,
 } from '../aoiProactiveBriefStore';
-import type { RunAoiProactiveBriefScoutInput } from '../aoiProactiveBriefScout';
+import type {
+  AoiProactiveBriefScoutResult,
+  RunAoiProactiveBriefScoutInput,
+} from '../aoiProactiveBriefScout';
 import { loadAoiProactiveTrendSnapshots } from '../aoiProactiveTrendAdvisor';
 import type {
   AoiGoal,
@@ -255,6 +258,26 @@ function makeProactiveBriefCandidate(
     createdAt: partial.createdAt ?? NOW,
     updatedAt: partial.updatedAt ?? NOW,
     expiresAt: partial.expiresAt ?? NOW + 14 * 24 * 60 * 60 * 1000,
+  };
+}
+
+function makeScoutResult(
+  partial: Partial<AoiProactiveBriefScoutResult> = {},
+): AoiProactiveBriefScoutResult {
+  return {
+    ok: partial.ok ?? true,
+    sessionPath: partial.sessionPath ?? SESSION_PATH,
+    mode: 'quick',
+    createdCandidates: partial.createdCandidates ?? [],
+    skippedTopics: partial.skippedTopics ?? [],
+    warnings: partial.warnings ?? [],
+    sourceFreshness: partial.sourceFreshness ?? [],
+    sourceHonestyRecords: partial.sourceHonestyRecords ?? [],
+    fieldEvents: partial.fieldEvents ?? [],
+    cannotKnow: partial.cannotKnow ?? [],
+    currentClaimAllowed: partial.currentClaimAllowed ?? true,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
   };
 }
 
@@ -1823,7 +1846,9 @@ describe('runAoiAutonomyWakeup()', () => {
       dependencies: {
         collectWorkspaceSnapshot: (input) =>
           makeSchedulerWorkspaceSnapshot(
-            input.registry.sources.filter((source) => source.enabled).map((source) => source.id),
+            (input.registry?.sources ?? [])
+              .filter((source) => source.enabled)
+              .map((source) => source.id),
           ),
         runBackgroundTick: async (params) => {
           tickCalls.push({
@@ -2046,15 +2071,7 @@ describe('runAoiAutonomyWakeup()', () => {
 
   it('blocks run-now proactive scouts when the current-info provider is missing', async () => {
     const root = makeTempRoot();
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult());
     enablePolicy(root, 'L4');
     saveAoiAutonomyPolicy(
       root,
@@ -2119,15 +2136,7 @@ describe('runAoiAutonomyWakeup()', () => {
 
   it('does not run proactive scouts when scheduler controls are disabled', async () => {
     const root = makeTempRoot();
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult());
     enablePolicy(root, 'L4');
     saveInterestProfile(root);
     saveAoiAutonomyPolicy(
@@ -2205,15 +2214,7 @@ describe('runAoiAutonomyWakeup()', () => {
       expect(input.budget?.directChatHookOptIn).toBe(true);
       expect(input.budget?.maxTopicsPerWakeup).toBe(2);
       expect(input.budget?.maxNetworkCallsPerWakeup).toBe(2);
-      return {
-        ok: true,
-        sessionPath: SESSION_PATH,
-        mode: 'quick' as const,
-        createdCandidates: [candidate],
-        skippedTopics: [],
-        warnings: [],
-        sourceFreshness: [],
-      };
+      return makeScoutResult({ createdCandidates: [candidate] });
     });
     enablePolicy(root, 'L4');
     saveInterestProfile(root);
@@ -2291,15 +2292,7 @@ describe('runAoiAutonomyWakeup()', () => {
   it('persists trend snapshots when a run-now proactive scout creates candidates', async () => {
     const root = makeTempRoot();
     const candidate = makeProactiveBriefCandidate();
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [candidate],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult({ createdCandidates: [candidate] }));
     enablePolicy(root, 'L4');
     saveInterestProfile(root);
     saveAoiAutonomyPolicy(
@@ -2363,15 +2356,7 @@ describe('runAoiAutonomyWakeup()', () => {
 
   it('enforces proactive scout session budget even for run-now requests', async () => {
     const root = makeTempRoot();
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult());
     enablePolicy(root, 'L4');
     saveInterestProfile(root);
     saveAoiAutonomyPolicy(
@@ -2454,15 +2439,7 @@ describe('runAoiAutonomyWakeup()', () => {
   it('includes proactive scout runtime in wakeup completion timing', async () => {
     const root = makeTempRoot();
     const timestamps = [NOW, NOW + 250];
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult());
     enablePolicy(root, 'L4');
     saveInterestProfile(root);
     saveAoiAutonomyPolicy(
@@ -2512,15 +2489,7 @@ describe('runAoiAutonomyWakeup()', () => {
   it('honors muted proactive topics before calling the scout provider', async () => {
     const root = makeTempRoot();
     const topic = makeInterestTopic();
-    const scout = vi.fn(async () => ({
-      ok: true,
-      sessionPath: SESSION_PATH,
-      mode: 'quick' as const,
-      createdCandidates: [],
-      skippedTopics: [],
-      warnings: [],
-      sourceFreshness: [],
-    }));
+    const scout = vi.fn(async () => makeScoutResult());
     enablePolicy(root, 'L4');
     saveInterestProfile(root, topic);
     saveAoiAutonomyPolicy(

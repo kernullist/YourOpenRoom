@@ -243,7 +243,7 @@ function makeSourceContract(
     sourceLabel: partial.sourceLabel ?? 'Workspace git',
     consentState: partial.consentState ?? 'granted',
     dataScope: partial.dataScope ?? 'status and diff',
-    scopeState: partial.scopeState ?? 'full',
+    scopeState: partial.scopeState ?? 'workspace',
     bodyAccessState: partial.bodyAccessState ?? 'not_applicable',
     freshnessState: partial.freshnessState ?? 'fresh',
     signalFreshness: partial.signalFreshness ?? 'fresh',

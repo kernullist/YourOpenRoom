@@ -21,7 +21,7 @@ describe('parseReadablePageSnapshot()', () => {
         </html>
       `,
       'https://example.com/post',
-      4,
+      { maxBlocks: 4 },
     );
 
     expect(snapshot.title).toBe('Example Article');

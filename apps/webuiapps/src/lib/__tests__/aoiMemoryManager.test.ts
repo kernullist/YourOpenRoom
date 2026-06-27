@@ -267,7 +267,9 @@ describe('mergeAoiMemoryCandidates()', () => {
       updatedFactMemoryFixture,
     ];
 
-    const selected = selectAoiMemoriesForPrompt(memories, '커밋 identity 기억나?', 500);
+    const selected = selectAoiMemoriesForPrompt(memories, '커밋 identity 기억나?', {
+      maxChars: 500,
+    });
     const prompt = buildAoiMemoryPrompt(selected, '커밋 identity 기억나?');
 
     expect(prompt).toContain('kernullist <gloryo@naver.com>');

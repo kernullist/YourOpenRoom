@@ -107,7 +107,7 @@ function makeMission(): AoiMissionState {
     focusSummary: 'Capture real field operations without leaking honey@example.com.',
     waitingOn: 'none',
     nextRecommendedAction: {
-      kind: 'continue',
+      kind: 'resume_mission',
       label: 'Render the real field capture dashboard.',
       reason: 'Fresh workspace evidence exists, but private source state is metadata-only.',
       ref: 'goal:real-field-capture',

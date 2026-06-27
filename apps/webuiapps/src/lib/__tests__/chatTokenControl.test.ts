@@ -16,8 +16,8 @@ import { buildFileReadResponse } from '../fileTools';
 describe('condenseConversationHistory()', () => {
   it('keeps short histories unchanged', () => {
     const history = [
-      { role: 'user', content: 'Hello' },
-      { role: 'assistant', content: 'Hi there' },
+      { role: 'user' as const, content: 'Hello' },
+      { role: 'assistant' as const, content: 'Hi there' },
     ];
 
     expect(condenseConversationHistory(history)).toEqual({

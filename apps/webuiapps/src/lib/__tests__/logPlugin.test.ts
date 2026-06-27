@@ -1,4 +1,6 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, type MockedFunction } from 'vitest';
+import type { PathLike } from 'fs';
+import type * as fsType from 'fs';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { formatLogLine, generateLogFileName, createLogMiddleware } from '../logPlugin';
 
@@ -63,15 +65,15 @@ describe('generateLogFileName', () => {
 // ============ createLogMiddleware ============
 
 type FsMock = {
-  appendFileSync: ReturnType<typeof vi.fn>;
-  existsSync: ReturnType<typeof vi.fn>;
-  mkdirSync: ReturnType<typeof vi.fn>;
+  appendFileSync: MockedFunction<typeof fsType.appendFileSync>;
+  existsSync: MockedFunction<typeof fsType.existsSync>;
+  mkdirSync: MockedFunction<typeof fsType.mkdirSync>;
 };
 
 function makeFsMock(dirExists = true): FsMock {
   return {
     appendFileSync: vi.fn(),
-    existsSync: vi.fn().mockReturnValue(dirExists),
+    existsSync: vi.fn<[PathLike], boolean>().mockReturnValue(dirExists),
     mkdirSync: vi.fn(),
   };
 }

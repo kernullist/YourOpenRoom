@@ -3243,12 +3243,14 @@ describe('Kira model route limits', () => {
       model: 'local-route-limit-test',
     };
     const events: string[] = [];
-    let releaseFirst: (() => void) | null = null;
+    // Hold the resolver on an object field so TS control-flow analysis does not
+    // narrow a closure-assigned variable back to its null initializer.
+    const release: { first: (() => void) | null } = { first: null };
 
     const first = runWithKiraModelRouteLimit(config, async () => {
       events.push('first-start');
       await new Promise<void>((resolve) => {
-        releaseFirst = resolve;
+        release.first = resolve;
       });
       events.push('first-end');
       return 'first';
@@ -3262,8 +3264,8 @@ describe('Kira model route limits', () => {
     await Promise.resolve();
 
     expect(events).toEqual(['first-start']);
-    expect(releaseFirst).toBeTypeOf('function');
-    releaseFirst?.();
+    expect(release.first).toBeTypeOf('function');
+    release.first?.();
     await expect(first).resolves.toBe('first');
     await expect(second).resolves.toBe('second');
     expect(events).toEqual(['first-start', 'first-end', 'second-start']);
@@ -3279,8 +3281,12 @@ describe('Kira model route limits', () => {
     const events: string[] = [];
     let active = 0;
     let maxActive = 0;
-    let releaseFirst: (() => void) | null = null;
-    let releaseSecond: (() => void) | null = null;
+    // Hold the resolvers on object fields so TS control-flow analysis does not
+    // narrow closure-assigned variables back to their null initializers.
+    const release: { first: (() => void) | null; second: (() => void) | null } = {
+      first: null,
+      second: null,
+    };
 
     const runHeldTask = (
       label: string,
@@ -3298,11 +3304,11 @@ describe('Kira model route limits', () => {
         return label;
       });
 
-    const first = runHeldTask('first', (release) => {
-      releaseFirst = release;
+    const first = runHeldTask('first', (resolve) => {
+      release.first = resolve;
     });
-    const second = runHeldTask('second', (release) => {
-      releaseSecond = release;
+    const second = runHeldTask('second', (resolve) => {
+      release.second = resolve;
     });
     await Promise.resolve();
 
@@ -3318,10 +3324,10 @@ describe('Kira model route limits', () => {
 
     expect(events).toEqual(['first-start', 'second-start']);
     expect(maxActive).toBe(2);
-    releaseFirst?.();
+    release.first?.();
     await expect(first).resolves.toBe('first');
     await expect(third).resolves.toBe('third');
-    releaseSecond?.();
+    release.second?.();
     await expect(second).resolves.toBe('second');
     expect(events).toEqual([
       'first-start',
@@ -3389,7 +3395,7 @@ describe('buildCodexCliArgs()', () => {
       },
       'F:/workspace/project',
       false,
-      null,
+      'F:/tmp/last-message.txt',
     );
 
     expect(args).toContain('--model');
@@ -4132,9 +4138,9 @@ describe('retry feedback comments', () => {
         ].join('\n'),
         createdAt: 3,
       },
-    ];
+    ] as const;
 
-    expect(extractOperatorSteeringFromComments(comments)).toEqual([
+    expect(extractOperatorSteeringFromComments([...comments])).toEqual([
       'Operator steer: Keep the existing public API stable.',
       'Operator steer: Prefer the smaller patch if both approaches pass validation.',
     ]);

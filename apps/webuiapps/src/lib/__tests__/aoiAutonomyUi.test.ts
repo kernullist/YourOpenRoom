@@ -1604,6 +1604,10 @@ describe('Aoi autonomy UI helpers', () => {
           blockerLabels: ['Command execution waits for approval.'],
           whyNotJarvisYetLabels: ['Execution remains approval-gated.'],
           nextUpgradeAction: 'Collect review evidence before approval execution.',
+          upgradePlanStatus: 'collect_evidence' as const,
+          upgradePlanSummaryLabel: 'Collect review evidence before approval execution.',
+          upgradePlanStepLabels: ['Gather approval-gate review evidence.'],
+          upgradePlanEvidenceRefs: ['governor-upgrade:direct_chat'],
           evidenceRefs: ['governor-mode:direct_chat'],
           safetyBoundary:
             'Governor audit is display-only; it records decisions but does not run tools, app actions, policy bypasses, or command execution.',
