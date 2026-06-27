@@ -32,6 +32,59 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+// Best-effort: embed the `content` of any memory that lacks a vector and attach
+// it in place. Memories that already carry a vector are left untouched (merge
+// keeps content identical for reinforced duplicates, so an existing vector still
+// matches). A provider failure leaves memories unembedded -- scoring then falls
+// back to lexical. Structurally typed so it serves both the browser and server
+// AoiMemoryEntry shapes.
+export async function attachAoiMemoryEmbeddings<
+  T extends { content: string; embedding?: number[] },
+>(memories: T[], provider: AoiEmbeddingProvider | null | undefined): Promise<T[]> {
+  if (!provider) {
+    return memories;
+  }
+  const targets = memories.filter(
+    (memory) => memory.content && (!memory.embedding || memory.embedding.length === 0),
+  );
+  if (targets.length === 0) {
+    return memories;
+  }
+  try {
+    const vectors = await provider.embed(targets.map((memory) => memory.content));
+    targets.forEach((memory, index) => {
+      const vector = vectors[index];
+      if (Array.isArray(vector) && vector.length > 0) {
+        memory.embedding = vector;
+      }
+    });
+  } catch {
+    // Best-effort: leave memories without vectors so capture never blocks.
+  }
+  return memories;
+}
+
+// Embed a recall query. Returns null on empty input, a missing provider, or any
+// failure so the caller silently falls back to lexical-only ranking.
+export async function embedAoiQuery(
+  query: string,
+  provider: AoiEmbeddingProvider | null | undefined,
+): Promise<number[] | null> {
+  if (!provider) {
+    return null;
+  }
+  const trimmed = query.trim();
+  if (!trimmed) {
+    return null;
+  }
+  try {
+    const [vector] = await provider.embed([trimmed]);
+    return Array.isArray(vector) && vector.length > 0 ? vector : null;
+  } catch {
+    return null;
+  }
+}
+
 interface GeminiEmbeddingResponse {
   embedding?: { values?: number[] };
 }

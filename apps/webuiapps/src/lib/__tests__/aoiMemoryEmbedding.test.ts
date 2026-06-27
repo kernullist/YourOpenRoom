@@ -1,5 +1,10 @@
-import { describe, expect, it } from 'vitest';
-import { cosineSimilarity, createAoiGeminiEmbeddingProvider } from '../aoiMemoryEmbedding';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  attachAoiMemoryEmbeddings,
+  cosineSimilarity,
+  createAoiGeminiEmbeddingProvider,
+  embedAoiQuery,
+} from '../aoiMemoryEmbedding';
 import { scoreAoiMemoryForQuery, type AoiMemoryEntry } from '../aoiMemoryManager';
 
 describe('cosineSimilarity', () => {
@@ -61,6 +66,59 @@ describe('scoreAoiMemoryForQuery semantic fusion', () => {
     const a = scoreAoiMemoryForQuery(withEmbedding, 'query with no shared words', 0);
     const b = scoreAoiMemoryForQuery(withoutEmbedding, 'query with no shared words', 0);
     expect(a).toBe(b);
+  });
+});
+
+describe('attachAoiMemoryEmbeddings', () => {
+  it('attaches a vector to a memory that lacks one', async () => {
+    const memories = [{ content: 'hello world' }];
+    await attachAoiMemoryEmbeddings(memories, {
+      embed: async (texts) => texts.map(() => [1, 0, 0]),
+    });
+    expect(memories[0].embedding).toEqual([1, 0, 0]);
+  });
+
+  it('skips a memory that already carries a vector', async () => {
+    const memories = [{ content: 'x', embedding: [9, 9] }];
+    const embed = vi.fn(async (texts: string[]) => texts.map(() => [1]));
+    await attachAoiMemoryEmbeddings(memories, { embed });
+    expect(memories[0].embedding).toEqual([9, 9]);
+    expect(embed).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op without a provider', async () => {
+    const memories = [{ content: 'x' } as { content: string; embedding?: number[] }];
+    await attachAoiMemoryEmbeddings(memories, null);
+    expect(memories[0].embedding).toBeUndefined();
+  });
+
+  it('leaves memories unembedded when the provider throws', async () => {
+    const memories = [{ content: 'x' } as { content: string; embedding?: number[] }];
+    await attachAoiMemoryEmbeddings(memories, {
+      embed: async () => {
+        throw new Error('boom');
+      },
+    });
+    expect(memories[0].embedding).toBeUndefined();
+  });
+});
+
+describe('embedAoiQuery', () => {
+  it('returns a vector for non-empty input', async () => {
+    expect(await embedAoiQuery('hi', { embed: async () => [[1, 2]] })).toEqual([1, 2]);
+  });
+
+  it('returns null for empty input, a missing provider, an empty vector, or a failure', async () => {
+    expect(await embedAoiQuery('   ', { embed: async () => [[1]] })).toBeNull();
+    expect(await embedAoiQuery('hi', null)).toBeNull();
+    expect(await embedAoiQuery('hi', { embed: async () => [[]] })).toBeNull();
+    expect(
+      await embedAoiQuery('hi', {
+        embed: async () => {
+          throw new Error('x');
+        },
+      }),
+    ).toBeNull();
   });
 });
 

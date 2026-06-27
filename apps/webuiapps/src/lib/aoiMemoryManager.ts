@@ -1,6 +1,10 @@
 import type { LLMConfig } from './llmModels';
 import { chat, type ChatMessage } from './llmClient';
-import { cosineSimilarity } from './aoiMemoryEmbedding';
+import {
+  attachAoiMemoryEmbeddings,
+  cosineSimilarity,
+  type AoiEmbeddingProvider,
+} from './aoiMemoryEmbedding';
 import {
   buildAoiKiraAutomationMemoryCandidates,
   containsAoiSensitiveContent,
@@ -107,6 +111,7 @@ export interface AoiMemorySyncParams {
   llmConfig?: LLMConfig | null;
   llmDistiller?: boolean;
   distillerChat?: AoiMemoryDistillerChat;
+  embeddingProvider?: AoiEmbeddingProvider | null;
 }
 
 type AoiMemoryEpisodeInput = Omit<
@@ -982,10 +987,14 @@ export async function saveAoiMemoryCandidates(
   sessionPath: string,
   candidates: AoiMemoryCandidate[],
   episodeId: string,
+  options?: { embeddingProvider?: AoiEmbeddingProvider | null },
 ): Promise<AoiMemoryEntry[]> {
   const existing = await loadAoiMemories();
   const merged = mergeAoiMemoryCandidates(existing, candidates, { sessionPath, episodeId });
   const changed = merged.memories.filter((memory) => merged.changedIds.includes(memory.id));
+  // Best-effort: attach semantic vectors to newly written memories. A provider
+  // failure leaves them unembedded and recall falls back to lexical scoring.
+  await attachAoiMemoryEmbeddings(changed, options?.embeddingProvider);
   await Promise.all(changed.map((memory) => writeJson(memoryFilePath(memory.id), memory)));
   return merged.memories;
 }
@@ -1031,7 +1040,9 @@ export async function syncAoiMemoryFromTurn(
   if (candidates.length === 0) {
     return loadAoiMemories();
   }
-  return saveAoiMemoryCandidates(params.sessionPath, candidates, episode.id);
+  return saveAoiMemoryCandidates(params.sessionPath, candidates, episode.id, {
+    embeddingProvider: params.embeddingProvider,
+  });
 }
 
 export async function syncAoiMemoryFromKiraAutomationEvent(
@@ -1240,8 +1251,14 @@ export function selectAoiMemoriesForPrompt(
   return selected;
 }
 
-export function buildAoiMemoryPrompt(memories: AoiMemoryEntry[], latestUserMessage = ''): string {
-  const selected = selectAoiMemoriesForPrompt(memories, latestUserMessage);
+export function buildAoiMemoryPrompt(
+  memories: AoiMemoryEntry[],
+  latestUserMessage = '',
+  options?: { queryEmbedding?: number[] | null },
+): string {
+  const selected = selectAoiMemoriesForPrompt(memories, latestUserMessage, {
+    ...(options?.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {}),
+  });
   if (selected.length === 0) return '';
   const preferenceResolution = resolveAoiPreferenceContext({
     memories: selected,

@@ -40,6 +40,9 @@ export interface AoiMemoryEntry {
   projectKey?: string;
   tags: string[];
   entities: string[];
+  // Optional semantic embedding of `content` for vector recall. Best-effort:
+  // absent when no embedding provider ran, in which case scoring stays lexical.
+  embedding?: number[];
 }
 
 export interface AoiMemoryEpisode {
