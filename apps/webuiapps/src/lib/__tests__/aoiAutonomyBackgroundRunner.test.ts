@@ -66,6 +66,22 @@ describe('runAoiAutonomyBackgroundCycle', () => {
     );
   });
 
+  it('resolves the LLM via loadLlmConfig when network is allowed', async () => {
+    const runWakeup = vi.fn().mockResolvedValue(wakeupOk());
+    const llm = { provider: 'openai' } as never;
+    await runAoiAutonomyBackgroundCycle({
+      ...baseOpts,
+      allowNetwork: true,
+      loadLlmConfig: () => llm,
+      listSessions: () => ['s/a'],
+      loadPolicy: () => policy(true),
+      runWakeup,
+    });
+    expect(runWakeup).toHaveBeenCalledWith(
+      expect.objectContaining({ llmConfig: llm, budget: { allowNetwork: true } }),
+    );
+  });
+
   it('isolates per-session wakeup failures', async () => {
     const runWakeup = vi
       .fn()

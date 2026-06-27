@@ -1470,8 +1470,11 @@ function normalizeStringArray(value: unknown, maxItems: number): string[] {
   return [...seen];
 }
 
-function hasOnlyKnownEvidenceRefs(refs: string[], knownEvidenceRefs: Set<string>): boolean {
-  return refs.length > 0 && refs.every((ref) => knownEvidenceRefs.has(ref));
+// Keep only evidence refs the deterministic layer already knows about. Used to
+// drop unverifiable refs the LLM may have invented, without discarding the
+// model's reasoning (the reflection/proposal itself is retained).
+function filterKnownEvidenceRefs(refs: string[], knownEvidenceRefs: Set<string>): string[] {
+  return refs.filter((ref) => knownEvidenceRefs.has(ref));
 }
 
 export function parseAoiAutonomyReflectionResponse(
@@ -1513,15 +1516,17 @@ export function parseAoiAutonomyReflectionResponse(
       typeof reflection.claim === 'string'
         ? sanitizePromptText(reflection.claim, CLAIM_MAX_CHARS)
         : '';
-    const evidenceRefs = normalizeStringArray(reflection.evidenceRefs, 8);
+    const rawEvidenceRefs = normalizeStringArray(reflection.evidenceRefs, 8);
+    // Driver's-seat: drop only unverifiable refs instead of rejecting the whole
+    // reflection. A reflection is a thought, so it may stand with no refs.
+    const evidenceRefs = filterKnownEvidenceRefs(rawEvidenceRefs, params.knownEvidenceRefs);
     const confidence = typeof reflection.confidence === 'number' ? reflection.confidence : NaN;
     if (!claim || claim.length > CLAIM_MAX_CHARS || !Number.isFinite(confidence)) {
       warnings.push('reflection_rejected_shape');
       continue;
     }
-    if (!hasOnlyKnownEvidenceRefs(evidenceRefs, params.knownEvidenceRefs)) {
-      warnings.push('reflection_rejected_evidence');
-      continue;
+    if (rawEvidenceRefs.length > evidenceRefs.length) {
+      warnings.push('reflection_evidence_filtered');
     }
     if (looksSecretBearing(claim) || proposalClaimsExecution(claim)) {
       warnings.push('reflection_rejected_content');
@@ -1564,7 +1569,11 @@ export function parseAoiAutonomyReflectionResponse(
       typeof proposal.reason === 'string'
         ? sanitizePromptText(proposal.reason, REASON_MAX_CHARS)
         : '';
-    const evidenceRefs = normalizeStringArray(proposal.evidenceRefs, 8);
+    const rawEvidenceRefs = normalizeStringArray(proposal.evidenceRefs, 8);
+    // Driver's-seat: keep the model's proposal but drop unverifiable refs. A
+    // proposal left with no real evidence is skipped here and, even if it were
+    // not, could not pass the execution policy gate (requireEvidenceRefs).
+    const evidenceRefs = filterKnownEvidenceRefs(rawEvidenceRefs, params.knownEvidenceRefs);
     const confidence = typeof proposal.confidence === 'number' ? proposal.confidence : NaN;
     const risk = isRisk(proposal.risk) ? proposal.risk : 'low';
     const requiresUserApproval = proposal.requiresUserApproval === true;
@@ -1579,9 +1588,12 @@ export function parseAoiAutonomyReflectionResponse(
       warnings.push('proposal_rejected_shape');
       continue;
     }
-    if (!hasOnlyKnownEvidenceRefs(evidenceRefs, params.knownEvidenceRefs)) {
-      warnings.push('proposal_rejected_evidence');
+    if (evidenceRefs.length === 0) {
+      warnings.push('proposal_rejected_no_known_evidence');
       continue;
+    }
+    if (rawEvidenceRefs.length > evidenceRefs.length) {
+      warnings.push('proposal_evidence_filtered');
     }
     if (risk === 'high' && !requiresUserApproval) {
       warnings.push('proposal_rejected_high_risk_without_approval');

@@ -14,6 +14,9 @@ export interface AoiAutonomyBackgroundCycleOptions {
   workspaceRoot?: string;
   allowNetwork?: boolean;
   llmConfig?: LLMConfig | null;
+  // Lazily resolve the main LLM config (e.g. from the config file) each cycle.
+  // Without this the background loop runs deterministic-only (no LLM reasoning).
+  loadLlmConfig?: () => LLMConfig | null;
   now?: number;
   maxSessionsPerCycle?: number;
   // Injectable seams for tests.
@@ -50,6 +53,10 @@ export async function runAoiAutonomyBackgroundCycle(
   const runWakeup = options.runWakeup ?? runAoiAutonomyWakeup;
   const maxSessions = Math.max(1, options.maxSessionsPerCycle ?? DEFAULT_MAX_SESSIONS_PER_CYCLE);
   const allowNetwork = options.allowNetwork === true;
+  // Resolve the main LLM config once per cycle (shared across sessions). This is
+  // what actually puts the model in the loop for self-initiated reasoning when
+  // network access is permitted.
+  const llmConfig = allowNetwork ? (options.llmConfig ?? options.loadLlmConfig?.() ?? null) : null;
   const result: AoiAutonomyBackgroundCycleResult = {
     startedAt,
     durationMs: 0,
@@ -93,9 +100,9 @@ export async function runAoiAutonomyBackgroundCycle(
         reason: 'scheduled_background',
         configFile: options.configFile,
         ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
-        // The LLM only participates when network is allowed; otherwise the
-        // wakeup runs the deterministic loop only.
-        llmConfig: allowNetwork ? (options.llmConfig ?? null) : null,
+        // The LLM only participates when network is allowed (see llmConfig
+        // resolution above); otherwise the wakeup runs the deterministic loop.
+        llmConfig,
         budget: { allowNetwork },
         now: startedAt,
       });

@@ -1021,7 +1021,7 @@ describe('runAoiAutonomyTick()', () => {
     });
 
     expect(result.newActiveProposalCount).toBe(0);
-    expect(result.warnings).toContain('proposal_rejected_evidence');
+    expect(result.warnings).toContain('proposal_rejected_no_known_evidence');
     expect(loadAoiActiveProposals(root, SESSION_PATH)).toEqual([]);
   });
 
