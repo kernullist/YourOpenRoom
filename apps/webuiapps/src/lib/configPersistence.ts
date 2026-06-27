@@ -76,6 +76,32 @@ export interface TavilyConfig {
   baseUrl?: string;
 }
 
+// Optional OpenAI-compatible embedding provider for Aoi semantic memory. Reuses
+// an existing key (OpenRouter / OpenAI / local) rather than a dedicated Gemini
+// key. Defaults target OpenRouter so a user only needs to paste their key.
+export const AOI_EMBEDDING_DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
+export const AOI_EMBEDDING_DEFAULT_MODEL = 'openai/text-embedding-3-small';
+
+export interface AoiEmbeddingConfig {
+  apiKey: string;
+  baseUrl?: string;
+  model?: string;
+}
+
+export function normalizeAoiEmbeddingConfig(
+  raw: Partial<AoiEmbeddingConfig> | null | undefined,
+): AoiEmbeddingConfig | null {
+  const apiKey = (raw?.apiKey ?? '').trim();
+  if (!apiKey) {
+    return null;
+  }
+  return {
+    apiKey,
+    baseUrl: (raw?.baseUrl ?? '').trim() || AOI_EMBEDDING_DEFAULT_BASE_URL,
+    model: (raw?.model ?? '').trim() || AOI_EMBEDDING_DEFAULT_MODEL,
+  };
+}
+
 export interface GmailConfig {
   clientId?: string;
   clientSecret?: string;
@@ -106,6 +132,7 @@ export interface PersistedConfig {
   tavily?: TavilyConfig;
   gmail?: GmailConfig;
   idaPe?: IdaPeConfig;
+  aoiEmbedding?: AoiEmbeddingConfig;
 }
 
 const CONFIG_API = '/api/llm-config';
@@ -124,6 +151,7 @@ const KNOWN_CONFIG_KEYS = [
   'tavily',
   'gmail',
   'idaPe',
+  'aoiEmbedding',
 ];
 
 export function normalizeUserProfileDisplayName(raw: string | null | undefined): string {
@@ -242,4 +270,22 @@ export async function savePersistedConfig(config: PersistedConfig): Promise<void
     }
     throw new Error(detail);
   }
+}
+
+/**
+ * Read-modify-write just the Aoi embedding config, preserving every other
+ * persisted field. Passing an empty/blank key clears it.
+ */
+export async function saveAoiEmbeddingConfig(
+  config: Partial<AoiEmbeddingConfig> | null,
+): Promise<void> {
+  const normalized = normalizeAoiEmbeddingConfig(config);
+  const existing = (await loadPersistedConfig()) ?? {};
+  const next: PersistedConfig = { ...existing };
+  if (normalized) {
+    next.aoiEmbedding = normalized;
+  } else {
+    delete next.aoiEmbedding;
+  }
+  await savePersistedConfig(next);
 }

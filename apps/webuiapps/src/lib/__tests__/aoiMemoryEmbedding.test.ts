@@ -2,10 +2,16 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   attachAoiMemoryEmbeddings,
   cosineSimilarity,
+  createAoiEmbeddingProviderFromConfig,
   createAoiGeminiEmbeddingProvider,
   createAoiOpenAiCompatibleEmbeddingProvider,
   embedAoiQuery,
 } from '../aoiMemoryEmbedding';
+import {
+  AOI_EMBEDDING_DEFAULT_BASE_URL,
+  AOI_EMBEDDING_DEFAULT_MODEL,
+  normalizeAoiEmbeddingConfig,
+} from '../configPersistence';
 import { scoreAoiMemoryForQuery, type AoiMemoryEntry } from '../aoiMemoryManager';
 
 describe('cosineSimilarity', () => {
@@ -191,5 +197,68 @@ describe('createAoiOpenAiCompatibleEmbeddingProvider', () => {
     });
     expect(await provider.embed(['', '  '])).toEqual([[], []]);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('normalizeAoiEmbeddingConfig', () => {
+  it('returns null when no key is set', () => {
+    expect(normalizeAoiEmbeddingConfig(null)).toBeNull();
+    expect(normalizeAoiEmbeddingConfig({ apiKey: '   ' })).toBeNull();
+  });
+
+  it('defaults baseUrl and model to OpenRouter when only a key is given', () => {
+    const config = normalizeAoiEmbeddingConfig({ apiKey: 'sk-or-test' });
+    expect(config).toEqual({
+      apiKey: 'sk-or-test',
+      baseUrl: AOI_EMBEDDING_DEFAULT_BASE_URL,
+      model: AOI_EMBEDDING_DEFAULT_MODEL,
+    });
+  });
+
+  it('preserves an explicit baseUrl and model', () => {
+    const config = normalizeAoiEmbeddingConfig({
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'text-embedding-3-large',
+    });
+    expect(config).toEqual({
+      apiKey: 'sk-test',
+      baseUrl: 'https://api.openai.com/v1',
+      model: 'text-embedding-3-large',
+    });
+  });
+});
+
+describe('createAoiEmbeddingProviderFromConfig', () => {
+  it('returns null without a key', () => {
+    expect(createAoiEmbeddingProviderFromConfig(null)).toBeNull();
+    expect(createAoiEmbeddingProviderFromConfig({ apiKey: '  ' })).toBeNull();
+  });
+
+  it('builds a provider that calls the configured baseUrl and model', async () => {
+    let calledUrl = '';
+    let sentModel = '';
+    const provider = createAoiEmbeddingProviderFromConfig(
+      {
+        apiKey: 'sk-or-test',
+        baseUrl: 'https://openrouter.ai/api/v1',
+        model: 'openai/text-embedding-3-small',
+      },
+      {
+        fetchImpl: (async (url: string, init?: RequestInit) => {
+          calledUrl = url;
+          sentModel = JSON.parse(String(init?.body ?? '{}')).model;
+          return {
+            ok: true,
+            json: async () => ({ data: [{ index: 0, embedding: [0.1, 0.2] }] }),
+          } as unknown as Response;
+        }) as typeof fetch,
+      },
+    );
+    expect(provider).not.toBeNull();
+    const out = await provider?.embed(['hello']);
+    expect(calledUrl).toBe('https://openrouter.ai/api/v1/embeddings');
+    expect(sentModel).toBe('openai/text-embedding-3-small');
+    expect(out).toEqual([[0.1, 0.2]]);
   });
 });

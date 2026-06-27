@@ -151,6 +151,26 @@ export function createAoiOpenAiCompatibleEmbeddingProvider(options: {
   };
 }
 
+// Build an embedding provider from a saved config (the Aoi settings field).
+// Returns null when no key is set, so capture/recall stay lexical. Defaults to
+// the OpenAI-compatible provider, which covers OpenRouter / OpenAI / local hosts;
+// baseUrl/model are expected to be pre-defaulted by the config normalizer.
+export function createAoiEmbeddingProviderFromConfig(
+  config: { apiKey?: string; baseUrl?: string; model?: string } | null | undefined,
+  options?: { fetchImpl?: typeof fetch },
+): AoiEmbeddingProvider | null {
+  const apiKey = config?.apiKey?.trim();
+  if (!apiKey) {
+    return null;
+  }
+  return createAoiOpenAiCompatibleEmbeddingProvider({
+    apiKey,
+    ...(config?.baseUrl ? { baseUrl: config.baseUrl } : {}),
+    ...(config?.model ? { model: config.model } : {}),
+    ...(options?.fetchImpl ? { fetchImpl: options.fetchImpl } : {}),
+  });
+}
+
 interface GeminiEmbeddingResponse {
   embedding?: { values?: number[] };
 }
