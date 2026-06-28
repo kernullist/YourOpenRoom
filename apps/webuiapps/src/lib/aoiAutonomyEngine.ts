@@ -88,7 +88,11 @@ import {
   stripAoiSourceInstructions,
   type AoiMemoryEntry,
 } from './aoiMemoryShared';
-import { embedAoiQuery, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import {
+  embedAoiQuery,
+  selectRelevantAoiMemoriesByEmbedding,
+  type AoiEmbeddingProvider,
+} from './aoiMemoryEmbedding';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import {
@@ -1320,6 +1324,12 @@ export function buildAoiAutonomyReflectionMessages(params: {
   memories: AoiMemoryEntry[];
   activeProposals: AoiProposal[];
   latestUserMessage?: string;
+  // Optional focus query + embedding. When present, the bounded memory slice
+  // shown to the LLM is the top focus-relevant memories (fused lexical+semantic)
+  // rather than the first by load order, so a relevant memory past the cap is
+  // not hidden from the reflection. Absent/empty -> load-order slice (unchanged).
+  focusQuery?: string;
+  queryEmbedding?: number[] | null;
   availableConnectors?: AoiMcpConnectorCatalogEntry[];
 }): ChatMessage[] {
   const observations = params.observations
@@ -1331,7 +1341,14 @@ export function buildAoiAutonomyReflectionMessages(params: {
       evidenceRefs: makeEvidenceRefsFromObservation(observation),
       riskSignals: observation.riskSignals,
     }));
-  const memories = params.memories.slice(0, MAX_REFLECTION_PROMPT_MEMORIES).map((memory) => ({
+  const focusQuery = (params.focusQuery ?? '').trim();
+  const selectedMemories = focusQuery
+    ? selectRelevantAoiMemoriesByEmbedding(params.memories, focusQuery, {
+        queryEmbedding: params.queryEmbedding ?? null,
+        limit: MAX_REFLECTION_PROMPT_MEMORIES,
+      })
+    : params.memories.slice(0, MAX_REFLECTION_PROMPT_MEMORIES);
+  const memories = selectedMemories.map((memory) => ({
     id: memory.id,
     type: `${memory.scope}/${memory.type}`,
     content: sanitizePromptText(memory.content, 220),
@@ -1789,6 +1806,8 @@ async function runLlmReflection(params: {
   bundle: CandidateBundle;
   sessionPath: string;
   latestUserMessage: string;
+  focusQuery?: string;
+  queryEmbedding?: number[] | null;
   llmConfig?: LLMConfig | null;
   reflectionChat?: AoiAutonomyReflectionChat;
   knownEvidenceRefs: Set<string>;
@@ -1808,6 +1827,8 @@ async function runLlmReflection(params: {
         memories: params.bundle.memories,
         activeProposals: params.bundle.activeProposals,
         latestUserMessage: params.latestUserMessage,
+        ...(params.focusQuery ? { focusQuery: params.focusQuery } : {}),
+        queryEmbedding: params.queryEmbedding ?? null,
         availableConnectors,
       }),
       [],
@@ -2373,6 +2394,8 @@ export async function runAoiAutonomyTick(
     bundle,
     sessionPath,
     latestUserMessage,
+    ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
+    queryEmbedding: recallFocusQueryEmbedding,
     llmConfig: params.llmConfig,
     reflectionChat: params.reflectionChat,
     knownEvidenceRefs,

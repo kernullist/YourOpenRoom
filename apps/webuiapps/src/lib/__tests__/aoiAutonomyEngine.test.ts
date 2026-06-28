@@ -9,6 +9,7 @@ import {
 } from '../aoiAutonomyPolicy';
 import { loadAoiActiveGoals, saveAoiActiveGoals } from '../aoiAutonomyGoals';
 import {
+  buildAoiAutonomyReflectionMessages,
   runAoiAutonomyBackgroundTick,
   runAoiAutonomyTick,
   type AoiAutonomyReflectionChat,
@@ -1478,6 +1479,45 @@ describe('runAoiAutonomyBackgroundTick()', () => {
       now: NOW,
     });
     expect(lexicalOnly.selectedSources[0].evidenceRefs).toContain('memory:memory-kira-embed-beta');
+  });
+
+  it('ranks reflection-prompt memories by focus relevance instead of load order', () => {
+    // 11 memories but the prompt cap is 10; the target is last in load order and
+    // shares no tokens with the focus query, yet its embedding matches the query.
+    const memories = Array.from({ length: 11 }, (_, index) =>
+      makeMemory({
+        id: `memory-reflect-${index}`,
+        content: `reflection memory number ${index}`,
+        embedding: index === 10 ? [1, 0, 0] : [0, 1, 0],
+      }),
+    );
+    const parseMemoryIds = (
+      messages: ReturnType<typeof buildAoiAutonomyReflectionMessages>,
+    ): string[] => {
+      const userMessage = messages.find((message) => message.role === 'user');
+      const payload = JSON.parse(String(userMessage?.content ?? '{}')) as {
+        memories?: Array<{ id: string }>;
+      };
+      return (payload.memories ?? []).map((memory) => memory.id);
+    };
+
+    // Load-order slice keeps the first 10; the target (11th) is dropped.
+    const lexicalOnly = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories,
+      activeProposals: [],
+    });
+    expect(parseMemoryIds(lexicalOnly)).not.toContain('memory-reflect-10');
+
+    // Ranked by fused relevance: the embedding-matched target surfaces into top 10.
+    const semantic = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories,
+      activeProposals: [],
+      focusQuery: 'zzz qqq www',
+      queryEmbedding: [1, 0, 0],
+    });
+    expect(parseMemoryIds(semantic)).toContain('memory-reflect-10');
   });
 
   it('routes consented personal metadata only when relevant and omits private bodies', () => {
