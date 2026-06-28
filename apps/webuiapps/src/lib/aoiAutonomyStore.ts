@@ -9,6 +9,7 @@ import {
   normalizeAoiAutonomyPolicy,
 } from './aoiAutonomyPolicy';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
+import type { AoiAutonomyLevelPromotionGateState } from './aoiAutonomyLevelPromotion';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -120,6 +121,7 @@ export interface AoiAutonomyPaths {
   appActionAuditDir: string;
   connectorCallAuditDir: string;
   tickState: string;
+  levelPromotionState: string;
   evalDir: string;
   environmentSources: string;
   timelineDir: string;
@@ -545,6 +547,7 @@ export function resolveAoiAutonomyPaths(
     appActionAuditDir: join(root, 'app-action-audit'),
     connectorCallAuditDir: join(root, 'connector-call-audit'),
     tickState: join(root, 'tick-state.json'),
+    levelPromotionState: join(root, 'level-promotion-state.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
     timelineDir,
@@ -603,6 +606,26 @@ export function saveAoiAutonomyPolicy(
   const normalized = normalizeAoiAutonomyPolicy(policy, current, now);
   writeJsonAtomic(paths.policy, normalized);
   return normalized;
+}
+
+// Per-session gate state for gated autonomy-level auto-promotion (roadmap 5b).
+// Returns the raw persisted record (or null when absent); the promotion evaluator
+// normalizes it defensively, so a malformed file is tolerated.
+export function loadAoiAutonomyLevelPromotionGateState(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiAutonomyLevelPromotionGateState | null {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return readJson<AoiAutonomyLevelPromotionGateState>(paths.levelPromotionState) ?? null;
+}
+
+export function saveAoiAutonomyLevelPromotionGateState(
+  sessionsDir: string,
+  sessionPath: string,
+  state: AoiAutonomyLevelPromotionGateState,
+): void {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  writeJsonAtomic(paths.levelPromotionState, state);
 }
 
 export function loadAoiEnvironmentSourceRegistry(

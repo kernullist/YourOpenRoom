@@ -11,6 +11,7 @@ import {
   type AoiAutonomyBackgroundTickParams,
 } from './aoiAutonomyEngine';
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
+import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -1666,6 +1667,21 @@ async function runWakeupInternal(
         error instanceof Error ? error.message : 'Aoi scheduler background tick failed.',
       );
     }
+  }
+
+  // Gated autonomy-level auto-promotion (roadmap 5b). OFF unless the operator opts
+  // in via AOI_AUTONOMY_AUTO_PROMOTE=1; runs after the tick so it reflects the
+  // latest readiness. Best-effort (maybeRun swallows its own errors and returns
+  // null when disabled), so it never blocks or fails the wakeup.
+  const levelPromotion = maybeRunAoiAutonomyLevelPromotion({
+    sessionsDir: input.sessionsDir,
+    sessionPath,
+    now,
+  });
+  if (levelPromotion?.changed) {
+    warnings.push(
+      `autonomy_level_${levelPromotion.action}:${levelPromotion.previousLevel}->${levelPromotion.nextLevel}`,
+    );
   }
 
   const tickRan = Boolean(tickResult);

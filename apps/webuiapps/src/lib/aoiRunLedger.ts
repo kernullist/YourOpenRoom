@@ -14,6 +14,8 @@ export type AoiRunLedgerEventType =
   | 'file_mutation_executed'
   | 'app_action_executed'
   | 'connector_call_executed'
+  | 'autonomy_level_promoted'
+  | 'autonomy_level_rolled_back'
   | 'kira_handoff_preview_created'
   | 'kira_handoff_execution_approved'
   | 'kira_work_item_created'
