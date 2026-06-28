@@ -12,6 +12,8 @@ import {
 } from './aoiAutonomyEngine';
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
+import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
+import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -1682,6 +1684,19 @@ async function runWakeupInternal(
     warnings.push(
       `autonomy_level_${levelPromotion.action}:${levelPromotion.previousLevel}->${levelPromotion.nextLevel}`,
     );
+  }
+
+  // Server-side memory embedding (best-effort): when an embedding key is configured
+  // (config aoiEmbedding block or env), opportunistically embed a bounded batch of
+  // un-embedded server memories so semantic recall has vectors to fuse. The key is
+  // the opt-in -- no key means lexical-only, unchanged. Never blocks the wakeup.
+  const embeddingProvider = createServerAoiEmbeddingProvider({ configFile: input.configFile });
+  if (embeddingProvider) {
+    try {
+      await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, { max: 16 });
+    } catch {
+      // best-effort; embeddings never block the wakeup
+    }
   }
 
   const tickRan = Boolean(tickResult);

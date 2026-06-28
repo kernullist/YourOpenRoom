@@ -15,6 +15,7 @@ import {
   type AoiMemoryEpisode,
 } from './aoiMemoryShared';
 import type { AoiResearchManifest } from './aoiResearchTypes';
+import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
 
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
 
@@ -391,6 +392,46 @@ export function loadServerAoiMemories(sessionsDir: string): AoiMemoryEntry[] {
     .map((filePath) => readJsonFile<AoiMemoryEntry>(filePath))
     .filter((memory): memory is AoiMemoryEntry => Boolean(memory?.id && memory?.content))
     .sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+const MAX_SERVER_EMBED_BATCH = 32;
+
+// Embed active server memories that still lack a vector (best-effort, bounded), so
+// server-side semantic recall has embeddings to fuse. Rewrites only memories that
+// gain an embedding; a provider failure yields empty vectors and is skipped, so
+// this never throws into the autonomy loop. Idempotent -- already-embedded memories
+// are skipped, so repeated calls converge and then no-op.
+export async function embedAndPersistServerAoiMemories(
+  sessionsDir: string,
+  provider: AoiEmbeddingProvider,
+  options: { max?: number } = {},
+): Promise<{ embeddedCount: number; pendingCount: number }> {
+  const max = Math.max(1, Math.min(options.max ?? MAX_SERVER_EMBED_BATCH, MAX_SERVER_EMBED_BATCH));
+  const memories = loadServerAoiMemories(sessionsDir);
+  const pending = memories.filter(
+    (memory) =>
+      memory.status === 'active' &&
+      (!Array.isArray(memory.embedding) || memory.embedding.length === 0),
+  );
+  if (pending.length === 0) {
+    return { embeddedCount: 0, pendingCount: 0 };
+  }
+  const batch = pending.slice(0, max);
+  let vectors: number[][];
+  try {
+    vectors = await provider.embed(batch.map((memory) => memory.content));
+  } catch {
+    return { embeddedCount: 0, pendingCount: pending.length };
+  }
+  let embeddedCount = 0;
+  batch.forEach((memory, index) => {
+    const vector = vectors[index];
+    if (Array.isArray(vector) && vector.length > 0) {
+      writeJsonFile(memoryFilePath(sessionsDir, memory.id), { ...memory, embedding: vector });
+      embeddedCount += 1;
+    }
+  });
+  return { embeddedCount, pendingCount: pending.length - embeddedCount };
 }
 
 export function saveServerAoiMemoryEpisode(
