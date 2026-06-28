@@ -17,6 +17,10 @@ import {
 } from './aoiAutonomyStore';
 import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import {
+  scoreAoiMemoryRelevance,
+  selectRelevantAoiMemoriesByEmbedding,
+} from './aoiMemoryEmbedding';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import { loadAoiPersonalSignalMetadataSummaries } from './aoiPersonalSignalConnectors';
 import {
@@ -96,6 +100,10 @@ export interface AoiContextRouterInput {
   registry?: AoiEnvironmentSourceRegistry | null;
   mission?: AoiMissionState | null;
   memories?: AoiMemoryEntry[];
+  // Optional embedding of `latestUserMessage` for semantic memory recall. When
+  // present, kira-memory candidates are query-ranked by fused lexical+semantic
+  // relevance before the cap; absent (the default) keeps lexical-only ranking.
+  queryEmbedding?: number[] | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   decisions?: AoiProposalDecision[];
   researchRuns?: AoiResearchRunSummary[];
@@ -871,6 +879,7 @@ function buildKiraCandidates(params: {
   registry: AoiEnvironmentSourceRegistry;
   mission: AoiMissionState | null;
   now: number;
+  queryEmbedding?: number[] | null;
 }): AoiContextSourceSummary[] {
   const sourceId = SOURCE_ID_BY_KIND.kira_board;
   if (!sourceAllowed(params.registry, sourceId)) {
@@ -882,45 +891,60 @@ function buildKiraCandidates(params: {
     /(kira|키라|review|reviewed|리뷰|검토|구현|implementation|delegate|delegation|handoff|작업|커밋|완료)/i,
   );
   const missionEvidence = missionRefs(params.mission);
-  return params.memories
-    .filter((memory) => {
-      const tags = new Set(memory.tags.map((tag) => tag.toLowerCase()));
-      return memory.status === 'active' && tags.has('kira');
-    })
-    .slice(0, 12)
-    .map((memory) => {
-      const tags = new Set(memory.tags.map((tag) => tag.toLowerCase()));
-      const reviewed = tags.has('reviewed') || tags.has('review-approved');
-      const evidenceRefs = [`memory:${memory.id}`];
-      const linkedToMission = missionEvidence.some((ref) => memory.content.includes(ref));
-      const overlap = overlapScore(message, `${memory.content} ${memory.entities.join(' ')}`);
-      const freshness = getFreshness(memory.updatedAt, params.now);
-      const score =
-        0.26 +
-        (kiraIntent ? 0.38 : 0) +
-        (reviewed ? 0.14 : 0) +
-        (linkedToMission ? 0.2 : 0) +
-        overlap * 0.18 +
-        scoreFreshness(freshness);
-      return makeSummary({
-        sourceId,
-        kind: 'kira_board',
-        label: 'Kira reviewed work',
-        displayName: 'Kira',
-        summary: memory.content,
-        evidenceRefs,
-        relevanceScore: score,
-        confidence: clamp(memory.confidence + (reviewed ? 0.06 : 0), 0, 0.92),
-        freshness,
-        scoreReasons: dedupeStrings([
-          kiraIntent ? 'implementation or Kira follow-up intent detected' : undefined,
-          reviewed ? 'reviewed Kira outcome' : undefined,
-          linkedToMission ? 'linked to active mission' : undefined,
-          overlap > 0 ? 'message overlaps Kira memory' : undefined,
-        ]),
-        updatedAt: memory.updatedAt,
-      });
+  const kiraMemories = params.memories.filter((memory) => {
+    const tags = new Set(memory.tags.map((tag) => tag.toLowerCase()));
+    return memory.status === 'active' && tags.has('kira');
+  });
+  // Query-rank the kira memories by fused lexical+semantic relevance before the
+  // cap, so the most relevant survive rather than the first 12 by load order; a
+  // semantic paraphrase that shares no tokens can now make the cut. With no query
+  // embedding (and no lexical overlap) this is a stable lexical top-K, identical
+  // to the prior `.slice(0, 12)`.
+  const ranked = selectRelevantAoiMemoriesByEmbedding(kiraMemories, message, {
+    queryEmbedding: params.queryEmbedding,
+    limit: 12,
+  });
+  return ranked.map((memory) => {
+    const tags = new Set(memory.tags.map((tag) => tag.toLowerCase()));
+    const reviewed = tags.has('reviewed') || tags.has('review-approved');
+    const evidenceRefs = [`memory:${memory.id}`];
+    const linkedToMission = missionEvidence.some((ref) => memory.content.includes(ref));
+    // Fused relevance: lexical over content+entities (the prior behaviour) maxed
+    // with cosine over the content embedding when both query and memory carry a
+    // vector. Reduces to the original lexical overlap when no embedding is present.
+    const overlap = scoreAoiMemoryRelevance({
+      query: message,
+      content: `${memory.content} ${memory.entities.join(' ')}`,
+      embedding: memory.embedding,
+      queryEmbedding: params.queryEmbedding,
     });
+    const freshness = getFreshness(memory.updatedAt, params.now);
+    const score =
+      0.26 +
+      (kiraIntent ? 0.38 : 0) +
+      (reviewed ? 0.14 : 0) +
+      (linkedToMission ? 0.2 : 0) +
+      overlap * 0.18 +
+      scoreFreshness(freshness);
+    return makeSummary({
+      sourceId,
+      kind: 'kira_board',
+      label: 'Kira reviewed work',
+      displayName: 'Kira',
+      summary: memory.content,
+      evidenceRefs,
+      relevanceScore: score,
+      confidence: clamp(memory.confidence + (reviewed ? 0.06 : 0), 0, 0.92),
+      freshness,
+      scoreReasons: dedupeStrings([
+        kiraIntent ? 'implementation or Kira follow-up intent detected' : undefined,
+        reviewed ? 'reviewed Kira outcome' : undefined,
+        linkedToMission ? 'linked to active mission' : undefined,
+        overlap > 0 ? 'message overlaps Kira memory' : undefined,
+      ]),
+      updatedAt: memory.updatedAt,
+    });
+  });
 }
 
 function buildBrowserCandidates(params: {
@@ -1221,7 +1245,14 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
     ...buildMissionCandidates(mission, now),
     ...buildAppCandidates({ latestUserMessage, registry, mission, now }),
     ...buildResearchCandidates({ runs, latestUserMessage, registry, mission, now }),
-    ...buildKiraCandidates({ memories, latestUserMessage, registry, mission, now }),
+    ...buildKiraCandidates({
+      memories,
+      latestUserMessage,
+      registry,
+      mission,
+      now,
+      queryEmbedding: params.queryEmbedding ?? null,
+    }),
     ...buildBrowserCandidates({ browserContexts, latestUserMessage, registry, now }),
     ...buildPersonalSignalCandidates({
       sessionsDir: params.sessionsDir,

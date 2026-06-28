@@ -1420,6 +1420,66 @@ describe('runAoiAutonomyBackgroundTick()', () => {
     );
   });
 
+  it('uses the query embedding to surface a semantically-matching Kira memory as top context', () => {
+    const root = makeTempRoot();
+    // Two reviewed Kira memories that share no tokens with the query. Beta is
+    // newer, so with lexical-only ranking it wins the score tie-break. The query
+    // embedding matches Alpha's vector, which must flip Alpha to the top.
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-embed-alpha',
+        scope: 'project',
+        type: 'action',
+        content: 'Alpha deployment pipeline handoff awaiting follow-up.',
+        normalizedContent: 'alpha deployment pipeline handoff awaiting follow-up',
+        permanent: undefined,
+        tags: ['kira', 'reviewed'],
+        updatedAt: NOW - 3_000,
+        confidence: 0.8,
+        embedding: [1, 0, 0],
+      }),
+    );
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-kira-embed-beta',
+        scope: 'project',
+        type: 'action',
+        content: 'Beta cooking recipe notes for the weekend.',
+        normalizedContent: 'beta cooking recipe notes for the weekend',
+        permanent: undefined,
+        tags: ['kira', 'reviewed'],
+        updatedAt: NOW - 2_000,
+        confidence: 0.8,
+        embedding: [0, 1, 0],
+      }),
+    );
+
+    // "구현" triggers the Kira intent for both equally; the query shares no tokens
+    // with either memory, isolating the semantic signal to the overlap term.
+    const semantic = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: '구현 이어서 진행하자',
+      mission: null,
+      queryEmbedding: [1, 0, 0],
+      now: NOW,
+    });
+    expect(semantic.selectedSources[0].evidenceRefs).toContain('memory:memory-kira-embed-alpha');
+
+    // Without the query embedding, lexical overlap is zero for both, so the newer
+    // memory (Beta) wins the tie-break and Alpha is no longer on top.
+    const lexicalOnly = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: '구현 이어서 진행하자',
+      mission: null,
+      now: NOW,
+    });
+    expect(lexicalOnly.selectedSources[0].evidenceRefs).toContain('memory:memory-kira-embed-beta');
+  });
+
   it('routes consented personal metadata only when relevant and omits private bodies', () => {
     const root = makeTempRoot();
     const configFile = join(root, 'config.json');

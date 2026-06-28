@@ -64,6 +64,8 @@ import {
   recordAoiBrowserContextMetadata,
   recordAoiContextSourceFeedback,
 } from './aoiContextRouter';
+import { embedAoiQuery } from './aoiMemoryEmbedding';
+import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
   buildAoiContextRouterTimelineEvents,
   exportAoiOperatorTrace,
@@ -1307,11 +1309,19 @@ async function handleAoiAutonomyRequest(
         return true;
       }
       const latestUserMessage = url.searchParams.get('latestUserMessage') || '';
+      // Best-effort semantic recall: embed the query with the server-resolved
+      // provider (null when no key is configured -> lexical-only ranking). A
+      // failed/absent embedding yields null, so recall degrades gracefully.
+      const queryEmbedding = await embedAoiQuery(
+        latestUserMessage,
+        createServerAoiEmbeddingProvider({ configFile }),
+      );
       const context = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
         configFile,
         latestUserMessage,
+        queryEmbedding,
       });
       writeJson(res, 200, {
         ok: true,
