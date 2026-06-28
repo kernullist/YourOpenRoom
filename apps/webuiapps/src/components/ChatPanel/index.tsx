@@ -436,6 +436,7 @@ import {
   normalizeUserProfileDisplayName,
   normalizeAoiEmbeddingConfig,
   saveAoiEmbeddingConfig,
+  saveAoiMcpConnectorsConfig,
   saveConversationPreferences,
   saveUserProfileConfig,
   AOI_EMBEDDING_DEFAULT_BASE_URL,
@@ -496,8 +497,10 @@ import {
   saveModCollection,
   getActiveModEntry,
 } from '@/lib/modManager';
+import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
+import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
 import styles from './index.module.scss';
 
 // ---------------------------------------------------------------------------
@@ -2441,6 +2444,10 @@ const ChatPanel: React.FC<{
   const [idaPeConfig, setIdaPeConfig] = useState<IdaPeConfig | null>(null);
   const [kiraConfig, setKiraConfig] = useState<KiraConfig | null>(null);
   const [aoiEmbeddingConfig, setAoiEmbeddingConfig] = useState<AoiEmbeddingConfig | null>(null);
+  // Server-readable trusted-connector allow-list for Aoi live MCP RPC. Edited in
+  // chat settings and persisted to PersistedConfig.aoiMcpConnectors.
+  const [aoiMcpConnectorsConfig, setAoiMcpConnectorsConfig] =
+    useState<AoiMcpConnectorsConfig | null>(null);
   // Best-effort embedding provider for Aoi semantic memory, rebuilt whenever the
   // saved embedding config changes. Null keeps capture/recall lexical-only.
   const aoiEmbeddingProviderRef = useRef<AoiEmbeddingProvider | null>(null);
@@ -2999,6 +3006,7 @@ const ChatPanel: React.FC<{
         }
         setKiraConfig(persisted?.kira ?? null);
         setAoiEmbeddingConfig(persisted?.aoiEmbedding ?? null);
+        setAoiMcpConnectorsConfig(persisted?.aoiMcpConnectors ?? null);
         const nextUserProfile = persisted
           ? (persisted.userProfile ?? null)
           : loadUserProfileConfigSync();
@@ -8589,6 +8597,13 @@ const ChatPanel: React.FC<{
               console.warn('[ChatPanel] Failed to save Aoi embedding config', error);
             });
           }}
+          aoiMcpConnectorsConfig={aoiMcpConnectorsConfig}
+          onSaveAoiMcpConnectorsConfig={(cfg) => {
+            setAoiMcpConnectorsConfig(cfg);
+            void saveAoiMcpConnectorsConfig(cfg).catch((error) => {
+              console.warn('[ChatPanel] Failed to save Aoi MCP connectors config', error);
+            });
+          }}
           onResetAll={handleResetSessionHistory}
           onSave={(
             c,
@@ -9209,6 +9224,8 @@ const SettingsModal: React.FC<{
   onDeleteAoiMemory: (memoryId: string) => Promise<void>;
   aoiEmbeddingConfig: AoiEmbeddingConfig | null;
   onSaveAoiEmbeddingConfig: (config: AoiEmbeddingConfig | null) => void;
+  aoiMcpConnectorsConfig: AoiMcpConnectorsConfig | null;
+  onSaveAoiMcpConnectorsConfig: (config: AoiMcpConnectorsConfig) => void;
   onResetAll: () => void;
   onSave: (
     _config: LLMConfig,
@@ -9312,6 +9329,8 @@ const SettingsModal: React.FC<{
   onDeleteAoiMemory,
   aoiEmbeddingConfig,
   onSaveAoiEmbeddingConfig,
+  aoiMcpConnectorsConfig,
+  onSaveAoiMcpConnectorsConfig,
   onResetAll,
   onSave,
   onClose,
@@ -11395,6 +11414,11 @@ const SettingsModal: React.FC<{
                   />
                 </div>
               </div>
+
+              <AoiMcpConnectorsSettings
+                config={aoiMcpConnectorsConfig}
+                onSave={onSaveAoiMcpConnectorsConfig}
+              />
 
               <div className={styles.settingsSectionCard}>
                 <div className={styles.settingsSectionTitle}>Dialog Model</div>

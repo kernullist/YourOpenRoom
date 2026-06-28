@@ -1461,3 +1461,120 @@
   border: 1px solid rgba(148, 163, 184, 0.18);
   background: rgba(15, 23, 42, 0.24);
 }
+
+// Trusted MCP Connectors editor (AoiMcpConnectorsSettings)
+.connectorList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.connectorRow {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border-radius: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.connectorRowHeader {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.connectorToggleRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.connectorToggle {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  background: #282a2a;
+  color: rgba(255, 255, 255, 0.7);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.connectorToggleOn {
+  background: #faea5f;
+  color: #121214;
+  border-color: #faea5f;
+  font-weight: 600;
+}
+
+.connectorToggleWarn {
+  background: rgba(255, 63, 77, 0.16);
+  color: #ff8a93;
+  border-color: rgba(255, 63, 77, 0.4);
+  font-weight: 600;
+}
+
+.connectorToolList {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.connectorToolRow {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.connectorInlineBtn {
+  align-self: flex-start;
+  padding: 6px 10px;
+  border-radius: 6px;
+  border: 1px dashed rgba(255, 255, 255, 0.2);
+  background: transparent;
+  color: rgba(255, 255, 255, 0.75);
+  font-size: 12px;
+  cursor: pointer;
+
+  &:hover {
+    border-color: rgba(255, 255, 255, 0.4);
+  }
+
+  &:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+}
+
+.connectorRemoveBtn {
+  padding: 5px 10px;
+  border-radius: 6px;
+  border: 1px solid rgba(255, 63, 77, 0.35);
+  background: transparent;
+  color: #ff8a93;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.connectorActionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.connectorHostOk {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #7ddc9a;
+}
+
+.connectorHostError {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: #ff8a93;
+}
