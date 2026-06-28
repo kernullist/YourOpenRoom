@@ -67,6 +67,10 @@ import {
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
+  applyAoiOperatorPromotionReview,
+  loadAoiOperatorReviewQueue,
+} from './aoiOperatorPromotionReviewServer';
+import {
   buildAoiContextRouterTimelineEvents,
   exportAoiOperatorTrace,
   loadAoiOperatorTimelineEvents,
@@ -987,6 +991,81 @@ async function handleAoiAutonomyRequest(
         ok: true,
         evaluation: buildAoiAutonomyEvaluation({ sessionsDir, sessionPath }),
       });
+      return true;
+    }
+
+    // Operator-review -> persisted-promotion pipeline (roadmap item 1). The review
+    // queue lists the trace / adaptive replay candidates and the operator's progress
+    // toward the promoted-replay gate that unlocks trusted_operator.
+    if (req.method === 'GET' && route === '/review-candidates') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        queue: loadAoiOperatorReviewQueue(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    // Record one operator review decision. SAFETY: the actor is FORCED to 'user' by
+    // the pipeline and the actor-gated store -- the request body can never set it, so
+    // this human-operator route is the ONLY way a promotion is ever created.
+    if (req.method === 'POST' && route === '/review-decision') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const kind = body.kind;
+      if (kind !== 'trace' && kind !== 'adaptive') {
+        writeJson(res, 400, { error: 'kind must be trace or adaptive.', code: 'invalid_kind' });
+        return true;
+      }
+      const action = body.action;
+      if (action !== 'promote' && action !== 'defer' && action !== 'reject') {
+        writeJson(res, 400, {
+          error: 'action must be promote, defer, or reject.',
+          code: 'invalid_action',
+        });
+        return true;
+      }
+      const candidateId = typeof body.candidateId === 'string' ? body.candidateId : '';
+      if (!candidateId) {
+        writeJson(res, 400, { error: 'candidateId is required.', code: 'invalid_candidate_id' });
+        return true;
+      }
+      try {
+        const { result, queue } = applyAoiOperatorPromotionReview(sessionsDir, sessionPath, {
+          kind,
+          candidateId,
+          action,
+          ...(typeof body.reason === 'string' ? { reason: body.reason } : {}),
+        });
+        if (!result.ok) {
+          writeJson(res, result.code === 'candidate_not_found' ? 404 : 400, {
+            error: result.error,
+            code: result.code,
+            sessionPath,
+            queue,
+          });
+          return true;
+        }
+        writeJson(res, 200, { ok: true, sessionPath, result, queue });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        writeJson(res, 400, { error: message, code: 'review_failed' });
+      }
       return true;
     }
 
