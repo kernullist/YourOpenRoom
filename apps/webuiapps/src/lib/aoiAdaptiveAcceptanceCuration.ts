@@ -106,6 +106,11 @@ export interface AoiAdaptiveAcceptanceReviewState {
   reviewedAt: number;
   evidenceRefs: string[];
   reason?: string;
+  // Who authored this review. Operator-reviewed promotion evidence is the only
+  // source that may unlock trusted_operator, so the persisted store records and
+  // the scorecard assembler both require actor === 'user'. Optional for backward
+  // compatibility; the pure pack builder ignores this field.
+  actor?: 'user' | 'system';
 }
 
 export interface AoiAdaptiveAcceptanceMissingEvidenceReason {

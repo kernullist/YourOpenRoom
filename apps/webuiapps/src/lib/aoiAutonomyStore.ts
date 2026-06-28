@@ -10,6 +10,8 @@ import {
 } from './aoiAutonomyPolicy';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import type { AoiAutonomyLevelPromotionGateState } from './aoiAutonomyLevelPromotion';
+import type { AoiTracePromotionDecision } from './aoiTracePromotion';
+import type { AoiAdaptiveAcceptanceReviewState } from './aoiAdaptiveAcceptanceCuration';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -120,6 +122,8 @@ export interface AoiAutonomyPaths {
   fileMutationAuditDir: string;
   appActionAuditDir: string;
   connectorCallAuditDir: string;
+  operatorTracePromotionDir: string;
+  operatorAdaptiveReviewDir: string;
   tickState: string;
   levelPromotionState: string;
   evalDir: string;
@@ -546,6 +550,8 @@ export function resolveAoiAutonomyPaths(
     fileMutationAuditDir: join(root, 'file-mutation-audit'),
     appActionAuditDir: join(root, 'app-action-audit'),
     connectorCallAuditDir: join(root, 'connector-call-audit'),
+    operatorTracePromotionDir: join(root, 'operator-trace-promotion'),
+    operatorAdaptiveReviewDir: join(root, 'operator-adaptive-review'),
     tickState: join(root, 'tick-state.json'),
     levelPromotionState: join(root, 'level-promotion-state.json'),
     evalDir: join(root, 'eval'),
@@ -626,6 +632,160 @@ export function saveAoiAutonomyLevelPromotionGateState(
 ): void {
   const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
   writeJsonAtomic(paths.levelPromotionState, state);
+}
+
+// Operator-reviewed replay-promotion evidence (roadmap item 1: the operator-review
+// -> persisted-promotion pipeline). These two append-only per-session logs are the
+// ONLY writable source of "this real trace was reviewed and promoted into replay
+// coverage". They are written EXCLUSIVELY by the operator-driven review route and
+// read back by the autonomy-level promotion scorecard assembler.
+//
+// SAFETY (do not relax): the append functions HARD-REQUIRE actor === 'user' and
+// throw otherwise; the loaders re-filter to actor === 'user'. The autonomy loop has
+// no path that produces a user-actor promotion, so it cannot populate these logs --
+// this is the structural barrier against a self-reinforcing autonomy-escalation
+// loop. The scorecard assembler filters to actor === 'user' as a further layer.
+function fnv1aHex(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, '0');
+}
+
+function isAoiPromotionActor(value: unknown): value is 'user' | 'system' {
+  return value === 'user' || value === 'system';
+}
+
+function isAoiOperatorTracePromotionDecision(value: unknown): value is AoiTracePromotionDecision {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiTracePromotionDecision>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.candidateId === 'string' &&
+    typeof record.sourceTraceId === 'string' &&
+    (record.action === 'promote' || record.action === 'defer' || record.action === 'reject') &&
+    typeof record.selectedLabel === 'string' &&
+    isAoiPromotionActor(record.actor) &&
+    typeof record.createdAt === 'number' &&
+    Array.isArray(record.evidenceRefs) &&
+    (record.privacyStatus === 'passed' ||
+      record.privacyStatus === 'blocked' ||
+      record.privacyStatus === 'needs_review') &&
+    record.mutationCount === 0
+  );
+}
+
+function isAoiOperatorAdaptiveReviewState(
+  value: unknown,
+): value is AoiAdaptiveAcceptanceReviewState {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<AoiAdaptiveAcceptanceReviewState>;
+  const statusOk =
+    record.status === 'needs_review' ||
+    record.status === 'approved' ||
+    record.status === 'deferred' ||
+    record.status === 'rejected';
+  const hasAnchor =
+    typeof record.candidateId === 'string' ||
+    typeof record.labelId === 'string' ||
+    typeof record.decisionRecordId === 'string';
+  return (
+    record.version === 1 &&
+    statusOk &&
+    hasAnchor &&
+    typeof record.reviewedAt === 'number' &&
+    Array.isArray(record.evidenceRefs) &&
+    isAoiPromotionActor(record.actor)
+  );
+}
+
+// Append one operator trace-promotion decision. Rejects any non-user actor so the
+// persisted log can only ever hold operator-authored decisions.
+export function appendAoiOperatorTracePromotionDecision(
+  sessionsDir: string,
+  sessionPath: string,
+  decision: AoiTracePromotionDecision,
+): AoiTracePromotionDecision {
+  if (!isAoiOperatorTracePromotionDecision(decision)) {
+    throw new Error('Invalid Aoi operator trace-promotion decision.');
+  }
+  if (decision.actor !== 'user') {
+    throw new Error('Operator trace-promotion decisions must be authored by a human operator.');
+  }
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const item: AoiTracePromotionDecision = {
+    ...decision,
+    evidenceRefs: normalizeStringList(decision.evidenceRefs, 24),
+  };
+  writeJsonAtomic(join(paths.operatorTracePromotionDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiOperatorTracePromotionDecisions(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiTracePromotionDecision[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.operatorTracePromotionDir)
+    .filter(isAoiOperatorTracePromotionDecision)
+    .filter((decision) => decision.actor === 'user')
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+}
+
+// Append one operator adaptive-acceptance review state. Filename is a content hash
+// (anchor + reviewedAt + status) so a re-review at a new timestamp is a new record
+// and the pack builder's latest-wins-per-candidate selection picks it up; identical
+// inputs are idempotent. Rejects any non-user actor.
+export function appendAoiOperatorAdaptiveReviewState(
+  sessionsDir: string,
+  sessionPath: string,
+  reviewState: AoiAdaptiveAcceptanceReviewState,
+): AoiAdaptiveAcceptanceReviewState {
+  if (!isAoiOperatorAdaptiveReviewState(reviewState)) {
+    throw new Error('Invalid Aoi operator adaptive-acceptance review state.');
+  }
+  if (reviewState.actor !== 'user') {
+    throw new Error('Operator adaptive review states must be authored by a human operator.');
+  }
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const item: AoiAdaptiveAcceptanceReviewState = {
+    ...reviewState,
+    evidenceRefs: normalizeStringList(reviewState.evidenceRefs, 24),
+  };
+  const key = fnv1aHex(
+    `${item.candidateId ?? ''}:${item.labelId ?? ''}:${item.decisionRecordId ?? ''}:${item.reviewedAt}:${item.status}`,
+  );
+  writeJsonAtomic(
+    join(paths.operatorAdaptiveReviewDir, `operator-adaptive-review-${key}.json`),
+    item,
+  );
+  return item;
+}
+
+export function loadAoiOperatorAdaptiveReviewStates(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiAdaptiveAcceptanceReviewState[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.operatorAdaptiveReviewDir)
+    .filter(isAoiOperatorAdaptiveReviewState)
+    .filter((state) => state.actor === 'user')
+    .sort((a, b) => a.reviewedAt - b.reviewedAt);
 }
 
 export function loadAoiEnvironmentSourceRegistry(
