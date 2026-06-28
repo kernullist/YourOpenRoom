@@ -17,12 +17,29 @@ import { isAoiMcpConnectorPrivateAddress } from './aoiMcpConnectorRegistry';
 // and re-checking EVERY resolved address with the registry's range classifier. The
 // lookup is injectable so tests never touch real DNS.
 //
-// Residual risk (documented, not closed here): a TOCTOU window remains between this
-// lookup and the fetch the transport performs, because fetch re-resolves the
-// hostname. Fully closing it needs IP pinning (connect to the validated address
-// while preserving Host / SNI), which the shared McpHttpClient does not support
-// yet. The resolve-time re-check still raises the bar substantially: an attacker
-// must win a sub-millisecond resolver race on every call.
+// Residual risk (documented, DEFERRED by an explicit operator decision -- not closed
+// here): a TOCTOU window remains between this lookup and the fetch the transport
+// performs, because fetch re-resolves the hostname independently. Fully closing it
+// needs IP pinning -- connect to the validated address while preserving Host / TLS
+// SNI -- which plain fetch cannot express.
+//
+// The concrete remediation, for whoever picks this up:
+//   1. Add `undici` as a dependency. It is NOT currently in the tree (not even
+//      transitively), and Node does not expose it as a builtin (`node:undici` is
+//      unknown), so there is no zero-dependency way to build a custom dispatcher.
+//   2. Build an undici Agent whose `connect.lookup` resolves the hostname, re-checks
+//      EVERY address with isAoiMcpConnectorPrivateAddress (as below), and pins the
+//      connection to a validated address -- making validation and connect atomic.
+//   3. Wire that dispatcher OPT-IN, on the connector RPC path ONLY. The McpHttpClient
+//      is shared (cached per endpoint) with idaPePlugin, which talks to a LOCAL IDA
+//      MCP server (a private/loopback host that MUST keep working) -- so the default
+//      client/transport must stay on plain fetch; only the connector runner attaches
+//      the validating dispatcher.
+//
+// Until then, this resolve-time re-check is the guard: it blocks the realistic
+// misconfiguration (a trusted connector that resolves to a private address) and
+// forces an attacker to win a sub-millisecond resolver race on every call. Side-
+// effecting RPC is also OFF by default, so the exposed surface is a read-only SSRF.
 
 export type AoiMcpConnectorDnsBlockReason =
   | 'invalid_url'
