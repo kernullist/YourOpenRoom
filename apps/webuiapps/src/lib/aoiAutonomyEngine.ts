@@ -2413,6 +2413,10 @@ export async function runAoiAutonomyTick(
       activeProposals,
       recentDecisions,
       trustCalibrationProfile,
+      followThroughSuppression: getAoiFollowThroughProposalBoost(
+        followThroughLearningSummary,
+        proposalFollowThroughSourceKey(proposal),
+      ),
       now,
     });
     reasons.push(...policyResult.reasons);

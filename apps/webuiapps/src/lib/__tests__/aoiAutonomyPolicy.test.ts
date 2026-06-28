@@ -1033,6 +1033,33 @@ describe('checkAoiProposalPolicy()', () => {
     });
   });
 
+  it('raises the approval bar for a strongly follow-through-suppressed source', () => {
+    const strong = checkAoiProposalPolicy({
+      policy,
+      proposal: makeProposal({ requiresUserApproval: false }),
+      followThroughSuppression: -0.12,
+    });
+    expect(strong.reasons).toContain('follow_through_source_suppressed_requires_approval');
+
+    // Mild suppression does not raise the bar.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({ requiresUserApproval: false }),
+        followThroughSuppression: -0.05,
+      }).reasons,
+    ).not.toContain('follow_through_source_suppressed_requires_approval');
+
+    // A proposal that already requires approval is not gated twice.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({ requiresUserApproval: true }),
+        followThroughSuppression: -0.5,
+      }).reasons,
+    ).not.toContain('follow_through_source_suppressed_requires_approval');
+  });
+
   it('blocks proposals when autonomy is neither enabled nor in preview mode', () => {
     const disabled = normalizeAoiAutonomyPolicy(
       { enabled: false, previewMode: false, level: 'L4' },

@@ -1611,6 +1611,11 @@ export function applyAoiFeedbackCalibrationToProposal(
   };
 }
 
+// A follow-through boost at or below this (bounded range is ~+/-0.15) marks a
+// source whose recent suggestions were strongly ignored/blocked; such a proposal
+// must be user-approved rather than flow autonomously.
+const FOLLOW_THROUGH_SUPPRESSION_APPROVAL_THRESHOLD = -0.1;
+
 export function checkAoiProposalPolicy(
   input: AoiProposalPolicyCheckInput,
 ): AoiProposalPolicyCheckResult {
@@ -1645,6 +1650,18 @@ export function checkAoiProposalPolicy(
   }
   if (trustCalibration.approvalStrictnessBoost > 0 && !proposal.requiresUserApproval) {
     reasons.push('trust_calibration_requires_user_approval');
+  }
+  // 5a -> policy: a strongly follow-through-suppressed source (its recent
+  // suggestions were repeatedly ignored or blocked) raises the approval bar.
+  // Conservative and one-directional -- it only ever requires approval, mirroring
+  // the trust-calibration gate above, and is distinct from it (keys on source
+  // follow-through, not decisions) so the two never double-count.
+  if (
+    typeof input.followThroughSuppression === 'number' &&
+    input.followThroughSuppression <= FOLLOW_THROUGH_SUPPRESSION_APPROVAL_THRESHOLD &&
+    !proposal.requiresUserApproval
+  ) {
+    reasons.push('follow_through_source_suppressed_requires_approval');
   }
   if (policy.duplicateCheckEnabled && hasDuplicateActiveProposal(proposal, input.activeProposals)) {
     reasons.push('duplicate_active_proposal');

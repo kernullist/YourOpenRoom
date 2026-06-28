@@ -3254,6 +3254,11 @@ export interface AoiProposalPolicyCheckInput {
   activeProposals?: AoiProposal[];
   recentDecisions?: AoiProposalDecision[];
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
+  // Follow-through learning boost for this proposal's source (bounded ~+/-0.15;
+  // negative means the source's recent suggestions were ignored/blocked). A
+  // strongly negative value conservatively raises the approval bar. Absent on
+  // client/preview paths (no effect); the engine passes it from the tick summary.
+  followThroughSuppression?: number;
   // Server-readable trusted MCP connector allow-list, used to evaluate a
   // connector_call proposal's policy. Absent on client/preview paths (the
   // connector policy then fails closed); the server passes it from config.
