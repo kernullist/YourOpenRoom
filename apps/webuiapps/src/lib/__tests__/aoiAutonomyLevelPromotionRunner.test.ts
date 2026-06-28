@@ -5,10 +5,15 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
+  appendAoiOperatorAdaptiveReviewState,
+  appendAoiOperatorTracePromotionDecision,
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
+  loadAoiFieldShadowRecordReport,
+  loadAoiOperatorFeedbackLabelActions,
   recordAoiFieldShadowDecisions,
   recordAoiOperatorFeedbackLabelAction,
+  resolveAoiAutonomyPaths,
   saveAoiAutonomyLevelPromotionGateState,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
@@ -17,8 +22,15 @@ import {
   maybeRunAoiAutonomyLevelPromotion,
   runAoiAutonomyLevelPromotion,
 } from '../aoiAutonomyLevelPromotionRunner';
+import { buildAoiAdaptiveAcceptancePack } from '../aoiAdaptiveAcceptanceCuration';
+import { buildAoiOperatorFeedbackPromotionLabels } from '../aoiOperatorFeedbackInbox';
+import { loadAoiOperatorTraceExports } from '../aoiOperatorTimeline';
+import {
+  buildAoiTracePromotionReport,
+  createAoiTracePromotionDecision,
+} from '../aoiTracePromotion';
 import type { AoiAutonomyLevelPromotionConfig } from '../aoiAutonomyLevelPromotion';
-import type { AoiAutonomyLevel } from '../aoiAutonomyTypes';
+import type { AoiAutonomyLevel, AoiOperatorTraceExport } from '../aoiAutonomyTypes';
 import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
 import type { AoiShadowDecision } from '../aoiShadowModeEvaluation';
 
@@ -286,5 +298,199 @@ describe('buildAoiAutonomyLevelPromotionScorecard', () => {
     expect(card.level).not.toBe('trusted_operator');
     expect(card.actionAuthority).toBe('display_only');
     expect(card.mutationCount).toBe(0);
+  });
+});
+
+function metricValue(card: AoiJarvisReadinessScorecard, id: string): number | undefined {
+  return card.metrics.find((metric) => metric.id === id)?.value;
+}
+
+// Write a privacy-PASSING trace export whose event refs match the field record so
+// both the trace-promotion and adaptive-acceptance candidates become promotable
+// (not privacy-blocked). totalReplacementCount > 0 keeps the trace out of the
+// "no redaction" needs-review fallback; the refs link it to the labeled decision.
+function writeMatchingTraceExport(
+  root: string,
+  record: { decisionId: string; evidenceRefs: string[] },
+  index: number,
+): void {
+  const traceExport: AoiOperatorTraceExport = {
+    version: 1,
+    id: `aoi-trace-export-cand-${index}`,
+    sessionPath: SESSION,
+    exportedAt: 2500 + index,
+    eventCount: 1,
+    sourceEventIds: [`aoi-timeline-cand-${index}`],
+    events: [
+      {
+        version: 1,
+        id: `aoi-timeline-cand-${index}`,
+        sessionPath: SESSION,
+        kind: 'feedback_recorded',
+        visibility: 'operator_visible',
+        createdAt: 2400 + index,
+        title: 'Operator labeled a useful proposal',
+        summary: 'Operator marked the workspace validation suggestion as useful.',
+        redactionState: 'synthetic',
+        evidenceRefs: [`shadow-decision:${record.decisionId}`, ...record.evidenceRefs],
+        relatedRefs: [],
+      },
+    ],
+    redactionSummary: {
+      totalReplacementCount: 1,
+      localPathCount: 0,
+      urlCount: 0,
+      emailCount: 0,
+      privateFieldCount: 1,
+      syntheticLabels: { '[redacted-field:1]': 'redacted' },
+    },
+    privacyNotes: [],
+  };
+  const dir = resolveAoiAutonomyPaths(root, SESSION).timelineExportsDir;
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    join(dir, `${traceExport.id}.json`),
+    JSON.stringify(traceExport, null, 2),
+    'utf-8',
+  );
+}
+
+// Seed `count` real, operator-labeled field decisions each with a matching trace
+// export, so the assembler generates promotable trace + adaptive candidates.
+function seedMatchingEvidenceSets(root: string, count: number): void {
+  const decisions = Array.from({ length: count }, (_unused, index) =>
+    makeFieldShadowDecision({
+      id: `aoi-shadow-cand-${index}`,
+      dedupeKey: `digest:field-shadow-cand-${index}:would_propose`,
+      evidenceRefs: [`workspace:validation-stale-${index}`],
+    }),
+  );
+  const report = recordAoiFieldShadowDecisions(root, {
+    sessionPath: SESSION,
+    decisions,
+    now: 1000,
+  });
+  report.records.forEach((record, index) => {
+    recordAoiOperatorFeedbackLabelAction(root, {
+      sessionPath: SESSION,
+      decisionRecordId: record.id,
+      decisionId: record.decisionId,
+      label: 'useful',
+      sourceKinds: ['workspace_build'],
+      evidenceRefs: record.evidenceRefs,
+      now: 2000 + index,
+    });
+    writeMatchingTraceExport(root, record, index);
+  });
+}
+
+// Mirror the assembler's candidate generation, then record an operator promotion /
+// approval for EVERY candidate (the only way promotedReplayPassRate reaches 1).
+function promoteAllOperatorCandidates(
+  root: string,
+  now: number,
+): { traceCandidateCount: number; adaptiveCandidateCount: number } {
+  const fieldShadowReport = loadAoiFieldShadowRecordReport(root, SESSION, now);
+  const labelActions = loadAoiOperatorFeedbackLabelActions(root, SESSION);
+  const traceExports = loadAoiOperatorTraceExports(root, SESSION);
+  const promotionLabels = buildAoiOperatorFeedbackPromotionLabels({
+    sessionPath: SESSION,
+    labelActions,
+    ...(fieldShadowReport?.records ? { records: fieldShadowReport.records } : {}),
+  });
+  const traceReport = buildAoiTracePromotionReport({
+    sessionPath: SESSION,
+    traceExports,
+    shadowLabels: promotionLabels,
+    now,
+  });
+  const adaptivePack = buildAoiAdaptiveAcceptancePack({
+    sessionPath: SESSION,
+    labelActions,
+    traceExports,
+    fieldShadowReport,
+    now,
+  });
+  for (const candidate of traceReport.candidates) {
+    const decision = createAoiTracePromotionDecision({
+      candidate,
+      action: 'promote',
+      acceptanceDimension: candidate.acceptanceDimension,
+      reason: 'Operator reviewed the redacted trace and promoted it into replay coverage.',
+      actor: 'user',
+      now,
+    });
+    appendAoiOperatorTracePromotionDecision(root, SESSION, decision);
+  }
+  for (const candidate of adaptivePack.candidates) {
+    appendAoiOperatorAdaptiveReviewState(root, SESSION, {
+      version: 1,
+      candidateId: candidate.id,
+      status: 'approved',
+      reviewedAt: now,
+      evidenceRefs: candidate.evidenceRefs.slice(0, 4),
+      reason: 'Operator approved this adaptive candidate.',
+      actor: 'user',
+    });
+  }
+  return {
+    traceCandidateCount: traceReport.candidates.length,
+    adaptiveCandidateCount: adaptivePack.candidates.length,
+  };
+}
+
+describe('buildAoiAutonomyLevelPromotionScorecard operator promotion wiring', () => {
+  it('raises promotedReplayPassRate from 0 to 1 once the operator promotes the candidates', () => {
+    const root = makeRoot();
+    seedMatchingEvidenceSets(root, 1);
+
+    const before = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+    expect(metricValue(before, 'field.trace_promotion_candidate_count') ?? 0).toBeGreaterThan(0);
+    expect(metricValue(before, 'field.promoted_replay_pass_rate')).toBe(0);
+    expect(before.level).not.toBe('trusted_operator');
+
+    const counts = promoteAllOperatorCandidates(root, 5000);
+    expect(counts.traceCandidateCount).toBeGreaterThan(0);
+    expect(counts.adaptiveCandidateCount).toBeGreaterThan(0);
+
+    const after = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+    // The assembler now loads the operator-authored promotions and folds them into
+    // the trace/adaptive reports -> every candidate is promoted -> rate is 1.
+    expect(metricValue(after, 'field.promoted_replay_pass_rate')).toBe(1);
+  });
+});
+
+describe('maybeRunAoiAutonomyLevelPromotion operator-unlocked escalation', () => {
+  it('reaches trusted_operator and promotes the level after the operator promotes the full set', () => {
+    const root = makeRoot();
+    seedMatchingEvidenceSets(root, 3);
+    saveAoiAutonomyPolicy(root, SESSION, {
+      ...DEFAULT_AOI_AUTONOMY_POLICY,
+      level: 'L3',
+      proactiveBriefing: {
+        ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+        directChatHookOptIn: true,
+      },
+    });
+    promoteAllOperatorCandidates(root, 5000);
+
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+    expect(card.level).toBe('trusted_operator');
+    expect(card.canIncreaseTrust).toBe(true);
+
+    const result = maybeRunAoiAutonomyLevelPromotion({
+      sessionsDir: root,
+      sessionPath: SESSION,
+      env: {
+        AOI_AUTONOMY_AUTO_PROMOTE: '1',
+        AOI_AUTONOMY_AUTO_PROMOTE_SUSTAIN_MS: '0',
+        AOI_AUTONOMY_AUTO_PROMOTE_MIN_CONSECUTIVE: '1',
+      },
+      now: 6000,
+    });
+
+    expect(result?.action).toBe('promote');
+    expect(result?.nextLevel).toBe('L4');
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L4');
   });
 });

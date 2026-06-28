@@ -2,7 +2,9 @@ import {
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowRecordReport,
+  loadAoiOperatorAdaptiveReviewStates,
   loadAoiOperatorFeedbackLabelActions,
+  loadAoiOperatorTracePromotionDecisions,
   loadAoiOutcomeLearningSummary,
   saveAoiAutonomyLevelPromotionGateState,
   saveAoiAutonomyPolicy,
@@ -95,20 +97,21 @@ export function runAoiAutonomyLevelPromotion(
 
 // Assemble a readiness scorecard from the per-session inputs that are loadable on
 // the server: field-shadow records, operator feedback labels, outcome learning,
-// direct-chat opt-in, AND the trace-promotion / adaptive-acceptance CANDIDATE
-// evidence assembled from real operator trace exports + promotion-eligible operator
-// labels + field-shadow records.
+// direct-chat opt-in, the trace-promotion / adaptive-acceptance CANDIDATE evidence
+// assembled from real operator trace exports + promotion-eligible operator labels +
+// field-shadow records, AND the operator-reviewed promotion decisions / review states
+// persisted by the operator review pipeline (roadmap item 1).
 //
-// SAFETY (deliberate, do not "fix" by synthesizing promotions): the promoted
-// counts that gate trusted_operator (promotedDraftCount / promotedCandidateCount ->
-// promotedReplayPassRate) derive ONLY from explicit operator promotion decisions /
-// review states, and this assembler passes NONE (there is no runtime store that
-// persists operator-reviewed promotions yet). So promotedReplayPassRate stays < 1
-// and trusted_operator remains UNREACHABLE by auto-promotion. Candidates are now
-// visible to the scorecard, but escalation still waits for a genuine operator-review
-// promotion pipeline -- synthesizing promotions here would be a self-reinforcing
-// autonomy-escalation loop. Fail-safe by design (instant to revoke, conservative to
-// grant); rollback + sustained-window + audit remain fully live.
+// SAFETY (the promotion source must stay human-only): the promoted counts that gate
+// trusted_operator (promotedDraftCount / promotedCandidateCount -> promotedReplayPassRate)
+// derive ONLY from operator-authored promotion decisions / review states, loaded here
+// from the actor-gated operator-promotion store and re-filtered to actor === 'user'.
+// The autonomy loop has no path that authors a user-actor promotion (the store's append
+// functions reject any non-user actor), so it CANNOT raise promotedReplayPassRate -- the
+// structural barrier against a self-reinforcing autonomy-escalation loop. With no
+// operator promotions the rate stays < 1 and trusted_operator remains unreachable; once
+// the operator promotes the full candidate set, escalation is unlocked, still behind the
+// 5b auto-promote env gate (OFF default, L4 cap, instant rollback, sustained window).
 export function buildAoiAutonomyLevelPromotionScorecard(
   sessionsDir: string,
   sessionPath: string,
@@ -125,19 +128,30 @@ export function buildAoiAutonomyLevelPromotionScorecard(
   const outcomeLearning = loadAoiOutcomeLearningSummary(sessionsDir, sessionPath, now);
   const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
 
-  // Candidate evidence from real session data. No promotion decisions / review
-  // states are passed, so the reports carry candidates but zero promotions (see
-  // the SAFETY note above).
+  // Candidate evidence from real session data, plus the operator-reviewed promotion
+  // decisions / review states. Both are loaded from the actor-gated operator store
+  // and re-filtered to actor === 'user' at this trust boundary (defense in depth on
+  // top of the store's write-time enforcement), so only deliberate human promotions
+  // can raise promotedReplayPassRate.
   const traceExports = loadAoiOperatorTraceExports(sessionsDir, sessionPath);
   const promotionLabels = buildAoiOperatorFeedbackPromotionLabels({
     sessionPath,
     labelActions,
     ...(fieldShadowReport?.records ? { records: fieldShadowReport.records } : {}),
   });
+  const operatorTracePromotionDecisions = loadAoiOperatorTracePromotionDecisions(
+    sessionsDir,
+    sessionPath,
+  ).filter((decision) => decision.actor === 'user');
+  const operatorAdaptiveReviewStates = loadAoiOperatorAdaptiveReviewStates(
+    sessionsDir,
+    sessionPath,
+  ).filter((state) => state.actor === 'user');
   const tracePromotionReport = buildAoiTracePromotionReport({
     sessionPath,
     traceExports,
     shadowLabels: promotionLabels,
+    promotionDecisions: operatorTracePromotionDecisions,
     now,
   });
   const adaptiveAcceptancePack = buildAoiAdaptiveAcceptancePack({
@@ -145,6 +159,7 @@ export function buildAoiAutonomyLevelPromotionScorecard(
     labelActions,
     traceExports,
     fieldShadowReport,
+    reviewStates: operatorAdaptiveReviewStates,
     now,
   });
 
