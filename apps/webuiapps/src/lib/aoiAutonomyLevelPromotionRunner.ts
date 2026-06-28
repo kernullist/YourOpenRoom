@@ -13,11 +13,17 @@ import {
   type AoiAutonomyLevelPromotionConfig,
   type AoiAutonomyLevelPromotionDecision,
 } from './aoiAutonomyLevelPromotion';
-import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
+import {
+  buildAoiOperatorFeedbackInbox,
+  buildAoiOperatorFeedbackPromotionLabels,
+} from './aoiOperatorFeedbackInbox';
 import {
   buildAoiJarvisReadinessScorecard,
   type AoiJarvisReadinessScorecard,
 } from './aoiJarvisReadinessScorecard';
+import { loadAoiOperatorTraceExports } from './aoiOperatorTimeline';
+import { buildAoiTracePromotionReport } from './aoiTracePromotion';
+import { buildAoiAdaptiveAcceptancePack } from './aoiAdaptiveAcceptanceCuration';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import type { AoiRunLedgerEventType, AoiRunStatus } from './aoiRunLedger';
 
@@ -87,14 +93,22 @@ export function runAoiAutonomyLevelPromotion(
   return decision;
 }
 
-// Assemble a readiness scorecard from the per-session inputs that are cheaply
-// loadable on the server (field-shadow records, operator feedback labels, outcome
-// learning, direct-chat opt-in). This is a faithful but CONSERVATIVE scorecard:
-// reaching trusted_operator (the promote trigger) additionally requires
-// trace-promotion / adaptive-acceptance candidate evidence, which is not assembled
-// here yet -- so auto-promotion holds until that pipeline is wired in, while the
-// rollback + sustained-window + audit machinery is fully live. Fail-safe by design
-// (instant to revoke, conservative to grant).
+// Assemble a readiness scorecard from the per-session inputs that are loadable on
+// the server: field-shadow records, operator feedback labels, outcome learning,
+// direct-chat opt-in, AND the trace-promotion / adaptive-acceptance CANDIDATE
+// evidence assembled from real operator trace exports + promotion-eligible operator
+// labels + field-shadow records.
+//
+// SAFETY (deliberate, do not "fix" by synthesizing promotions): the promoted
+// counts that gate trusted_operator (promotedDraftCount / promotedCandidateCount ->
+// promotedReplayPassRate) derive ONLY from explicit operator promotion decisions /
+// review states, and this assembler passes NONE (there is no runtime store that
+// persists operator-reviewed promotions yet). So promotedReplayPassRate stays < 1
+// and trusted_operator remains UNREACHABLE by auto-promotion. Candidates are now
+// visible to the scorecard, but escalation still waits for a genuine operator-review
+// promotion pipeline -- synthesizing promotions here would be a self-reinforcing
+// autonomy-escalation loop. Fail-safe by design (instant to revoke, conservative to
+// grant); rollback + sustained-window + audit remain fully live.
 export function buildAoiAutonomyLevelPromotionScorecard(
   sessionsDir: string,
   sessionPath: string,
@@ -110,12 +124,38 @@ export function buildAoiAutonomyLevelPromotionScorecard(
   });
   const outcomeLearning = loadAoiOutcomeLearningSummary(sessionsDir, sessionPath, now);
   const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
+
+  // Candidate evidence from real session data. No promotion decisions / review
+  // states are passed, so the reports carry candidates but zero promotions (see
+  // the SAFETY note above).
+  const traceExports = loadAoiOperatorTraceExports(sessionsDir, sessionPath);
+  const promotionLabels = buildAoiOperatorFeedbackPromotionLabels({
+    sessionPath,
+    labelActions,
+    ...(fieldShadowReport?.records ? { records: fieldShadowReport.records } : {}),
+  });
+  const tracePromotionReport = buildAoiTracePromotionReport({
+    sessionPath,
+    traceExports,
+    shadowLabels: promotionLabels,
+    now,
+  });
+  const adaptiveAcceptancePack = buildAoiAdaptiveAcceptancePack({
+    sessionPath,
+    labelActions,
+    traceExports,
+    fieldShadowReport,
+    now,
+  });
+
   return buildAoiJarvisReadinessScorecard({
     sessionPath,
     now,
     fieldShadowReport,
     feedbackInbox,
     outcomeLearning,
+    tracePromotionReport,
+    adaptiveAcceptancePack,
     directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
 }

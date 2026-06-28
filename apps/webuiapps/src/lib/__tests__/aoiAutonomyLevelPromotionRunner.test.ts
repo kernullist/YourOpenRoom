@@ -7,16 +7,20 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
+  recordAoiFieldShadowDecisions,
+  recordAoiOperatorFeedbackLabelAction,
   saveAoiAutonomyLevelPromotionGateState,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
 import {
+  buildAoiAutonomyLevelPromotionScorecard,
   maybeRunAoiAutonomyLevelPromotion,
   runAoiAutonomyLevelPromotion,
 } from '../aoiAutonomyLevelPromotionRunner';
 import type { AoiAutonomyLevelPromotionConfig } from '../aoiAutonomyLevelPromotion';
 import type { AoiAutonomyLevel } from '../aoiAutonomyTypes';
 import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
+import type { AoiShadowDecision } from '../aoiShadowModeEvaluation';
 
 const SESSION = 'aoi/default';
 const tempRoots: string[] = [];
@@ -80,6 +84,49 @@ function config(
 
 function seedPolicyLevel(root: string, level: AoiAutonomyLevel): void {
   saveAoiAutonomyPolicy(root, SESSION, { ...DEFAULT_AOI_AUTONOMY_POLICY, level });
+}
+
+function makeFieldShadowDecision(partial: Partial<AoiShadowDecision> = {}): AoiShadowDecision {
+  return {
+    version: 1,
+    id: 'aoi-shadow-promote-candidate',
+    sessionPath: SESSION,
+    kind: 'would_propose',
+    createdAt: 1000,
+    sourceRefs: ['workspace:validation'],
+    sourceSummary: 'Workspace validation is stale.',
+    consentState: 'unknown',
+    risk: 'low',
+    policyResult: 'not_applicable',
+    mutationCount: 0,
+    evidenceRefs: ['workspace:validation-stale'],
+    dedupeKey: 'digest:field-shadow-promote:would_propose',
+    ...partial,
+  };
+}
+
+// Seed a labeled field-shadow record (operator labels a real decision). This is
+// real candidate evidence the scorecard now assembles -- but it carries NO operator
+// promotion decision, so it must never be enough to reach trusted_operator.
+function seedLabeledFieldEvidence(root: string): void {
+  const report = recordAoiFieldShadowDecisions(root, {
+    sessionPath: SESSION,
+    decisions: [makeFieldShadowDecision()],
+    now: 1000,
+  });
+  const record = report.records[0];
+  if (!record) {
+    throw new Error('Expected a field shadow record.');
+  }
+  recordAoiOperatorFeedbackLabelAction(root, {
+    sessionPath: SESSION,
+    decisionRecordId: record.id,
+    decisionId: record.decisionId,
+    label: 'useful',
+    sourceKinds: ['workspace_build'],
+    evidenceRefs: record.evidenceRefs,
+    now: 2000,
+  });
 }
 
 describe('runAoiAutonomyLevelPromotion', () => {
@@ -189,5 +236,55 @@ describe('maybeRunAoiAutonomyLevelPromotion', () => {
     // An empty session has no trusted-operator readiness, so it must not promote.
     expect(result?.changed).toBe(false);
     expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L2');
+  });
+
+  it('holds without promotion even when labeled trace-promotion candidate evidence exists', () => {
+    const root = makeRoot();
+    seedPolicyLevel(root, 'L2');
+    seedLabeledFieldEvidence(root);
+
+    const result = maybeRunAoiAutonomyLevelPromotion({
+      sessionsDir: root,
+      sessionPath: SESSION,
+      env: {
+        AOI_AUTONOMY_AUTO_PROMOTE: '1',
+        AOI_AUTONOMY_AUTO_PROMOTE_SUSTAIN_MS: '0',
+        AOI_AUTONOMY_AUTO_PROMOTE_MIN_CONSECUTIVE: '1',
+      },
+      now: 5000,
+    });
+
+    // Candidate evidence is now assembled into the scorecard, but no operator
+    // promotion decisions exist -> promotedReplayPassRate stays < 1 -> trusted_operator
+    // is unreachable -> no escalation. The conservative gate holds.
+    expect(result?.changed).toBe(false);
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L2');
+  });
+});
+
+describe('buildAoiAutonomyLevelPromotionScorecard', () => {
+  it('builds a valid display-only scorecard on an empty session below trusted_operator', () => {
+    const root = makeRoot();
+
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+
+    expect(card.sessionPath).toBe(SESSION);
+    expect(card.level).not.toBe('trusted_operator');
+    expect(card.actionAuthority).toBe('display_only');
+    expect(card.mutationCount).toBe(0);
+  });
+
+  it('assembles candidate evidence from labeled field traces yet stays below trusted_operator', () => {
+    const root = makeRoot();
+    seedLabeledFieldEvidence(root);
+
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+
+    // The assembler ran over real labeled evidence without throwing and produced a
+    // display-only scorecard; with zero operator promotions it cannot reach the
+    // trusted_operator level that would unlock auto-escalation.
+    expect(card.level).not.toBe('trusted_operator');
+    expect(card.actionAuthority).toBe('display_only');
+    expect(card.mutationCount).toBe(0);
   });
 });
