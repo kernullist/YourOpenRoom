@@ -6,6 +6,9 @@ import {
   createAoiGeminiEmbeddingProvider,
   createAoiOpenAiCompatibleEmbeddingProvider,
   embedAoiQuery,
+  lexicalOverlapScore,
+  scoreAoiMemoryRelevance,
+  selectRelevantAoiMemoriesByEmbedding,
 } from '../aoiMemoryEmbedding';
 import {
   AOI_EMBEDDING_DEFAULT_BASE_URL,
@@ -73,6 +76,111 @@ describe('scoreAoiMemoryForQuery semantic fusion', () => {
     const a = scoreAoiMemoryForQuery(withEmbedding, 'query with no shared words', 0);
     const b = scoreAoiMemoryForQuery(withoutEmbedding, 'query with no shared words', 0);
     expect(a).toBe(b);
+  });
+});
+
+describe('lexicalOverlapScore', () => {
+  it('is high when the query tokens are fully contained in the content', () => {
+    expect(lexicalOverlapScore('deploy script', 'how to deploy the script safely')).toBe(1);
+  });
+  it('is 0 when there is no shared token', () => {
+    expect(lexicalOverlapScore('alpha beta', 'gamma delta')).toBe(0);
+  });
+  it('is 0 when either side has no usable tokens', () => {
+    expect(lexicalOverlapScore('', 'anything here')).toBe(0);
+    expect(lexicalOverlapScore('anything here', '   ')).toBe(0);
+    // Single-char tokens are dropped (2-char minimum).
+    expect(lexicalOverlapScore('a', 'a b c')).toBe(0);
+  });
+  it('tokenizes Korean and other Unicode scripts', () => {
+    expect(lexicalOverlapScore('배포 스크립트', '배포 자동화 스크립트 가이드')).toBeGreaterThan(0);
+  });
+  it('is case-insensitive', () => {
+    expect(lexicalOverlapScore('Deploy', 'deploy now')).toBe(1);
+  });
+});
+
+describe('scoreAoiMemoryRelevance', () => {
+  it('takes the stronger of lexical and semantic', () => {
+    // No token overlap but identical embeddings -> semantic dominates.
+    const score = scoreAoiMemoryRelevance({
+      query: 'totally different words',
+      content: 'unrelated content tokens',
+      embedding: [1, 0, 0],
+      queryEmbedding: [1, 0, 0],
+    });
+    expect(score).toBeCloseTo(1);
+  });
+  it('reduces to lexical when there is no usable embedding pair', () => {
+    const withMismatch = scoreAoiMemoryRelevance({
+      query: 'deploy script',
+      content: 'deploy the script',
+      embedding: [1, 0],
+      queryEmbedding: [1, 0, 0],
+    });
+    const lexicalOnly = scoreAoiMemoryRelevance({
+      query: 'deploy script',
+      content: 'deploy the script',
+    });
+    expect(withMismatch).toBe(lexicalOnly);
+    expect(lexicalOnly).toBe(1);
+  });
+  it('ignores a negative cosine (semantic floor is 0)', () => {
+    const score = scoreAoiMemoryRelevance({
+      query: 'no shared tokens',
+      content: 'entirely other',
+      embedding: [1, 0],
+      queryEmbedding: [-1, 0],
+    });
+    expect(score).toBe(0);
+  });
+});
+
+describe('selectRelevantAoiMemoriesByEmbedding', () => {
+  const mem = (content: string, embedding?: number[]) => ({ content, embedding });
+
+  it('ranks by fused relevance and respects the limit', () => {
+    const memories = [
+      mem('an unrelated note about lunch'),
+      mem('the deploy script lives in scripts/deploy.sh'),
+      mem('another deploy note for the script'),
+    ];
+    const out = selectRelevantAoiMemoriesByEmbedding(memories, 'deploy script', { limit: 2 });
+    expect(out).toHaveLength(2);
+    expect(out.every((m) => m.content.includes('deploy'))).toBe(true);
+  });
+
+  it('uses semantic similarity to surface a paraphrase with no shared tokens', () => {
+    const memories = [
+      mem('completely irrelevant filler', [0, 1, 0]),
+      mem('paraphrased target with different words', [1, 0, 0]),
+    ];
+    const out = selectRelevantAoiMemoriesByEmbedding(memories, 'the original phrasing', {
+      queryEmbedding: [1, 0, 0],
+      limit: 1,
+    });
+    expect(out[0].content).toBe('paraphrased target with different words');
+  });
+
+  it('drops zero-relevance memories when minScore is above 0', () => {
+    const memories = [mem('deploy script note'), mem('unrelated lunch plan')];
+    const out = selectRelevantAoiMemoriesByEmbedding(memories, 'deploy script', {
+      limit: 5,
+      minScore: 0.01,
+    });
+    expect(out).toHaveLength(1);
+    expect(out[0].content).toBe('deploy script note');
+  });
+
+  it('is a stable lexical top-K when no embeddings are present', () => {
+    const memories = [mem('first match deploy'), mem('second match deploy')];
+    const out = selectRelevantAoiMemoriesByEmbedding(memories, 'deploy', { limit: 5 });
+    expect(out.map((m) => m.content)).toEqual(['first match deploy', 'second match deploy']);
+  });
+
+  it('returns [] for a non-positive limit or no memories', () => {
+    expect(selectRelevantAoiMemoriesByEmbedding([mem('x')], 'x', { limit: 0 })).toEqual([]);
+    expect(selectRelevantAoiMemoriesByEmbedding([], 'x')).toEqual([]);
   });
 });
 

@@ -32,6 +32,111 @@ export function cosineSimilarity(a: readonly number[], b: readonly number[]): nu
   return dot / (Math.sqrt(normA) * Math.sqrt(normB));
 }
 
+// Tokenize for lexical overlap. Unicode-aware (\p{L}/\p{N}) so Korean/CJK and
+// Latin both tokenize; the {1,} tail enforces a 2-char minimum to drop noise.
+// Mirrors the per-engine tokenizers (aoiContextRouter / aoiAutonomyEngine) so a
+// fused relevance score lines up with the lexical behaviour those engines
+// already use.
+function tokenizeForRelevance(value: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const token of value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'_-]{1,}/gu) ?? []) {
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+// Lexical overlap in [0, 1]: shared tokens over the smaller token set, so a
+// short query fully contained in a long memory still scores high. Returns 0 when
+// either side has no tokens.
+export function lexicalOverlapScore(query: string, content: string): number {
+  const queryTokens = tokenizeForRelevance(query);
+  if (queryTokens.size === 0) {
+    return 0;
+  }
+  const contentTokens = tokenizeForRelevance(content);
+  if (contentTokens.size === 0) {
+    return 0;
+  }
+  let matches = 0;
+  for (const token of queryTokens) {
+    if (contentTokens.has(token)) {
+      matches += 1;
+    }
+  }
+  const score = matches / Math.max(1, Math.min(queryTokens.size, contentTokens.size));
+  return score < 0 ? 0 : score > 1 ? 1 : score;
+}
+
+export interface AoiMemoryRelevanceInput {
+  query: string;
+  content: string;
+  embedding?: number[] | null;
+  queryEmbedding?: number[] | null;
+}
+
+// Fuse lexical overlap and semantic cosine into one [0, 1] relevance, taking the
+// stronger of the two so neither signal is lost: cosine catches paraphrases and
+// cross-lingual matches that share no tokens, lexical catches exact terms the
+// embedding may blur. Reduces to pure lexical when there is no usable embedding
+// pair (missing vector or a dimension mismatch). Pure + server-safe: this is the
+// shared scorer for engines that rank memories by query relevance, mirroring the
+// `max(lexical, semantic)` fusion already used by `scoreAoiMemoryForQuery`.
+export function scoreAoiMemoryRelevance(input: AoiMemoryRelevanceInput): number {
+  const lexical = lexicalOverlapScore(input.query, input.content);
+  const semantic =
+    input.queryEmbedding &&
+    input.embedding &&
+    input.embedding.length > 0 &&
+    input.embedding.length === input.queryEmbedding.length
+      ? Math.max(0, cosineSimilarity(input.embedding, input.queryEmbedding))
+      : 0;
+  return Math.max(lexical, semantic);
+}
+
+// Rank memories by fused relevance to a query and return the top `limit`. Pure +
+// structurally typed so both the browser and server AoiMemoryEntry shapes work.
+// Ties break by input order (stable). With no query embedding (or memories that
+// carry no vectors) this is a lexical top-K, so it is safe to call before the
+// embedding layer is configured. `minScore` (default 0) lets a caller drop
+// zero-relevance memories; because the ranked list is descending, the first item
+// below the floor ends the scan.
+export function selectRelevantAoiMemoriesByEmbedding<
+  T extends { content: string; embedding?: number[] },
+>(
+  memories: readonly T[],
+  query: string,
+  options?: { queryEmbedding?: number[] | null; limit?: number; minScore?: number },
+): T[] {
+  const limit = options?.limit ?? 8;
+  if (limit <= 0 || memories.length === 0) {
+    return [];
+  }
+  const queryEmbedding = options?.queryEmbedding ?? null;
+  const minScore = options?.minScore ?? 0;
+  const scored = memories.map((memory, index) => ({
+    memory,
+    index,
+    score: scoreAoiMemoryRelevance({
+      query,
+      content: memory.content,
+      embedding: memory.embedding,
+      queryEmbedding,
+    }),
+  }));
+  scored.sort((a, b) => b.score - a.score || a.index - b.index);
+  const selected: T[] = [];
+  for (const item of scored) {
+    if (selected.length >= limit) {
+      break;
+    }
+    if (item.score < minScore) {
+      break;
+    }
+    selected.push(item.memory);
+  }
+  return selected;
+}
+
 // Best-effort: embed the `content` of any memory that lacks a vector and attach
 // it in place. Memories that already carry a vector are left untouched (merge
 // keeps content identical for reinforced duplicates, so an existing vector still
