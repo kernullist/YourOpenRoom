@@ -199,6 +199,68 @@ describe('applyAoiApprovedConnectorCall', () => {
     expect(calls.callTool).toHaveLength(0);
   });
 
+  it('fires a side-effecting tool only with the env gate AND the irreversibility ack', async () => {
+    const request = createAoiApprovedConnectorCallRequest({
+      sessionPath: 'aoi/session-run',
+      connectorRef: 'jira',
+      toolName: 'create_issue',
+      args: { project: 'OPS', summary: 'x' },
+      purpose: 'Create an issue',
+      risk: 'high',
+      requestedAt: NOW,
+      evidenceRefs: ['goal:demo'],
+      acknowledgeIrreversible: true,
+    });
+    // Accept-time binding receipt (no allow-list -> routing unknown, but the
+    // fingerprint is resolution-independent and matches the execute-time policy).
+    const approvedPolicy = evaluateAoiApprovedConnectorCallPolicy(request, { now: NOW });
+    const { transport, calls } = recordingTransport({ callTool: () => ({ created: 'OPS-1' }) });
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      allowSideEffecting: true,
+      transport,
+      resolveHost: publicLookup,
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.applied).toBe(true);
+    expect(result.routing).toBe('side_effecting');
+    expect(calls.callTool).toHaveLength(1);
+    expect(calls.callTool[0].toolName).toBe('create_issue');
+    expect(calls.callTool[0].endpointUrl).toBe('https://mcp.example.com/jira');
+  });
+
+  it('blocks a gated side-effecting tool that lacks the irreversibility ack (no RPC)', async () => {
+    const request = createAoiApprovedConnectorCallRequest({
+      sessionPath: 'aoi/session-run',
+      connectorRef: 'jira',
+      toolName: 'create_issue',
+      args: { project: 'OPS', summary: 'x' },
+      purpose: 'Create an issue',
+      risk: 'high',
+      requestedAt: NOW,
+      evidenceRefs: ['goal:demo'],
+    });
+    const approvedPolicy = evaluateAoiApprovedConnectorCallPolicy(request, { now: NOW });
+    const { transport, calls } = recordingTransport();
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      allowSideEffecting: true,
+      transport,
+      resolveHost: publicLookup,
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blockReasons).toContain('irreversible_approval_not_acknowledged');
+    expect(calls.callTool).toHaveLength(0);
+  });
+
   it('blocks when the connector is no longer trusted at execute time (no RPC)', async () => {
     const { request, approvedPolicy } = approvedRequest();
     const { transport, calls } = recordingTransport();

@@ -29,3 +29,18 @@ export function loadAoiMcpConnectorsFromConfigFile(configFile: string): AoiMcpCo
     return { connectors: [] };
   }
 }
+
+// Hard env gate for side-effecting (irreversible) live MCP RPC. OFF by default:
+// only an explicit AOI_MCP_SIDE_EFFECTING_RPC=1 (or true/yes/on) unlocks eligibility,
+// and even then a side-effecting call still needs the per-call irreversibility
+// acknowledgment in the approved action (enforced by the connector-call policy). This
+// is deliberately an env gate, not a config-file flag, so it cannot be flipped by the
+// in-app settings UI or a persisted file an attacker might influence -- it requires
+// operator access to the server environment. Default (unset) keeps every
+// side-effecting tool hard-blocked with `side_effecting_live_rpc_not_enabled`.
+export function isAoiSideEffectingLiveRpcEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  const raw = (env.AOI_MCP_SIDE_EFFECTING_RPC ?? '').trim().toLowerCase();
+  return raw === '1' || raw === 'true' || raw === 'yes' || raw === 'on';
+}

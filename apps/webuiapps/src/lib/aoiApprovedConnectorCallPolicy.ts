@@ -137,6 +137,7 @@ export function createAoiApprovedConnectorCallRequest(params: {
   risk?: AoiAutonomyRisk;
   requestedAt?: number;
   evidenceRefs?: string[];
+  acknowledgeIrreversible?: boolean;
 }): AoiApprovedConnectorCallRequest {
   const args = normalizeConnectorCallArgs(params.args);
   const resourceUri = normalizeReference(params.resourceUri);
@@ -153,12 +154,21 @@ export function createAoiApprovedConnectorCallRequest(params: {
     risk: params.risk ?? 'high',
     requestedAt: params.requestedAt ?? Date.now(),
     evidenceRefs: [...new Set(params.evidenceRefs ?? [])].slice(0, 16),
+    ...(params.acknowledgeIrreversible === true ? { acknowledgeIrreversible: true } : {}),
   };
 }
 
 export function evaluateAoiApprovedConnectorCallPolicy(
   request: AoiApprovedConnectorCallRequest,
-  options: { connectors?: AoiMcpConnectorsConfig | null; now?: number } = {},
+  options: {
+    connectors?: AoiMcpConnectorsConfig | null;
+    now?: number;
+    // Hard env gate (server-resolved, OFF by default): only when true is a
+    // side-effecting tool eligible for live RPC, and even then it needs the
+    // explicit irreversibility acknowledgment. False/absent keeps the legacy
+    // `side_effecting_live_rpc_not_enabled` hard block.
+    allowSideEffecting?: boolean;
+  } = {},
 ): AoiApprovedConnectorCallPolicy {
   const purpose = normalizePurpose(request.purpose);
   const purposeHash = hashStable(purpose);
@@ -191,6 +201,7 @@ export function evaluateAoiApprovedConnectorCallPolicy(
   let endpointHost = '';
   let routing: AoiConnectorCallRouting = 'unknown';
   let readOnly = false;
+  let requiresIrreversibleApproval = false;
 
   if (entry && toolName) {
     connectorName = entry.name;
@@ -219,9 +230,18 @@ export function evaluateAoiApprovedConnectorCallPolicy(
     } else if (classification.readOnly) {
       routing = 'live_read_only';
     } else {
-      // Recognized but side-effecting: not eligible for live RPC this cut.
+      // Recognized but side-effecting. Hard-blocked unless the operator enabled the
+      // env gate; even then it demands an explicit irreversibility acknowledgment on
+      // the approved action (a stronger, separate consent than a read-only call).
       routing = 'side_effecting';
-      blockReasons.push('side_effecting_live_rpc_not_enabled');
+      if (!options.allowSideEffecting) {
+        blockReasons.push('side_effecting_live_rpc_not_enabled');
+      } else {
+        requiresIrreversibleApproval = true;
+        if (request.acknowledgeIrreversible !== true) {
+          blockReasons.push('irreversible_approval_not_acknowledged');
+        }
+      }
     }
   }
 
@@ -279,6 +299,7 @@ export function evaluateAoiApprovedConnectorCallPolicy(
     toolName,
     routing,
     readOnly,
+    requiresIrreversibleApproval,
     operationHash,
     argsHash,
     purpose,
@@ -289,9 +310,13 @@ export function evaluateAoiApprovedConnectorCallPolicy(
     approvalSandbox,
     expiresAt: request.requestedAt + AOI_CONNECTOR_CALL_APPROVAL_TTL_MS,
     rationale: allowed
-      ? [
-          `Approved read-only connector call ${toolName} on ${connectorName} under L5; external side effects are not reversible so only read-only tools run live.`,
-        ]
+      ? requiresIrreversibleApproval
+        ? [
+            `Approved IRREVERSIBLE side-effecting connector call ${toolName} on ${connectorName} under L5; enabled by the side-effecting env gate with an explicit irreversibility acknowledgment. The external effect cannot be rolled back.`,
+          ]
+        : [
+            `Approved read-only connector call ${toolName} on ${connectorName} under L5; external side effects are not reversible so only read-only tools run live.`,
+          ]
       : ['Connector call is blocked until it matches the approved connector-call policy.'],
   };
 }
@@ -342,6 +367,8 @@ export function normalizeAoiApprovedConnectorCallPolicy(
     toolName: raw.toolName,
     routing: raw.routing,
     readOnly: raw.readOnly,
+    // Default false for legacy stored policies (captured read-only before the gate).
+    requiresIrreversibleApproval: raw.requiresIrreversibleApproval === true,
     operationHash: raw.operationHash,
     argsHash: raw.argsHash,
     purpose: raw.purpose,

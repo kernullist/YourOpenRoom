@@ -1068,6 +1068,7 @@ function getAoiApprovedConnectorCallPolicyForProposal(
   proposal: AoiProposal,
   now: number,
   connectors: AoiMcpConnectorsConfig | null | undefined,
+  allowSideEffecting = false,
 ) {
   const params = proposal.acceptAction?.params ?? {};
   return evaluateAoiApprovedConnectorCallPolicy(
@@ -1082,8 +1083,13 @@ function getAoiApprovedConnectorCallPolicyForProposal(
       risk: proposal.risk,
       requestedAt: now,
       evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+      acknowledgeIrreversible: params.acknowledgeIrreversible === 'true',
     }),
-    { connectors: connectors ?? null, now },
+    {
+      connectors: connectors ?? null,
+      now,
+      ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
+    },
   );
 }
 
@@ -1173,7 +1179,12 @@ export function evaluateAoiProposalExecution(
     ? getAoiApprovedAppActionPolicyForProposal(proposal, now)
     : null;
   const approvedConnectorCallPolicy = connectorCall
-    ? getAoiApprovedConnectorCallPolicyForProposal(proposal, now, context.connectors)
+    ? getAoiApprovedConnectorCallPolicyForProposal(
+        proposal,
+        now,
+        context.connectors,
+        context.allowSideEffecting === true,
+      )
     : null;
   const requiresFreshAcceptance =
     context.executionMode === 'preview'
@@ -1744,6 +1755,7 @@ export function checkAoiProposalPolicy(
       proposal,
       now,
       input.connectors,
+      input.allowSideEffecting === true,
     );
     if (compareAoiAutonomyLevel(policy.level, 'L5') < 0) {
       reasons.push('connector_call_requires_l5');
@@ -1785,6 +1797,7 @@ export function checkAoiProposalPolicy(
         proposal,
         now,
         input.connectors,
+        input.allowSideEffecting === true,
       );
       if (!approvedConnectorCallPolicy.allowed) {
         reasons.push('tool_blocked:connector_call');

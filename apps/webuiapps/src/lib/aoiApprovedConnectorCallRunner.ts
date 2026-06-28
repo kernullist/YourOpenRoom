@@ -23,16 +23,19 @@ import type {
 
 // Server-side runner that executes an approved Aoi connector call (live MCP RPC).
 // Mirrors aoiApprovedAppActionRunner.ts / aoiApprovedFileMutationRunner.ts:
-// re-derive the policy, validate the stored approval, then -- only for a
-// live_read_only routing -- fire the RPC.
+// re-derive the policy (with the same side-effecting env gate the execution layer
+// used), validate the stored approval, then fire the RPC for any routing the policy
+// allowed -- read-only by default, or a side-effecting tool ONLY when the hard env
+// gate is on AND the approved action carried the irreversibility acknowledgment.
 //
 // Unlike app_action's live op (browser-only postMessage), an HTTP MCP backend IS
 // reachable from Node, so this is a real server-side call. Two hard invariants:
 //   1. The endpoint is resolved from the trusted allow-list by connector id, here
 //      again at execute time -- NEVER from the proposal. If the connector is no
 //      longer trusted/enabled/server-callable, the call is blocked before any RPC.
-//   2. External side effects are not reversible, so there is no checkpoint; only
-//      read-only tools (and gated resources/read) reach the transport.
+//   2. External side effects are not reversible, so there is never a checkpoint; a
+//      side-effecting call is permitted only behind the env gate + explicit
+//      irreversibility acknowledgment (the policy enforces both before it allows).
 //
 // The transport is injectable so tests never hit the network; the default wraps
 // the shared McpHttpClient. This module is server-only (imports Node 'crypto' and
@@ -50,6 +53,10 @@ export interface AoiConnectorCallTransport {
 export interface AoiApprovedConnectorCallRunnerOptions {
   connectors: AoiMcpConnectorsConfig | null;
   approvedPolicy?: AoiApprovedConnectorCallPolicy | null;
+  // Hard env gate (server-resolved, OFF by default). Must match the value the
+  // execution layer used so the execute-time policy re-evaluation here agrees with
+  // the gate decision; false/absent keeps side-effecting tools hard-blocked.
+  allowSideEffecting?: boolean;
   transport?: AoiConnectorCallTransport;
   // Injectable hostname resolver for the execute-time DNS-rebind re-check. Tests
   // pass a stub so they stay offline; production uses the Node 'dns' default.
@@ -173,6 +180,7 @@ export async function applyAoiApprovedConnectorCall(
   const policy = evaluateAoiApprovedConnectorCallPolicy(request, {
     connectors,
     now: startedAt,
+    ...(options.allowSideEffecting ? { allowSideEffecting: true } : {}),
   });
   const approvalReasons = compareAoiApprovedConnectorCallApproval({
     approved: options.approvedPolicy ?? undefined,

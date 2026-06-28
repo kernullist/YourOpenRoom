@@ -63,7 +63,10 @@ import {
 } from './aoiApprovedConnectorCallPolicy';
 import { applyAoiApprovedConnectorCall } from './aoiApprovedConnectorCallRunner';
 import type { AoiMcpConnectorsConfig } from './aoiMcpConnectorRegistry';
-import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
+import {
+  isAoiSideEffectingLiveRpcEnabled,
+  loadAoiMcpConnectorsFromConfigFile,
+} from './aoiMcpConnectorsConfigFile';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
@@ -373,6 +376,9 @@ function buildApprovedConnectorCallRequestFromProposal(params: {
     risk: params.proposal.risk,
     requestedAt: params.now,
     evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+    // Explicit irreversibility acknowledgment from the approved action params
+    // (string-valued); only meaningful for a side-effecting call behind the env gate.
+    acknowledgeIrreversible: actionParams.acknowledgeIrreversible === 'true',
   });
 }
 
@@ -876,9 +882,16 @@ async function executeAllowedProposalAction(params: {
       now: params.now,
     });
     const connectors = params.connectors ?? null;
+    // Hard env gate (OFF by default). When unset, a side-effecting tool is blocked by
+    // the policy with `side_effecting_live_rpc_not_enabled`; when set, the policy
+    // additionally requires the per-call irreversibility acknowledgment. The gate
+    // value is threaded identically into the runner so the execute-time re-evaluation
+    // agrees.
+    const allowSideEffecting = isAoiSideEffectingLiveRpcEnabled();
     const policy = evaluateAoiApprovedConnectorCallPolicy(request, {
       connectors,
       now: params.now,
+      ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
     });
     if (!policy.allowed) {
       throw new Error(`connector_call_blocked:${policy.blockReasons.join(',')}`);
@@ -894,6 +907,7 @@ async function executeAllowedProposalAction(params: {
         applyAoiApprovedConnectorCall(runnerParams.request, {
           connectors: runnerParams.connectors,
           ...(runnerParams.approvedPolicy ? { approvedPolicy: runnerParams.approvedPolicy } : {}),
+          ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
           now: runnerParams.now,
         }))
     )({
@@ -1172,11 +1186,15 @@ export async function executeAoiProposal(params: {
   // Server-readable trusted connector allow-list; the live trust authority for a
   // connector_call. Read once and shared by the execution gate and the runner.
   const connectors = loadAoiMcpConnectorsFromConfigFile(params.configFile);
+  // Hard env gate (OFF by default) for side-effecting live RPC; resolved once and
+  // shared by the execution gate and the connector_call runner so they agree.
+  const allowSideEffecting = isAoiSideEffectingLiveRpcEnabled();
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
     decisionId: params.decisionId,
     connectors,
+    ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
   });
   if (!evaluation.allowed) {
     if (proposal.acceptAction?.kind === 'create_kira_work') {

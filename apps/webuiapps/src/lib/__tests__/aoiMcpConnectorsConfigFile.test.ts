@@ -3,7 +3,10 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { loadAoiMcpConnectorsFromConfigFile } from '../aoiMcpConnectorsConfigFile';
+import {
+  isAoiSideEffectingLiveRpcEnabled,
+  loadAoiMcpConnectorsFromConfigFile,
+} from '../aoiMcpConnectorsConfigFile';
 
 const tempRoots: string[] = [];
 
@@ -64,5 +67,22 @@ describe('loadAoiMcpConnectorsFromConfigFile', () => {
     const file = join(root, 'config.json');
     fs.writeFileSync(file, '{ not valid json', 'utf-8');
     expect(loadAoiMcpConnectorsFromConfigFile(file)).toEqual({ connectors: [] });
+  });
+});
+
+describe('isAoiSideEffectingLiveRpcEnabled', () => {
+  it('is off by default (unset / blank / unrelated value)', () => {
+    expect(isAoiSideEffectingLiveRpcEnabled({})).toBe(false);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: '' })).toBe(false);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: '0' })).toBe(false);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: 'false' })).toBe(false);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: 'maybe' })).toBe(false);
+  });
+
+  it('is on only for an explicit truthy opt-in', () => {
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: '1' })).toBe(true);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: 'true' })).toBe(true);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: 'YES' })).toBe(true);
+    expect(isAoiSideEffectingLiveRpcEnabled({ AOI_MCP_SIDE_EFFECTING_RPC: ' On ' })).toBe(true);
   });
 });

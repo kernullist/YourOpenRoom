@@ -77,14 +77,83 @@ describe('evaluateAoiApprovedConnectorCallPolicy', () => {
     expect(policy.approvalFingerprint).toBeTruthy();
   });
 
-  it('blocks a side-effecting tool from live RPC this cut', () => {
+  it('blocks a side-effecting tool from live RPC when the env gate is off (default)', () => {
     const policy = evaluateAoiApprovedConnectorCallPolicy(
       request({ toolName: 'create_issue', args: { project: 'OPS', summary: 'x' } }),
       { connectors: connectors(), now: NOW },
     );
     expect(policy.allowed).toBe(false);
     expect(policy.routing).toBe('side_effecting');
+    expect(policy.requiresIrreversibleApproval).toBe(false);
     expect(policy.blockReasons).toContain('side_effecting_live_rpc_not_enabled');
+  });
+
+  it('with the env gate on, a side-effecting call still needs the irreversibility ack', () => {
+    const policy = evaluateAoiApprovedConnectorCallPolicy(
+      request({ toolName: 'create_issue', args: { project: 'OPS', summary: 'x' } }),
+      { connectors: connectors(), now: NOW, allowSideEffecting: true },
+    );
+    expect(policy.allowed).toBe(false);
+    expect(policy.routing).toBe('side_effecting');
+    expect(policy.requiresIrreversibleApproval).toBe(true);
+    // The legacy hard block is lifted by the gate, replaced by the stronger consent.
+    expect(policy.blockReasons).not.toContain('side_effecting_live_rpc_not_enabled');
+    expect(policy.blockReasons).toContain('irreversible_approval_not_acknowledged');
+  });
+
+  it('allows a side-effecting call only with the env gate AND an explicit irreversibility ack', () => {
+    const policy = evaluateAoiApprovedConnectorCallPolicy(
+      request({
+        toolName: 'create_issue',
+        args: { project: 'OPS', summary: 'x' },
+        acknowledgeIrreversible: true,
+      }),
+      { connectors: connectors(), now: NOW, allowSideEffecting: true },
+    );
+    expect(policy.allowed).toBe(true);
+    expect(policy.blockReasons).toEqual([]);
+    expect(policy.routing).toBe('side_effecting');
+    expect(policy.requiresIrreversibleApproval).toBe(true);
+    expect(policy.rationale.join(' ')).toMatch(/irreversible/i);
+  });
+
+  it('leaves a read-only call unaffected when the env gate is on', () => {
+    const policy = evaluateAoiApprovedConnectorCallPolicy(request({}), {
+      connectors: connectors(),
+      now: NOW,
+      allowSideEffecting: true,
+    });
+    expect(policy.allowed).toBe(true);
+    expect(policy.routing).toBe('live_read_only');
+    expect(policy.requiresIrreversibleApproval).toBe(false);
+  });
+
+  it('keeps the accept->execute binding stable for a gated side-effecting call', () => {
+    // Accept time: no allow-list, no ack -> routing unknown, the binding receipt.
+    const acceptPolicy = evaluateAoiApprovedConnectorCallPolicy(
+      request({ toolName: 'create_issue', args: { project: 'OPS', summary: 'x' } }),
+      { now: NOW },
+    );
+    // Execute time: allow-list + gate + ack -> routing side_effecting.
+    const executePolicy = evaluateAoiApprovedConnectorCallPolicy(
+      request({
+        toolName: 'create_issue',
+        args: { project: 'OPS', summary: 'x' },
+        acknowledgeIrreversible: true,
+      }),
+      { connectors: connectors(), now: NOW, allowSideEffecting: true },
+    );
+    // The fingerprint is resolution-independent, so the binding holds even though
+    // routing / requiresIrreversibleApproval / the ack differ between the two.
+    expect(executePolicy.approvalFingerprint).toBe(acceptPolicy.approvalFingerprint);
+    expect(executePolicy.operationHash).toBe(acceptPolicy.operationHash);
+    expect(
+      compareAoiApprovedConnectorCallApproval({
+        approved: acceptPolicy,
+        current: executePolicy,
+        now: NOW,
+      }),
+    ).toEqual([]);
   });
 
   it('blocks an unknown or untrusted connector', () => {

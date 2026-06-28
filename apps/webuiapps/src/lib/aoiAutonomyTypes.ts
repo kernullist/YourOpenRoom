@@ -2630,6 +2630,9 @@ export type AoiConnectorCallBlockReason =
   | 'tool_not_allow_listed'
   | 'read_resource_not_allowed'
   | 'side_effecting_live_rpc_not_enabled'
+  // Side-effecting live RPC is enabled (hard env gate) but the approved action did
+  // not carry the explicit irreversibility acknowledgment that side effects require.
+  | 'irreversible_approval_not_acknowledged'
   | 'approval_missing'
   | 'approval_expired'
   | 'approval_connector_changed'
@@ -2664,6 +2667,12 @@ export interface AoiApprovedConnectorCallRequest {
   risk: AoiAutonomyRisk;
   requestedAt: number;
   evidenceRefs: string[];
+  // Explicit per-call acknowledgment that the operator accepts an IRREVERSIBLE
+  // external side effect. Required only when side-effecting live RPC is enabled by
+  // the hard env gate AND the tool is side-effecting; ignored for read-only calls.
+  // Intentionally NOT part of operationHash/approvalFingerprint, so it never affects
+  // the accept->execute binding -- it is a separate, stronger consent gate.
+  acknowledgeIrreversible?: boolean;
 }
 
 export interface AoiApprovedConnectorCallPolicy {
@@ -2679,6 +2688,11 @@ export interface AoiApprovedConnectorCallPolicy {
   toolName: string;
   routing: AoiConnectorCallRouting;
   readOnly: boolean;
+  // True when this is a side-effecting call permitted only because the hard env gate
+  // is on; such a call additionally requires the explicit irreversibility
+  // acknowledgment (request.acknowledgeIrreversible) or it is blocked. Always false
+  // for read-only calls. Resolution-dependent (needs the allow-list), like routing.
+  requiresIrreversibleApproval: boolean;
   // Content-addressed hash of connector + tool + canonical args (+ resourceUri).
   operationHash: string;
   argsHash: string;
@@ -3263,6 +3277,10 @@ export interface AoiProposalPolicyCheckInput {
   // connector_call proposal's policy. Absent on client/preview paths (the
   // connector policy then fails closed); the server passes it from config.
   connectors?: AoiMcpConnectorsConfig | null;
+  // Hard env gate (server-resolved, OFF by default) for side-effecting live RPC.
+  // Absent/false keeps side-effecting connector tools hard-blocked. Never set on
+  // client/preview paths.
+  allowSideEffecting?: boolean;
   now?: number;
 }
 
@@ -3310,6 +3328,11 @@ export interface AoiProposalExecutionPolicyContext {
   // proposal. The server passes it from config; absent on client/preview paths
   // (the connector policy then fails closed).
   connectors?: AoiMcpConnectorsConfig | null;
+  // Hard env gate (server-resolved, OFF by default) for side-effecting live RPC.
+  // When true a side-effecting connector tool is eligible (still needs the per-call
+  // irreversibility acknowledgment); absent/false keeps side-effecting hard-blocked.
+  // Never set on client/preview paths.
+  allowSideEffecting?: boolean;
 }
 
 export interface AoiProposalExecutionPolicyResult {
