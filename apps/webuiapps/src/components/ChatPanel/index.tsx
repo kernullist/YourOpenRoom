@@ -501,6 +501,7 @@ import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
+import { AoiReplayPromotionPanel } from './AoiReplayPromotionPanel';
 import styles from './index.module.scss';
 
 // ---------------------------------------------------------------------------
@@ -8598,6 +8599,7 @@ const ChatPanel: React.FC<{
             });
           }}
           aoiMcpConnectorsConfig={aoiMcpConnectorsConfig}
+          aoiReplaySessionPath={sessionPath}
           onSaveAoiMcpConnectorsConfig={(cfg) => {
             setAoiMcpConnectorsConfig(cfg);
             void saveAoiMcpConnectorsConfig(cfg).catch((error) => {
@@ -9225,6 +9227,7 @@ const SettingsModal: React.FC<{
   aoiEmbeddingConfig: AoiEmbeddingConfig | null;
   onSaveAoiEmbeddingConfig: (config: AoiEmbeddingConfig | null) => void;
   aoiMcpConnectorsConfig: AoiMcpConnectorsConfig | null;
+  aoiReplaySessionPath: string;
   onSaveAoiMcpConnectorsConfig: (config: AoiMcpConnectorsConfig) => void;
   onResetAll: () => void;
   onSave: (
@@ -9330,6 +9333,7 @@ const SettingsModal: React.FC<{
   aoiEmbeddingConfig,
   onSaveAoiEmbeddingConfig,
   aoiMcpConnectorsConfig,
+  aoiReplaySessionPath,
   onSaveAoiMcpConnectorsConfig,
   onResetAll,
   onSave,
@@ -14601,6 +14605,8 @@ const SettingsModal: React.FC<{
                   </>
                 )}
               </div>
+
+              <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
 
               <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
                 <div className={styles.settingsSectionHeader}>
