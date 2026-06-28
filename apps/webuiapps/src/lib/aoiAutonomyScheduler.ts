@@ -1635,6 +1635,10 @@ async function runWakeupInternal(
 
   const runBackgroundTick = dependencies.runBackgroundTick ?? runAoiAutonomyBackgroundTick;
   const tickReason = mapWakeupReasonToTickReason(input.reason);
+  // Resolve the embedding provider once (config aoiEmbedding block / env). Reused
+  // for the tick's semantic query recall (network-gated below) and the best-effort
+  // memory embed-persist after the tick. Null when no key is configured.
+  const embeddingProvider = createServerAoiEmbeddingProvider({ configFile: input.configFile });
   let tickResult: AoiAutonomyTickResult | undefined;
   if (budget.maxBackgroundTickRuntimeMs <= 0) {
     warnings.push('background_tick_budget_zero');
@@ -1654,6 +1658,9 @@ async function runWakeupInternal(
           connectors: budget.allowNetwork
             ? loadAoiMcpConnectorsFromConfigFile(input.configFile ?? '')
             : undefined,
+          // Semantic query recall also requires a network call to the embedding
+          // provider, so it is gated on allowNetwork like the LLM driver.
+          embeddingProvider: budget.allowNetwork ? embeddingProvider : undefined,
           maxRuntimeMs: budget.maxBackgroundTickRuntimeMs,
           minIntervalMs: budget.wakeupCooldownMs,
           quietMode: budget.quietMode,
@@ -1690,7 +1697,7 @@ async function runWakeupInternal(
   // (config aoiEmbedding block or env), opportunistically embed a bounded batch of
   // un-embedded server memories so semantic recall has vectors to fuse. The key is
   // the opt-in -- no key means lexical-only, unchanged. Never blocks the wakeup.
-  const embeddingProvider = createServerAoiEmbeddingProvider({ configFile: input.configFile });
+  // (embeddingProvider was resolved once above and is reused here.)
   if (embeddingProvider) {
     try {
       await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, { max: 16 });

@@ -200,6 +200,49 @@ describe('Aoi Curiosity Engine', () => {
     });
   });
 
+  it('uses the focus query embedding to surface a relevant dormant memory past the load-order cap', () => {
+    // Four eligible high-importance memories; the target is last in load order
+    // and shares no tokens with the focus query. The internal cap keeps only the
+    // first 3, so load-order selection drops the target.
+    const memories = ['Topic A', 'Topic B', 'Topic C', 'Target Topic'].map((label, index) =>
+      makeMemory({
+        id: `memory-focus-${index}`,
+        content: `${label} dormant signal note`,
+        normalizedContent: `${label.toLowerCase()} dormant signal note`,
+        importance: 0.8,
+        entities: [label],
+        tags: ['note'],
+        embedding: index === 3 ? [1, 0, 0] : [0, 1, 0],
+      }),
+    );
+
+    const findTarget = (result: ReturnType<typeof buildAoiCuriosityCandidates>) =>
+      result.candidates.find(
+        (item) => item.signalKind === 'memory' && item.title.includes('Target Topic'),
+      );
+
+    // No focus query: load-order selection -> target (4th) is dropped by the cap.
+    const lexicalOnly = buildAoiCuriosityCandidates({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      memories,
+      maxCandidates: 8,
+    });
+    expect(findTarget(lexicalOnly)).toBeUndefined();
+
+    // Focus query with an embedding matching only the target: it ranks first and
+    // surfaces despite the cap and the absence of any shared tokens.
+    const semantic = buildAoiCuriosityCandidates({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      memories,
+      focusQuery: 'zzz qqq www',
+      focusQueryEmbedding: [1, 0, 0],
+      maxCandidates: 8,
+    });
+    expect(findTarget(semantic)).toBeDefined();
+  });
+
   it('boosts accepted follow-through signals in candidate ranking only', () => {
     const baseline = buildAoiCuriosityCandidates({
       sessionPath: SESSION_PATH,

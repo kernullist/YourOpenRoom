@@ -26,6 +26,7 @@ import type {
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import { scoreAoiFollowThroughLearningForKey } from './aoiFollowThroughLearning';
+import { selectRelevantAoiMemoriesByEmbedding } from './aoiMemoryEmbedding';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import {
   redactAoiSensitiveContent,
@@ -134,6 +135,12 @@ export interface AoiCuriosityEngineInput {
   sessionPath: string;
   now?: number;
   memories?: readonly AoiMemoryEntry[];
+  // Optional focus query (the mission focus, falling back to the latest user
+  // message) used to rank dormant high-importance memories before they are
+  // surfaced as curiosity opportunities. Absent/empty -> load-order selection
+  // (unchanged). `focusQueryEmbedding` adds the semantic signal when present.
+  focusQuery?: string;
+  focusQueryEmbedding?: number[] | null;
   interestProfile?: AoiInterestProfile | null;
   researchRuns?: readonly AoiResearchRunSummary[];
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
@@ -502,9 +509,23 @@ function buildMemoryCandidates(input: {
   memories: readonly AoiMemoryEntry[];
   recentDecisions: readonly AoiProposalDecision[];
   followThroughLearning?: AoiFollowThroughLearningSummary | null;
+  focusQuery?: string;
+  focusQueryEmbedding?: number[] | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const candidates: AoiCuriosityOpportunityCandidate[] = [];
-  for (const memory of input.memories.slice(0, 16)) {
+  const focusQuery = (input.focusQuery ?? '').trim();
+  // With a focus query, rank the eligible (active, high-importance) memories by
+  // fused lexical+semantic relevance so the most focus-relevant dormant memories
+  // surface as opportunities -- a semantic paraphrase can now be recalled. With
+  // no focus query, keep the prior load-order pre-filter exactly.
+  const pool = focusQuery
+    ? selectRelevantAoiMemoriesByEmbedding(
+        input.memories.filter((memory) => memory.status === 'active' && memory.importance >= 0.7),
+        focusQuery,
+        { queryEmbedding: input.focusQueryEmbedding ?? null, limit: 16 },
+      )
+    : input.memories.slice(0, 16);
+  for (const memory of pool) {
     if (memory.status !== 'active' || memory.importance < 0.7) {
       continue;
     }
@@ -1133,6 +1154,8 @@ export function buildAoiCuriosityCandidates(
       memories,
       recentDecisions,
       followThroughLearning: input.followThroughLearning,
+      ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
+      focusQueryEmbedding: input.focusQueryEmbedding ?? null,
     }),
     ...buildResearchCandidates({
       sessionPath,
@@ -1270,6 +1293,8 @@ export function runAoiCuriosityEngineForSession(
     sessionPath,
     now,
     memories,
+    ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
+    focusQueryEmbedding: input.focusQueryEmbedding ?? null,
     interestProfile: profile,
     researchRuns,
     workspaceSnapshot,

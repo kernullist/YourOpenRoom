@@ -88,6 +88,7 @@ import {
   stripAoiSourceInstructions,
   type AoiMemoryEntry,
 } from './aoiMemoryShared';
+import { embedAoiQuery, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import {
@@ -151,6 +152,11 @@ export interface AoiAutonomyTickParams {
   // present with network access, the LLM reflection driver may propose a
   // connector_call for an allow-listed read-only tool; never supplied by a client.
   connectors?: AoiMcpConnectorsConfig | null;
+  // Server-resolved embedding provider (from the config aoiEmbedding block / env).
+  // When present, the tick embeds a focus query once and threads it into the
+  // memory-consuming engines for semantic recall. Null/absent -> lexical-only.
+  // Network-gated by the caller (only supplied when network access is allowed).
+  embeddingProvider?: AoiEmbeddingProvider | null;
   now?: number;
   maxObservations?: number;
   maxGeneratedProposals?: number;
@@ -2301,6 +2307,13 @@ export async function runAoiAutonomyTick(
     ],
     now,
   });
+  // Semantic recall focus query: prefer the mission focus (what Aoi is working
+  // toward), falling back to the latest user message. Embedded once via the
+  // network-gated server provider (null when no key / no provider) and reused by
+  // the memory-consuming engines so a paraphrased memory that shares no tokens
+  // can still be recalled. Best-effort: a failed embedding degrades to lexical.
+  const recallFocusQuery = (attentionMission?.focusSummary || latestUserMessage || '').trim();
+  const recallFocusQueryEmbedding = await embedAoiQuery(recallFocusQuery, params.embeddingProvider);
   const curiosityWarnings: string[] = [];
   const deliberationWarnings: string[] = [];
   try {
@@ -2309,6 +2322,8 @@ export async function runAoiAutonomyTick(
       sessionPath,
       now,
       memories: bundle.memories,
+      ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
+      focusQueryEmbedding: recallFocusQueryEmbedding,
       researchRuns: bundle.researchRuns,
       workspaceSnapshot,
       activeProposals: bundle.activeProposals,
