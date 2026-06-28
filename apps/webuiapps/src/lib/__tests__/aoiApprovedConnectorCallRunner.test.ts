@@ -5,6 +5,7 @@ import {
   evaluateAoiApprovedConnectorCallPolicy,
 } from '../aoiApprovedConnectorCallPolicy';
 import { applyAoiApprovedConnectorCall } from '../aoiApprovedConnectorCallRunner';
+import type { AoiMcpConnectorHostLookup } from '../aoiMcpConnectorDnsGuard';
 import {
   AOI_MCP_READ_RESOURCE_METHOD,
   normalizeAoiMcpConnectorsConfig,
@@ -12,6 +13,10 @@ import {
 } from '../aoiMcpConnectorRegistry';
 
 const NOW = 2_000_000;
+
+// Default offline resolver: every allow-listed hostname maps to a public address,
+// so the execute-time DNS-rebind guard passes without touching real DNS.
+const publicLookup: AoiMcpConnectorHostLookup = async () => ['93.184.216.34'];
 
 function connectors(): AoiMcpConnectorsConfig {
   return normalizeAoiMcpConnectorsConfig({
@@ -28,6 +33,25 @@ function connectors(): AoiMcpConnectorsConfig {
         ],
         allowReadResource: true,
         allowPrivateHost: false,
+      },
+    ],
+  });
+}
+
+// A trusted connector that explicitly opted into a private endpoint host (e.g. a
+// local dev MCP server); the execute-time DNS re-check is intentionally skipped.
+function privateConnectors(): AoiMcpConnectorsConfig {
+  return normalizeAoiMcpConnectorsConfig({
+    connectors: [
+      {
+        id: 'localmcp',
+        name: 'Local MCP',
+        endpointUrl: 'http://10.0.0.9/mcp',
+        enabled: true,
+        trusted: true,
+        allowedTools: [{ name: 'search_issues', readOnly: true }],
+        allowReadResource: true,
+        allowPrivateHost: true,
       },
     ],
   });
@@ -94,6 +118,7 @@ describe('applyAoiApprovedConnectorCall', () => {
       connectors: connectors(),
       approvedPolicy,
       transport,
+      resolveHost: publicLookup,
       now: NOW,
     });
 
@@ -123,6 +148,7 @@ describe('applyAoiApprovedConnectorCall', () => {
       connectors: connectors(),
       approvedPolicy,
       transport,
+      resolveHost: publicLookup,
       now: NOW,
     });
 
@@ -245,6 +271,7 @@ describe('applyAoiApprovedConnectorCall', () => {
       connectors: connectors(),
       approvedPolicy,
       transport,
+      resolveHost: publicLookup,
       now: NOW,
     });
 
@@ -267,5 +294,135 @@ describe('applyAoiApprovedConnectorCall', () => {
     expect(result.ok).toBe(false);
     expect(result.blockReasons).toContain('approval_missing');
     expect(calls.callTool).toHaveLength(0);
+  });
+
+  it('fires when the endpoint hostname resolves to a public address', async () => {
+    const { request, approvedPolicy } = approvedRequest();
+    const { transport, calls } = recordingTransport({ callTool: () => ({ issues: [] }) });
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      transport,
+      resolveHost: async () => ['93.184.216.34', '2606:2800:220:1:248:1893:25c8:1946'],
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.applied).toBe(true);
+    expect(calls.callTool).toHaveLength(1);
+  });
+
+  it('blocks when the hostname resolves to a private address (DNS rebind) before any RPC', async () => {
+    const { request, approvedPolicy } = approvedRequest();
+    const { transport, calls } = recordingTransport();
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      transport,
+      // Public-looking hostname that resolves to an internal address.
+      resolveHost: async () => ['93.184.216.34', '10.0.0.5'],
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.applied).toBe(false);
+    expect(result.blockReasons).toContain('dns_rebind_blocked');
+    expect(result.resultDigest).toContain('error:dns:resolved_private_host_blocked');
+    expect(result.resultDigest).toContain('10.0.0.5');
+    expect(calls.callTool).toHaveLength(0);
+  });
+
+  it('blocks when the hostname resolves to the cloud metadata address', async () => {
+    const { request, approvedPolicy } = approvedRequest();
+    const { transport, calls } = recordingTransport();
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      transport,
+      resolveHost: async () => ['169.254.169.254'],
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blockReasons).toContain('dns_rebind_blocked');
+    expect(calls.callTool).toHaveLength(0);
+  });
+
+  it('blocks an IPv4-mapped IPv6 private resolution (no bypass)', async () => {
+    const { request, approvedPolicy } = approvedRequest();
+    const { transport, calls } = recordingTransport();
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      transport,
+      resolveHost: async () => ['::ffff:10.0.0.5'],
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.blockReasons).toContain('dns_rebind_blocked');
+    expect(calls.callTool).toHaveLength(0);
+  });
+
+  it('captures a DNS resolution failure as execution_failed without an RPC', async () => {
+    const { request, approvedPolicy } = approvedRequest();
+    const { transport, calls } = recordingTransport();
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: connectors(),
+      approvedPolicy,
+      transport,
+      resolveHost: async () => {
+        throw new Error('ENOTFOUND');
+      },
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.applied).toBe(false);
+    expect(result.blockReasons).toContain('execution_failed');
+    expect(result.resultDigest).toContain('error:dns:dns_resolution_failed');
+    expect(calls.callTool).toHaveLength(0);
+  });
+
+  it('skips the DNS re-check for a connector that opted into private hosts', async () => {
+    const config = privateConnectors();
+    const request = createAoiApprovedConnectorCallRequest({
+      sessionPath: 'aoi/session-run',
+      connectorRef: 'localmcp',
+      toolName: 'search_issues',
+      args: { jql: 'assignee = me' },
+      purpose: 'List my issues',
+      risk: 'high',
+      requestedAt: NOW,
+    });
+    const approvedPolicy = evaluateAoiApprovedConnectorCallPolicy(request, {
+      connectors: config,
+      now: NOW,
+    });
+    const { transport, calls } = recordingTransport({ callTool: () => ({ issues: [] }) });
+    let lookups = 0;
+
+    const result = await applyAoiApprovedConnectorCall(request, {
+      connectors: config,
+      approvedPolicy,
+      transport,
+      resolveHost: async () => {
+        lookups += 1;
+        return ['10.0.0.9'];
+      },
+      now: NOW,
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.applied).toBe(true);
+    // allowPrivateHost short-circuits the guard, so the resolver is never consulted.
+    expect(lookups).toBe(0);
+    expect(calls.callTool).toHaveLength(1);
+    expect(calls.callTool[0].endpointUrl).toBe('http://10.0.0.9/mcp');
   });
 });

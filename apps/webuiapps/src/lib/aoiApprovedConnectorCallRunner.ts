@@ -4,6 +4,10 @@ import {
   evaluateAoiApprovedConnectorCallPolicy,
 } from './aoiApprovedConnectorCallPolicy';
 import {
+  assertAoiMcpConnectorEndpointResolvesPublic,
+  type AoiMcpConnectorHostLookup,
+} from './aoiMcpConnectorDnsGuard';
+import {
   AOI_MCP_READ_RESOURCE_METHOD,
   resolveTrustedAoiMcpConnector,
   type AoiMcpConnectorsConfig,
@@ -47,6 +51,9 @@ export interface AoiApprovedConnectorCallRunnerOptions {
   connectors: AoiMcpConnectorsConfig | null;
   approvedPolicy?: AoiApprovedConnectorCallPolicy | null;
   transport?: AoiConnectorCallTransport;
+  // Injectable hostname resolver for the execute-time DNS-rebind re-check. Tests
+  // pass a stub so they stay offline; production uses the Node 'dns' default.
+  resolveHost?: AoiMcpConnectorHostLookup;
   now?: number;
 }
 
@@ -213,6 +220,36 @@ export async function applyAoiApprovedConnectorCall(
         applied: false,
         blockReasons: ['execution_failed'],
         resultDigest: 'error:resources/read requires a resourceUri',
+      },
+    });
+  }
+
+  // DNS-rebind / SSRF re-check at execute time. The registry's literal host check
+  // never resolves DNS, so re-validate every address the endpoint hostname resolves
+  // to before any network call. A resolved private / loopback / metadata address is
+  // a distinct hard block; a transient resolution failure folds into execution_failed
+  // (the call could not proceed, like a transport error). Skipped when the connector
+  // opted into private hosts; the lookup is injectable so tests stay offline.
+  const dnsCheck = await assertAoiMcpConnectorEndpointResolvesPublic(entry.endpointUrl, {
+    allowPrivateHost: entry.allowPrivateHost,
+    ...(options.resolveHost ? { lookup: options.resolveHost } : {}),
+  });
+  if (!dnsCheck.ok) {
+    const blockReason: AoiConnectorCallBlockReason =
+      dnsCheck.reason === 'resolved_private_host_blocked'
+        ? 'dns_rebind_blocked'
+        : 'execution_failed';
+    return buildResult({
+      request,
+      policy,
+      startedAt,
+      completedAt: options.now ?? startedAt,
+      outcome: {
+        applied: false,
+        blockReasons: [blockReason],
+        resultDigest: `error:dns:${dnsCheck.reason}${
+          dnsCheck.addresses.length > 0 ? `:${dnsCheck.addresses.slice(0, 3).join(',')}` : ''
+        }`,
       },
     });
   }

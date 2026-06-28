@@ -2623,6 +2623,10 @@ export type AoiConnectorCallBlockReason =
   | 'missing_tool_name'
   | 'unknown_or_untrusted_connector'
   | 'endpoint_not_server_callable'
+  // The endpoint hostname resolved to a private / loopback / metadata address at
+  // execute time (DNS-rebind / SSRF guard); emitted only by the runner, never the
+  // policy, since the literal allow-list check cannot resolve DNS.
+  | 'dns_rebind_blocked'
   | 'tool_not_allow_listed'
   | 'read_resource_not_allowed'
   | 'side_effecting_live_rpc_not_enabled'

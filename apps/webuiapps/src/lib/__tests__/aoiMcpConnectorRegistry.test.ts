@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   AOI_MCP_READ_RESOURCE_METHOD,
   classifyAoiMcpConnectorTool,
+  isAoiMcpConnectorPrivateAddress,
   isAoiMcpConnectorServerCallable,
   normalizeAoiMcpConnectorEntry,
   normalizeAoiMcpConnectorsConfig,
@@ -92,6 +93,43 @@ describe('validateAoiMcpConnectorEndpointHost', () => {
       validateAoiMcpConnectorEndpointHost('http://127.0.0.1:9000/mcp', { allowPrivateHost: true })
         .ok,
     ).toBe(true);
+  });
+});
+
+describe('isAoiMcpConnectorPrivateAddress', () => {
+  it('flags loopback, private, link-local, CGNAT, and metadata IPv4 addresses', () => {
+    for (const address of [
+      '127.0.0.1',
+      '10.0.0.5',
+      '192.168.1.10',
+      '172.16.0.1',
+      '172.31.255.254',
+      '169.254.169.254', // cloud metadata
+      '100.64.0.1', // carrier-grade NAT
+      '0.0.0.0',
+    ]) {
+      expect(isAoiMcpConnectorPrivateAddress(address)).toBe(true);
+    }
+  });
+
+  it('flags loopback, unique-local, and link-local IPv6 addresses', () => {
+    for (const address of ['::1', '::', 'fd00::1', 'fc00::abcd', 'fe80::1']) {
+      expect(isAoiMcpConnectorPrivateAddress(address)).toBe(true);
+    }
+  });
+
+  it('flags IPv4-mapped IPv6 forms of a private address (no bypass)', () => {
+    expect(isAoiMcpConnectorPrivateAddress('::ffff:10.0.0.5')).toBe(true);
+    expect(isAoiMcpConnectorPrivateAddress('::ffff:169.254.169.254')).toBe(true);
+    // A public IPv4 mapped into IPv6 stays public.
+    expect(isAoiMcpConnectorPrivateAddress('::ffff:8.8.8.8')).toBe(false);
+  });
+
+  it('does not flag public IPv4 / IPv6 addresses', () => {
+    expect(isAoiMcpConnectorPrivateAddress('8.8.8.8')).toBe(false);
+    expect(isAoiMcpConnectorPrivateAddress('93.184.216.34')).toBe(false);
+    expect(isAoiMcpConnectorPrivateAddress('172.32.0.1')).toBe(false);
+    expect(isAoiMcpConnectorPrivateAddress('2606:2800:220:1:248:1893:25c8:1946')).toBe(false);
   });
 });
 

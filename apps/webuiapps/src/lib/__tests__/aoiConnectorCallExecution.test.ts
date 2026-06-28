@@ -129,6 +129,9 @@ function dependenciesWith(transportHolder: ReturnType<typeof recordingTransport>
         connectors: p.connectors,
         ...(p.approvedPolicy ? { approvedPolicy: p.approvedPolicy } : {}),
         transport: transportHolder.transport,
+        // Offline resolver so the execute-time DNS-rebind guard passes without
+        // touching real DNS; the allow-list host maps to a public address.
+        resolveHost: async () => ['93.184.216.34'],
         now: p.now,
       }),
   };

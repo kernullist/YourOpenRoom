@@ -109,6 +109,14 @@ function isLikelyPrivateOrLoopbackHost(hostname: string): boolean {
   if (!host) {
     return true;
   }
+
+  // IPv4-mapped IPv6 (e.g. '::ffff:10.0.0.5'): classify by the embedded IPv4 so a
+  // resolver returning a mapped address cannot slip a private range past the check.
+  const mappedV4 = host.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mappedV4) {
+    return isLikelyPrivateOrLoopbackHost(mappedV4[1]);
+  }
+
   if (
     host === 'localhost' ||
     host.endsWith('.localhost') ||
@@ -156,6 +164,16 @@ function isLikelyPrivateOrLoopbackHost(hostname: string): boolean {
   }
 
   return false;
+}
+
+// Public classifier for a resolved IP address (or any host literal): true when the
+// address falls in a private / loopback / link-local / unique-local / carrier-grade
+// NAT / metadata range. The server-only DNS guard (aoiMcpConnectorDnsGuard) re-checks
+// every address an endpoint hostname resolves to, closing the gap this module's
+// literal check leaves open against a hostname that resolves to a private address
+// (DNS rebinding). Stays pure / browser-safe; the guard owns the Node 'dns' import.
+export function isAoiMcpConnectorPrivateAddress(address: string): boolean {
+  return isLikelyPrivateOrLoopbackHost(address);
 }
 
 // Validate that an endpoint is server-callable and not an SSRF hazard. Used at
