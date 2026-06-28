@@ -32,6 +32,7 @@ import {
   stripAoiSourceInstructions,
   type AoiMemoryEntry,
 } from './aoiMemoryShared';
+import { selectRelevantAoiMemoriesByEmbedding } from './aoiMemoryEmbedding';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
@@ -44,6 +45,12 @@ const DEFAULT_RECENT_RUN_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const STALE_RESEARCH_MS = 21 * 24 * 60 * 60 * 1000;
 const STALE_MEMORY_MS = 45 * 24 * 60 * 60 * 1000;
 const MAX_TEXT_CHARS = 260;
+// Source-ref prefix marking a semantic-recall-augmented memory step. Distinct
+// from a cited `memory:` ref so it is never mistaken for the opportunity's own
+// evidence and is excluded from the substantive evidence-sufficiency gate.
+const RECALL_MEMORY_REF_PREFIX = 'recall-memory:';
+const MAX_RECALL_MEMORY_STEPS = 3;
+const MIN_RECALL_MEMORY_RELEVANCE = 0.3;
 
 const PRIVATE_MEMORY_TAGS = new Set([
   'private',
@@ -66,6 +73,14 @@ export interface AoiDeliberationRunBuildInput {
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   activeProposals?: readonly AoiProposal[];
   mission?: AoiMissionState | null;
+  // Optional focus query + embedding (from the autonomy tick). When present, the
+  // evidence plan is augmented with the top semantically-relevant memories that
+  // the opportunity does NOT already cite -- surfaced as clearly-secondary
+  // "recall context" rows. They are NON-substantive (see isSubstantiveEvidenceStep)
+  // so they can never inflate the evidence-sufficiency phase; they only enrich the
+  // deliberation record. Absent/empty -> no augmentation (unchanged).
+  focusQuery?: string;
+  focusQueryEmbedding?: number[] | null;
 }
 
 export interface AoiDeliberationRunForSessionInput extends Omit<
@@ -736,6 +751,51 @@ function buildGenericStep(params: {
   });
 }
 
+// Semantic-recall augmentation: surface the top focus-relevant memories the
+// opportunity does NOT already cite, as clearly-secondary "recall context" steps.
+// These are non-substantive (RECALL_MEMORY_REF_PREFIX, see isSubstantiveEvidenceStep)
+// and carry no blockers/cannotKnow, so they never affect the evidence-sufficiency
+// phase or freshness -- they only enrich the deliberation record. Private memory
+// bodies are excluded. No focus query -> no augmentation.
+function buildRecallMemorySteps(params: {
+  memories: readonly AoiMemoryEntry[];
+  citedMemoryIds: ReadonlySet<string>;
+  focusQuery: string;
+  focusQueryEmbedding?: number[] | null;
+  now: number;
+}): AoiDeliberationEvidenceStep[] {
+  const query = params.focusQuery.trim();
+  if (!query) {
+    return [];
+  }
+  const candidates = params.memories.filter(
+    (memory) =>
+      memory.status === 'active' &&
+      !params.citedMemoryIds.has(memory.id) &&
+      !memoryIsPrivate(memory),
+  );
+  if (candidates.length === 0) {
+    return [];
+  }
+  const relevant = selectRelevantAoiMemoriesByEmbedding(candidates, query, {
+    queryEmbedding: params.focusQueryEmbedding ?? null,
+    limit: MAX_RECALL_MEMORY_STEPS,
+    minScore: MIN_RECALL_MEMORY_RELEVANCE,
+  });
+  return relevant.map((memory) => {
+    const stale = params.now - memory.updatedAt > STALE_MEMORY_MS;
+    return makeStep({
+      now: params.now,
+      kind: 'memory',
+      sourceRef: `${RECALL_MEMORY_REF_PREFIX}${memory.id}`,
+      label: 'Related memory (semantic recall)',
+      summary: sanitizeText(memory.content, 220),
+      status: stale ? 'stale' : 'observed',
+      freshness: stale ? 'stale' : 'fresh',
+    });
+  });
+}
+
 function buildEvidencePlan(
   input: AoiDeliberationRunBuildInput & { now: number },
 ): AoiDeliberationEvidenceStep[] {
@@ -745,6 +805,7 @@ function buildEvidencePlan(
     (input.activeProposals ?? []).map((proposal) => [proposal.id, proposal]),
   );
   const refs = uniqueStrings(input.opportunity.evidenceRefs, 24);
+  const citedMemoryIds = new Set<string>();
   const steps: AoiDeliberationEvidenceStep[] = [
     makeStep({
       now: input.now,
@@ -762,6 +823,7 @@ function buildEvidencePlan(
   for (const ref of refs) {
     const kind = sourceRefKind(ref);
     if (kind === 'memory') {
+      citedMemoryIds.add(ref.replace(/^memory:/, ''));
       steps.push(
         buildMemoryStep({
           ref,
@@ -797,6 +859,18 @@ function buildEvidencePlan(
     steps.push(buildGenericStep({ ref, kind, now: input.now }));
   }
 
+  if (input.focusQuery) {
+    steps.push(
+      ...buildRecallMemorySteps({
+        memories: input.memories ?? [],
+        citedMemoryIds,
+        focusQuery: input.focusQuery,
+        focusQueryEmbedding: input.focusQueryEmbedding ?? null,
+        now: input.now,
+      }),
+    );
+  }
+
   return steps;
 }
 
@@ -805,7 +879,10 @@ function isSubstantiveEvidenceStep(step: AoiDeliberationEvidenceStep): boolean {
     step.kind === 'opportunity' ||
     (step.kind === 'unknown' && step.status !== 'observed') ||
     step.sourceRef.startsWith('generated_by:') ||
-    step.sourceRef.startsWith('curiosity_engine:')
+    step.sourceRef.startsWith('curiosity_engine:') ||
+    // Semantic-recall context is never counted toward evidence sufficiency, so it
+    // cannot make a baseless opportunity look "ready".
+    step.sourceRef.startsWith(RECALL_MEMORY_REF_PREFIX)
   );
 }
 
@@ -1162,6 +1239,8 @@ export function runAoiDeliberationForSession(
     opportunity,
     now,
     memories,
+    ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
+    focusQueryEmbedding: input.focusQueryEmbedding ?? null,
     researchRuns,
     workspaceSnapshot,
     activeProposals,

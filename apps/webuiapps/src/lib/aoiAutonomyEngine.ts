@@ -2344,6 +2344,8 @@ export async function runAoiAutonomyTick(
       sessionPath,
       now,
       memories: bundle.memories,
+      ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
+      focusQueryEmbedding: recallFocusQueryEmbedding,
       researchRuns: bundle.researchRuns,
       workspaceSnapshot,
       activeProposals: bundle.activeProposals,

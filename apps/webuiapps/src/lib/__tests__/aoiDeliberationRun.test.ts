@@ -159,6 +159,81 @@ describe('Aoi Deliberation Run', () => {
     expect(summary.findingLabel).toContain('usable local evidence');
   });
 
+  it('augments the evidence plan with focus-relevant uncited memories as recall context', () => {
+    const root = makeTempRoot();
+    const stored = upsertAoiOpportunity(
+      root,
+      SESSION_PATH,
+      makeOpportunityInput({ evidenceRefs: ['memory:memory-cited-001'] }),
+      NOW,
+    );
+    const run = buildAoiDeliberationRun({
+      sessionPath: SESSION_PATH,
+      opportunity: stored.opportunity,
+      now: NOW,
+      memories: [
+        makeMemory({
+          id: 'memory-cited-001',
+          content: 'Cited evidence memory',
+          embedding: [0, 0, 1],
+        }),
+        makeMemory({
+          id: 'memory-recall-target',
+          content: 'Uncited but focus-relevant memory',
+          tags: ['note'],
+          entities: ['Target'],
+          embedding: [1, 0, 0],
+        }),
+        makeMemory({
+          id: 'memory-irrelevant',
+          content: 'Totally unrelated lunch note',
+          tags: ['note'],
+          entities: ['Lunch'],
+          embedding: [0, 1, 0],
+        }),
+      ],
+      focusQuery: 'zzz qqq www',
+      focusQueryEmbedding: [1, 0, 0],
+    });
+    const refs = run.evidencePlan.map((step) => step.sourceRef);
+    // Only the uncited, focus-relevant memory is recalled.
+    expect(refs).toContain('recall-memory:memory-recall-target');
+    // The cited memory is already evidence; the irrelevant one is below the floor.
+    expect(refs).not.toContain('recall-memory:memory-cited-001');
+    expect(refs).not.toContain('recall-memory:memory-irrelevant');
+  });
+
+  it('never lets recall context make a baseless opportunity look ready', () => {
+    const root = makeTempRoot();
+    const stored = upsertAoiOpportunity(
+      root,
+      SESSION_PATH,
+      makeOpportunityInput({ evidenceRefs: ['memory:memory-missing-999'] }),
+      NOW,
+    );
+    const run = buildAoiDeliberationRun({
+      sessionPath: SESSION_PATH,
+      opportunity: stored.opportunity,
+      now: NOW,
+      memories: [
+        makeMemory({
+          id: 'memory-recall-target',
+          content: 'Uncited focus-relevant memory',
+          tags: ['note'],
+          embedding: [1, 0, 0],
+        }),
+      ],
+      focusQuery: 'zzz qqq www',
+      focusQueryEmbedding: [1, 0, 0],
+    });
+    const refs = run.evidencePlan.map((step) => step.sourceRef);
+    // The relevant memory is recalled as context...
+    expect(refs).toContain('recall-memory:memory-recall-target');
+    // ...yet the only cited source is missing, so recall (non-substantive) cannot
+    // manufacture evidence sufficiency: the run stays failed.
+    expect(run.phase).toBe('failed');
+  });
+
   it('blocks a run when research evidence is stale', () => {
     const root = makeTempRoot();
     const stored = upsertAoiOpportunity(root, SESSION_PATH, makeOpportunityInput(), NOW);
