@@ -57,6 +57,13 @@ import {
 } from './aoiAutonomyRelations';
 import { deriveAoiMissionState, loadAoiMissionState } from './aoiAutonomyMission';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
+import {
+  buildAoiMcpConnectorCatalog,
+  classifyAoiMcpConnectorTool,
+  resolveTrustedAoiMcpConnector,
+  type AoiMcpConnectorCatalogEntry,
+  type AoiMcpConnectorsConfig,
+} from './aoiMcpConnectorRegistry';
 import type {
   AoiAutonomyBlockedProposal,
   AoiAutonomyRisk,
@@ -101,6 +108,8 @@ const MAX_MEMORY_OBSERVATIONS = 12;
 const MAX_REFLECTION_PROMPT_OBSERVATIONS = 16;
 const MAX_REFLECTION_PROMPT_PROPOSALS = 8;
 const MAX_REFLECTION_PROMPT_MEMORIES = 10;
+const MAX_REFLECTION_PROMPT_CONNECTORS = 12;
+const MAX_REFLECTION_PROMPT_CONNECTOR_TOOLS = 16;
 const STALE_RESEARCH_MEMORY_MS = 30 * 24 * 60 * 60 * 1000;
 const RECENT_RUN_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const TITLE_MAX_CHARS = 96;
@@ -138,6 +147,10 @@ export interface AoiAutonomyTickParams {
   latestUserMessage?: string;
   llmConfig?: LLMConfig | null;
   reflectionChat?: AoiAutonomyReflectionChat;
+  // Trusted MCP connector allow-list (server-loaded from the config file). When
+  // present with network access, the LLM reflection driver may propose a
+  // connector_call for an allow-listed read-only tool; never supplied by a client.
+  connectors?: AoiMcpConnectorsConfig | null;
   now?: number;
   maxObservations?: number;
   maxGeneratedProposals?: number;
@@ -1301,6 +1314,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
   memories: AoiMemoryEntry[];
   activeProposals: AoiProposal[];
   latestUserMessage?: string;
+  availableConnectors?: AoiMcpConnectorCatalogEntry[];
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1328,18 +1342,69 @@ export function buildAoiAutonomyReflectionMessages(params: {
       evidenceRefs: proposal.evidenceRefs,
     }));
 
+  // Trusted, read-only connector catalog the driver MAY propose a connector_call
+  // against. Bounded for prompt size. When empty, no connector guidance is shown
+  // and the model is never told it can emit connector_call (so the default prompt
+  // is unchanged for the common no-connector case).
+  const availableConnectors = (params.availableConnectors ?? [])
+    .filter((entry) => entry.readOnlyTools.length > 0 || entry.allowReadResource)
+    .slice(0, MAX_REFLECTION_PROMPT_CONNECTORS)
+    .map((entry) => ({
+      connectorRef: entry.connectorRef,
+      name: entry.name,
+      readOnlyTools: entry.readOnlyTools.slice(0, MAX_REFLECTION_PROMPT_CONNECTOR_TOOLS),
+      resourcesRead: entry.allowReadResource,
+    }));
+  const connectorsAvailable = availableConnectors.length > 0;
+
+  const systemLines = [
+    'You are Aoi Autonomy read-only reflection evaluator.',
+    'Return strict JSON only.',
+    'Do not claim actions were executed.',
+    'Use only supplied evidenceRefs.',
+    'If confidence is low, return no proposal.',
+    'Never store secrets, credentials, private keys, or tokens.',
+    'High-risk proposals must set requiresUserApproval=true.',
+  ];
+  if (connectorsAvailable) {
+    systemLines.push(
+      'You may propose at most one connector_call acceptAction, and ONLY for a connectorRef + toolName listed in availableConnectors (every listed tool is read-only).',
+      'A connector_call must set risk="high", requiredAutonomyLevel="L5", requiresUserApproval=true; it never runs without explicit user approval.',
+      'For a resource read use toolName "resources/read" with params.resourceUri; otherwise put tool arguments in params.args and omit resourceUri.',
+      'Never invent a connector or tool that is not listed in availableConnectors.',
+    );
+  }
+
+  const proposalSchema: Record<string, unknown> = {
+    title: 'short title',
+    body: 'short body',
+    reason: 'why now',
+    trigger: 'short trigger id',
+    cooldownKey: 'stable dedupe key',
+    confidence: 0.0,
+    risk: 'low|medium|high',
+    requiredAutonomyLevel: 'L2|L3|L4|L5',
+    requiresUserApproval: false,
+    suggestedTools: ['read_research_artifact'],
+    evidenceRefs: ['observation:id'],
+  };
+  if (connectorsAvailable) {
+    proposalSchema.acceptAction = {
+      kind: 'connector_call (optional; only from availableConnectors)',
+      params: {
+        connectorRef: 'availableConnectors[].connectorRef',
+        toolName: 'one of that connector readOnlyTools, or "resources/read"',
+        args: {},
+        resourceUri: 'only when toolName is resources/read',
+        purpose: 'short purpose',
+      },
+    };
+  }
+
   return [
     {
       role: 'system',
-      content: [
-        'You are Aoi Autonomy read-only reflection evaluator.',
-        'Return strict JSON only.',
-        'Do not claim actions were executed.',
-        'Use only supplied evidenceRefs.',
-        'If confidence is low, return no proposal.',
-        'Never store secrets, credentials, private keys, or tokens.',
-        'High-risk proposals must set requiresUserApproval=true.',
-      ].join('\n'),
+      content: systemLines.join('\n'),
     },
     {
       role: 'user',
@@ -1348,6 +1413,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         observations,
         memories,
         activeProposals,
+        ...(connectorsAvailable ? { availableConnectors } : {}),
         outputSchema: {
           reflections: [
             {
@@ -1360,21 +1426,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
               proposedMemoryCandidates: ['short memory candidate'],
             },
           ],
-          proposals: [
-            {
-              title: 'short title',
-              body: 'short body',
-              reason: 'why now',
-              trigger: 'short trigger id',
-              cooldownKey: 'stable dedupe key',
-              confidence: 0.0,
-              risk: 'low|medium|high',
-              requiredAutonomyLevel: 'L2|L3|L4|L5',
-              requiresUserApproval: false,
-              suggestedTools: ['read_research_artifact'],
-              evidenceRefs: ['observation:id'],
-            },
-          ],
+          proposals: [proposalSchema],
         },
       }),
     },
@@ -1419,10 +1471,57 @@ function isAcceptActionKind(value: unknown): value is AoiProposalAcceptActionKin
     value === 'start_research' ||
     value === 'create_kira_work' ||
     value === 'run_command' ||
+    value === 'connector_call' ||
     value === 'open_app' ||
     value === 'save_memory' ||
     value === 'activate_goal'
   );
+}
+
+// Read connector_call params with the same alias precedence the execution layer
+// (buildApprovedConnectorCallRequestFromProposal) accepts, so accept-time
+// validation and execute-time resolution agree on connectorRef + toolName.
+function readConnectorCallTarget(params: Record<string, unknown>): {
+  connectorRef: string;
+  toolName: string;
+} {
+  const pick = (...keys: string[]): string => {
+    for (const key of keys) {
+      const value = params[key];
+      if (typeof value === 'string' && value.trim()) {
+        return value.trim();
+      }
+    }
+    return '';
+  };
+  return {
+    connectorRef: pick('connectorRef', 'connectorId', 'connector'),
+    toolName: pick('toolName', 'tool'),
+  };
+}
+
+// Validate an LLM-proposed connector_call against the trusted allow-list, mirroring
+// the live_read_only gate the policy/runner enforce: the connector must resolve as
+// trusted + server-callable, and the tool must be allow-listed AND read-only (or a
+// permitted resources/read). Anything else -- a hallucinated connector, an
+// unlisted tool, or a side-effecting tool -- is dropped here so it never surfaces.
+function validateProposedConnectorCall(
+  action: AoiProposalAcceptAction,
+  connectors: AoiMcpConnectorsConfig | null | undefined,
+): { ok: true } | { ok: false; warning: string } {
+  const { connectorRef, toolName } = readConnectorCallTarget(action.params);
+  if (!connectorRef || !toolName) {
+    return { ok: false, warning: 'proposal_connector_call_incomplete' };
+  }
+  const entry = resolveTrustedAoiMcpConnector(connectors ?? null, connectorRef);
+  if (!entry) {
+    return { ok: false, warning: 'proposal_connector_call_untrusted' };
+  }
+  const classification = classifyAoiMcpConnectorTool(entry, toolName);
+  if (!classification.allowed || !classification.readOnly) {
+    return { ok: false, warning: 'proposal_connector_call_not_read_only' };
+  }
+  return { ok: true };
 }
 
 function normalizeAcceptAction(value: unknown): AoiProposalAcceptAction | undefined {
@@ -1485,6 +1584,9 @@ export function parseAoiAutonomyReflectionResponse(
   params: {
     sessionPath: string;
     knownEvidenceRefs: Set<string>;
+    // Trusted allow-list used to validate an LLM-proposed connector_call. When
+    // absent, any connector_call acceptAction is dropped (fail-closed).
+    connectors?: AoiMcpConnectorsConfig | null;
     now?: number;
   },
 ): { reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] } {
@@ -1578,8 +1680,39 @@ export function parseAoiAutonomyReflectionResponse(
     // not, could not pass the execution policy gate (requireEvidenceRefs).
     const evidenceRefs = filterKnownEvidenceRefs(rawEvidenceRefs, params.knownEvidenceRefs);
     const confidence = typeof proposal.confidence === 'number' ? proposal.confidence : NaN;
-    const risk = isRisk(proposal.risk) ? proposal.risk : 'low';
-    const requiresUserApproval = proposal.requiresUserApproval === true;
+
+    // Resolve the acceptAction up front so a connector_call can be validated
+    // against the trusted allow-list and have its governance forced BEFORE the
+    // risk/approval gate below.
+    const acceptAction = normalizeAcceptAction(proposal.acceptAction);
+    const isConnectorCall = acceptAction?.kind === 'connector_call';
+    if (isConnectorCall && acceptAction) {
+      const connectorCheck = validateProposedConnectorCall(acceptAction, params.connectors);
+      if (!connectorCheck.ok) {
+        warnings.push(connectorCheck.warning);
+        continue;
+      }
+      if (acceptActionLooksSecretBearing(acceptAction)) {
+        warnings.push('proposal_rejected_content');
+        continue;
+      }
+    }
+
+    // A connector_call is an external action whose effects the server cannot undo,
+    // so force the governance the execution gate mandates (L5 + explicit approval +
+    // high risk) regardless of what the model claimed. This keeps the proposal
+    // well-formed for the gate and guarantees it never auto-runs.
+    const risk: AoiAutonomyRisk = isConnectorCall
+      ? 'high'
+      : isRisk(proposal.risk)
+        ? proposal.risk
+        : 'low';
+    const requiresUserApproval = isConnectorCall ? true : proposal.requiresUserApproval === true;
+    const requiredAutonomyLevel: AoiProposal['requiredAutonomyLevel'] = isConnectorCall
+      ? 'L5'
+      : isLevel(proposal.requiredAutonomyLevel)
+        ? proposal.requiredAutonomyLevel
+        : 'L2';
     if (
       !title ||
       !reason ||
@@ -1632,16 +1765,14 @@ export function parseAoiAutonomyReflectionResponse(
           : `llm:${title.toLowerCase()}`,
       confidence: Math.min(1, Math.max(0, confidence)),
       risk,
-      requiredAutonomyLevel: isLevel(proposal.requiredAutonomyLevel)
-        ? proposal.requiredAutonomyLevel
-        : 'L2',
+      requiredAutonomyLevel,
       requiresUserApproval,
       suggestedTools,
       evidenceRefs,
       memoryIds,
       artifactRefs,
       riskSignals: normalizeStringArray(proposal.riskSignals, 6),
-      acceptAction: normalizeAcceptAction(proposal.acceptAction),
+      acceptAction,
     });
   }
 
@@ -1655,6 +1786,7 @@ async function runLlmReflection(params: {
   llmConfig?: LLMConfig | null;
   reflectionChat?: AoiAutonomyReflectionChat;
   knownEvidenceRefs: Set<string>;
+  connectors?: AoiMcpConnectorsConfig | null;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -1663,12 +1795,14 @@ async function runLlmReflection(params: {
   try {
     const reflectionChat =
       params.reflectionChat ?? ((await import('./llmClient')).chat as AoiAutonomyReflectionChat);
+    const availableConnectors = buildAoiMcpConnectorCatalog(params.connectors);
     const response = await reflectionChat(
       buildAoiAutonomyReflectionMessages({
         observations: params.bundle.observations,
         memories: params.bundle.memories,
         activeProposals: params.bundle.activeProposals,
         latestUserMessage: params.latestUserMessage,
+        availableConnectors,
       }),
       [],
       params.llmConfig,
@@ -1676,6 +1810,7 @@ async function runLlmReflection(params: {
     return parseAoiAutonomyReflectionResponse(response.content, {
       sessionPath: params.sessionPath,
       knownEvidenceRefs: params.knownEvidenceRefs,
+      connectors: params.connectors,
       now: params.now,
     });
   } catch {
@@ -2224,6 +2359,7 @@ export async function runAoiAutonomyTick(
     llmConfig: params.llmConfig,
     reflectionChat: params.reflectionChat,
     knownEvidenceRefs,
+    connectors: params.connectors,
     now,
   });
 

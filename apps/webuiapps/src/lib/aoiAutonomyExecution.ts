@@ -1,4 +1,3 @@
-import * as fs from 'fs';
 import { evaluateAoiProposalExecution } from './aoiAutonomyPolicy';
 import {
   applyAoiProposalExecutionTransition,
@@ -63,10 +62,8 @@ import {
   normalizeAoiApprovedConnectorCallPolicy,
 } from './aoiApprovedConnectorCallPolicy';
 import { applyAoiApprovedConnectorCall } from './aoiApprovedConnectorCallRunner';
-import {
-  normalizeAoiMcpConnectorsConfig,
-  type AoiMcpConnectorsConfig,
-} from './aoiMcpConnectorRegistry';
+import type { AoiMcpConnectorsConfig } from './aoiMcpConnectorRegistry';
+import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { recordAoiValidationSignal } from './aoiWorkspaceSignals';
 import { createSupervisedKiraWorkItem } from './kiraAutomationPlugin';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
@@ -377,28 +374,6 @@ function buildApprovedConnectorCallRequestFromProposal(params: {
     requestedAt: params.now,
     evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
   });
-}
-
-// Read the server-readable trusted MCP connector allow-list from the persisted
-// config file. This is the SINGLE trust source for a live connector RPC: the
-// endpoint is resolved by id from here, never from the proposal. Fail-closed to
-// an empty list if the file is missing or unreadable.
-function loadAoiMcpConnectorsFromConfigFile(configFile: string): AoiMcpConnectorsConfig {
-  try {
-    if (!configFile || !fs.existsSync(configFile)) {
-      return { connectors: [] };
-    }
-    const parsed = JSON.parse(fs.readFileSync(configFile, 'utf-8')) as {
-      aoiMcpConnectors?: unknown;
-    } | null;
-    const raw =
-      parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-        ? (parsed.aoiMcpConnectors as Partial<AoiMcpConnectorsConfig> | undefined)
-        : undefined;
-    return normalizeAoiMcpConnectorsConfig(raw ?? null);
-  } catch {
-    return { connectors: [] };
-  }
 }
 
 function summarizePromotedMemory(memory: AoiMemoryEntry): Record<string, unknown> {

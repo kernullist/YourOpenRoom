@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   AOI_MCP_READ_RESOURCE_METHOD,
+  buildAoiMcpConnectorCatalog,
   classifyAoiMcpConnectorTool,
   isAoiMcpConnectorPrivateAddress,
   isAoiMcpConnectorServerCallable,
@@ -263,5 +264,76 @@ describe('summarizeAoiMcpConnectorsConfig', () => {
     expect(summary.serverCallable).toBe(1);
     // Each entry: 1 read-only tool (search_issues) + allowReadResource.
     expect(summary.readOnlyTools).toBe(4);
+  });
+});
+
+describe('buildAoiMcpConnectorCatalog', () => {
+  it('lists server-callable connectors with only their read-only tools', () => {
+    const config = normalizeAoiMcpConnectorsConfig({
+      connectors: [
+        makeEntry({
+          id: 'jira',
+          name: 'Jira',
+          allowedTools: [
+            { name: 'search_issues', readOnly: true },
+            { name: 'create_issue', readOnly: false },
+          ],
+          allowReadResource: true,
+        }),
+      ],
+    });
+    expect(buildAoiMcpConnectorCatalog(config)).toEqual([
+      {
+        connectorRef: 'jira',
+        name: 'Jira',
+        readOnlyTools: ['search_issues'],
+        allowReadResource: true,
+      },
+    ]);
+  });
+
+  it('excludes untrusted, disabled, and non-server-callable connectors', () => {
+    const config = normalizeAoiMcpConnectorsConfig({
+      connectors: [
+        makeEntry({ id: 'untrusted', trusted: false }),
+        makeEntry({ id: 'disabled', enabled: false }),
+        makeEntry({ id: 'private', endpointUrl: 'http://10.0.0.5/mcp', allowPrivateHost: false }),
+      ],
+    });
+    expect(buildAoiMcpConnectorCatalog(config)).toEqual([]);
+  });
+
+  it('excludes a connector with only side-effecting tools and no resources/read', () => {
+    const config = normalizeAoiMcpConnectorsConfig({
+      connectors: [
+        makeEntry({
+          id: 'writeonly',
+          allowedTools: [{ name: 'create_issue', readOnly: false }],
+          allowReadResource: false,
+        }),
+      ],
+    });
+    expect(buildAoiMcpConnectorCatalog(config)).toEqual([]);
+  });
+
+  it('includes a connector with no read-only tools but resources/read enabled', () => {
+    const config = normalizeAoiMcpConnectorsConfig({
+      connectors: [
+        makeEntry({
+          id: 'resourceonly',
+          name: 'Resource Only',
+          allowedTools: [{ name: 'create_issue', readOnly: false }],
+          allowReadResource: true,
+        }),
+      ],
+    });
+    expect(buildAoiMcpConnectorCatalog(config)).toEqual([
+      {
+        connectorRef: 'resourceonly',
+        name: 'Resource Only',
+        readOnlyTools: [],
+        allowReadResource: true,
+      },
+    ]);
   });
 });

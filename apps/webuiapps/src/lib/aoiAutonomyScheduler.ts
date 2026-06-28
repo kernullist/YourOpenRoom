@@ -10,6 +10,7 @@ import {
   runAoiAutonomyBackgroundTick,
   type AoiAutonomyBackgroundTickParams,
 } from './aoiAutonomyEngine';
+import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -1643,6 +1644,13 @@ async function runWakeupInternal(
           reason: tickReason,
           latestUserMessage: input.latestUserMessage,
           llmConfig: budget.allowNetwork ? (input.llmConfig ?? undefined) : undefined,
+          // The trusted connector allow-list only matters when the LLM driver is
+          // active (network allowed); it lets the driver propose a connector_call
+          // for an allow-listed read-only tool. Loaded from the same config file
+          // that is the live-RPC trust source.
+          connectors: budget.allowNetwork
+            ? loadAoiMcpConnectorsFromConfigFile(input.configFile ?? '')
+            : undefined,
           maxRuntimeMs: budget.maxBackgroundTickRuntimeMs,
           minIntervalMs: budget.wakeupCooldownMs,
           quietMode: budget.quietMode,

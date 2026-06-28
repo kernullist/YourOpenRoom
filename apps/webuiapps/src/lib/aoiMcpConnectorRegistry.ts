@@ -373,3 +373,43 @@ export function summarizeAoiMcpConnectorsConfig(
   }
   return { total: connectors.length, serverCallable, readOnlyTools };
 }
+
+export interface AoiMcpConnectorCatalogEntry {
+  connectorRef: string;
+  name: string;
+  // Live-eligible (read-only) tool names; side-effecting tools are omitted.
+  readOnlyTools: string[];
+  // True when resources/read (inherently read-only) is permitted on this connector.
+  allowReadResource: boolean;
+}
+
+// Catalog of server-callable connectors and their live-eligible (read-only) tools,
+// for offering to the LLM reflection driver so it can propose a connector_call.
+// Only read-only tools (and the gated resources/read) are listed -- side-effecting
+// tools are omitted so the model is never shown a tool it cannot run live, and a
+// connector with nothing live (no read-only tool and no resources/read) is excluded
+// entirely. This is the same trust gate the policy/runner enforce, so anything in
+// the catalog is guaranteed to pass the live_read_only routing.
+export function buildAoiMcpConnectorCatalog(
+  config: AoiMcpConnectorsConfig | null | undefined,
+): AoiMcpConnectorCatalogEntry[] {
+  const catalog: AoiMcpConnectorCatalogEntry[] = [];
+  for (const entry of config?.connectors ?? []) {
+    if (!isAoiMcpConnectorServerCallable(entry)) {
+      continue;
+    }
+    const readOnlyTools = entry.allowedTools
+      .filter((tool) => tool.readOnly)
+      .map((tool) => tool.name);
+    if (readOnlyTools.length === 0 && !entry.allowReadResource) {
+      continue;
+    }
+    catalog.push({
+      connectorRef: entry.id,
+      name: entry.name,
+      readOnlyTools,
+      allowReadResource: entry.allowReadResource,
+    });
+  }
+  return catalog;
+}
