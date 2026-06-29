@@ -13,6 +13,7 @@ import {
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
 import { DEFAULT_LLM_DAILY_TOKEN_BUDGET, resolveAoiLlmTokenCeiling } from './aoiAutonomyLlmBudget';
+import { createAoiAutonomyReflectionChat } from './aoiAutonomyReflectionChat';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
 import {
@@ -107,6 +108,10 @@ export interface AoiAutonomyWakeupInput {
   reason: AoiAutonomyWakeupReason;
   workspaceRoot?: string;
   configFile?: string;
+  // Origin for the server-side reflection chat adapter (used only by CLI /
+  // managed-auth providers; baseUrl providers call their absolute endpoint
+  // directly). Defaults to the dev loopback when absent.
+  serverOrigin?: string;
   latestUserMessage?: string;
   llmConfig?: LLMConfig | null;
   sourceIds?: string[];
@@ -1656,6 +1661,16 @@ async function runWakeupInternal(
           reason: tickReason,
           latestUserMessage: input.latestUserMessage,
           llmConfig: budget.allowNetwork ? (input.llmConfig ?? undefined) : undefined,
+          // Server-capable reflection chat: the engine's default chat is the
+          // browser client (relative /api/llm-proxy) which throws in the Node
+          // loop. When network is allowed and a model is configured, route the
+          // LLM reflection / brief / goal synthesis through the server-side
+          // caller so it actually reaches the model (otherwise it silently falls
+          // back to deterministic).
+          reflectionChat:
+            budget.allowNetwork && input.llmConfig
+              ? createAoiAutonomyReflectionChat(input.serverOrigin)
+              : undefined,
           // The trusted connector allow-list only matters when the LLM driver is
           // active (network allowed); it lets the driver propose a connector_call
           // for an allow-listed read-only tool. Loaded from the same config file
