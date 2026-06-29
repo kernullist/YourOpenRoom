@@ -7,6 +7,7 @@ import {
   getAoiToolAutonomyPolicy,
 } from './aoiAutonomyPolicy';
 import {
+  buildAoiGoalCandidateProposal,
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
   loadAoiActiveGoals,
@@ -191,6 +192,11 @@ export interface AoiAutonomyTickParams {
   // llmConfig is present (network allowed), so the deterministic brief is the
   // floor and OFF-by-default is preserved.
   llmDailyTokenBudget?: number;
+  // P1a c4 (LLM goal-synthesis). When true (explicit opt-in ON TOP of network),
+  // the reflection prompt may offer a goal candidate and the parser accepts an
+  // activate_goal acceptAction (display-only, user-approval-gated). Default/false
+  // -> the prompt is unchanged and any goal candidate is dropped (fail-closed).
+  goalSynthesisEnabled?: boolean;
 }
 
 export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
@@ -1360,6 +1366,9 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // sanitized continuity block is added to the prompt as PRIORITIZATION context
   // only -- it is not evidence and is never citable in evidenceRefs.
   previousBrief?: AoiStrategicBrief | null;
+  // P1a c4: when true, the prompt offers a goal-candidate acceptAction. Default
+  // off -> no goal guidance is shown (prompt unchanged for the common case).
+  goalSynthesisEnabled?: boolean;
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1449,6 +1458,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
       'A "continuity" field summarizes what you were working on last (prior focus, open/blocked threads, recent outcomes). Use it ONLY to prioritize; it is NOT evidence and must never appear in evidenceRefs.',
     );
   }
+  if (params.goalSynthesisEnabled) {
+    systemLines.push(
+      'You MAY propose at most one goal candidate via acceptAction.kind="activate_goal" with params.title and params.userIntentSummary, ONLY when recent observations show a recurring multi-step objective worth tracking. Cite supplied evidenceRefs; it is display-only and requires explicit user approval before any goal is created.',
+    );
+  }
 
   const proposalSchema: Record<string, unknown> = {
     title: 'short title',
@@ -1472,6 +1486,15 @@ export function buildAoiAutonomyReflectionMessages(params: {
         args: {},
         resourceUri: 'only when toolName is resources/read',
         purpose: 'short purpose',
+      },
+    };
+  }
+  if (params.goalSynthesisEnabled) {
+    proposalSchema.acceptActionGoalCandidate = {
+      kind: 'activate_goal (optional; at most one, from a recurring observed objective)',
+      params: {
+        title: 'short goal title',
+        userIntentSummary: 'the objective to pursue, grounded in the supplied observations',
       },
     };
   }
@@ -1663,6 +1686,9 @@ export function parseAoiAutonomyReflectionResponse(
     // Trusted allow-list used to validate an LLM-proposed connector_call. When
     // absent, any connector_call acceptAction is dropped (fail-closed).
     connectors?: AoiMcpConnectorsConfig | null;
+    // P1a c4: when true, an activate_goal acceptAction is accepted and rebuilt as
+    // a display-only goal candidate. Absent/false -> any goal candidate is dropped.
+    goalSynthesisEnabled?: boolean;
     now?: number;
   },
 ): { reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] } {
@@ -1756,6 +1782,51 @@ export function parseAoiAutonomyReflectionResponse(
     // not, could not pass the execution policy gate (requireEvidenceRefs).
     const evidenceRefs = filterKnownEvidenceRefs(rawEvidenceRefs, params.knownEvidenceRefs);
     const confidence = typeof proposal.confidence === 'number' ? proposal.confidence : NaN;
+
+    // P1a c4: an activate_goal acceptAction is goal synthesis. Accept it ONLY when
+    // explicitly enabled, then DROP the model's acceptAction and rebuild a
+    // display-only goal candidate deterministically (forced governance + a
+    // deterministic plan), grounded in the known evidence. The model supplies only
+    // the title + intent; everything else (plan, gating) is ours.
+    const rawAcceptActionKind =
+      proposal.acceptAction && typeof proposal.acceptAction === 'object'
+        ? (proposal.acceptAction as { kind?: unknown }).kind
+        : undefined;
+    if (rawAcceptActionKind === 'activate_goal') {
+      if (params.goalSynthesisEnabled !== true) {
+        warnings.push('proposal_goal_synthesis_disabled');
+        continue;
+      }
+      const goalActionParams =
+        (proposal.acceptAction as { params?: Record<string, unknown> }).params ?? {};
+      const goalTitle = typeof goalActionParams.title === 'string' ? goalActionParams.title : title;
+      const goalIntent =
+        typeof goalActionParams.userIntentSummary === 'string'
+          ? goalActionParams.userIntentSummary
+          : body || reason;
+      const goalCandidate = buildAoiGoalCandidateProposal({
+        sessionPath: params.sessionPath,
+        title: goalTitle,
+        userIntentSummary: goalIntent,
+        sourceRefs: evidenceRefs,
+        risk: isRisk(proposal.risk) ? proposal.risk : 'low',
+        ...(Number.isFinite(confidence) ? { confidence } : {}),
+        now,
+      });
+      if (!goalCandidate) {
+        warnings.push('proposal_goal_candidate_rejected');
+        continue;
+      }
+      if (
+        looksSecretBearing(`${goalCandidate.title} ${goalCandidate.body}`) ||
+        proposalClaimsExecution(goalCandidate.title)
+      ) {
+        warnings.push('proposal_rejected_content');
+        continue;
+      }
+      proposals.push(goalCandidate);
+      continue;
+    }
 
     // Resolve the acceptAction up front so a connector_call can be validated
     // against the trusted allow-list and have its governance forced BEFORE the
@@ -1867,6 +1938,7 @@ async function runLlmReflection(params: {
   knownEvidenceRefs: Set<string>;
   connectors?: AoiMcpConnectorsConfig | null;
   previousBrief?: AoiStrategicBrief | null;
+  goalSynthesisEnabled?: boolean;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -1887,6 +1959,7 @@ async function runLlmReflection(params: {
         queryEmbeddingModel: params.queryEmbeddingModel ?? null,
         availableConnectors,
         previousBrief: params.previousBrief ?? null,
+        goalSynthesisEnabled: params.goalSynthesisEnabled === true,
       }),
       [],
       params.llmConfig,
@@ -1895,6 +1968,7 @@ async function runLlmReflection(params: {
       sessionPath: params.sessionPath,
       knownEvidenceRefs: params.knownEvidenceRefs,
       connectors: params.connectors,
+      goalSynthesisEnabled: params.goalSynthesisEnabled === true,
       now: params.now,
     });
   } catch {
@@ -2627,6 +2701,8 @@ export async function runAoiAutonomyTick(
     // P1a c3: feed the prior tick's brief into the reflection prompt as
     // prioritization-only continuity context (never evidence).
     previousBrief,
+    // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
+    goalSynthesisEnabled: params.goalSynthesisEnabled,
     now,
   });
 

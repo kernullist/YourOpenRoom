@@ -836,6 +836,89 @@ export function buildAoiGoalProposalFromUserMessage(params: {
   };
 }
 
+// P1a c4 (LLM goal-synthesis): build a goal-candidate proposal from an
+// LLM-supplied title + intent that was synthesized from observed patterns
+// (NOT a user message). The proposal is forced display-only (goal_candidate +
+// requiresUserApproval + L1) and carries a DETERMINISTICALLY built plan, so the
+// model never fabricates a plan and a goal only ever activates through the
+// existing user-acceptance path (activateAoiGoalFromProposal). Evidence-grounded:
+// returns null without source refs.
+export function buildAoiGoalCandidateProposal(params: {
+  sessionPath: string;
+  title: string;
+  userIntentSummary: string;
+  sourceRefs: string[];
+  now: number;
+  risk?: AoiAutonomyRisk;
+  confidence?: number;
+}): AoiProposal | null {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    return null;
+  }
+  const title = truncateText(sanitizeText(params.title, 120), 96);
+  const userIntentSummary = sanitizeText(params.userIntentSummary, TEXT_MAX_CHARS);
+  const sourceRefs = normalizeStringArray(params.sourceRefs, 16);
+  if (!title || !userIntentSummary || sourceRefs.length === 0) {
+    return null;
+  }
+  // Goals are not high-risk actions; clamp an over-claimed risk to medium.
+  const risk: AoiAutonomyRisk = params.risk === 'high' ? 'medium' : (params.risk ?? 'low');
+  const confidence =
+    typeof params.confidence === 'number' && params.confidence >= 0 && params.confidence <= 1
+      ? params.confidence
+      : 0.7;
+  const goalId = `goal-candidate-${hashPart(`${sessionPath}:${userIntentSummary}`)}`;
+  const plan = buildAoiPlanForGoal({
+    goalId,
+    sessionPath,
+    userIntentSummary,
+    sourceRefs,
+    risk,
+    now: params.now,
+  });
+  return {
+    version: 1,
+    id: createGoalId('aoi-proposal-goal-llm', params.now),
+    sessionPath,
+    status: 'active',
+    title: truncateText(`Track goal: ${title}`, 96),
+    body: truncateText(
+      'Aoi noticed a recurring pattern in recent activity and suggests tracking it as an objective. Approving activates a small evidence-backed goal; continuations still go through the existing approval flow.',
+      320,
+    ),
+    reason: truncateText(
+      'Recurring signals across recent observations suggest a multi-step objective worth tracking.',
+      240,
+    ),
+    trigger: 'goal_candidate',
+    createdAt: params.now,
+    updatedAt: params.now,
+    cooldownKey: `goal-candidate:${hashPart(`${sessionPath}:${userIntentSummary}`)}`,
+    confidence,
+    risk,
+    requiredAutonomyLevel: 'L1',
+    requiresUserApproval: true,
+    suggestedTools: [],
+    evidenceRefs: sourceRefs,
+    memoryIds: [],
+    artifactRefs: [`goal:${goalId}`],
+    riskSignals: ['goal-candidate', 'llm-goal-synthesis'],
+    acceptAction: {
+      kind: 'activate_goal',
+      params: {
+        title,
+        userIntentSummary,
+        sourceRefs,
+        confidence,
+        risk,
+        owner: 'shared',
+        plan,
+      },
+    },
+  };
+}
+
 export function activateAoiGoalFromProposal(params: {
   sessionsDir: string;
   sessionPath: string;

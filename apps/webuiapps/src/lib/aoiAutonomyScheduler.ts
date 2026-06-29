@@ -98,6 +98,7 @@ export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   quietMode: false,
   allowNetwork: false,
   llmDailyTokenBudget: DEFAULT_LLM_DAILY_TOKEN_BUDGET,
+  goalSynthesisEnabled: false,
 };
 
 export interface AoiAutonomyWakeupInput {
@@ -301,6 +302,7 @@ function normalizeBudget(
     quietMode: quietMode ?? budget?.quietMode ?? DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET.quietMode,
     allowNetwork: budget?.allowNetwork === true,
     llmDailyTokenBudget: resolveAoiLlmTokenCeiling(budget?.llmDailyTokenBudget),
+    goalSynthesisEnabled: budget?.goalSynthesisEnabled === true,
   };
 }
 
@@ -1672,6 +1674,8 @@ async function runWakeupInternal(
           // P1a c2: rolling daily token ceiling for LLM brief synthesis. Only
           // consumed when allowNetwork put an llmConfig in the tick above.
           llmDailyTokenBudget: budget.llmDailyTokenBudget,
+          // P1a c4: explicit opt-in for LLM goal synthesis (on top of network).
+          goalSynthesisEnabled: budget.goalSynthesisEnabled,
         }),
         budget.maxBackgroundTickRuntimeMs,
         'Aoi scheduler background tick exceeded runtime budget.',

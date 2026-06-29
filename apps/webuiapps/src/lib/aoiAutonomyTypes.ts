@@ -1887,6 +1887,10 @@ export interface AoiAutonomyWakeupBudget {
   // Undefined -> the enforced finite default; 0 -> unlimited (explicit opt-out).
   // Only consumed when allowNetwork puts an llmConfig in the tick.
   llmDailyTokenBudget?: number;
+  // P1a c4: explicit opt-in (on top of allowNetwork) for LLM goal synthesis.
+  // Default/false -> the reflection prompt offers no goal candidate and the
+  // parser drops any activate_goal acceptAction (fail-closed).
+  goalSynthesisEnabled?: boolean;
 }
 
 export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';

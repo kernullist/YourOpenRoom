@@ -828,6 +828,89 @@ describe('runAoiAutonomyTick()', () => {
     expect(loadAoiLlmBudgetState(root, SESSION_PATH)).toBeNull();
   });
 
+  it('proposes a display-only goal candidate but never self-activates the goal (P1a c4)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const goalJson = JSON.stringify({
+      reflections: [],
+      proposals: [
+        {
+          title: 'track the recurring telemetry objective',
+          body: 'A recurring multi-step objective across recent activity.',
+          reason: 'It keeps recurring across observations.',
+          confidence: 0.8,
+          evidenceRefs: ['observation:latest-user-message'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: {
+              title: 'Harden kernel telemetry',
+              userIntentSummary: 'Finish hardening the kernel telemetry path',
+            },
+          },
+        },
+      ],
+    });
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(goalJson),
+      goalSynthesisEnabled: true,
+      now: NOW,
+    });
+
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeDefined();
+    expect(goalCandidate?.requiresUserApproval).toBe(true);
+    expect(goalCandidate?.acceptAction?.kind).toBe('activate_goal');
+    expect(result.newActiveProposalCount).toBeGreaterThan(0);
+    // no-self-direction: a goal is proposed but NEVER activated by the loop.
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toHaveLength(0);
+  });
+
+  it('drops an activate_goal candidate when goal synthesis is not opted in (P1a c4)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const goalJson = JSON.stringify({
+      reflections: [],
+      proposals: [
+        {
+          title: 'track something',
+          body: 'b',
+          reason: 'r',
+          confidence: 0.8,
+          evidenceRefs: ['observation:latest-user-message'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: { title: 'X', userIntentSummary: 'Y' },
+          },
+        },
+      ],
+    });
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(goalJson),
+      now: NOW,
+    });
+
+    expect(
+      loadAoiActiveProposals(root, SESSION_PATH).some(
+        (proposal) => proposal.trigger === 'goal_candidate',
+      ),
+    ).toBe(false);
+    expect(result.warnings).toContain('proposal_goal_synthesis_disabled');
+  });
+
   it('creates a bounded recovery proposal for failed or timed-out research', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

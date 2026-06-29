@@ -7,6 +7,7 @@ import {
   activateAoiGoalFromProposal,
   aoiPlanStepRequiredLevel,
   applyAoiGoalDecision,
+  buildAoiGoalCandidateProposal,
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
   loadAoiActiveGoals,
@@ -238,6 +239,58 @@ function makeKiraOutcome(partial: Partial<AoiKiraOutcomeEvent> = {}): AoiKiraOut
 }
 
 describe('Aoi autonomy goals', () => {
+  it('builds a display-only goal candidate from an LLM-supplied title and intent (P1a c4)', () => {
+    const proposal = buildAoiGoalCandidateProposal({
+      sessionPath: SESSION_PATH,
+      title: 'Harden kernel telemetry',
+      userIntentSummary: 'Finish hardening the kernel telemetry path end to end',
+      sourceRefs: ['observation:obs-1'],
+      risk: 'high', // goals are not high-risk -> clamps to medium
+      confidence: 0.82,
+      now: NOW,
+    });
+    expect(proposal).not.toBeNull();
+    expect(proposal?.trigger).toBe('goal_candidate');
+    expect(proposal?.requiresUserApproval).toBe(true);
+    expect(proposal?.requiredAutonomyLevel).toBe('L1');
+    expect(proposal?.risk).toBe('medium');
+    expect(proposal?.acceptAction?.kind).toBe('activate_goal');
+    expect(proposal?.evidenceRefs).toEqual(['observation:obs-1']);
+    // The plan is built deterministically; the LLM never fabricates it.
+    expect(proposal?.acceptAction?.params).toHaveProperty('plan');
+  });
+
+  it('returns null without a title, intent, or grounding source ref (P1a c4)', () => {
+    const sourceRefs = ['observation:obs-1'];
+    expect(
+      buildAoiGoalCandidateProposal({
+        sessionPath: SESSION_PATH,
+        title: '',
+        userIntentSummary: 'x',
+        sourceRefs,
+        now: NOW,
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiGoalCandidateProposal({
+        sessionPath: SESSION_PATH,
+        title: 'x',
+        userIntentSummary: '',
+        sourceRefs,
+        now: NOW,
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiGoalCandidateProposal({
+        sessionPath: SESSION_PATH,
+        title: 'x',
+        userIntentSummary: 'y',
+        sourceRefs: [],
+        now: NOW,
+      }),
+    ).toBeNull();
+  });
+
   it('creates an explicit goal candidate proposal but not from ambiguous text', async () => {
     const root = makeTempRoot();
     saveAoiAutonomyPolicy(root, SESSION_PATH, {

@@ -179,8 +179,23 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
         AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK: 'true',
         AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '120000',
         AOI_AUTONOMY_BACKGROUND_MAX_SESSIONS: '3',
+        AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET: '50000',
+        AOI_AUTONOMY_GOAL_SYNTHESIS: '1',
       }),
-    ).toEqual({ enabled: true, allowNetwork: true, intervalMs: 120000, maxSessionsPerCycle: 3 });
+    ).toEqual({
+      enabled: true,
+      allowNetwork: true,
+      intervalMs: 120000,
+      maxSessionsPerCycle: 3,
+      llmDailyTokenBudget: 50000,
+      goalSynthesisEnabled: true,
+    });
+  });
+
+  it('defaults the goal-synthesis opt-in to false and leaves the token budget unset', () => {
+    const config = resolveAoiAutonomyBackgroundConfigFromEnv({ AOI_AUTONOMY_BACKGROUND: '1' });
+    expect(config.goalSynthesisEnabled).toBe(false);
+    expect(config.llmDailyTokenBudget).toBeUndefined();
   });
 });
 

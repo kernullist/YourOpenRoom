@@ -213,3 +213,89 @@ describe('buildAoiAutonomyReflectionMessages connector catalog', () => {
     expect(user.content).not.toContain('create_issue');
   });
 });
+
+describe('parseAoiAutonomyReflectionResponse goal synthesis (P1a c4)', () => {
+  const base = { sessionPath: 'demo', now: 1_000 };
+
+  function goalProposalRaw(overrides: Record<string, unknown> = {}): string {
+    return JSON.stringify({
+      proposals: [
+        {
+          title: 'recurring telemetry work',
+          body: 'A multi-step objective seen across observations.',
+          reason: 'It keeps recurring.',
+          confidence: 0.8,
+          // Deliberately over-claimed / under-gated; the parser must force
+          // display-only goal_candidate governance regardless.
+          risk: 'high',
+          requiresUserApproval: false,
+          requiredAutonomyLevel: 'L4',
+          evidenceRefs: ['observation:obs-1', 'memory:ghost'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: {
+              title: 'Harden the kernel telemetry path',
+              userIntentSummary: 'Finish hardening the kernel telemetry path end to end',
+            },
+          },
+          ...overrides,
+        },
+      ],
+    });
+  }
+
+  it('accepts an activate_goal candidate when enabled and forces display-only governance', () => {
+    const result = parseAoiAutonomyReflectionResponse(goalProposalRaw(), {
+      ...base,
+      knownEvidenceRefs: new Set(['observation:obs-1']),
+      goalSynthesisEnabled: true,
+    });
+    expect(result.proposals).toHaveLength(1);
+    const proposal = result.proposals[0];
+    expect(proposal?.trigger).toBe('goal_candidate');
+    expect(proposal?.requiresUserApproval).toBe(true);
+    expect(proposal?.requiredAutonomyLevel).toBe('L1');
+    expect(proposal?.risk).toBe('medium'); // clamped from over-claimed 'high'
+    expect(proposal?.acceptAction?.kind).toBe('activate_goal');
+    // Hallucinated evidence is dropped; only the known ref grounds the goal.
+    expect(proposal?.evidenceRefs).toEqual(['observation:obs-1']);
+  });
+
+  it('drops an activate_goal candidate when goal synthesis is not enabled (fail-closed)', () => {
+    const result = parseAoiAutonomyReflectionResponse(goalProposalRaw(), {
+      ...base,
+      knownEvidenceRefs: new Set(['observation:obs-1']),
+    });
+    expect(result.proposals).toHaveLength(0);
+    expect(result.warnings).toContain('proposal_goal_synthesis_disabled');
+  });
+
+  it('drops an enabled goal candidate that is not grounded in known evidence', () => {
+    const result = parseAoiAutonomyReflectionResponse(goalProposalRaw(), {
+      ...base,
+      knownEvidenceRefs: new Set<string>(),
+      goalSynthesisEnabled: true,
+    });
+    expect(result.proposals).toHaveLength(0);
+    expect(result.warnings).toContain('proposal_goal_candidate_rejected');
+  });
+});
+
+describe('buildAoiAutonomyReflectionMessages goal synthesis (P1a c4)', () => {
+  const baseParams = { observations: [], memories: [], activeProposals: [] };
+
+  it('omits goal guidance by default (prompt unchanged)', () => {
+    const [system, user] = buildAoiAutonomyReflectionMessages(baseParams);
+    expect(system.content).not.toContain('activate_goal');
+    expect(user.content).not.toContain('acceptActionGoalCandidate');
+  });
+
+  it('offers a goal candidate when goal synthesis is enabled', () => {
+    const [system, user] = buildAoiAutonomyReflectionMessages({
+      ...baseParams,
+      goalSynthesisEnabled: true,
+    });
+    expect(system.content).toContain('activate_goal');
+    expect(user.content).toContain('acceptActionGoalCandidate');
+  });
+});
