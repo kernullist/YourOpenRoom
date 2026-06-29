@@ -8,6 +8,7 @@ import {
   startAoiAutonomyBackgroundRunner,
   type AoiAutonomyBackgroundRunnerHandle,
 } from './aoiAutonomyBackgroundRunner';
+import { acquireAoiAutonomyLoopLock } from './aoiAutonomyLoopLock';
 import { loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
@@ -2476,7 +2477,17 @@ export function startAoiAutonomyBackgroundFromEnv(
   const sessionsDir = resolve(options.sessionsDir);
   const configFile = resolve(options.configFile);
   const workspaceRoot = resolve(options.workspaceRoot || process.cwd());
-  return startAoiAutonomyBackgroundRunner({
+  // Single-instance guard: refuse to start a SECOND loop against the same
+  // session dir (double-tick / file races; the in-flight guard is per-process).
+  // This covers daemon-vs-daemon AND daemon-vs-Vite because both mounts start
+  // the loop through this one function. OFF-by-default is preserved: the lock
+  // is only touched after the enabled check above, so an un-opted-in process
+  // never writes the lock file.
+  const loopLock = acquireAoiAutonomyLoopLock(sessionsDir);
+  if (!loopLock) {
+    return null;
+  }
+  const runnerHandle = startAoiAutonomyBackgroundRunner({
     sessionsDir,
     configFile,
     workspaceRoot,
@@ -2487,6 +2498,14 @@ export function startAoiAutonomyBackgroundFromEnv(
     // loop can drive LLM reasoning (only used when allowNetwork is on).
     loadLlmConfig: () => loadAoiMainLlmConfig(configFile),
   });
+  // Release the lock when the loop stops so a clean shutdown frees the dir for
+  // the next process (a crash leaves a stale lock that the next acquire reclaims).
+  return {
+    stop: () => {
+      runnerHandle.stop();
+      loopLock.release();
+    },
+  };
 }
 
 export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {

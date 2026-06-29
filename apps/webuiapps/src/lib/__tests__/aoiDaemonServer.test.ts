@@ -128,20 +128,48 @@ describe('resolveAoiDaemonOptionsFromEnv', () => {
 
 describe('startAoiAutonomyBackgroundFromEnv', () => {
   it('returns null when the loop is not opted in', () => {
+    // Real temp dir: the loop starter now touches the fs for the single-instance
+    // lock, so it can no longer be exercised against a non-existent path.
+    const sessionsDir = makeTempSessionsDir();
     const handle = startAoiAutonomyBackgroundFromEnv(
-      { sessionsDir: '/sessions', configFile: '/config.json' },
+      { sessionsDir, configFile: join(sessionsDir, 'config.json') },
       {},
     );
     expect(handle).toBeNull();
+    // OFF-by-default must not write the lock file.
+    expect(fs.existsSync(join(sessionsDir, '.aoi-autonomy-loop.lock'))).toBe(false);
   });
 
   it('returns a stoppable handle when opted in via env', () => {
+    const sessionsDir = makeTempSessionsDir();
     const handle = startAoiAutonomyBackgroundFromEnv(
-      { sessionsDir: '/sessions', configFile: '/config.json' },
+      { sessionsDir, configFile: join(sessionsDir, 'config.json') },
       { AOI_AUTONOMY_BACKGROUND: '1' },
     );
     expect(handle).not.toBeNull();
     // The interval is unref'd and no cycle runs before stop(); release it now.
     handle?.stop();
+  });
+});
+
+describe('autonomy loop single-instance lock', () => {
+  it('refuses a second loop against the same session dir and frees it on stop', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const options = { sessionsDir, configFile: join(sessionsDir, 'config.json') };
+    const env = { AOI_AUTONOMY_BACKGROUND: '1' };
+
+    const first = startAoiAutonomyBackgroundFromEnv(options, env);
+    expect(first).not.toBeNull();
+
+    // A second loop against the SAME dir is refused while the first is live --
+    // this is the daemon-vs-daemon / daemon-vs-Vite double-tick guard.
+    const second = startAoiAutonomyBackgroundFromEnv(options, env);
+    expect(second).toBeNull();
+
+    // After the first releases its lock on stop(), the dir can be locked again.
+    first?.stop();
+    const third = startAoiAutonomyBackgroundFromEnv(options, env);
+    expect(third).not.toBeNull();
+    third?.stop();
   });
 });
