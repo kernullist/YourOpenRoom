@@ -47,6 +47,7 @@ import {
 import { buildAoiPersonalSourceRealityCheck } from '../aoiPersonalSourceRealityCheck';
 import { buildAoiSourceFreshnessContracts } from '../aoiSourceFreshnessContract';
 import { applyAoiTrustCalibration, buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
+import { normalizeAoiOutcomeSignalRecord } from '../aoiOutcomeLearning';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type {
   AoiJarvisAcceptanceReport,
@@ -64,6 +65,9 @@ import type {
   AoiOperatorHealthState,
   AoiOpportunity,
   AoiOperatorTraceExport,
+  AoiOutcomeLearningDirection,
+  AoiOutcomeSignalKind,
+  AoiOutcomeSignalRecord,
   AoiPersonalSignalMetadataSummary,
   AoiProposal,
   AoiProposalDecision,
@@ -2795,6 +2799,143 @@ describe('Aoi autonomy evaluation', () => {
 
     expect(memory?.freshnessState).toBe('stale');
     expect(memory?.cannotKnow.map((item) => item.statement).join(' ')).toContain('current truth');
+  });
+});
+
+describe('outcome signals feed trust calibration (P1b)', () => {
+  const SESSION = 'aoi/default';
+  const TRIGGER = feedbackMemoryProposalFixture.trigger;
+  const ACTION = feedbackMemoryProposalFixture.acceptAction?.kind;
+
+  function makeLinkedOutcome(partial: {
+    id: string;
+    direction: AoiOutcomeLearningDirection;
+    confidence?: number;
+    magnitude?: number;
+    outcomeKind?: AoiOutcomeSignalKind;
+    sourceProposalId?: string;
+    createdAt?: number;
+  }): AoiOutcomeSignalRecord {
+    const record = normalizeAoiOutcomeSignalRecord(
+      {
+        id: partial.id,
+        sessionPath: SESSION,
+        outcomeKind: partial.outcomeKind ?? 'work_order_rejected',
+        signalKind: 'passive_outcome',
+        sourceProposalId: partial.sourceProposalId ?? feedbackMemoryProposalFixture.id,
+        confidence: partial.confidence ?? 0.5,
+        inferredAdjustment: {
+          version: 1,
+          target: 'source',
+          direction: partial.direction,
+          magnitude: partial.magnitude ?? 1,
+          reason: 'test outcome',
+        },
+        createdAt: partial.createdAt ?? 3000,
+      },
+      SESSION,
+      5000,
+    );
+    if (!record) {
+      throw new Error('failed to build test outcome');
+    }
+    return record;
+  }
+
+  function applyForFixture(
+    outcomes: AoiOutcomeSignalRecord[],
+    outcomeTrustIncreaseAllowed: boolean,
+  ): ReturnType<typeof applyAoiTrustCalibration> {
+    const profile = buildAoiTrustCalibrationProfile({
+      sessionPath: SESSION,
+      proposals: [feedbackMemoryProposalFixture],
+      outcomes,
+      outcomeTrustIncreaseAllowed,
+      now: 5000,
+    });
+    return applyAoiTrustCalibration({
+      profile,
+      triggerKind: TRIGGER,
+      actionKind: ACTION,
+      score: 0.6,
+    });
+  }
+
+  it('does not boost trust from an outcome-only signal (gate closed)', () => {
+    const applied = applyForFixture(
+      [
+        makeLinkedOutcome({
+          id: 'o-boost-gated',
+          direction: 'boost',
+          outcomeKind: 'work_order_approved',
+        }),
+      ],
+      false,
+    );
+    expect(applied.rankingAdjustment).toBe(0);
+  });
+
+  it('boosts trust when the outcome trust gate is open', () => {
+    const applied = applyForFixture(
+      [
+        makeLinkedOutcome({
+          id: 'o-boost',
+          direction: 'boost',
+          outcomeKind: 'work_order_approved',
+        }),
+      ],
+      true,
+    );
+    expect(applied.rankingAdjustment).toBeGreaterThan(0);
+  });
+
+  it('suppresses a linked proposal kind regardless of the trust gate', () => {
+    const applied = applyForFixture(
+      [makeLinkedOutcome({ id: 'o-suppress', direction: 'suppress' })],
+      false,
+    );
+    expect(applied.rankingAdjustment).toBeLessThan(0);
+  });
+
+  it('raises approval strictness for a risk_up outcome', () => {
+    const applied = applyForFixture(
+      [makeLinkedOutcome({ id: 'o-risk', direction: 'risk_up', outcomeKind: 'user_correction' })],
+      false,
+    );
+    expect(applied.approvalStrictnessBoost).toBeGreaterThan(0);
+  });
+
+  it('leaves calibration unchanged when no outcomes are supplied', () => {
+    const applied = applyForFixture([], true);
+    expect(applied.rankingAdjustment).toBe(0);
+    expect(applied.approvalStrictnessBoost).toBe(0);
+  });
+
+  it('ignores an outcome whose linked proposal cannot be resolved', () => {
+    const applied = applyForFixture(
+      [
+        makeLinkedOutcome({
+          id: 'o-unlinked',
+          direction: 'suppress',
+          sourceProposalId: 'no-such-proposal',
+        }),
+      ],
+      false,
+    );
+    expect(applied.rankingAdjustment).toBe(0);
+  });
+
+  it('keeps accumulated outcome boosts within the positive learning cap', () => {
+    const many = Array.from({ length: 50 }, (_, index) =>
+      makeLinkedOutcome({
+        id: `o-many-${index}`,
+        direction: 'boost',
+        outcomeKind: 'work_order_approved',
+        createdAt: 3000 + index,
+      }),
+    );
+    const applied = applyForFixture(many, true);
+    expect(applied.rankingAdjustment).toBeLessThanOrEqual(0.12);
   });
 });
 

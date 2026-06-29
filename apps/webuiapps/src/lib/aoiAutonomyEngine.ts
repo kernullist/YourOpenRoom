@@ -43,6 +43,8 @@ import {
   loadAoiAutonomyPolicy,
   loadAoiFollowThroughLearningSummary,
   loadAoiObservations,
+  loadAoiOutcomeLearningSummary,
+  loadAoiOutcomeSignalRecords,
   loadAoiProposalDecisions,
   markAoiAutonomyTickSkipped,
   normalizeAoiAutonomySessionPath,
@@ -2209,6 +2211,11 @@ export async function runAoiAutonomyTick(
       limit: 160,
     }),
     resets: loadAoiTrustCalibrationResets(params.sessionsDir, sessionPath),
+    // Outcome signals feed bounded secondary calibration on linked proposals'
+    // trigger/action; the trust gate keeps outcome-only signals from boosting.
+    outcomes: loadAoiOutcomeSignalRecords(params.sessionsDir, sessionPath, now),
+    outcomeTrustIncreaseAllowed: loadAoiOutcomeLearningSummary(params.sessionsDir, sessionPath, now)
+      .trustIncreaseAllowed,
     now,
   });
   // Follow-through learning: a secondary, source-keyed ranking signal distinct

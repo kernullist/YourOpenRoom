@@ -9,6 +9,7 @@ import type {
   AoiNotificationLane,
   AoiOperatorTimelineEvent,
   AoiOperatorVoiceEventCategory,
+  AoiOutcomeSignalRecord,
   AoiProposal,
   AoiProposalDecision,
   AoiProposalFeedbackCategory,
@@ -26,6 +27,14 @@ const TOO_MUCH_DELTA = -0.28;
 const WRONG_SOURCE_DELTA = -0.3;
 const WRONG_EVIDENCE_DELTA = -0.18;
 const UNSAFE_STRICTNESS_DELTA = 0.22;
+// Outcome-derived calibration deltas: weaker than decision evidence (outcomes are
+// mostly passive, confidence <= 0.5) and further scaled by confidence * magnitude.
+// The boost delta only applies when the outcome-learning trust gate is open;
+// suppress and risk deltas always apply (conservative -- lower usefulness / raise
+// strictness). All accumulation stays inside the existing calibration clamps.
+const OUTCOME_BOOST_DELTA = 0.03;
+const OUTCOME_SUPPRESS_DELTA = -0.05;
+const OUTCOME_RISK_DELTA = 0.1;
 
 export interface AoiTrustCalibrationBuildInput {
   sessionPath: string;
@@ -35,6 +44,12 @@ export interface AoiTrustCalibrationBuildInput {
   timelineEvents?: AoiOperatorTimelineEvent[];
   replayFailures?: Array<{ key: string; evidenceRefs?: string[] }>;
   resets?: AoiTrustCalibrationReset[];
+  // Outcome signals feed bounded secondary evidence on their linked proposal's
+  // trigger / action calibration. outcomeTrustIncreaseAllowed gates the BOOST
+  // direction (outcome-only signals cannot raise trust); suppress / risk always
+  // apply. Absent or false keeps boosts off (fail-closed).
+  outcomes?: AoiOutcomeSignalRecord[];
+  outcomeTrustIncreaseAllowed?: boolean;
   now?: number;
 }
 
@@ -392,6 +407,88 @@ function evidenceFromDecisions(
   return evidence;
 }
 
+// Outcome signals become bounded secondary calibration evidence. Only outcomes
+// LINKED to a proposal (sourceProposalId resolvable in proposalsById) are used,
+// so the evidence lands on the SAME trigger_kind / action_kind vocabulary the
+// ranking path looks up (a proposal's trigger / acceptAction). Unlinked outcomes
+// (e.g. pure chat corrections) are recorded but not calibrated here.
+//
+// Direction maps conservatively: suppress -> negative, risk_up -> safety
+// (strictness), boost -> positive but ONLY when the trust gate is open. neutral
+// carries no signal. Deltas are scaled by confidence * magnitude and stay inside
+// the existing per-dimension and final calibration clamps.
+function evidenceFromOutcomes(params: {
+  outcomes: AoiOutcomeSignalRecord[];
+  proposalsById: Map<string, AoiProposal>;
+  trustIncreaseAllowed: boolean;
+}): AoiCalibrationEvidence[] {
+  const evidence: AoiCalibrationEvidence[] = [];
+  for (const outcome of params.outcomes) {
+    const proposalId = outcome.sourceProposalId;
+    if (!proposalId) {
+      continue;
+    }
+    const proposal = params.proposalsById.get(proposalId);
+    if (!proposal) {
+      continue;
+    }
+    const direction = outcome.inferredAdjustment.direction;
+    if (direction === 'neutral') {
+      continue;
+    }
+    // Fail-closed gate: a boost may only raise trust when the outcome-learning
+    // summary permits it (outcome-only signals cannot boost without an explicit
+    // label or field readiness). Suppress / risk are conservative and always run.
+    if (direction === 'boost' && !params.trustIncreaseAllowed) {
+      continue;
+    }
+    const weight =
+      clamp(outcome.confidence, 0, 1) * clamp(outcome.inferredAdjustment.magnitude, 0, 1);
+    if (weight <= 0) {
+      continue;
+    }
+    const calibrationDirection: AoiCalibrationDirection =
+      direction === 'boost' ? 'positive' : direction === 'risk_up' ? 'safety' : 'negative';
+    const baseDelta =
+      direction === 'boost'
+        ? OUTCOME_BOOST_DELTA
+        : direction === 'risk_up'
+          ? OUTCOME_RISK_DELTA
+          : OUTCOME_SUPPRESS_DELTA;
+    const delta = fixed(baseDelta * weight);
+    if (delta === 0) {
+      continue;
+    }
+    const triggerKind = proposal.trigger;
+    const actionKind = proposal.acceptAction?.kind ?? proposal.suggestedTools[0] ?? 'unknown';
+    const evidenceRefs = dedupeRefs([
+      `outcome:${outcome.id}`,
+      `proposal:${proposalId}`,
+      ...(outcome.evidenceRefs ?? []),
+    ]);
+    const reason = `Outcome ${outcome.outcomeKind} (${outcome.signalKind}) ${direction} on linked proposal.`;
+    addEvidence(evidence, {
+      dimension: 'trigger_kind',
+      key: triggerKind,
+      direction: calibrationDirection,
+      delta,
+      reason,
+      createdAt: outcome.createdAt,
+      evidenceRefs,
+    });
+    addEvidence(evidence, {
+      dimension: 'action_kind',
+      key: actionKind,
+      direction: calibrationDirection,
+      delta,
+      reason,
+      createdAt: outcome.createdAt,
+      evidenceRefs,
+    });
+  }
+  return evidence;
+}
+
 function evidenceFromContextFeedback(
   feedback: AoiContextSourceFeedback[] | undefined,
 ): AoiCalibrationEvidence[] {
@@ -638,6 +735,12 @@ export function buildAoiTrustCalibrationProfile(
         proposalsById,
         replayFailures: input.replayFailures,
         now,
+      }),
+      ...evidenceFromOutcomes({
+        outcomes: input.outcomes ?? [],
+        proposalsById,
+        // Fail-closed: only an explicit true opens the boost gate.
+        trustIncreaseAllowed: input.outcomeTrustIncreaseAllowed === true,
       }),
       ...evidenceFromContextFeedback(input.contextFeedback),
       ...evidenceFromTimeline(input.timelineEvents),
