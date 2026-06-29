@@ -55,7 +55,11 @@ describe('createServerAoiEmbeddingProvider', () => {
 });
 
 describe('embedAndPersistServerAoiMemories', () => {
-  const fakeProvider = (vector: number[] = [0.1, 0.2, 0.3]): AoiEmbeddingProvider => ({
+  const fakeProvider = (
+    vector: number[] = [0.1, 0.2, 0.3],
+    model = 'test-embed-model',
+  ): AoiEmbeddingProvider => ({
+    model,
     async embed(texts: string[]) {
       return texts.map(() => vector);
     },
@@ -77,6 +81,8 @@ describe('embedAndPersistServerAoiMemories', () => {
     const result = await embedAndPersistServerAoiMemories(root, fakeProvider());
     expect(result.embeddedCount).toBe(1);
     expect(loadServerAoiMemories(root)[0].embedding).toEqual([0.1, 0.2, 0.3]);
+    // The provider's model id is stamped alongside the vector for recall guarding.
+    expect(loadServerAoiMemories(root)[0].embeddingModel).toBe('test-embed-model');
   });
 
   it('is idempotent -- an already-embedded memory is skipped on the next pass', async () => {
@@ -103,6 +109,7 @@ describe('embedAndPersistServerAoiMemories', () => {
     const root = makeRoot();
     seedMemory(root);
     const throwingProvider: AoiEmbeddingProvider = {
+      model: 'test-embed-model',
       async embed() {
         throw new Error('embedding backend down');
       },

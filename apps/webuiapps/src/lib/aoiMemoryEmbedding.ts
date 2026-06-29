@@ -7,6 +7,10 @@
 export const AOI_DEFAULT_EMBEDDING_MODEL = 'text-embedding-004';
 
 export interface AoiEmbeddingProvider {
+  // The embedding model id this provider uses. Stamped onto each memory's
+  // `embeddingModel` at write time so recall can refuse to fuse vectors that a
+  // later model change made incompatible (same dimension, different space).
+  readonly model: string;
   embed(texts: string[]): Promise<number[][]>;
 }
 
@@ -72,6 +76,13 @@ export interface AoiMemoryRelevanceInput {
   content: string;
   embedding?: number[] | null;
   queryEmbedding?: number[] | null;
+  // Embedding model ids for the memory vector and the query vector. When BOTH
+  // are present, the semantic score is used only if they match, so a model
+  // change can never fuse vectors from incompatible spaces. When either is
+  // absent (legacy vectors, or a caller that does not track the model) this
+  // falls back to the dimension-only guard -- additive, no regression.
+  embeddingModel?: string | null;
+  queryEmbeddingModel?: string | null;
 }
 
 // Fuse lexical overlap and semantic cosine into one [0, 1] relevance, taking the
@@ -83,7 +94,14 @@ export interface AoiMemoryRelevanceInput {
 // `max(lexical, semantic)` fusion already used by `scoreAoiMemoryForQuery`.
 export function scoreAoiMemoryRelevance(input: AoiMemoryRelevanceInput): number {
   const lexical = lexicalOverlapScore(input.query, input.content);
+  // Only fuse the semantic signal when the two vectors are model-compatible.
+  // Unknown model on either side keeps the prior dimension-only guard.
+  const modelsCompatible =
+    !input.embeddingModel ||
+    !input.queryEmbeddingModel ||
+    input.embeddingModel === input.queryEmbeddingModel;
   const semantic =
+    modelsCompatible &&
     input.queryEmbedding &&
     input.embedding &&
     input.embedding.length > 0 &&
@@ -101,17 +119,23 @@ export function scoreAoiMemoryRelevance(input: AoiMemoryRelevanceInput): number 
 // zero-relevance memories; because the ranked list is descending, the first item
 // below the floor ends the scan.
 export function selectRelevantAoiMemoriesByEmbedding<
-  T extends { content: string; embedding?: number[] },
+  T extends { content: string; embedding?: number[]; embeddingModel?: string },
 >(
   memories: readonly T[],
   query: string,
-  options?: { queryEmbedding?: number[] | null; limit?: number; minScore?: number },
+  options?: {
+    queryEmbedding?: number[] | null;
+    queryEmbeddingModel?: string | null;
+    limit?: number;
+    minScore?: number;
+  },
 ): T[] {
   const limit = options?.limit ?? 8;
   if (limit <= 0 || memories.length === 0) {
     return [];
   }
   const queryEmbedding = options?.queryEmbedding ?? null;
+  const queryEmbeddingModel = options?.queryEmbeddingModel ?? null;
   const minScore = options?.minScore ?? 0;
   const scored = memories.map((memory, index) => ({
     memory,
@@ -121,6 +145,8 @@ export function selectRelevantAoiMemoriesByEmbedding<
       content: memory.content,
       embedding: memory.embedding,
       queryEmbedding,
+      embeddingModel: memory.embeddingModel,
+      queryEmbeddingModel,
     }),
   }));
   scored.sort((a, b) => b.score - a.score || a.index - b.index);
@@ -144,7 +170,7 @@ export function selectRelevantAoiMemoriesByEmbedding<
 // back to lexical. Structurally typed so it serves both the browser and server
 // AoiMemoryEntry shapes.
 export async function attachAoiMemoryEmbeddings<
-  T extends { content: string; embedding?: number[] },
+  T extends { content: string; embedding?: number[]; embeddingModel?: string },
 >(memories: T[], provider: AoiEmbeddingProvider | null | undefined): Promise<T[]> {
   if (!provider) {
     return memories;
@@ -161,6 +187,7 @@ export async function attachAoiMemoryEmbeddings<
       const vector = vectors[index];
       if (Array.isArray(vector) && vector.length > 0) {
         memory.embedding = vector;
+        memory.embeddingModel = provider.model;
       }
     });
   } catch {
@@ -213,6 +240,7 @@ export function createAoiOpenAiCompatibleEmbeddingProvider(options: {
   const model = options.model ?? AOI_DEFAULT_OPENAI_EMBEDDING_MODEL;
   const fetchImpl = options.fetchImpl ?? fetch;
   return {
+    model,
     async embed(texts: string[]): Promise<number[][]> {
       const results: number[][] = texts.map(() => []);
       // The endpoint rejects empty strings, so only send non-empty inputs and
@@ -290,6 +318,7 @@ export function createAoiGeminiEmbeddingProvider(options: {
   const model = options.model ?? AOI_DEFAULT_EMBEDDING_MODEL;
   const fetchImpl = options.fetchImpl ?? fetch;
   return {
+    model,
     async embed(texts: string[]): Promise<number[][]> {
       const results: number[][] = [];
       for (const text of texts) {

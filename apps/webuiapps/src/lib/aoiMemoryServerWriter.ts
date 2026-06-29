@@ -427,7 +427,11 @@ export async function embedAndPersistServerAoiMemories(
   batch.forEach((memory, index) => {
     const vector = vectors[index];
     if (Array.isArray(vector) && vector.length > 0) {
-      writeJsonFile(memoryFilePath(sessionsDir, memory.id), { ...memory, embedding: vector });
+      writeJsonFile(memoryFilePath(sessionsDir, memory.id), {
+        ...memory,
+        embedding: vector,
+        embeddingModel: provider.model,
+      });
       embeddedCount += 1;
     }
   });

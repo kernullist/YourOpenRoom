@@ -77,6 +77,35 @@ describe('scoreAoiMemoryForQuery semantic fusion', () => {
     const b = scoreAoiMemoryForQuery(withoutEmbedding, 'query with no shared words', 0);
     expect(a).toBe(b);
   });
+
+  it('suppresses semantic fusion when the memory and query embedding models differ', () => {
+    const queryEmbedding = [1, 0, 0];
+    const sameModel = scoreAoiMemoryForQuery(
+      makeMemory({ embedding: [1, 0, 0], embeddingModel: 'model-a' }),
+      'query with no shared words',
+      0,
+      queryEmbedding,
+      'model-a',
+    );
+    const diffModel = scoreAoiMemoryForQuery(
+      makeMemory({ embedding: [1, 0, 0], embeddingModel: 'model-a' }),
+      'query with no shared words',
+      0,
+      queryEmbedding,
+      'model-b',
+    );
+    // A legacy memory with no model tag keeps the dimension-only guard (semantic used).
+    const legacyMemory = scoreAoiMemoryForQuery(
+      makeMemory({ embedding: [1, 0, 0] }),
+      'query with no shared words',
+      0,
+      queryEmbedding,
+      'model-b',
+    );
+    expect(sameModel).toBeGreaterThan(diffModel);
+    expect(legacyMemory).toBeGreaterThan(diffModel);
+    expect(sameModel).toBeCloseTo(legacyMemory);
+  });
 });
 
 describe('lexicalOverlapScore', () => {
@@ -134,6 +163,33 @@ describe('scoreAoiMemoryRelevance', () => {
     });
     expect(score).toBe(0);
   });
+
+  it('suppresses the semantic score when the memory and query models differ', () => {
+    const base = {
+      query: 'no shared tokens at all',
+      content: 'entirely different surface form',
+      embedding: [1, 0, 0],
+      queryEmbedding: [1, 0, 0],
+    };
+    // Identical vectors + same model -> semantic dominates (close to 1).
+    expect(
+      scoreAoiMemoryRelevance({
+        ...base,
+        embeddingModel: 'model-a',
+        queryEmbeddingModel: 'model-a',
+      }),
+    ).toBeCloseTo(1);
+    // Same vectors but different models -> semantic suppressed, lexical only (0 here).
+    expect(
+      scoreAoiMemoryRelevance({
+        ...base,
+        embeddingModel: 'model-a',
+        queryEmbeddingModel: 'model-b',
+      }),
+    ).toBe(0);
+    // A missing model tag on either side keeps the prior dimension-only guard.
+    expect(scoreAoiMemoryRelevance(base)).toBeCloseTo(1);
+  });
 });
 
 describe('selectRelevantAoiMemoriesByEmbedding', () => {
@@ -186,11 +242,16 @@ describe('selectRelevantAoiMemoriesByEmbedding', () => {
 
 describe('attachAoiMemoryEmbeddings', () => {
   it('attaches a vector to a memory that lacks one', async () => {
-    const memories: Array<{ content: string; embedding?: number[] }> = [{ content: 'hello world' }];
+    const memories: Array<{ content: string; embedding?: number[]; embeddingModel?: string }> = [
+      { content: 'hello world' },
+    ];
     await attachAoiMemoryEmbeddings(memories, {
+      model: 'test-embed-model',
       embed: async (texts) => texts.map(() => [1, 0, 0]),
     });
     expect(memories[0].embedding).toEqual([1, 0, 0]);
+    // The provider's model id is stamped so recall can guard cross-model fusion.
+    expect(memories[0].embeddingModel).toBe('test-embed-model');
   });
 
   it('skips a memory that already carries a vector', async () => {
@@ -198,7 +259,7 @@ describe('attachAoiMemoryEmbeddings', () => {
       { content: 'x', embedding: [9, 9] },
     ];
     const embed = vi.fn(async (texts: string[]) => texts.map(() => [1]));
-    await attachAoiMemoryEmbeddings(memories, { embed });
+    await attachAoiMemoryEmbeddings(memories, { model: 'test-embed-model', embed });
     expect(memories[0].embedding).toEqual([9, 9]);
     expect(embed).not.toHaveBeenCalled();
   });
@@ -212,6 +273,7 @@ describe('attachAoiMemoryEmbeddings', () => {
   it('leaves memories unembedded when the provider throws', async () => {
     const memories = [{ content: 'x' } as { content: string; embedding?: number[] }];
     await attachAoiMemoryEmbeddings(memories, {
+      model: 'test-embed-model',
       embed: async () => {
         throw new Error('boom');
       },
@@ -222,15 +284,16 @@ describe('attachAoiMemoryEmbeddings', () => {
 
 describe('embedAoiQuery', () => {
   it('returns a vector for non-empty input', async () => {
-    expect(await embedAoiQuery('hi', { embed: async () => [[1, 2]] })).toEqual([1, 2]);
+    expect(await embedAoiQuery('hi', { model: 'm', embed: async () => [[1, 2]] })).toEqual([1, 2]);
   });
 
   it('returns null for empty input, a missing provider, an empty vector, or a failure', async () => {
-    expect(await embedAoiQuery('   ', { embed: async () => [[1]] })).toBeNull();
+    expect(await embedAoiQuery('   ', { model: 'm', embed: async () => [[1]] })).toBeNull();
     expect(await embedAoiQuery('hi', null)).toBeNull();
-    expect(await embedAoiQuery('hi', { embed: async () => [[]] })).toBeNull();
+    expect(await embedAoiQuery('hi', { model: 'm', embed: async () => [[]] })).toBeNull();
     expect(
       await embedAoiQuery('hi', {
+        model: 'm',
         embed: async () => {
           throw new Error('x');
         },

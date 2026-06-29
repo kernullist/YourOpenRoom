@@ -43,6 +43,9 @@ export interface AoiMemoryEntry {
   // Optional semantic embedding of `content` for vector recall. Best-effort:
   // absent when no embedding provider ran, in which case scoring stays lexical.
   embedding?: number[];
+  // The embedding model id that produced `embedding`. Recall fuses the semantic
+  // score only when this matches the query's embedding model (model-change safety).
+  embeddingModel?: string;
 }
 
 export interface AoiMemoryEpisode {

@@ -73,6 +73,9 @@ export interface AoiMemoryEntry {
   // Optional semantic embedding of `content` for vector recall. Best-effort:
   // absent when no embedding provider ran, in which case scoring stays lexical.
   embedding?: number[];
+  // The embedding model id that produced `embedding`. Recall fuses the semantic
+  // score only when this matches the query's embedding model (see aoiMemoryEmbedding).
+  embeddingModel?: string;
 }
 
 export interface AoiMemoryEpisode {
@@ -1186,6 +1189,7 @@ export function scoreAoiMemoryForQuery(
   query: string,
   now = Date.now(),
   queryEmbedding?: number[] | null,
+  queryEmbeddingModel?: string | null,
 ) {
   const ageDays = Math.max(0, (now - memory.updatedAt) / 86_400_000);
   const recency = memory.permanent ? 0.85 : Math.max(0, 1 - ageDays / 90);
@@ -1198,8 +1202,16 @@ export function scoreAoiMemoryForQuery(
   // catches paraphrases/synonyms (incl. cross-lingual) that share no tokens.
   // Fuse by taking the stronger of lexical and semantic so neither is lost;
   // when there is no embedding this reduces to the original lexical score.
+  // Same model-compatibility guard as the shared scorer: skip semantic fusion
+  // when the memory and query vectors come from different embedding models.
+  // Unknown model on either side keeps the prior dimension-only guard.
+  const semanticModelsCompatible =
+    !memory.embeddingModel || !queryEmbeddingModel || memory.embeddingModel === queryEmbeddingModel;
   const semantic =
-    queryEmbedding && memory.embedding && memory.embedding.length === queryEmbedding.length
+    semanticModelsCompatible &&
+    queryEmbedding &&
+    memory.embedding &&
+    memory.embedding.length === queryEmbedding.length
       ? Math.max(0, cosineSimilarity(memory.embedding, queryEmbedding))
       : 0;
   const relevance = Math.max(lexical, semantic);
@@ -1226,17 +1238,24 @@ export function scoreAoiMemoryForQuery(
 export function selectAoiMemoriesForPrompt(
   memories: AoiMemoryEntry[],
   query: string,
-  options?: { now?: number; limit?: number; maxChars?: number; queryEmbedding?: number[] | null },
+  options?: {
+    now?: number;
+    limit?: number;
+    maxChars?: number;
+    queryEmbedding?: number[] | null;
+    queryEmbeddingModel?: string | null;
+  },
 ): AoiMemoryEntry[] {
   const now = options?.now ?? Date.now();
   const limit = options?.limit ?? MAX_PROMPT_MEMORY_ENTRIES;
   const maxChars = options?.maxChars ?? MAX_PROMPT_MEMORY_CHARS;
   const queryEmbedding = options?.queryEmbedding ?? null;
+  const queryEmbeddingModel = options?.queryEmbeddingModel ?? null;
   const ranked = memories
     .filter((memory) => isPromptEligible(memory, now))
     .map((memory) => ({
       memory,
-      score: scoreAoiMemoryForQuery(memory, query, now, queryEmbedding),
+      score: scoreAoiMemoryForQuery(memory, query, now, queryEmbedding, queryEmbeddingModel),
     }))
     .sort((a, b) => b.score - a.score || b.memory.updatedAt - a.memory.updatedAt);
 
@@ -1254,10 +1273,11 @@ export function selectAoiMemoriesForPrompt(
 export function buildAoiMemoryPrompt(
   memories: AoiMemoryEntry[],
   latestUserMessage = '',
-  options?: { queryEmbedding?: number[] | null },
+  options?: { queryEmbedding?: number[] | null; queryEmbeddingModel?: string | null },
 ): string {
   const selected = selectAoiMemoriesForPrompt(memories, latestUserMessage, {
     ...(options?.queryEmbedding ? { queryEmbedding: options.queryEmbedding } : {}),
+    ...(options?.queryEmbeddingModel ? { queryEmbeddingModel: options.queryEmbeddingModel } : {}),
   });
   if (selected.length === 0) return '';
   const preferenceResolution = resolveAoiPreferenceContext({
