@@ -3302,6 +3302,32 @@ export interface AoiAutonomyBlockedProposal {
   dedupeKey?: string;
 }
 
+// Continuity note synthesized at the end of a tick and persisted for the NEXT
+// tick to consume as recall focus context (P1a continuous reasoning). It is
+// re-injected, so every text field is sanitized/redacted at synthesis and load.
+export interface AoiStrategicBrief {
+  version: 1;
+  sessionPath: string;
+  generatedAt: number;
+  tickReason: AoiAutonomyTickReason;
+  // Single continuity line fed into the next tick's recall focus query.
+  focusSummary: string;
+  // Just-accepted proposal titles -- threads Aoi opened this tick.
+  openThreads: string[];
+  // Blocked proposal "title -- top reason" lines.
+  blockedThreads: string[];
+  // Fresh Kira/work outcome lines observed this tick.
+  recentOutcomes: string[];
+  // Notable observation summaries this tick.
+  observationHighlights: string[];
+  evidenceRefs: string[];
+  acceptedCount: number;
+  blockedCount: number;
+  observationCount: number;
+  // Deterministic builder (commit 1) vs LLM synthesis (commit 2, budget-gated).
+  synthesizedBy: 'deterministic' | 'llm';
+}
+
 export interface AoiAutonomyTickResult {
   ok: boolean;
   sessionPath: string;
@@ -3315,6 +3341,9 @@ export interface AoiAutonomyTickResult {
   blockedProposalCount: number;
   blockedProposals: AoiAutonomyBlockedProposal[];
   operatorDigest?: AoiOperatorDigest;
+  // Continuity note persisted for the next tick. Optional/additive: absent on
+  // skipped/failed ticks and on serialized paths that predate it.
+  strategicBrief?: AoiStrategicBrief;
   warnings: string[];
 }
 

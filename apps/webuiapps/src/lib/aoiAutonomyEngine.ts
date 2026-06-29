@@ -58,6 +58,12 @@ import {
   recordAoiRecoveryProposalRelations,
 } from './aoiAutonomyRelations';
 import { deriveAoiMissionState, loadAoiMissionState } from './aoiAutonomyMission';
+import {
+  buildAoiContinuityFocus,
+  loadAoiStrategicBrief,
+  saveAoiStrategicBrief,
+  synthesizeAoiStrategicBrief,
+} from './aoiStrategicBrief';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   buildAoiMcpConnectorCatalog,
@@ -78,6 +84,7 @@ import type {
   AoiProposalAcceptAction,
   AoiProposalAcceptActionKind,
   AoiProposalDecision,
+  AoiStrategicBrief,
   AoiTrustCalibrationProfile,
   AoiFollowThroughLearningSummary,
   AoiReflection,
@@ -2176,6 +2183,11 @@ export async function runAoiAutonomyTick(
   const now = params.now ?? Date.now();
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const latestUserMessage = normalizeWhitespace(params.latestUserMessage || '');
+  // P1a continuous reasoning: the brief persisted at the end of the PREVIOUS tick.
+  // Folded into the recall focus query below so an idle background tick recalls
+  // memory about what Aoi was working on. Null on the first tick / older sessions
+  // -> the focus composition reduces to the prior mission/user-message behavior.
+  const previousBrief = loadAoiStrategicBrief(params.sessionsDir, sessionPath);
   const bundle = collectAoiAutonomyObservations({
     sessionsDir: params.sessionsDir,
     sessionPath,
@@ -2340,11 +2352,17 @@ export async function runAoiAutonomyTick(
     now,
   });
   // Semantic recall focus query: prefer the mission focus (what Aoi is working
-  // toward), falling back to the latest user message. Embedded once via the
+  // toward), falling back to the latest user message, and fold in the previous
+  // tick's strategic brief for continuity (P1a). Embedded once via the
   // network-gated server provider (null when no key / no provider) and reused by
   // the memory-consuming engines so a paraphrased memory that shares no tokens
   // can still be recalled. Best-effort: a failed embedding degrades to lexical.
-  const recallFocusQuery = (attentionMission?.focusSummary || latestUserMessage || '').trim();
+  // With no brief this reduces to the prior mission/user-message focus.
+  const recallFocusQuery = buildAoiContinuityFocus({
+    mission: attentionMission,
+    latestUserMessage,
+    brief: previousBrief,
+  });
   const recallFocusQueryEmbedding = await embedAoiQuery(recallFocusQuery, params.embeddingProvider);
   const recallFocusQueryEmbeddingModel = params.embeddingProvider?.model ?? null;
   const curiosityWarnings: string[] = [];
@@ -2605,6 +2623,29 @@ export async function runAoiAutonomyTick(
     trustCalibrationProfile,
   });
 
+  // P1a: synthesize this tick's continuity brief and persist it for the next
+  // tick to consume as recall focus. Best-effort -- a brief failure must never
+  // fail the tick (mirrors the mission-state side-effect discipline).
+  let strategicBrief: AoiStrategicBrief | undefined;
+  try {
+    strategicBrief = saveAoiStrategicBrief(
+      params.sessionsDir,
+      sessionPath,
+      synthesizeAoiStrategicBrief({
+        sessionPath,
+        now,
+        reason: params.reason,
+        acceptedProposals,
+        blockedProposals,
+        observations: bundle.observations,
+        outcomes: kiraOutcomeResult.freshOutcomes,
+        mission: attentionMission,
+      }),
+    );
+  } catch {
+    // Brief persistence is best-effort continuity; never fail the tick.
+  }
+
   return {
     ok: true,
     sessionPath,
@@ -2618,6 +2659,7 @@ export async function runAoiAutonomyTick(
     blockedProposalCount: blockedProposals.length,
     blockedProposals,
     operatorDigest,
+    ...(strategicBrief ? { strategicBrief } : {}),
     warnings: [
       ...observationWarnings,
       ...llmResult.warnings,

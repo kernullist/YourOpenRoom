@@ -28,6 +28,7 @@ import {
   updateAoiEnvironmentSource,
 } from '../aoiAutonomyStore';
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
+import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
@@ -696,6 +697,45 @@ describe('runAoiAutonomyTick()', () => {
       evidenceRefs: expect.arrayContaining(['research:aoi-research-done-001/report']),
       proposedActions: expect.arrayContaining(['read_research_artifact']),
     });
+  });
+
+  it('persists a strategic brief from the tick and reloads it on the next tick', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const first = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      now: NOW,
+    });
+
+    expect(first.newActiveProposalCount).toBe(1);
+    expect(first.strategicBrief).toBeDefined();
+    expect(first.strategicBrief?.synthesizedBy).toBe('deterministic');
+    expect(first.strategicBrief?.acceptedCount).toBe(1);
+    expect(first.strategicBrief?.openThreads.length).toBeGreaterThan(0);
+    expect(first.strategicBrief?.focusSummary.startsWith('Pursuing:')).toBe(true);
+    expect(first.strategicBrief?.generatedAt).toBe(NOW);
+
+    // Persisted to disk and reloadable for the next tick to consume.
+    const persisted = loadAoiStrategicBrief(root, SESSION_PATH);
+    expect(persisted).toEqual(first.strategicBrief);
+
+    // A later idle background tick (no user message) loads the prior brief at
+    // the start of the tick without error and continues the loop, persisting a
+    // fresh brief of its own.
+    const second = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW + 1,
+    });
+    expect(second.ok).toBe(true);
+    expect(second.strategicBrief).toBeDefined();
+    expect(second.strategicBrief?.generatedAt).toBe(NOW + 1);
   });
 
   it('creates a bounded recovery proposal for failed or timed-out research', async () => {
