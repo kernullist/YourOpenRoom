@@ -11,6 +11,8 @@
     "build": "vite build --mode production",
     "build:analyze": "vite build --mode analyze",
     "preview": "vite preview",
+    "daemon:build": "vite build --config vite.daemon.config.ts",
+    "daemon": "node dist-daemon/aoiDaemonServer.js",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",

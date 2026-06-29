@@ -596,7 +596,7 @@ function findGoalForPlaybook(
   );
 }
 
-async function handleAoiAutonomyRequest(
+export async function handleAoiAutonomyRequest(
   req: IncomingMessage,
   res: ServerResponse,
   url: URL,
@@ -2430,52 +2430,82 @@ async function handleAoiAutonomyRequest(
   }
 }
 
-export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
+// A Connect-style request handler that owns the Aoi autonomy API routes and
+// calls next() for anything it does not handle. Shared by the Vite plugin and
+// the standalone daemon so the routing glue has a single implementation and is
+// never forked. Path resolution happens once when the middleware is created.
+export type AoiAutonomyMiddleware = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  next: () => void,
+) => void;
+
+export function createAoiAutonomyMiddleware(
+  options: AoiAutonomyPluginOptions,
+): AoiAutonomyMiddleware {
   const sessionsDir = resolve(options.sessionsDir);
   const configFile = resolve(options.configFile);
   const workspaceRoot = resolve(options.workspaceRoot || process.cwd());
-
-  const mount = (middlewares: {
-    use: (
-      middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void,
-    ) => void;
-  }): void => {
-    middlewares.use((req, res, next) => {
-      const url = new URL(req.url || '/', 'http://localhost');
-      void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile, workspaceRoot)
-        .then((handled) => {
-          if (!handled) {
-            next();
-          }
-        })
-        .catch((error) => {
-          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-        });
-    });
+  return (req, res, next) => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile, workspaceRoot)
+      .then((handled) => {
+        if (!handled) {
+          next();
+        }
+      })
+      .catch((error) => {
+        writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      });
   };
+}
 
-  // Self-initiating background autonomy loop (OFF unless opted in via env).
-  // This is what lets Aoi "wake itself up" instead of only ticking on an
-  // inbound request. Started once; stopped on server close.
-  const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(process.env);
+// Start the self-initiating background autonomy loop from env config. This is
+// what lets Aoi "wake itself up" instead of only ticking on an inbound request.
+// Returns null when the loop is NOT opted in (AOI_AUTONOMY_BACKGROUND unset),
+// so a caller stays loop-free by default. Lifecycle (stop on shutdown) is the
+// caller's responsibility. Shared by the Vite plugin and the standalone daemon
+// so the loop wiring is never forked.
+export function startAoiAutonomyBackgroundFromEnv(
+  options: AoiAutonomyPluginOptions,
+  env: Record<string, string | undefined> = process.env,
+): AoiAutonomyBackgroundRunnerHandle | null {
+  const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(env);
+  if (!backgroundConfig.enabled) {
+    return null;
+  }
+  const sessionsDir = resolve(options.sessionsDir);
+  const configFile = resolve(options.configFile);
+  const workspaceRoot = resolve(options.workspaceRoot || process.cwd());
+  return startAoiAutonomyBackgroundRunner({
+    sessionsDir,
+    configFile,
+    workspaceRoot,
+    intervalMs: backgroundConfig.intervalMs,
+    allowNetwork: backgroundConfig.allowNetwork,
+    maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
+    // Resolve the user's main model from the config file so the background
+    // loop can drive LLM reasoning (only used when allowNetwork is on).
+    loadLlmConfig: () => loadAoiMainLlmConfig(configFile),
+  });
+}
+
+export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
+  const middleware = createAoiAutonomyMiddleware(options);
+
+  // Background autonomy loop is started once and stopped on server close.
+  // OFF unless opted in via env (startAoiAutonomyBackgroundFromEnv returns null).
   let backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null = null;
   const startBackground = (
     httpServer: { on?: (event: string, listener: () => void) => void } | null | undefined,
   ): void => {
-    if (!backgroundConfig.enabled || backgroundHandle) {
+    if (backgroundHandle) {
       return;
     }
-    backgroundHandle = startAoiAutonomyBackgroundRunner({
-      sessionsDir,
-      configFile,
-      workspaceRoot,
-      intervalMs: backgroundConfig.intervalMs,
-      allowNetwork: backgroundConfig.allowNetwork,
-      maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
-      // Resolve the user's main model from the config file so the background
-      // loop can drive LLM reasoning (only used when allowNetwork is on).
-      loadLlmConfig: () => loadAoiMainLlmConfig(configFile),
-    });
+    backgroundHandle = startAoiAutonomyBackgroundFromEnv(options);
+    if (!backgroundHandle) {
+      return;
+    }
     httpServer?.on?.('close', () => {
       backgroundHandle?.stop();
       backgroundHandle = null;
@@ -2485,11 +2515,11 @@ export function aoiAutonomyPlugin(options: AoiAutonomyPluginOptions): Plugin {
   return {
     name: 'aoi-autonomy',
     configureServer(server) {
-      mount(server.middlewares);
+      server.middlewares.use(middleware);
       startBackground(server.httpServer);
     },
     configurePreviewServer(server) {
-      mount(server.middlewares);
+      server.middlewares.use(middleware);
       startBackground(server.httpServer);
     },
   };
