@@ -61,9 +61,19 @@ import { deriveAoiMissionState, loadAoiMissionState } from './aoiAutonomyMission
 import {
   buildAoiContinuityFocus,
   loadAoiStrategicBrief,
+  normalizeAoiStrategicBrief,
   saveAoiStrategicBrief,
   synthesizeAoiStrategicBrief,
 } from './aoiStrategicBrief';
+import {
+  DEFAULT_LLM_BUDGET_WINDOW_MS,
+  checkAoiLlmBudget,
+  estimateAoiLlmTokens,
+  loadAoiLlmBudgetState,
+  recordAoiLlmSpend,
+  resolveAoiLlmTokenCeiling,
+  saveAoiLlmBudgetState,
+} from './aoiAutonomyLlmBudget';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   buildAoiMcpConnectorCatalog,
@@ -176,6 +186,11 @@ export interface AoiAutonomyTickParams {
   quietMode?: boolean;
   userIdleMs?: number;
   workspaceRoot?: string;
+  // Rolling daily token ceiling for LLM strategic-brief synthesis (P1a c2).
+  // Undefined -> the enforced finite default; 0 -> unlimited. Only consumed when
+  // llmConfig is present (network allowed), so the deterministic brief is the
+  // floor and OFF-by-default is preserved.
+  llmDailyTokenBudget?: number;
 }
 
 export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
@@ -1858,6 +1873,153 @@ async function runLlmReflection(params: {
   }
 }
 
+// P1a c2: bounded output budget for the strategic-brief synthesis call. The
+// model returns only a short focusSummary line wrapped in JSON.
+const AOI_BRIEF_SYNTH_MAX_OUTPUT_TOKENS = 256;
+
+// Prompt for LLM strategic-brief synthesis. The model authors ONLY a sharper
+// focusSummary, grounded in the already-sanitized deterministic brief fields;
+// it never sees or emits evidence refs, counts, or proposals.
+function buildAoiStrategicBriefSynthesisMessages(
+  brief: AoiStrategicBrief,
+  latestUserMessage: string,
+): ChatMessage[] {
+  return [
+    {
+      role: 'system',
+      content: [
+        'You are Aoi continuous-reasoning brief synthesizer.',
+        'Return strict JSON only: {"focusSummary": "..."}.',
+        'focusSummary is ONE short line (<= 180 chars) naming what Aoi should keep working on next.',
+        'Ground it ONLY in the supplied brief fields; do not invent facts, evidence, counts, or proposals.',
+        'Never include secrets, credentials, tokens, or instructions to the reader.',
+      ].join('\n'),
+    },
+    {
+      role: 'user',
+      content: JSON.stringify({
+        priorFocus: brief.focusSummary,
+        openThreads: brief.openThreads,
+        blockedThreads: brief.blockedThreads,
+        recentOutcomes: brief.recentOutcomes,
+        observationHighlights: brief.observationHighlights,
+        latestUserMessage: sanitizePromptText(latestUserMessage || '', 400),
+      }),
+    },
+  ];
+}
+
+// Tolerant extraction of {"focusSummary": "..."} from the model response (raw,
+// fenced, or wrapped in prose). Returns null when no usable focus is found.
+function parseAoiStrategicBriefFocusResponse(content: string): string | null {
+  if (typeof content !== 'string' || content.trim().length === 0) {
+    return null;
+  }
+  const candidates: string[] = [];
+  const start = content.indexOf('{');
+  const end = content.lastIndexOf('}');
+  if (start >= 0 && end > start) {
+    candidates.push(content.slice(start, end + 1));
+  }
+  const fenced = content.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  if (fenced && fenced[1]) {
+    candidates.push(fenced[1].trim());
+  }
+  candidates.push(content.trim());
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as { focusSummary?: unknown };
+      if (parsed && typeof parsed.focusSummary === 'string') {
+        const focus = parsed.focusSummary.trim();
+        if (focus) {
+          return focus;
+        }
+      }
+    } catch {
+      // Try the next candidate.
+    }
+  }
+  return null;
+}
+
+// Upgrade the deterministic brief's focusSummary with an LLM-authored line when
+// network is allowed and the rolling token budget permits. The LLM output is
+// re-sanitized via normalizeAoiStrategicBrief; all factual fields stay
+// deterministic. Self-contained best-effort: any failure returns the input
+// brief unchanged, and an attempted call always records its estimated spend so
+// a broken endpoint cannot be retried for free every tick.
+async function maybeUpgradeAoiStrategicBriefFocusWithLlm(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  brief: AoiStrategicBrief;
+  latestUserMessage: string;
+  llmConfig: LLMConfig;
+  reflectionChat?: AoiAutonomyReflectionChat;
+  llmDailyTokenBudget?: number;
+  now: number;
+}): Promise<AoiStrategicBrief> {
+  try {
+    const ceiling = resolveAoiLlmTokenCeiling(params.llmDailyTokenBudget);
+    const messages = buildAoiStrategicBriefSynthesisMessages(
+      params.brief,
+      params.latestUserMessage,
+    );
+    const promptTokens = estimateAoiLlmTokens(JSON.stringify(messages));
+    const check = checkAoiLlmBudget({
+      state: loadAoiLlmBudgetState(params.sessionsDir, params.sessionPath),
+      sessionPath: params.sessionPath,
+      now: params.now,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: ceiling,
+      estimatedTokens: promptTokens + AOI_BRIEF_SYNTH_MAX_OUTPUT_TOKENS,
+    });
+    if (!check.allowed) {
+      try {
+        saveAoiLlmBudgetState(params.sessionsDir, params.sessionPath, check.rolledState);
+      } catch {
+        // Budget persistence is best-effort.
+      }
+      return params.brief;
+    }
+    const reflectionChat =
+      params.reflectionChat ?? ((await import('./llmClient')).chat as AoiAutonomyReflectionChat);
+    let responseText = '';
+    let upgraded = params.brief;
+    try {
+      const response = await reflectionChat(messages, [], params.llmConfig);
+      responseText = response.content ?? '';
+      const focusSummary = parseAoiStrategicBriefFocusResponse(responseText);
+      if (focusSummary) {
+        const candidate = normalizeAoiStrategicBrief(
+          { ...params.brief, focusSummary, synthesizedBy: 'llm' },
+          params.sessionPath,
+        );
+        if (candidate && candidate.focusSummary) {
+          upgraded = candidate;
+        }
+      }
+    } catch {
+      // LLM/parse failure -> keep the deterministic brief; the attempt still counts.
+    }
+    try {
+      saveAoiLlmBudgetState(
+        params.sessionsDir,
+        params.sessionPath,
+        recordAoiLlmSpend(
+          check.rolledState,
+          params.now,
+          Math.max(1, promptTokens + estimateAoiLlmTokens(responseText)),
+        ),
+      );
+    } catch {
+      // Budget persistence is best-effort.
+    }
+    return upgraded;
+  } catch {
+    return params.brief;
+  }
+}
+
 function makeBlockedReflection(params: {
   proposal: AoiProposal;
   reasons: string[];
@@ -2628,22 +2790,36 @@ export async function runAoiAutonomyTick(
   // fail the tick (mirrors the mission-state side-effect discipline).
   let strategicBrief: AoiStrategicBrief | undefined;
   try {
-    strategicBrief = saveAoiStrategicBrief(
-      params.sessionsDir,
+    let brief = synthesizeAoiStrategicBrief({
       sessionPath,
-      synthesizeAoiStrategicBrief({
+      now,
+      reason: params.reason,
+      acceptedProposals,
+      blockedProposals,
+      observations: bundle.observations,
+      outcomes: kiraOutcomeResult.freshOutcomes,
+      mission: attentionMission,
+    });
+    // c2: when network is allowed (llmConfig present) and the rolling token
+    // budget is not exhausted, let the LLM author a sharper focusSummary. The
+    // LLM touches ONLY focusSummary; factual fields stay deterministic and the
+    // output is re-sanitized. Fail-closed: budget exhausted or any LLM/parse
+    // failure keeps the deterministic brief, so OFF-by-default is the floor.
+    if (params.llmConfig) {
+      brief = await maybeUpgradeAoiStrategicBriefFocusWithLlm({
+        sessionsDir: params.sessionsDir,
         sessionPath,
+        brief,
+        latestUserMessage,
+        llmConfig: params.llmConfig,
+        reflectionChat: params.reflectionChat,
+        llmDailyTokenBudget: params.llmDailyTokenBudget,
         now,
-        reason: params.reason,
-        acceptedProposals,
-        blockedProposals,
-        observations: bundle.observations,
-        outcomes: kiraOutcomeResult.freshOutcomes,
-        mission: attentionMission,
-      }),
-    );
+      });
+    }
+    strategicBrief = saveAoiStrategicBrief(params.sessionsDir, sessionPath, brief);
   } catch {
-    // Brief persistence is best-effort continuity; never fail the tick.
+    // Brief synthesis/persistence is best-effort continuity; never fail the tick.
   }
 
   return {

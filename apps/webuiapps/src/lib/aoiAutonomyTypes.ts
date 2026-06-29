@@ -1883,6 +1883,10 @@ export interface AoiAutonomyWakeupBudget {
   wakeupCooldownMs: number;
   quietMode: boolean;
   allowNetwork: boolean;
+  // Rolling daily token ceiling for auto-path LLM brief synthesis (P1a c2).
+  // Undefined -> the enforced finite default; 0 -> unlimited (explicit opt-out).
+  // Only consumed when allowNetwork puts an llmConfig in the tick.
+  llmDailyTokenBudget?: number;
 }
 
 export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';

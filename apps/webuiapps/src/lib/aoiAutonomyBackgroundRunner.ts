@@ -13,6 +13,9 @@ export interface AoiAutonomyBackgroundCycleOptions {
   configFile: string;
   workspaceRoot?: string;
   allowNetwork?: boolean;
+  // Rolling daily LLM token ceiling threaded to each wakeup (P1a c2). Undefined
+  // -> the scheduler applies the enforced finite default; 0 -> unlimited.
+  llmDailyTokenBudget?: number;
   llmConfig?: LLMConfig | null;
   // Lazily resolve the main LLM config (e.g. from the config file) each cycle.
   // Without this the background loop runs deterministic-only (no LLM reasoning).
@@ -103,7 +106,12 @@ export async function runAoiAutonomyBackgroundCycle(
         // The LLM only participates when network is allowed (see llmConfig
         // resolution above); otherwise the wakeup runs the deterministic loop.
         llmConfig,
-        budget: { allowNetwork },
+        budget: {
+          allowNetwork,
+          ...(typeof options.llmDailyTokenBudget === 'number'
+            ? { llmDailyTokenBudget: options.llmDailyTokenBudget }
+            : {}),
+        },
         now: startedAt,
       });
       result.sessionsRun.push(sessionPath);
@@ -175,6 +183,9 @@ export interface AoiAutonomyBackgroundEnvConfig {
   intervalMs: number;
   allowNetwork: boolean;
   maxSessionsPerCycle: number;
+  // Rolling daily LLM token ceiling for brief synthesis. Undefined when unset ->
+  // the scheduler applies the enforced finite default; 0 -> unlimited.
+  llmDailyTokenBudget?: number;
 }
 
 function parseBoolEnv(value: string | undefined): boolean {
@@ -184,6 +195,16 @@ function parseBoolEnv(value: string | undefined): boolean {
 function parseIntEnv(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(value ?? '', 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+// Like parseIntEnv but accepts an explicit 0 (= unlimited) and returns undefined
+// when unset/invalid so the scheduler can apply the enforced finite default.
+function parseTokenBudgetEnv(value: string | undefined): number | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
 }
 
 // Background autonomy is OFF by default. Operators opt in via env so the loop
@@ -203,5 +224,6 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
       env.AOI_AUTONOMY_BACKGROUND_MAX_SESSIONS,
       DEFAULT_MAX_SESSIONS_PER_CYCLE,
     ),
+    llmDailyTokenBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET),
   };
 }

@@ -29,6 +29,7 @@ import {
 } from '../aoiAutonomyStore';
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
+import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
@@ -736,6 +737,94 @@ describe('runAoiAutonomyTick()', () => {
     expect(second.ok).toBe(true);
     expect(second.strategicBrief).toBeDefined();
     expect(second.strategicBrief?.generatedAt).toBe(NOW + 1);
+  });
+
+  it('lets the LLM author the brief focus when network and budget allow (P1a c2)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(
+        JSON.stringify({ focusSummary: 'Keep hardening the kernel driver telemetry path' }),
+      ),
+      now: NOW,
+    });
+
+    expect(result.strategicBrief?.synthesizedBy).toBe('llm');
+    expect(result.strategicBrief?.focusSummary).toBe(
+      'Keep hardening the kernel driver telemetry path',
+    );
+    // Factual fields stay deterministic even when the LLM authors the focus.
+    expect(result.strategicBrief?.acceptedCount).toBe(1);
+    const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
+    expect(ledger?.callCount).toBe(1);
+    expect(ledger?.tokensSpent ?? 0).toBeGreaterThan(0);
+  });
+
+  it('falls back to the deterministic brief when the token budget is exhausted (P1a c2)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(JSON.stringify({ focusSummary: 'should not be used' })),
+      llmDailyTokenBudget: 1,
+      now: NOW,
+    });
+
+    expect(result.strategicBrief?.synthesizedBy).toBe('deterministic');
+    expect(result.strategicBrief?.focusSummary).not.toContain('should not be used');
+    const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
+    expect(ledger?.callCount ?? 0).toBe(0);
+  });
+
+  it('keeps the deterministic brief but records spend on a malformed LLM brief response (P1a c2)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat('not valid json at all'),
+      now: NOW,
+    });
+
+    expect(result.strategicBrief?.synthesizedBy).toBe('deterministic');
+    // The attempt still counts so a broken endpoint cannot be retried for free.
+    const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
+    expect(ledger?.callCount).toBe(1);
+  });
+
+  it('never touches the LLM budget ledger without an llmConfig (P1a c2 parity)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      now: NOW,
+    });
+
+    expect(result.strategicBrief?.synthesizedBy).toBe('deterministic');
+    expect(loadAoiLlmBudgetState(root, SESSION_PATH)).toBeNull();
   });
 
   it('creates a bounded recovery proposal for failed or timed-out research', async () => {

@@ -12,6 +12,7 @@ import {
 } from './aoiAutonomyEngine';
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
+import { DEFAULT_LLM_DAILY_TOKEN_BUDGET, resolveAoiLlmTokenCeiling } from './aoiAutonomyLlmBudget';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
 import {
@@ -96,6 +97,7 @@ export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   wakeupCooldownMs: DEFAULT_WAKEUP_COOLDOWN_MS,
   quietMode: false,
   allowNetwork: false,
+  llmDailyTokenBudget: DEFAULT_LLM_DAILY_TOKEN_BUDGET,
 };
 
 export interface AoiAutonomyWakeupInput {
@@ -298,6 +300,7 @@ function normalizeBudget(
     ),
     quietMode: quietMode ?? budget?.quietMode ?? DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET.quietMode,
     allowNetwork: budget?.allowNetwork === true,
+    llmDailyTokenBudget: resolveAoiLlmTokenCeiling(budget?.llmDailyTokenBudget),
   };
 }
 
@@ -1666,6 +1669,9 @@ async function runWakeupInternal(
           quietMode: budget.quietMode,
           userIdleMs: input.userIdleMs,
           maxGeneratedProposals: budget.maxGeneratedProposalCount,
+          // P1a c2: rolling daily token ceiling for LLM brief synthesis. Only
+          // consumed when allowNetwork put an llmConfig in the tick above.
+          llmDailyTokenBudget: budget.llmDailyTokenBudget,
         }),
         budget.maxBackgroundTickRuntimeMs,
         'Aoi scheduler background tick exceeded runtime budget.',
