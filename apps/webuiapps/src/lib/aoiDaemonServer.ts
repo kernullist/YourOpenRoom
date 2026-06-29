@@ -9,6 +9,7 @@ import {
   type AoiAutonomyPluginOptions,
 } from './aoiAutonomyPlugin';
 import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundRunner';
+import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
 
 // Standalone headless autonomy daemon.
 //
@@ -76,12 +77,21 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
   };
 
-  const middleware: AoiAutonomyMiddleware = createAoiAutonomyMiddleware(pluginOptions);
+  const autonomyMiddleware: AoiAutonomyMiddleware = createAoiAutonomyMiddleware(pluginOptions);
+  // Durable session-data store (browser memory / chat / disk writes). Mounting it
+  // here lets a daemon-hosted deployment persist browser captures without the
+  // Vite-only middleware. Same on-disk root as the autonomy loop and the dev
+  // server -- no data migration. Idle until a browser is pointed at the daemon.
+  const sessionDataMiddleware: SessionDataMiddleware = createSessionDataMiddleware({
+    sessionsDir: pluginOptions.sessionsDir,
+  });
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
-    // Native http has no next(); the daemon owns only the autonomy routes, so
-    // anything the middleware declines becomes a 404.
-    middleware(req, res, () => {
-      writeNotFound(res);
+    // Native http has no next(); chain the shared middlewares (autonomy first,
+    // then session-data) and turn anything neither owns into a 404.
+    autonomyMiddleware(req, res, () => {
+      sessionDataMiddleware(req, res, () => {
+        writeNotFound(res);
+      });
     });
   });
 

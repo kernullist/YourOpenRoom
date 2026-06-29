@@ -96,6 +96,48 @@ describe('startAoiDaemon', () => {
   });
 });
 
+describe('daemon session-data store', () => {
+  it('serves session-data read/write/list and session-reset (durable memory endpoint)', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    const rel = 'aoi/memory-v2/memories/d1.json';
+    const body = { id: 'd1', kind: 'fact' };
+
+    const post = await fetch(`${base}/api/session-data?path=${encodeURIComponent(rel)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(post.status).toBe(200);
+
+    const get = await fetch(`${base}/api/session-data?path=${encodeURIComponent(rel)}`);
+    expect(get.status).toBe(200);
+    expect(await get.json()).toEqual(body);
+
+    const list = await fetch(
+      `${base}/api/session-data?path=${encodeURIComponent('aoi/memory-v2/memories')}&action=list`,
+    );
+    const listData = (await list.json()) as { files: Array<{ path: string }> };
+    expect(listData.files.some((f) => f.path.endsWith('d1.json'))).toBe(true);
+
+    const reset = await fetch(`${base}/api/session-reset?path=${encodeURIComponent('aoi')}`, {
+      method: 'DELETE',
+    });
+    expect(reset.status).toBe(200);
+    const afterReset = await fetch(`${base}/api/session-data?path=${encodeURIComponent(rel)}`);
+    expect(await afterReset.json()).toEqual({});
+  });
+
+  it('still 404s a path that neither autonomy nor session-data owns', async () => {
+    const handle = await bootTestDaemon();
+    // A session-data-prefixed typo proves exact-match routing, not prefix capture.
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/session-data-typo?path=x`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('route_not_found');
+  });
+});
+
 describe('resolveAoiDaemonOptionsFromEnv', () => {
   it('defaults to the shared ~/.openroom session store and loopback bind', () => {
     const options = resolveAoiDaemonOptionsFromEnv({});
