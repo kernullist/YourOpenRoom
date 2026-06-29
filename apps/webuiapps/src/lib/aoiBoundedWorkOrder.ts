@@ -15,6 +15,8 @@ import type {
   AoiAutonomyLevel,
   AoiAutonomyRisk,
   AoiCheckpointPlan,
+  AoiGoal,
+  AoiPlanStep,
   AoiPlaybook,
   AoiProposal,
   AoiRollbackPlan,
@@ -50,6 +52,7 @@ export type AoiBoundedWorkOrderOperation =
 export type AoiBoundedWorkOrderOriginKind =
   | 'mission_control_top_mission'
   | 'playbook_next_step'
+  | 'goal_plan_step'
   | 'accepted_proposal'
   | 'proposal_preview'
   | 'shadow_useful_label'
@@ -1492,6 +1495,71 @@ export function buildAoiBoundedWorkOrderFromPlaybook(
         expectedEvidenceRefs: nextStep.evidenceRefs,
       },
       evidenceRefs: dedupeStrings([`playbook:${playbook.id}`, ...playbook.evidenceRefs], MAX_REFS),
+      now: options.now,
+    },
+    options,
+  );
+}
+
+// P1a c5 (plan decomposition): turn an active goal's open plan step into a
+// display-only bounded work-order preview. createAoiBoundedWorkOrder always
+// stamps actionAuthority:'display_only' + mutationCount:0, so this is a preview
+// of the next bounded unit of work for the goal -- never an execution.
+export function buildAoiBoundedWorkOrderFromGoalStep(
+  goal: AoiGoal,
+  step: AoiPlanStep,
+  options: AoiBoundedWorkOrderBuilderOptions = {},
+): AoiBoundedWorkOrder {
+  const actionKind = step.allowedActionKind === 'none' ? undefined : step.allowedActionKind;
+  const allowedOperations = operationForProposalKind(actionKind);
+  const mutationCapable = allowedOperations.some(operationMutates);
+  const commandCapable = allowedOperations.some(operationRunsCommand);
+  const requiresApproval =
+    step.risk === 'high' ||
+    mutationCapable ||
+    commandCapable ||
+    step.requiredAutonomyLevel === 'L4' ||
+    step.requiredAutonomyLevel === 'L5';
+  return createAoiBoundedWorkOrder(
+    {
+      sessionPath: goal.sessionPath,
+      objective: step.title,
+      owner: 'aoi',
+      origin: {
+        kind: 'goal_plan_step',
+        ref: `goal:${goal.id}/step:${step.id}`,
+        label: `${goal.title}: ${step.title}`,
+        generated: options.generated ?? true,
+      },
+      affectedSurfaces: dedupeStrings([goal.title, step.title, ...step.expectedEvidence], 18),
+      modules: dedupeStrings(goal.sourceRefs, 12),
+      allowedOperations,
+      risk: {
+        level: step.risk,
+        mutationCapable,
+        commandCapable,
+      },
+      approval: {
+        required: requiresApproval,
+        requiredAutonomyLevel: step.requiredAutonomyLevel,
+        approvalRef: `goal:${goal.id}/step:${step.id}`,
+      },
+      validation: {
+        required: mutationCapable || commandCapable,
+        approvalRequiredBeforeRun: commandCapable,
+        summary: step.doneCriteria[0],
+        expectedEvidenceRefs: step.evidenceRefs,
+      },
+      stopConditions: step.doneCriteria,
+      evidenceRefs: dedupeStrings(
+        [
+          `goal:${goal.id}`,
+          `goal:${goal.id}/step:${step.id}`,
+          ...step.evidenceRefs,
+          ...goal.sourceRefs,
+        ],
+        MAX_REFS,
+      ),
       now: options.now,
     },
     options,

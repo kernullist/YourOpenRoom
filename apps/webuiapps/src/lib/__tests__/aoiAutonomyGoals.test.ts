@@ -10,6 +10,7 @@ import {
   buildAoiGoalCandidateProposal,
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
+  firstOpenStep,
   loadAoiActiveGoals,
   loadAoiArchivedGoals,
   loadAoiGoalProgressEvents,
@@ -18,6 +19,7 @@ import {
   updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
 } from '../aoiAutonomyGoals';
+import { buildAoiBoundedWorkOrderFromGoalStep } from '../aoiBoundedWorkOrder';
 import {
   applyAoiMissionDecision,
   deriveAoiMissionState,
@@ -289,6 +291,40 @@ describe('Aoi autonomy goals', () => {
         now: NOW,
       }),
     ).toBeNull();
+  });
+
+  it('decomposes a goal open plan step into a display-only work-order preview (P1a c5)', () => {
+    const root = makeTempRoot();
+    const proposal = buildAoiGoalCandidateProposal({
+      sessionPath: SESSION_PATH,
+      title: 'Harden kernel telemetry',
+      userIntentSummary: 'Finish hardening the kernel telemetry path end to end',
+      sourceRefs: ['observation:obs-1'],
+      now: NOW,
+    });
+    if (!proposal) {
+      throw new Error('Expected goal candidate proposal.');
+    }
+    const goal = activateAoiGoalFromProposal({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      proposal,
+      now: NOW,
+    });
+    if (!goal) {
+      throw new Error('Expected activated goal.');
+    }
+    const step = firstOpenStep(goal);
+    if (!step) {
+      throw new Error('Expected an open plan step.');
+    }
+    const order = buildAoiBoundedWorkOrderFromGoalStep(goal, step, { now: NOW });
+    expect(order.origin.kind).toBe('goal_plan_step');
+    // Bounded work orders are previews by type -- never executions.
+    expect(order.actionAuthority).toBe('display_only');
+    expect(order.mutationCount).toBe(0);
+    expect(order.evidenceRefs).toContain(`goal:${goal.id}`);
+    expect(order.evidenceRefs).toContain(`goal:${goal.id}/step:${step.id}`);
   });
 
   it('creates an explicit goal candidate proposal but not from ambiguous text', async () => {

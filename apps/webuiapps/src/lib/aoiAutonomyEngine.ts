@@ -10,6 +10,7 @@ import {
   buildAoiGoalCandidateProposal,
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
+  firstOpenStep,
   loadAoiActiveGoals,
   loadAoiArchivedGoals,
   recordAoiGoalContinuationProposed,
@@ -17,6 +18,10 @@ import {
   updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
 } from './aoiAutonomyGoals';
+import {
+  buildAoiBoundedWorkOrderFromGoalStep,
+  type AoiBoundedWorkOrder,
+} from './aoiBoundedWorkOrder';
 import { runAoiAttentionBroker, type AoiAttentionBrokerResult } from './aoiAttentionBroker';
 import { buildAoiOperatorDigest } from './aoiOperatorDigest';
 import { runAoiCuriosityEngineForSession } from './aoiCuriosityEngine';
@@ -2930,6 +2935,26 @@ export async function runAoiAutonomyTick(
     // Brief synthesis/persistence is best-effort continuity; never fail the tick.
   }
 
+  // P1a c5: decompose each active goal's open plan step into a display-only
+  // bounded work-order preview (the next concrete unit of work). Best-effort and
+  // display_only + mutationCount:0 by type, so it surfaces previews and never
+  // blocks, activates, or executes anything.
+  const goalWorkOrders: AoiBoundedWorkOrder[] = [];
+  try {
+    for (const goal of loadAoiActiveGoals(params.sessionsDir, sessionPath)) {
+      if (goal.status !== 'active' && goal.status !== 'blocked') {
+        continue;
+      }
+      const openStep = firstOpenStep(goal);
+      if (!openStep) {
+        continue;
+      }
+      goalWorkOrders.push(buildAoiBoundedWorkOrderFromGoalStep(goal, openStep, { now }));
+    }
+  } catch {
+    // Work-order previews are best-effort display-only context; never fail the tick.
+  }
+
   return {
     ok: true,
     sessionPath,
@@ -2944,6 +2969,7 @@ export async function runAoiAutonomyTick(
     blockedProposals,
     operatorDigest,
     ...(strategicBrief ? { strategicBrief } : {}),
+    ...(goalWorkOrders.length > 0 ? { goalWorkOrders } : {}),
     warnings: [
       ...observationWarnings,
       ...llmResult.warnings,

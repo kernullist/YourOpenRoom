@@ -3352,6 +3352,10 @@ export interface AoiAutonomyTickResult {
   // Continuity note persisted for the next tick. Optional/additive: absent on
   // skipped/failed ticks and on serialized paths that predate it.
   strategicBrief?: AoiStrategicBrief;
+  // P1a c5: display-only bounded work-order previews decomposed from the open
+  // plan step of each active goal. Optional/additive; always display_only +
+  // mutationCount:0 by type, so these are previews, never executions.
+  goalWorkOrders?: AoiBoundedWorkOrder[];
   warnings: string[];
 }
 

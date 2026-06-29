@@ -7,7 +7,12 @@ import {
   checkAoiProposalPolicy,
   getDefaultAoiEnvironmentSourceRegistry,
 } from '../aoiAutonomyPolicy';
-import { loadAoiActiveGoals, saveAoiActiveGoals } from '../aoiAutonomyGoals';
+import {
+  activateAoiGoalFromProposal,
+  buildAoiGoalCandidateProposal,
+  loadAoiActiveGoals,
+  saveAoiActiveGoals,
+} from '../aoiAutonomyGoals';
 import {
   buildAoiAutonomyReflectionMessages,
   runAoiAutonomyBackgroundTick,
@@ -909,6 +914,57 @@ describe('runAoiAutonomyTick()', () => {
       ),
     ).toBe(false);
     expect(result.warnings).toContain('proposal_goal_synthesis_disabled');
+  });
+
+  it('decomposes an active goal into a display-only work-order preview on the tick (P1a c5)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const proposal = buildAoiGoalCandidateProposal({
+      sessionPath: SESSION_PATH,
+      title: 'Harden kernel telemetry',
+      userIntentSummary: 'Finish hardening the kernel telemetry path end to end',
+      sourceRefs: ['observation:obs-1'],
+      now: NOW,
+    });
+    if (!proposal) {
+      throw new Error('Expected goal candidate proposal.');
+    }
+    const goal = activateAoiGoalFromProposal({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      proposal,
+      now: NOW,
+    });
+    if (!goal) {
+      throw new Error('Expected activated goal.');
+    }
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW + 1,
+    });
+
+    expect(result.goalWorkOrders).toBeDefined();
+    expect(result.goalWorkOrders?.length).toBeGreaterThan(0);
+    const order = result.goalWorkOrders?.[0];
+    expect(order?.origin.kind).toBe('goal_plan_step');
+    expect(order?.actionAuthority).toBe('display_only');
+    expect(order?.mutationCount).toBe(0);
+    expect(order?.evidenceRefs).toContain(`goal:${goal.id}`);
+  });
+
+  it('omits goal work orders when there is no active goal (P1a c5)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW,
+    });
+    expect(result.goalWorkOrders).toBeUndefined();
   });
 
   it('creates a bounded recovery proposal for failed or timed-out research', async () => {

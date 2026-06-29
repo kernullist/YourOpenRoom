@@ -1088,7 +1088,7 @@ function observationLooksCompleted(observation: AoiObservation): boolean {
   );
 }
 
-function firstOpenStep(goal: AoiGoal): AoiPlanStep | null {
+export function firstOpenStep(goal: AoiGoal): AoiPlanStep | null {
   return (
     goal.plan.steps.find((step) => step.status === 'pending' || step.status === 'blocked') ?? null
   );
