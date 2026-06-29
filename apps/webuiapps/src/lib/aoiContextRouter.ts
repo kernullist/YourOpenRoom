@@ -104,6 +104,7 @@ export interface AoiContextRouterInput {
   // present, kira-memory candidates are query-ranked by fused lexical+semantic
   // relevance before the cap; absent (the default) keeps lexical-only ranking.
   queryEmbedding?: number[] | null;
+  queryEmbeddingModel?: string | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   decisions?: AoiProposalDecision[];
   researchRuns?: AoiResearchRunSummary[];
@@ -880,6 +881,7 @@ function buildKiraCandidates(params: {
   mission: AoiMissionState | null;
   now: number;
   queryEmbedding?: number[] | null;
+  queryEmbeddingModel?: string | null;
 }): AoiContextSourceSummary[] {
   const sourceId = SOURCE_ID_BY_KIND.kira_board;
   if (!sourceAllowed(params.registry, sourceId)) {
@@ -902,6 +904,7 @@ function buildKiraCandidates(params: {
   // to the prior `.slice(0, 12)`.
   const ranked = selectRelevantAoiMemoriesByEmbedding(kiraMemories, message, {
     queryEmbedding: params.queryEmbedding,
+    queryEmbeddingModel: params.queryEmbeddingModel ?? null,
     limit: 12,
   });
   return ranked.map((memory) => {
@@ -916,7 +919,9 @@ function buildKiraCandidates(params: {
       query: message,
       content: `${memory.content} ${memory.entities.join(' ')}`,
       embedding: memory.embedding,
+      embeddingModel: memory.embeddingModel,
       queryEmbedding: params.queryEmbedding,
+      queryEmbeddingModel: params.queryEmbeddingModel ?? null,
     });
     const freshness = getFreshness(memory.updatedAt, params.now);
     const score =
@@ -1252,6 +1257,7 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
       mission,
       now,
       queryEmbedding: params.queryEmbedding ?? null,
+      queryEmbeddingModel: params.queryEmbeddingModel ?? null,
     }),
     ...buildBrowserCandidates({ browserContexts, latestUserMessage, registry, now }),
     ...buildPersonalSignalCandidates({

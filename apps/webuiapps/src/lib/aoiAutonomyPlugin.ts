@@ -1391,16 +1391,15 @@ export async function handleAoiAutonomyRequest(
       // Best-effort semantic recall: embed the query with the server-resolved
       // provider (null when no key is configured -> lexical-only ranking). A
       // failed/absent embedding yields null, so recall degrades gracefully.
-      const queryEmbedding = await embedAoiQuery(
-        latestUserMessage,
-        createServerAoiEmbeddingProvider({ configFile }),
-      );
+      const contextEmbeddingProvider = createServerAoiEmbeddingProvider({ configFile });
+      const queryEmbedding = await embedAoiQuery(latestUserMessage, contextEmbeddingProvider);
       const context = buildAoiContextRouterResult({
         sessionsDir,
         sessionPath,
         configFile,
         latestUserMessage,
         queryEmbedding,
+        queryEmbeddingModel: contextEmbeddingProvider?.model ?? null,
       });
       writeJson(res, 200, {
         ok: true,

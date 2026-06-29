@@ -141,6 +141,7 @@ export interface AoiCuriosityEngineInput {
   // (unchanged). `focusQueryEmbedding` adds the semantic signal when present.
   focusQuery?: string;
   focusQueryEmbedding?: number[] | null;
+  focusQueryEmbeddingModel?: string | null;
   interestProfile?: AoiInterestProfile | null;
   researchRuns?: readonly AoiResearchRunSummary[];
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
@@ -511,6 +512,7 @@ function buildMemoryCandidates(input: {
   followThroughLearning?: AoiFollowThroughLearningSummary | null;
   focusQuery?: string;
   focusQueryEmbedding?: number[] | null;
+  focusQueryEmbeddingModel?: string | null;
 }): AoiCuriosityOpportunityCandidate[] {
   const candidates: AoiCuriosityOpportunityCandidate[] = [];
   const focusQuery = (input.focusQuery ?? '').trim();
@@ -522,7 +524,11 @@ function buildMemoryCandidates(input: {
     ? selectRelevantAoiMemoriesByEmbedding(
         input.memories.filter((memory) => memory.status === 'active' && memory.importance >= 0.7),
         focusQuery,
-        { queryEmbedding: input.focusQueryEmbedding ?? null, limit: 16 },
+        {
+          queryEmbedding: input.focusQueryEmbedding ?? null,
+          queryEmbeddingModel: input.focusQueryEmbeddingModel ?? null,
+          limit: 16,
+        },
       )
     : input.memories.slice(0, 16);
   for (const memory of pool) {
@@ -1156,6 +1162,7 @@ export function buildAoiCuriosityCandidates(
       followThroughLearning: input.followThroughLearning,
       ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
       focusQueryEmbedding: input.focusQueryEmbedding ?? null,
+      focusQueryEmbeddingModel: input.focusQueryEmbeddingModel ?? null,
     }),
     ...buildResearchCandidates({
       sessionPath,
@@ -1295,6 +1302,7 @@ export function runAoiCuriosityEngineForSession(
     memories,
     ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
     focusQueryEmbedding: input.focusQueryEmbedding ?? null,
+    focusQueryEmbeddingModel: input.focusQueryEmbeddingModel ?? null,
     interestProfile: profile,
     researchRuns,
     workspaceSnapshot,

@@ -46,6 +46,8 @@ function makeMemory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
     ...(partial.expiresAt ? { expiresAt: partial.expiresAt } : {}),
     ...(partial.permanent ? { permanent: partial.permanent } : {}),
     ...(partial.supersedes ? { supersedes: partial.supersedes } : {}),
+    ...(partial.embedding ? { embedding: partial.embedding } : {}),
+    ...(partial.embeddingModel ? { embeddingModel: partial.embeddingModel } : {}),
   };
 }
 
@@ -434,6 +436,54 @@ describe('Aoi prompt memory selection', () => {
 
     expect(selected.map((memory) => memory.id)).toEqual(['permanent-low-confidence']);
     expect(prompt).toContain('permanent user/fact');
+  });
+
+  it('threads queryEmbeddingModel so cross-model vectors fall back to lexical/importance', () => {
+    const now = 1_000;
+    // Neither memory shares a token with the query, so ranking is driven by the
+    // embedding (when model-compatible) vs importance.
+    const semanticMatch = makeMemory({
+      id: 'semantic-match',
+      scope: 'session',
+      content: 'alpha bravo charlie',
+      importance: 0.4,
+      confidence: 0.8,
+      updatedAt: 100,
+      embedding: [1, 0, 0],
+      embeddingModel: 'model-x',
+    });
+    const importantOrthogonal = makeMemory({
+      id: 'important-orthogonal',
+      scope: 'session',
+      content: 'delta echo foxtrot',
+      importance: 0.7,
+      confidence: 0.8,
+      updatedAt: 100,
+      embedding: [0, 1, 0],
+      embeddingModel: 'model-x',
+    });
+    const query = 'zulu yankee xray';
+    const queryEmbedding = [1, 0, 0];
+
+    // Matching model -> the cosine-aligned memory wins despite lower importance.
+    const matched = selectAoiMemoriesForPrompt([importantOrthogonal, semanticMatch], query, {
+      now,
+      limit: 1,
+      queryEmbedding,
+      queryEmbeddingModel: 'model-x',
+    });
+    expect(matched.map((memory) => memory.id)).toEqual(['semantic-match']);
+
+    // Mismatched model -> semantic is suppressed end-to-end, so the more
+    // important memory wins. This proves queryEmbeddingModel threads from
+    // selectAoiMemoriesForPrompt into scoreAoiMemoryForQuery.
+    const mismatched = selectAoiMemoriesForPrompt([importantOrthogonal, semanticMatch], query, {
+      now,
+      limit: 1,
+      queryEmbedding,
+      queryEmbeddingModel: 'model-y',
+    });
+    expect(mismatched.map((memory) => memory.id)).toEqual(['important-orthogonal']);
   });
 });
 

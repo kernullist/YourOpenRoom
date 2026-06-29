@@ -5485,6 +5485,7 @@ const ChatPanel: React.FC<{
     throwIfConversationAborted(options.signal);
     const currentAoiMemoryPrompt = buildAoiMemoryPrompt(latestAoiMemories, latestUserMessage, {
       queryEmbedding: aoiQueryEmbedding,
+      queryEmbeddingModel: aoiEmbeddingProviderRef.current?.model ?? null,
     });
     let currentAoiMissionPrompt = '';
     try {

@@ -81,6 +81,7 @@ export interface AoiDeliberationRunBuildInput {
   // deliberation record. Absent/empty -> no augmentation (unchanged).
   focusQuery?: string;
   focusQueryEmbedding?: number[] | null;
+  focusQueryEmbeddingModel?: string | null;
 }
 
 export interface AoiDeliberationRunForSessionInput extends Omit<
@@ -762,6 +763,7 @@ function buildRecallMemorySteps(params: {
   citedMemoryIds: ReadonlySet<string>;
   focusQuery: string;
   focusQueryEmbedding?: number[] | null;
+  focusQueryEmbeddingModel?: string | null;
   now: number;
 }): AoiDeliberationEvidenceStep[] {
   const query = params.focusQuery.trim();
@@ -779,6 +781,7 @@ function buildRecallMemorySteps(params: {
   }
   const relevant = selectRelevantAoiMemoriesByEmbedding(candidates, query, {
     queryEmbedding: params.focusQueryEmbedding ?? null,
+    queryEmbeddingModel: params.focusQueryEmbeddingModel ?? null,
     limit: MAX_RECALL_MEMORY_STEPS,
     minScore: MIN_RECALL_MEMORY_RELEVANCE,
   });
@@ -866,6 +869,7 @@ function buildEvidencePlan(
         citedMemoryIds,
         focusQuery: input.focusQuery,
         focusQueryEmbedding: input.focusQueryEmbedding ?? null,
+        focusQueryEmbeddingModel: input.focusQueryEmbeddingModel ?? null,
         now: input.now,
       }),
     );
@@ -1241,6 +1245,7 @@ export function runAoiDeliberationForSession(
     memories,
     ...(input.focusQuery ? { focusQuery: input.focusQuery } : {}),
     focusQueryEmbedding: input.focusQueryEmbedding ?? null,
+    focusQueryEmbeddingModel: input.focusQueryEmbeddingModel ?? null,
     researchRuns,
     workspaceSnapshot,
     activeProposals,

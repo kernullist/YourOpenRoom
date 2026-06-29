@@ -1330,6 +1330,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // not hidden from the reflection. Absent/empty -> load-order slice (unchanged).
   focusQuery?: string;
   queryEmbedding?: number[] | null;
+  queryEmbeddingModel?: string | null;
   availableConnectors?: AoiMcpConnectorCatalogEntry[];
 }): ChatMessage[] {
   const observations = params.observations
@@ -1345,6 +1346,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
   const selectedMemories = focusQuery
     ? selectRelevantAoiMemoriesByEmbedding(params.memories, focusQuery, {
         queryEmbedding: params.queryEmbedding ?? null,
+        queryEmbeddingModel: params.queryEmbeddingModel ?? null,
         limit: MAX_REFLECTION_PROMPT_MEMORIES,
       })
     : params.memories.slice(0, MAX_REFLECTION_PROMPT_MEMORIES);
@@ -1808,6 +1810,7 @@ async function runLlmReflection(params: {
   latestUserMessage: string;
   focusQuery?: string;
   queryEmbedding?: number[] | null;
+  queryEmbeddingModel?: string | null;
   llmConfig?: LLMConfig | null;
   reflectionChat?: AoiAutonomyReflectionChat;
   knownEvidenceRefs: Set<string>;
@@ -1829,6 +1832,7 @@ async function runLlmReflection(params: {
         latestUserMessage: params.latestUserMessage,
         ...(params.focusQuery ? { focusQuery: params.focusQuery } : {}),
         queryEmbedding: params.queryEmbedding ?? null,
+        queryEmbeddingModel: params.queryEmbeddingModel ?? null,
         availableConnectors,
       }),
       [],
@@ -2335,6 +2339,7 @@ export async function runAoiAutonomyTick(
   // can still be recalled. Best-effort: a failed embedding degrades to lexical.
   const recallFocusQuery = (attentionMission?.focusSummary || latestUserMessage || '').trim();
   const recallFocusQueryEmbedding = await embedAoiQuery(recallFocusQuery, params.embeddingProvider);
+  const recallFocusQueryEmbeddingModel = params.embeddingProvider?.model ?? null;
   const curiosityWarnings: string[] = [];
   const deliberationWarnings: string[] = [];
   try {
@@ -2345,6 +2350,7 @@ export async function runAoiAutonomyTick(
       memories: bundle.memories,
       ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
       focusQueryEmbedding: recallFocusQueryEmbedding,
+      focusQueryEmbeddingModel: recallFocusQueryEmbeddingModel,
       researchRuns: bundle.researchRuns,
       workspaceSnapshot,
       activeProposals: bundle.activeProposals,
@@ -2367,6 +2373,7 @@ export async function runAoiAutonomyTick(
       memories: bundle.memories,
       ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
       focusQueryEmbedding: recallFocusQueryEmbedding,
+      focusQueryEmbeddingModel: recallFocusQueryEmbeddingModel,
       researchRuns: bundle.researchRuns,
       workspaceSnapshot,
       activeProposals: bundle.activeProposals,
@@ -2396,6 +2403,7 @@ export async function runAoiAutonomyTick(
     latestUserMessage,
     ...(recallFocusQuery ? { focusQuery: recallFocusQuery } : {}),
     queryEmbedding: recallFocusQueryEmbedding,
+    queryEmbeddingModel: recallFocusQueryEmbeddingModel,
     llmConfig: params.llmConfig,
     reflectionChat: params.reflectionChat,
     knownEvidenceRefs,
