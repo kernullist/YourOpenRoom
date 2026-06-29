@@ -58,6 +58,7 @@ import type {
   AoiProposal,
   AoiProposalDecision,
   AoiProactiveBriefCandidate,
+  AoiStrategicBrief,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
 import type { LLMConfig } from '../llmModels';
@@ -1252,6 +1253,60 @@ describe('runAoiAutonomyTick()', () => {
         (item) => item.triggerKind === 'research_followup',
       )?.usefulnessScore,
     ).toBeLessThanOrEqual(trustCalibrationProfile.interruptionPolicy.positiveLearningCap);
+  });
+});
+
+describe('buildAoiAutonomyReflectionMessages() continuity (P1a c3)', () => {
+  const brief: AoiStrategicBrief = {
+    version: 1,
+    sessionPath: SESSION_PATH,
+    generatedAt: NOW,
+    tickReason: 'periodic',
+    focusSummary: 'Pursuing: harden the kernel telemetry path',
+    openThreads: ['harden the kernel telemetry path'],
+    blockedThreads: ['Risky delete -- needs L5 approval'],
+    recentOutcomes: ['Build green: all tests pass'],
+    observationHighlights: ['Branch changed'],
+    evidenceRefs: ['proposal:p1'],
+    acceptedCount: 1,
+    blockedCount: 1,
+    observationCount: 2,
+    synthesizedBy: 'deterministic',
+  };
+
+  function userPayload(
+    messages: ReturnType<typeof buildAoiAutonomyReflectionMessages>,
+  ): Record<string, unknown> {
+    return JSON.parse(messages[1].content) as Record<string, unknown>;
+  }
+
+  it('adds a continuity block and a non-evidence guard line when a prior brief exists', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      previousBrief: brief,
+    });
+    expect(messages[0].content).toContain('continuity');
+    expect(messages[0].content).toMatch(/not evidence/i);
+    expect(userPayload(messages).continuity).toMatchObject({
+      focusSummary: 'Pursuing: harden the kernel telemetry path',
+      openThreads: ['harden the kernel telemetry path'],
+      blockedThreads: ['Risky delete -- needs L5 approval'],
+      recentOutcomes: ['Build green: all tests pass'],
+    });
+  });
+
+  it('omits the continuity block entirely without a prior brief (parity)', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+    });
+    expect('continuity' in userPayload(messages)).toBe(false);
+    expect(messages[0].content).not.toContain('continuity');
   });
 });
 

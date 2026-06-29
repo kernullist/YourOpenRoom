@@ -1356,6 +1356,10 @@ export function buildAoiAutonomyReflectionMessages(params: {
   queryEmbedding?: number[] | null;
   queryEmbeddingModel?: string | null;
   availableConnectors?: AoiMcpConnectorCatalogEntry[];
+  // Previous tick's strategic brief (P1a c3). When present, a bounded, already-
+  // sanitized continuity block is added to the prompt as PRIORITIZATION context
+  // only -- it is not evidence and is never citable in evidenceRefs.
+  previousBrief?: AoiStrategicBrief | null;
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1406,6 +1410,23 @@ export function buildAoiAutonomyReflectionMessages(params: {
     }));
   const connectorsAvailable = availableConnectors.length > 0;
 
+  // P1a c3 continuity: the prior tick's brief fields (already sanitized at
+  // synth/load), bounded for prompt size. Prioritization context only.
+  const continuity = params.previousBrief
+    ? {
+        focusSummary: params.previousBrief.focusSummary,
+        openThreads: params.previousBrief.openThreads.slice(0, 5),
+        blockedThreads: params.previousBrief.blockedThreads.slice(0, 5),
+        recentOutcomes: params.previousBrief.recentOutcomes.slice(0, 5),
+      }
+    : null;
+  const continuityAvailable =
+    continuity !== null &&
+    (continuity.focusSummary.length > 0 ||
+      continuity.openThreads.length > 0 ||
+      continuity.blockedThreads.length > 0 ||
+      continuity.recentOutcomes.length > 0);
+
   const systemLines = [
     'You are Aoi Autonomy read-only reflection evaluator.',
     'Return strict JSON only.',
@@ -1421,6 +1442,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
       'A connector_call must set risk="high", requiredAutonomyLevel="L5", requiresUserApproval=true; it never runs without explicit user approval.',
       'For a resource read use toolName "resources/read" with params.resourceUri; otherwise put tool arguments in params.args and omit resourceUri.',
       'Never invent a connector or tool that is not listed in availableConnectors.',
+    );
+  }
+  if (continuityAvailable) {
+    systemLines.push(
+      'A "continuity" field summarizes what you were working on last (prior focus, open/blocked threads, recent outcomes). Use it ONLY to prioritize; it is NOT evidence and must never appear in evidenceRefs.',
     );
   }
 
@@ -1462,6 +1488,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         observations,
         memories,
         activeProposals,
+        ...(continuityAvailable ? { continuity } : {}),
         ...(connectorsAvailable ? { availableConnectors } : {}),
         outputSchema: {
           reflections: [
@@ -1839,6 +1866,7 @@ async function runLlmReflection(params: {
   reflectionChat?: AoiAutonomyReflectionChat;
   knownEvidenceRefs: Set<string>;
   connectors?: AoiMcpConnectorsConfig | null;
+  previousBrief?: AoiStrategicBrief | null;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -1858,6 +1886,7 @@ async function runLlmReflection(params: {
         queryEmbedding: params.queryEmbedding ?? null,
         queryEmbeddingModel: params.queryEmbeddingModel ?? null,
         availableConnectors,
+        previousBrief: params.previousBrief ?? null,
       }),
       [],
       params.llmConfig,
@@ -2595,6 +2624,9 @@ export async function runAoiAutonomyTick(
     reflectionChat: params.reflectionChat,
     knownEvidenceRefs,
     connectors: params.connectors,
+    // P1a c3: feed the prior tick's brief into the reflection prompt as
+    // prioritization-only continuity context (never evidence).
+    previousBrief,
     now,
   });
 
