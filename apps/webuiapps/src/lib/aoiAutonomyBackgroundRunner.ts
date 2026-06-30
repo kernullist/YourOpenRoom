@@ -18,6 +18,9 @@ export interface AoiAutonomyBackgroundCycleOptions {
   llmDailyTokenBudget?: number;
   // P1a c4: explicit opt-in for LLM goal synthesis, threaded to each wakeup.
   goalSynthesisEnabled?: boolean;
+  // P3-1: rolling daily network-call ceiling for the auto scout, threaded to each
+  // wakeup. Undefined -> the scheduler applies the enforced finite default; 0 -> unlimited.
+  scoutNetworkDailyBudget?: number;
   llmConfig?: LLMConfig | null;
   // Lazily resolve the main LLM config (e.g. from the config file) each cycle.
   // Without this the background loop runs deterministic-only (no LLM reasoning).
@@ -116,6 +119,9 @@ export async function runAoiAutonomyBackgroundCycle(
           ...(typeof options.goalSynthesisEnabled === 'boolean'
             ? { goalSynthesisEnabled: options.goalSynthesisEnabled }
             : {}),
+          ...(typeof options.scoutNetworkDailyBudget === 'number'
+            ? { scoutNetworkDailyBudget: options.scoutNetworkDailyBudget }
+            : {}),
         },
         now: startedAt,
       });
@@ -193,6 +199,9 @@ export interface AoiAutonomyBackgroundEnvConfig {
   llmDailyTokenBudget?: number;
   // P1a c4: explicit opt-in for LLM goal synthesis (on top of allowNetwork).
   goalSynthesisEnabled: boolean;
+  // P3-1: rolling daily network-call ceiling for the auto scout. Undefined when unset ->
+  // the scheduler applies the enforced finite default; 0 -> unlimited.
+  scoutNetworkDailyBudget?: number;
 }
 
 function parseBoolEnv(value: string | undefined): boolean {
@@ -233,5 +242,6 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
     ),
     llmDailyTokenBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET),
     goalSynthesisEnabled: parseBoolEnv(env.AOI_AUTONOMY_GOAL_SYNTHESIS),
+    scoutNetworkDailyBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_SCOUT_NETWORK_DAILY_BUDGET),
   };
 }

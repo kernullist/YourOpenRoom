@@ -13,6 +13,16 @@ import {
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
 import { DEFAULT_LLM_DAILY_TOKEN_BUDGET, resolveAoiLlmTokenCeiling } from './aoiAutonomyLlmBudget';
+import {
+  checkAoiScoutNetworkBudget,
+  DEFAULT_SCOUT_NETWORK_BUDGET_WINDOW_MS,
+  DEFAULT_SCOUT_NETWORK_DAILY_BUDGET,
+  loadAoiScoutNetworkBudgetState,
+  recordAoiScoutNetworkSpend,
+  resolveAoiScoutNetworkCeiling,
+  saveAoiScoutNetworkBudgetState,
+  type AoiScoutNetworkBudgetState,
+} from './aoiScoutNetworkBudget';
 import { createAoiAutonomyReflectionChat } from './aoiAutonomyReflectionChat';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
@@ -100,6 +110,7 @@ export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   allowNetwork: false,
   llmDailyTokenBudget: DEFAULT_LLM_DAILY_TOKEN_BUDGET,
   goalSynthesisEnabled: false,
+  scoutNetworkDailyBudget: DEFAULT_SCOUT_NETWORK_DAILY_BUDGET,
 };
 
 export interface AoiAutonomyWakeupInput {
@@ -308,6 +319,7 @@ function normalizeBudget(
     allowNetwork: budget?.allowNetwork === true,
     llmDailyTokenBudget: resolveAoiLlmTokenCeiling(budget?.llmDailyTokenBudget),
     goalSynthesisEnabled: budget?.goalSynthesisEnabled === true,
+    scoutNetworkDailyBudget: resolveAoiScoutNetworkCeiling(budget?.scoutNetworkDailyBudget),
   };
 }
 
@@ -1130,6 +1142,10 @@ async function runProactiveScoutForWakeup(params: {
     params.previousState.proactiveScoutBudget,
     params.now,
   );
+  // P3-1: the auto (background) scout's network calls draw from a persistent, fail-closed
+  // daily budget (separate from the run-count caps). Rolled here when the budget is
+  // checked; recorded + saved after a successful scout. A manual run is exempt.
+  let scoutNetworkBudgetState: AoiScoutNetworkBudgetState | null = null;
   const requested =
     runNow ||
     controls.allowBackgroundScout ||
@@ -1205,6 +1221,22 @@ async function runProactiveScoutForWakeup(params: {
   }
   if (!params.budget.allowNetwork) {
     blockedReasons.push('network_budget_disabled');
+  }
+  // P3-1: the AUTONOMOUS scout path is bounded by a daily network-call budget; a manual
+  // run is the user's own request and is exempt. Fail-closed: an exhausted budget blocks.
+  if (background) {
+    const networkBudgetCheck = checkAoiScoutNetworkBudget({
+      state: loadAoiScoutNetworkBudgetState(params.input.sessionsDir, sessionPath),
+      sessionPath,
+      now: params.now,
+      windowMs: DEFAULT_SCOUT_NETWORK_BUDGET_WINDOW_MS,
+      ceilingCalls: resolveAoiScoutNetworkCeiling(params.budget.scoutNetworkDailyBudget),
+      estimatedCalls: Math.max(1, controls.maxNetworkCallsPerWakeup),
+    });
+    scoutNetworkBudgetState = networkBudgetCheck.rolledState;
+    if (!networkBudgetCheck.allowed) {
+      blockedReasons.push('scout_network_budget_exhausted');
+    }
   }
   if (!providerConfigured) {
     blockedReasons.push('current_provider_missing');
@@ -1396,6 +1428,24 @@ async function runProactiveScoutForWakeup(params: {
   } catch (error) {
     const message = error instanceof Error ? error.message : 'trend advisor update failed';
     trendWarnings.push(`trend_advisor_update_failed:${message.slice(0, 160)}`);
+  }
+
+  // P3-1: charge the auto scout's actual network searches (one source-freshness record per
+  // search) against the daily budget. Best-effort: a write failure must not fail the scout.
+  if (background && scoutNetworkBudgetState && result.sourceFreshness.length > 0) {
+    try {
+      saveAoiScoutNetworkBudgetState(
+        params.input.sessionsDir,
+        sessionPath,
+        recordAoiScoutNetworkSpend(
+          scoutNetworkBudgetState,
+          params.now,
+          result.sourceFreshness.length,
+        ),
+      );
+    } catch {
+      // Budget accounting is diagnostic; stored candidates remain authoritative.
+    }
   }
 
   const status: AoiProactiveBriefSchedulerRunRecord['status'] =

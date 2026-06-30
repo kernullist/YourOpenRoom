@@ -1891,6 +1891,10 @@ export interface AoiAutonomyWakeupBudget {
   // Default/false -> the reflection prompt offers no goal candidate and the
   // parser drops any activate_goal acceptAction (fail-closed).
   goalSynthesisEnabled?: boolean;
+  // P3-1: rolling daily NETWORK-call ceiling for the AUTONOMOUS scout path. Undefined
+  // -> the enforced finite default; 0 -> unlimited. Only consumed on the background
+  // (auto) scout path; a manual scout run is exempt.
+  scoutNetworkDailyBudget?: number;
 }
 
 export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';

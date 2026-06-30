@@ -35,6 +35,11 @@ import {
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
+import {
+  DEFAULT_SCOUT_NETWORK_BUDGET_WINDOW_MS,
+  loadAoiScoutNetworkBudgetState,
+  saveAoiScoutNetworkBudgetState,
+} from '../aoiScoutNetworkBudget';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
@@ -2983,6 +2988,127 @@ describe('runAoiAutonomyWakeup()', () => {
           event.suppressionReasons.includes('all_topics_muted'),
       ),
     ).toBe(true);
+  });
+
+  it('blocks the background (auto) scout when its daily network budget is exhausted (P3-1)', async () => {
+    const root = makeTempRoot();
+    const scout = vi.fn(async () => makeScoutResult());
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          minScoutCooldownMs: 0,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 5,
+        },
+      },
+      NOW,
+    );
+    // Pre-seed the network budget at its default ceiling so the next call cannot fit.
+    saveAoiScoutNetworkBudgetState(root, SESSION_PATH, {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      windowStartedAt: NOW,
+      windowMs: DEFAULT_SCOUT_NETWORK_BUDGET_WINDOW_MS,
+      callsSpent: 8,
+      recordCount: 1,
+    });
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      // Auto (background) path: the budget gate applies (a manual run-now is exempt).
+      proactiveScout: { runNow: false },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).not.toHaveBeenCalled();
+    expect(result.record.proactiveScout?.status).toBe('blocked');
+    expect(result.record.proactiveScout?.blockedReasons).toContain(
+      'scout_network_budget_exhausted',
+    );
+  });
+
+  it('charges the background scout network searches against the daily budget (P3-1)', async () => {
+    const root = makeTempRoot();
+    const candidate = makeProactiveBriefCandidate();
+    const scout = vi.fn(async () =>
+      makeScoutResult({
+        createdCandidates: [candidate],
+        sourceFreshness: [
+          { topicId: 't1', query: 'q1', searchedAt: NOW, sourceCount: 2, cannotKnow: [] },
+          { topicId: 't2', query: 'q2', searchedAt: NOW, sourceCount: 1, cannotKnow: [] },
+        ],
+      }),
+    );
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          directChatHookOptIn: false,
+          minScoutCooldownMs: 0,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 5,
+        },
+      },
+      NOW,
+    );
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: { runNow: false },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    expect(scout).toHaveBeenCalledTimes(1);
+    expect(result.record.proactiveScout?.status).toBe('scouted');
+    // Two source-freshness records => two network searches charged on a fresh budget.
+    const budgetState = loadAoiScoutNetworkBudgetState(root, SESSION_PATH);
+    expect(budgetState?.callsSpent).toBe(2);
+    expect(budgetState?.recordCount).toBe(1);
   });
 
   it('records a failed wakeup on background tick timeout without corrupting scheduler state', async () => {

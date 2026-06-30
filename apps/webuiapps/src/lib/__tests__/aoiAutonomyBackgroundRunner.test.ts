@@ -181,6 +181,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
         AOI_AUTONOMY_BACKGROUND_MAX_SESSIONS: '3',
         AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET: '50000',
         AOI_AUTONOMY_GOAL_SYNTHESIS: '1',
+        AOI_AUTONOMY_SCOUT_NETWORK_DAILY_BUDGET: '4',
       }),
     ).toEqual({
       enabled: true,
@@ -189,6 +190,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
       maxSessionsPerCycle: 3,
       llmDailyTokenBudget: 50000,
       goalSynthesisEnabled: true,
+      scoutNetworkDailyBudget: 4,
     });
   });
 
@@ -196,6 +198,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
     const config = resolveAoiAutonomyBackgroundConfigFromEnv({ AOI_AUTONOMY_BACKGROUND: '1' });
     expect(config.goalSynthesisEnabled).toBe(false);
     expect(config.llmDailyTokenBudget).toBeUndefined();
+    expect(config.scoutNetworkDailyBudget).toBeUndefined();
   });
 });
 

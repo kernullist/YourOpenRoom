@@ -2595,6 +2595,7 @@ export function startAoiAutonomyBackgroundFromEnv(
     maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
     llmDailyTokenBudget: backgroundConfig.llmDailyTokenBudget,
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,
+    scoutNetworkDailyBudget: backgroundConfig.scoutNetworkDailyBudget,
     // Resolve the user's main model from the config file so the background
     // loop can drive LLM reasoning (only used when allowNetwork is on).
     loadLlmConfig: () => loadAoiMainLlmConfig(configFile),
