@@ -282,6 +282,8 @@ import {
   buildAoiAutonomyAgendaPanelSummary,
   buildAoiBlockedStateSummary,
   buildAoiBlockedProactiveExplanation,
+  buildAoiGoalWorkOrderPreviews,
+  buildAoiStrategicBriefPanel,
   buildAoiAutonomySchedulerPanelSummary,
   buildAoiAutonomyNotificationBadge,
   buildAoiOpportunityInboxPanelSummary,
@@ -384,9 +386,11 @@ import type {
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryEventKind,
   AoiProactiveTrendOpinionCard,
+  AoiStrategicBrief,
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from '@/lib/aoiAutonomyTypes';
+import type { AoiBoundedWorkOrder } from '@/lib/aoiBoundedWorkOrder';
 import {
   AOI_OPERATOR_VOICE_CATEGORY_LABELS,
   buildAoiOperatorVoiceEventFromDigest,
@@ -2697,6 +2701,8 @@ const ChatPanel: React.FC<{
   const [aoiAutonomyBlockedProposals, setAoiAutonomyBlockedProposals] = useState<
     AoiAutonomyBlockedProposal[]
   >([]);
+  const [aoiStrategicBrief, setAoiStrategicBrief] = useState<AoiStrategicBrief | null>(null);
+  const [aoiGoalWorkOrders, setAoiGoalWorkOrders] = useState<AoiBoundedWorkOrder[]>([]);
   const [aoiAutonomyLoading, setAoiAutonomyLoading] = useState(false);
   const [aoiAutonomyError, setAoiAutonomyError] = useState('');
   const [aoiAutonomyActionId, setAoiAutonomyActionId] = useState<string | null>(null);
@@ -2892,6 +2898,8 @@ const ChatPanel: React.FC<{
     setAoiAutonomyEvaluation(null);
     setAoiOperatorHealth(null);
     setAoiAutonomyBlockedProposals([]);
+    setAoiStrategicBrief(null);
+    setAoiGoalWorkOrders([]);
     setAoiAutonomyError('');
     setAoiAutonomyActionId(null);
     setAoiAutonomyLastTickAt(null);
@@ -3545,6 +3553,8 @@ const ChatPanel: React.FC<{
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyScheduler(result.state);
       setAoiAutonomyBlockedProposals(result.tickResult?.blockedProposals ?? []);
+      setAoiStrategicBrief(result.tickResult?.strategicBrief ?? null);
+      setAoiGoalWorkOrders(result.tickResult?.goalWorkOrders ?? []);
       setAoiAutonomyLastTickAt(result.status.lastTickAt ?? result.record.completedAt);
       await refreshAoiAutonomy({ silent: true });
     } catch (error) {
@@ -3737,6 +3747,8 @@ const ChatPanel: React.FC<{
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyScheduler(result.state);
       setAoiAutonomyBlockedProposals(result.tickResult?.blockedProposals ?? []);
+      setAoiStrategicBrief(result.tickResult?.strategicBrief ?? null);
+      setAoiGoalWorkOrders(result.tickResult?.goalWorkOrders ?? []);
       setAoiAutonomyLastTickAt(result.status.lastTickAt ?? result.record.completedAt);
       await refreshAoiAutonomy({ silent: true });
     } catch (error) {
@@ -8546,6 +8558,8 @@ const ChatPanel: React.FC<{
           aoiFieldFeedback={aoiFieldFeedback}
           aoiAutonomyPanelSettings={aoiAutonomyPanelSettings}
           aoiAutonomyBlockedProposals={aoiAutonomyBlockedProposals}
+          aoiStrategicBrief={aoiStrategicBrief}
+          aoiGoalWorkOrders={aoiGoalWorkOrders}
           aoiAutonomyLoading={aoiAutonomyLoading}
           aoiAutonomyError={aoiAutonomyError}
           aoiAutonomyActionId={aoiAutonomyActionId}
@@ -9113,6 +9127,96 @@ function kiraDraftToConfig(draft: KiraRoleDraft): KiraRoleLlmConfig {
   };
 }
 
+const AoiStrategicOutputsSection: React.FC<{
+  brief: AoiStrategicBrief | null;
+  workOrders: AoiBoundedWorkOrder[];
+}> = ({ brief, workOrders }) => {
+  // Read-only surface for the autonomy tick's strategic outputs (P1a UI c2).
+  // Builds the display models from raw tick data captured in ChatPanel state and
+  // renders them next to "Blocked in last check". ALWAYS renders a titled section
+  // (with an empty-state hint) so the panel is present even before a fresh tick,
+  // giving the persist-free e2e a stable anchor. Nothing here can execute or
+  // activate -- the work-order previews are display_only / mutationCount:0 by type.
+  const briefPanel = buildAoiStrategicBriefPanel(brief);
+  const workOrderPreviews = buildAoiGoalWorkOrderPreviews(workOrders);
+  const hasContent = briefPanel.visible || workOrderPreviews.length > 0;
+
+  return (
+    <div className={styles.aoiAutonomyProposalSection} data-testid="aoi-strategic-outputs">
+      <div className={styles.promptBudgetSectionTitle}>Strategic outputs (last check)</div>
+      {!hasContent && (
+        <p className={styles.modelHint}>
+          No strategic brief or goal work-order previews from the last check yet. Run a check or
+          wait for a background tick to populate this read-only view.
+        </p>
+      )}
+      {briefPanel.visible && (
+        <div className={styles.aoiAutonomyProposalList}>
+          <div className={styles.aoiAutonomyProposalItem}>
+            <div className={styles.aoiAutonomyProposalTitle}>
+              {briefPanel.focusSummary || 'Continuity brief'}
+            </div>
+            <div className={styles.aoiAutonomyProposalMeta}>
+              <span>{briefPanel.synthesizedByLabel}</span>
+              {briefPanel.tickReasonLabel ? <span>{briefPanel.tickReasonLabel}</span> : null}
+              <span>{briefPanel.countsLabel}</span>
+              <span>read only</span>
+            </div>
+            <div className={styles.aoiAutonomyProposalDetails}>
+              {briefPanel.openThreadLabels.map((label, index) => (
+                <div key={`aoi-brief-open-${index}`}>Open: {label}</div>
+              ))}
+              {briefPanel.blockedThreadLabels.map((label, index) => (
+                <div key={`aoi-brief-blocked-${index}`}>Blocked: {label}</div>
+              ))}
+              {briefPanel.recentOutcomeLabels.map((label, index) => (
+                <div key={`aoi-brief-outcome-${index}`}>Outcome: {label}</div>
+              ))}
+              {briefPanel.observationHighlightLabels.map((label, index) => (
+                <div key={`aoi-brief-observed-${index}`}>Observed: {label}</div>
+              ))}
+              {briefPanel.evidenceRefs.map((ref, index) => (
+                <div key={`aoi-brief-evidence-${index}`}>Evidence: {ref}</div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+      {workOrderPreviews.length > 0 && (
+        <div className={styles.aoiAutonomyProposalList}>
+          {workOrderPreviews.map((preview) => (
+            <div className={styles.aoiAutonomyProposalItem} key={preview.id}>
+              <div className={styles.aoiAutonomyProposalTitle}>{preview.objectiveLabel}</div>
+              <div className={styles.aoiAutonomyProposalMeta}>
+                <span>goal work order</span>
+                <span>{preview.statusLabel}</span>
+                <span>{preview.policyStatusLabel}</span>
+                <span>{preview.riskLabel} risk</span>
+                <span>requires {preview.requiredLevelLabel}</span>
+                <span>display only</span>
+                <span>evidence {preview.evidenceRefCount}</span>
+              </div>
+              <div className={styles.aoiAutonomyProposalDetails}>
+                <div>Next: {preview.approvalBoundaryLabel}</div>
+                <div>Expected diff: {preview.expectedDiffLabel}</div>
+                {preview.scopeLabels.map((label, index) => (
+                  <div key={`${preview.id}-scope-${index}`}>Scope: {label}</div>
+                ))}
+                {preview.allowedOperationLabels.map((label, index) => (
+                  <div key={`${preview.id}-op-${index}`}>Operation: {label}</div>
+                ))}
+                {preview.stopConditionLabels.map((label, index) => (
+                  <div key={`${preview.id}-stop-${index}`}>Stop: {label}</div>
+                ))}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const SettingsModal: React.FC<{
   config: LLMConfig | null;
   dialogConfig: DialogLlmConfig | null;
@@ -9156,6 +9260,8 @@ const SettingsModal: React.FC<{
   aoiFieldFeedback: AoiFieldFeedbackResponse | null;
   aoiAutonomyPanelSettings: AoiAutonomyPanelSettings;
   aoiAutonomyBlockedProposals: AoiAutonomyBlockedProposal[];
+  aoiStrategicBrief: AoiStrategicBrief | null;
+  aoiGoalWorkOrders: AoiBoundedWorkOrder[];
   aoiAutonomyLoading: boolean;
   aoiAutonomyError: string;
   aoiAutonomyActionId: string | null;
@@ -9288,6 +9394,8 @@ const SettingsModal: React.FC<{
   aoiFieldFeedback,
   aoiAutonomyPanelSettings,
   aoiAutonomyBlockedProposals,
+  aoiStrategicBrief,
+  aoiGoalWorkOrders,
   aoiAutonomyLoading,
   aoiAutonomyError,
   aoiAutonomyActionId,
@@ -14603,6 +14711,11 @@ const SettingsModal: React.FC<{
                         </div>
                       </div>
                     )}
+
+                    <AoiStrategicOutputsSection
+                      brief={aoiStrategicBrief}
+                      workOrders={aoiGoalWorkOrders}
+                    />
                   </>
                 )}
               </div>
