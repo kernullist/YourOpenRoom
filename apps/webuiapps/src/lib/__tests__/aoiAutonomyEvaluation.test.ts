@@ -3033,7 +3033,7 @@ describe('outcome signals feed trust calibration (P1b)', () => {
     expect(applied.sourceSelectionPenalty).toBe(0);
   });
 
-  it('keeps accumulated outcome boosts within the positive learning cap', () => {
+  it('widens the positive cap toward the ceiling under strong consistent boosts but never past it', () => {
     const many = Array.from({ length: 50 }, (_, index) =>
       makeLinkedOutcome({
         id: `o-many-${index}`,
@@ -3043,7 +3043,70 @@ describe('outcome signals feed trust calibration (P1b)', () => {
       }),
     );
     const applied = applyForFixture(many, true);
-    expect(applied.rankingAdjustment).toBeLessThanOrEqual(0.12);
+    // Adaptive cap: strong, consistent positive field evidence raises the cap
+    // above the 0.12 base toward the 0.2 hard ceiling -- but never beyond it.
+    expect(applied.rankingAdjustment).toBeGreaterThan(0.12);
+    expect(applied.rankingAdjustment).toBeLessThanOrEqual(0.2);
+  });
+
+  function profileWithOutcomes(outcomes: AoiOutcomeSignalRecord[]) {
+    return buildAoiTrustCalibrationProfile({
+      sessionPath: SESSION,
+      proposals: [feedbackMemoryProposalFixture],
+      outcomes,
+      outcomeTrustIncreaseAllowed: true,
+      now: 5000,
+    });
+  }
+
+  it('keeps the learning caps at the conservative base when field evidence is sparse', () => {
+    const profile = profileWithOutcomes([
+      makeLinkedOutcome({ id: 'o-one', direction: 'boost', outcomeKind: 'work_order_approved' }),
+    ]);
+    expect(profile.interruptionPolicy.positiveLearningCap).toBe(0.12);
+    expect(profile.interruptionPolicy.negativeLearningCap).toBe(-0.42);
+  });
+
+  it('widens the positive learning cap under strong consistent positive evidence', () => {
+    const profile = profileWithOutcomes(
+      Array.from({ length: 16 }, (_, index) =>
+        makeLinkedOutcome({
+          id: `p-${index}`,
+          direction: 'boost',
+          outcomeKind: 'work_order_approved',
+          createdAt: 3000 + index,
+        }),
+      ),
+    );
+    expect(profile.interruptionPolicy.positiveLearningCap).toBeGreaterThan(0.12);
+    expect(profile.interruptionPolicy.positiveLearningCap).toBeLessThanOrEqual(0.2);
+  });
+
+  it('does not widen the positive cap when negative evidence balances it (consistency gate)', () => {
+    const profile = profileWithOutcomes([
+      ...Array.from({ length: 16 }, (_, index) =>
+        makeLinkedOutcome({
+          id: `mp-${index}`,
+          direction: 'boost',
+          outcomeKind: 'work_order_approved',
+          createdAt: 3000 + index,
+        }),
+      ),
+      ...Array.from({ length: 16 }, (_, index) =>
+        makeLinkedOutcome({ id: `mn-${index}`, direction: 'suppress', createdAt: 3200 + index }),
+      ),
+    ]);
+    expect(profile.interruptionPolicy.positiveLearningCap).toBe(0.12);
+  });
+
+  it('deepens the negative floor under strong negative evidence', () => {
+    const profile = profileWithOutcomes(
+      Array.from({ length: 16 }, (_, index) =>
+        makeLinkedOutcome({ id: `n-${index}`, direction: 'suppress', createdAt: 3000 + index }),
+      ),
+    );
+    expect(profile.interruptionPolicy.negativeLearningCap).toBeLessThan(-0.42);
+    expect(profile.interruptionPolicy.negativeLearningCap).toBeGreaterThanOrEqual(-0.5);
   });
 });
 

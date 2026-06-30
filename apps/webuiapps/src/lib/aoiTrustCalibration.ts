@@ -36,6 +36,25 @@ const OUTCOME_BOOST_DELTA = 0.03;
 const OUTCOME_SUPPRESS_DELTA = -0.05;
 const OUTCOME_RISK_DELTA = 0.1;
 
+// Adaptive learning caps. The trust-adjustment clamps start conservative and
+// widen with FIELD EVIDENCE, but never past a hard bound:
+//  - the positive cap (how much trust may rise) widens ONLY when positive
+//    evidence DOMINATES (net positive), up to POSITIVE_CAP_CEILING. This is the
+//    autonomy-sensitive direction, so it stays consistency-gated and hard-capped;
+//  - the negative floor (how much a kind/source may be de-prioritized) deepens
+//    with the VOLUME of negative evidence (more suppression is always safe), down
+//    to NEGATIVE_CAP_FLOOR.
+// Sparse evidence -> the conservative base (byte-identical to the prior static
+// caps). The caps feed ranking / interruption / per-key scoring ONLY; they never
+// touch the promotion trigger (canIncreaseTrust does not read this profile), so a
+// wider cap cannot enable self-promotion.
+const POSITIVE_CAP_BASE = 0.12;
+const POSITIVE_CAP_CEILING = 0.2;
+const NEGATIVE_CAP_BASE = -0.42;
+const NEGATIVE_CAP_FLOOR = -0.5;
+const CAP_ADAPT_MIN_EVIDENCE = 8;
+const CAP_ADAPT_FULL_EVIDENCE = 24;
+
 export interface AoiTrustCalibrationBuildInput {
   sessionPath: string;
   proposals?: AoiProposal[];
@@ -128,9 +147,47 @@ function getDefaultAoiInterruptionPolicy(): AoiInterruptionPolicy {
     askFirstThreshold: 0.52,
     suppressThreshold: 0.24,
     minInterruptionGapMs: 10 * 60 * 1000,
-    positiveLearningCap: 0.12,
-    negativeLearningCap: -0.42,
+    positiveLearningCap: POSITIVE_CAP_BASE,
+    negativeLearningCap: NEGATIVE_CAP_BASE,
   };
+}
+
+// Linear 0..1 adaptation fraction: 0 below the minimum evidence threshold, 1 at
+// or above the full-adaptation threshold.
+function capAdaptFraction(strength: number): number {
+  if (strength <= CAP_ADAPT_MIN_EVIDENCE) {
+    return 0;
+  }
+  if (strength >= CAP_ADAPT_FULL_EVIDENCE) {
+    return 1;
+  }
+  return (strength - CAP_ADAPT_MIN_EVIDENCE) / (CAP_ADAPT_FULL_EVIDENCE - CAP_ADAPT_MIN_EVIDENCE);
+}
+
+// Derive the learning caps from the assembled evidence. Positive cap widens only
+// with NET positive evidence (consistency-gated); negative floor deepens with the
+// volume of negative evidence. Both stay inside their hard bounds.
+function computeAdaptiveLearningCaps(evidence: AoiCalibrationEvidence[]): {
+  positiveLearningCap: number;
+  negativeLearningCap: number;
+} {
+  let positiveCount = 0;
+  let negativeCount = 0;
+  for (const item of evidence) {
+    if (item.direction === 'positive' && item.delta > 0) {
+      positiveCount += 1;
+    } else if (item.direction === 'negative' && item.delta < 0) {
+      negativeCount += 1;
+    }
+  }
+  const netPositive = Math.max(0, positiveCount - negativeCount);
+  const positiveLearningCap = fixed(
+    POSITIVE_CAP_BASE + (POSITIVE_CAP_CEILING - POSITIVE_CAP_BASE) * capAdaptFraction(netPositive),
+  );
+  const negativeLearningCap = fixed(
+    NEGATIVE_CAP_BASE + (NEGATIVE_CAP_FLOOR - NEGATIVE_CAP_BASE) * capAdaptFraction(negativeCount),
+  );
+  return { positiveLearningCap, negativeLearningCap };
 }
 
 function actionKindFromDecision(decision: AoiProposalDecision): string {
@@ -795,9 +852,17 @@ export function buildAoiTrustCalibrationProfile(
     ].sort((left, right) => right.createdAt - left.createdAt),
     input.resets,
   );
-  const triggerCalibrations = buildTriggerCalibrations(evidence, policy);
+  // P1b: learning caps adapt to the assembled field evidence (consistency-gated
+  // positive widening, volume-driven negative deepening, hard-bounded). Sparse
+  // evidence keeps the conservative base, so this is byte-identical until enough
+  // evidence accumulates. The same adaptive caps flow into the per-key clamps.
+  const adaptivePolicy: AoiInterruptionPolicy = {
+    ...policy,
+    ...computeAdaptiveLearningCaps(evidence),
+  };
+  const triggerCalibrations = buildTriggerCalibrations(evidence, adaptivePolicy);
   const sourceCalibrations = buildSourceCalibrations(evidence);
-  const actionCalibrations = buildActionCalibrations(evidence, policy);
+  const actionCalibrations = buildActionCalibrations(evidence, adaptivePolicy);
   const negativeEvidence = evidence
     .filter((item) => item.direction === 'negative' && item.delta < 0)
     .sort(
@@ -809,7 +874,7 @@ export function buildAoiTrustCalibrationProfile(
     version: 1,
     sessionPath,
     generatedAt: now,
-    interruptionPolicy: policy,
+    interruptionPolicy: adaptivePolicy,
     triggerCalibrations,
     sourceCalibrations,
     actionCalibrations,
@@ -901,8 +966,13 @@ export function applyAoiTrustCalibration(params: {
     interruptionAdjustment += profile.voiceCalibration[params.voiceCategory] ?? 0;
   }
 
-  rankingAdjustment = fixed(clamp(rankingAdjustment, -0.42, 0.12));
-  interruptionAdjustment = fixed(clamp(interruptionAdjustment, -0.42, 0.12));
+  // Adaptive learning caps from the profile (conservative base when evidence is
+  // sparse; widened/deepened within hard bounds otherwise). Fall back to the
+  // static base when there is no profile.
+  const positiveCap = profile?.interruptionPolicy.positiveLearningCap ?? POSITIVE_CAP_BASE;
+  const negativeCap = profile?.interruptionPolicy.negativeLearningCap ?? NEGATIVE_CAP_BASE;
+  rankingAdjustment = fixed(clamp(rankingAdjustment, negativeCap, positiveCap));
+  interruptionAdjustment = fixed(clamp(interruptionAdjustment, negativeCap, positiveCap));
   sourceSelectionPenalty = fixed(clamp(sourceSelectionPenalty, 0, 0.5));
   const adjustedScore = fixed(
     (params.score ?? profile?.interruptionPolicy.defaultThreshold ?? 0) + interruptionAdjustment,
