@@ -1,4 +1,8 @@
-import { evaluateAoiProposalExecution, FRESH_ACCEPTANCE_MS } from './aoiAutonomyPolicy';
+import {
+  evaluateAoiProposalExecution,
+  FRESH_ACCEPTANCE_MS,
+  getAoiApprovedConnectorCallPolicyForProposal,
+} from './aoiAutonomyPolicy';
 import {
   applyAoiProposalExecutionTransition,
   buildAoiAutonomyStatus,
@@ -67,6 +71,7 @@ import {
   wasAoiApprovalTtlWindowUsed,
 } from './aoiApprovalTtl';
 import { buildAoiAutonomyLevelPromotionScorecard } from './aoiAutonomyLevelPromotionRunner';
+import { isAoiTrustedOperatorReadiness } from './aoiAutonomyLevelPromotion';
 import type { AoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
 import {
   createAoiApprovedConnectorCallRequest,
@@ -162,10 +167,11 @@ export interface AoiProposalExecutionDependencies {
     connectors: AoiMcpConnectorsConfig | null;
     now: number;
   }) => Promise<AoiApprovedConnectorCallResult>;
-  // P2/B3-2: the readiness scorecard that gates the trust-bounded approval TTL. Defaults
-  // to buildAoiAutonomyLevelPromotionScorecard (the same field-evidence, non-self-authorable
-  // signal B2 uses); injectable so the trust gate can be exercised in tests.
-  readApprovalTtlScorecard?: (
+  // P2/B3-2 + B3-3: the field-evidence readiness scorecard that gates the trust-bounded
+  // approval TTL (app_operation) AND the side-effecting connector trust check. Defaults to
+  // buildAoiAutonomyLevelPromotionScorecard (the same non-self-authorable signal B2 uses);
+  // injectable so the trust gates can be exercised in tests.
+  readReadinessScorecard?: (
     sessionsDir: string,
     sessionPath: string,
     now: number,
@@ -1279,17 +1285,29 @@ export async function executeAoiProposal(params: {
   const eligibleAppOperationForTtl =
     proposal.acceptAction?.kind === 'app_action' &&
     approvedAppActionPolicyForExecution?.routing === 'app_operation';
-  const buildApprovalTtlScorecard =
-    params.dependencies?.readApprovalTtlScorecard ?? buildAoiAutonomyLevelPromotionScorecard;
+  const buildReadinessScorecard =
+    params.dependencies?.readReadinessScorecard ?? buildAoiAutonomyLevelPromotionScorecard;
   const approvalTtlScorecard =
     approvalTtlEnabled && eligibleAppOperationForTtl
-      ? buildApprovalTtlScorecard(params.sessionsDir, sessionPath, now)
+      ? buildReadinessScorecard(params.sessionsDir, sessionPath, now)
       : null;
   const approvalWindowMs = resolveAoiApprovalTtlWindowMs({
     enabled: approvalTtlEnabled,
     eligibleAppOperation: eligibleAppOperationForTtl,
     scorecard: approvalTtlScorecard,
   });
+  // P2/B3-3 defense in depth: a side-effecting connector call requires field-proven
+  // trusted_operator readiness IN ADDITION to the env gate + irreversibility ack. Cost-
+  // gated: re-resolve the (resolution-dependent) routing first, and build the readiness
+  // scorecard ONLY for a side-effecting call under the env gate (read-only -> no I/O).
+  const sideEffectingConnectorCall =
+    proposal.acceptAction?.kind === 'connector_call' &&
+    allowSideEffecting &&
+    getAoiApprovedConnectorCallPolicyForProposal(proposal, now, connectors, true).routing ===
+      'side_effecting';
+  const sideEffectingConnectorTrustSatisfied = sideEffectingConnectorCall
+    ? isAoiTrustedOperatorReadiness(buildReadinessScorecard(params.sessionsDir, sessionPath, now))
+    : undefined;
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
@@ -1297,6 +1315,9 @@ export async function executeAoiProposal(params: {
     connectors,
     ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
     ...(approvalWindowMs !== null ? { approvalValidityMs: approvalWindowMs } : {}),
+    ...(sideEffectingConnectorTrustSatisfied !== undefined
+      ? { sideEffectingConnectorTrustSatisfied }
+      : {}),
   });
   if (!evaluation.allowed) {
     if (proposal.acceptAction?.kind === 'create_kira_work') {

@@ -1069,7 +1069,10 @@ function findAppActionApprovalDecision(params: {
   });
 }
 
-function getAoiApprovedConnectorCallPolicyForProposal(
+// Exported for the P2/B3-3 side-effecting connector gate: executeAoiProposal re-resolves
+// the routing (resolution-dependent: side_effecting vs live_read_only) to decide whether
+// the trusted_operator trust gate applies before building the readiness scorecard.
+export function getAoiApprovedConnectorCallPolicyForProposal(
   proposal: AoiProposal,
   now: number,
   connectors: AoiMcpConnectorsConfig | null | undefined,
@@ -1350,6 +1353,19 @@ export function evaluateAoiProposalExecution(
     for (const reason of approvalReasons) {
       reasons.push(`connector_call_${reason}`);
     }
+  }
+  // P2/B3-3 defense in depth: a side-effecting connector call (already env-gated +
+  // irreversibility-acked + allow-listed + DNS-guarded) ALSO requires field-proven
+  // trusted_operator readiness, re-checked at execute time. The trust signal is resolved
+  // server-side (executeAoiProposal) and threaded in; absent (client / preview) keeps a
+  // side-effecting op fail-closed. Read-only connector calls are unaffected.
+  if (
+    connectorCall &&
+    context.executionMode !== 'preview' &&
+    approvedConnectorCallPolicy?.routing === 'side_effecting' &&
+    context.sideEffectingConnectorTrustSatisfied !== true
+  ) {
+    reasons.push('connector_call_side_effecting_requires_trusted_operator');
   }
   if (
     actionKind !== 'run_command' &&

@@ -250,6 +250,18 @@ export function isAoiLowTierReadinessPositive(scorecard: AoiJarvisReadinessScore
   );
 }
 
+// True only at the STRICT trusted_operator rung on a clean pass -- the bar for relaxing or
+// enabling a side-effecting gate (P2/B3-2 approval TTL, P2/B3-3 side-effecting connector).
+// trusted_operator is reachable only via deliberate operator promotion (the session-9
+// barrier), so it is NOT self-authorable; the scorecard never reads the autonomy level, so
+// it cannot self-amplify. Single source of the "trusted operator" safety predicate.
+export function isAoiTrustedOperatorReadiness(scorecard: AoiJarvisReadinessScorecard): boolean {
+  return (
+    scorecard.gateStatus === 'pass' &&
+    readinessRank(scorecard.level) >= readinessRank('trusted_operator')
+  );
+}
+
 export function evaluateAoiAutonomyLevelPromotion(params: {
   policy: AoiAutonomyPolicy;
   scorecard: AoiJarvisReadinessScorecard;

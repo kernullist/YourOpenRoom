@@ -13,6 +13,7 @@
 //
 // Server-only (reads process.env by default); never import from client-reachable code.
 import type { AoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
+import { isAoiTrustedOperatorReadiness } from './aoiAutonomyLevelPromotion';
 import type { AoiProposalDecision } from './aoiAutonomyTypes';
 
 // Default approval-valid-until window when the feature is on and no override is set.
@@ -48,7 +49,7 @@ export function resolveAoiApprovalTtlMs(
 // promotion -- not self-authorable). trusted_operator is the highest rung, so this is an
 // exact-match check.
 export function isAoiApprovalTtlTrustSatisfied(scorecard: AoiJarvisReadinessScorecard): boolean {
-  return scorecard.gateStatus === 'pass' && scorecard.level === 'trusted_operator';
+  return isAoiTrustedOperatorReadiness(scorecard);
 }
 
 // Resolve the fresh-acceptance window for one execution. Returns the widened window (ms)

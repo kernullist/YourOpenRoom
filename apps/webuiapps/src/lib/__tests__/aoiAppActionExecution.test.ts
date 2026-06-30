@@ -214,7 +214,7 @@ describe('executeAoiProposal() trust-bounded approval TTL (B3-2)', () => {
         now: STALE_NOW,
         dependencies: {
           ...kiraWorkStub(),
-          readApprovalTtlScorecard: () => scorecardAt('trusted_operator'),
+          readReadinessScorecard: () => scorecardAt('trusted_operator'),
         },
       }),
     );
@@ -246,7 +246,7 @@ describe('executeAoiProposal() trust-bounded approval TTL (B3-2)', () => {
         now: STALE_NOW,
         dependencies: {
           ...kiraWorkStub(),
-          readApprovalTtlScorecard: () => scorecardAt('supervised_prepare'),
+          readReadinessScorecard: () => scorecardAt('supervised_prepare'),
         },
       }),
     );
@@ -278,7 +278,7 @@ describe('executeAoiProposal() trust-bounded approval TTL (B3-2)', () => {
         now: FRESH_NOW,
         dependencies: {
           ...kiraWorkStub(),
-          readApprovalTtlScorecard: () => scorecardAt('trusted_operator'),
+          readReadinessScorecard: () => scorecardAt('trusted_operator'),
         },
       }),
     );

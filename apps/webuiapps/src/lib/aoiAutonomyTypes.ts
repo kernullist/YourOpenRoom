@@ -3408,6 +3408,11 @@ export interface AoiProposalExecutionPolicyContext {
   // irreversibility acknowledgment); absent/false keeps side-effecting hard-blocked.
   // Never set on client/preview paths.
   allowSideEffecting?: boolean;
+  // P2/B3-3 defense in depth (server-resolved). Whether the field-evidence readiness is at
+  // the trusted_operator rung; a side-effecting connector call requires this IN ADDITION to
+  // allowSideEffecting + the irreversibility ack. Absent => a side-effecting op fails closed.
+  // Never set on client/preview paths.
+  sideEffectingConnectorTrustSatisfied?: boolean;
 }
 
 export interface AoiProposalExecutionPolicyResult {
