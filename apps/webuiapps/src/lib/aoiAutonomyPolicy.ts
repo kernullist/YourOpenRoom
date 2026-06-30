@@ -1025,7 +1025,10 @@ function findFileMutationApprovalDecision(params: {
   });
 }
 
-function getAoiApprovedAppActionPolicyForProposal(proposal: AoiProposal, now: number) {
+// Exported for the P2/B3-1 c3 client bridge: it recomputes a proposal's approved
+// app-action policy (content-addressed approvalFingerprint) to re-check that a queued
+// dispatch still matches its approval before dispatching it over the agent->app bus.
+export function getAoiApprovedAppActionPolicyForProposal(proposal: AoiProposal, now: number) {
   const params = proposal.acceptAction?.params ?? {};
   return evaluateAoiApprovedAppActionPolicy(
     createAoiApprovedAppActionRequest({

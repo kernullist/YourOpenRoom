@@ -244,9 +244,11 @@ import {
   decideAoiMission,
   decideAoiProposal,
   executeAoiProposalAction,
+  fetchAoiAppOperationDispatches,
   fetchAoiAutonomyDashboard,
   fetchAoiProposalDecisions,
   fetchAoiStrategicBrief,
+  reportAoiAppOperationDispatchResult,
   fetchAoiContextRouter,
   fetchAoiMissionState,
   previewAoiProposalAction,
@@ -352,7 +354,12 @@ import {
   canAoiJarvisAutonomyUseCapability,
   type AoiJarvisAutonomyGovernorDecision,
 } from '@/lib/aoiJarvisAutonomyGovernor';
-import { compareAoiAutonomyLevel, isAoiToolAllowedAtLevel } from '@/lib/aoiAutonomyPolicy';
+import {
+  compareAoiAutonomyLevel,
+  getAoiApprovedAppActionPolicyForProposal,
+  isAoiToolAllowedAtLevel,
+} from '@/lib/aoiAutonomyPolicy';
+import { runAoiAppOperationDispatchBridge } from '@/lib/aoiAppOperationDispatchBridge';
 import { buildAoiJarvisReadinessScorecard } from '@/lib/aoiJarvisReadinessScorecard';
 import { buildAoiMissionControlState } from '@/lib/aoiMissionControlRuntime';
 import { buildAoiSourceFreshnessContracts } from '@/lib/aoiSourceFreshnessContract';
@@ -2759,6 +2766,9 @@ const ChatPanel: React.FC<{
     new Map<string, AoiAgendaChatFollowUpContext>(),
   );
   const aoiAutonomyRefreshInFlightRef = useRef(false);
+  // P2/B3-1 c3: guards the client-mediated app-operation dispatch bridge against
+  // re-entrancy while a (possibly slow) agent->app dispatch round-trip is in flight.
+  const aoiAppOpDispatchBridgeInFlightRef = useRef(false);
   const aoiAutonomySessionOpenTickPathsRef = useRef(new Set<string>());
   const aoiInlineShownProposalIdsRef = useRef(new Set<string>());
   const aoiInlineShownProactiveBriefIdsRef = useRef(new Set<string>());
@@ -3461,54 +3471,117 @@ const ChatPanel: React.FC<{
     [publishAoiRunLedgerEntry],
   );
 
-  const refreshAoiAutonomy = useCallback(async (options: { silent?: boolean } = {}) => {
-    if (aoiAutonomyRefreshInFlightRef.current) {
+  // P2/B3-1 c3: the connected client's bridge for app-operation live dispatch. The server
+  // loop cannot postMessage an app iframe, so it queues approved app_operations as pending
+  // records (OFF by default -- they exist only when AOI_AUTONOMY_APP_OP_LIVE_DISPATCH is on
+  // AND a proposal was user-accepted). We poll those records, re-check the content-addressed
+  // approval against the CURRENT proposal, dispatch each to its already-loaded app over the
+  // agent->app bus, and report the result back. Apps that are not open are left pending (no
+  // auto-open); recovery is the app's own undo.
+  const runAoiAppOperationDispatchBridgeNow = useCallback(async (proposals: AoiProposal[]) => {
+    const sessionPathForAutonomy = sessionPathRef.current;
+    if (!sessionPathForAutonomy || aoiAppOpDispatchBridgeInFlightRef.current) {
       return;
     }
-
-    const sessionPathForAutonomy = sessionPathRef.current;
-    aoiAutonomyRefreshInFlightRef.current = true;
-    if (!options.silent) {
-      setAoiAutonomyLoading(true);
-    }
-    setAoiAutonomyError('');
-
+    aoiAppOpDispatchBridgeInFlightRef.current = true;
     try {
-      const [snapshot, decisions, strategicBrief] = await Promise.all([
-        fetchAoiAutonomyDashboard(sessionPathForAutonomy),
-        fetchAoiProposalDecisions(sessionPathForAutonomy, 50),
-        // Best-effort: a brief-route failure must not break the dashboard refresh.
-        // goalWorkOrders are tick-only (not persisted), so only the brief reloads here.
-        fetchAoiStrategicBrief(sessionPathForAutonomy).catch(() => null),
-      ]);
-      setAoiAutonomyStatus(snapshot.status);
-      setAoiAutonomyActiveProposals(snapshot.proposals.active);
-      setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
-      setAoiActiveOpportunities(snapshot.opportunities.active);
-      setAoiArchivedOpportunities(snapshot.opportunities.archived);
-      setAoiDeliberationRuns(snapshot.deliberations.runs);
-      setAoiRecentProposalDecisions(decisions.decisions);
-      setAoiAutonomyActiveGoals(snapshot.goals.active);
-      setAoiActivePlaybooks(snapshot.playbooks.active);
-      setAoiMissionState(snapshot.mission);
-      setAoiEnvironmentSources(snapshot.environmentSources);
-      setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
-      setAoiContextRouter(snapshot.contextRouter);
-      setAoiAutonomyScheduler(snapshot.scheduler);
-      setAoiAutonomyEvaluation(snapshot.evaluation);
-      setAoiOperatorHealth(snapshot.health);
-      setAoiProactiveBriefs(snapshot.proactiveBriefs);
-      setAoiFieldFeedback(snapshot.fieldFeedback);
-      setAoiStrategicBrief(strategicBrief);
-    } catch (error) {
-      setAoiAutonomyError(error instanceof Error ? error.message : String(error));
-    } finally {
-      aoiAutonomyRefreshInFlightRef.current = false;
-      if (!options.silent) {
-        setAoiAutonomyLoading(false);
+      const pending = await fetchAoiAppOperationDispatches(sessionPathForAutonomy);
+      if (pending.length === 0) {
+        return;
       }
+      const proposalById = new Map(proposals.map((proposal) => [proposal.id, proposal]));
+      await runAoiAppOperationDispatchBridge(pending, {
+        lookupProposal: (proposalId) => proposalById.get(proposalId) ?? null,
+        recomputeApprovalFingerprint: (proposal) =>
+          getAoiApprovedAppActionPolicyForProposal(proposal, Date.now()).approvalFingerprint,
+        dispatchToApp: async (record) => {
+          // Only dispatch to an app already loaded in this client; otherwise leave the
+          // record pending for a later refresh / another connected client (no auto-open).
+          const isOpen = getWindows().some((win) => win.appId === record.appId);
+          if (!isOpen) {
+            return null;
+          }
+          const result = await dispatchAgentAction({
+            app_id: record.appId,
+            action_type: record.actionType,
+            params: record.params,
+          });
+          if (typeof result === 'string' && result.startsWith('timeout:')) {
+            // A no-response timeout is a transport failure, not an app action result.
+            throw new Error(result);
+          }
+          return result;
+        },
+        reportResult: async (report) => {
+          await reportAoiAppOperationDispatchResult(sessionPathForAutonomy, report);
+        },
+      });
+    } catch (error) {
+      // Best-effort: a bridge failure must never disrupt chat or the dashboard refresh.
+      logger.warn('ChatPanel', 'Aoi app-operation dispatch bridge failed', error);
+    } finally {
+      aoiAppOpDispatchBridgeInFlightRef.current = false;
     }
   }, []);
+
+  const refreshAoiAutonomy = useCallback(
+    async (options: { silent?: boolean } = {}) => {
+      if (aoiAutonomyRefreshInFlightRef.current) {
+        return;
+      }
+
+      const sessionPathForAutonomy = sessionPathRef.current;
+      aoiAutonomyRefreshInFlightRef.current = true;
+      if (!options.silent) {
+        setAoiAutonomyLoading(true);
+      }
+      setAoiAutonomyError('');
+
+      try {
+        const [snapshot, decisions, strategicBrief] = await Promise.all([
+          fetchAoiAutonomyDashboard(sessionPathForAutonomy),
+          fetchAoiProposalDecisions(sessionPathForAutonomy, 50),
+          // Best-effort: a brief-route failure must not break the dashboard refresh.
+          // goalWorkOrders are tick-only (not persisted), so only the brief reloads here.
+          fetchAoiStrategicBrief(sessionPathForAutonomy).catch(() => null),
+        ]);
+        setAoiAutonomyStatus(snapshot.status);
+        setAoiAutonomyActiveProposals(snapshot.proposals.active);
+        setAoiAutonomyArchivedProposals(snapshot.proposals.archived);
+        setAoiActiveOpportunities(snapshot.opportunities.active);
+        setAoiArchivedOpportunities(snapshot.opportunities.archived);
+        setAoiDeliberationRuns(snapshot.deliberations.runs);
+        setAoiRecentProposalDecisions(decisions.decisions);
+        setAoiAutonomyActiveGoals(snapshot.goals.active);
+        setAoiActivePlaybooks(snapshot.playbooks.active);
+        setAoiMissionState(snapshot.mission);
+        setAoiEnvironmentSources(snapshot.environmentSources);
+        setAoiWorkspaceSnapshot(snapshot.workspaceSnapshot);
+        setAoiContextRouter(snapshot.contextRouter);
+        setAoiAutonomyScheduler(snapshot.scheduler);
+        setAoiAutonomyEvaluation(snapshot.evaluation);
+        setAoiOperatorHealth(snapshot.health);
+        setAoiProactiveBriefs(snapshot.proactiveBriefs);
+        setAoiFieldFeedback(snapshot.fieldFeedback);
+        setAoiStrategicBrief(strategicBrief);
+        // P2/B3-1 c3: after the dashboard refresh, run the client dispatch bridge over any
+        // pending app-operation dispatches the loop queued, using the freshly-loaded proposals
+        // for the approval re-check. No-op when the feature is off (no pending records).
+        void runAoiAppOperationDispatchBridgeNow([
+          ...snapshot.proposals.active,
+          ...snapshot.proposals.archived,
+        ]);
+      } catch (error) {
+        setAoiAutonomyError(error instanceof Error ? error.message : String(error));
+      } finally {
+        aoiAutonomyRefreshInFlightRef.current = false;
+        if (!options.silent) {
+          setAoiAutonomyLoading(false);
+        }
+      }
+    },
+    [runAoiAppOperationDispatchBridgeNow],
+  );
 
   const handleAoiAutonomyAdvancedVisible = useCallback(() => {
     void refreshAoiAutonomy();

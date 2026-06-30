@@ -1,4 +1,5 @@
 import type {
+  AoiAppOperationDispatch,
   AoiAutonomyPolicy,
   AoiAutonomySchedulerState,
   AoiAutonomyStatus,
@@ -1204,6 +1205,51 @@ export async function fetchAoiStrategicBrief(
   const response = await fetch(`${API_PREFIX}/strategic-brief?${sessionQuery(sessionPath)}`);
   const payload = await readJsonRecord(response, 'Failed to load Aoi strategic brief.');
   return isRecord(payload.brief) ? (payload.brief as unknown as AoiStrategicBrief) : null;
+}
+
+// P2/B3-1 c3 client bridge: poll the pending app-operation dispatches the autonomy loop
+// queued (GET), and report each agent->app dispatch result back (POST). The bridge
+// re-checks the content-addressed approval before dispatching; these calls only move a
+// queued record that already passed the L5 + approval gate + the user's acceptance.
+export async function fetchAoiAppOperationDispatches(
+  sessionPath: string,
+): Promise<AoiAppOperationDispatch[]> {
+  const response = await fetch(`${API_PREFIX}/app-operation-dispatch?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi app-operation dispatches.');
+  return Array.isArray(payload.pending)
+    ? (payload.pending as unknown as AoiAppOperationDispatch[])
+    : [];
+}
+
+export interface AoiAppOperationDispatchReportInput {
+  id: string;
+  status: 'dispatched' | 'failed';
+  actionResult?: string;
+  failureReason?: string;
+}
+
+export async function reportAoiAppOperationDispatchResult(
+  sessionPath: string,
+  input: AoiAppOperationDispatchReportInput,
+): Promise<AoiAppOperationDispatch | null> {
+  const response = await fetch(`${API_PREFIX}/app-operation-dispatch`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      id: input.id,
+      status: input.status,
+      actionResult: input.actionResult,
+      failureReason: input.failureReason,
+    }),
+  });
+  const payload = await readJsonRecord(
+    response,
+    'Failed to report Aoi app-operation dispatch result.',
+  );
+  return isRecord(payload.dispatch)
+    ? (payload.dispatch as unknown as AoiAppOperationDispatch)
+    : null;
 }
 
 export async function fetchAoiEnvironmentSources(
