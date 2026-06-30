@@ -113,6 +113,13 @@ import {
   loadAoiProactiveTrendSnapshots,
   recordAoiProactiveTrendDeliveryEventFromSnapshot,
 } from './aoiProactiveTrendAdvisor';
+import {
+  checkAoiDirectChatBudget,
+  DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+  loadAoiDirectChatBudgetState,
+  recordAoiDirectChatOffer,
+  saveAoiDirectChatBudgetState,
+} from './aoiDirectChatBudget';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
@@ -1666,6 +1673,28 @@ export async function handleAoiAutonomyRequest(
         kind: body.kind,
         now,
       });
+      // P3-2a: an actual direct-chat offer is the real interruption, so charge it against the
+      // per-day direct-chat budget here (the scheduler only reads this ledger to downgrade
+      // future offers). Best-effort: an accounting failure must not fail the delivery record.
+      if (body.kind === 'direct_chat_offered') {
+        try {
+          const rolled = checkAoiDirectChatBudget({
+            state: loadAoiDirectChatBudgetState(sessionsDir, sessionPath),
+            sessionPath,
+            now,
+            windowMs: DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+            ceilingCalls: 0,
+            estimatedCalls: 0,
+          }).rolledState;
+          saveAoiDirectChatBudgetState(
+            sessionsDir,
+            sessionPath,
+            recordAoiDirectChatOffer(rolled, now, 1),
+          );
+        } catch {
+          // Budget accounting is diagnostic; the delivery event remains authoritative.
+        }
+      }
       if (snapshot.candidateId && body.kind !== 'delivery_suppressed') {
         try {
           recordAoiProactiveBriefFieldEvent(sessionsDir, {
@@ -2596,6 +2625,7 @@ export function startAoiAutonomyBackgroundFromEnv(
     llmDailyTokenBudget: backgroundConfig.llmDailyTokenBudget,
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,
     scoutNetworkDailyBudget: backgroundConfig.scoutNetworkDailyBudget,
+    directChatDailyBudget: backgroundConfig.directChatDailyBudget,
     // Resolve the user's main model from the config file so the background
     // loop can drive LLM reasoning (only used when allowNetwork is on).
     loadLlmConfig: () => loadAoiMainLlmConfig(configFile),

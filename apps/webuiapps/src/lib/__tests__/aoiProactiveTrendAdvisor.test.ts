@@ -327,6 +327,40 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.directChatHookCount).toBe(1);
   });
 
+  it('downgrades a direct-chat trend to an inline card when the per-day budget is exhausted (P3-2a)', () => {
+    const base = {
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    };
+
+    // Control: budget available (flag absent/false) -> the existing direct_chat decision stands.
+    const available = buildAoiProactiveTrendAdvisorState({
+      ...base,
+      directChatBudgetExhausted: false,
+    });
+    expect(available.opinionCards[0].deliveryMode).toBe('direct_chat');
+    expect(available.opinionCards[0].directChatAllowed).toBe(true);
+    expect(available.directChatHookCount).toBe(1);
+
+    // Exhausted: the would-be direct chat falls through to an inline card (still surfaced, not
+    // an interruption); the budget reason is recorded and direct chat is no longer offered.
+    const exhausted = buildAoiProactiveTrendAdvisorState({
+      ...base,
+      directChatBudgetExhausted: true,
+    });
+    expect(exhausted.opinionCards[0].deliveryMode).toBe('inline_card');
+    expect(exhausted.opinionCards[0].directChatAllowed).toBe(false);
+    expect(exhausted.opinionCards[0].directChatBlockedReasons).toContain(
+      'direct_chat_daily_budget_exhausted',
+    );
+    expect(exhausted.directChatHookCount).toBe(0);
+  });
+
   it('suppresses repeated snapshots from direct chat with novelty evidence', () => {
     const first = buildAoiProactiveTrendAdvisorState({
       sessionPath: SESSION_PATH,

@@ -23,6 +23,13 @@ import {
   saveAoiScoutNetworkBudgetState,
   type AoiScoutNetworkBudgetState,
 } from './aoiScoutNetworkBudget';
+import {
+  checkAoiDirectChatBudget,
+  DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+  DEFAULT_DIRECT_CHAT_DAILY_BUDGET,
+  loadAoiDirectChatBudgetState,
+  resolveAoiDirectChatCeiling,
+} from './aoiDirectChatBudget';
 import { createAoiAutonomyReflectionChat } from './aoiAutonomyReflectionChat';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
@@ -111,6 +118,7 @@ export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   llmDailyTokenBudget: DEFAULT_LLM_DAILY_TOKEN_BUDGET,
   goalSynthesisEnabled: false,
   scoutNetworkDailyBudget: DEFAULT_SCOUT_NETWORK_DAILY_BUDGET,
+  directChatDailyBudget: DEFAULT_DIRECT_CHAT_DAILY_BUDGET,
 };
 
 export interface AoiAutonomyWakeupInput {
@@ -320,6 +328,7 @@ function normalizeBudget(
     llmDailyTokenBudget: resolveAoiLlmTokenCeiling(budget?.llmDailyTokenBudget),
     goalSynthesisEnabled: budget?.goalSynthesisEnabled === true,
     scoutNetworkDailyBudget: resolveAoiScoutNetworkCeiling(budget?.scoutNetworkDailyBudget),
+    directChatDailyBudget: resolveAoiDirectChatCeiling(budget?.directChatDailyBudget),
   };
 }
 
@@ -1405,6 +1414,21 @@ async function runProactiveScoutForWakeup(params: {
       sessionPath,
       params.now,
     );
+    // P3-2a: on the BACKGROUND path, an exhausted per-day direct-chat budget downgrades the
+    // trend advisor's direct_chat decision to an inline card. A manual run is the user's own
+    // request and is exempt. Read-only here; an offer is charged at the trend-delivery route.
+    let directChatBudgetExhausted = false;
+    if (background) {
+      const directChatCheck = checkAoiDirectChatBudget({
+        state: loadAoiDirectChatBudgetState(params.input.sessionsDir, sessionPath),
+        sessionPath,
+        now: params.now,
+        windowMs: DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+        ceilingCalls: resolveAoiDirectChatCeiling(params.budget.directChatDailyBudget),
+        estimatedCalls: 1,
+      });
+      directChatBudgetExhausted = !directChatCheck.allowed;
+    }
     const trendAdvisor = buildAoiProactiveTrendAdvisorState({
       sessionsDir: params.input.sessionsDir,
       sessionPath,
@@ -1415,6 +1439,7 @@ async function runProactiveScoutForWakeup(params: {
       fieldMetrics,
       calibrationTuning: tuning,
       now: params.now,
+      directChatBudgetExhausted,
     });
     trendSnapshotCount = trendAdvisor.snapshots.length;
     trendOpinionCardCount = trendAdvisor.opinionCards.length;

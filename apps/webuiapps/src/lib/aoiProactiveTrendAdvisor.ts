@@ -89,6 +89,10 @@ export interface BuildAoiProactiveTrendAdvisorStateInput {
   now?: number;
   persist?: boolean;
   sourceStaleAfterMs?: number;
+  // P3-2a: when the per-day direct-chat budget is exhausted (decided server-side on the
+  // background path), suppress the direct_chat delivery mode so a would-be direct chat
+  // falls through to an inline card. Default/false -> unchanged (byte-identical) behavior.
+  directChatBudgetExhausted?: boolean;
 }
 
 export interface BuildAoiProactiveTrendAdvisorDiagnosticsInput {
@@ -1249,6 +1253,7 @@ function directChatBlockReasons(params: {
   controls: AoiProactiveTrendDeliveryControls;
   interestDrift: AoiProactiveTrendInterestDrift;
   novelty: AoiProactiveTrendNovelty;
+  directChatBudgetExhausted?: boolean;
   now: number;
 }): string[] {
   const reasons: string[] = [];
@@ -1294,6 +1299,13 @@ function directChatBlockReasons(params: {
   }
   if (params.controls.snoozedUntil && params.controls.snoozedUntil > params.now) {
     reasons.push('trend_snoozed');
+  }
+  // P3-2a: a spent per-day direct-chat budget blocks direct chat for this trend. The reason
+  // intentionally matches none of deliveryModeForTrend's "blocked"/"dashboard"/hard-block
+  // patterns, so an otherwise-strong trend falls through to an inline card (still surfaced,
+  // not an interruption) rather than being demoted to dashboard.
+  if (params.directChatBudgetExhausted === true) {
+    reasons.push('direct_chat_daily_budget_exhausted');
   }
   if (params.interestDrift.status === 'muted') {
     reasons.push('topic_muted');
@@ -1642,6 +1654,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   existingDeliveryEvents?: AoiProactiveTrendDeliveryEvent[];
   now?: number;
   sourceStaleAfterMs?: number;
+  directChatBudgetExhausted?: boolean;
 }): AoiProactiveTrendSnapshot | null {
   const now = params.now ?? Date.now();
   const candidate = params.candidate;
@@ -1706,6 +1719,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     controls,
     interestDrift,
     novelty,
+    directChatBudgetExhausted: params.directChatBudgetExhausted,
     now,
   });
   const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong });
@@ -2401,6 +2415,7 @@ export function buildAoiProactiveTrendAdvisorState(
         existingDeliveryEvents,
         now,
         sourceStaleAfterMs: input.sourceStaleAfterMs,
+        directChatBudgetExhausted: input.directChatBudgetExhausted,
       }),
     )
     .filter((snapshot): snapshot is AoiProactiveTrendSnapshot => snapshot !== null);

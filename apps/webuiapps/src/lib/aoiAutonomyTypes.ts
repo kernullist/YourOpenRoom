@@ -1895,6 +1895,11 @@ export interface AoiAutonomyWakeupBudget {
   // -> the enforced finite default; 0 -> unlimited. Only consumed on the background
   // (auto) scout path; a manual scout run is exempt.
   scoutNetworkDailyBudget?: number;
+  // P3-2a: rolling daily DIRECT-CHAT offer ceiling for the AUTONOMOUS trend advisor.
+  // Undefined -> the enforced finite default; 0 -> unlimited. Only consumed on the
+  // background path (checked around the trend-advisor build to downgrade a would-be
+  // direct chat to an inline card); a manual run is exempt.
+  directChatDailyBudget?: number;
 }
 
 export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';

@@ -182,6 +182,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
         AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET: '50000',
         AOI_AUTONOMY_GOAL_SYNTHESIS: '1',
         AOI_AUTONOMY_SCOUT_NETWORK_DAILY_BUDGET: '4',
+        AOI_AUTONOMY_DIRECT_CHAT_DAILY_BUDGET: '2',
       }),
     ).toEqual({
       enabled: true,
@@ -191,6 +192,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
       llmDailyTokenBudget: 50000,
       goalSynthesisEnabled: true,
       scoutNetworkDailyBudget: 4,
+      directChatDailyBudget: 2,
     });
   });
 
@@ -199,6 +201,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
     expect(config.goalSynthesisEnabled).toBe(false);
     expect(config.llmDailyTokenBudget).toBeUndefined();
     expect(config.scoutNetworkDailyBudget).toBeUndefined();
+    expect(config.directChatDailyBudget).toBeUndefined();
   });
 });
 

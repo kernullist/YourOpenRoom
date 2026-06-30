@@ -40,6 +40,10 @@ import {
   loadAoiScoutNetworkBudgetState,
   saveAoiScoutNetworkBudgetState,
 } from '../aoiScoutNetworkBudget';
+import {
+  DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+  saveAoiDirectChatBudgetState,
+} from '../aoiDirectChatBudget';
 import { loadAoiRelationIndex } from '../aoiAutonomyRelations';
 import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission';
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
@@ -3109,6 +3113,99 @@ describe('runAoiAutonomyWakeup()', () => {
     const budgetState = loadAoiScoutNetworkBudgetState(root, SESSION_PATH);
     expect(budgetState?.callsSpent).toBe(2);
     expect(budgetState?.recordCount).toBe(1);
+  });
+
+  // P3-2a: a direct-chat-opted-in, background-eligible proactive scout whose trend card
+  // therefore carries direct-chat block reasons, so the per-day budget gate is observable
+  // via the run record's trendBlockedReasons.
+  function configureDirectChatBudgetScout(root: string): void {
+    enablePolicy(root, 'L4');
+    saveInterestProfile(root);
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        confidenceFloor: 0.55,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          directChatHookOptIn: true,
+          minScoutCooldownMs: 0,
+          maxScoutRunsPerDay: 5,
+          maxScoutRunsPerSession: 5,
+        },
+      },
+      NOW,
+    );
+  }
+
+  function seedExhaustedDirectChatBudget(root: string): void {
+    saveAoiDirectChatBudgetState(root, SESSION_PATH, {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      windowStartedAt: NOW,
+      windowMs: DEFAULT_DIRECT_CHAT_BUDGET_WINDOW_MS,
+      offersSpent: 3,
+      recordCount: 3,
+    });
+  }
+
+  function runDirectChatScoutWakeup(root: string, runNow: boolean) {
+    return runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh' as const,
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: { runNow },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: vi.fn(async () =>
+          makeScoutResult({ createdCandidates: [makeProactiveBriefCandidate()] }),
+        ),
+      },
+    });
+  }
+
+  it('blocks direct chat on the background path when the per-day budget is exhausted, but not on a fresh budget (P3-2a)', async () => {
+    const exhaustedRoot = makeTempRoot();
+    configureDirectChatBudgetScout(exhaustedRoot);
+    seedExhaustedDirectChatBudget(exhaustedRoot);
+    const exhausted = await runDirectChatScoutWakeup(exhaustedRoot, false);
+    expect(exhausted.record.proactiveScout?.status).toBe('scouted');
+    expect(exhausted.record.proactiveScout?.trendBlockedReasons).toContain(
+      'direct_chat_daily_budget_exhausted',
+    );
+
+    // A fresh budget (separate session dir, so trend dedupe cannot interfere) never adds it.
+    const freshRoot = makeTempRoot();
+    configureDirectChatBudgetScout(freshRoot);
+    const fresh = await runDirectChatScoutWakeup(freshRoot, false);
+    expect(fresh.record.proactiveScout?.status).toBe('scouted');
+    expect(fresh.record.proactiveScout?.trendBlockedReasons ?? []).not.toContain(
+      'direct_chat_daily_budget_exhausted',
+    );
+  });
+
+  it('exempts a manual run-now proactive scout from the per-day direct-chat budget (P3-2a)', async () => {
+    const root = makeTempRoot();
+    configureDirectChatBudgetScout(root);
+    seedExhaustedDirectChatBudget(root);
+    const manual = await runDirectChatScoutWakeup(root, true);
+    expect(manual.record.proactiveScout?.status).toBe('scouted');
+    expect(manual.record.proactiveScout?.trendBlockedReasons ?? []).not.toContain(
+      'direct_chat_daily_budget_exhausted',
+    );
   });
 
   it('records a failed wakeup on background tick timeout without corrupting scheduler state', async () => {
