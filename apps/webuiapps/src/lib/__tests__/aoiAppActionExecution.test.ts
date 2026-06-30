@@ -8,9 +8,12 @@ import {
   loadAoiActiveProposals,
   loadAoiAppActionAuditRecords,
   loadAoiAppOperationDispatches,
+  loadAoiArchivedProposals,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
+import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
+import { recordAoiAppOperationDispatchResult } from '../aoiAppOperationDispatchServer';
 import type { AoiProposal } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
@@ -373,5 +376,59 @@ describe('executeAoiProposal() app actions', () => {
       '{"id":"p1","text":"hello"}',
     );
     expect(loadAoiAppOperationDispatches(root, 'aoi/default')).toHaveLength(0);
+  });
+
+  it('binds c2 dispatch to the c3 re-check: queued fingerprint == recomputed proposal fingerprint', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    // c2: execute with the gate ON -> a pending dispatch carrying the accept-time
+    // content-addressed approval fingerprint.
+    await withAppOpLiveDispatch(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-win-001',
+        decisionId: accepted.decision.id,
+        now: 3000,
+      }),
+    );
+    const dispatches = loadAoiAppOperationDispatches(root, 'aoi/default');
+    expect(dispatches).toHaveLength(1);
+
+    // c3: the client bridge re-checks the approval by recomputing the CURRENT policy
+    // fingerprint for the loaded proposal at a LATER time. It MUST equal the queued one
+    // (a time-independent, content-addressed binding) -- otherwise the bridge would
+    // reject every dispatch as approval_fingerprint_mismatch and the feature is inert.
+    const proposal =
+      loadAoiActiveProposals(root, 'aoi/default').find((p) => p.id === 'proposal-aa-win-001') ??
+      loadAoiArchivedProposals(root, 'aoi/default').find((p) => p.id === 'proposal-aa-win-001');
+    expect(proposal).toBeDefined();
+    const recheckFingerprint = getAoiApprovedAppActionPolicyForProposal(
+      proposal as AoiProposal,
+      9999,
+    ).approvalFingerprint;
+    expect(recheckFingerprint).toBe(dispatches[0].approvalFingerprint);
+
+    // c2 report path: the bridge POSTs the result -> the record reaches a terminal state.
+    const outcome = recordAoiAppOperationDispatchResult({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      id: dispatches[0].id,
+      status: 'dispatched',
+      actionResult: 'success',
+      now: 10000,
+    });
+    expect(outcome.found).toBe(true);
+    expect(loadAoiAppOperationDispatches(root, 'aoi/default')[0].status).toBe('dispatched');
   });
 });

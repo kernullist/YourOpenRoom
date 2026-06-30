@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi, type Mock } from 'vitest';
 import {
   runAoiAppOperationDispatchBridge,
   type AoiAppOperationDispatchBridgeDeps,
@@ -35,7 +35,7 @@ function makeProposal(id: string): AoiProposal {
 interface Harness {
   deps: AoiAppOperationDispatchBridgeDeps;
   reports: AoiAppOperationDispatchBridgeReport[];
-  dispatchToApp: ReturnType<typeof vi.fn>;
+  dispatchToApp: Mock;
 }
 
 function makeHarness(overrides: Partial<AoiAppOperationDispatchBridgeDeps> = {}): Harness {
