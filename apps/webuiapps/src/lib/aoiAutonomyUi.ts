@@ -91,6 +91,7 @@ import type {
   AoiProactiveTrendAdvisorState,
   AoiProposal,
   AoiProposalDecision,
+  AoiStrategicBrief,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 
@@ -690,6 +691,47 @@ export interface AoiBoundedWorkOrderPanel {
   rollbackLabels: string[];
   approvalSandboxLabels: string[];
   evidenceRefs: string[];
+}
+
+// P1a UI surface: read-only display models for the autonomy tick's strategic
+// outputs -- the continuity brief (focus + open/blocked threads + outcomes) and
+// the bounded goal work-order previews. Both are PURE + display-only: they never
+// carry an execute/activate affordance, and every text field is defensively
+// re-sanitized here even though the source brief is already redacted at
+// synthesis/load. Consumed by the Advanced-tab autonomy section, mirroring the
+// blocked-proposals render. Empty/absent inputs collapse to a hidden panel so an
+// existing session with no fresh tick output renders nothing (byte-identical).
+export interface AoiStrategicBriefPanel {
+  visible: boolean;
+  synthesizedByLabel: string;
+  tickReasonLabel: string;
+  generatedAt: number;
+  focusSummary: string;
+  openThreadLabels: string[];
+  blockedThreadLabels: string[];
+  recentOutcomeLabels: string[];
+  observationHighlightLabels: string[];
+  countsLabel: string;
+  evidenceRefs: string[];
+}
+
+export interface AoiGoalWorkOrderPreview {
+  id: string;
+  objectiveLabel: string;
+  ownerLabel: string;
+  statusLabel: string;
+  policyStatusLabel: string;
+  riskLabel: string;
+  requiredLevelLabel: string;
+  scopeLabels: string[];
+  allowedOperationLabels: string[];
+  approvalBoundaryLabel: string;
+  expectedDiffLabel: string;
+  stopConditionLabels: string[];
+  evidenceRefCount: number;
+  // Always true: AoiBoundedWorkOrder is display_only / mutationCount:0 by type,
+  // so a preview is never an execution. Surfaced so the render can hard-label it.
+  displayOnly: true;
 }
 
 export interface AoiNextSafeActionPanel {
@@ -4947,6 +4989,135 @@ function buildAoiBoundedWorkOrderPanel(
       ]),
     ]),
   };
+}
+
+const AOI_STRATEGIC_BRIEF_LABEL_CAP = 6;
+const AOI_STRATEGIC_BRIEF_EVIDENCE_CAP = 12;
+const AOI_GOAL_WORK_ORDER_PREVIEW_CAP = 6;
+const AOI_GOAL_WORK_ORDER_SCOPE_CAP = 5;
+const AOI_GOAL_WORK_ORDER_OPERATION_CAP = 6;
+const AOI_GOAL_WORK_ORDER_STOP_CONDITION_CAP = 4;
+
+// Sanitize + dedupe + cap a list of free-text labels for the strategic-output
+// panels, using the same proposal-display sanitizer the blocked-proposals render
+// uses (no URL/email stripping -- these are internal threads/scopes, not source
+// bodies), so the new section stays visually and defensively consistent with it.
+function sanitizeAoiStrategicLabels(values: readonly string[], cap: number): string[] {
+  const labels: string[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    const label = sanitizeAoiProposalDisplayText(value, 200);
+    if (!label || seen.has(label)) {
+      continue;
+    }
+    seen.add(label);
+    labels.push(label);
+    if (labels.length >= cap) {
+      break;
+    }
+  }
+  return labels;
+}
+
+// Build the read-only continuity-brief panel from the tick's strategic brief.
+// A null/absent brief collapses to a hidden panel (the autonomy section then
+// renders nothing for it), so existing sessions without a fresh tick output are
+// byte-identical. The brief is already redacted server-side; we re-sanitize here
+// because it is operator-facing text re-rendered in the browser.
+export function buildAoiStrategicBriefPanel(
+  brief: AoiStrategicBrief | null | undefined,
+): AoiStrategicBriefPanel {
+  if (!brief) {
+    return {
+      visible: false,
+      synthesizedByLabel: '',
+      tickReasonLabel: '',
+      generatedAt: 0,
+      focusSummary: '',
+      openThreadLabels: [],
+      blockedThreadLabels: [],
+      recentOutcomeLabels: [],
+      observationHighlightLabels: [],
+      countsLabel: '',
+      evidenceRefs: [],
+    };
+  }
+  return {
+    visible: true,
+    synthesizedByLabel:
+      brief.synthesizedBy === 'llm' ? 'LLM-authored focus' : 'Deterministic focus',
+    tickReasonLabel: sanitizeAoiProposalDisplayText(brief.tickReason, 80),
+    generatedAt: Number.isFinite(brief.generatedAt) ? brief.generatedAt : 0,
+    focusSummary: sanitizeAoiProposalDisplayText(brief.focusSummary, 320),
+    openThreadLabels: sanitizeAoiStrategicLabels(brief.openThreads, AOI_STRATEGIC_BRIEF_LABEL_CAP),
+    blockedThreadLabels: sanitizeAoiStrategicLabels(
+      brief.blockedThreads,
+      AOI_STRATEGIC_BRIEF_LABEL_CAP,
+    ),
+    recentOutcomeLabels: sanitizeAoiStrategicLabels(
+      brief.recentOutcomes,
+      AOI_STRATEGIC_BRIEF_LABEL_CAP,
+    ),
+    observationHighlightLabels: sanitizeAoiStrategicLabels(
+      brief.observationHighlights,
+      AOI_STRATEGIC_BRIEF_LABEL_CAP,
+    ),
+    countsLabel: `${Math.max(0, brief.acceptedCount)} accepted, ${Math.max(
+      0,
+      brief.blockedCount,
+    )} blocked, ${Math.max(0, brief.observationCount)} observations`,
+    evidenceRefs: sanitizeAoiStrategicLabels(brief.evidenceRefs, AOI_STRATEGIC_BRIEF_EVIDENCE_CAP),
+  };
+}
+
+// Build per-order read-only previews from the tick's bounded goal work orders.
+// AoiBoundedWorkOrder is display_only / mutationCount:0 by type, so each preview
+// is inert -- the render must never attach an execute/activate control. Deduped
+// by id and capped so a pathological tick cannot flood the panel.
+export function buildAoiGoalWorkOrderPreviews(
+  workOrders: readonly AoiBoundedWorkOrder[] | null | undefined,
+): AoiGoalWorkOrderPreview[] {
+  if (!workOrders || workOrders.length <= 0) {
+    return [];
+  }
+  const previews: AoiGoalWorkOrderPreview[] = [];
+  const seen = new Set<string>();
+  for (const order of workOrders) {
+    if (seen.has(order.id)) {
+      continue;
+    }
+    seen.add(order.id);
+    const scope = [...order.scope.files, ...order.scope.modules, ...order.scope.affectedSurfaces];
+    previews.push({
+      id: order.id,
+      objectiveLabel: sanitizeAoiProposalDisplayText(order.objective, 200),
+      ownerLabel: sanitizeAoiProposalDisplayText(order.owner, 40),
+      statusLabel: formatAoiWorkOrderStatus(order.status),
+      policyStatusLabel: formatAoiWorkOrderStatus(order.policyResult.status),
+      riskLabel: sanitizeAoiProposalDisplayText(order.risk.level, 40),
+      requiredLevelLabel: sanitizeAoiProposalDisplayText(order.approval.requiredAutonomyLevel, 40),
+      scopeLabels: sanitizeAoiStrategicLabels(scope, AOI_GOAL_WORK_ORDER_SCOPE_CAP),
+      allowedOperationLabels: sanitizeAoiStrategicLabels(
+        order.allowedOperations,
+        AOI_GOAL_WORK_ORDER_OPERATION_CAP,
+      ),
+      approvalBoundaryLabel: sanitizeAoiProposalDisplayText(
+        order.policyResult.exactNextApproval || order.reviewRequirement.approvalBoundary,
+        220,
+      ),
+      expectedDiffLabel: sanitizeAoiProposalDisplayText(order.expectedDiffShape.summary, 220),
+      stopConditionLabels: sanitizeAoiStrategicLabels(
+        order.stopConditions,
+        AOI_GOAL_WORK_ORDER_STOP_CONDITION_CAP,
+      ),
+      evidenceRefCount: order.evidenceRefs.length,
+      displayOnly: true,
+    });
+    if (previews.length >= AOI_GOAL_WORK_ORDER_PREVIEW_CAP) {
+      break;
+    }
+  }
+  return previews;
 }
 
 function buildAoiNextSafeActionPanel(
