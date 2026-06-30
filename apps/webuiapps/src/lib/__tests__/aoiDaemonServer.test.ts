@@ -9,6 +9,8 @@ import {
   type AoiDaemonHandle,
 } from '../aoiDaemonServer';
 import { startAoiAutonomyBackgroundFromEnv } from '../aoiAutonomyPlugin';
+import { saveAoiStrategicBrief } from '../aoiStrategicBrief';
+import type { AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
 const liveDaemons: AoiDaemonHandle[] = [];
@@ -213,5 +215,63 @@ describe('autonomy loop single-instance lock', () => {
     const third = startAoiAutonomyBackgroundFromEnv(options, env);
     expect(third).not.toBeNull();
     third?.stop();
+  });
+});
+
+describe('daemon strategic-brief route', () => {
+  const briefFixture: AoiStrategicBrief = {
+    version: 1,
+    sessionPath: 'aoi/default',
+    generatedAt: 1_700_000_000_000,
+    tickReason: 'periodic',
+    focusSummary: 'Continue hardening the kernel telemetry path',
+    openThreads: ['harden the kernel telemetry path'],
+    blockedThreads: [],
+    recentOutcomes: [],
+    observationHighlights: [],
+    evidenceRefs: ['proposal:p1'],
+    acceptedCount: 1,
+    blockedCount: 0,
+    observationCount: 2,
+    synthesizedBy: 'deterministic',
+  };
+
+  it('returns a null brief when none is persisted', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/strategic-brief?sessionPath=aoi/default`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean; brief?: unknown };
+    expect(body.ok).toBe(true);
+    expect(body.brief).toBeNull();
+  });
+
+  it('returns the persisted brief a tick saved (read-only, survives reload without a tick)', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    saveAoiStrategicBrief(sessionsDir, 'aoi/default', briefFixture);
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: {},
+    });
+    liveDaemons.push(handle);
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/strategic-brief?sessionPath=aoi/default`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { brief?: { focusSummary?: string } | null };
+    expect(body.brief?.focusSummary).toContain('telemetry');
+  });
+
+  it('rejects a missing sessionPath', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/api/aoi-autonomy/strategic-brief`);
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('invalid_session_path');
   });
 });

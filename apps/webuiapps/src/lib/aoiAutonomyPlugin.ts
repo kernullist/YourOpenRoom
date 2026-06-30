@@ -44,6 +44,7 @@ import {
   saveAoiAutonomyPolicy,
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
+import { loadAoiStrategicBrief } from './aoiStrategicBrief';
 import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
 import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import {
@@ -623,6 +624,25 @@ export async function handleAoiAutonomyRequest(
       writeJson(res, 200, {
         ok: true,
         status: buildAoiAutonomyStatus(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/strategic-brief') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // Read-only: the last continuity brief persisted by a tick (P1a). Already
+      // redacted at load; lets the operator UI show it on open without a tick.
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        brief: loadAoiStrategicBrief(sessionsDir, sessionPath),
       });
       return true;
     }

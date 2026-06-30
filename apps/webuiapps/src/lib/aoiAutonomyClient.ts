@@ -22,6 +22,7 @@ import type {
   AoiLearningSignalKind,
   AoiMissionDecisionAction,
   AoiMissionState,
+  AoiStrategicBrief,
   AoiObservation,
   AoiOperatorTimelineEvent,
   AoiOperatorTimelineEventKind,
@@ -1195,6 +1196,14 @@ export async function fetchAoiMissionState(
     mission: isRecord(payload.mission) ? (payload.mission as unknown as AoiMissionState) : null,
     status: isRecord(payload.status) ? (payload.status as unknown as AoiAutonomyStatus) : undefined,
   };
+}
+
+export async function fetchAoiStrategicBrief(
+  sessionPath: string,
+): Promise<AoiStrategicBrief | null> {
+  const response = await fetch(`${API_PREFIX}/strategic-brief?${sessionQuery(sessionPath)}`);
+  const payload = await readJsonRecord(response, 'Failed to load Aoi strategic brief.');
+  return isRecord(payload.brief) ? (payload.brief as unknown as AoiStrategicBrief) : null;
 }
 
 export async function fetchAoiEnvironmentSources(

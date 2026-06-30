@@ -246,6 +246,7 @@ import {
   executeAoiProposalAction,
   fetchAoiAutonomyDashboard,
   fetchAoiProposalDecisions,
+  fetchAoiStrategicBrief,
   fetchAoiContextRouter,
   fetchAoiMissionState,
   previewAoiProposalAction,
@@ -3473,9 +3474,12 @@ const ChatPanel: React.FC<{
     setAoiAutonomyError('');
 
     try {
-      const [snapshot, decisions] = await Promise.all([
+      const [snapshot, decisions, strategicBrief] = await Promise.all([
         fetchAoiAutonomyDashboard(sessionPathForAutonomy),
         fetchAoiProposalDecisions(sessionPathForAutonomy, 50),
+        // Best-effort: a brief-route failure must not break the dashboard refresh.
+        // goalWorkOrders are tick-only (not persisted), so only the brief reloads here.
+        fetchAoiStrategicBrief(sessionPathForAutonomy).catch(() => null),
       ]);
       setAoiAutonomyStatus(snapshot.status);
       setAoiAutonomyActiveProposals(snapshot.proposals.active);
@@ -3495,6 +3499,7 @@ const ChatPanel: React.FC<{
       setAoiOperatorHealth(snapshot.health);
       setAoiProactiveBriefs(snapshot.proactiveBriefs);
       setAoiFieldFeedback(snapshot.fieldFeedback);
+      setAoiStrategicBrief(strategicBrief);
     } catch (error) {
       setAoiAutonomyError(error instanceof Error ? error.message : String(error));
     } finally {
