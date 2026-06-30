@@ -2,14 +2,23 @@ import * as fs from 'fs';
 import * as http from 'http';
 import * as os from 'os';
 import { join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createAoiAutonomyReflectionChat,
   DEFAULT_AOI_REFLECTION_SERVER_ORIGIN,
 } from '../aoiAutonomyReflectionChat';
 import { runAoiAutonomyTick } from '../aoiAutonomyEngine';
 import { saveAoiAutonomyPolicy } from '../aoiAutonomyStore';
+import { runAoiServerCliChat } from '../aoiCliChatServer';
 import type { LLMConfig } from '../llmModels';
+
+// Mock only the in-process CLI runner so the CLI-provider branch can be asserted
+// without spawning a real CLI; isAoiServerCliProvider stays real so the routing
+// decision is genuine.
+vi.mock('../aoiCliChatServer', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../aoiCliChatServer')>();
+  return { ...actual, runAoiServerCliChat: vi.fn() };
+});
 
 const SESSION_PATH = 'aoi/default';
 const NOW = 1_800_000_000_000;
@@ -79,6 +88,30 @@ describe('createAoiAutonomyReflectionChat (server-capable reflection chat)', () 
     expect(response.content).toBe('{"focusSummary":"server-routed line"}');
     expect(response.toolCalls).toEqual([]);
     expect(fake.calls()).toBeGreaterThan(0);
+  });
+
+  it('routes CLI / managed-auth providers through the in-process CLI chat', async () => {
+    const mocked = vi.mocked(runAoiServerCliChat);
+    mocked.mockReset();
+    mocked.mockResolvedValue('{"focusSummary":"cli-routed line"}');
+    const chat = createAoiAutonomyReflectionChat('http://unused.invalid', '/work/root');
+    const response = await chat(
+      [
+        { role: 'system', content: 'rules' },
+        { role: 'user', content: '{"q":1}' },
+      ],
+      [],
+      { provider: 'codex-auth', model: 'gpt-5.5' } as LLMConfig,
+    );
+    // The codex-auth provider went in-process (no HTTP), with the workspace root
+    // threaded through as the codex `--cd` / cwd.
+    expect(response.content).toBe('{"focusSummary":"cli-routed line"}');
+    expect(response.toolCalls).toEqual([]);
+    expect(mocked).toHaveBeenCalledTimes(1);
+    const call = mocked.mock.calls[0];
+    expect(call[0].provider).toBe('codex-auth');
+    expect(call[1]).toContain('{"q":1}');
+    expect(call[2].root).toBe('/work/root');
   });
 
   it('lets the autonomy tick synthesize the brief through the real adapter (synthesizedBy=llm)', async () => {

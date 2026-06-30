@@ -1669,7 +1669,7 @@ async function runWakeupInternal(
           // back to deterministic).
           reflectionChat:
             budget.allowNetwork && input.llmConfig
-              ? createAoiAutonomyReflectionChat(input.serverOrigin)
+              ? createAoiAutonomyReflectionChat(input.serverOrigin, input.workspaceRoot)
               : undefined,
           // The trusted connector allow-list only matters when the LLM driver is
           // active (network allowed); it lets the driver propose a connector_call

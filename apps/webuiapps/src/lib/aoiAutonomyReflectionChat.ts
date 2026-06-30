@@ -13,13 +13,17 @@
 // adapter requests JSON mode and flattens the [system, user] messages into a
 // single prompt (the reflection path never passes tools).
 import { callAoiMainTextModel } from './dewdropCanvasPlugin';
+import { isAoiServerCliProvider, runAoiServerCliChat } from './aoiCliChatServer';
 import type { AoiAutonomyReflectionChat } from './aoiAutonomyEngine';
 
 const AOI_REFLECTION_MAX_OUTPUT_TOKENS = 1500;
 
-// serverOrigin is only used by CLI / managed-auth providers (which proxy through
-// `${serverOrigin}/api/...`); baseUrl providers (OpenAI / OpenRouter / Anthropic)
-// call their absolute endpoint directly and ignore it.
+// serverOrigin is the default dev origin for the baseUrl proxy path; baseUrl
+// providers (OpenAI / OpenRouter / Anthropic) call their absolute endpoint
+// directly. CLI / managed-auth providers (codex-auth, codex-cli, claude-cli) no
+// longer proxy through `${serverOrigin}/api/...` -- they spawn the CLI in-process
+// (runAoiServerCliChat), which is what lets the LLM path reach the model under the
+// standalone daemon, not only under `pnpm dev` (where the Vite endpoints exist).
 export const DEFAULT_AOI_REFLECTION_SERVER_ORIGIN = 'http://127.0.0.1:3000';
 
 function flattenMessagesToPrompt(messages: Parameters<AoiAutonomyReflectionChat>[0]): string {
@@ -34,9 +38,19 @@ function flattenMessagesToPrompt(messages: Parameters<AoiAutonomyReflectionChat>
 
 export function createAoiAutonomyReflectionChat(
   serverOrigin: string = DEFAULT_AOI_REFLECTION_SERVER_ORIGIN,
+  workspaceRoot?: string,
 ): AoiAutonomyReflectionChat {
   return async (messages, _tools, config) => {
     const prompt = flattenMessagesToPrompt(messages);
+    // CLI / managed-auth providers: spawn the CLI in-process (the daemon is Node;
+    // the HTTP chat endpoints are a browser bridge). This is the B1 daemon LLM-path
+    // fix. workspaceRoot is the codex `--cd` / cwd; fall back to the process cwd.
+    if (isAoiServerCliProvider(config.provider)) {
+      const content = await runAoiServerCliChat(config, prompt, {
+        root: workspaceRoot ?? process.cwd(),
+      });
+      return { content, toolCalls: [] };
+    }
     const content = await callAoiMainTextModel(
       config,
       serverOrigin,
