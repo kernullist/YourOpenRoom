@@ -172,6 +172,20 @@ function sourceKindFromRef(ref: string): string | null {
   return null;
 }
 
+// The source_kind an UNLINKED outcome is about, derived from what its evidence
+// points at (first recognized ref). Null when nothing is attributable -> the
+// outcome is then skipped (fail-closed), so a chat correction with no concrete
+// source never perturbs calibration.
+function unlinkedOutcomeSourceKind(outcome: AoiOutcomeSignalRecord): string | null {
+  for (const ref of outcome.evidenceRefs ?? []) {
+    const kind = sourceKindFromRef(ref);
+    if (kind) {
+      return kind;
+    }
+  }
+  return null;
+}
+
 function sourceKindFromSourceId(sourceId: string): string {
   return sourceId.replace(/-/g, '_') || 'unknown';
 }
@@ -407,16 +421,23 @@ function evidenceFromDecisions(
   return evidence;
 }
 
-// Outcome signals become bounded secondary calibration evidence. Only outcomes
-// LINKED to a proposal (sourceProposalId resolvable in proposalsById) are used,
-// so the evidence lands on the SAME trigger_kind / action_kind vocabulary the
-// ranking path looks up (a proposal's trigger / acceptAction). Unlinked outcomes
-// (e.g. pure chat corrections) are recorded but not calibrated here.
+// Outcome signals become bounded secondary calibration evidence.
 //
-// Direction maps conservatively: suppress -> negative, risk_up -> safety
-// (strictness), boost -> positive but ONLY when the trust gate is open. neutral
-// carries no signal. Deltas are scaled by confidence * magnitude and stay inside
-// the existing per-dimension and final calibration clamps.
+// LINKED outcomes (sourceProposalId resolvable in proposalsById) land on the SAME
+// trigger_kind / action_kind vocabulary the ranking path looks up (a proposal's
+// trigger / acceptAction). Direction maps conservatively: suppress -> negative,
+// risk_up -> safety (strictness), boost -> positive but ONLY when the trust gate
+// is open.
+//
+// UNLINKED outcomes (chat corrections / standalone signals) feed the source_kind
+// dimension, keyed on what the outcome is ABOUT (derived from its evidence refs).
+// They are held to a STRICTER rule than linked outcomes: they may only LOWER trust
+// / raise strictness (suppress -> negative, risk_up -> safety) and NEVER boost,
+// regardless of the gate, because their attribution is weaker. Unlinked outcomes
+// with no attributable source are skipped.
+//
+// neutral carries no signal. Deltas are scaled by confidence * magnitude and stay
+// inside the existing per-dimension and final calibration clamps.
 function evidenceFromOutcomes(params: {
   outcomes: AoiOutcomeSignalRecord[];
   proposalsById: Map<string, AoiProposal>;
@@ -424,27 +445,54 @@ function evidenceFromOutcomes(params: {
 }): AoiCalibrationEvidence[] {
   const evidence: AoiCalibrationEvidence[] = [];
   for (const outcome of params.outcomes) {
-    const proposalId = outcome.sourceProposalId;
-    if (!proposalId) {
-      continue;
-    }
-    const proposal = params.proposalsById.get(proposalId);
-    if (!proposal) {
-      continue;
-    }
     const direction = outcome.inferredAdjustment.direction;
     if (direction === 'neutral') {
-      continue;
-    }
-    // Fail-closed gate: a boost may only raise trust when the outcome-learning
-    // summary permits it (outcome-only signals cannot boost without an explicit
-    // label or field readiness). Suppress / risk are conservative and always run.
-    if (direction === 'boost' && !params.trustIncreaseAllowed) {
       continue;
     }
     const weight =
       clamp(outcome.confidence, 0, 1) * clamp(outcome.inferredAdjustment.magnitude, 0, 1);
     if (weight <= 0) {
+      continue;
+    }
+    const proposalId = outcome.sourceProposalId;
+    const proposal = proposalId ? params.proposalsById.get(proposalId) : undefined;
+
+    if (!proposal) {
+      // Unlinked outcome: an outcome with only a SOURCE (no proposal). Both
+      // suppress and risk_up DE-PRIORITIZE that source (source_kind negative);
+      // approval-strictness is a proposal-kind concept that does not apply without
+      // a proposal. NEVER boosts trust (weaker attribution), regardless of the
+      // gate. No attributable source -> skip (fail-closed).
+      if (direction === 'boost') {
+        continue;
+      }
+      const sourceKind = unlinkedOutcomeSourceKind(outcome);
+      if (!sourceKind) {
+        continue;
+      }
+      // Both suppress and risk_up de-prioritize the source, so both use the
+      // (negative) suppress delta; OUTCOME_RISK_DELTA is positive and is meant
+      // for the safety/strictness direction, which does not apply without a
+      // proposal kind.
+      const delta = fixed(OUTCOME_SUPPRESS_DELTA * weight);
+      if (delta === 0) {
+        continue;
+      }
+      addEvidence(evidence, {
+        dimension: 'source_kind',
+        key: sourceKind,
+        direction: 'negative',
+        delta,
+        reason: `Unlinked outcome ${outcome.outcomeKind} (${outcome.signalKind}) ${direction} on source ${sourceKind}.`,
+        createdAt: outcome.createdAt,
+        evidenceRefs: dedupeRefs([`outcome:${outcome.id}`, ...(outcome.evidenceRefs ?? [])]),
+      });
+      continue;
+    }
+
+    // Linked outcome: trigger_kind + action_kind calibration. Fail-closed gate --
+    // a boost may only raise trust when the outcome-learning summary permits it.
+    if (direction === 'boost' && !params.trustIncreaseAllowed) {
       continue;
     }
     const calibrationDirection: AoiCalibrationDirection =

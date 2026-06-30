@@ -2861,6 +2861,62 @@ describe('outcome signals feed trust calibration (P1b)', () => {
     });
   }
 
+  function makeUnlinkedOutcome(partial: {
+    id: string;
+    direction: AoiOutcomeLearningDirection;
+    evidenceRefs?: string[];
+    confidence?: number;
+    magnitude?: number;
+    outcomeKind?: AoiOutcomeSignalKind;
+    createdAt?: number;
+  }): AoiOutcomeSignalRecord {
+    const record = normalizeAoiOutcomeSignalRecord(
+      {
+        id: partial.id,
+        sessionPath: SESSION,
+        outcomeKind: partial.outcomeKind ?? 'user_correction',
+        signalKind: 'passive_outcome',
+        // No sourceProposalId -> unlinked (chat correction / standalone signal).
+        confidence: partial.confidence ?? 0.5,
+        inferredAdjustment: {
+          version: 1,
+          target: 'source',
+          direction: partial.direction,
+          magnitude: partial.magnitude ?? 1,
+          reason: 'test unlinked outcome',
+        },
+        evidenceRefs: partial.evidenceRefs ?? [],
+        createdAt: partial.createdAt ?? 3000,
+      },
+      SESSION,
+      5000,
+    );
+    if (!record) {
+      throw new Error('failed to build test unlinked outcome');
+    }
+    return record;
+  }
+
+  function applyForSourceKind(
+    outcomes: AoiOutcomeSignalRecord[],
+    sourceKind: string,
+  ): ReturnType<typeof applyAoiTrustCalibration> {
+    const profile = buildAoiTrustCalibrationProfile({
+      sessionPath: SESSION,
+      proposals: [feedbackMemoryProposalFixture],
+      outcomes,
+      outcomeTrustIncreaseAllowed: true,
+      now: 5000,
+    });
+    return applyAoiTrustCalibration({
+      profile,
+      triggerKind: TRIGGER,
+      actionKind: ACTION,
+      sourceKind,
+      score: 0.6,
+    });
+  }
+
   it('does not boost trust from an outcome-only signal (gate closed)', () => {
     const applied = applyForFixture(
       [
@@ -2923,6 +2979,58 @@ describe('outcome signals feed trust calibration (P1b)', () => {
       false,
     );
     expect(applied.rankingAdjustment).toBe(0);
+  });
+
+  it('penalizes the source of an unlinked suppress outcome (chat-only calibration)', () => {
+    const applied = applyForSourceKind(
+      [
+        makeUnlinkedOutcome({
+          id: 'u-suppress',
+          direction: 'suppress',
+          evidenceRefs: ['research:run-1'],
+        }),
+      ],
+      'research_runs',
+    );
+    expect(applied.sourceSelectionPenalty).toBeGreaterThan(0);
+  });
+
+  it('de-prioritizes the source of an unlinked risk_up outcome', () => {
+    const applied = applyForSourceKind(
+      [
+        makeUnlinkedOutcome({
+          id: 'u-risk',
+          direction: 'risk_up',
+          evidenceRefs: ['workspace:build-1'],
+        }),
+      ],
+      'workspace_build',
+    );
+    expect(applied.sourceSelectionPenalty).toBeGreaterThan(0);
+  });
+
+  it('never boosts trust from an unlinked outcome, even with the gate open', () => {
+    const applied = applyForSourceKind(
+      [
+        makeUnlinkedOutcome({
+          id: 'u-boost',
+          direction: 'boost',
+          outcomeKind: 'work_order_approved',
+          evidenceRefs: ['research:run-1'],
+        }),
+      ],
+      'research_runs',
+    );
+    expect(applied.rankingAdjustment).toBe(0);
+    expect(applied.sourceSelectionPenalty).toBe(0);
+  });
+
+  it('ignores an unlinked outcome with no attributable source', () => {
+    const applied = applyForSourceKind(
+      [makeUnlinkedOutcome({ id: 'u-nosrc', direction: 'suppress', evidenceRefs: ['chat:msg-1'] })],
+      'research_runs',
+    );
+    expect(applied.sourceSelectionPenalty).toBe(0);
   });
 
   it('keeps accumulated outcome boosts within the positive learning cap', () => {
