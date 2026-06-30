@@ -1900,6 +1900,11 @@ export interface AoiAutonomyWakeupBudget {
   // background path (checked around the trend-advisor build to downgrade a would-be
   // direct chat to an inline card); a manual run is exempt.
   directChatDailyBudget?: number;
+  // P3-2b: explicit opt-in for the user-return lull confidence-floor relief on the AUTONOMOUS
+  // trend advisor. Default/false -> no relief (byte-identical). Only consumed on the background
+  // path, only within the idle window, and only when the P3-2a budget has room; a manual run is
+  // exempt. The relief never lowers any gate other than the direct-chat confidence floor.
+  idleConfidenceSurgeEnabled?: boolean;
 }
 
 export type AoiAutonomySourceScheduleResult = 'refreshed' | 'skipped' | 'failed';

@@ -105,6 +105,12 @@ const SOURCE_TTL_MS_BY_ID: Record<string, number> = {
   'notes-metadata': 10 * 60 * 1000,
 };
 
+// P3-2b: lower bound of the "user-return lull" window for the confidence-floor relief. Mirrors
+// the attention broker's USER_IDLE_RETURN_THRESHOLD_MS (15 min) so "returned from idle" means the
+// same thing in both places. The upper bound is the policy's maxSessionIdleMs: a longer idle has
+// already tripped session_not_active_enough and blocked the scout pipeline before the relief runs.
+const DEFAULT_USER_RETURN_IDLE_MS = 15 * 60 * 1000;
+
 export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   version: 1,
   maxSchedulerRuntimeMs: DEFAULT_SCHEDULER_RUNTIME_MS,
@@ -119,6 +125,7 @@ export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   goalSynthesisEnabled: false,
   scoutNetworkDailyBudget: DEFAULT_SCOUT_NETWORK_DAILY_BUDGET,
   directChatDailyBudget: DEFAULT_DIRECT_CHAT_DAILY_BUDGET,
+  idleConfidenceSurgeEnabled: false,
 };
 
 export interface AoiAutonomyWakeupInput {
@@ -329,6 +336,7 @@ function normalizeBudget(
     goalSynthesisEnabled: budget?.goalSynthesisEnabled === true,
     scoutNetworkDailyBudget: resolveAoiScoutNetworkCeiling(budget?.scoutNetworkDailyBudget),
     directChatDailyBudget: resolveAoiDirectChatCeiling(budget?.directChatDailyBudget),
+    idleConfidenceSurgeEnabled: budget?.idleConfidenceSurgeEnabled === true,
   };
 }
 
@@ -1429,6 +1437,19 @@ async function runProactiveScoutForWakeup(params: {
       });
       directChatBudgetExhausted = !directChatCheck.allowed;
     }
+    // P3-2b: on a user-return lull, grant a bounded direct-chat confidence-floor relief so a
+    // near-miss trend whose ONLY remaining blocker is confidence can reach direct chat. Gated to
+    // the BACKGROUND path + explicit opt-in + the active idle window [DEFAULT_USER_RETURN_IDLE_MS,
+    // maxSessionIdleMs] + P3-2a budget room (an exhausted budget keeps the daily cap dominant). A
+    // longer idle already tripped session_not_active_enough and returned above; a manual run sets
+    // no userIdleMs and is exempt. OFF / outside the window -> no relief (byte-identical).
+    const directChatConfidenceFloorRelief =
+      background &&
+      params.budget.idleConfidenceSurgeEnabled === true &&
+      !directChatBudgetExhausted &&
+      typeof params.input.userIdleMs === 'number' &&
+      params.input.userIdleMs >= DEFAULT_USER_RETURN_IDLE_MS &&
+      params.input.userIdleMs <= controls.maxSessionIdleMs;
     const trendAdvisor = buildAoiProactiveTrendAdvisorState({
       sessionsDir: params.input.sessionsDir,
       sessionPath,
@@ -1440,6 +1461,7 @@ async function runProactiveScoutForWakeup(params: {
       calibrationTuning: tuning,
       now: params.now,
       directChatBudgetExhausted,
+      directChatConfidenceFloorRelief,
     });
     trendSnapshotCount = trendAdvisor.snapshots.length;
     trendOpinionCardCount = trendAdvisor.opinionCards.length;

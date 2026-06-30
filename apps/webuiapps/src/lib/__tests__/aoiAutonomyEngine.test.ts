@@ -3208,6 +3208,102 @@ describe('runAoiAutonomyWakeup()', () => {
     );
   });
 
+  // P3-2b: a near-miss trend (confidence in the [0.50, 0.55) band) is normally blocked by the
+  // direct-chat confidence floor. On a user-return lull (background path + opt-in + idle within
+  // the active window + P3-2a budget room) the bounded floor relief clears that sole blocker.
+  function runIdleSurgeScoutWakeup(
+    root: string,
+    options: { userIdleMs?: number; idleConfidenceSurgeEnabled?: boolean },
+  ) {
+    return runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh' as const,
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+        ...(typeof options.idleConfidenceSurgeEnabled === 'boolean'
+          ? { idleConfidenceSurgeEnabled: options.idleConfidenceSurgeEnabled }
+          : {}),
+      },
+      proactiveScout: { runNow: false },
+      ...(typeof options.userIdleMs === 'number' ? { userIdleMs: options.userIdleMs } : {}),
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: vi.fn(async () =>
+          makeScoutResult({
+            createdCandidates: [makeProactiveBriefCandidate({ confidence: 0.52, score: 0.52 })],
+          }),
+        ),
+      },
+    });
+  }
+
+  it('clears the near-miss confidence blocker on a user-return lull when opted in (P3-2b)', async () => {
+    // The delta vs the off-by-default test below isolates exactly this change: with the same
+    // setup, the explicit opt-in is the only thing that removes confidence_below_floor. (The
+    // end-to-end inline_card -> direct_chat promotion under a ready readiness is unit-covered in
+    // aoiProactiveTrendAdvisor.test.ts; the scheduler test here proves the flag wiring.)
+    const root = makeTempRoot();
+    configureDirectChatBudgetScout(root);
+    const result = await runIdleSurgeScoutWakeup(root, {
+      userIdleMs: 20 * 60 * 1000,
+      idleConfidenceSurgeEnabled: true,
+    });
+    expect(result.record.proactiveScout?.status).toBe('scouted');
+    expect(result.record.proactiveScout?.trendBlockedReasons ?? []).not.toContain(
+      'confidence_below_floor',
+    );
+  });
+
+  it('does not relax the floor without the explicit opt-in (P3-2b off-by-default)', async () => {
+    const root = makeTempRoot();
+    configureDirectChatBudgetScout(root);
+    const result = await runIdleSurgeScoutWakeup(root, { userIdleMs: 20 * 60 * 1000 });
+    expect(result.record.proactiveScout?.status).toBe('scouted');
+    expect(result.record.proactiveScout?.trendBlockedReasons ?? []).toContain(
+      'confidence_below_floor',
+    );
+  });
+
+  it('does not relax the floor when idle is below the user-return window (P3-2b)', async () => {
+    const root = makeTempRoot();
+    configureDirectChatBudgetScout(root);
+    const result = await runIdleSurgeScoutWakeup(root, {
+      userIdleMs: 5 * 60 * 1000,
+      idleConfidenceSurgeEnabled: true,
+    });
+    expect(result.record.proactiveScout?.status).toBe('scouted');
+    expect(result.record.proactiveScout?.trendBlockedReasons ?? []).toContain(
+      'confidence_below_floor',
+    );
+  });
+
+  it('keeps the P3-2a daily budget dominant over the floor relief when exhausted (P3-2b)', async () => {
+    const root = makeTempRoot();
+    configureDirectChatBudgetScout(root);
+    seedExhaustedDirectChatBudget(root);
+    const result = await runIdleSurgeScoutWakeup(root, {
+      userIdleMs: 20 * 60 * 1000,
+      idleConfidenceSurgeEnabled: true,
+    });
+    expect(result.record.proactiveScout?.status).toBe('scouted');
+    // The relief is gated off by the exhausted budget, so the confidence blocker still stands
+    // (it was not relaxed) and the budget reason is recorded -> no direct chat.
+    expect(result.record.proactiveScout?.trendBlockedReasons ?? []).toContain(
+      'confidence_below_floor',
+    );
+    expect(result.record.proactiveScout?.trendBlockedReasons ?? []).toContain(
+      'direct_chat_daily_budget_exhausted',
+    );
+    expect(result.record.proactiveScout?.trendDeliveryModes?.direct_chat ?? 0).toBe(0);
+  });
+
   it('records a failed wakeup on background tick timeout without corrupting scheduler state', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

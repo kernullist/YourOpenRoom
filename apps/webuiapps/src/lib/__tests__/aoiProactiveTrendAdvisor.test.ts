@@ -361,6 +361,60 @@ describe('Aoi proactive trend advisor', () => {
     expect(exhausted.directChatHookCount).toBe(0);
   });
 
+  it('grants a bounded confidence-floor relief on a user-return lull so a near-miss trend reaches direct chat (P3-2b)', () => {
+    const base = {
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      // Confidence sits in the narrow [hard-min 0.50, base-floor 0.55) band: blocked by the
+      // 0.55 floor normally, cleared only when the bounded relief lowers the floor to 0.50.
+      candidates: [makeCandidate({ confidence: 0.52, score: 0.52 })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    };
+
+    // No relief (flag absent/false): confidence is the sole remaining blocker -> inline card.
+    const withoutRelief = buildAoiProactiveTrendAdvisorState(base);
+    expect(withoutRelief.opinionCards[0].deliveryMode).toBe('inline_card');
+    expect(withoutRelief.opinionCards[0].directChatBlockedReasons).toContain(
+      'confidence_below_floor',
+    );
+    expect(withoutRelief.directChatHookCount).toBe(0);
+
+    // Relief granted: the bounded floor (0.50) clears confidence_below_floor -> direct chat.
+    const withRelief = buildAoiProactiveTrendAdvisorState({
+      ...base,
+      directChatConfidenceFloorRelief: true,
+    });
+    expect(withRelief.opinionCards[0].deliveryMode).toBe('direct_chat');
+    expect(withRelief.opinionCards[0].directChatAllowed).toBe(true);
+    expect(withRelief.opinionCards[0].directChatBlockedReasons).not.toContain(
+      'confidence_below_floor',
+    );
+    expect(withRelief.directChatHookCount).toBe(1);
+  });
+
+  it('keeps the bounded floor relief from rescuing a trend far below the floor (P3-2b hard min)', () => {
+    const base = {
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      // Below the hard 0.50 relief floor: even with relief the confidence blocker stands, so the
+      // relief can only ever rescue a genuine near-miss, never an item well under the bar.
+      candidates: [makeCandidate({ confidence: 0.46, score: 0.46 })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+    };
+    const withRelief = buildAoiProactiveTrendAdvisorState({
+      ...base,
+      directChatConfidenceFloorRelief: true,
+    });
+    expect(withRelief.opinionCards[0].deliveryMode).not.toBe('direct_chat');
+    expect(withRelief.opinionCards[0].directChatBlockedReasons).toContain('confidence_below_floor');
+  });
+
   it('suppresses repeated snapshots from direct chat with novelty evidence', () => {
     const first = buildAoiProactiveTrendAdvisorState({
       sessionPath: SESSION_PATH,

@@ -2626,6 +2626,7 @@ export function startAoiAutonomyBackgroundFromEnv(
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,
     scoutNetworkDailyBudget: backgroundConfig.scoutNetworkDailyBudget,
     directChatDailyBudget: backgroundConfig.directChatDailyBudget,
+    idleConfidenceSurgeEnabled: backgroundConfig.idleConfidenceSurgeEnabled,
     // Resolve the user's main model from the config file so the background
     // loop can drive LLM reasoning (only used when allowNetwork is on).
     loadLlmConfig: () => loadAoiMainLlmConfig(configFile),

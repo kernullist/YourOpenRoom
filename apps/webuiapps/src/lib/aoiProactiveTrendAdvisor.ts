@@ -93,6 +93,10 @@ export interface BuildAoiProactiveTrendAdvisorStateInput {
   // background path), suppress the direct_chat delivery mode so a would-be direct chat
   // falls through to an inline card. Default/false -> unchanged (byte-identical) behavior.
   directChatBudgetExhausted?: boolean;
+  // P3-2b: when a user-return lull relief was granted (decided server-side on the background
+  // path: explicit opt-in + idle within the active window + P3-2a budget room), relax the
+  // direct-chat confidence floor by a bounded delta. Default/false -> byte-identical behavior.
+  directChatConfidenceFloorRelief?: boolean;
 }
 
 export interface BuildAoiProactiveTrendAdvisorDiagnosticsInput {
@@ -1241,6 +1245,15 @@ function computeTrendNovelty(params: {
   };
 }
 
+// P3-2b: on a user-return lull the auto trend advisor may relax the direct-chat confidence
+// floor by this bounded delta, with a hard lower bound so the floor can never drop below
+// DIRECT_CHAT_CONFIDENCE_FLOOR_HARD_MIN. The relief only ever removes the confidence_below_floor
+// reason; every other gate stays unchanged, so a trend reaches direct chat only when confidence
+// was its SOLE remaining blocker. Eligibility (background path, explicit opt-in, idle window,
+// P3-2a budget room) is decided server-side in aoiAutonomyScheduler; this is just the bound.
+const DIRECT_CHAT_CONFIDENCE_FLOOR_RELIEF_DELTA = 0.05;
+const DIRECT_CHAT_CONFIDENCE_FLOOR_HARD_MIN = 0.5;
+
 function directChatBlockReasons(params: {
   candidate: AoiProactiveBriefCandidate;
   watch: AoiProactiveTrendWatchTopic | null;
@@ -1254,6 +1267,7 @@ function directChatBlockReasons(params: {
   interestDrift: AoiProactiveTrendInterestDrift;
   novelty: AoiProactiveTrendNovelty;
   directChatBudgetExhausted?: boolean;
+  directChatConfidenceFloorRelief?: boolean;
   now: number;
 }): string[] {
   const reasons: string[] = [];
@@ -1320,7 +1334,17 @@ function directChatBlockReasons(params: {
   if (params.novelty.status === 'weak') {
     reasons.push('novelty_below_threshold');
   }
-  if (params.candidate.confidence < Math.max(0.55, params.policy?.confidenceFloor ?? 0.55)) {
+  const baseConfidenceFloor = Math.max(0.55, params.policy?.confidenceFloor ?? 0.55);
+  // P3-2b: when the server-side gate granted a user-return lull relief, lower the direct-chat
+  // confidence floor by a bounded delta (never below the hard min). Off -> byte-identical floor.
+  const confidenceFloor =
+    params.directChatConfidenceFloorRelief === true
+      ? Math.max(
+          DIRECT_CHAT_CONFIDENCE_FLOOR_HARD_MIN,
+          baseConfidenceFloor - DIRECT_CHAT_CONFIDENCE_FLOOR_RELIEF_DELTA,
+        )
+      : baseConfidenceFloor;
+  if (params.candidate.confidence < confidenceFloor) {
     reasons.push('confidence_below_floor');
   }
   for (const item of recentFeedback(params.feedback, params.candidate, params.now)) {
@@ -1655,6 +1679,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   now?: number;
   sourceStaleAfterMs?: number;
   directChatBudgetExhausted?: boolean;
+  directChatConfidenceFloorRelief?: boolean;
 }): AoiProactiveTrendSnapshot | null {
   const now = params.now ?? Date.now();
   const candidate = params.candidate;
@@ -1720,6 +1745,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     interestDrift,
     novelty,
     directChatBudgetExhausted: params.directChatBudgetExhausted,
+    directChatConfidenceFloorRelief: params.directChatConfidenceFloorRelief,
     now,
   });
   const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong });
@@ -2416,6 +2442,7 @@ export function buildAoiProactiveTrendAdvisorState(
         now,
         sourceStaleAfterMs: input.sourceStaleAfterMs,
         directChatBudgetExhausted: input.directChatBudgetExhausted,
+        directChatConfidenceFloorRelief: input.directChatConfidenceFloorRelief,
       }),
     )
     .filter((snapshot): snapshot is AoiProactiveTrendSnapshot => snapshot !== null);

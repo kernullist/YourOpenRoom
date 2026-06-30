@@ -24,6 +24,9 @@ export interface AoiAutonomyBackgroundCycleOptions {
   // P3-2a: rolling daily direct-chat offer ceiling for the auto trend advisor, threaded to
   // each wakeup. Undefined -> the scheduler applies the enforced finite default; 0 -> unlimited.
   directChatDailyBudget?: number;
+  // P3-2b: explicit opt-in for the user-return lull confidence-floor relief, threaded to each
+  // wakeup. Default/false -> no relief (byte-identical). Only ever applies on the background path.
+  idleConfidenceSurgeEnabled?: boolean;
   llmConfig?: LLMConfig | null;
   // Lazily resolve the main LLM config (e.g. from the config file) each cycle.
   // Without this the background loop runs deterministic-only (no LLM reasoning).
@@ -128,6 +131,9 @@ export async function runAoiAutonomyBackgroundCycle(
           ...(typeof options.directChatDailyBudget === 'number'
             ? { directChatDailyBudget: options.directChatDailyBudget }
             : {}),
+          ...(typeof options.idleConfidenceSurgeEnabled === 'boolean'
+            ? { idleConfidenceSurgeEnabled: options.idleConfidenceSurgeEnabled }
+            : {}),
         },
         now: startedAt,
       });
@@ -211,6 +217,9 @@ export interface AoiAutonomyBackgroundEnvConfig {
   // P3-2a: rolling daily direct-chat offer ceiling for the auto trend advisor. Undefined when
   // unset -> the scheduler applies the enforced finite default; 0 -> unlimited.
   directChatDailyBudget?: number;
+  // P3-2b: explicit opt-in for the user-return lull confidence-floor relief on the auto trend
+  // advisor (on top of allowNetwork + the background path). Default false.
+  idleConfidenceSurgeEnabled: boolean;
 }
 
 function parseBoolEnv(value: string | undefined): boolean {
@@ -253,5 +262,6 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
     goalSynthesisEnabled: parseBoolEnv(env.AOI_AUTONOMY_GOAL_SYNTHESIS),
     scoutNetworkDailyBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_SCOUT_NETWORK_DAILY_BUDGET),
     directChatDailyBudget: parseTokenBudgetEnv(env.AOI_AUTONOMY_DIRECT_CHAT_DAILY_BUDGET),
+    idleConfidenceSurgeEnabled: parseBoolEnv(env.AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE),
   };
 }
