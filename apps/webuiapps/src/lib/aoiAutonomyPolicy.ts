@@ -386,7 +386,9 @@ const READ_ONLY_PROPOSAL_ACTIONS = new Set([
   'get_research_status',
 ]);
 
-const FRESH_ACCEPTANCE_MS = 10 * 60 * 1000;
+// The strict per-execution fresh-acceptance window. Exported so the P2/B3-2 approval-TTL
+// path can compare a relaxed validity window against the same baseline.
+export const FRESH_ACCEPTANCE_MS = 10 * 60 * 1000;
 const FILESYSTEM_PATH_KEY_PATTERN = /(?:^|_)(?:path|file|dir|directory|cwd|command)(?:$|_)/i;
 const WINDOWS_PATH_PATTERN = /(?:[a-zA-Z]:\\|\\\\)[^\s'"`<>|]*/;
 const UNIX_PATH_PATTERN =
@@ -1269,7 +1271,8 @@ export function evaluateAoiProposalExecution(
       decisions: context.decisions,
       decisionId: context.decisionId,
       now,
-      freshAcceptanceMs: context.freshAcceptanceMs,
+      // P2/B3-2: an active trust-bounded approval window widens the fresh-acceptance bound.
+      freshAcceptanceMs: context.approvalValidityMs ?? context.freshAcceptanceMs,
       requireFresh: requiresFreshAcceptance,
     })
   ) {
@@ -1323,6 +1326,13 @@ export function evaluateAoiProposalExecution(
       now,
     });
     for (const reason of approvalReasons) {
+      // P2/B3-2: when the trust-bounded approval window is active for this app_operation,
+      // the widened fresh-acceptance window (anchored at the user's accept decision) is the
+      // freshness bound, so the per-approval 5min expiry is intentionally not re-enforced.
+      // Every OTHER drift reason (operation / risk / purpose / target changed) still blocks.
+      if (reason === 'approval_expired' && context.approvalValidityMs !== undefined) {
+        continue;
+      }
       reasons.push(`app_action_${reason}`);
     }
   }

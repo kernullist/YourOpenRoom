@@ -14,7 +14,13 @@ import {
 } from '../aoiAutonomyStore';
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
 import { recordAoiAppOperationDispatchResult } from '../aoiAppOperationDispatchServer';
+import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiProposal } from '../aoiAutonomyTypes';
+import type {
+  AoiJarvisReadinessLevel,
+  AoiJarvisReadinessScorecard,
+} from '../aoiJarvisReadinessScorecard';
+import type { AoiKiraHandoffCreateResult, AoiKiraHandoffPreview } from '../aoiKiraHandoff';
 
 const tempRoots: string[] = [];
 
@@ -102,6 +108,186 @@ async function withAppOpLiveDispatch<T>(run: () => Promise<T>): Promise<T> {
     }
   }
 }
+
+// B3-2 trust-bounded approval TTL is OFF by default and read from process.env; set it only
+// for the duration of the call and always restore.
+async function withApprovalTtl<T>(run: () => Promise<T>): Promise<T> {
+  const prev = process.env.AOI_AUTONOMY_APPROVAL_TTL;
+  process.env.AOI_AUTONOMY_APPROVAL_TTL = '1';
+  try {
+    return await run();
+  } finally {
+    if (prev === undefined) {
+      delete process.env.AOI_AUTONOMY_APPROVAL_TTL;
+    } else {
+      process.env.AOI_AUTONOMY_APPROVAL_TTL = prev;
+    }
+  }
+}
+
+// Inject a readiness scorecard at a chosen rung; the TTL trust gate reads gateStatus + level.
+function scorecardAt(level: AoiJarvisReadinessLevel): AoiJarvisReadinessScorecard {
+  return { gateStatus: 'pass', level } as unknown as AoiJarvisReadinessScorecard;
+}
+
+function ledgerEventTypesFor(root: string): string[] {
+  return loadServerAoiRunLedger(root, 'aoi/default').flatMap((entry) =>
+    entry.events.map((event) => event.type),
+  );
+}
+
+// 10min strict fresh-acceptance + 5min approval expiry; pick a `now` past BOTH but within
+// the default 1h TTL window from the accept at 1000.
+const ACCEPT_AT = 1000;
+const STALE_NOW = ACCEPT_AT + 10 * 60 * 1000 + 1;
+const FRESH_NOW = ACCEPT_AT + 60 * 1000;
+
+function kiraWorkStub() {
+  return {
+    createKiraWork: ({
+      preview,
+    }: {
+      preview: AoiKiraHandoffPreview;
+    }): AoiKiraHandoffCreateResult => ({
+      kind: 'create_kira_work' as const,
+      preview,
+      work: {
+        id: 'w1',
+        ref: 'kira-work:w1',
+        title: 'Review the Twitter window app action',
+        projectName: 'aoi',
+        status: 'todo' as const,
+      },
+      reviewRequired: true,
+      route: '/kira',
+      openPayload: { workId: 'w1', focusType: 'work' },
+    }),
+  };
+}
+
+describe('executeAoiProposal() trust-bounded approval TTL (B3-2)', () => {
+  it('blocks a stale app_operation acceptance when the TTL is off (default)', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: ACCEPT_AT,
+    });
+
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: 'proposal-aa-win-001',
+      decisionId: accepted.decision.id,
+      now: STALE_NOW,
+    });
+
+    expect(result.executed).toBe(false);
+    // The 5min approval expiry is the binding gate for a stale app_operation.
+    expect(result.reasons.join(',')).toContain('app_action_approval_expired');
+  });
+
+  it('lets a trusted_operator execute a stale app_operation within the window + records the marker', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: ACCEPT_AT,
+    });
+
+    const result = await withApprovalTtl(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-win-001',
+        decisionId: accepted.decision.id,
+        now: STALE_NOW,
+        dependencies: {
+          ...kiraWorkStub(),
+          readApprovalTtlScorecard: () => scorecardAt('trusted_operator'),
+        },
+      }),
+    );
+
+    expect(result.executed).toBe(true);
+    // The loop acted on a stale approval via the window -> audit marker recorded.
+    expect(ledgerEventTypesFor(root)).toContain('approval_window_used');
+  });
+
+  it('still blocks a stale app_operation when readiness is below trusted_operator', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: ACCEPT_AT,
+    });
+
+    const result = await withApprovalTtl(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-win-001',
+        decisionId: accepted.decision.id,
+        now: STALE_NOW,
+        dependencies: {
+          ...kiraWorkStub(),
+          readApprovalTtlScorecard: () => scorecardAt('supervised_prepare'),
+        },
+      }),
+    );
+
+    expect(result.executed).toBe(false);
+    expect(result.reasons.join(',')).toContain('app_action_approval_expired');
+    expect(ledgerEventTypesFor(root)).not.toContain('approval_window_used');
+  });
+
+  it('does not record the window marker when the acceptance was fresh', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: ACCEPT_AT,
+    });
+
+    const result = await withApprovalTtl(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-win-001',
+        decisionId: accepted.decision.id,
+        now: FRESH_NOW,
+        dependencies: {
+          ...kiraWorkStub(),
+          readApprovalTtlScorecard: () => scorecardAt('trusted_operator'),
+        },
+      }),
+    );
+
+    expect(result.executed).toBe(true);
+    // The window was granted but not needed (fresh click) -> no marker.
+    expect(ledgerEventTypesFor(root)).not.toContain('approval_window_used');
+  });
+});
 
 describe('executeAoiProposal() app actions', () => {
   it('executes an approved file_backed app action under L5 and records the audit', async () => {

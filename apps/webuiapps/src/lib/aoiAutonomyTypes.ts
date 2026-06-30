@@ -3392,6 +3392,12 @@ export interface AoiProposalExecutionPolicyContext {
   decisions?: AoiProposalDecision[];
   decisionId?: string;
   freshAcceptanceMs?: number;
+  // P2/B3-2 trust-bounded approval TTL (server-resolved, OFF by default). When set for an
+  // eligible app_operation, it widens the fresh-acceptance window to this validity window
+  // (anchored at the user's accept decision) AND suppresses the per-approval 5min expiry,
+  // so the loop can act within the window without a fresh click. Never set on
+  // client/preview paths or for run_command / connector_call / file mutation.
+  approvalValidityMs?: number;
   executionMode?: 'preview' | 'execute';
   // Server-readable trusted MCP connector allow-list for a connector_call
   // proposal. The server passes it from config; absent on client/preview paths

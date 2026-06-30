@@ -15,6 +15,7 @@ export type AoiRunLedgerEventType =
   | 'app_action_executed'
   | 'app_operation_dispatch_executed'
   | 'app_operation_dispatch_failed'
+  | 'approval_window_used'
   | 'connector_call_executed'
   | 'autonomy_level_promoted'
   | 'autonomy_level_rolled_back'

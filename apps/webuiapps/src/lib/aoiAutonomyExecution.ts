@@ -1,4 +1,4 @@
-import { evaluateAoiProposalExecution } from './aoiAutonomyPolicy';
+import { evaluateAoiProposalExecution, FRESH_ACCEPTANCE_MS } from './aoiAutonomyPolicy';
 import {
   applyAoiProposalExecutionTransition,
   buildAoiAutonomyStatus,
@@ -61,6 +61,13 @@ import {
   buildAoiAppOperationDispatch,
   isAoiAppOpLiveDispatchEnabled,
 } from './aoiAppOperationDispatch';
+import {
+  isAoiApprovalTtlEnabled,
+  resolveAoiApprovalTtlWindowMs,
+  wasAoiApprovalTtlWindowUsed,
+} from './aoiApprovalTtl';
+import { buildAoiAutonomyLevelPromotionScorecard } from './aoiAutonomyLevelPromotionRunner';
+import type { AoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
 import {
   createAoiApprovedConnectorCallRequest,
   evaluateAoiApprovedConnectorCallPolicy,
@@ -155,6 +162,14 @@ export interface AoiProposalExecutionDependencies {
     connectors: AoiMcpConnectorsConfig | null;
     now: number;
   }) => Promise<AoiApprovedConnectorCallResult>;
+  // P2/B3-2: the readiness scorecard that gates the trust-bounded approval TTL. Defaults
+  // to buildAoiAutonomyLevelPromotionScorecard (the same field-evidence, non-self-authorable
+  // signal B2 uses); injectable so the trust gate can be exercised in tests.
+  readApprovalTtlScorecard?: (
+    sessionsDir: string,
+    sessionPath: string,
+    now: number,
+  ) => AoiJarvisReadinessScorecard;
 }
 
 export interface AoiProposalExecutionResult {
@@ -1255,12 +1270,33 @@ export async function executeAoiProposal(params: {
   // Hard env gate (OFF by default) for side-effecting live RPC; resolved once and
   // shared by the execution gate and the connector_call runner so they agree.
   const allowSideEffecting = isAoiSideEffectingLiveRpcEnabled();
+  // P2/B3-2 trust-bounded approval TTL (OFF by default). For an eligible pure
+  // app_operation, when the field-evidence readiness is at the trusted_operator rung, the
+  // strict 10min fresh-acceptance window is widened to a configurable validity window so
+  // the loop can act within it without a fresh human click. Cost-gated: the readiness
+  // scorecard is built ONLY when the flag is on AND the action is eligible (OFF -> no I/O).
+  const approvalTtlEnabled = isAoiApprovalTtlEnabled();
+  const eligibleAppOperationForTtl =
+    proposal.acceptAction?.kind === 'app_action' &&
+    approvedAppActionPolicyForExecution?.routing === 'app_operation';
+  const buildApprovalTtlScorecard =
+    params.dependencies?.readApprovalTtlScorecard ?? buildAoiAutonomyLevelPromotionScorecard;
+  const approvalTtlScorecard =
+    approvalTtlEnabled && eligibleAppOperationForTtl
+      ? buildApprovalTtlScorecard(params.sessionsDir, sessionPath, now)
+      : null;
+  const approvalWindowMs = resolveAoiApprovalTtlWindowMs({
+    enabled: approvalTtlEnabled,
+    eligibleAppOperation: eligibleAppOperationForTtl,
+    scorecard: approvalTtlScorecard,
+  });
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
     decisionId: params.decisionId,
     connectors,
     ...(allowSideEffecting ? { allowSideEffecting: true } : {}),
+    ...(approvalWindowMs !== null ? { approvalValidityMs: approvalWindowMs } : {}),
   });
   if (!evaluation.allowed) {
     if (proposal.acceptAction?.kind === 'create_kira_work') {
@@ -1289,6 +1325,31 @@ export async function executeAoiProposal(params: {
             },
           }
         : {}),
+    });
+  }
+
+  // P2/B3-2: stamp an audit marker ONLY when the trust-bounded window was actually the
+  // reason this passed -- i.e. the loop acted on a stale approval (youngest accept older
+  // than the strict 10min) without a fresh click. A fresh click within 10min records
+  // nothing new.
+  if (
+    approvalWindowMs !== null &&
+    wasAoiApprovalTtlWindowUsed({
+      decisions,
+      proposalId: proposal.id,
+      decisionId: params.decisionId,
+      now,
+      freshAcceptanceMs: FRESH_ACCEPTANCE_MS,
+    })
+  ) {
+    recordServerAoiRunLedgerEvent({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      type: 'approval_window_used',
+      message: `App operation executed under the trust-bounded approval window (${approvalWindowMs}ms) without a fresh acceptance.`,
+      goalSummary: `Aoi approval TTL: ${proposal.title}`,
+      toolNames: [proposal.acceptAction?.kind ?? 'app_action'],
+      now,
     });
   }
 
