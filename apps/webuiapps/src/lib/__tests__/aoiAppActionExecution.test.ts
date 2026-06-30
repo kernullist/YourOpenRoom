@@ -7,6 +7,7 @@ import {
   applyAoiProposalDecision,
   loadAoiActiveProposals,
   loadAoiAppActionAuditRecords,
+  loadAoiAppOperationDispatches,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
@@ -81,6 +82,22 @@ function makeWindowAppActionProposal(partial: Partial<AoiProposal> = {}): AoiPro
     },
     ...partial,
   });
+}
+
+// B3-1 live dispatch is OFF by default and read from process.env; set it only for the
+// duration of the call and always restore so the other tests keep the default OFF path.
+async function withAppOpLiveDispatch<T>(run: () => Promise<T>): Promise<T> {
+  const prev = process.env.AOI_AUTONOMY_APP_OP_LIVE_DISPATCH;
+  process.env.AOI_AUTONOMY_APP_OP_LIVE_DISPATCH = '1';
+  try {
+    return await run();
+  } finally {
+    if (prev === undefined) {
+      delete process.env.AOI_AUTONOMY_APP_OP_LIVE_DISPATCH;
+    } else {
+      process.env.AOI_AUTONOMY_APP_OP_LIVE_DISPATCH = prev;
+    }
+  }
 }
 
 describe('executeAoiProposal() app actions', () => {
@@ -245,5 +262,116 @@ describe('executeAoiProposal() app actions', () => {
     expect(audits[0].kiraWorkRef).toBe('kira-work:w1');
     // A pure app operation never mutates an app dataRoot file on the server.
     expect(audits[0].applied).toBe(false);
+    // OFF by default: no live dispatch is queued -- the Kira handoff is the only path.
+    expect(loadAoiAppOperationDispatches(root, 'aoi/default')).toHaveLength(0);
+  });
+
+  it('queues a pending live dispatch instead of a Kira handoff when the flag is on', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeWindowAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-win-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    let kiraCalled = false;
+    const result = await withAppOpLiveDispatch(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-win-001',
+        decisionId: accepted.decision.id,
+        dependencies: {
+          createKiraWork: ({ preview }) => {
+            kiraCalled = true;
+            return {
+              kind: 'create_kira_work',
+              preview,
+              work: {
+                id: 'w1',
+                ref: 'kira-work:w1',
+                title: 'Review the Twitter window app action',
+                projectName: 'aoi',
+                status: 'todo',
+              },
+              reviewRequired: true,
+              route: '/kira',
+              openPayload: { workId: 'w1', focusType: 'work' },
+            };
+          },
+        },
+        now: 3000,
+      }),
+    );
+
+    expect(result).toMatchObject({
+      executed: true,
+      outcome: 'executed',
+      result: {
+        kind: 'app_action',
+        appActionResult: { ok: true, reviewHandoff: true, routing: 'app_operation' },
+      },
+    });
+    // Live dispatch REPLACES the Kira handoff -- createKiraWork is never invoked.
+    expect(kiraCalled).toBe(false);
+
+    const dispatches = loadAoiAppOperationDispatches(root, 'aoi/default');
+    expect(dispatches).toHaveLength(1);
+    expect(dispatches[0].status).toBe('pending');
+    expect(typeof dispatches[0].appId).toBe('number');
+    // The id encodes now + the resolved numeric appId + the action type (filename-safe).
+    expect(dispatches[0].id).toBe(`app-op-dispatch-3000-${dispatches[0].appId}-OPEN_APP_WINDOW`);
+    expect(dispatches[0].actionType).toBe('OPEN_APP_WINDOW');
+    // The content-addressed approval fingerprint is carried for the client re-check.
+    expect(dispatches[0].approvalFingerprint.length).toBeGreaterThan(0);
+    expect(dispatches[0].proposalId).toBe('proposal-aa-win-001');
+    expect(typeof dispatches[0].decisionId).toBe('string');
+    expect((dispatches[0].decisionId ?? '').length).toBeGreaterThan(0);
+
+    // No Kira work ref on the audit; the dispatch ref is woven into the evidence.
+    const audits = loadAoiAppActionAuditRecords(root, 'aoi/default');
+    expect(audits).toHaveLength(1);
+    expect(audits[0].reviewHandoff).toBe(true);
+    expect(audits[0].kiraWorkRef).toBeUndefined();
+    expect(audits[0].evidenceRefs.some((ref) => ref.startsWith('aoi-app-op-dispatch:'))).toBe(true);
+    // The dispatch and its audit reference the same execution decision.
+    expect(audits[0].evidenceRefs).toContain(`decision:${dispatches[0].decisionId}`);
+  });
+
+  it('with the flag on, a file_backed app action still mutates on disk and queues no dispatch', async () => {
+    const root = makeTempRoot();
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [makeFileBackedAppActionProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-aa-001',
+      action: 'accept',
+      now: 2500,
+    });
+
+    const result = await withAppOpLiveDispatch(() =>
+      executeAoiProposal({
+        sessionsDir: root,
+        configFile: join(root, 'config.json'),
+        serverOrigin: 'http://127.0.0.1:3000',
+        workspaceRoot: root,
+        sessionPath: 'aoi/default',
+        proposalId: 'proposal-aa-001',
+        decisionId: accepted.decision.id,
+        now: 3000,
+      }),
+    );
+
+    // file_backed routing is unaffected by the live-dispatch gate: it mutates the
+    // dataRoot file on disk and never queues a dispatch (only app_operation does).
+    expect(result.executed).toBe(true);
+    expect(fs.readFileSync(join(root, 'apps/twitter/data/posts/p1.json'), 'utf8')).toBe(
+      '{"id":"p1","text":"hello"}',
+    );
+    expect(loadAoiAppOperationDispatches(root, 'aoi/default')).toHaveLength(0);
   });
 });

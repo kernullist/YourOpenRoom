@@ -28,6 +28,7 @@ import {
   appendAoiOutcomeSignalRecord,
   loadAoiEnvironmentSourceRegistry,
   loadAoiActiveProposals,
+  loadAoiAppOperationDispatches,
   loadAoiArchivedProposals,
   loadAoiActiveOpportunities,
   loadAoiArchivedOpportunities,
@@ -45,6 +46,7 @@ import {
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { loadAoiStrategicBrief } from './aoiStrategicBrief';
+import { recordAoiAppOperationDispatchResult } from './aoiAppOperationDispatchServer';
 import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
 import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
 import {
@@ -643,6 +645,83 @@ export async function handleAoiAutonomyRequest(
         ok: true,
         sessionPath,
         brief: loadAoiStrategicBrief(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/app-operation-dispatch') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // P2/B3-1: the connected client bridge polls 'pending' app-operation dispatches
+      // and runs each over the agent->app bus (the server loop cannot postMessage to an
+      // app iframe). Read-only: returns the queued records; dispatch is the client's job.
+      const pending = loadAoiAppOperationDispatches(sessionsDir, sessionPath).filter(
+        (record) => record.status === 'pending',
+      );
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        pending,
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/app-operation-dispatch') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const id = getOptionalBodyString(body.id);
+      if (!id) {
+        writeJson(res, 400, {
+          error: 'A dispatch id is required.',
+          code: 'invalid_dispatch_id',
+        });
+        return true;
+      }
+      const status = body.status === 'dispatched' || body.status === 'failed' ? body.status : null;
+      if (!status) {
+        writeJson(res, 400, {
+          error: 'status must be "dispatched" or "failed".',
+          code: 'invalid_dispatch_status',
+        });
+        return true;
+      }
+      // The client bridge reports the agent->app dispatch result. The recorder updates
+      // the record in place (pending -> dispatched|failed), writes a run-ledger event,
+      // and ingests an observation; it is idempotent on an already-resolved record.
+      const outcome = recordAoiAppOperationDispatchResult({
+        sessionsDir,
+        sessionPath,
+        id,
+        status,
+        actionResult: getOptionalBodyString(body.actionResult),
+        failureReason: getOptionalBodyString(body.failureReason),
+        now: typeof body.now === 'number' ? body.now : Date.now(),
+      });
+      if (!outcome.found) {
+        writeJson(res, 404, {
+          error: 'No app-operation dispatch matches that id.',
+          code: 'dispatch_not_found',
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        dispatch: outcome.dispatch,
+        alreadyResolved: outcome.alreadyResolved,
       });
       return true;
     }

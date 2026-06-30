@@ -10,7 +10,9 @@ import {
 } from '../aoiDaemonServer';
 import { startAoiAutonomyBackgroundFromEnv } from '../aoiAutonomyPlugin';
 import { saveAoiStrategicBrief } from '../aoiStrategicBrief';
-import type { AoiStrategicBrief } from '../aoiAutonomyTypes';
+import { buildAoiAppOperationDispatch } from '../aoiAppOperationDispatch';
+import { appendAoiAppOperationDispatch } from '../aoiAutonomyStore';
+import type { AoiAppOperationDispatch, AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
 const liveDaemons: AoiDaemonHandle[] = [];
@@ -273,5 +275,137 @@ describe('daemon strategic-brief route', () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { code?: string };
     expect(body.code).toBe('invalid_session_path');
+  });
+});
+
+describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', () => {
+  function seedPendingDispatch(sessionsDir: string): AoiAppOperationDispatch {
+    return appendAoiAppOperationDispatch(
+      sessionsDir,
+      'aoi/default',
+      buildAoiAppOperationDispatch({
+        sessionPath: 'aoi/default',
+        appId: 7,
+        appName: 'musicApp',
+        actionType: 'PLAY_TRACK',
+        params: { trackId: '123' },
+        approvalFingerprint: 'fp-abc',
+        proposalId: 'p1',
+        decisionId: 'd1',
+        evidenceRefs: ['proposal:p1'],
+        now: 1_700_000_000_000,
+      }),
+    );
+  }
+
+  async function bootDaemonOn(sessionsDir: string): Promise<AoiDaemonHandle> {
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: {},
+    });
+    liveDaemons.push(handle);
+    return handle;
+  }
+
+  it('GET returns queued pending dispatches; POST report resolves them in place', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const seeded = seedPendingDispatch(sessionsDir);
+    const handle = await bootDaemonOn(sessionsDir);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/app-operation-dispatch`;
+
+    // The client bridge polls pending dispatches.
+    const pendingRes = await fetch(`${base}?sessionPath=aoi/default`);
+    expect(pendingRes.status).toBe(200);
+    const pendingBody = (await pendingRes.json()) as {
+      ok?: boolean;
+      pending?: AoiAppOperationDispatch[];
+    };
+    expect(pendingBody.ok).toBe(true);
+    expect(pendingBody.pending).toHaveLength(1);
+    expect(pendingBody.pending?.[0].id).toBe(seeded.id);
+    expect(pendingBody.pending?.[0].actionType).toBe('PLAY_TRACK');
+
+    // The bridge reports the agent->app dispatch result.
+    const reportRes = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        sessionPath: 'aoi/default',
+        id: seeded.id,
+        status: 'dispatched',
+        actionResult: 'success',
+        now: 1_700_000_001_000,
+      }),
+    });
+    expect(reportRes.status).toBe(200);
+    const reportBody = (await reportRes.json()) as {
+      dispatch?: AoiAppOperationDispatch;
+      alreadyResolved?: boolean;
+    };
+    expect(reportBody.dispatch?.status).toBe('dispatched');
+    expect(reportBody.dispatch?.actionResult).toBe('success');
+    expect(reportBody.alreadyResolved).toBe(false);
+
+    // After the report the record is terminal -> no longer pending.
+    const afterRes = await fetch(`${base}?sessionPath=aoi/default`);
+    const afterBody = (await afterRes.json()) as { pending?: AoiAppOperationDispatch[] };
+    expect(afterBody.pending).toHaveLength(0);
+  });
+
+  it('POST returns 404 for an unknown dispatch id', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/app-operation-dispatch`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionPath: 'aoi/default', id: 'nope', status: 'dispatched' }),
+      },
+    );
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as { code?: string };
+    expect(body.code).toBe('dispatch_not_found');
+  });
+
+  it('POST rejects a missing id, an invalid status, and a missing sessionPath', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/app-operation-dispatch`;
+
+    const noId = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionPath: 'aoi/default', status: 'dispatched' }),
+    });
+    expect(noId.status).toBe(400);
+    expect(((await noId.json()) as { code?: string }).code).toBe('invalid_dispatch_id');
+
+    const badStatus = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionPath: 'aoi/default', id: 'x', status: 'pending' }),
+    });
+    expect(badStatus.status).toBe(400);
+    expect(((await badStatus.json()) as { code?: string }).code).toBe('invalid_dispatch_status');
+
+    const noSession = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'x', status: 'dispatched' }),
+    });
+    expect(noSession.status).toBe(400);
+    expect(((await noSession.json()) as { code?: string }).code).toBe('invalid_session_path');
+  });
+
+  it('GET rejects a missing sessionPath', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/app-operation-dispatch`,
+    );
+    expect(res.status).toBe(400);
+    expect(((await res.json()) as { code?: string }).code).toBe('invalid_session_path');
   });
 });

@@ -13,6 +13,8 @@ export type AoiRunLedgerEventType =
   | 'approved_command_executed'
   | 'file_mutation_executed'
   | 'app_action_executed'
+  | 'app_operation_dispatch_executed'
+  | 'app_operation_dispatch_failed'
   | 'connector_call_executed'
   | 'autonomy_level_promoted'
   | 'autonomy_level_rolled_back'

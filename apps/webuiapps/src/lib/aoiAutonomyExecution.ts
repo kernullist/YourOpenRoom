@@ -5,6 +5,7 @@ import {
   appendAoiCommandAuditRecord,
   appendAoiFileMutationAuditRecord,
   appendAoiAppActionAuditRecord,
+  appendAoiAppOperationDispatch,
   appendAoiConnectorCallAuditRecord,
   loadAoiActiveProposals,
   loadAoiAutonomyPolicy,
@@ -57,6 +58,10 @@ import {
 } from './aoiApprovedAppActionPolicy';
 import { applyAoiApprovedAppAction } from './aoiApprovedAppActionRunner';
 import {
+  buildAoiAppOperationDispatch,
+  isAoiAppOpLiveDispatchEnabled,
+} from './aoiAppOperationDispatch';
+import {
   createAoiApprovedConnectorCallRequest,
   evaluateAoiApprovedConnectorCallPolicy,
   normalizeAoiApprovedConnectorCallPolicy,
@@ -85,6 +90,7 @@ import type {
   AoiApprovedAppActionPolicy,
   AoiApprovedAppActionRequest,
   AoiApprovedAppActionResult,
+  AoiAppOperationDispatch,
   AoiApprovedConnectorCallPolicy,
   AoiApprovedConnectorCallRequest,
   AoiApprovedConnectorCallResult,
@@ -355,6 +361,66 @@ function buildApprovedAppActionRequestFromProposal(params: {
     requestedAt: params.now,
     evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
   });
+}
+
+// P2/B3-1: when live dispatch is opted in, an approved app_operation is QUEUED for
+// client-mediated dispatch over the agent->app bus instead of a Kira review handoff.
+// Returns the queued record, or null to fall back to the Kira handoff (gate OFF, the
+// routing is not a pure app_operation, the app id / action type is missing, or the
+// append fails). OFF by default; the record carries the content-addressed approval
+// fingerprint so the client bridge re-checks it before dispatching, and the L5 +
+// approval gate already governed this exact operation.
+function maybeQueueAppOperationDispatch(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  proposal: AoiProposal;
+  decisionId: string;
+  policy?: AoiApprovedAppActionPolicy;
+  appActionResult: AoiApprovedAppActionResult;
+  now: number;
+}): AoiAppOperationDispatch | null {
+  if (!isAoiAppOpLiveDispatchEnabled()) {
+    return null;
+  }
+  // Only a pure app_operation is eligible -- file_backed routing already mutated on
+  // disk and never reaches the review-handoff branch as a live op.
+  if (params.appActionResult.routing !== 'app_operation') {
+    return null;
+  }
+  const policy = params.policy;
+  if (!policy || typeof policy.appId !== 'number') {
+    return null;
+  }
+  const request = buildApprovedAppActionRequestFromProposal({
+    proposal: params.proposal,
+    sessionPath: params.sessionPath,
+    decisionId: params.decisionId,
+    now: params.now,
+  });
+  const actionType = (request.actionType ?? '').trim();
+  if (!actionType) {
+    // No concrete action type to publish over the agent->app bus; fall back to the
+    // Kira handoff so the approved operation is never silently dropped.
+    return null;
+  }
+  try {
+    const dispatch = buildAoiAppOperationDispatch({
+      sessionPath: params.sessionPath,
+      appId: policy.appId,
+      appName: policy.appName,
+      actionType,
+      params: request.operationParams ?? {},
+      approvalFingerprint: policy.approvalFingerprint,
+      proposalId: params.proposal.id,
+      decisionId: params.decisionId,
+      evidenceRefs: [...params.proposal.evidenceRefs, ...params.proposal.artifactRefs],
+      now: params.now,
+    });
+    return appendAoiAppOperationDispatch(params.sessionsDir, params.sessionPath, dispatch);
+  } catch (error) {
+    console.warn('[AoiAutonomyExecution] Failed to queue app-operation live dispatch', error);
+    return null;
+  }
 }
 
 function buildApprovedConnectorCallRequestFromProposal(params: {
@@ -1513,42 +1579,61 @@ export async function executeAoiProposal(params: {
       if (!isAoiApprovedAppActionResult(appActionResult)) {
         throw new Error('App action result was missing from execution output.');
       }
-      // app_operation routing cannot be dispatched server-side, so it is handed
-      // off to a Kira-style review; file_backed routing already mutated on disk.
+      // app_operation routing cannot be dispatched server-side. By default it is
+      // handed off to a Kira-style review; when live dispatch is opted in (B3-1) it
+      // is instead QUEUED for client-mediated dispatch over the agent->app bus.
+      // file_backed routing already mutated on disk and never reaches this branch.
       let kiraWorkRef: string | undefined;
+      let appOpDispatchId: string | undefined;
       if (appActionResult.reviewHandoff) {
-        try {
-          const preview = buildAoiKiraHandoffPreview(proposal, { now });
-          const createKiraWork =
-            params.dependencies?.createKiraWork ?? createDefaultKiraWorkFromPreview;
-          const kiraWork = createKiraWork({
-            sessionsDir: params.sessionsDir,
-            sessionPath,
-            proposal,
-            preview,
-            now,
-          });
-          kiraWorkRef = kiraWork.work.ref;
-          recordAoiKiraHandoffRelations({
-            sessionsDir: params.sessionsDir,
-            sessionPath,
-            proposal,
-            workRef: kiraWork.work.ref,
-            workTitle: kiraWork.work.title,
-            decisionId: transition.decision.id,
-            evidenceRefs: [...preview.evidenceRefs],
-            goalRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs].filter(
-              (ref) => ref.startsWith('goal:') || ref.startsWith('plan-step:'),
-            ),
-            now,
-          });
-        } catch (error) {
-          console.warn(
-            '[AoiAutonomyExecution] Failed to create Kira review handoff for app action',
-            error,
-          );
+        const queued = maybeQueueAppOperationDispatch({
+          sessionsDir: params.sessionsDir,
+          sessionPath,
+          proposal,
+          decisionId: transition.decision.id,
+          policy: approvedAppActionPolicyForExecution,
+          appActionResult,
+          now,
+        });
+        if (queued) {
+          appOpDispatchId = queued.id;
+        } else {
+          try {
+            const preview = buildAoiKiraHandoffPreview(proposal, { now });
+            const createKiraWork =
+              params.dependencies?.createKiraWork ?? createDefaultKiraWorkFromPreview;
+            const kiraWork = createKiraWork({
+              sessionsDir: params.sessionsDir,
+              sessionPath,
+              proposal,
+              preview,
+              now,
+            });
+            kiraWorkRef = kiraWork.work.ref;
+            recordAoiKiraHandoffRelations({
+              sessionsDir: params.sessionsDir,
+              sessionPath,
+              proposal,
+              workRef: kiraWork.work.ref,
+              workTitle: kiraWork.work.title,
+              decisionId: transition.decision.id,
+              evidenceRefs: [...preview.evidenceRefs],
+              goalRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs].filter(
+                (ref) => ref.startsWith('goal:') || ref.startsWith('plan-step:'),
+              ),
+              now,
+            });
+          } catch (error) {
+            console.warn(
+              '[AoiAutonomyExecution] Failed to create Kira review handoff for app action',
+              error,
+            );
+          }
         }
       }
+      const appOpDispatchRef = appOpDispatchId
+        ? `aoi-app-op-dispatch:${appOpDispatchId}`
+        : undefined;
       const audit = appendAoiAppActionAuditRecord(params.sessionsDir, {
         ...appActionResult.auditRecord,
         ...(kiraWorkRef ? { kiraWorkRef } : {}),
@@ -1557,13 +1642,16 @@ export async function executeAoiProposal(params: {
             ...appActionResult.auditRecord.evidenceRefs,
             `decision:${transition.decision.id}`,
             ...(kiraWorkRef ? [kiraWorkRef] : []),
+            ...(appOpDispatchRef ? [appOpDispatchRef] : []),
             ...proposal.evidenceRefs,
             ...proposal.artifactRefs,
           ]),
         ].slice(0, 24),
       });
       const appActionStatusLabel = appActionResult.reviewHandoff
-        ? 'handed off to Kira review'
+        ? appOpDispatchId
+          ? 'queued for live dispatch'
+          : 'handed off to Kira review'
         : appActionResult.ok
           ? 'applied'
           : appActionResult.rolledBack
@@ -1594,6 +1682,7 @@ export async function executeAoiProposal(params: {
               `aoi-app-action-audit:${audit.id}`,
               `decision:${transition.decision.id}`,
               ...(kiraWorkRef ? [kiraWorkRef] : []),
+              ...(appOpDispatchRef ? [appOpDispatchRef] : []),
               ...(appActionResult.checkpointId
                 ? [`aoi-action-checkpoint:${appActionResult.checkpointId}`]
                 : []),
@@ -1604,7 +1693,9 @@ export async function executeAoiProposal(params: {
               'app-action',
               `app-action:${appActionResult.routing}`,
               appActionResult.reviewHandoff
-                ? 'app-action:review-handoff'
+                ? appOpDispatchId
+                  ? 'app-action:queued-for-dispatch'
+                  : 'app-action:review-handoff'
                 : appActionResult.ok
                   ? 'app-action:applied'
                   : 'app-action:failed',
