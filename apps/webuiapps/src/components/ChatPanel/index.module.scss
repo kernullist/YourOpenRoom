@@ -1321,6 +1321,25 @@
   white-space: nowrap;
 }
 
+// Goal-candidate marker for the proposal list: accent-yellow pill (design token
+// main1-yellow #FAEA5F) placed before the proposal title so a synthesized goal
+// candidate reads distinctly from ordinary proposals. Mirrors .aoiAutonomyBadge.
+.aoiGoalCandidateBadge {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 8px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  border: 1px solid rgba(250, 234, 95, 0.32);
+  background: rgba(250, 234, 95, 0.12);
+  color: #faea5f;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.2;
+  vertical-align: middle;
+  white-space: nowrap;
+}
+
 .aoiAutonomyError {
   padding: 8px 10px;
   border-radius: 8px;

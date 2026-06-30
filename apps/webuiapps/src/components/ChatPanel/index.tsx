@@ -305,6 +305,7 @@ import {
   buildAoiRecoveryPreviewSummary,
   buildAoiWorkspaceSignalPanelSummary,
   canShowAoiProposalPrimaryAction,
+  isAoiGoalCandidateProposal,
   loadAoiAutonomyPanelSettings,
   recordAoiAgendaNudgeFeedback,
   sanitizeAoiProposalDisplayText,
@@ -14203,6 +14204,14 @@ const SettingsModal: React.FC<{
                                   <span>evidence {proactiveExplanation.evidenceCount}</span>
                                 </div>
                                 <div className={styles.aoiAutonomyProposalTitle}>
+                                  {isAoiGoalCandidateProposal(proposal) && (
+                                    <span
+                                      className={styles.aoiGoalCandidateBadge}
+                                      title="Accepting this proposal activates a new Aoi goal (display-only until you approve)."
+                                    >
+                                      Goal candidate
+                                    </span>
+                                  )}
                                   {sanitizeAoiProposalDisplayText(proposal.title, 140)}
                                 </div>
                                 <div className={styles.aoiAutonomyProposalReason}>

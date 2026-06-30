@@ -1566,6 +1566,15 @@ export function sanitizeAoiProposalDisplayText(value: string, maxLength = 520): 
   return `${compact.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
 }
 
+// A goal-candidate proposal is the display-only output of LLM goal synthesis
+// (P1a c4): accepting it activates a new goal, so the operator UI flags it
+// distinctly in the proposal list. Centralizes the trigger literal that
+// aoiAutonomyGoals.buildAoiGoalCandidateProposal stamps, so the UI and the
+// builder cannot drift. Pure; takes only the trigger so it needs no full fixture.
+export function isAoiGoalCandidateProposal(proposal: Pick<AoiProposal, 'trigger'>): boolean {
+  return proposal.trigger === 'goal_candidate';
+}
+
 function formatAoiEvidenceSummary(evidenceCount: number): string {
   if (evidenceCount <= 0) {
     return 'Limited evidence: no evidence refs are attached yet.';

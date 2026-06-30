@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { buildAoiGoalWorkOrderPreviews, buildAoiStrategicBriefPanel } from '../aoiAutonomyUi';
+import {
+  buildAoiGoalWorkOrderPreviews,
+  buildAoiStrategicBriefPanel,
+  isAoiGoalCandidateProposal,
+} from '../aoiAutonomyUi';
 import { createAoiBoundedWorkOrder, type AoiBoundedWorkOrder } from '../aoiBoundedWorkOrder';
 import type { AoiStrategicBrief } from '../aoiAutonomyTypes';
 
@@ -201,5 +205,13 @@ describe('buildAoiGoalWorkOrderPreviews()', () => {
     const messy: AoiBoundedWorkOrder = { ...base, objective: 'Inspect    the    telemetry' };
     const previews = buildAoiGoalWorkOrderPreviews([messy]);
     expect(previews[0].objectiveLabel).toBe('Inspect the telemetry');
+  });
+});
+
+describe('isAoiGoalCandidateProposal()', () => {
+  it('is true only for a goal_candidate trigger', () => {
+    expect(isAoiGoalCandidateProposal({ trigger: 'goal_candidate' })).toBe(true);
+    expect(isAoiGoalCandidateProposal({ trigger: 'manual' })).toBe(false);
+    expect(isAoiGoalCandidateProposal({ trigger: '' })).toBe(false);
   });
 });
