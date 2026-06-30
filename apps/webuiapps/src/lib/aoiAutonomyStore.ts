@@ -87,6 +87,7 @@ import type {
   AoiProposalDecisionAction,
   AoiProposalFeedbackCategory,
   AoiReflection,
+  AoiAppOperationDispatch,
 } from './aoiAutonomyTypes';
 
 const AUTONOMY_ROOT_DIR = 'aoi-autonomy';
@@ -124,6 +125,7 @@ export interface AoiAutonomyPaths {
   connectorCallAuditDir: string;
   operatorTracePromotionDir: string;
   operatorAdaptiveReviewDir: string;
+  appOperationDispatchDir: string;
   tickState: string;
   levelPromotionState: string;
   evalDir: string;
@@ -552,6 +554,7 @@ export function resolveAoiAutonomyPaths(
     connectorCallAuditDir: join(root, 'connector-call-audit'),
     operatorTracePromotionDir: join(root, 'operator-trace-promotion'),
     operatorAdaptiveReviewDir: join(root, 'operator-adaptive-review'),
+    appOperationDispatchDir: join(root, 'app-operation-dispatch'),
     tickState: join(root, 'tick-state.json'),
     levelPromotionState: join(root, 'level-promotion-state.json'),
     evalDir: join(root, 'eval'),
@@ -740,6 +743,59 @@ export function loadAoiOperatorTracePromotionDecisions(
   return listJsonFiles<unknown>(paths.operatorTracePromotionDir)
     .filter(isAoiOperatorTracePromotionDecision)
     .filter((decision) => decision.actor === 'user')
+    .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
+}
+
+function isAoiAppOperationDispatch(value: unknown): value is AoiAppOperationDispatch {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    (record.status === 'pending' || record.status === 'dispatched' || record.status === 'failed') &&
+    typeof record.appId === 'number' &&
+    typeof record.actionType === 'string' &&
+    typeof record.approvalFingerprint === 'string'
+  );
+}
+
+// Append or update one app-operation live-dispatch record (P2/B3-1). The filename is
+// the record id, so a status update (pending -> dispatched/failed) overwrites in
+// place. System-generated (NOT actor-gated): it queues an ALREADY user-approved
+// operation that passed the L5 + content-addressed approval gate; the client bridge
+// re-checks the approval fingerprint before dispatching.
+export function appendAoiAppOperationDispatch(
+  sessionsDir: string,
+  sessionPath: string,
+  dispatch: AoiAppOperationDispatch,
+): AoiAppOperationDispatch {
+  if (!isAoiAppOperationDispatch(dispatch)) {
+    throw new Error('Invalid Aoi app-operation dispatch record.');
+  }
+  const normalizedSessionPath = normalizeAoiAutonomySessionPath(sessionPath);
+  if (!normalizedSessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const item: AoiAppOperationDispatch = {
+    ...dispatch,
+    params: { ...dispatch.params },
+    evidenceRefs: normalizeStringList(dispatch.evidenceRefs, 24),
+  };
+  writeJsonAtomic(join(paths.appOperationDispatchDir, `${item.id}.json`), item);
+  return item;
+}
+
+export function loadAoiAppOperationDispatches(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiAppOperationDispatch[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  return listJsonFiles<unknown>(paths.appOperationDispatchDir)
+    .filter(isAoiAppOperationDispatch)
     .sort((a, b) => a.createdAt - b.createdAt || a.id.localeCompare(b.id));
 }
 

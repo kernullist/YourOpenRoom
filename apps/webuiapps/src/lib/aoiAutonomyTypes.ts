@@ -2536,6 +2536,34 @@ export interface AoiApprovedAppActionRequest {
   evidenceRefs: string[];
 }
 
+export type AoiAppOperationDispatchStatus = 'pending' | 'dispatched' | 'failed';
+
+// P2/B3-1: a user-approved app_operation queued for CLIENT-MEDIATED live dispatch
+// over the agent->app bus (the server loop cannot postMessage to an app iframe). A
+// connected client bridge picks up 'pending' records, re-checks the
+// content-addressed approval, dispatches via the agent->app channel, and reports the
+// result back. The record authorizes nothing on its own -- it queues an ALREADY
+// user-approved operation that has passed the L5 + content-addressed approval gate.
+export interface AoiAppOperationDispatch {
+  version: 1;
+  id: string;
+  sessionPath: string;
+  status: AoiAppOperationDispatchStatus;
+  appId: number;
+  appName: string;
+  actionType: string;
+  params: Record<string, string>;
+  proposalId?: string;
+  decisionId?: string;
+  approvalFingerprint: string;
+  evidenceRefs: string[];
+  createdAt: number;
+  updatedAt: number;
+  // Set when the client bridge reports back (slices 2-3).
+  actionResult?: string;
+  failureReason?: string;
+}
+
 export interface AoiApprovedAppActionPolicy {
   version: 1;
   allowed: boolean;
