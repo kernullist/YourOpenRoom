@@ -769,7 +769,9 @@ describe('runAoiAutonomyTick()', () => {
     // Factual fields stay deterministic even when the LLM authors the focus.
     expect(result.strategicBrief?.acceptedCount).toBe(1);
     const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
-    expect(ledger?.callCount).toBe(1);
+    // Both the reflection call and the brief synthesizer record against the
+    // shared daily ledger now that all auto-path LLM is budgeted.
+    expect(ledger?.callCount).toBe(2);
     expect(ledger?.tokensSpent ?? 0).toBeGreaterThan(0);
   });
 
@@ -791,6 +793,9 @@ describe('runAoiAutonomyTick()', () => {
 
     expect(result.strategicBrief?.synthesizedBy).toBe('deterministic');
     expect(result.strategicBrief?.focusSummary).not.toContain('should not be used');
+    // The reflection call is now gated by the same ledger, so an exhausted budget
+    // skips it too (fail-closed).
+    expect(result.warnings).toContain('reflection_llm_budget_exhausted');
     const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
     expect(ledger?.callCount ?? 0).toBe(0);
   });
@@ -812,8 +817,9 @@ describe('runAoiAutonomyTick()', () => {
 
     expect(result.strategicBrief?.synthesizedBy).toBe('deterministic');
     // The attempt still counts so a broken endpoint cannot be retried for free.
+    // Both the reflection call and the brief synthesizer record (callCount 2).
     const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
-    expect(ledger?.callCount).toBe(1);
+    expect(ledger?.callCount).toBe(2);
   });
 
   it('never touches the LLM budget ledger without an llmConfig (P1a c2 parity)', async () => {

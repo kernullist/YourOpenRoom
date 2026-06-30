@@ -1931,8 +1931,14 @@ export function parseAoiAutonomyReflectionResponse(
   return { reflections, proposals, warnings };
 }
 
+// Estimated output cap for the reflection call's token-budget accounting --
+// larger than the brief synthesizer's since reflection emits proposals. The
+// reflection call shares the SAME rolling daily ledger as the brief synthesizer.
+const AOI_REFLECTION_BUDGET_OUTPUT_TOKENS = 1500;
+
 async function runLlmReflection(params: {
   bundle: CandidateBundle;
+  sessionsDir: string;
   sessionPath: string;
   latestUserMessage: string;
   focusQuery?: string;
@@ -1944,6 +1950,7 @@ async function runLlmReflection(params: {
   connectors?: AoiMcpConnectorsConfig | null;
   previousBrief?: AoiStrategicBrief | null;
   goalSynthesisEnabled?: boolean;
+  llmDailyTokenBudget?: number;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -1953,22 +1960,56 @@ async function runLlmReflection(params: {
     const reflectionChat =
       params.reflectionChat ?? ((await import('./llmClient')).chat as AoiAutonomyReflectionChat);
     const availableConnectors = buildAoiMcpConnectorCatalog(params.connectors);
-    const response = await reflectionChat(
-      buildAoiAutonomyReflectionMessages({
-        observations: params.bundle.observations,
-        memories: params.bundle.memories,
-        activeProposals: params.bundle.activeProposals,
-        latestUserMessage: params.latestUserMessage,
-        ...(params.focusQuery ? { focusQuery: params.focusQuery } : {}),
-        queryEmbedding: params.queryEmbedding ?? null,
-        queryEmbeddingModel: params.queryEmbeddingModel ?? null,
-        availableConnectors,
-        previousBrief: params.previousBrief ?? null,
-        goalSynthesisEnabled: params.goalSynthesisEnabled === true,
-      }),
-      [],
-      params.llmConfig,
-    );
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: params.bundle.observations,
+      memories: params.bundle.memories,
+      activeProposals: params.bundle.activeProposals,
+      latestUserMessage: params.latestUserMessage,
+      ...(params.focusQuery ? { focusQuery: params.focusQuery } : {}),
+      queryEmbedding: params.queryEmbedding ?? null,
+      queryEmbeddingModel: params.queryEmbeddingModel ?? null,
+      availableConnectors,
+      previousBrief: params.previousBrief ?? null,
+      goalSynthesisEnabled: params.goalSynthesisEnabled === true,
+    });
+    // Budget gate: the reflection call is the largest auto-path LLM consumer.
+    // It draws from the SAME rolling daily ledger as the brief synthesizer, so
+    // ALL auto-path LLM spend is bounded. Exhausted -> skip (fail-closed) and
+    // persist the rolled window; otherwise record the estimated spend after the
+    // call (an attempted call always counts so a broken endpoint cannot be
+    // retried for free).
+    const ceilingTokens = resolveAoiLlmTokenCeiling(params.llmDailyTokenBudget);
+    const promptTokens = estimateAoiLlmTokens(JSON.stringify(messages));
+    const budgetCheck = checkAoiLlmBudget({
+      state: loadAoiLlmBudgetState(params.sessionsDir, params.sessionPath),
+      sessionPath: params.sessionPath,
+      now: params.now,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens,
+      estimatedTokens: promptTokens + AOI_REFLECTION_BUDGET_OUTPUT_TOKENS,
+    });
+    if (!budgetCheck.allowed) {
+      try {
+        saveAoiLlmBudgetState(params.sessionsDir, params.sessionPath, budgetCheck.rolledState);
+      } catch {
+        // Budget persistence is best-effort.
+      }
+      return { reflections: [], proposals: [], warnings: ['reflection_llm_budget_exhausted'] };
+    }
+    const response = await reflectionChat(messages, [], params.llmConfig);
+    try {
+      saveAoiLlmBudgetState(
+        params.sessionsDir,
+        params.sessionPath,
+        recordAoiLlmSpend(
+          budgetCheck.rolledState,
+          params.now,
+          Math.max(1, promptTokens + estimateAoiLlmTokens(response.content ?? '')),
+        ),
+      );
+    } catch {
+      // Budget persistence is best-effort.
+    }
     return parseAoiAutonomyReflectionResponse(response.content, {
       sessionPath: params.sessionPath,
       knownEvidenceRefs: params.knownEvidenceRefs,
@@ -2708,6 +2749,10 @@ export async function runAoiAutonomyTick(
     previousBrief,
     // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
     goalSynthesisEnabled: params.goalSynthesisEnabled,
+    // Reflection draws from the same rolling daily token ledger as the brief
+    // synthesizer, so all auto-path LLM spend is bounded.
+    sessionsDir: params.sessionsDir,
+    llmDailyTokenBudget: params.llmDailyTokenBudget,
     now,
   });
 
