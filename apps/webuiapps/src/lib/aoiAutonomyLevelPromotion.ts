@@ -24,6 +24,28 @@ const LEVEL_ORDER: AoiAutonomyLevel[] = ['L0', 'L1', 'L2', 'L3', 'L4', 'L5'];
 
 // Auto-promotion is hard-capped here; env config can only lower the ceiling.
 export const AOI_AUTO_PROMOTE_HARD_CEILING: AoiAutonomyLevel = 'L4';
+
+// P1b low-tier earned auto-promotion: field-readiness alone (NOT the
+// trusted_operator-gated canIncreaseTrust) may earn levels up to here. Strictly
+// below the L4 mutation/L5 line; promotions above this stay on the strict
+// trusted_operator path, and L4->L5 is always human.
+export const AOI_LOW_TIER_AUTO_PROMOTE_HARD_CEILING: AoiAutonomyLevel = 'L3';
+
+// Readiness ladder (ascending), distinct from the autonomy LEVEL_ORDER. The
+// low-tier signal requires a rung at or above supervised_prepare (the rung just
+// below trusted_operator) -- weaker than the strict path's trusted_operator
+// requirement, but still field-grounded + supervised.
+const READINESS_LEVEL_ORDER = [
+  'synthetic_pass',
+  'field_shadow',
+  'field_preview',
+  'supervised_prepare',
+  'trusted_operator',
+];
+
+function readinessRank(level: string): number {
+  return READINESS_LEVEL_ORDER.indexOf(level);
+}
 export const DEFAULT_AOI_AUTO_PROMOTE_MIN_CONSECUTIVE = 3;
 export const DEFAULT_AOI_AUTO_PROMOTE_SUSTAIN_MS = 60 * 60 * 1000;
 const MAX_PROMOTION_HISTORY = 20;
@@ -55,6 +77,11 @@ export interface AoiAutonomyLevelPromotionConfig {
   ceiling: AoiAutonomyLevel;
   minConsecutive: number;
   sustainMs: number;
+  // P1b low-tier earned auto-promotion (separate OFF-by-default opt-in). When on,
+  // the weaker field-readiness signal may earn levels up to lowTierCeiling without
+  // trusted_operator; the strict trusted_operator path still governs higher tiers.
+  lowTierEnabled: boolean;
+  lowTierCeiling: AoiAutonomyLevel;
 }
 
 // Resolve config from an env-shaped map. Pure (the caller passes process.env) so
@@ -82,6 +109,10 @@ export function resolveAoiAutonomyLevelPromotionConfig(
       0,
       30 * 24 * 60 * 60 * 1000,
     ),
+    // Separate opt-in from AOI_AUTONOMY_AUTO_PROMOTE (the strict path); the
+    // low-tier ceiling is fixed at the hard cap (L3) -- it cannot reach L4/L5.
+    lowTierEnabled: env.AOI_AUTONOMY_AUTO_PROMOTE_LOW_TIER === '1',
+    lowTierCeiling: AOI_LOW_TIER_AUTO_PROMOTE_HARD_CEILING,
   };
 }
 
@@ -206,6 +237,19 @@ export function isAoiReadinessPromotionPositive(scorecard: AoiJarvisReadinessSco
   );
 }
 
+// P1b low-tier signal: field-grounded + supervised, WITHOUT requiring
+// trusted_operator (which canIncreaseTrust demands). Strict: the overall gate must
+// PASS (not merely be unblocked) and the readiness rung must be at or above
+// supervised_prepare (the rung just below trusted_operator). Reads only
+// field-evidence-derived fields (gate + rung), so it is not self-authorable -- no
+// self-reinforcing promotion loop.
+export function isAoiLowTierReadinessPositive(scorecard: AoiJarvisReadinessScorecard): boolean {
+  return (
+    scorecard.gateStatus === 'pass' &&
+    readinessRank(scorecard.level) >= readinessRank('supervised_prepare')
+  );
+}
+
 export function evaluateAoiAutonomyLevelPromotion(params: {
   policy: AoiAutonomyPolicy;
   scorecard: AoiJarvisReadinessScorecard;
@@ -248,11 +292,17 @@ export function evaluateAoiAutonomyLevelPromotion(params: {
     evidenceRefs,
   });
 
-  if (!config.enabled) {
+  // Two independent OFF-by-default paths. STRICT: trusted_operator-gated, earns up
+  // to the main ceiling (L4). LOW-TIER: weaker field-readiness signal, earns only up
+  // to the low-tier ceiling (L3) -- never reaching the L4 mutation / L5 line.
+  const strictActive = config.enabled && isAoiReadinessPromotionPositive(scorecard);
+  const lowTierActive = config.lowTierEnabled && isAoiLowTierReadinessPositive(scorecard);
+
+  if (!config.enabled && !config.lowTierEnabled) {
     return hold('auto_promote_disabled');
   }
 
-  if (!isAoiReadinessPromotionPositive(scorecard)) {
+  if (!strictActive && !lowTierActive) {
     // Regression: snap all auto-granted levels back to the human baseline at once.
     if (levelRank(currentLevel) > levelRank(state.baselineLevel)) {
       const reason = `readiness regressed (canIncreaseTrust=${scorecard.canIncreaseTrust}, level=${scorecard.level}, gate=${scorecard.gateStatus}); rolling back to ${state.baselineLevel}`;
@@ -291,7 +341,12 @@ export function evaluateAoiAutonomyLevelPromotion(params: {
   // Positive readiness: advance the sustained-window streak.
   const positiveSince = state.positiveSince ?? now;
   const consecutivePositive = state.consecutivePositive + 1;
-  const ceilingRank = Math.min(levelRank(config.ceiling), levelRank(AOI_AUTO_PROMOTE_HARD_CEILING));
+  // The strict (trusted_operator) signal earns up to the main ceiling (L4); the
+  // low-tier field-readiness signal earns only up to the low-tier ceiling (L3). When
+  // both are active (trusted_operator satisfies both), the strict ceiling wins.
+  const ceilingRank = strictActive
+    ? Math.min(levelRank(config.ceiling), levelRank(AOI_AUTO_PROMOTE_HARD_CEILING))
+    : Math.min(levelRank(config.lowTierCeiling), levelRank(AOI_LOW_TIER_AUTO_PROMOTE_HARD_CEILING));
 
   if (levelRank(currentLevel) >= ceilingRank) {
     return hold(`at_ceiling (${currentLevel})`, { positiveSince, consecutivePositive });
@@ -307,7 +362,8 @@ export function evaluateAoiAutonomyLevelPromotion(params: {
   }
 
   const nextLevel = levelByRank(Math.min(levelRank(currentLevel) + 1, ceilingRank));
-  const reason = `sustained trusted readiness (score=${scorecard.score}, ${consecutivePositive} consecutive over ${elapsed}ms); promoting ${currentLevel} -> ${nextLevel}`;
+  const signalLabel = strictActive ? 'trusted readiness' : 'low-tier field readiness';
+  const reason = `sustained ${signalLabel} (score=${scorecard.score}, ${consecutivePositive} consecutive over ${elapsed}ms); promoting ${currentLevel} -> ${nextLevel}`;
   const record: AoiAutonomyLevelChangeRecord = {
     kind: 'promote',
     from: currentLevel,

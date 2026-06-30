@@ -91,7 +91,15 @@ function scorecard(
 function config(
   overrides: Partial<AoiAutonomyLevelPromotionConfig> = {},
 ): AoiAutonomyLevelPromotionConfig {
-  return { enabled: true, ceiling: 'L4', minConsecutive: 1, sustainMs: 0, ...overrides };
+  return {
+    enabled: true,
+    ceiling: 'L4',
+    minConsecutive: 1,
+    sustainMs: 0,
+    lowTierEnabled: false,
+    lowTierCeiling: 'L3',
+    ...overrides,
+  };
 }
 
 function seedPolicyLevel(root: string, level: AoiAutonomyLevel): void {

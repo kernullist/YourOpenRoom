@@ -186,7 +186,7 @@ export function maybeRunAoiAutonomyLevelPromotion(params: {
 }): AoiAutonomyLevelPromotionDecision | null {
   const env = params.env ?? process.env;
   const config = resolveAoiAutonomyLevelPromotionConfig(env);
-  if (!config.enabled) {
+  if (!config.enabled && !config.lowTierEnabled) {
     return null;
   }
   const now = params.now ?? Date.now();

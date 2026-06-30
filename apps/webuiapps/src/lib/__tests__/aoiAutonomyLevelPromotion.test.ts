@@ -49,6 +49,11 @@ function scorecard(
 const negativeScorecard = (): AoiJarvisReadinessScorecard =>
   scorecard({ canIncreaseTrust: false, level: 'field_preview', gateStatus: 'warning' });
 
+// Low-tier-positive but NOT strict-positive: gate passes and the rung is
+// supervised_prepare (one below trusted_operator), so canIncreaseTrust is false.
+const lowTierScorecard = (): AoiJarvisReadinessScorecard =>
+  scorecard({ canIncreaseTrust: false, level: 'supervised_prepare', gateStatus: 'pass' });
+
 function policy(level: AoiAutonomyLevel): AoiAutonomyPolicy {
   return { ...DEFAULT_AOI_AUTONOMY_POLICY, level };
 }
@@ -56,7 +61,15 @@ function policy(level: AoiAutonomyLevel): AoiAutonomyPolicy {
 function config(
   overrides: Partial<AoiAutonomyLevelPromotionConfig> = {},
 ): AoiAutonomyLevelPromotionConfig {
-  return { enabled: true, ceiling: 'L4', minConsecutive: 1, sustainMs: 0, ...overrides };
+  return {
+    enabled: true,
+    ceiling: 'L4',
+    minConsecutive: 1,
+    sustainMs: 0,
+    lowTierEnabled: false,
+    lowTierCeiling: 'L3',
+    ...overrides,
+  };
 }
 
 function gateState(
@@ -83,6 +96,8 @@ describe('resolveAoiAutonomyLevelPromotionConfig', () => {
       ceiling: 'L4',
       minConsecutive: 3,
       sustainMs: 60 * 60 * 1000,
+      lowTierEnabled: false,
+      lowTierCeiling: 'L3',
     });
   });
 
@@ -104,6 +119,16 @@ describe('resolveAoiAutonomyLevelPromotionConfig', () => {
     expect(resolved.ceiling).toBe('L3');
     expect(resolved.minConsecutive).toBe(5);
     expect(resolved.sustainMs).toBe(0);
+  });
+
+  it('enables low-tier earned promotion via its own flag, independent of the strict flag', () => {
+    const resolved = resolveAoiAutonomyLevelPromotionConfig({
+      AOI_AUTONOMY_AUTO_PROMOTE_LOW_TIER: '1',
+    });
+    // The strict path stays OFF; only the low-tier path turns on, capped at L3.
+    expect(resolved.enabled).toBe(false);
+    expect(resolved.lowTierEnabled).toBe(true);
+    expect(resolved.lowTierCeiling).toBe('L3');
   });
 });
 
@@ -170,6 +195,87 @@ describe('evaluateAoiAutonomyLevelPromotion', () => {
     expect(decision.action).toBe('hold');
     expect(decision.changed).toBe(false);
     expect(decision.reason).toContain('at_ceiling');
+  });
+
+  it('earns a low-tier promotion on field readiness without trusted_operator', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L1'),
+      scorecard: lowTierScorecard(),
+      gateState: gateState({ baselineLevel: 'L1', lastManagedLevel: 'L1' }),
+      config: config({ enabled: false, lowTierEnabled: true }),
+      now: 1000,
+    });
+    expect(decision.action).toBe('promote');
+    expect(decision.nextLevel).toBe('L2');
+    expect(decision.reason).toContain('low-tier field readiness');
+  });
+
+  it('holds the low-tier path at the L3 ceiling (never reaches L4 without trusted_operator)', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L3'),
+      scorecard: lowTierScorecard(),
+      gateState: gateState({ baselineLevel: 'L3', lastManagedLevel: 'L3' }),
+      config: config({ enabled: false, lowTierEnabled: true }),
+      now: 1000,
+    });
+    expect(decision.action).toBe('hold');
+    expect(decision.reason).toContain('at_ceiling');
+  });
+
+  it('does not earn a low-tier promotion when the gate is not pass', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L1'),
+      scorecard: scorecard({
+        canIncreaseTrust: false,
+        level: 'supervised_prepare',
+        gateStatus: 'warning',
+      }),
+      gateState: gateState({ baselineLevel: 'L1', lastManagedLevel: 'L1' }),
+      config: config({ enabled: false, lowTierEnabled: true }),
+      now: 1000,
+    });
+    expect(decision.action).toBe('hold');
+    expect(decision.changed).toBe(false);
+  });
+
+  it('does not earn a low-tier promotion below the supervised_prepare rung', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L1'),
+      scorecard: scorecard({
+        canIncreaseTrust: false,
+        level: 'field_preview',
+        gateStatus: 'pass',
+      }),
+      gateState: gateState({ baselineLevel: 'L1', lastManagedLevel: 'L1' }),
+      config: config({ enabled: false, lowTierEnabled: true }),
+      now: 1000,
+    });
+    expect(decision.action).toBe('hold');
+    expect(decision.changed).toBe(false);
+  });
+
+  it('lets the strict trusted_operator path earn past L3 to L4 even with low-tier on', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L3'),
+      scorecard: scorecard(),
+      gateState: gateState({ baselineLevel: 'L3', lastManagedLevel: 'L3' }),
+      config: config({ enabled: true, lowTierEnabled: true }),
+      now: 1000,
+    });
+    expect(decision.action).toBe('promote');
+    expect(decision.nextLevel).toBe('L4');
+    expect(decision.reason).toContain('trusted readiness');
+  });
+
+  it('stays disabled when neither the strict nor the low-tier path is enabled', () => {
+    const decision = evaluateAoiAutonomyLevelPromotion({
+      policy: policy('L1'),
+      scorecard: lowTierScorecard(),
+      gateState: null,
+      config: config({ enabled: false, lowTierEnabled: false }),
+      now: 1000,
+    });
+    expect(decision.reason).toBe('auto_promote_disabled');
   });
 
   it('instantly rolls back to baseline on readiness regression', () => {
