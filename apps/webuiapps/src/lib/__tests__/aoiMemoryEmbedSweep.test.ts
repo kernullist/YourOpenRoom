@@ -199,6 +199,49 @@ describe('startAoiMemoryEmbedSweep', () => {
 
     expect(errors).toHaveLength(1);
   });
+
+  it('runs the consolidation cycle AFTER the embed cycle when consolidation is enabled', async () => {
+    const order: string[] = [];
+    const handle = startAoiMemoryEmbedSweep({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      intervalMs: 30_000,
+      runImmediately: true,
+      runCycle: async () => {
+        order.push('embed');
+        return { ran: true, embeddedCount: 0, pendingCount: 0 };
+      },
+      consolidation: { enabled: true, max: 4 },
+      runConsolidationCycle: (opts) => {
+        order.push(`consolidate:${opts.max}`);
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+      onConsolidation: () => order.push('onConsolidation'),
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    handle.stop();
+
+    expect(order).toEqual(['embed', 'consolidate:4', 'onConsolidation']);
+  });
+
+  it('does not run the consolidation cycle when consolidation is not enabled', async () => {
+    let consolidations = 0;
+    const handle = startAoiMemoryEmbedSweep({
+      sessionsDir: '/tmp/aoi-embed-sweep-noop',
+      intervalMs: 30_000,
+      runImmediately: true,
+      runCycle: async () => ({ ran: true, embeddedCount: 0, pendingCount: 0 }),
+      runConsolidationCycle: () => {
+        consolidations += 1;
+        return { ran: true, clusterCount: 0, supersededCount: 0 };
+      },
+    });
+
+    await new Promise((r) => setTimeout(r, 0));
+    handle.stop();
+
+    expect(consolidations).toBe(0);
+  });
 });
 
 describe('startAoiMemoryEmbedSweepFromEnv', () => {
@@ -242,5 +285,21 @@ describe('startAoiMemoryEmbedSweepFromEnv', () => {
     expect(handle).toBeNull();
 
     loopLock?.release();
+  });
+
+  it('starts the maintenance sweep when ONLY consolidation is opted in', () => {
+    const root = makeRoot();
+    const handle = startAoiMemoryEmbedSweepFromEnv(
+      { sessionsDir: root, configFile: join(root, 'config.json') },
+      { AOI_AUTONOMY_CONSOLIDATION: '1' },
+    );
+    expect(handle).not.toBeNull();
+    // The combined sweep still takes the single-instance lock.
+    expect(acquireAoiAutonomyLoopLock(root)).toBeNull();
+
+    handle?.stop();
+    const reacquired = acquireAoiAutonomyLoopLock(root);
+    expect(reacquired).not.toBeNull();
+    reacquired?.release();
   });
 });

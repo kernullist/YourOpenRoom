@@ -49,7 +49,11 @@ import { loadAoiMissionState, saveAoiMissionState } from '../aoiAutonomyMission'
 import { buildAoiContextRouterResult } from '../aoiContextRouter';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
-import { loadServerAoiMemories } from '../aoiMemoryServerWriter';
+import {
+  loadServerAoiMemories,
+  saveServerAoiMemoryCandidatesWithEmbedding,
+} from '../aoiMemoryServerWriter';
+import type { AoiEmbeddingProvider } from '../aoiMemoryEmbedding';
 import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiResearchTypes';
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
@@ -2318,6 +2322,68 @@ describe('runAoiAutonomyWakeup()', () => {
       refreshCount: 1,
       nextAllowedAt: NOW + 60_000,
     });
+  });
+
+  it('consolidates near-duplicate memories in-tick when AOI_AUTONOMY_CONSOLIDATION is on', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    // Two distinct-content facts sharing a vector: near-duplicates for the cluster.
+    const provider: AoiEmbeddingProvider = {
+      model: 'engine-consolidation-model',
+      async embed(texts: string[]) {
+        return texts.map(() => [1, 0, 0]);
+      },
+    };
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      root,
+      SESSION_PATH,
+      [{ scope: 'user', type: 'fact', content: 'Aoi memory alpha detail', importance: 0.7 }],
+      'ep-consol-a',
+      provider,
+    );
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      root,
+      SESSION_PATH,
+      [{ scope: 'user', type: 'fact', content: 'Aoi memory beta detail', importance: 0.9 }],
+      'ep-consol-b',
+      provider,
+    );
+
+    const priorEnv = process.env.AOI_AUTONOMY_CONSOLIDATION;
+    process.env.AOI_AUTONOMY_CONSOLIDATION = '1';
+    try {
+      const result = await runAoiAutonomyWakeup({
+        sessionsDir: root,
+        sessionPath: SESSION_PATH,
+        reason: 'manual_refresh',
+        sourceIds: [],
+        budget: {
+          maxSourceCount: 1,
+          maxGeneratedProposalCount: 0,
+          wakeupCooldownMs: 0,
+        },
+        now: NOW,
+        dependencies: {
+          runBackgroundTick: async (params) =>
+            makeSchedulerTickResult(root, { reason: params.reason }),
+        },
+      });
+      expect(result.ok).toBe(true);
+    } finally {
+      if (priorEnv === undefined) {
+        delete process.env.AOI_AUTONOMY_CONSOLIDATION;
+      } else {
+        process.env.AOI_AUTONOMY_CONSOLIDATION = priorEnv;
+      }
+    }
+
+    const after = loadServerAoiMemories(root);
+    expect(after.filter((memory) => memory.status === 'active')).toHaveLength(1);
+    expect(after.filter((memory) => memory.status === 'superseded')).toHaveLength(1);
+    // Canonical = the higher-importance memory; content is preserved verbatim.
+    const active = after.find((memory) => memory.status === 'active');
+    expect(active?.content).toContain('beta');
   });
 
   it('records disabled sources as skipped instead of refreshing them', async () => {

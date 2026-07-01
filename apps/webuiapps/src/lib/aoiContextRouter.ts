@@ -1206,7 +1206,13 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
           persist: false,
         })
       : params.mission;
-  const memories = params.memories ?? loadServerAoiMemories(params.sessionsDir);
+  // Defensive: only ACTIVE memories feed the router. Every downstream consumer
+  // (buildKiraCandidates, the source-freshness contracts) already filters active, so
+  // this is byte-identical today; it hardens the surface now that consolidation
+  // supersedes near-duplicates -- superseded/archived must never resurface here.
+  const memories = (params.memories ?? loadServerAoiMemories(params.sessionsDir)).filter(
+    (memory) => memory.status === 'active',
+  );
   const workspaceSnapshot =
     params.workspaceSnapshot === undefined
       ? loadAoiWorkspaceSnapshot(params.sessionsDir, sessionPath)

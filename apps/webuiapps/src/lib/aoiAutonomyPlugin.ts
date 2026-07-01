@@ -14,6 +14,7 @@ import {
   startAoiMemoryEmbedSweep,
   type AoiMemoryEmbedSweepHandle,
 } from './aoiMemoryEmbedSweep';
+import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolidationSweep';
 import { loadAoiMainLlmConfig } from './dewdropCanvasPlugin';
 import { buildAoiAutonomyEvaluation } from './aoiAutonomyEvaluation';
 import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
@@ -2646,21 +2647,23 @@ export function startAoiAutonomyBackgroundFromEnv(
   };
 }
 
-// Start the loop-independent memory embed sweep from env config. Returns null when
-// the sweep is NOT opted in (AOI_AUTONOMY_EMBED_SWEEP unset). Shared by the Vite
-// plugin and the standalone daemon so the wiring is never forked. It REUSES the
-// single-instance loop lock: whichever process owns the dir does the embedding, so
-// the sweep and the autonomy tick's backfill never both mutate the memory files.
+// Start the loop-independent memory maintenance sweep (embed + consolidation) from
+// env config. Returns null when NEITHER half is opted in (AOI_AUTONOMY_EMBED_SWEEP
+// and AOI_AUTONOMY_CONSOLIDATION both unset). Shared by the Vite plugin and the
+// standalone daemon so the wiring is never forked. It REUSES the single-instance
+// loop lock: whichever process owns the dir runs the maintenance, so the sweep and
+// the autonomy tick's own backfill/consolidation never both mutate the memory files.
 // Because the caller starts the background loop FIRST, an enabled loop already holds
-// the lock (its tick backfill covers embedding) and this returns null; the sweep
-// only takes over when the loop is off. Only touched after the enabled check ->
-// OFF-by-default never writes the lock file.
+// the lock (its tick covers embedding + consolidation) and this returns null; the
+// sweep only takes over when the loop is off. Only touched after the enabled check
+// -> OFF-by-default never writes the lock file.
 export function startAoiMemoryEmbedSweepFromEnv(
   options: AoiAutonomyPluginOptions,
   env: Record<string, string | undefined> = process.env,
 ): AoiMemoryEmbedSweepHandle | null {
   const sweepConfig = resolveAoiMemoryEmbedSweepConfigFromEnv(env);
-  if (!sweepConfig.enabled) {
+  const consolidationConfig = resolveAoiMemoryConsolidationConfigFromEnv(env);
+  if (!sweepConfig.enabled && !consolidationConfig.enabled) {
     return null;
   }
   const sessionsDir = resolve(options.sessionsDir);
@@ -2674,6 +2677,7 @@ export function startAoiMemoryEmbedSweepFromEnv(
     configFile,
     intervalMs: sweepConfig.intervalMs,
     max: sweepConfig.max,
+    consolidation: { enabled: consolidationConfig.enabled, max: consolidationConfig.max },
   });
   return {
     stop: () => {

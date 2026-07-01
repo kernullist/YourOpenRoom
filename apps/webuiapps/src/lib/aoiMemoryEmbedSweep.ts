@@ -1,8 +1,18 @@
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
 import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import {
+  runAoiMemoryConsolidationSweepCycle,
+  type AoiMemoryConsolidationSweepCycleResult,
+} from './aoiMemoryConsolidationSweep';
 
-// Loop-independent server memory embed sweep.
+// Loop-independent server memory maintenance sweep (embed + consolidation).
+//
+// This owns the single loop-independent maintenance timer. Its primary job is the
+// embed backfill; when consolidation is opted in (see aoiMemoryConsolidationSweep),
+// the SAME timer runs a bounded consolidation pass right after the embed cycle,
+// under the SAME reused single-instance loop lock, so the two never both mutate the
+// memory files and a just-vectorised memory is immediately eligible to collapse.
 //
 // The bulk embed backfill (embedAndPersistServerAoiMemories) only runs inside the
 // autonomy wakeup, so a server memory written while the background loop is OFF (the
@@ -104,6 +114,15 @@ export interface AoiMemoryEmbedSweepOptions {
   onError?: (error: unknown) => void;
   // Injectable seam for tests.
   runCycle?: typeof runAoiMemoryEmbedSweepCycle;
+  // Consolidation half of the maintenance sweep: when enabled, the SAME timer runs
+  // one bounded consolidation pass right AFTER the embed cycle (so any vectors the
+  // backfill just added are immediately eligible to collapse). OFF by default; it
+  // shares this timer and the reused single-instance loop lock, so embedding and
+  // consolidation never both mutate the memory files. See aoiMemoryConsolidationSweep.
+  consolidation?: { enabled: boolean; max?: number };
+  onConsolidation?: (result: AoiMemoryConsolidationSweepCycleResult) => void;
+  // Injectable seam for tests.
+  runConsolidationCycle?: typeof runAoiMemoryConsolidationSweepCycle;
 }
 
 // Start the loop-independent embed sweep interval. Overlapping cycles are blocked
@@ -115,6 +134,8 @@ export function startAoiMemoryEmbedSweep(
 ): AoiMemoryEmbedSweepHandle {
   const intervalMs = Math.max(MIN_SWEEP_INTERVAL_MS, options.intervalMs);
   const runCycle = options.runCycle ?? runAoiMemoryEmbedSweepCycle;
+  const runConsolidationCycle =
+    options.runConsolidationCycle ?? runAoiMemoryConsolidationSweepCycle;
   let running = false;
   let stopped = false;
 
@@ -130,6 +151,17 @@ export function startAoiMemoryEmbedSweep(
         ...(typeof options.max === 'number' ? { max: options.max } : {}),
       });
       options.onCycle?.(result);
+      // Consolidation runs AFTER embedding in the same cycle so any vectors the
+      // backfill just added are eligible; it is best-effort (never throws).
+      if (options.consolidation?.enabled) {
+        const consolidationResult = runConsolidationCycle({
+          sessionsDir: options.sessionsDir,
+          ...(typeof options.consolidation.max === 'number'
+            ? { max: options.consolidation.max }
+            : {}),
+        });
+        options.onConsolidation?.(consolidationResult);
+      }
     } catch (error) {
       options.onError?.(error);
     } finally {

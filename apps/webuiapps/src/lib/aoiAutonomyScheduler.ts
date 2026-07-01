@@ -32,7 +32,11 @@ import {
 } from './aoiDirectChatBudget';
 import { createAoiAutonomyReflectionChat } from './aoiAutonomyReflectionChat';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
-import { embedAndPersistServerAoiMemories } from './aoiMemoryServerWriter';
+import {
+  consolidateServerAoiMemories,
+  embedAndPersistServerAoiMemories,
+} from './aoiMemoryServerWriter';
+import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolidationSweep';
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
@@ -1825,6 +1829,21 @@ async function runWakeupInternal(
       await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, { max: 16 });
     } catch {
       // best-effort; embeddings never block the wakeup
+    }
+  }
+
+  // Loop-side memory consolidation (best-effort): when opted in, collapse near-
+  // duplicate active memories right AFTER the embed backfill so any vectors it just
+  // added are eligible. OFF by default; reads only on-disk vectors (no provider /
+  // network) and is non-destructive (superseded originals keep their files). This is
+  // the loop-ON counterpart of the loop-independent maintenance sweep (which no-ops
+  // while the loop holds the single-instance lock). Never blocks the wakeup.
+  const consolidationConfig = resolveAoiMemoryConsolidationConfigFromEnv(process.env);
+  if (consolidationConfig.enabled) {
+    try {
+      consolidateServerAoiMemories(input.sessionsDir, { maxClusters: consolidationConfig.max });
+    } catch {
+      // best-effort; consolidation never blocks the wakeup
     }
   }
 
