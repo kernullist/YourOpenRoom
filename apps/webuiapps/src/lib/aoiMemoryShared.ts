@@ -18,6 +18,12 @@ export type AoiMemoryEpisodeSource =
   | 'kira_automation'
   | 'research_run';
 
+// Coarse origin category for the unified memory ledger (P4-d): the three streams
+// the roadmap unifies -- conversation ('chat'), Kira automation ('automation'),
+// and research runs ('research'). This maps the finer 5-way episode source onto
+// the queryable ledger dimension (chat_turn/direct_action/manual_memory -> chat).
+export type AoiMemorySourceCategory = 'chat' | 'automation' | 'research';
+
 export interface AoiMemoryEntry {
   version: 2;
   id: string;
@@ -190,6 +196,38 @@ export function makeAoiKiraAutomationEpisodeId(eventId: string): string {
 
 export function makeAoiResearchRunEpisodeId(runId: string): string {
   return `aoi_research_${sanitizeAoiStoragePart(runId)}`;
+}
+
+// Derive the coarse origin category(ies) of a memory from its episode ids + tags,
+// centralising the prefix/tag heuristic that was previously inlined (e.g. the
+// browser's isExternalAutomationMemory). A memory can carry episodes from several
+// sources (reinforcement / consolidation), so this returns the SET of categories
+// present (membership semantics -- matches the existing `.some` checks). Structurally
+// typed so both the server and browser AoiMemoryEntry shapes work. The 'automation'
+// predicate reproduces isExternalAutomationMemory EXACTLY (tag 'automation' OR the
+// aoi_kira_ id prefix) so callers can switch to it byte-identically. 'chat' is the
+// default bucket for generic (aoi_ep_ / other) episodes and the fallback so every
+// memory carries at least one category.
+export function deriveAoiMemorySources(memory: {
+  sourceEpisodeIds: string[];
+  tags: string[];
+}): AoiMemorySourceCategory[] {
+  const episodeIds = memory.sourceEpisodeIds ?? [];
+  const tags = memory.tags ?? [];
+  const categories = new Set<AoiMemorySourceCategory>();
+  if (tags.includes('automation') || episodeIds.some((id) => id.startsWith('aoi_kira_'))) {
+    categories.add('automation');
+  }
+  if (tags.includes('research') || episodeIds.some((id) => id.startsWith('aoi_research_'))) {
+    categories.add('research');
+  }
+  const hasGenericEpisode = episodeIds.some(
+    (id) => !id.startsWith('aoi_kira_') && !id.startsWith('aoi_research_'),
+  );
+  if (hasGenericEpisode || categories.size === 0) {
+    categories.add('chat');
+  }
+  return [...categories];
 }
 
 function formatAoiCount(label: string, value: number | undefined): string | null {

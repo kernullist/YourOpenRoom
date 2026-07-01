@@ -8,6 +8,7 @@ import {
 import {
   buildAoiKiraAutomationMemoryCandidates,
   containsAoiSensitiveContent,
+  deriveAoiMemorySources,
   makeAoiKiraAutomationEpisodeId,
   redactAoiSensitiveContent,
   sanitizeAoiProcedureContent,
@@ -381,10 +382,9 @@ function buildAutoInterestMemoryCandidate(
 }
 
 function isExternalAutomationMemory(memory: AoiMemoryEntry): boolean {
-  return (
-    hasMemoryTag(memory, 'automation') ||
-    memory.sourceEpisodeIds.some((episodeId) => episodeId.startsWith('aoi_kira_'))
-  );
+  // Byte-identical to the prior `tag 'automation' || aoi_kira_ prefix` check, now
+  // centralised in deriveAoiMemorySources (the unified ledger source dimension).
+  return deriveAoiMemorySources(memory).includes('automation');
 }
 
 function scoreConversationContextPromptBoost(memory: AoiMemoryEntry, query: string): number {
