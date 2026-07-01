@@ -1819,12 +1819,15 @@ async function runWakeupInternal(
     );
   }
 
-  // Server-side memory embedding (best-effort): when an embedding key is configured
-  // (config aoiEmbedding block or env), opportunistically embed a bounded batch of
-  // un-embedded server memories so semantic recall has vectors to fuse. The key is
-  // the opt-in -- no key means lexical-only, unchanged. Never blocks the wakeup.
-  // (embeddingProvider was resolved once above and is reused here.)
-  if (embeddingProvider) {
+  // Server-side memory embedding (best-effort): embed a bounded batch of un-embedded
+  // server memories so semantic recall has vectors to fuse. Gated on BOTH budget.allowNetwork
+  // (the per-session network "thinking" switch) AND a configured embedding key -- the embed
+  // call is outbound network, so a session with network off makes NO egress here, matching
+  // the tick's recall-query embedding (below) + the LLM/scout gates. When network is off the
+  // memories embed lazily once it is turned on, or via the loop-independent embed sweep when
+  // the loop is off. The key stays the opt-in -- no key means lexical-only. Never blocks the
+  // wakeup. (embeddingProvider was resolved once above and is reused here.)
+  if (budget.allowNetwork && embeddingProvider) {
     try {
       await embedAndPersistServerAoiMemories(input.sessionsDir, embeddingProvider, { max: 16 });
     } catch {
