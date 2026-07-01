@@ -240,6 +240,7 @@ export const DEFAULT_AOI_PROACTIVE_BRIEFING_CONTROLS: AoiProactiveBriefScheduler
 export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   version: 1,
   enabled: false,
+  allowNetwork: false,
   previewMode: true,
   level: 'L1',
   proactiveSuggestionsEnabled: false,
@@ -686,6 +687,7 @@ export function normalizeAoiAutonomyPolicy(
   return {
     version: 1,
     enabled: normalizeBoolean(raw.enabled, fallback.enabled),
+    allowNetwork: normalizeBoolean(raw.allowNetwork, fallback.allowNetwork),
     previewMode: normalizeBoolean(raw.previewMode, fallback.previewMode),
     level: isAoiAutonomyLevel(raw.level) ? raw.level : fallback.level,
     proactiveSuggestionsEnabled: normalizeBoolean(

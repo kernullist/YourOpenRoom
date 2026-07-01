@@ -111,10 +111,13 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   });
 
   // The background loop's interval is unref'd, so the listening server is what
-  // keeps the process alive -- exactly what a daemon wants. Null when the loop
-  // is not opted in via env.
+  // keeps the process alive -- exactly what a daemon wants. The daemon is a
+  // dedicated autonomy host, so it starts the loop by DEFAULT (defaultStart) --
+  // the operator turns Aoi on/off from the settings UI (per-session policy.enabled,
+  // default false -> a safe idle no-op) without touching env. Null only when
+  // AOI_AUTONOMY_BACKGROUND is explicitly off (hard ceiling).
   const backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null =
-    startAoiAutonomyBackgroundFromEnv(pluginOptions, env);
+    startAoiAutonomyBackgroundFromEnv(pluginOptions, env, { defaultStart: true });
   // Loop-independent memory embed sweep (OFF unless AOI_AUTONOMY_EMBED_SWEEP is
   // opted in). Started AFTER the loop so an enabled loop holds the single-instance
   // lock and the sweep no-ops; the sweep only embeds when the loop is off. Its
@@ -203,8 +206,9 @@ export async function runAoiDaemonMain(
   logInfo(`sessions dir: ${options.sessionsDir}`);
   logInfo(
     handle.backgroundRunning
-      ? 'background loop: ON (AOI_AUTONOMY_BACKGROUND opted in)'
-      : 'background loop: OFF (set AOI_AUTONOMY_BACKGROUND=1 to enable)',
+      ? 'background loop: RUNNING (per-session autonomy is controlled from the settings UI; ' +
+          'set AOI_AUTONOMY_BACKGROUND=0 to hard-disable)'
+      : 'background loop: OFF (AOI_AUTONOMY_BACKGROUND=0, or another process owns the lock)',
   );
 
   let shuttingDown = false;

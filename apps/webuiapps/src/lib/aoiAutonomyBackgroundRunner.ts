@@ -12,7 +12,11 @@ export interface AoiAutonomyBackgroundCycleOptions {
   sessionsDir: string;
   configFile: string;
   workspaceRoot?: string;
-  allowNetwork?: boolean;
+  // Deployment ceiling for network "thinking" (tri-state): undefined = no ceiling
+  // (the per-session policy.allowNetwork decides), false = hard-disabled regardless
+  // of policy, true = permitted (policy decides). The actual per-session switch is
+  // policy.allowNetwork; this only caps it.
+  allowNetworkCeiling?: boolean;
   // Rolling daily LLM token ceiling threaded to each wakeup (P1a c2). Undefined
   // -> the scheduler applies the enforced finite default; 0 -> unlimited.
   llmDailyTokenBudget?: number;
@@ -66,11 +70,15 @@ export async function runAoiAutonomyBackgroundCycle(
   const loadPolicy = options.loadPolicy ?? loadAoiAutonomyPolicy;
   const runWakeup = options.runWakeup ?? runAoiAutonomyWakeup;
   const maxSessions = Math.max(1, options.maxSessionsPerCycle ?? DEFAULT_MAX_SESSIONS_PER_CYCLE);
-  const allowNetwork = options.allowNetwork === true;
+  // The env ceiling only CAPS network access; the per-session policy.allowNetwork is
+  // the actual switch. undefined/true ceiling -> policy decides; false -> hard off.
+  const ceilingPermitsNetwork = options.allowNetworkCeiling !== false;
   // Resolve the main LLM config once per cycle (shared across sessions). This is
-  // what actually puts the model in the loop for self-initiated reasoning when
-  // network access is permitted.
-  const llmConfig = allowNetwork ? (options.llmConfig ?? options.loadLlmConfig?.() ?? null) : null;
+  // what actually puts the model in the loop for self-initiated reasoning when a
+  // session enables network; skip the resolve entirely if the ceiling forbids it.
+  const llmConfig = ceilingPermitsNetwork
+    ? (options.llmConfig ?? options.loadLlmConfig?.() ?? null)
+    : null;
   const result: AoiAutonomyBackgroundCycleResult = {
     startedAt,
     durationMs: 0,
@@ -118,7 +126,9 @@ export async function runAoiAutonomyBackgroundCycle(
         // resolution above); otherwise the wakeup runs the deterministic loop.
         llmConfig,
         budget: {
-          allowNetwork,
+          // Effective network = the deployment ceiling AND the per-session policy
+          // switch (operator-controlled via the settings UI).
+          allowNetwork: ceilingPermitsNetwork && policy.allowNetwork === true,
           ...(typeof options.llmDailyTokenBudget === 'number'
             ? { llmDailyTokenBudget: options.llmDailyTokenBudget }
             : {}),
@@ -204,7 +214,10 @@ export function startAoiAutonomyBackgroundRunner(
 export interface AoiAutonomyBackgroundEnvConfig {
   enabled: boolean;
   intervalMs: number;
-  allowNetwork: boolean;
+  // Tri-state deployment ceiling for network "thinking": undefined when the env var
+  // is unset (no ceiling -> the settings UI / policy.allowNetwork decides), false =
+  // hard-disabled, true = permitted. The actual switch is per-session policy.allowNetwork.
+  allowNetworkCeiling: boolean | undefined;
   maxSessionsPerCycle: number;
   // Rolling daily LLM token ceiling for brief synthesis. Undefined when unset ->
   // the scheduler applies the enforced finite default; 0 -> unlimited.
@@ -223,6 +236,16 @@ export interface AoiAutonomyBackgroundEnvConfig {
 }
 
 function parseBoolEnv(value: string | undefined): boolean {
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
+// Tri-state parse for a ceiling flag: undefined when unset/empty (no ceiling -> the
+// settings UI decides), else the boolean. Distinguishes "unset" (permit, UI decides)
+// from an explicit "0" (hard-disable), which parseBoolEnv cannot.
+function parseBoolEnvTristate(value: string | undefined): boolean | undefined {
+  if (value === undefined || value.trim() === '') {
+    return undefined;
+  }
   return value === '1' || value === 'true' || value === 'yes';
 }
 
@@ -253,7 +276,7 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
       env.AOI_AUTONOMY_BACKGROUND_INTERVAL_MS,
       DEFAULT_BACKGROUND_INTERVAL_MS,
     ),
-    allowNetwork: parseBoolEnv(env.AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK),
+    allowNetworkCeiling: parseBoolEnvTristate(env.AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK),
     maxSessionsPerCycle: parseIntEnv(
       env.AOI_AUTONOMY_BACKGROUND_MAX_SESSIONS,
       DEFAULT_MAX_SESSIONS_PER_CYCLE,

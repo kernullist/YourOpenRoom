@@ -10,8 +10,8 @@ import {
 import { listAoiAutonomySessionPaths } from '../aoiAutonomyStore';
 import type { AoiAutonomyPolicy, AoiAutonomyWakeupResult } from '../aoiAutonomyTypes';
 
-const policy = (enabled: boolean): AoiAutonomyPolicy =>
-  ({ enabled }) as unknown as AoiAutonomyPolicy;
+const policy = (enabled: boolean, allowNetwork = false): AoiAutonomyPolicy =>
+  ({ enabled, allowNetwork }) as unknown as AoiAutonomyPolicy;
 const wakeupOk = (): AoiAutonomyWakeupResult => ({}) as unknown as AoiAutonomyWakeupResult;
 
 const baseOpts = { sessionsDir: '/sessions', configFile: '/config.json', now: 1000 };
@@ -37,9 +37,9 @@ describe('runAoiAutonomyBackgroundCycle', () => {
     const runWakeup = vi.fn().mockResolvedValue(wakeupOk());
     await runAoiAutonomyBackgroundCycle({
       ...baseOpts,
-      allowNetwork: true,
+      allowNetworkCeiling: true,
       listSessions: () => ['s/a'],
-      loadPolicy: () => policy(true),
+      loadPolicy: () => policy(true, true),
       runWakeup,
     });
     expect(runWakeup).toHaveBeenCalledWith(
@@ -51,14 +51,14 @@ describe('runAoiAutonomyBackgroundCycle', () => {
     );
   });
 
-  it('omits the LLM when network is disabled', async () => {
+  it('omits the LLM when the ceiling forbids network', async () => {
     const runWakeup = vi.fn().mockResolvedValue(wakeupOk());
     await runAoiAutonomyBackgroundCycle({
       ...baseOpts,
-      allowNetwork: false,
+      allowNetworkCeiling: false,
       llmConfig: { provider: 'openai' } as never,
       listSessions: () => ['s/a'],
-      loadPolicy: () => policy(true),
+      loadPolicy: () => policy(true, true),
       runWakeup,
     });
     expect(runWakeup).toHaveBeenCalledWith(
@@ -71,14 +71,41 @@ describe('runAoiAutonomyBackgroundCycle', () => {
     const llm = { provider: 'openai' } as never;
     await runAoiAutonomyBackgroundCycle({
       ...baseOpts,
-      allowNetwork: true,
+      allowNetworkCeiling: true,
       loadLlmConfig: () => llm,
       listSessions: () => ['s/a'],
-      loadPolicy: () => policy(true),
+      loadPolicy: () => policy(true, true),
       runWakeup,
     });
     expect(runWakeup).toHaveBeenCalledWith(
       expect.objectContaining({ llmConfig: llm, budget: { allowNetwork: true } }),
+    );
+  });
+
+  it('effective network = the ceiling AND the per-session policy switch', async () => {
+    const runWakeup = vi.fn().mockResolvedValue(wakeupOk());
+    const run = (ceiling: boolean | undefined, policyAllowNetwork: boolean): Promise<unknown> =>
+      runAoiAutonomyBackgroundCycle({
+        ...baseOpts,
+        ...(ceiling === undefined ? {} : { allowNetworkCeiling: ceiling }),
+        listSessions: () => ['s/a'],
+        loadPolicy: () => policy(true, policyAllowNetwork),
+        runWakeup,
+      });
+
+    // No env ceiling (unset) -> the policy switch decides.
+    await run(undefined, true);
+    expect(runWakeup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ budget: { allowNetwork: true } }),
+    );
+    await run(undefined, false);
+    expect(runWakeup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ budget: { allowNetwork: false } }),
+    );
+    // Explicit ceiling=false hard-disables even when the policy wants network.
+    await run(false, true);
+    expect(runWakeup).toHaveBeenLastCalledWith(
+      expect.objectContaining({ budget: { allowNetwork: false } }),
     );
   });
 
@@ -165,11 +192,11 @@ describe('listAoiAutonomySessionPaths', () => {
 });
 
 describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
-  it('is disabled by default', () => {
-    expect(resolveAoiAutonomyBackgroundConfigFromEnv({})).toMatchObject({
-      enabled: false,
-      allowNetwork: false,
-    });
+  it('is disabled by default with no network ceiling', () => {
+    const config = resolveAoiAutonomyBackgroundConfigFromEnv({});
+    expect(config.enabled).toBe(false);
+    // Unset env -> no ceiling (the settings UI / policy.allowNetwork decides).
+    expect(config.allowNetworkCeiling).toBeUndefined();
   });
 
   it('parses opt-in flags', () => {
@@ -187,7 +214,7 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
       }),
     ).toEqual({
       enabled: true,
-      allowNetwork: true,
+      allowNetworkCeiling: true,
       intervalMs: 120000,
       maxSessionsPerCycle: 3,
       llmDailyTokenBudget: 50000,
@@ -205,6 +232,14 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
     expect(config.scoutNetworkDailyBudget).toBeUndefined();
     expect(config.directChatDailyBudget).toBeUndefined();
     expect(config.idleConfidenceSurgeEnabled).toBe(false);
+  });
+
+  it('treats an explicit ALLOW_NETWORK=0 as a hard ceiling (false)', () => {
+    expect(
+      resolveAoiAutonomyBackgroundConfigFromEnv({
+        AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK: '0',
+      }).allowNetworkCeiling,
+    ).toBe(false);
   });
 });
 

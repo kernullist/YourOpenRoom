@@ -3240,6 +3240,11 @@ export interface AoiAutonomyToolPolicy {
 export interface AoiAutonomyPolicy {
   version: 1;
   enabled: boolean;
+  // Master "thinking" switch: when true the self-initiated loop may make network
+  // calls (LLM reflection / goal synthesis / proactive scout / semantic recall).
+  // Operator-controlled via the settings UI; the deployment env acts as a ceiling
+  // (AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK=0 hard-disables regardless). Default off.
+  allowNetwork: boolean;
   previewMode: boolean;
   level: AoiAutonomyLevel;
   proactiveSuggestionsEnabled: boolean;

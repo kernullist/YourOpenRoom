@@ -2603,9 +2603,19 @@ export function createAoiAutonomyMiddleware(
 export function startAoiAutonomyBackgroundFromEnv(
   options: AoiAutonomyPluginOptions,
   env: Record<string, string | undefined> = process.env,
+  { defaultStart = false }: { defaultStart?: boolean } = {},
 ): AoiAutonomyBackgroundRunnerHandle | null {
   const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(env);
-  if (!backgroundConfig.enabled) {
+  // defaultStart hosts (the standalone daemon) run the loop unless AOI_AUTONOMY_BACKGROUND
+  // is EXPLICITLY off, so the operator controls on/off from the settings UI (per-session
+  // policy.enabled, default false -> a safe idle no-op) without touching env. The Vite
+  // plugin keeps the opt-in default (start only when explicitly enabled) so an ordinary
+  // dev server never starts an autonomy loop. AOI_AUTONOMY_BACKGROUND=0 is a hard ceiling
+  // either way.
+  const raw = env.AOI_AUTONOMY_BACKGROUND;
+  const explicitlyOff = raw === '0' || raw === 'false' || raw === 'no';
+  const shouldStart = defaultStart ? !explicitlyOff : backgroundConfig.enabled;
+  if (!shouldStart) {
     return null;
   }
   const sessionsDir = resolve(options.sessionsDir);
@@ -2626,7 +2636,7 @@ export function startAoiAutonomyBackgroundFromEnv(
     configFile,
     workspaceRoot,
     intervalMs: backgroundConfig.intervalMs,
-    allowNetwork: backgroundConfig.allowNetwork,
+    allowNetworkCeiling: backgroundConfig.allowNetworkCeiling,
     maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
     llmDailyTokenBudget: backgroundConfig.llmDailyTokenBudget,
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,

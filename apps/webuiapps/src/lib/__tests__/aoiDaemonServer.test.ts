@@ -58,7 +58,10 @@ describe('startAoiDaemon', () => {
   it('binds an ephemeral port and routes into the shared autonomy handler', async () => {
     const handle = await bootTestDaemon();
     expect(handle.port).toBeGreaterThan(0);
-    expect(handle.backgroundRunning).toBe(false);
+    // The daemon is a dedicated autonomy host: the runner starts by default (the
+    // per-session policy.enabled, default false, is the actual on/off -- so nothing
+    // autonomous runs until the operator enables it from the UI).
+    expect(handle.backgroundRunning).toBe(true);
 
     const base = `http://127.0.0.1:${handle.port}`;
 
@@ -84,8 +87,14 @@ describe('startAoiDaemon', () => {
     expect(body.code).toBe('route_not_found');
   });
 
-  it('keeps the background loop OFF by default and ON only when opted in', async () => {
-    const off = await bootTestDaemon({});
+  it('runs the loop by default and hard-disables only on AOI_AUTONOMY_BACKGROUND=0', async () => {
+    // Daemon default: the runner is RUNNING (per-session policy.enabled gates the
+    // actual autonomy; default false -> a safe idle no-op).
+    const def = await bootTestDaemon({});
+    expect(def.backgroundRunning).toBe(true);
+
+    // Explicit hard ceiling: no runner at all.
+    const off = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '0' });
     expect(off.backgroundRunning).toBe(false);
 
     const on = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '1' });
@@ -195,6 +204,28 @@ describe('startAoiAutonomyBackgroundFromEnv', () => {
     expect(handle).not.toBeNull();
     // The interval is unref'd and no cycle runs before stop(); release it now.
     handle?.stop();
+  });
+
+  it('starts by default when defaultStart is set (the daemon host path)', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = startAoiAutonomyBackgroundFromEnv(
+      { sessionsDir, configFile: join(sessionsDir, 'config.json') },
+      {},
+      { defaultStart: true },
+    );
+    expect(handle).not.toBeNull();
+    handle?.stop();
+  });
+
+  it('defaultStart is overridden by an explicit AOI_AUTONOMY_BACKGROUND=0', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = startAoiAutonomyBackgroundFromEnv(
+      { sessionsDir, configFile: join(sessionsDir, 'config.json') },
+      { AOI_AUTONOMY_BACKGROUND: '0' },
+      { defaultStart: true },
+    );
+    expect(handle).toBeNull();
+    expect(fs.existsSync(join(sessionsDir, '.aoi-autonomy-loop.lock'))).toBe(false);
   });
 });
 
