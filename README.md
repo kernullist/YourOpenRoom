@@ -218,6 +218,20 @@ The chat panel is not limited to `app_action`. It currently exposes several tool
     that still respects cooldowns; labeled field events can also be redacted into separate replay
     promotion drafts and checked by proactive-brief readiness gates before they are considered for
     built-in replay packs
+  - the autonomy loop is operator-controlled from the settings UI (Advanced -> Aoi autonomy): a
+    per-session master on/off toggle, a network "thinking" toggle that gates LLM reflection, goal
+    synthesis, proactive scouting, and semantic recall, and the action-ladder level selector. No
+    environment variables are required; the deployment env only acts as a safety ceiling
+    (`AOI_AUTONOMY_BACKGROUND=0` / `AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK=0` hard-disable).
+    Everything stays off by default, and side-effecting action still requires an earned
+    trusted-operator level
+  - the server memory has a semantic backbone: memories gain embeddings so recall fuses lexical and
+    vector similarity, near-duplicate memories are consolidated non-destructively into a canonical
+    (superseded originals are kept on disk and recoverable), and a unified query/enumeration ledger
+    spans chat, Kira automation, and research memories. Semantic features are opt-in behind an
+    embedding key; without one, recall stays lexical and consolidation is a no-op
+  - a standalone headless daemon (`aoiDaemonServer`) can run the autonomy loop 24/7 outside the Vite
+    dev server, with single-instance locking, graceful shutdown, and the same durable session store
 - **Skills workshop**
   - built-in and user-authored skills are matched by trigger terms before a chat turn
   - only enabled and trusted skills are injected into the system prompt
@@ -408,6 +422,21 @@ Many of the current capabilities are implemented as Vite middleware, including:
 
 `pnpm build` will still produce the browser bundle, but those integrations only work if you also
 provide equivalent backend endpoints in your deployment.
+
+### Standalone Autonomy Daemon (optional)
+
+For always-on autonomy outside the Vite dev server, build and run the headless daemon:
+
+```bash
+pnpm --filter @openroom/webuiapps daemon:build
+pnpm --filter @openroom/webuiapps daemon
+```
+
+It serves the autonomy HTTP routes and the durable session store headlessly and starts the
+background loop by default (set `AOI_AUTONOMY_BACKGROUND=0` to hard-disable it). Actual per-session
+autonomy stays off until you enable it from the desktop settings UI, so a fresh daemon idles safely.
+It shares the same `~/.openroom` store as `pnpm dev`, and a single-instance lock keeps exactly one
+loop running per store.
 
 ## Configuration
 
