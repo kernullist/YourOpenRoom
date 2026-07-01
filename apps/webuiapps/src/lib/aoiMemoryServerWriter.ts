@@ -15,7 +15,7 @@ import {
   type AoiMemoryEpisode,
 } from './aoiMemoryShared';
 import type { AoiResearchManifest } from './aoiResearchTypes';
-import type { AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import { attachAoiMemoryEmbeddings, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
 
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
 
@@ -455,6 +455,22 @@ export function saveServerAoiMemoryEpisode(
   return item;
 }
 
+// Write only the memories a merge changed (new + reinforced + superseded), keyed
+// by id. Shared by the sync save and the embed-on-write variant so the two never
+// drift in what they persist.
+function writeChangedServerAoiMemories(
+  sessionsDir: string,
+  memories: AoiMemoryEntry[],
+  changedIds: string[],
+): void {
+  const changed = new Set(changedIds);
+  for (const memory of memories) {
+    if (changed.has(memory.id)) {
+      writeJsonFile(memoryFilePath(sessionsDir, memory.id), memory);
+    }
+  }
+}
+
 export function saveServerAoiMemoryCandidates(
   sessionsDir: string,
   sessionPath: string,
@@ -463,10 +479,38 @@ export function saveServerAoiMemoryCandidates(
 ): AoiMemoryEntry[] {
   const existing = loadServerAoiMemories(sessionsDir);
   const merged = mergeServerAoiMemoryCandidates(existing, candidates, { sessionPath, episodeId });
-  const changed = merged.memories.filter((memory) => merged.changedIds.includes(memory.id));
-  for (const memory of changed) {
-    writeJsonFile(memoryFilePath(sessionsDir, memory.id), memory);
+  writeChangedServerAoiMemories(sessionsDir, merged.memories, merged.changedIds);
+  return merged.memories;
+}
+
+// Embed-on-write variant of saveServerAoiMemoryCandidates. When a provider is
+// supplied, the active memories this write changed and that still lack a vector
+// are embedded (in place) BEFORE they are persisted, so a server-written memory
+// carries its embedding immediately -- even when the autonomy background loop
+// (whose tick runs the bulk backfill) is OFF. Best-effort: a provider failure
+// leaves those memories unembedded (attach swallows it) and recall falls back to
+// lexical. No provider (no embedding key) -> byte-identical to the sync save.
+export async function saveServerAoiMemoryCandidatesWithEmbedding(
+  sessionsDir: string,
+  sessionPath: string,
+  candidates: AoiMemoryCandidate[],
+  episodeId: string,
+  provider: AoiEmbeddingProvider | null | undefined,
+): Promise<AoiMemoryEntry[]> {
+  const existing = loadServerAoiMemories(sessionsDir);
+  const merged = mergeServerAoiMemoryCandidates(existing, candidates, { sessionPath, episodeId });
+  if (provider) {
+    const changed = new Set(merged.changedIds);
+    // attach mutates in place; these entries are references into merged.memories,
+    // so the writeChanged call below persists the freshly attached vectors. Only
+    // active memories are embedded (a superseded/archived entry is not recalled),
+    // mirroring the tick backfill's active-only policy.
+    const activeChanged = merged.memories.filter(
+      (memory) => changed.has(memory.id) && memory.status === 'active',
+    );
+    await attachAoiMemoryEmbeddings(activeChanged, provider);
   }
+  writeChangedServerAoiMemories(sessionsDir, merged.memories, merged.changedIds);
   return merged.memories;
 }
 
@@ -497,6 +541,20 @@ export function syncAoiMemoryFromKiraAutomationEventServer(
   return saveServerAoiMemoryCandidates(sessionsDir, sessionPath, candidates, episode.id);
 }
 
+function buildAoiResearchRunEpisodeInput(manifest: AoiResearchManifest): AoiMemoryEpisodeInput {
+  return {
+    id: makeAoiResearchRunEpisodeId(manifest.id),
+    source: 'research_run',
+    userMessage: manifest.request,
+    assistantMessage: truncateAoiMemoryContent(
+      `Research completed: ${manifest.reportTitle || manifest.plan?.title || manifest.id}`,
+    ),
+    toolCalls: ['start_research'],
+    createdAt: manifest.completedAt ?? manifest.updatedAt,
+    outcome: 'completed',
+  };
+}
+
 export function syncAoiMemoryFromResearchRunServer(
   sessionsDir: string,
   manifest: AoiResearchManifest,
@@ -509,17 +567,41 @@ export function syncAoiMemoryFromResearchRunServer(
   if (candidates.length === 0) {
     return loadServerAoiMemories(sessionsDir);
   }
-
-  const episode = saveServerAoiMemoryEpisode(sessionsDir, manifest.sessionPath, {
-    id: makeAoiResearchRunEpisodeId(manifest.id),
-    source: 'research_run',
-    userMessage: manifest.request,
-    assistantMessage: truncateAoiMemoryContent(
-      `Research completed: ${manifest.reportTitle || manifest.plan?.title || manifest.id}`,
-    ),
-    toolCalls: ['start_research'],
-    createdAt: manifest.completedAt ?? manifest.updatedAt,
-    outcome: 'completed',
-  });
+  const episode = saveServerAoiMemoryEpisode(
+    sessionsDir,
+    manifest.sessionPath,
+    buildAoiResearchRunEpisodeInput(manifest),
+  );
   return saveServerAoiMemoryCandidates(sessionsDir, manifest.sessionPath, candidates, episode.id);
+}
+
+// Embed-on-write variant of syncAoiMemoryFromResearchRunServer: wires the research
+// completion path to embed the new research memory as soon as the run finishes,
+// independent of the (default-OFF) autonomy loop. Provider null (no embedding key)
+// -> lexical fallback, byte-identical to the sync variant.
+export async function syncAoiMemoryFromResearchRunServerWithEmbedding(
+  sessionsDir: string,
+  manifest: AoiResearchManifest,
+  provider: AoiEmbeddingProvider | null | undefined,
+  options?: { reportMarkdown?: string },
+): Promise<AoiMemoryEntry[]> {
+  const candidates = buildAoiResearchMemoryCandidates({
+    manifest,
+    reportMarkdown: options?.reportMarkdown,
+  });
+  if (candidates.length === 0) {
+    return loadServerAoiMemories(sessionsDir);
+  }
+  const episode = saveServerAoiMemoryEpisode(
+    sessionsDir,
+    manifest.sessionPath,
+    buildAoiResearchRunEpisodeInput(manifest),
+  );
+  return saveServerAoiMemoryCandidatesWithEmbedding(
+    sessionsDir,
+    manifest.sessionPath,
+    candidates,
+    episode.id,
+    provider,
+  );
 }

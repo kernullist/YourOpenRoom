@@ -6,10 +6,13 @@ import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEval
 import {
   loadServerAoiMemories,
   saveServerAoiMemoryCandidates,
+  saveServerAoiMemoryCandidatesWithEmbedding,
   syncAoiMemoryFromKiraAutomationEventServer,
   syncAoiMemoryFromResearchRunServer,
+  syncAoiMemoryFromResearchRunServerWithEmbedding,
 } from '../aoiMemoryServerWriter';
 import type { AoiMemoryEpisode } from '../aoiMemoryShared';
+import type { AoiEmbeddingProvider } from '../aoiMemoryEmbedding';
 import type { AoiResearchManifest } from '../aoiResearchTypes';
 
 const tempRoots: string[] = [];
@@ -399,5 +402,134 @@ describe('Aoi server memory writer', () => {
 
     expect(memories).toEqual([]);
     expect(loadServerAoiMemories(sessionsDir)).toEqual([]);
+  });
+});
+
+describe('Aoi server memory embed-on-write', () => {
+  const fakeProvider = (
+    vector: number[] = [0.4, 0.5, 0.6],
+    model = 'test-embed-model',
+  ): AoiEmbeddingProvider => ({
+    model,
+    async embed(texts: string[]) {
+      return texts.map(() => vector);
+    },
+  });
+
+  it('embeds a new active memory before persisting when a provider is supplied', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [{ scope: 'user', type: 'fact', content: 'The user works on Windows kernel anti-cheat.' }],
+      'episode-embed-1',
+      fakeProvider(),
+    );
+
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory.embedding).toEqual([0.4, 0.5, 0.6]);
+    expect(memory.embeddingModel).toBe('test-embed-model');
+  });
+
+  it('persists without a vector when no provider is configured (lexical fallback)', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    const saved = await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [{ scope: 'user', type: 'fact', content: 'The user prefers Korean responses.' }],
+      'episode-embed-2',
+      null,
+    );
+
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory.embedding).toBeUndefined();
+    expect(memory.embeddingModel).toBeUndefined();
+    // Same result shape as the sync save -- only the vector attach is skipped.
+    expect(saved).toHaveLength(1);
+  });
+
+  it('does not throw and persists without a vector when the provider rejects', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const throwingProvider: AoiEmbeddingProvider = {
+      model: 'test-embed-model',
+      async embed() {
+        throw new Error('embedding backend down');
+      },
+    };
+
+    await expect(
+      saveServerAoiMemoryCandidatesWithEmbedding(
+        sessionsDir,
+        'aoi/default',
+        [{ scope: 'user', type: 'fact', content: 'Embedding must never block a memory write.' }],
+        'episode-embed-3',
+        throwingProvider,
+      ),
+    ).resolves.toHaveLength(1);
+
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory.embedding).toBeUndefined();
+  });
+
+  it('does not re-embed a reinforced duplicate that already carries a vector', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const content = 'The user maintains the Tavern anti-cheat driver.';
+
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [{ scope: 'user', type: 'fact', content }],
+      'episode-embed-4a',
+      fakeProvider([0.1, 0.1, 0.1]),
+    );
+    // A second capture of the same content from a new episode reinforces the
+    // existing memory (hits/updatedAt change) but the content -- and therefore the
+    // vector -- is unchanged, so attach must skip it (no wasted re-embed).
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [{ scope: 'user', type: 'fact', content }],
+      'episode-embed-4b',
+      fakeProvider([9, 9, 9]),
+    );
+
+    const memories = loadServerAoiMemories(sessionsDir);
+    expect(memories).toHaveLength(1);
+    expect(memories[0].embedding).toEqual([0.1, 0.1, 0.1]);
+  });
+
+  it('embeds a research memory on write when a provider is supplied', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    await syncAoiMemoryFromResearchRunServerWithEmbedding(
+      sessionsDir,
+      makeCompletedResearchManifest(),
+      fakeProvider(),
+      { reportMarkdown: '## Key Findings\n- BYOVD abuse keeps rising across signed drivers.' },
+    );
+
+    const research = loadServerAoiMemories(sessionsDir).find((memory) =>
+      memory.tags.includes('research'),
+    );
+    expect(research?.embedding).toEqual([0.4, 0.5, 0.6]);
+    expect(research?.embeddingModel).toBe('test-embed-model');
+  });
+
+  it('persists a research memory without a vector when no provider is configured', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    await syncAoiMemoryFromResearchRunServerWithEmbedding(
+      sessionsDir,
+      makeCompletedResearchManifest(),
+      null,
+    );
+
+    const research = loadServerAoiMemories(sessionsDir).find((memory) =>
+      memory.tags.includes('research'),
+    );
+    expect(research).toBeDefined();
+    expect(research?.embedding).toBeUndefined();
   });
 });

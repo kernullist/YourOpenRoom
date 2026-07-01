@@ -11,7 +11,8 @@ import {
   type AoiResearchRunPaths,
 } from './aoiResearchEngine';
 import { ingestAoiObservation } from './aoiAutonomyObserver';
-import { syncAoiMemoryFromResearchRunServer } from './aoiMemoryServerWriter';
+import { syncAoiMemoryFromResearchRunServerWithEmbedding } from './aoiMemoryServerWriter';
+import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
   isAoiResearchArtifactName,
   type AoiResearchArtifactName,
@@ -176,16 +177,23 @@ function readTextFileIfPresent(filePath: string): string | undefined {
   }
 }
 
-function persistResearchRunMemory(
+async function persistResearchRunMemory(
   sessionsDir: string,
   manifest: AoiResearchManifest,
   paths: AoiResearchRunPaths,
-): void {
+  configFile: string,
+): Promise<void> {
   if (manifest.status !== 'completed') {
     return;
   }
   try {
-    syncAoiMemoryFromResearchRunServer(sessionsDir, manifest, {
+    // Embed-on-write: resolve the server embedding provider (config aoiEmbedding
+    // block / env key) so the research memory carries a vector as soon as the run
+    // completes, independent of the (default-OFF) autonomy loop. No key -> the
+    // provider is null -> the memory persists without a vector (lexical fallback),
+    // byte-identical to the prior sync write.
+    const provider = createServerAoiEmbeddingProvider({ configFile });
+    await syncAoiMemoryFromResearchRunServerWithEmbedding(sessionsDir, manifest, provider, {
       reportMarkdown: readTextFileIfPresent(paths.report),
     });
   } catch (error) {
@@ -412,8 +420,8 @@ export async function startAoiResearchRunFromServer(params: {
   });
   const manifest = readManifest(paths.manifest) ?? (await runPromise);
   void runPromise
-    .then((finalManifest) => {
-      persistResearchRunMemory(params.sessionsDir, finalManifest, paths);
+    .then(async (finalManifest) => {
+      await persistResearchRunMemory(params.sessionsDir, finalManifest, paths, params.configFile);
       persistResearchRunObservation(params.sessionsDir, finalManifest);
     })
     .catch((error) => {
@@ -541,8 +549,8 @@ async function handleAoiResearchRequest(
       });
       const manifest = readManifest(paths.manifest) ?? (await runPromise);
       void runPromise
-        .then((finalManifest) => {
-          persistResearchRunMemory(sessionsDir, finalManifest, paths);
+        .then(async (finalManifest) => {
+          await persistResearchRunMemory(sessionsDir, finalManifest, paths, configFile);
         })
         .catch((error) => {
           console.error('[aoi-research] background run failed', error);
