@@ -4,6 +4,8 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import {
+  archiveServerAoiMemories,
+  computeServerAoiMemoryDecayDryRun,
   consolidateServerAoiMemories,
   loadServerAoiMemories,
   saveServerAoiMemoryCandidates,
@@ -11,8 +13,9 @@ import {
   syncAoiMemoryFromKiraAutomationEventServer,
   syncAoiMemoryFromResearchRunServer,
   syncAoiMemoryFromResearchRunServerWithEmbedding,
+  unarchiveServerAoiMemories,
 } from '../aoiMemoryServerWriter';
-import type { AoiMemoryEpisode } from '../aoiMemoryShared';
+import type { AoiMemoryEntry, AoiMemoryEpisode } from '../aoiMemoryShared';
 import type { AoiEmbeddingProvider } from '../aoiMemoryEmbedding';
 import type { AoiResearchManifest } from '../aoiResearchTypes';
 
@@ -611,5 +614,89 @@ describe('Aoi server memory embed-on-write', () => {
     expect(loadServerAoiMemories(sessionsDir).every((memory) => memory.status === 'active')).toBe(
       true,
     );
+  });
+
+  // Direct memory-file writer so decay tests can control updatedAt / confidence /
+  // hits / expiresAt (the normal save path stamps updatedAt = now).
+  const writeDecayMemory = (
+    sessionsDir: string,
+    partial: Partial<AoiMemoryEntry> & { id: string },
+  ): void => {
+    const dir = join(sessionsDir, 'aoi', 'memory-v2', 'memories');
+    fs.mkdirSync(dir, { recursive: true });
+    const entry: AoiMemoryEntry = {
+      version: 2,
+      scope: 'user',
+      type: 'fact',
+      status: 'active',
+      content: `content ${partial.id}`,
+      normalizedContent: `content ${partial.id}`,
+      importance: 0.5,
+      confidence: 0.3,
+      hits: 1,
+      createdAt: 0,
+      updatedAt: 0,
+      sourceEpisodeIds: [`ep_${partial.id}`],
+      tags: [],
+      entities: [],
+      ...partial,
+    };
+    fs.writeFileSync(join(dir, `${entry.id}.json`), JSON.stringify(entry), 'utf-8');
+  };
+
+  const decayOpts = { now: 10_000, maxAgeMs: 1_000, confidenceFloor: 0.5, maxHits: 1 };
+
+  it('previews decay candidates read-only (no writes) with a fingerprint', () => {
+    const sessionsDir = makeTempSessionsDir();
+    writeDecayMemory(sessionsDir, { id: 'stale', updatedAt: 0, confidence: 0.2, hits: 0 });
+    writeDecayMemory(sessionsDir, { id: 'fresh', updatedAt: 9_999, confidence: 0.9, hits: 20 });
+
+    const dry = computeServerAoiMemoryDecayDryRun(sessionsDir, decayOpts);
+    expect(dry.candidates.map((c) => c.id)).toEqual(['stale']);
+    expect(dry.candidates[0].reasons).toEqual(
+      expect.arrayContaining(['aged', 'low_confidence', 'low_hits']),
+    );
+    expect(dry.totalActive).toBe(2);
+    expect(dry.fingerprint).toMatch(/^[0-9a-f]{8}$/);
+    // Read-only: nothing archived.
+    expect(loadServerAoiMemories(sessionsDir).every((m) => m.status === 'active')).toBe(true);
+  });
+
+  it('archives only with a matching fingerprint and keeps the files on disk', () => {
+    const sessionsDir = makeTempSessionsDir();
+    writeDecayMemory(sessionsDir, { id: 'stale', updatedAt: 0, confidence: 0.2, hits: 0 });
+
+    const dry = computeServerAoiMemoryDecayDryRun(sessionsDir, decayOpts);
+    const approvedIds = dry.candidates.map((c) => c.id);
+
+    // Wrong fingerprint -> rejected, nothing written.
+    const rejected = archiveServerAoiMemories(sessionsDir, approvedIds, {
+      approvalFingerprint: 'deadbeef',
+      now: 20_000,
+    });
+    expect(rejected).toMatchObject({ rejected: true, archivedCount: 0 });
+    expect(loadServerAoiMemories(sessionsDir)[0].status).toBe('active');
+
+    // Matching fingerprint -> archived (soft-delete), file preserved.
+    const ok = archiveServerAoiMemories(sessionsDir, approvedIds, {
+      approvalFingerprint: dry.fingerprint,
+      now: 20_000,
+    });
+    expect(ok).toMatchObject({ rejected: false, archivedCount: 1 });
+    const after = loadServerAoiMemories(sessionsDir);
+    expect(after).toHaveLength(1); // file kept on disk, not deleted
+    expect(after[0].status).toBe('archived');
+    expect(after[0].updatedAt).toBe(20_000);
+  });
+
+  it('unarchives (recovers) archived memories back to active', () => {
+    const sessionsDir = makeTempSessionsDir();
+    writeDecayMemory(sessionsDir, { id: 'gone', status: 'archived', updatedAt: 0 });
+
+    const result = unarchiveServerAoiMemories(sessionsDir, ['gone'], { now: 30_000 });
+    expect(result).toMatchObject({ unarchivedCount: 1 });
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory.status).toBe('active');
+    expect(memory.updatedAt).toBe(30_000);
   });
 });

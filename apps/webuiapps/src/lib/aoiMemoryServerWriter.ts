@@ -17,6 +17,14 @@ import {
 import type { AoiResearchManifest } from './aoiResearchTypes';
 import { attachAoiMemoryEmbeddings, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
 import { consolidateAoiMemories } from './aoiMemoryConsolidation';
+import {
+  applyAoiMemoryDecay,
+  fingerprintAoiMemoryDecaySelection,
+  selectAoiMemoryDecayCandidates,
+  unarchiveAoiMemories,
+  type AoiMemoryDecayOptions,
+  type AoiMemoryDecayReason,
+} from './aoiMemoryDecay';
 
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
 
@@ -481,6 +489,94 @@ export function consolidateServerAoiMemories(
     supersededCount: result.supersededCount,
     changedIds: result.changedIds,
   };
+}
+
+export interface AoiMemoryDecayDryRunCandidate {
+  id: string;
+  contentPreview: string;
+  confidence: number;
+  hits: number;
+  ageMs: number;
+  reasons: AoiMemoryDecayReason[];
+}
+
+export interface AoiMemoryDecayDryRunResult {
+  candidates: AoiMemoryDecayDryRunCandidate[];
+  fingerprint: string;
+  totalActive: number;
+}
+
+// Read-only decay preview (P4-b): select archive candidates from the whole store
+// plus a content-addressed fingerprint of their id set, WITHOUT writing anything.
+// The operator reviews this and approves the exact set (via the fingerprint) before
+// archiveServerAoiMemories commits -- so nothing is ever archived automatically.
+export function computeServerAoiMemoryDecayDryRun(
+  sessionsDir: string,
+  options: AoiMemoryDecayOptions,
+): AoiMemoryDecayDryRunResult {
+  const memories = loadServerAoiMemories(sessionsDir);
+  const candidates = selectAoiMemoryDecayCandidates(memories, options);
+  const totalActive = memories.filter((memory) => memory.status === 'active').length;
+  return {
+    candidates: candidates.map(({ memory, reasons }) => ({
+      id: memory.id,
+      contentPreview: memory.content.slice(0, 120),
+      confidence: memory.confidence,
+      hits: memory.hits,
+      ageMs: Math.max(0, options.now - memory.updatedAt),
+      reasons,
+    })),
+    fingerprint: fingerprintAoiMemoryDecaySelection(candidates.map(({ memory }) => memory.id)),
+    totalActive,
+  };
+}
+
+export interface ArchiveServerAoiMemoriesResult {
+  archivedCount: number;
+  changedIds: string[];
+  rejected: boolean;
+}
+
+// Archive (soft-delete) the operator-approved memory ids. The approval is bound to
+// the exact reviewed set by a content-addressed fingerprint: when fingerprint(ids)
+// does NOT match approvalFingerprint, NOTHING is written (rejected -- the reviewed
+// set drifted or was tampered). Otherwise the still-active subset is flipped to
+// 'archived' and only those files are rewritten (superseded/unknown ids skipped).
+// Non-destructive: files are kept and restorable via unarchiveServerAoiMemories.
+export function archiveServerAoiMemories(
+  sessionsDir: string,
+  ids: string[],
+  options: { approvalFingerprint: string; now?: number },
+): ArchiveServerAoiMemoriesResult {
+  if (fingerprintAoiMemoryDecaySelection(ids) !== options.approvalFingerprint) {
+    return { archivedCount: 0, changedIds: [], rejected: true };
+  }
+  const existing = loadServerAoiMemories(sessionsDir);
+  const result = applyAoiMemoryDecay(existing, ids, options.now ?? Date.now());
+  writeChangedServerAoiMemories(sessionsDir, result.memories, result.changedIds);
+  return {
+    archivedCount: result.changedIds.length,
+    changedIds: result.changedIds,
+    rejected: false,
+  };
+}
+
+export interface UnarchiveServerAoiMemoriesResult {
+  unarchivedCount: number;
+  changedIds: string[];
+}
+
+// Recovery: restore archived memories to 'active'. No approval gate -- restoring a
+// memory is non-destructive.
+export function unarchiveServerAoiMemories(
+  sessionsDir: string,
+  ids: string[],
+  options: { now?: number } = {},
+): UnarchiveServerAoiMemoriesResult {
+  const existing = loadServerAoiMemories(sessionsDir);
+  const result = unarchiveAoiMemories(existing, ids, options.now ?? Date.now());
+  writeChangedServerAoiMemories(sessionsDir, result.memories, result.changedIds);
+  return { unarchivedCount: result.changedIds.length, changedIds: result.changedIds };
 }
 
 export function saveServerAoiMemoryEpisode(
