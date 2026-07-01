@@ -16,6 +16,7 @@ import {
 } from './aoiMemoryShared';
 import type { AoiResearchManifest } from './aoiResearchTypes';
 import { attachAoiMemoryEmbeddings, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import { consolidateAoiMemories } from './aoiMemoryConsolidation';
 
 const AOI_MEMORY_ROOT = 'aoi/memory-v2';
 
@@ -436,6 +437,50 @@ export async function embedAndPersistServerAoiMemories(
     }
   });
   return { embeddedCount, pendingCount: pending.length - embeddedCount };
+}
+
+export interface ConsolidateServerAoiMemoriesResult {
+  clusterCount: number;
+  supersededCount: number;
+  changedIds: string[];
+}
+
+// Loop-independent memory consolidation (P4-a): load the whole server store,
+// collapse clusters of near-duplicate ACTIVE memories into their strongest member
+// (see aoiMemoryConsolidation), and persist only the memories the collapse
+// changed (the canonical + the newly superseded originals). Synchronous and
+// self-contained: it reads only the embeddings already on disk and never calls a
+// provider, so it neither blocks nor needs the network. Idempotent -- superseded
+// originals drop out of the eligible set, so repeated calls converge and then
+// no-op. Non-destructive: superseded files are kept on disk (recoverable), never
+// deleted. No vectors on disk (no embedding key) -> nothing is eligible -> a
+// byte-identical no-op.
+export function consolidateServerAoiMemories(
+  sessionsDir: string,
+  options: {
+    now?: number;
+    maxClusters?: number;
+    maxClusterSize?: number;
+    cosineThreshold?: number;
+  } = {},
+): ConsolidateServerAoiMemoriesResult {
+  const existing = loadServerAoiMemories(sessionsDir);
+  const result = consolidateAoiMemories(existing, {
+    now: options.now ?? Date.now(),
+    ...(typeof options.maxClusters === 'number' ? { maxClusters: options.maxClusters } : {}),
+    ...(typeof options.maxClusterSize === 'number'
+      ? { maxClusterSize: options.maxClusterSize }
+      : {}),
+    ...(typeof options.cosineThreshold === 'number'
+      ? { cosineThreshold: options.cosineThreshold }
+      : {}),
+  });
+  writeChangedServerAoiMemories(sessionsDir, result.memories, result.changedIds);
+  return {
+    clusterCount: result.clusterCount,
+    supersededCount: result.supersededCount,
+    changedIds: result.changedIds,
+  };
 }
 
 export function saveServerAoiMemoryEpisode(

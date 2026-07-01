@@ -4,6 +4,7 @@ import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
 import {
+  consolidateServerAoiMemories,
   loadServerAoiMemories,
   saveServerAoiMemoryCandidates,
   saveServerAoiMemoryCandidatesWithEmbedding,
@@ -531,5 +532,84 @@ describe('Aoi server memory embed-on-write', () => {
     );
     expect(research).toBeDefined();
     expect(research?.embedding).toBeUndefined();
+  });
+
+  it('consolidates near-duplicate embedded server memories, keeping superseded files on disk', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    // Two distinct-content facts that share a vector (so they are NOT exact-dedup
+    // merged but ARE near-duplicates for the cosine cluster).
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [
+        {
+          scope: 'user',
+          type: 'fact',
+          content: 'Aoi tuned kernel telemetry alpha',
+          importance: 0.7,
+        },
+      ],
+      'episode-consolidate-a',
+      fakeProvider([1, 0, 0]),
+    );
+    await saveServerAoiMemoryCandidatesWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      [
+        {
+          scope: 'user',
+          type: 'fact',
+          content: 'Aoi tuned kernel telemetry beta',
+          importance: 0.9,
+        },
+      ],
+      'episode-consolidate-b',
+      fakeProvider([1, 0, 0]),
+    );
+
+    const before = loadServerAoiMemories(sessionsDir);
+    expect(before).toHaveLength(2);
+    expect(before.every((memory) => (memory.embedding?.length ?? 0) > 0)).toBe(true);
+
+    const result = consolidateServerAoiMemories(sessionsDir, {
+      now: 9000,
+      maxClusters: 5,
+      maxClusterSize: 4,
+      cosineThreshold: 0.85,
+    });
+    expect(result.clusterCount).toBe(1);
+    expect(result.supersededCount).toBe(1);
+
+    const after = loadServerAoiMemories(sessionsDir);
+    expect(after).toHaveLength(2); // both files still on disk (non-destructive)
+    const active = after.filter((memory) => memory.status === 'active');
+    const superseded = after.filter((memory) => memory.status === 'superseded');
+    expect(active).toHaveLength(1);
+    expect(superseded).toHaveLength(1);
+    // Canonical = the higher-importance memory.
+    expect(active[0].content).toContain('beta');
+    expect(active[0].importance).toBe(0.9);
+    expect(active[0].updatedAt).toBe(9000);
+    expect(active[0].supersedes).toContain(superseded[0].id);
+  });
+
+  it('consolidation is a no-op when server memories carry no embedding vectors', () => {
+    const sessionsDir = makeTempSessionsDir();
+    saveServerAoiMemoryCandidates(
+      sessionsDir,
+      'aoi/default',
+      [
+        { scope: 'user', type: 'fact', content: 'plain fact one', importance: 0.7 },
+        { scope: 'user', type: 'fact', content: 'plain fact one restated', importance: 0.9 },
+      ],
+      'episode-consolidate-none',
+    );
+
+    const result = consolidateServerAoiMemories(sessionsDir, { now: 9000 });
+    expect(result.clusterCount).toBe(0);
+    expect(result.changedIds).toEqual([]);
+    expect(loadServerAoiMemories(sessionsDir).every((memory) => memory.status === 'active')).toBe(
+      true,
+    );
   });
 });
