@@ -5,10 +5,12 @@ import { fileURLToPath } from 'url';
 import {
   createAoiAutonomyMiddleware,
   startAoiAutonomyBackgroundFromEnv,
+  startAoiMemoryEmbedSweepFromEnv,
   type AoiAutonomyMiddleware,
   type AoiAutonomyPluginOptions,
 } from './aoiAutonomyPlugin';
 import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundRunner';
+import type { AoiMemoryEmbedSweepHandle } from './aoiMemoryEmbedSweep';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
 
 // Standalone headless autonomy daemon.
@@ -113,6 +115,15 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   // is not opted in via env.
   const backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null =
     startAoiAutonomyBackgroundFromEnv(pluginOptions, env);
+  // Loop-independent memory embed sweep (OFF unless AOI_AUTONOMY_EMBED_SWEEP is
+  // opted in). Started AFTER the loop so an enabled loop holds the single-instance
+  // lock and the sweep no-ops; the sweep only embeds when the loop is off. Its
+  // interval is unref'd, so like the loop it never keeps the process alive on its
+  // own -- the listening server does.
+  const sweepHandle: AoiMemoryEmbedSweepHandle | null = startAoiMemoryEmbedSweepFromEnv(
+    pluginOptions,
+    env,
+  );
 
   const address = server.address();
   const port = address && typeof address === 'object' ? address.port : desiredPort;
@@ -124,6 +135,7 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     }
     closed = true;
     backgroundHandle?.stop();
+    sweepHandle?.stop();
     await new Promise<void>((resolveClose) => {
       server.close(() => {
         resolveClose();
