@@ -12879,6 +12879,24 @@ const SettingsModal: React.FC<{
                           {aoiAutonomyPolicy?.enabled ? 'Enabled' : 'Disabled'}
                         </button>
                       </div>
+                      <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Thinking (network)</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.allowNetwork ? styles.saveBtn : styles.cancelBtn
+                          }
+                          onClick={() =>
+                            void onUpdateAoiAutonomyPolicy({
+                              allowNetwork: !aoiAutonomyPolicy?.allowNetwork,
+                            })
+                          }
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          data-testid="aoi-autonomy-thinking-toggle"
+                        >
+                          {aoiAutonomyPolicy?.allowNetwork ? 'On' : 'Off'}
+                        </button>
+                      </div>
                       <div className={styles.field}>
                         <label className={styles.label}>Autonomy level</label>
                         <select
