@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { normalizeAoiResearchRunRequest, startAoiResearchRun } from '../aoiResearchClient';
+import {
+  deleteAoiResearchRun,
+  normalizeAoiResearchRunRequest,
+  startAoiResearchRun,
+} from '../aoiResearchClient';
 
 function makeJsonResponse(status: number, body: unknown): Response {
   return {
@@ -164,6 +168,75 @@ describe('startAoiResearchRun', () => {
 
     await expect(startAoiResearchRun({ sessionPath: 'aoi/default', request: 'x' })).rejects.toThrow(
       'Failed to start research (status 502).',
+    );
+  });
+});
+
+describe('deleteAoiResearchRun', () => {
+  it('posts sessionPath and runId and resolves on success', async () => {
+    const mockFetch = vi.fn().mockResolvedValueOnce(makeJsonResponse(200, { ok: true }));
+    globalThis.fetch = mockFetch;
+
+    await expect(
+      deleteAoiResearchRun({ sessionPath: 'aoi/space_adventure', runId: 'aoi-research-1' }),
+    ).resolves.toBeUndefined();
+
+    expect(mockFetch).toHaveBeenCalledWith('/api/aoi-research/delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ sessionPath: 'aoi/space_adventure', runId: 'aoi-research-1' }),
+    });
+  });
+
+  it('rejects an empty session or run id without calling fetch', async () => {
+    const mockFetch = vi.fn();
+    globalThis.fetch = mockFetch;
+
+    await expect(deleteAoiResearchRun({ sessionPath: '  ', runId: 'r' })).rejects.toThrow(
+      'Current session is not ready.',
+    );
+    await expect(deleteAoiResearchRun({ sessionPath: 'aoi/default', runId: '  ' })).rejects.toThrow(
+      'No research run selected.',
+    );
+    expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  it('surfaces the server 409 still-active message', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(
+      makeJsonResponse(409, {
+        error: 'This run is still queued or running. Cancel it before deleting.',
+        code: 'active',
+      }),
+    );
+
+    await expect(
+      deleteAoiResearchRun({ sessionPath: 'aoi/default', runId: 'aoi-research-live' }),
+    ).rejects.toThrow('This run is still queued or running. Cancel it before deleting.');
+  });
+
+  it('surfaces the server 404 not-found message', async () => {
+    globalThis.fetch = vi
+      .fn()
+      .mockResolvedValueOnce(makeJsonResponse(404, { error: 'Research run not found.' }));
+
+    await expect(
+      deleteAoiResearchRun({ sessionPath: 'aoi/default', runId: 'aoi-research-gone' }),
+    ).rejects.toThrow('Research run not found.');
+  });
+
+  it('falls back to a status message when the body has no error field', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(makeJsonResponse(500, {}));
+
+    await expect(deleteAoiResearchRun({ sessionPath: 'aoi/default', runId: 'r' })).rejects.toThrow(
+      'Failed to delete research (status 500).',
+    );
+  });
+
+  it('handles an unparseable JSON body with the status fallback', async () => {
+    globalThis.fetch = vi.fn().mockResolvedValueOnce(makeBrokenJsonResponse(502));
+
+    await expect(deleteAoiResearchRun({ sessionPath: 'aoi/default', runId: 'r' })).rejects.toThrow(
+      'Failed to delete research (status 502).',
     );
   });
 });

@@ -3,11 +3,12 @@ app_name: aoiresearch
 app_display_name: Aoi Research
 version: '1.0.0'
 description: >
-  Aoi Research starts new structured research runs and shows local runs, their reports, source
-  lists, evidence claims, warnings, and run status for the current YourOpenRoom session.
+  Aoi Research starts new structured research runs, shows local runs, their reports, source
+  lists, evidence claims, warnings, and run status, and deletes runs from the local library for
+  the current YourOpenRoom session.
 displayDesc: >
-  Start a new cited research run, browse Aoi's runs, open generated reports, and refresh the local
-  research library.
+  Start a new cited research run, browse Aoi's runs, open generated reports, delete runs you no
+  longer need, and refresh the local research library.
 
 actions:
   - type: CREATE_AOI_RESEARCH_RUN
@@ -31,3 +32,14 @@ actions:
     name: Open Aoi Research Report
     description: Open the currently selected Aoi Research report in a new browser tab.
     params: []
+
+  - type: DELETE_AOI_RESEARCH_RUN
+    name: Delete Aoi Research Run
+    description: >
+      Reported when the operator permanently deletes a research run from the library (a two-step
+      confirm in the report header). Params carry the deleted runId. This is a data-mutation
+      notification, not an agent-callable method; active (queued/running) runs must be cancelled
+      before they can be deleted.
+    params:
+      - name: runId
+        description: Identifier of the deleted research run.

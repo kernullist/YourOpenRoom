@@ -303,6 +303,49 @@
   line-height: 1.4;
 }
 
+.deleteBtn:hover:not(:disabled) {
+  border-color: rgba(212, 102, 96, 0.6) !important;
+  color: #ffaaa4 !important;
+}
+
+.deleteConfirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 34px;
+  padding: 0 5px 0 9px;
+  border: 1px solid rgba(212, 102, 96, 0.42);
+  border-radius: 6px;
+  background: var(--bad-soft);
+  white-space: nowrap;
+}
+
+.deleteConfirm span {
+  color: #ffaaa4;
+  font-size: 12px;
+  font-weight: 660;
+  letter-spacing: 0.02em;
+}
+
+/* Override the 34x34 sizing that .headerActions button forces on descendants. */
+.deleteConfirm button {
+  width: auto !important;
+  height: 26px !important;
+  padding: 0 10px !important;
+  font-size: 12px;
+  font-weight: 660;
+}
+
+.deleteConfirmYes {
+  border-color: rgba(212, 102, 96, 0.6) !important;
+  background: rgba(212, 102, 96, 0.22) !important;
+  color: #ffd9d5 !important;
+}
+
+.deleteConfirmYes:hover:not(:disabled) {
+  background: rgba(212, 102, 96, 0.34) !important;
+}
+
 .statStrip {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

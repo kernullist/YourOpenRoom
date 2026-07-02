@@ -129,7 +129,9 @@ Most backend behavior in local mode is implemented inside [`vite.config.ts`](./v
 - `/api/openvscode/*`
 - `/api/ida-pe/*`
 - `/api/tts-lab/*`
-- `/api/openroom-reset` (destructive; deletes `~/.openroom` config/characters/mods/sessions. Guarded: refused unless running in CI or `OPENROOM_ALLOW_RESET=1` is set, so it cannot wipe a developer's real data when e2e reuses a local dev server.)
+- `/api/openroom-reset` (destructive; deletes `~/.openroom` config/characters/mods/sessions.
+  Guarded: refused unless running in CI or `OPENROOM_ALLOW_RESET=1` is set, so it cannot wipe a
+  developer's real data when e2e reuses a local dev server.)
 
 ## Kira Automation Notes
 

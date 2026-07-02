@@ -84,3 +84,41 @@ export async function startAoiResearchRun(
 
   return { ok: true, run: data.run, background: data.background };
 }
+
+const DELETE_ENDPOINT = '/api/aoi-research/delete';
+
+// Permanently deletes a single research run. Throws with a human-readable
+// message on validation failure, on a non-2xx response (surfacing the server's
+// 404 not-found / 409 still-active message), or on a transport failure.
+export async function deleteAoiResearchRun(params: {
+  sessionPath: string;
+  runId: string;
+}): Promise<void> {
+  const sessionPath = params.sessionPath.trim();
+  if (!sessionPath) {
+    throw new Error('Current session is not ready.');
+  }
+  const runId = params.runId.trim();
+  if (!runId) {
+    throw new Error('No research run selected.');
+  }
+
+  const response = await fetch(DELETE_ENDPOINT, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ sessionPath, runId }),
+  });
+
+  let data: (AoiResearchStartErrorBody & { ok?: boolean }) | null = null;
+  try {
+    data = (await response.json()) as AoiResearchStartErrorBody & { ok?: boolean };
+  } catch {
+    data = null;
+  }
+
+  if (!response.ok || !data || data.ok !== true) {
+    const message =
+      (data && data.error) || `Failed to delete research (status ${response.status}).`;
+    throw new Error(message);
+  }
+}

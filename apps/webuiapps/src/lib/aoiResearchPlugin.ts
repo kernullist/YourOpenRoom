@@ -476,6 +476,39 @@ function getRunPathsFromRequest(
   }
 }
 
+export type DeleteAoiResearchRunResult =
+  | { ok: true }
+  | { ok: false; code: 'invalid' | 'not_found' | 'active'; error: string };
+
+// Hard-delete a single research run: removes only that run's own directory
+// (runDir), which resolveRunPaths validates to be inside the sessions root, so
+// this cannot escape to delete anything else. Refuses while the run is still
+// queued/running (its background promise is still writing there) -- the caller
+// should cancel first. Missing run -> not_found so a double-delete is a no-op.
+export function deleteAoiResearchRun(
+  sessionsDir: string,
+  sessionPathRaw: unknown,
+  runIdRaw: unknown,
+): DeleteAoiResearchRunResult {
+  const resolved = getRunPathsFromRequest(sessionsDir, sessionPathRaw, runIdRaw);
+  if (typeof resolved === 'string') {
+    return { ok: false, code: 'invalid', error: resolved };
+  }
+  const manifest = readManifest(resolved.paths.manifest);
+  if (!manifest) {
+    return { ok: false, code: 'not_found', error: 'Research run not found.' };
+  }
+  if (isActiveResearchRun(manifest)) {
+    return {
+      ok: false,
+      code: 'active',
+      error: 'This run is still queued or running. Cancel it before deleting.',
+    };
+  }
+  fs.rmSync(resolved.paths.runDir, { recursive: true, force: true });
+  return { ok: true };
+}
+
 async function handleAoiResearchRequest(
   req: IncomingMessage,
   res: ServerResponse,
@@ -658,6 +691,18 @@ async function handleAoiResearchRequest(
       }
       const response: AoiResearchCancelResponse = { ok: true, run: nextManifest };
       writeJson(res, 200, response);
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/delete') {
+      const body = await readJsonBody(req);
+      const result = deleteAoiResearchRun(sessionsDir, body.sessionPath, body.runId);
+      if (!result.ok) {
+        const status = result.code === 'not_found' ? 404 : result.code === 'active' ? 409 : 400;
+        writeJson(res, status, { error: result.error, code: result.code });
+        return true;
+      }
+      writeJson(res, 200, { ok: true });
       return true;
     }
 

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AppLifecycle, initVibeApp } from '@gui/vibe-container';
-import { Copy, ExternalLink, RefreshCw, Sparkles, XCircle } from 'lucide-react';
+import { Copy, ExternalLink, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
 import {
   reportAction,
   reportLifecycle,
@@ -10,7 +10,7 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import { getSessionPath } from '@/lib/sessionPath';
-import { startAoiResearchRun } from '@/lib/aoiResearchClient';
+import { deleteAoiResearchRun, startAoiResearchRun } from '@/lib/aoiResearchClient';
 import type {
   AoiResearchArtifactName,
   AoiResearchArtifactResponse,
@@ -102,6 +102,8 @@ const AoiResearchPage: React.FC = () => {
   const [newMode, setNewMode] = useState<AoiResearchMode>('standard');
   const [newRecency, setNewRecency] = useState<AoiResearchRecency>('any');
   const [starting, setStarting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null,
@@ -235,6 +237,29 @@ const AoiResearchPage: React.FC = () => {
     }
   }, [loadRuns, selectedRun, sessionPath]);
 
+  const deleteRun = useCallback(async () => {
+    if (!selectedRun || !sessionPath) {
+      return;
+    }
+    const runId = selectedRun.id;
+    try {
+      setDeleting(true);
+      setErrorText(null);
+      await deleteAoiResearchRun({ sessionPath, runId });
+      setConfirmingDelete(false);
+      setSelectedRunId('');
+      setFlashText('Research deleted.');
+      // User-initiated data mutation: notify the agent the run is gone. Not called
+      // from an Agent-dispatched handler, so no duplicate reporting.
+      reportAction(APP_ID, 'DELETE_AOI_RESEARCH_RUN', { runId });
+      await loadRuns();
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setDeleting(false);
+    }
+  }, [loadRuns, selectedRun, sessionPath]);
+
   const copyReport = useCallback(async () => {
     if (!selectedRun) {
       return;
@@ -319,6 +344,12 @@ const AoiResearchPage: React.FC = () => {
   useEffect(() => {
     void refreshArtifacts();
   }, [refreshArtifacts]);
+
+  // Reset the delete confirmation whenever the selected run changes, so a pending
+  // "confirm delete" never carries over to a different run.
+  useEffect(() => {
+    setConfirmingDelete(false);
+  }, [selectedRun?.id]);
 
   useEffect(() => {
     if (!flashText) {
@@ -479,7 +510,40 @@ const AoiResearchPage: React.FC = () => {
                   <button type="button" onClick={() => void cancelRun()} title="Cancel run">
                     <XCircle size={15} />
                   </button>
-                ) : null}
+                ) : confirmingDelete ? (
+                  <div className={styles.deleteConfirm} data-testid="aoi-research-delete-confirm">
+                    <span>Delete?</span>
+                    <button
+                      type="button"
+                      className={styles.deleteConfirmYes}
+                      onClick={() => void deleteRun()}
+                      disabled={deleting}
+                      title="Confirm delete"
+                      data-testid="aoi-research-delete-yes"
+                    >
+                      {deleting ? 'Deleting' : 'Delete'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setConfirmingDelete(false)}
+                      disabled={deleting}
+                      title="Keep this run"
+                      data-testid="aoi-research-delete-no"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    className={styles.deleteBtn}
+                    onClick={() => setConfirmingDelete(true)}
+                    title="Delete run"
+                    data-testid="aoi-research-delete-btn"
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
               </div>
             </div>
 

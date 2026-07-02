@@ -14,6 +14,7 @@ import {
 } from '../aoiResearchTools';
 import {
   AOI_RESEARCH_MAX_CONCURRENT_RUNS,
+  deleteAoiResearchRun,
   getActiveResearchStartConflict,
   getAoiResearchRoute,
   isValidAoiResearchRunId,
@@ -424,5 +425,59 @@ describe('Aoi research path guards', () => {
     expect(isValidAoiResearchRunId('../run_123')).toBe(false);
     expect(isValidAoiResearchRunId('run/123')).toBe(false);
     expect(isValidAoiResearchRunId('.')).toBe(false);
+  });
+});
+
+describe('deleteAoiResearchRun', () => {
+  function writeRun(root: string, id: string, status: AoiResearchManifest['status']): string {
+    const runDir = join(root, 'aoi/default', 'aoi-research', 'runs', id);
+    fs.mkdirSync(runDir, { recursive: true });
+    const manifest: Partial<AoiResearchManifest> = {
+      version: 1,
+      id,
+      sessionPath: 'aoi/default',
+      request: 'demo',
+      status,
+      phase: status === 'completed' ? 'completed' : 'searching',
+    };
+    fs.writeFileSync(join(runDir, 'manifest.json'), JSON.stringify(manifest), 'utf-8');
+    fs.writeFileSync(join(runDir, 'report.md'), '# Report', 'utf-8');
+    return runDir;
+  }
+
+  it('deletes a terminal run directory and is idempotent on a second delete', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-del-'));
+    const runDir = writeRun(root, 'aoi-research-done-001', 'completed');
+    expect(fs.existsSync(runDir)).toBe(true);
+
+    const result = deleteAoiResearchRun(root, 'aoi/default', 'aoi-research-done-001');
+    expect(result.ok).toBe(true);
+    expect(fs.existsSync(runDir)).toBe(false);
+
+    // Second delete: the run is gone -> not_found (a safe no-op, no throw).
+    const again = deleteAoiResearchRun(root, 'aoi/default', 'aoi-research-done-001');
+    expect(again).toEqual({ ok: false, code: 'not_found', error: 'Research run not found.' });
+  });
+
+  it('refuses to delete an active run and leaves it on disk', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-del-active-'));
+    const runDir = writeRun(root, 'aoi-research-live-001', 'running');
+
+    const result = deleteAoiResearchRun(root, 'aoi/default', 'aoi-research-live-001');
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ code: 'active' });
+    expect(fs.existsSync(runDir)).toBe(true);
+  });
+
+  it('rejects invalid session paths and run ids without touching the filesystem', () => {
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-research-del-guard-'));
+    expect(deleteAoiResearchRun(root, '../escape', 'aoi-research-x')).toMatchObject({
+      ok: false,
+      code: 'invalid',
+    });
+    expect(deleteAoiResearchRun(root, 'aoi/default', '../escape')).toMatchObject({
+      ok: false,
+      code: 'invalid',
+    });
   });
 });
