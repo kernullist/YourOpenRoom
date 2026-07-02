@@ -1943,7 +1943,7 @@ describe('Aoi autonomy UI helpers', () => {
       risk: 'low',
     });
     expect(explanation.messageSummary).toMatchInlineSnapshot(
-      `"Why now: The current topic overlaps with a completed research run. Changed: A research followup proposal is ready for review. Evidence: 1 evidence ref attached; details stay in the panel. Next: Approve exact action Boundary: I will not run tools or change state without explicit approval."`,
+      `"About: A completed Aoi research report may answer the current question. Why now: The current topic overlaps with a completed research run. Next: Approve exact action (read_research_artifact) Evidence: 1 evidence ref attached; details stay in the panel. Boundary: I will not run tools or change state without explicit approval."`,
     );
     expect(explanation.messageSummary.length).toBeLessThan(360);
   });

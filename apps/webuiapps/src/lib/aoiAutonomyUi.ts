@@ -1582,6 +1582,19 @@ function formatAoiEvidenceSummary(evidenceCount: number): string {
   return `${evidenceCount} evidence ref${evidenceCount === 1 ? '' : 's'} attached; details stay in the panel.`;
 }
 
+// First sentence of a proposal body, used to surface a human subject line in the
+// chat card. Splits on the first sentence terminator; falls back to the whole
+// (whitespace-collapsed) text when there is no terminator. Length is clamped by
+// the caller via sanitizeAoiProposalDisplayText.
+function firstSentenceOf(body: string): string {
+  const compact = (body ?? '').replace(/\s+/g, ' ').trim();
+  if (!compact) {
+    return '';
+  }
+  const match = compact.match(/^(.+?[.!?])(\s|$)/);
+  return match ? match[1] : compact;
+}
+
 function getAoiConfidenceLabel(confidence: number, evidenceCount: number): string {
   if (evidenceCount <= 0 || confidence < 0.55) {
     return 'low evidence';
@@ -1673,6 +1686,22 @@ export function buildAoiProactiveExplanation(params: {
     180,
   );
   const safeNextAction = sanitizeAoiProposalDisplayText(action.primaryLabel, 120);
+  // A concrete, subject-bearing line for the chat card. The card only had the
+  // generic title + `reason`, so an operator could not tell WHICH research or
+  // WHAT the action would touch. `body` is where the builder/LLM records the
+  // human subject (e.g. "the failed latest Anti-Tamper trend research"), so
+  // surface its first sentence, and name the concrete tool(s) the approval maps
+  // to instead of the bare "Approve exact action".
+  const subject = sanitizeAoiProposalDisplayText(
+    firstSentenceOf(params.proposal.body) || params.proposal.title || whatChanged,
+    150,
+  );
+  const suggestedTools = (params.proposal.suggestedTools ?? [])
+    .map((tool) => sanitizeAoiProposalDisplayText(tool, 40))
+    .filter(Boolean)
+    .slice(0, 3);
+  const concreteNextAction =
+    suggestedTools.length > 0 ? `${safeNextAction} (${suggestedTools.join(', ')})` : safeNextAction;
   const approvalBoundary = sanitizeAoiProposalDisplayText(
     getAoiApprovalBoundary(params.proposal, action),
     180,
@@ -1693,12 +1722,17 @@ export function buildAoiProactiveExplanation(params: {
   ]
     .filter(Boolean)
     .map((item) => sanitizeAoiProposalDisplayText(item, 260));
+  // Lead with the subject and the concrete next action -- those answer "what is
+  // this about?" and "what would Approve do?". Evidence count and the approval
+  // boundary trail because the chat card already shows them (the evidence chip
+  // and the "will not run tools" hint), so if the 360-char card truncates, it
+  // drops the duplicated tail rather than the subject.
   const messageSummary = sanitizeAoiProposalDisplayText(
     [
+      `About: ${subject}`,
       `Why now: ${whyNow}`,
-      `Changed: ${whatChanged}`,
+      `Next: ${concreteNextAction}`,
       `Evidence: ${evidenceSummary}`,
-      `Next: ${safeNextAction}`,
       `Boundary: ${approvalBoundary}`,
     ].join(' '),
     520,
