@@ -41,12 +41,14 @@ import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolida
 import {
   buildAoiAutonomyStatus,
   createAoiAutonomyId,
+  loadAoiActiveOpportunities,
   loadAoiAutonomyPolicy,
   loadAoiEnvironmentSourceRegistry,
   normalizeAoiAutonomySessionPath,
   resolveAoiAutonomyPaths,
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
+import { recordAoiFieldShadowDecisionIntegration } from './aoiFieldShadowDecisionBridge';
 import {
   collectAndPersistAoiWorkspaceSnapshot,
   type AoiWorkspaceSignalStoreInput,
@@ -1847,6 +1849,35 @@ async function runWakeupInternal(
       warnings.push(
         error instanceof Error ? error.message : 'Aoi scheduler background tick failed.',
       );
+    }
+  }
+
+  // Field-shadow capture (best-effort, OFF by default). Persists "what Aoi WOULD
+  // surface" as zero-mutation shadow decision records from the opportunities the
+  // tick just refreshed. This is the foundational promotion evidence that was
+  // otherwise never written outside tests, so no trusted_operator candidate could
+  // ever form from real use. Runs BEFORE the promotion check below so the same
+  // tick's readiness scorecard counts the new records.
+  //
+  // SAFETY (no self-promotion): records only grow the candidate DENOMINATOR
+  // (tracePromotionCandidateCount). The promoted rate that actually gates
+  // trusted_operator derives ONLY from actor='user' operator review, which the loop
+  // cannot author, so loop-written records can never raise it -- they can only add
+  // un-promoted candidates until a human labels + reviews them. This path persists
+  // records/field-events only (recordAoiFieldShadowDecisionIntegration); it writes
+  // no autonomy level or trust, and never labels or promotes.
+  if (process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE === '1') {
+    try {
+      const shadowOpportunities = loadAoiActiveOpportunities(input.sessionsDir, sessionPath, now);
+      if (shadowOpportunities.length > 0) {
+        recordAoiFieldShadowDecisionIntegration(input.sessionsDir, {
+          sessionPath,
+          opportunities: shadowOpportunities,
+          now,
+        });
+      }
+    } catch {
+      // best-effort; field-shadow capture never blocks the wakeup
     }
   }
 

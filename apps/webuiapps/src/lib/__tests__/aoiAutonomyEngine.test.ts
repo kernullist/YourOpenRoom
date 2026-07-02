@@ -26,11 +26,14 @@ import {
   loadAoiActiveProposals,
   loadAoiAutonomyTickState,
   loadAoiCommandAuditRecords,
+  loadAoiFieldShadowDecisionRecords,
   loadAoiObservations,
   loadAoiReflections,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
   updateAoiEnvironmentSource,
+  upsertAoiOpportunity,
+  type AoiOpportunityUpsertInput,
 } from '../aoiAutonomyStore';
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
@@ -2825,6 +2828,77 @@ describe('runAoiAutonomyWakeup()', () => {
 
     // Scouting fully disabled -> the rebuild path is skipped -> profile stays empty.
     expect(loadAoiInterestProfile(root, SESSION_PATH, NOW).topics.length).toBe(0);
+  });
+
+  function makeFieldShadowOpportunityInput(): AoiOpportunityUpsertInput {
+    return {
+      sourceKind: 'interest',
+      title: 'Deliberate RE evidence freshness',
+      curiosityQuestion: 'Is the RE evidence fresh enough to brief?',
+      whyNow: 'Aoi generated this from a high-confidence interest.',
+      evidenceNeed: 'Need memory and research evidence before any action.',
+      suggestedNextAction: 'Summarize evidence only.',
+      risk: 'low',
+      confidence: 0.78,
+      urgency: 0.62,
+      novelty: 0.6,
+      deliveryRecommendation: 'dashboard',
+      evidenceRefs: ['memory:memory-re-001', 'research:research-re-001'],
+      dedupeKey: 'curiosity:interest:reverse-engineering',
+    };
+  }
+
+  it('persists field-shadow decision records when field-shadow capture is enabled', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    // Seed an active opportunity so the tick has something for the shadow bridge.
+    upsertAoiOpportunity(root, SESSION_PATH, makeFieldShadowOpportunityInput(), NOW);
+    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBe(0);
+
+    process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE = '1';
+    try {
+      await runAoiAutonomyWakeup({
+        sessionsDir: root,
+        sessionPath: SESSION_PATH,
+        reason: 'manual_refresh',
+        sourceIds: [],
+        budget: {
+          maxSourceCount: 0,
+          maxGeneratedProposalCount: 0,
+          wakeupCooldownMs: 0,
+        },
+        now: NOW,
+      });
+    } finally {
+      delete process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE;
+    }
+
+    // The would-be (zero-mutation) shadow decisions are now persisted as promotion
+    // evidence -- the foundation the trusted_operator pipeline was missing.
+    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBeGreaterThan(0);
+  });
+
+  it('does not persist field-shadow records when capture is disabled', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    upsertAoiOpportunity(root, SESSION_PATH, makeFieldShadowOpportunityInput(), NOW);
+    delete process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE;
+
+    await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+    });
+
+    // OFF by default -> byte-identical: no field-shadow records written.
+    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBe(0);
   });
 
   it('keeps quiet-window proactive scouts dashboard-only while recording direct-chat suppression', async () => {

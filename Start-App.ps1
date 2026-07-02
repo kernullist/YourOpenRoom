@@ -421,13 +421,14 @@ function Start-AoiDaemon
     # off on purpose: the level is pinned at L5 manually, so auto-promote (hard-cap
     # L4) could only roll it back.
     $jarvisAutonomyEnv = [ordered]@{
-        'AOI_AUTONOMY_GOAL_SYNTHESIS'        = '1'
-        'AOI_AUTONOMY_CONSOLIDATION'         = '1'
-        'AOI_AUTONOMY_EMBED_SWEEP'           = '1'
-        'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE' = '1'
-        'AOI_AUTONOMY_APP_OP_LIVE_DISPATCH'  = '1'
-        'AOI_AUTONOMY_APPROVAL_TTL'          = '1'
-        'AOI_MCP_SIDE_EFFECTING_RPC'         = '1'
+        'AOI_AUTONOMY_GOAL_SYNTHESIS'         = '1'
+        'AOI_AUTONOMY_CONSOLIDATION'          = '1'
+        'AOI_AUTONOMY_EMBED_SWEEP'            = '1'
+        'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE'  = '1'
+        'AOI_AUTONOMY_FIELD_SHADOW_CAPTURE'   = '1'
+        'AOI_AUTONOMY_APP_OP_LIVE_DISPATCH'   = '1'
+        'AOI_AUTONOMY_APPROVAL_TTL'           = '1'
+        'AOI_MCP_SIDE_EFFECTING_RPC'          = '1'
     }
     foreach ($key in $jarvisAutonomyEnv.Keys)
     {
