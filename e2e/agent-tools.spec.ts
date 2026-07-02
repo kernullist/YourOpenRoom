@@ -7,11 +7,13 @@ import { buildRenamePreview } from '../apps/webuiapps/src/lib/openVscodeSemantic
 const CONFIG_KEY = 'webuiapps-llm-config';
 const TOOL_POLICY_KEY = 'openroom-tool-safety-policy-v1';
 
-function makeOpenAIToolResponse(toolCalls: Array<{
-  id: string;
-  name: string;
-  args: Record<string, unknown>;
-}>) {
+function makeOpenAIToolResponse(
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    args: Record<string, unknown>;
+  }>,
+) {
   return {
     choices: [
       {
@@ -31,44 +33,37 @@ function makeOpenAIToolResponse(toolCalls: Array<{
   };
 }
 
-function makeOpenAITextResponse(content: string) {
-  return {
-    choices: [
-      {
-        message: {
-          content,
-          tool_calls: [],
-        },
-      },
-    ],
-  };
-}
-
 test.describe('Agent tool integration', () => {
   test.beforeEach(async ({ page, request }) => {
+    // openroom-reset is guarded to CI / OPENROOM_ALLOW_RESET=1 (vite.config) so it
+    // can never wipe a developer's real ~/.openroom when the suite is run against a
+    // reused local dev server. In CI the disposable runner sets CI, so this resets.
     await request.delete('/api/openroom-reset');
-    await page.addInitScript(([configKey, toolPolicyKey]) => {
-      localStorage.clear();
-      localStorage.setItem(
-        configKey,
-        JSON.stringify({
-          provider: 'openai',
-          apiKey: 'sk-test',
-          baseUrl: 'https://mock-llm.test/v1',
-          model: 'gpt-4',
-        }),
-      );
-      localStorage.setItem(
-        toolPolicyKey,
-        JSON.stringify({
-          autoVerifyFixes: true,
-          allowWorkspaceCommands: true,
-          allowSemanticRefactors: true,
-          allowBackgroundWatches: false,
-          requirePreviewBeforeMutation: false,
-        }),
-      );
-    }, [CONFIG_KEY, TOOL_POLICY_KEY]);
+    await page.addInitScript(
+      ([configKey, toolPolicyKey]) => {
+        localStorage.clear();
+        localStorage.setItem(
+          configKey,
+          JSON.stringify({
+            provider: 'openai',
+            apiKey: 'sk-test',
+            baseUrl: 'https://mock-llm.test/v1',
+            model: 'gpt-4',
+          }),
+        );
+        localStorage.setItem(
+          toolPolicyKey,
+          JSON.stringify({
+            autoVerifyFixes: true,
+            allowWorkspaceCommands: true,
+            allowSemanticRefactors: true,
+            allowBackgroundWatches: false,
+            requirePreviewBeforeMutation: false,
+          }),
+        );
+      },
+      [CONFIG_KEY, TOOL_POLICY_KEY],
+    );
   });
 
   test('shows tool inspector sections in settings', async ({ page }) => {
@@ -83,7 +78,9 @@ test.describe('Agent tool integration', () => {
     await expect(modal).toContainText('Recent Tool Activity');
   });
 
-  test('auto-verifies diagnostics after a file mutation before final response', async ({ page }) => {
+  test('auto-verifies diagnostics after a file mutation before final response', async ({
+    page,
+  }) => {
     let llmCallCount = 0;
     await page.route('**/api/llm-proxy', async (route) => {
       llmCallCount += 1;
@@ -214,7 +211,9 @@ test.describe('Agent tool integration', () => {
     });
 
     await page.goto('/');
-    await page.locator('[data-testid="chat-input"]').fill('Fix the TypeScript issue and verify it.');
+    await page
+      .locator('[data-testid="chat-input"]')
+      .fill('Fix the TypeScript issue and verify it.');
     await page.locator('[data-testid="send-btn"]').click();
 
     await expect(page.locator('[data-testid="chat-messages"]')).toContainText(
@@ -231,7 +230,13 @@ test.describe('Agent tool integration', () => {
     const filePath = path.join(tempDirPath, 'renameTarget.ts');
     fs.writeFileSync(
       filePath,
-      ['export function OldName() {', '  return OldName.name;', '}', '', 'console.log(OldName());'].join('\n'),
+      [
+        'export function OldName() {',
+        '  return OldName.name;',
+        '}',
+        '',
+        'console.log(OldName());',
+      ].join('\n'),
       'utf-8',
     );
 
@@ -312,7 +317,9 @@ test.describe('Agent tool integration', () => {
       });
 
       await page.goto('/');
-      await page.locator('[data-testid="chat-input"]').fill('Rename OldName to NewName in the IDE workspace.');
+      await page
+        .locator('[data-testid="chat-input"]')
+        .fill('Rename OldName to NewName in the IDE workspace.');
       await page.locator('[data-testid="send-btn"]').click();
 
       await expect(page.locator('[data-testid="chat-messages"]')).toContainText(

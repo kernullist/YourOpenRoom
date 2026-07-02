@@ -3830,6 +3830,25 @@ function openroomResetPlugin(): Plugin {
           return;
         }
 
+        // This endpoint deletes the real ~/.openroom config, characters, mods,
+        // and sessions. It exists only to give e2e a clean slate. Locally
+        // Playwright reuses the developer's running dev server
+        // (reuseExistingServer: !CI), so running the suite against a normal dev
+        // server would wipe real user data. Only allow the reset in CI (a
+        // disposable runner) or when an operator explicitly opts in via
+        // OPENROOM_ALLOW_RESET=1; a plain local dev server always refuses.
+        const allowReset = Boolean(process.env.CI) || process.env.OPENROOM_ALLOW_RESET === '1';
+        if (!allowReset) {
+          res.writeHead(403);
+          res.end(
+            JSON.stringify({
+              error:
+                'openroom-reset is destructive and disabled outside CI. Set OPENROOM_ALLOW_RESET=1 to opt in.',
+            }),
+          );
+          return;
+        }
+
         try {
           const targets = [LLM_CONFIG_FILE, CHARACTERS_FILE, MODS_FILE];
           for (const filePath of targets) {
