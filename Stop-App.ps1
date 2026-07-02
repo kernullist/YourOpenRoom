@@ -179,6 +179,29 @@ function Find-OpenRoomDevProcesses
     return @($targets)
 }
 
+function Get-AoiDaemonProcesses
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $daemonProcesses = @()
+    $nodeProcesses = @(Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue)
+
+    foreach ($process in $nodeProcesses)
+    {
+        $commandLine = Get-ProcessCommandLine -Process $process
+        if ($commandLine -like "*$RepoRoot*" -and $commandLine -like "*aoiDaemonServer.js*")
+        {
+            $daemonProcesses += $process
+        }
+    }
+
+    return $daemonProcesses
+}
+
 function Find-RemainingOpenRoomDevProcesses
 {
     param
@@ -289,6 +312,43 @@ do
             Write-Step "Stopping matched processes."
             Stop-Process -Id ($targets.ProcessId) -Force -ErrorAction SilentlyContinue
             Start-Sleep -Milliseconds 1200
+        }
+
+        # Aoi daemon: the dev-process hunt above only reaches it as a child of a
+        # dev tree; stop it explicitly so a standalone daemon also goes down.
+        $daemonProcesses = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
+        if ($daemonProcesses.Count -eq 0)
+        {
+            Write-Step "No Aoi daemon is running."
+        }
+        else
+        {
+            foreach ($daemonProcess in $daemonProcesses)
+            {
+                Write-Step ("Aoi daemon: node.exe:{0}" -f $daemonProcess.ProcessId)
+            }
+
+            if ($DryRun)
+            {
+                Write-Step "Dry run only. The Aoi daemon was not stopped."
+            }
+            else
+            {
+                Write-Step "Stopping the Aoi daemon."
+                Stop-Process -Id (@($daemonProcesses | ForEach-Object { [int]$_.ProcessId })) -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 500
+
+                $daemonRemaining = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
+                if ($daemonRemaining.Count -gt 0)
+                {
+                    Write-Step "The Aoi daemon did not stop cleanly."
+                    $script:ExitCode = 1
+                }
+                else
+                {
+                    Write-Step "Aoi daemon stopped."
+                }
+            }
         }
 
         if ($DryRun)

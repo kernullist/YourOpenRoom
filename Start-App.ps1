@@ -3,10 +3,7 @@ param
 (
     [int]$Port = 3000,
     [string]$HostAddress = "127.0.0.1",
-    [switch]$NoCleanup,
-    [switch]$Install,
-    [switch]$Aoi,
-    [switch]$Stop
+    [switch]$Install
 )
 
 Set-StrictMode -Version Latest
@@ -123,7 +120,7 @@ function Stop-ExistingOpenRoomDevServers
 
         $commandLine = Get-ProcessCommandLine -Process $process
 
-        # The Aoi daemon is a long-lived service and is only stopped by -Stop.
+        # The Aoi daemon is a long-lived service; only Stop-App.ps1 ends it.
         if ($commandLine -like "*aoiDaemonServer.js*")
         {
             continue
@@ -195,7 +192,7 @@ function Stop-ExistingOpenRoomDevServers
         return
     }
 
-    Write-Step "Stopping existing OpenRoom dev processes."
+    Write-Step "Stopping stale OpenRoom dev processes."
     foreach ($target in $targets)
     {
         Write-Step ("Stop {0}:{1}" -f $target.Name, $target.ProcessId)
@@ -230,6 +227,40 @@ function Assert-PortAvailable
 
         throw "Port $PortToCheck is already in use by PID $($listener.OwningProcess) ($name)."
     }
+}
+
+function Get-OpenRoomDevServerListener
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+
+        [Parameter(Mandatory = $true)]
+        [int]$PortToCheck
+    )
+
+    $listeners = @(Get-NetTCPConnection -State Listen -LocalPort $PortToCheck -ErrorAction SilentlyContinue)
+
+    foreach ($listener in $listeners)
+    {
+        $owner = Get-CimInstance Win32_Process -Filter "ProcessId = $($listener.OwningProcess)" -ErrorAction SilentlyContinue
+        if ($null -eq $owner)
+        {
+            continue
+        }
+
+        $commandLine = Get-ProcessCommandLine -Process $owner
+        if ($commandLine -like "*$RepoRoot*" -and $commandLine -like "*vite*")
+        {
+            return [pscustomobject]@{
+                ProcessId = [int]$owner.ProcessId
+                Name = $owner.Name
+            }
+        }
+    }
+
+    return $null
 }
 
 function Get-AoiDaemonPort
@@ -348,15 +379,6 @@ function Start-AoiDaemon
     )
 
     $daemonPort = Get-AoiDaemonPort
-    $running = @(Get-AoiDaemonProcesses -RepoRoot $RepoRoot)
-
-    if ($running.Count -gt 0)
-    {
-        $pids = ($running | ForEach-Object { $_.ProcessId }) -join ", "
-        Write-Step ("Aoi daemon already running (PID {0}, port {1})." -f $pids, $daemonPort)
-        return
-    }
-
     $bundlePath = Join-Path $AppDir "dist-daemon\aoiDaemonServer.js"
 
     if (Test-AoiDaemonBundleStale -AppDir $AppDir -BundlePath $bundlePath)
@@ -438,42 +460,6 @@ function Start-AoiDaemon
     Write-Step ("Aoi daemon is running (PID {0}, http://127.0.0.1:{1})." -f $daemonProcess.Id, $daemonPort)
 }
 
-function Stop-AoiDaemon
-{
-    param
-    (
-        [Parameter(Mandatory = $true)]
-        [string]$RepoRoot
-    )
-
-    $running = @(Get-AoiDaemonProcesses -RepoRoot $RepoRoot)
-
-    if ($running.Count -eq 0)
-    {
-        Write-Step "No Aoi daemon is running."
-        return
-    }
-
-    foreach ($process in $running)
-    {
-        Write-Step ("Stop aoi-daemon node.exe:{0}" -f $process.ProcessId)
-    }
-
-    Stop-Process -Id (@($running | ForEach-Object { [int]$_.ProcessId })) -Force -ErrorAction SilentlyContinue
-    Start-Sleep -Milliseconds 500
-
-    $remaining = @(Get-AoiDaemonProcesses -RepoRoot $RepoRoot)
-    if ($remaining.Count -gt 0)
-    {
-        $pids = ($remaining | ForEach-Object { $_.ProcessId }) -join ", "
-        Write-Warning ("Aoi daemon did not stop cleanly (PID {0})." -f $pids)
-    }
-    else
-    {
-        Write-Step "Aoi daemon stopped."
-    }
-}
-
 do
 {
     try
@@ -483,14 +469,6 @@ do
         $appPackageJson = Join-Path $appDir "package.json"
         $rootPackageJson = Join-Path $repoRoot "package.json"
         $lockFile = Join-Path $repoRoot "pnpm-lock.yaml"
-
-        if ($Stop)
-        {
-            Write-Step "Stop requested: shutting down the dev server and the Aoi daemon."
-            Stop-ExistingOpenRoomDevServers -RepoRoot $repoRoot -CurrentProcessId ([int]$PID)
-            Stop-AoiDaemon -RepoRoot $repoRoot
-            break
-        }
 
         if (-not (Test-Path -LiteralPath $rootPackageJson -PathType Leaf))
         {
@@ -512,12 +490,14 @@ do
         Write-Step "App: $appDir"
         Write-Step "URL: http://$HostAddress`:$Port"
 
-        if (-not $NoCleanup)
+        # Aoi daemon: start it only when it is not already running.
+        $daemonProcesses = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
+        if ($daemonProcesses.Count -gt 0)
         {
-            Stop-ExistingOpenRoomDevServers -RepoRoot $repoRoot -CurrentProcessId ([int]$PID)
+            $daemonPids = ($daemonProcesses | ForEach-Object { $_.ProcessId }) -join ", "
+            Write-Step ("Aoi daemon already running (PID {0}, port {1})." -f $daemonPids, (Get-AoiDaemonPort))
         }
-
-        if ($Aoi)
+        else
         {
             try
             {
@@ -530,6 +510,16 @@ do
             }
         }
 
+        # Dev server: leave a healthy running instance alone.
+        $devListener = Get-OpenRoomDevServerListener -RepoRoot $repoRoot -PortToCheck $Port
+        if ($null -ne $devListener)
+        {
+            Write-Step ("Dev server already running on port {0} (PID {1})." -f $Port, $devListener.ProcessId)
+            Write-Step "Nothing to start. Use .\Stop-App.ps1 to stop everything."
+            break
+        }
+
+        Stop-ExistingOpenRoomDevServers -RepoRoot $repoRoot -CurrentProcessId ([int]$PID)
         Assert-PortAvailable -PortToCheck $Port
 
         if ($Install)
@@ -540,7 +530,7 @@ do
             }
 
             Write-Step "Installing dependencies with frozen lockfile."
-            & $pnpmCommand.Source install --frozen-lockfile
+            & $pnpmCommand.Source --dir $repoRoot install --frozen-lockfile
             if ($LASTEXITCODE -ne 0)
             {
                 throw "pnpm install failed with exit code $LASTEXITCODE."
@@ -548,15 +538,7 @@ do
         }
 
         Write-Step "Starting Vite dev server."
-        if ($Aoi)
-        {
-            Write-Step "Press Ctrl+C to stop the dev server. The Aoi daemon keeps running; use .\Start-App.ps1 -Stop to stop everything."
-        }
-        else
-        {
-            Write-Step "Press Ctrl+C to stop."
-        }
-
+        Write-Step "Press Ctrl+C to stop the dev server. The Aoi daemon keeps running; use .\Stop-App.ps1 to stop everything."
         & $pnpmCommand.Source --dir $appDir dev --host $HostAddress --port $Port --strictPort
         $script:ExitCode = $LASTEXITCODE
     }
