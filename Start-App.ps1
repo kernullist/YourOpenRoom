@@ -405,6 +405,27 @@ function Start-AoiDaemon
     $stdoutLog = Join-Path $AppDir "dist-daemon\aoi-daemon.out.log"
     $stderrLog = Join-Path $AppDir "dist-daemon\aoi-daemon.err.log"
 
+    # Jarvis autonomy (cognition/memory/proactive tier). These make Aoi think,
+    # propose, remember, and reach out MORE; none of them run a side-effecting
+    # action without the existing approval gates, so they are safe to default on.
+    # Set only when unset so an explicit shell value still wins, and the node
+    # daemon (started below) inherits them. AOI_AUTONOMY_BACKGROUND=0 is still the
+    # hard off switch. The action tier (app-op live dispatch, approval TTL, auto
+    # promotion, side-effecting connectors) is deliberately NOT set here.
+    $jarvisAutonomyEnv = [ordered]@{
+        'AOI_AUTONOMY_GOAL_SYNTHESIS'        = '1'
+        'AOI_AUTONOMY_CONSOLIDATION'         = '1'
+        'AOI_AUTONOMY_EMBED_SWEEP'           = '1'
+        'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE' = '1'
+    }
+    foreach ($key in $jarvisAutonomyEnv.Keys)
+    {
+        if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($key)))
+        {
+            [Environment]::SetEnvironmentVariable($key, $jarvisAutonomyEnv[$key])
+        }
+    }
+
     Write-Step ("Starting Aoi daemon on port {0} (logs: apps\webuiapps\dist-daemon\aoi-daemon.*.log)." -f $daemonPort)
 
     # The absolute bundle path keeps the repo root in the command line, which is
