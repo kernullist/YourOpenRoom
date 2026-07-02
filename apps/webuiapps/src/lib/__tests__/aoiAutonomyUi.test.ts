@@ -1943,7 +1943,7 @@ describe('Aoi autonomy UI helpers', () => {
       risk: 'low',
     });
     expect(explanation.messageSummary).toMatchInlineSnapshot(
-      `"About: A completed Aoi research report may answer the current question. Why now: The current topic overlaps with a completed research run. Next: Approve exact action (read_research_artifact) Evidence: 1 evidence ref attached; details stay in the panel. Boundary: I will not run tools or change state without explicit approval."`,
+      `"A completed Aoi research report may answer the current question. The current topic overlaps with a completed research run. Approve to read that research report."`,
     );
     expect(explanation.messageSummary.length).toBeLessThan(360);
   });
@@ -1966,7 +1966,7 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(explanation.risk).toBe('high');
     expect(explanation.willNotDoWithoutApproval).toContain('explicit approval');
-    expect(explanation.messageSummary).toContain('Boundary:');
+    expect(explanation.messageSummary).toContain('Approve to');
   });
 
   it('explains Kira handoff boundaries without claiming direct file edits', () => {
@@ -1994,7 +1994,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(explanation.safeNextAction).toBe('Approve and create Kira work item');
     expect(explanation.willNotDoWithoutApproval).toContain('reviewed Kira work item');
     expect(explanation.willNotDoWithoutApproval).toContain('will not edit files');
-    expect(explanation.messageSummary).toContain('Boundary:');
+    expect(explanation.messageSummary).toContain('Approve to');
   });
 
   it('explains failed validation recovery as a narrow follow-up', () => {
@@ -2031,7 +2031,7 @@ describe('Aoi autonomy UI helpers', () => {
 
     expect(explanation.whatChanged).toContain('narrower recovery proposal');
     expect(explanation.messageSummary).toContain('Kira validation failed');
-    expect(explanation.messageSummary).toContain('Boundary:');
+    expect(explanation.messageSummary).toContain('Approve to');
   });
 
   it('avoids confident wording when evidence is weak', () => {

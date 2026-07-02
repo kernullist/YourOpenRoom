@@ -1595,6 +1595,41 @@ function firstSentenceOf(body: string): string {
   return match ? match[1] : compact;
 }
 
+// A plain-language phrase for what approving a proposal does, so the chat card
+// says "Approve to read that research report" instead of exposing the internal
+// tool id (read_research_artifact). Maps the proposal's accept action / suggested
+// tools to human words; falls back to "record this review" for a display-only
+// proposal that just logs an approval.
+function describeAoiApproveAction(
+  proposal: AoiProposal,
+  action: AoiProposalActionPresentation,
+): string {
+  switch (proposal.acceptAction?.kind) {
+    case 'start_research':
+      return 'start a research run';
+    case 'create_kira_work':
+      return 'create one reviewed Kira work item';
+    case 'save_memory':
+      return 'save a memory note';
+    default:
+      break;
+  }
+  const tools = proposal.suggestedTools ?? [];
+  if (tools.includes('read_research_artifact')) {
+    return 'read that research report';
+  }
+  if (tools.includes('start_research')) {
+    return 'start a research run';
+  }
+  if (tools.includes('search_web')) {
+    return 'run a quick web search';
+  }
+  if (action.primaryRole === 'none') {
+    return 'record this review';
+  }
+  return 'record this approval';
+}
+
 function getAoiConfidenceLabel(confidence: number, evidenceCount: number): string {
   if (evidenceCount <= 0 || confidence < 0.55) {
     return 'low evidence';
@@ -1686,22 +1721,16 @@ export function buildAoiProactiveExplanation(params: {
     180,
   );
   const safeNextAction = sanitizeAoiProposalDisplayText(action.primaryLabel, 120);
-  // A concrete, subject-bearing line for the chat card. The card only had the
-  // generic title + `reason`, so an operator could not tell WHICH research or
-  // WHAT the action would touch. `body` is where the builder/LLM records the
-  // human subject (e.g. "the failed latest Anti-Tamper trend research"), so
-  // surface its first sentence, and name the concrete tool(s) the approval maps
-  // to instead of the bare "Approve exact action".
+  // Plain-language pieces for the chat card. The card used to be a 5-label form
+  // (Why now / Changed / Evidence / Next / Boundary) that never named the subject
+  // and showed the internal tool id. Instead surface a short subject (the first
+  // sentence of `body`, where the topic is recorded) and describe what Approve
+  // does in human words (e.g. "read that research report"), not a tool id.
   const subject = sanitizeAoiProposalDisplayText(
     firstSentenceOf(params.proposal.body) || params.proposal.title || whatChanged,
     150,
   );
-  const suggestedTools = (params.proposal.suggestedTools ?? [])
-    .map((tool) => sanitizeAoiProposalDisplayText(tool, 40))
-    .filter(Boolean)
-    .slice(0, 3);
-  const concreteNextAction =
-    suggestedTools.length > 0 ? `${safeNextAction} (${suggestedTools.join(', ')})` : safeNextAction;
+  const approveAction = describeAoiApproveAction(params.proposal, action);
   const approvalBoundary = sanitizeAoiProposalDisplayText(
     getAoiApprovalBoundary(params.proposal, action),
     180,
@@ -1722,20 +1751,14 @@ export function buildAoiProactiveExplanation(params: {
   ]
     .filter(Boolean)
     .map((item) => sanitizeAoiProposalDisplayText(item, 260));
-  // Lead with the subject and the concrete next action -- those answer "what is
-  // this about?" and "what would Approve do?". Evidence count and the approval
-  // boundary trail because the chat card already shows them (the evidence chip
-  // and the "will not run tools" hint), so if the 360-char card truncates, it
-  // drops the duplicated tail rather than the subject.
+  // Read like plain sentences, not a labeled form: what this is about, why now
+  // (this also carries the "Limited evidence" caveat when evidence is weak), then
+  // what Approve does. No field labels and no tool ids -- the card already shows
+  // the title, the evidence/risk chips, and the "no tools run" hint separately.
+  const subjectSentence = /[.!?]$/.test(subject) ? subject : `${subject}.`;
   const messageSummary = sanitizeAoiProposalDisplayText(
-    [
-      `About: ${subject}`,
-      `Why now: ${whyNow}`,
-      `Next: ${concreteNextAction}`,
-      `Evidence: ${evidenceSummary}`,
-      `Boundary: ${approvalBoundary}`,
-    ].join(' '),
-    520,
+    `${subjectSentence} ${whyNow} Approve to ${approveAction}.`,
+    360,
   );
 
   return {
