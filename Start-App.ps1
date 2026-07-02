@@ -410,13 +410,24 @@ function Start-AoiDaemon
     # action without the existing approval gates, so they are safe to default on.
     # Set only when unset so an explicit shell value still wins, and the node
     # daemon (started below) inherits them. AOI_AUTONOMY_BACKGROUND=0 is still the
-    # hard off switch. The action tier (app-op live dispatch, approval TTL, auto
-    # promotion, side-effecting connectors) is deliberately NOT set here.
+    # hard off switch.
+    #
+    # Action tier (operator-enabled): these reduce human-in-the-loop friction and
+    # open real effects. They still require earned trusted_operator readiness plus
+    # the unchanged hard gates -- L5 + content-addressed approval, per-call
+    # irreversibility ack for side-effecting connectors, and the DNS-rebind guard --
+    # so flipping them on does not by itself let Aoi act without approval; it opens
+    # the capability once the operator promotion is earned. Auto-promotion is left
+    # off on purpose: the level is pinned at L5 manually, so auto-promote (hard-cap
+    # L4) could only roll it back.
     $jarvisAutonomyEnv = [ordered]@{
         'AOI_AUTONOMY_GOAL_SYNTHESIS'        = '1'
         'AOI_AUTONOMY_CONSOLIDATION'         = '1'
         'AOI_AUTONOMY_EMBED_SWEEP'           = '1'
         'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE' = '1'
+        'AOI_AUTONOMY_APP_OP_LIVE_DISPATCH'  = '1'
+        'AOI_AUTONOMY_APPROVAL_TTL'          = '1'
+        'AOI_MCP_SIDE_EFFECTING_RPC'         = '1'
     }
     foreach ($key in $jarvisAutonomyEnv.Keys)
     {
