@@ -63,5 +63,6 @@ For normal operation:
 Notes:
 
 - If the user agrees to play a recommended song, search the full artist + song title together.
+- To auto-start the top result instead of only cueing it, pass `autoplay: "1"` to `OPEN_SEARCH`.
 - If you already have a concrete YouTube link, prefer `OPEN_VIDEO` over a fresh search.
 - The app itself manages recent searches and saved topics in `state.json`.

@@ -18,6 +18,12 @@ actions:
         type: string
         description: Search query, for example "IVE I AM"
         required: true
+      - name: autoplay
+        type: string
+        description: >
+          Optional. Set to "1" to auto-start the top result instead of only
+          cueing it in the player.
+        required: false
 
   - type: OPEN_HOME
     name: Open Home

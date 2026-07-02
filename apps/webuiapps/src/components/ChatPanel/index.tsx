@@ -5450,7 +5450,7 @@ const ChatPanel: React.FC<{
             await dispatchAgentAction({
               app_id: YOUTUBE_APP_ID,
               action_type: 'OPEN_SEARCH',
-              params: { query: pendingIdleMusicOffer.query },
+              params: { query: pendingIdleMusicOffer.query, autoplay: '1' },
             });
             const ack = buildIdleMusicPlayAck(pendingIdleMusicOffer.query, lang);
             emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });

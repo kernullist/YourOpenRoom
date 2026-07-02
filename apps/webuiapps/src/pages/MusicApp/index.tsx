@@ -274,6 +274,10 @@ const YouTubeApp: React.FC = () => {
   const [selectedResult, setSelectedResult] = useState<YoutubeSearchResult | null>(null);
   const [activePlayback, setActivePlayback] = useState<PlaylistPlayback | null>(null);
   const [currentPlayingVideoId, setCurrentPlayingVideoId] = useState<string | null>(null);
+  // One-shot autoplay target: the video id of a search hit that should auto-start
+  // (set by an OPEN_SEARCH with autoplay). Matched by id so only that exact hit
+  // autoplays; manual selection of any other result does not.
+  const [autoplayVideoId, setAutoplayVideoId] = useState<string | null>(null);
   const [resultsLoading, setResultsLoading] = useState(false);
   const [resultsError, setResultsError] = useState<string | null>(null);
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -415,7 +419,11 @@ const YouTubeApp: React.FC = () => {
   );
 
   const submitSearch = useCallback(
-    async (rawQuery?: string, triggerBy: ActionTriggerBy = ActionTriggerBy.User) => {
+    async (
+      rawQuery?: string,
+      triggerBy: ActionTriggerBy = ActionTriggerBy.User,
+      options?: { autoplay?: boolean },
+    ) => {
       const query = (rawQuery ?? searchQuery).trim();
       if (!query) return;
 
@@ -438,6 +446,7 @@ const YouTubeApp: React.FC = () => {
       reportAction(APP_ID, 'OPEN_SEARCH', { query }, triggerBy);
       setResultsOpen(true);
       setActivePlayback(null);
+      setAutoplayVideoId(null);
       setCurrentPlayingVideoId(null);
       setResultQuery(query);
       setResultListHidden(false);
@@ -448,6 +457,9 @@ const YouTubeApp: React.FC = () => {
         const results = await fetchYoutubeSearchResults(query);
         setSearchResults(results);
         setSelectedResult(results[0] ?? null);
+        if (options?.autoplay) {
+          setAutoplayVideoId(results[0]?.id ?? null);
+        }
       } catch (error) {
         setSearchResults([]);
         setSelectedResult(null);
@@ -828,7 +840,9 @@ const YouTubeApp: React.FC = () => {
           case 'OPEN_SEARCH': {
             const query = action.params?.query?.trim();
             if (!query) return 'error: missing query';
-            await submitSearch(query, ActionTriggerBy.Agent);
+            await submitSearch(query, ActionTriggerBy.Agent, {
+              autoplay: action.params?.autoplay === '1',
+            });
             return 'success';
           }
           case 'PLAY_LAST_PLAYLIST': {
@@ -1686,7 +1700,9 @@ const YouTubeApp: React.FC = () => {
                         ref={playerIframeRef}
                         title={currentPlaybackItem.title}
                         src={buildEmbedUrl(queueStartVideoId, {
-                          autoplay: Boolean(activePlayback),
+                          autoplay:
+                            Boolean(activePlayback) ||
+                            (autoplayVideoId !== null && queueStartVideoId === autoplayVideoId),
                           loopPlayback,
                           queueVideoIds: currentQueueVideoIds,
                         })}
