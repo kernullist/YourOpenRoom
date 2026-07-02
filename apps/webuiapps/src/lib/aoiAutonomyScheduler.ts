@@ -49,6 +49,8 @@ import {
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { recordAoiFieldShadowDecisionIntegration } from './aoiFieldShadowDecisionBridge';
+import { buildAoiInterruptionGovernorDecisions } from './aoiInterruptionGovernor';
+import { loadAoiDeliberationRuns } from './aoiDeliberationRun';
 import {
   collectAndPersistAoiWorkspaceSnapshot,
   type AoiWorkspaceSignalStoreInput,
@@ -1870,9 +1872,30 @@ async function runWakeupInternal(
     try {
       const shadowOpportunities = loadAoiActiveOpportunities(input.sessionsDir, sessionPath, now);
       if (shadowOpportunities.length > 0) {
+        // Feed the shadow bridge the SAME subsystem outputs it was designed to read.
+        // With only opportunities it degenerates to all 'would_stay_quiet' plus a
+        // misleading "source freshness unknown" reason (the freshness INPUTS were
+        // simply absent, not the evidence). The interruption-governor decisions vary
+        // the shadow kind (dashboard / speak / genuinely-blocked quiet), and the
+        // deliberation runs resolve real source freshness -- so the persisted records
+        // are meaningful promotion evidence. Still display-only + zero-mutation, and
+        // still records-only: no label and no promotion are written here.
+        const capturePolicy = loadAoiAutonomyPolicy(input.sessionsDir, sessionPath);
+        const deliberationRuns = loadAoiDeliberationRuns(input.sessionsDir, sessionPath, now);
+        const interruptionDecisions = buildAoiInterruptionGovernorDecisions({
+          sessionPath,
+          opportunities: shadowOpportunities,
+          deliberationRuns,
+          policy: capturePolicy,
+          directChatOptIn: capturePolicy.proactiveBriefing.directChatHookOptIn === true,
+          quietMode: budget.quietMode,
+          now,
+        });
         recordAoiFieldShadowDecisionIntegration(input.sessionsDir, {
           sessionPath,
           opportunities: shadowOpportunities,
+          interruptionDecisions,
+          deliberationRuns,
           now,
         });
       }

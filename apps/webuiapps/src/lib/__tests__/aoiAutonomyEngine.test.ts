@@ -2875,7 +2875,16 @@ describe('runAoiAutonomyWakeup()', () => {
 
     // The would-be (zero-mutation) shadow decisions are now persisted as promotion
     // evidence -- the foundation the trusted_operator pipeline was missing.
-    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBeGreaterThan(0);
+    const shadowRecords = loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW);
+    expect(shadowRecords.length).toBeGreaterThan(0);
+    // Enrichment: because the capture feeds the interruption-governor decision, the
+    // shadow kind reflects a real, specific assessment (here would_mark_blind_spot)
+    // rather than the degenerate would_stay_quiet the bridge emits when starved of
+    // subsystem inputs. That is the meaningful promotion evidence we want to persist.
+    expect(shadowRecords.every((record) => record.decisionKind === 'would_stay_quiet')).toBe(false);
+    expect(shadowRecords.some((record) => record.decisionKind === 'would_mark_blind_spot')).toBe(
+      true,
+    );
   });
 
   it('does not persist field-shadow records when capture is disabled', async () => {
