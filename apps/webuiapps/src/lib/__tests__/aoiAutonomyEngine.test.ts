@@ -58,6 +58,7 @@ import { buildAoiResearchArtifactPaths, type AoiResearchManifest } from '../aoiR
 import { buildAoiTrustCalibrationProfile } from '../aoiTrustCalibration';
 import { buildAoiOperatorHealthState } from '../aoiOperatorHealthServer';
 import {
+  loadAoiInterestProfile,
   loadAoiProactiveBriefFieldEvents,
   saveAoiInterestProfile,
 } from '../aoiProactiveBriefStore';
@@ -2703,6 +2704,127 @@ describe('runAoiAutonomyWakeup()', () => {
           event.suppressionReasons.includes('proactive_scouting_disabled'),
       ),
     ).toBe(true);
+  });
+
+  it('rebuilds the interest profile from memories so the scout is not blocked as profile_empty', async () => {
+    const root = makeTempRoot();
+    const scout = vi.fn(async () => makeScoutResult());
+    enablePolicy(root, 'L4');
+    // Seed an interest-eligible memory but do NOT pre-save a profile, so the only
+    // way the scout gets topics is the wakeup rebuilding the profile from memories.
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-interest-seed',
+        scope: 'user',
+        type: 'preference',
+        content: 'The user is interested in reverse engineering and Windows kernel internals.',
+        normalizedContent:
+          'the user is interested in reverse engineering and windows kernel internals.',
+        tags: ['interest', 'reverse-engineering', 'kernel'],
+        entities: ['reverse engineering', 'Windows kernel'],
+        permanent: false,
+      }),
+    );
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: true,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: true,
+          allowBackgroundScout: true,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    // Precondition: nothing persisted the profile, so it starts empty.
+    expect(loadAoiInterestProfile(root, SESSION_PATH, NOW).topics.length).toBe(0);
+
+    const result = await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      proactiveScout: {
+        runNow: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+        runProactiveBriefScout: scout,
+      },
+    });
+
+    // The wakeup rebuilt the profile from the seeded memory...
+    expect(loadAoiInterestProfile(root, SESSION_PATH, NOW).topics.length).toBeGreaterThan(0);
+    // ...so the scout is no longer skipped for having no interest topics.
+    expect(result.record.proactiveScout?.blockedReasons ?? []).not.toContain('profile_empty');
+  });
+
+  it('does not rebuild the interest profile when scouting is disabled', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeMemory(
+      root,
+      makeMemory({
+        id: 'memory-interest-seed-off',
+        scope: 'user',
+        type: 'preference',
+        content: 'The user is interested in reverse engineering.',
+        normalizedContent: 'the user is interested in reverse engineering.',
+        tags: ['interest', 'reverse-engineering'],
+        entities: ['reverse engineering'],
+        permanent: false,
+      }),
+    );
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        proactiveSuggestionsEnabled: false,
+        proactiveBriefing: {
+          ...DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing,
+          enabled: false,
+          allowBackgroundScout: false,
+          minScoutCooldownMs: 0,
+        },
+      },
+      NOW,
+    );
+
+    await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxBackgroundTickRuntimeMs: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+        allowNetwork: true,
+      },
+      now: NOW,
+      dependencies: {
+        currentInfoProviderConfigured: () => true,
+      },
+    });
+
+    // Scouting fully disabled -> the rebuild path is skipped -> profile stays empty.
+    expect(loadAoiInterestProfile(root, SESSION_PATH, NOW).topics.length).toBe(0);
   });
 
   it('keeps quiet-window proactive scouts dashboard-only while recording direct-chat suppression', async () => {

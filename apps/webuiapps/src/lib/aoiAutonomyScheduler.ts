@@ -35,6 +35,7 @@ import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
   consolidateServerAoiMemories,
   embedAndPersistServerAoiMemories,
+  loadServerAoiMemories,
 } from './aoiMemoryServerWriter';
 import { resolveAoiMemoryConsolidationConfigFromEnv } from './aoiMemoryConsolidationSweep';
 import {
@@ -67,6 +68,7 @@ import {
   loadAoiProactiveBriefCooldownState,
   loadAoiProactiveBriefFeedback,
   loadAoiProactiveBriefFieldMetrics,
+  rebuildAndSaveAoiInterestProfile,
   recordAoiProactiveBriefFieldEvent,
 } from './aoiProactiveBriefStore';
 import type { LLMConfig } from './llmModels';
@@ -119,6 +121,13 @@ const SOURCE_TTL_MS_BY_ID: Record<string, number> = {
 // same thing in both places. The upper bound is the policy's maxSessionIdleMs: a longer idle has
 // already tripped session_not_active_enough and blocked the scout pipeline before the relief runs.
 const DEFAULT_USER_RETURN_IDLE_MS = 15 * 60 * 1000;
+
+// The interest profile that gives the proactive scout its topics is derived from
+// memories, but nothing rebuilt it at runtime -- so the scout was permanently
+// skipped with 'profile_empty' and Aoi never self-initiated. Rebuild it in the
+// scout wakeup when it is empty or older than this TTL. Local read only; bounded
+// by the scout's own cadence (a few runs/day), so an hourly ceiling is ample.
+const INTEREST_PROFILE_REBUILD_TTL_MS = 60 * 60 * 1000;
 
 export const DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET: AoiAutonomyWakeupBudget = {
   version: 1,
@@ -1156,6 +1165,38 @@ async function runProactiveScoutForWakeup(params: {
   const controls = policy.proactiveBriefing;
   const runNow = params.input.proactiveScout?.runNow === true;
   const background = !runNow;
+  // Bootstrap/refresh the interest profile from the session's memories before the
+  // scout reads it. loadAoiInterestProfile only reads a persisted file that nothing
+  // else populated at runtime, so the scout was stuck at 'profile_empty'. Rebuild
+  // only when scouting is actually enabled (byte-identical when off) and the profile
+  // is empty or stale. Local memory read + file write, no network, best-effort so a
+  // failure never blocks the wakeup.
+  const scoutingEnabled = runNow || controls.enabled || controls.allowBackgroundScout;
+  if (scoutingEnabled) {
+    try {
+      const existingProfile = loadAoiInterestProfile(
+        params.input.sessionsDir,
+        sessionPath,
+        params.now,
+      );
+      const profileStale =
+        existingProfile.topics.length === 0 ||
+        params.now - existingProfile.generatedAt > INTEREST_PROFILE_REBUILD_TTL_MS;
+      if (profileStale) {
+        const memories = loadServerAoiMemories(params.input.sessionsDir).filter(
+          (memory) => memory.scope !== 'session' || memory.sessionPath === sessionPath,
+        );
+        rebuildAndSaveAoiInterestProfile({
+          sessionsDir: params.input.sessionsDir,
+          sessionPath,
+          memories,
+          now: params.now,
+        });
+      }
+    } catch {
+      // best-effort; a profile rebuild failure must never block the scout/wakeup
+    }
+  }
   const profile = applyAoiProactiveBriefingTopicControls(
     loadAoiInterestProfile(params.input.sessionsDir, sessionPath, params.now),
     controls,
