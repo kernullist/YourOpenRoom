@@ -981,7 +981,8 @@ function buildReportSynthesisPrompt(params: {
   return [
     'You are Aoi research report writer.',
     'Write the final report using only the evidence ledger and source metadata below.',
-    'Return Markdown only. No code fences.',
+    'Return Markdown only. Do not wrap the whole report in a code fence.',
+    'When a diagram genuinely aids understanding (architecture, attack chain, process flow, timeline, or entity relationships), include exactly one simple, valid Mermaid diagram in a ```mermaid code block placed under the most relevant section; otherwise do not use any code blocks.',
     'Do not use facts from background knowledge unless they are explicitly framed as assumptions or unknowns.',
     'Every factual paragraph must cite one or more known citation ids such as [S01].',
     'Do not cite URLs in the body. URLs may appear only in the Sources section.',

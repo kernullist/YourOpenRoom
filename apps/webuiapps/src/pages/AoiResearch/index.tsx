@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import ReactMarkdown from 'react-markdown';
+import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AppLifecycle, initVibeApp } from '@gui/vibe-container';
 import { Copy, ExternalLink, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
@@ -19,6 +19,8 @@ import type {
   AoiResearchRecency,
   AoiResearchRunSummary,
 } from '@/lib/aoiResearchTypes';
+import MermaidDiagram from './MermaidDiagram';
+import { ResearchEvidenceList, ResearchSourcesList } from './ResearchDetail';
 import styles from './index.module.scss';
 
 const APP_ID = 24;
@@ -83,6 +85,28 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   }
   return data;
 }
+
+// Report markdown overrides: links open in a new tab, and a ```mermaid fenced
+// block renders as a diagram instead of a plain code block. Detected at the
+// <pre> level so the diagram replaces the whole block (no invalid pre>div).
+const REPORT_MARKDOWN_COMPONENTS: Components = {
+  a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  pre: ({ children }) => {
+    const first = React.Children.toArray(children)[0];
+    if (React.isValidElement(first)) {
+      const codeProps = first.props as { className?: string; children?: React.ReactNode };
+      if (/language-mermaid/.test(codeProps.className || '')) {
+        return (
+          <MermaidDiagram
+            code={String(codeProps.children ?? '').trim()}
+            className={styles.mermaid}
+          />
+        );
+      }
+    }
+    return <pre>{children}</pre>;
+  },
+};
 
 const AoiResearchPage: React.FC = () => {
   const [sessionPath, setSessionPath] = useState('');
@@ -575,7 +599,9 @@ const AoiResearchPage: React.FC = () => {
               {artifactLoading && !artifacts.report ? (
                 <div className={styles.emptyState}>Loading report...</div>
               ) : artifacts.report ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>{artifacts.report}</ReactMarkdown>
+                <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
+                  {artifacts.report}
+                </ReactMarkdown>
               ) : (
                 <div className={styles.emptyState}>Report artifact is not available.</div>
               )}
@@ -603,11 +629,15 @@ const AoiResearchPage: React.FC = () => {
             Evidence
           </button>
         </div>
-        <pre className={styles.artifactBlock}>
-          {artifactLoading && !detailContent
-            ? 'Loading artifact...'
-            : detailContent || 'No artifact.'}
-        </pre>
+        <div className={styles.artifactBlock}>
+          {artifactLoading && !detailContent ? (
+            <div className={styles.artifactHint}>Loading artifact...</div>
+          ) : detailTab === 'sources' ? (
+            <ResearchSourcesList raw={artifacts.sources} />
+          ) : (
+            <ResearchEvidenceList raw={artifacts.evidence} />
+          )}
+        </div>
       </aside>
     </main>
   );

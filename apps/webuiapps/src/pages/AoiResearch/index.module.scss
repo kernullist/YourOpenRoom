@@ -742,18 +742,229 @@
   margin: 0;
   overflow: auto;
   border-top: 1px solid rgba(199, 203, 212, 0.06);
-  padding: 16px;
+  padding: 12px;
   background:
     linear-gradient(90deg, rgba(199, 203, 212, 0.026) 1px, transparent 1px),
     linear-gradient(180deg, rgba(199, 203, 212, 0.02) 1px, transparent 1px), #080a0e;
   background-size: 24px 24px;
   color: #d7dee7;
+  scrollbar-color: rgba(199, 203, 212, 0.34) rgba(255, 255, 255, 0.04);
+}
+
+.artifactHint {
+  padding: 10px 4px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.artifactRaw {
+  margin: 0;
+  color: #d7dee7;
   font-family: 'Cascadia Code', Consolas, monospace;
   font-size: 12px;
   line-height: 1.58;
-  scrollbar-color: rgba(199, 203, 212, 0.34) rgba(255, 255, 255, 0.04);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.sourceList,
+.evidenceList {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sourceCard,
+.evidenceCard {
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: linear-gradient(90deg, rgba(199, 203, 212, 0.03), transparent 60%), var(--panel);
+}
+
+.sourceTop {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 7px;
+}
+
+.sourceIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 20px;
+  height: 20px;
+  padding: 0 5px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.sourceStatus {
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 1px 6px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sourceStatus[data-status='accepted'] {
+  border-color: rgba(199, 203, 212, 0.5);
+  color: var(--accent-strong);
+}
+
+.sourceStatus[data-status='pending'] {
+  border-color: rgba(208, 169, 87, 0.42);
+  color: var(--gold);
+}
+
+.sourceStatus[data-status='failed'] {
+  border-color: rgba(212, 102, 96, 0.5);
+  color: #ffaaa4;
+}
+
+.sourceDomain {
+  margin-left: auto;
+  max-width: 160px;
+  overflow: hidden;
+  color: var(--muted-soft);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sourceTitle {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #c9d2ff;
+  font-size: 13px;
+  font-weight: 660;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+  text-decoration: none;
+}
+
+.sourceTitle:hover {
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.sourceTitle svg {
+  flex: 0 0 auto;
+  opacity: 0.7;
+}
+
+.sourceExcerpt {
+  display: -webkit-box;
+  margin: 6px 0 0;
+  overflow: hidden;
+  color: #c2c7d0;
+  font-size: 12px;
+  line-height: 1.5;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+}
+
+.evidenceClaim {
+  margin: 0 0 8px;
+  color: var(--text-strong);
+  font-size: 13px;
+  font-weight: 620;
+  line-height: 1.5;
+}
+
+.confidenceRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.confidenceTrack {
+  flex: 1;
+  height: 6px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(199, 203, 212, 0.12);
+}
+
+.confidenceFill {
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--violet), var(--gold));
+}
+
+.confidenceValue {
+  min-width: 34px;
+  color: var(--accent-strong);
+  font-size: 11px;
+  font-weight: 720;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.evidenceSupport {
+  margin: 0 0 8px;
+  border-left: 3px solid var(--gold);
+  padding: 6px 10px;
+  background: rgba(208, 169, 87, 0.08);
+  color: #ebe1c8;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.tagRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-bottom: 6px;
+}
+
+.tag {
+  border: 1px solid rgba(154, 140, 255, 0.4);
+  border-radius: 999px;
+  padding: 1px 8px;
+  background: rgba(154, 140, 255, 0.1);
+  color: #cfc7ff;
+  font-size: 10px;
+  font-weight: 640;
+}
+
+.caveatList {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.mermaid {
+  display: flex;
+  justify-content: center;
+  margin: 16px 0;
+  overflow-x: auto;
+  border: 1px solid rgba(199, 203, 212, 0.14);
+  border-radius: 8px;
+  padding: 14px;
+  background: #0b0e13;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.mermaid svg {
+  max-width: 100%;
+  height: auto;
 }
 
 .emptyState,
