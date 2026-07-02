@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AppLifecycle, initVibeApp } from '@gui/vibe-container';
-import { Copy, ExternalLink, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
+import { Copy, ExternalLink, ListTree, RefreshCw, Sparkles, Trash2, XCircle } from 'lucide-react';
 import {
   reportAction,
   reportLifecycle,
@@ -21,6 +21,8 @@ import type {
 } from '@/lib/aoiResearchTypes';
 import MermaidDiagram from './MermaidDiagram';
 import { ResearchEvidenceList, ResearchSourcesList } from './ResearchDetail';
+import { parseResearchSources } from './researchArtifacts';
+import { extractReportToc, slugifyHeading } from './researchToc';
 import styles from './index.module.scss';
 
 const APP_ID = 24;
@@ -86,11 +88,41 @@ async function fetchJson<T>(url: string, init?: RequestInit): Promise<T> {
   return data;
 }
 
+// Flatten heading children to plain text so headings can be slugified into ids
+// that the table of contents links to.
+function reactChildrenToText(children: React.ReactNode): string {
+  if (typeof children === 'string' || typeof children === 'number') {
+    return String(children);
+  }
+  if (Array.isArray(children)) {
+    return children.map(reactChildrenToText).join('');
+  }
+  if (React.isValidElement(children)) {
+    return reactChildrenToText((children.props as { children?: React.ReactNode }).children);
+  }
+  return '';
+}
+
 // Report markdown overrides: links open in a new tab, and a ```mermaid fenced
 // block renders as a diagram instead of a plain code block. Detected at the
 // <pre> level so the diagram replaces the whole block (no invalid pre>div).
 const REPORT_MARKDOWN_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noopener noreferrer" />,
+  h1: ({ node: _node, children, ...props }) => (
+    <h1 id={slugifyHeading(reactChildrenToText(children))} {...props}>
+      {children}
+    </h1>
+  ),
+  h2: ({ node: _node, children, ...props }) => (
+    <h2 id={slugifyHeading(reactChildrenToText(children))} {...props}>
+      {children}
+    </h2>
+  ),
+  h3: ({ node: _node, children, ...props }) => (
+    <h3 id={slugifyHeading(reactChildrenToText(children))} {...props}>
+      {children}
+    </h3>
+  ),
   pre: ({ children }) => {
     const first = React.Children.toArray(children)[0];
     if (React.isValidElement(first)) {
@@ -128,11 +160,29 @@ const AoiResearchPage: React.FC = () => {
   const [starting, setStarting] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [highlightSourceId, setHighlightSourceId] = useState<string | null>(null);
+  const [tocOpen, setTocOpen] = useState(false);
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null,
     [runs, selectedRunId],
   );
+
+  const parsedSources = useMemo(() => parseResearchSources(artifacts.sources), [artifacts.sources]);
+  const reportToc = useMemo(() => extractReportToc(artifacts.report), [artifacts.report]);
+
+  const handleNavigateToSource = useCallback((sourceId: string) => {
+    setDetailTab('sources');
+    setHighlightSourceId(sourceId);
+  }, []);
+
+  const scrollToReportSection = useCallback((slug: string) => {
+    const element = document.getElementById(slug);
+    if (element) {
+      element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    setTocOpen(false);
+  }, []);
 
   const loadRuns = useCallback(async () => {
     const currentSessionPath = getSessionPath().trim();
@@ -222,22 +272,19 @@ const AoiResearchPage: React.FC = () => {
     }
     try {
       setArtifactLoading(true);
-      const [report, detail] = await Promise.all([
+      const [report, sources, evidence] = await Promise.all([
         loadArtifact(selectedRun.id, 'report'),
-        loadArtifact(selectedRun.id, detailTab),
+        loadArtifact(selectedRun.id, 'sources'),
+        loadArtifact(selectedRun.id, 'evidence'),
       ]);
-      setArtifacts((previous) => ({
-        ...previous,
-        report,
-        [detailTab]: detail,
-      }));
+      setArtifacts({ report, sources, evidence });
       setErrorText(null);
     } catch (error) {
       setErrorText(error instanceof Error ? error.message : String(error));
     } finally {
       setArtifactLoading(false);
     }
-  }, [detailTab, loadArtifact, selectedRun]);
+  }, [loadArtifact, selectedRun]);
 
   const cancelRun = useCallback(async () => {
     if (!selectedRun || !sessionPath) {
@@ -373,7 +420,18 @@ const AoiResearchPage: React.FC = () => {
   // "confirm delete" never carries over to a different run.
   useEffect(() => {
     setConfirmingDelete(false);
+    setHighlightSourceId(null);
+    setTocOpen(false);
   }, [selectedRun?.id]);
+
+  // Clear a source highlight shortly after it is applied so it reads as a pulse.
+  useEffect(() => {
+    if (!highlightSourceId) {
+      return undefined;
+    }
+    const timer = window.setTimeout(() => setHighlightSourceId(null), 2600);
+    return () => window.clearTimeout(timer);
+  }, [highlightSourceId]);
 
   useEffect(() => {
     if (!flashText) {
@@ -599,9 +657,42 @@ const AoiResearchPage: React.FC = () => {
               {artifactLoading && !artifacts.report ? (
                 <div className={styles.emptyState}>Loading report...</div>
               ) : artifacts.report ? (
-                <ReactMarkdown remarkPlugins={[remarkGfm]} components={REPORT_MARKDOWN_COMPONENTS}>
-                  {artifacts.report}
-                </ReactMarkdown>
+                <>
+                  {reportToc.length > 1 ? (
+                    <nav className={styles.toc} data-testid="aoi-research-toc">
+                      <button
+                        type="button"
+                        className={styles.tocToggle}
+                        onClick={() => setTocOpen((open) => !open)}
+                        aria-expanded={tocOpen}
+                      >
+                        <ListTree size={13} />
+                        <span>Contents</span>
+                        <span className={styles.tocCount}>{reportToc.length}</span>
+                      </button>
+                      {tocOpen ? (
+                        <ol className={styles.tocList}>
+                          {reportToc.map((entry, index) => (
+                            <li key={`${index}-${entry.slug}`} data-level={entry.level}>
+                              <button
+                                type="button"
+                                onClick={() => scrollToReportSection(entry.slug)}
+                              >
+                                {entry.text}
+                              </button>
+                            </li>
+                          ))}
+                        </ol>
+                      ) : null}
+                    </nav>
+                  ) : null}
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={REPORT_MARKDOWN_COMPONENTS}
+                  >
+                    {artifacts.report}
+                  </ReactMarkdown>
+                </>
               ) : (
                 <div className={styles.emptyState}>Report artifact is not available.</div>
               )}
@@ -633,9 +724,17 @@ const AoiResearchPage: React.FC = () => {
           {artifactLoading && !detailContent ? (
             <div className={styles.artifactHint}>Loading artifact...</div>
           ) : detailTab === 'sources' ? (
-            <ResearchSourcesList raw={artifacts.sources} />
+            <ResearchSourcesList
+              sources={parsedSources}
+              raw={artifacts.sources}
+              highlightId={highlightSourceId}
+            />
           ) : (
-            <ResearchEvidenceList raw={artifacts.evidence} />
+            <ResearchEvidenceList
+              raw={artifacts.evidence}
+              sources={parsedSources}
+              onNavigateToSource={handleNavigateToSource}
+            />
           )}
         </div>
       </aside>

@@ -950,6 +950,7 @@
 }
 
 .mermaid {
+  position: relative;
   display: flex;
   justify-content: center;
   margin: 16px 0;
@@ -960,11 +961,170 @@
   background: #0b0e13;
   color: var(--muted);
   font-size: 12px;
+  cursor: zoom-in;
 }
 
 .mermaid svg {
   max-width: 100%;
   height: auto;
+}
+
+.mermaidExpandHint {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: rgba(10, 12, 16, 0.7);
+  color: var(--muted);
+  opacity: 0;
+  transition: opacity 140ms ease;
+  pointer-events: none;
+}
+
+.mermaid:hover .mermaidExpandHint,
+.mermaid:focus-visible .mermaidExpandHint {
+  opacity: 1;
+}
+
+.mermaidOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 40px;
+  background: rgba(4, 5, 8, 0.86);
+  cursor: zoom-out;
+}
+
+.mermaidOverlayInner {
+  max-width: 96vw;
+  max-height: 90vh;
+  overflow: auto;
+  border: 1px solid rgba(199, 203, 212, 0.18);
+  border-radius: 10px;
+  padding: 20px;
+  background: #0b0e13;
+  cursor: default;
+}
+
+.mermaidOverlayInner svg {
+  width: auto;
+  height: auto;
+  max-width: none;
+}
+
+.mermaidOverlayClose {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  height: 36px;
+  padding: 0 !important;
+}
+
+.toc {
+  margin: 0 0 18px;
+  overflow: hidden;
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: linear-gradient(90deg, rgba(154, 140, 255, 0.05), transparent 60%), var(--panel-soft);
+}
+
+.tocToggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  border: 0 !important;
+  border-radius: 0 !important;
+  padding: 9px 12px !important;
+  background: transparent !important;
+  color: var(--accent) !important;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.tocToggle:hover:not(:disabled) {
+  color: var(--accent-strong) !important;
+}
+
+.tocCount {
+  margin-left: auto;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 0 7px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 640;
+}
+
+.tocList {
+  margin: 0;
+  padding: 4px 8px 10px;
+  border-top: 1px solid var(--line-soft);
+  list-style: none;
+}
+
+.tocList li[data-level='3'] {
+  padding-left: 16px;
+}
+
+.tocList button {
+  width: 100%;
+  border: 0 !important;
+  border-radius: 5px !important;
+  padding: 5px 8px !important;
+  background: transparent !important;
+  color: #d9dde4 !important;
+  font-size: 12.5px;
+  text-align: left;
+}
+
+.tocList button:hover:not(:disabled) {
+  background: var(--accent-soft) !important;
+  color: var(--accent-strong) !important;
+}
+
+.sourceCard[data-highlight] {
+  border-color: rgba(154, 140, 255, 0.7);
+  background: linear-gradient(90deg, rgba(154, 140, 255, 0.14), transparent 60%), var(--panel-hot);
+  box-shadow: 0 0 0 1px rgba(154, 140, 255, 0.3);
+}
+
+.evidenceSource {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 2px;
+  border: 1px solid var(--line) !important;
+  border-radius: 999px !important;
+  padding: 2px 9px !important;
+  background: rgba(199, 203, 212, 0.06) !important;
+  color: var(--muted) !important;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.evidenceSource:hover:not(:disabled) {
+  border-color: rgba(154, 140, 255, 0.5) !important;
+  color: #cfc7ff !important;
+}
+
+.evidenceSource svg {
+  flex: 0 0 auto;
 }
 
 .emptyState,
