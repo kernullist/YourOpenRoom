@@ -52,6 +52,16 @@ import {
   type AoiIdleMusicLearningState,
 } from '@/lib/aoiIdleMusicNudge';
 import {
+  DEFAULT_AOI_NEWS_STATE,
+  pickInterestingArticle,
+  recordNewsOffered,
+  recordNewsOutcome,
+  shouldOfferNewsNudge,
+  type AoiNewsCategory,
+  type AoiNewsLearningState,
+} from '@/lib/aoiNewsNudge';
+import { loadCyberNewsCandidates } from '@/pages/CyberNews/aoiNewsFeed';
+import {
   LLM_REASONING_EFFORTS,
   LLM_REASONING_SUMMARIES,
   LLM_VERBOSITIES,
@@ -611,6 +621,8 @@ const IDE_APP_ID = 19;
 const PE_ANALYST_APP_ID = 20;
 const KIRA_AUTOMATION_NOTICE_EVENT = 'openroom-kira-automation-notice';
 const YOUTUBE_APP_ID = 3;
+const CYBERNEWS_APP_ID = 14;
+const cyberNewsFileApi = createAppFileApi('cyberNews');
 const BROWSER_APP_ID = 17;
 
 function buildOpenUrlAction(url: string): {
@@ -1237,13 +1249,13 @@ function detectPreferredLanguage(
 
 // --- Aoi idle music nudge: localized copy + persisted learning state ---------
 
-type IdleMusicLang = 'ko' | 'ja' | 'zh' | 'en';
+type NudgeLang = 'ko' | 'ja' | 'zh' | 'en';
 
 // Card body + chip labels for the "want some music?" nudge, per mood and
 // language. English mood lines mirror aoiMusicRecommendation's why text.
 function buildIdleMusicCardCopy(
   mood: AoiMusicMood,
-  lang: IdleMusicLang,
+  lang: NudgeLang,
 ): { text: string; playPrompt: string; dismissPrompt: string } {
   const chips = {
     ko: { play: '재생', dismiss: '다음에' },
@@ -1251,7 +1263,7 @@ function buildIdleMusicCardCopy(
     zh: { play: '播放', dismiss: '待会儿' },
     en: { play: 'Play', dismiss: 'Not now' },
   }[lang];
-  const lines: Record<IdleMusicLang, Record<AoiMusicMood, string>> = {
+  const lines: Record<NudgeLang, Record<AoiMusicMood, string>> = {
     ko: {
       focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
       chill: '잠깐 여유로운 시간이네. 잔잔한 곡 하나 배경으로 깔아줄까?',
@@ -1284,7 +1296,7 @@ function buildIdleMusicCardCopy(
   };
 }
 
-function buildIdleMusicPlayAck(query: string, lang: IdleMusicLang): string {
+function buildIdleMusicPlayAck(query: string, lang: NudgeLang): string {
   switch (lang) {
     case 'ko':
       return `틀어줄게. 유튜브에서 "${query}" 찾아서 재생 준비해뒀어.`;
@@ -1297,7 +1309,7 @@ function buildIdleMusicPlayAck(query: string, lang: IdleMusicLang): string {
   }
 }
 
-function buildIdleMusicDismissAck(lang: IdleMusicLang): string {
+function buildIdleMusicDismissAck(lang: NudgeLang): string {
   switch (lang) {
     case 'ko':
       return '알겠어. 필요하면 말해줘.';
@@ -1310,7 +1322,7 @@ function buildIdleMusicDismissAck(lang: IdleMusicLang): string {
   }
 }
 
-function buildIdleMusicErrorAck(lang: IdleMusicLang): string {
+function buildIdleMusicErrorAck(lang: NudgeLang): string {
   switch (lang) {
     case 'ko':
       return '음악을 트는 데 문제가 있었어. 유튜브 앱을 열어두고 다시 시도해줘.';
@@ -1360,6 +1372,118 @@ function loadAoiIdleMusicState(): AoiIdleMusicLearningState {
 function saveAoiIdleMusicState(state: AoiIdleMusicLearningState): void {
   try {
     localStorage.setItem(AOI_IDLE_MUSIC_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Best-effort persistence; ignore quota / privacy-mode failures.
+  }
+}
+
+// --- Aoi cyber-news nudge: localized copy + persisted learning state ---------
+
+// Card body + chip labels for the "interesting cybersecurity news?" nudge. The
+// play chip carries a distinctive prefix so an unrelated user message does not
+// accidentally match a pending offer.
+function buildNewsCardCopy(
+  title: string,
+  lang: NudgeLang,
+): { text: string; playPrompt: string; dismissPrompt: string } {
+  const chips = {
+    ko: { play: '관심 있어', dismiss: '지금은 됐어' },
+    ja: { play: '気になる', dismiss: '今はいい' },
+    zh: { play: '有兴趣', dismiss: '暂时不用' },
+    en: { play: 'Interested', dismiss: 'Not now' },
+  }[lang];
+  const intro = {
+    ko: '새 사이버보안 뉴스가 눈에 띄네',
+    ja: '気になるサイバーセキュリティのニュースがあるよ',
+    zh: '有条网络安全新闻挺有意思',
+    en: 'A cybersecurity headline caught my eye',
+  }[lang];
+  const ask = { ko: '자세히 볼래?', ja: '詳しく見る?', zh: '想看详情吗?', en: 'Want the details?' }[
+    lang
+  ];
+  return {
+    text: `📰 ${intro}: "${title}". ${ask}`,
+    playPrompt: `📰 ${chips.play}`,
+    dismissPrompt: chips.dismiss,
+  };
+}
+
+function buildNewsOpenAck(title: string, lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return `열어줄게. CyberNews에서 "${title}" 자세히 보여줄게.`;
+    case 'ja':
+      return `開くね。CyberNewsで「${title}」を表示するよ。`;
+    case 'zh':
+      return `好，我在 CyberNews 里打开 "${title}"。`;
+    default:
+      return `Opening it. I pulled up "${title}" in CyberNews for you.`;
+  }
+}
+
+function buildNewsDismissAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '알겠어. 관심 생기면 말해줘.';
+    case 'ja':
+      return '了解。気になったら言ってね。';
+    case 'zh':
+      return '好的，感兴趣了随时说。';
+    default:
+      return 'No problem. Say the word if something catches your interest.';
+  }
+}
+
+function buildNewsErrorAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '기사를 여는 데 문제가 있었어. CyberNews 앱을 열어서 다시 확인해줘.';
+    case 'ja':
+      return '記事を開けなかったよ。CyberNewsアプリを開いて確認してみて。';
+    case 'zh':
+      return '打开文章出错了。请打开 CyberNews 应用再看看。';
+    default:
+      return 'I could not open the article. Open the CyberNews app and try again.';
+  }
+}
+
+const AOI_NEWS_STORAGE_KEY = 'aoi:newsState:v1';
+
+function loadAoiNewsState(): AoiNewsLearningState {
+  const fallback: AoiNewsLearningState = {
+    ...DEFAULT_AOI_NEWS_STATE,
+    categoryFeedback: {},
+    recentArticleIds: [],
+  };
+  try {
+    const raw = localStorage.getItem(AOI_NEWS_STORAGE_KEY);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw) as Partial<AoiNewsLearningState> | null;
+    if (
+      parsed &&
+      parsed.version === DEFAULT_AOI_NEWS_STATE.version &&
+      Array.isArray(parsed.recentArticleIds) &&
+      typeof parsed.categoryFeedback === 'object' &&
+      parsed.categoryFeedback !== null
+    ) {
+      return {
+        version: DEFAULT_AOI_NEWS_STATE.version,
+        categoryFeedback: parsed.categoryFeedback,
+        recentArticleIds: parsed.recentArticleIds,
+        lastOfferedAt: typeof parsed.lastOfferedAt === 'number' ? parsed.lastOfferedAt : 0,
+      };
+    }
+  } catch {
+    // Ignore malformed storage and start clean.
+  }
+  return fallback;
+}
+
+function saveAoiNewsState(state: AoiNewsLearningState): void {
+  try {
+    localStorage.setItem(AOI_NEWS_STORAGE_KEY, JSON.stringify(state));
   } catch {
     // Best-effort persistence; ignore quota / privacy-mode failures.
   }
@@ -5086,12 +5210,23 @@ const ChatPanel: React.FC<{
     mood: AoiMusicMood;
   } | null>(null);
 
+  const newsStateRef = useRef<AoiNewsLearningState>(DEFAULT_AOI_NEWS_STATE);
+  const pendingNewsOfferRef = useRef<{
+    playPrompt: string;
+    dismissPrompt: string;
+    articleId: string;
+    category: AoiNewsCategory;
+    title: string;
+  } | null>(null);
+  const newsOfferInFlightRef = useRef(false);
+
   useEffect(() => {
     idleMusicStateRef.current = loadAoiIdleMusicState();
+    newsStateRef.current = loadAoiNewsState();
   }, []);
 
   // Language for idle-music copy, resolved from the latest user turn like TTS.
-  const resolveIdleMusicLang = useCallback((): IdleMusicLang => {
+  const resolveNudgeLang = useCallback((): NudgeLang => {
     const latestUserText =
       [...chatHistoryRef.current].reverse().find((message) => message.role === 'user')?.content ??
       '';
@@ -5445,7 +5580,7 @@ const ChatPanel: React.FC<{
             accepted: true,
           });
           saveAoiIdleMusicState(idleMusicStateRef.current);
-          const lang = resolveIdleMusicLang();
+          const lang = resolveNudgeLang();
           try {
             await dispatchAgentAction({
               app_id: YOUTUBE_APP_ID,
@@ -5480,7 +5615,7 @@ const ChatPanel: React.FC<{
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
-            content: buildIdleMusicDismissAck(resolveIdleMusicLang()),
+            content: buildIdleMusicDismissAck(resolveNudgeLang()),
           });
           return;
         }
@@ -5491,6 +5626,65 @@ const ChatPanel: React.FC<{
           accepted: false,
         });
         saveAoiIdleMusicState(idleMusicStateRef.current);
+      }
+
+      // Aoi cyber-news nudge: answer a pending "interesting news?" offer here.
+      // Interested -> open the exact article in CyberNews (VIEW_ARTICLE, which
+      // refreshes if needed); dismiss / anything-else folds an accept(+)/skip(-)
+      // signal per category into the learning state.
+      const pendingNewsOffer = pendingNewsOfferRef.current;
+      if (pendingNewsOffer) {
+        pendingNewsOfferRef.current = null;
+        if (messageText === pendingNewsOffer.playPrompt) {
+          newsStateRef.current = recordNewsOutcome(newsStateRef.current, {
+            category: pendingNewsOffer.category,
+            accepted: true,
+          });
+          saveAoiNewsState(newsStateRef.current);
+          const lang = resolveNudgeLang();
+          try {
+            await dispatchAgentAction({
+              app_id: CYBERNEWS_APP_ID,
+              action_type: 'VIEW_ARTICLE',
+              params: { articleId: pendingNewsOffer.articleId },
+            });
+            const ack = buildNewsOpenAck(pendingNewsOffer.title, lang);
+            emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
+            recordAoiMemoryTurn({
+              userMessage: messageText,
+              assistantMessage: ack,
+              toolCalls: ['direct:aoi_news_open'],
+              source: 'direct_action',
+              llmConfig: selectedConfig,
+            });
+          } catch (err) {
+            console.error('[ChatPanel] Idle news open dispatch failed', err);
+            emitAssistantMessage({
+              id: String(Date.now()),
+              role: 'assistant',
+              content: buildNewsErrorAck(lang),
+            });
+          }
+          return;
+        }
+        if (messageText === pendingNewsOffer.dismissPrompt) {
+          newsStateRef.current = recordNewsOutcome(newsStateRef.current, {
+            category: pendingNewsOffer.category,
+            accepted: false,
+          });
+          saveAoiNewsState(newsStateRef.current);
+          emitAssistantMessage({
+            id: String(Date.now()),
+            role: 'assistant',
+            content: buildNewsDismissAck(resolveNudgeLang()),
+          });
+          return;
+        }
+        newsStateRef.current = recordNewsOutcome(newsStateRef.current, {
+          category: pendingNewsOffer.category,
+          accepted: false,
+        });
+        saveAoiNewsState(newsStateRef.current);
       }
 
       if (!hasImageAttachments && isDirectYouTubeOpenIntent(text)) {
@@ -8132,7 +8326,7 @@ const ChatPanel: React.FC<{
         lastUserActivityAtRef.current = now;
         return;
       }
-      if (pendingIdleMusicOfferRef.current) {
+      if (pendingIdleMusicOfferRef.current || pendingNewsOfferRef.current) {
         return;
       }
       const state = idleMusicStateRef.current;
@@ -8154,7 +8348,7 @@ const ChatPanel: React.FC<{
         recentQueries: state.recentQueries,
         moodFeedback: state.moodFeedback,
       });
-      const copy = buildIdleMusicCardCopy(recommendation.mood, resolveIdleMusicLang());
+      const copy = buildIdleMusicCardCopy(recommendation.mood, resolveNudgeLang());
       pendingIdleMusicOfferRef.current = {
         playPrompt: copy.playPrompt,
         dismissPrompt: copy.dismissPrompt,
@@ -8177,7 +8371,118 @@ const ChatPanel: React.FC<{
       );
     }, IDLE_MUSIC_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [emitAssistantMessage, resolveIdleMusicLang]);
+  }, [emitAssistantMessage, resolveNudgeLang]);
+
+  // Aoi cyber-news nudge: live gate mirror (adds allowNetwork for the fetch).
+  const newsGateRef = useRef({
+    autonomyEnabled: false,
+    quietMode: false,
+    visible: false,
+    loading: false,
+    allowNetwork: false,
+  });
+  useEffect(() => {
+    newsGateRef.current = {
+      autonomyEnabled: aoiAutonomyStatus?.policy?.enabled === true,
+      quietMode: aoiAutonomyPanelSettings.quietMode === true,
+      visible,
+      loading,
+      allowNetwork: aoiAutonomyStatus?.policy?.allowNetwork === true,
+    };
+  }, [
+    aoiAutonomyStatus?.policy?.enabled,
+    aoiAutonomyStatus?.policy?.allowNetwork,
+    aoiAutonomyPanelSettings.quietMode,
+    visible,
+    loading,
+  ]);
+
+  // When the user is quietly idle, surface an interesting unseen cybersecurity
+  // article. The fetch/pick is async, so an in-flight guard prevents overlap and
+  // the offer yields to any pending music card so only one nudge shows at a time.
+  useEffect(() => {
+    const NEWS_CHECK_INTERVAL_MS = 60_000;
+    let cancelled = false;
+    const timer = window.setInterval(() => {
+      const gate = newsGateRef.current;
+      const now = Date.now();
+      if (!gate.visible || gate.loading) {
+        lastUserActivityAtRef.current = now;
+        return;
+      }
+      if (
+        pendingNewsOfferRef.current ||
+        pendingIdleMusicOfferRef.current ||
+        newsOfferInFlightRef.current
+      ) {
+        return;
+      }
+      const state = newsStateRef.current;
+      const newsAppActive = getWindows().some((win) => win.appId === CYBERNEWS_APP_ID);
+      if (
+        !shouldOfferNewsNudge({
+          now,
+          userIdleMs: now - lastUserActivityAtRef.current,
+          autonomyEnabled: gate.autonomyEnabled,
+          quietMode: gate.quietMode,
+          newsAppActive,
+          lastOfferedAt: state.lastOfferedAt,
+        })
+      ) {
+        return;
+      }
+      newsOfferInFlightRef.current = true;
+      void (async () => {
+        try {
+          const candidates = await loadCyberNewsCandidates({
+            fileApi: cyberNewsFileApi,
+            allowNetwork: gate.allowNetwork,
+          });
+          if (cancelled || pendingNewsOfferRef.current || pendingIdleMusicOfferRef.current) {
+            return;
+          }
+          const article = pickInterestingArticle(candidates, {
+            recentArticleIds: newsStateRef.current.recentArticleIds,
+            categoryFeedback: newsStateRef.current.categoryFeedback,
+          });
+          if (!article) {
+            return;
+          }
+          const stamp = Date.now();
+          const copy = buildNewsCardCopy(article.title, resolveNudgeLang());
+          pendingNewsOfferRef.current = {
+            playPrompt: copy.playPrompt,
+            dismissPrompt: copy.dismissPrompt,
+            articleId: article.id,
+            category: article.category,
+            title: article.title,
+          };
+          newsStateRef.current = recordNewsOffered(newsStateRef.current, {
+            articleId: article.id,
+            now: stamp,
+          });
+          saveAoiNewsState(newsStateRef.current);
+          emitAssistantMessage(
+            {
+              id: `aoi-news-${stamp}`,
+              role: 'assistant',
+              content: copy.text,
+              suggestedReplies: [copy.playPrompt, copy.dismissPrompt],
+            },
+            { updateSuggestedReplies: true, speak: false },
+          );
+        } catch (error) {
+          console.warn('[ChatPanel] Aoi news nudge failed', error);
+        } finally {
+          newsOfferInFlightRef.current = false;
+        }
+      })();
+    }, NEWS_CHECK_INTERVAL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [emitAssistantMessage, resolveNudgeLang]);
 
   useEffect(() => {
     if (
