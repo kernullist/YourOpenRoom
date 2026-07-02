@@ -5565,7 +5565,7 @@ const ChatPanel: React.FC<{
           await dispatchAgentAction({
             app_id: YOUTUBE_APP_ID,
             action_type: 'OPEN_SEARCH',
-            params: { query: directMusicIntent.query },
+            params: { query: directMusicIntent.query, autoplay: '1' },
           });
           const ack = buildDirectMusicAck(
             directMusicIntent.query,
