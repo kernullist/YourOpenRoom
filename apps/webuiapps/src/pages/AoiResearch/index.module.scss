@@ -188,6 +188,121 @@
   padding: 0;
 }
 
+.composer {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--line-soft);
+  background: rgba(9, 11, 15, 0.72);
+}
+
+.composerInput {
+  width: 100%;
+  min-height: 46px;
+  max-height: 140px;
+  resize: vertical;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #0b0e13;
+  color: var(--text);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  scrollbar-color: rgba(199, 203, 212, 0.34) rgba(255, 255, 255, 0.04);
+}
+
+.composerInput::placeholder {
+  color: var(--muted-soft);
+}
+
+.composerInput:focus-visible {
+  border-color: rgba(154, 140, 255, 0.5);
+  outline: 2px solid rgba(154, 140, 255, 0.44);
+  outline-offset: 1px;
+}
+
+.composerInput:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.composerRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.composerSelect {
+  flex: 1;
+  min-width: 0;
+  height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0 8px;
+  background: #12161d;
+  color: var(--text);
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+}
+
+.composerSelect:focus-visible {
+  outline: 2px solid rgba(154, 140, 255, 0.44);
+  outline-offset: 1px;
+}
+
+.composerSelect:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.composerStart {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  gap: 6px;
+  height: 32px;
+  padding: 0 14px;
+  border-color: rgba(154, 140, 255, 0.46) !important;
+  background: linear-gradient(
+    180deg,
+    rgba(154, 140, 255, 0.2),
+    rgba(154, 140, 255, 0.08)
+  ) !important;
+  color: var(--accent-strong) !important;
+  font-size: 12px;
+  font-weight: 720;
+}
+
+.composerStart:hover:not(:disabled) {
+  border-color: rgba(154, 140, 255, 0.7) !important;
+  background: linear-gradient(
+    180deg,
+    rgba(154, 140, 255, 0.28),
+    rgba(154, 140, 255, 0.12)
+  ) !important;
+}
+
+.composerStart:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.composerError {
+  margin: 0;
+  border: 1px solid rgba(212, 102, 96, 0.42);
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: var(--bad-soft);
+  color: #ffaaa4;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
 .statStrip {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

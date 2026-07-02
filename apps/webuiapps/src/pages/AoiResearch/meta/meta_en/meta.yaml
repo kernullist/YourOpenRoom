@@ -3,12 +3,25 @@ app_name: aoiresearch
 app_display_name: Aoi Research
 version: '1.0.0'
 description: >
-  Aoi Research shows local structured research runs, their reports, source lists, evidence claims,
-  warnings, and run status for the current YourOpenRoom session.
+  Aoi Research starts new structured research runs and shows local runs, their reports, source
+  lists, evidence claims, warnings, and run status for the current YourOpenRoom session.
 displayDesc: >
-  Browse Aoi's cited research runs, open generated reports, and refresh the local research library.
+  Start a new cited research run, browse Aoi's runs, open generated reports, and refresh the local
+  research library.
 
 actions:
+  - type: CREATE_AOI_RESEARCH_RUN
+    name: Create Aoi Research Run
+    description: >
+      Reported when the operator starts a new research run from the composer. Params carry the new
+      runId and the research request. This is a data-mutation notification, not an agent-callable
+      method; use the start_research tool to have Aoi kick off a run itself.
+    params:
+      - name: runId
+        description: Identifier of the newly created research run.
+      - name: request
+        description: The research request text the run was started with.
+
   - type: REFRESH_AOI_RESEARCH_RUNS
     name: Refresh Aoi Research Runs
     description: Reload the Aoi Research run list for the current session.

@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { AppLifecycle, initVibeApp } from '@gui/vibe-container';
-import { Copy, ExternalLink, RefreshCw, XCircle } from 'lucide-react';
+import { Copy, ExternalLink, RefreshCw, Sparkles, XCircle } from 'lucide-react';
 import {
   reportAction,
   reportLifecycle,
@@ -10,16 +10,33 @@ import {
   type CharacterAppAction,
 } from '@/lib';
 import { getSessionPath } from '@/lib/sessionPath';
+import { startAoiResearchRun } from '@/lib/aoiResearchClient';
 import type {
   AoiResearchArtifactName,
   AoiResearchArtifactResponse,
   AoiResearchListResponse,
+  AoiResearchMode,
+  AoiResearchRecency,
   AoiResearchRunSummary,
 } from '@/lib/aoiResearchTypes';
 import styles from './index.module.scss';
 
 const APP_ID = 24;
 const APP_NAME = 'Aoi Research';
+
+const RESEARCH_MODE_OPTIONS: { value: AoiResearchMode; label: string }[] = [
+  { value: 'quick', label: 'Quick' },
+  { value: 'standard', label: 'Standard' },
+  { value: 'deep', label: 'Deep' },
+];
+
+const RESEARCH_RECENCY_OPTIONS: { value: AoiResearchRecency; label: string }[] = [
+  { value: 'any', label: 'Any time' },
+  { value: 'day', label: 'Past day' },
+  { value: 'week', label: 'Past week' },
+  { value: 'month', label: 'Past month' },
+  { value: 'year', label: 'Past year' },
+];
 
 type DetailTab = 'sources' | 'evidence';
 
@@ -81,6 +98,10 @@ const AoiResearchPage: React.FC = () => {
   const [artifactLoading, setArtifactLoading] = useState(false);
   const [errorText, setErrorText] = useState<string | null>(null);
   const [flashText, setFlashText] = useState<string | null>(null);
+  const [newRequest, setNewRequest] = useState('');
+  const [newMode, setNewMode] = useState<AoiResearchMode>('standard');
+  const [newRecency, setNewRecency] = useState<AoiResearchRecency>('any');
+  const [starting, setStarting] = useState(false);
 
   const selectedRun = useMemo(
     () => runs.find((run) => run.id === selectedRunId) ?? runs[0] ?? null,
@@ -119,6 +140,39 @@ const AoiResearchPage: React.FC = () => {
       setLoading(false);
     }
   }, []);
+
+  const canStart = newRequest.trim().length > 0 && !starting;
+
+  const submitResearch = useCallback(async () => {
+    const trimmed = newRequest.trim();
+    if (!trimmed || starting) {
+      return;
+    }
+    try {
+      setStarting(true);
+      setErrorText(null);
+      const response = await startAoiResearchRun({
+        sessionPath,
+        request: trimmed,
+        mode: newMode,
+        recency: newRecency,
+      });
+      setNewRequest('');
+      setFlashText('Research started.');
+      // User-initiated data mutation: notify the agent that a run now exists.
+      // Not called from an Agent-dispatched handler, so no duplicate reporting.
+      reportAction(APP_ID, 'CREATE_AOI_RESEARCH_RUN', {
+        runId: response.run.id,
+        request: trimmed,
+      });
+      await loadRuns();
+      setSelectedRunId(response.run.id);
+    } catch (error) {
+      setErrorText(error instanceof Error ? error.message : String(error));
+    } finally {
+      setStarting(false);
+    }
+  }, [loadRuns, newMode, newRecency, newRequest, sessionPath, starting]);
 
   const loadArtifact = useCallback(
     async (runId: string, artifact: AoiResearchArtifactName): Promise<string> => {
@@ -289,6 +343,76 @@ const AoiResearchPage: React.FC = () => {
             <RefreshCw size={15} />
           </button>
         </div>
+
+        <form
+          className={styles.composer}
+          data-testid="aoi-research-composer"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submitResearch();
+          }}
+        >
+          <textarea
+            className={styles.composerInput}
+            data-testid="aoi-research-new-request"
+            value={newRequest}
+            onChange={(event) => setNewRequest(event.target.value)}
+            onKeyDown={(event) => {
+              if ((event.metaKey || event.ctrlKey) && event.key === 'Enter' && canStart) {
+                event.preventDefault();
+                void submitResearch();
+              }
+            }}
+            placeholder="Ask Aoi to research a topic..."
+            rows={2}
+            disabled={starting}
+          />
+          <div className={styles.composerRow}>
+            <select
+              className={styles.composerSelect}
+              data-testid="aoi-research-mode"
+              value={newMode}
+              onChange={(event) => setNewMode(event.target.value as AoiResearchMode)}
+              disabled={starting}
+              title="Research depth"
+            >
+              {RESEARCH_MODE_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <select
+              className={styles.composerSelect}
+              data-testid="aoi-research-recency"
+              value={newRecency}
+              onChange={(event) => setNewRecency(event.target.value as AoiResearchRecency)}
+              disabled={starting}
+              title="Source recency"
+            >
+              {RESEARCH_RECENCY_OPTIONS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+            <button
+              type="submit"
+              className={styles.composerStart}
+              data-testid="aoi-research-start-btn"
+              disabled={!canStart}
+              title="Start a new research run"
+            >
+              <Sparkles size={14} />
+              {starting ? 'Starting' : 'Research'}
+            </button>
+          </div>
+          {!selectedRun && errorText ? (
+            <div className={styles.composerError} data-testid="aoi-research-composer-error">
+              {errorText}
+            </div>
+          ) : null}
+        </form>
 
         <div className={styles.statStrip}>
           <div>
