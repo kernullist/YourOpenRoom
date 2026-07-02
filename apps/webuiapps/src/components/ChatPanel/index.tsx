@@ -43,6 +43,14 @@ import {
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
 import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
+import { buildAoiMusicRecommendation, type AoiMusicMood } from '@/lib/aoiMusicRecommendation';
+import {
+  DEFAULT_AOI_IDLE_MUSIC_STATE,
+  recordIdleMusicOffered,
+  recordIdleMusicOutcome,
+  shouldOfferIdleMusic,
+  type AoiIdleMusicLearningState,
+} from '@/lib/aoiIdleMusicNudge';
 import {
   LLM_REASONING_EFFORTS,
   LLM_REASONING_SUMMARIES,
@@ -1225,6 +1233,136 @@ function detectPreferredLanguage(
   if (locale.startsWith('ja')) return 'ja';
   if (locale.startsWith('zh')) return 'zh';
   return 'en';
+}
+
+// --- Aoi idle music nudge: localized copy + persisted learning state ---------
+
+type IdleMusicLang = 'ko' | 'ja' | 'zh' | 'en';
+
+// Card body + chip labels for the "want some music?" nudge, per mood and
+// language. English mood lines mirror aoiMusicRecommendation's why text.
+function buildIdleMusicCardCopy(
+  mood: AoiMusicMood,
+  lang: IdleMusicLang,
+): { text: string; playPrompt: string; dismissPrompt: string } {
+  const chips = {
+    ko: { play: '재생', dismiss: '다음에' },
+    ja: { play: '再生', dismiss: 'あとで' },
+    zh: { play: '播放', dismiss: '待会儿' },
+    en: { play: 'Play', dismiss: 'Not now' },
+  }[lang];
+  const lines: Record<IdleMusicLang, Record<AoiMusicMood, string>> = {
+    ko: {
+      focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
+      chill: '잠깐 여유로운 시간이네. 잔잔한 곡 하나 배경으로 깔아줄까?',
+      upbeat: '이제 하루 시작하는 참이네. 기분 올릴 만한 곡 틀어줄까?',
+      ambient: '늦은 시간이라 조용하네. 은은한 사운드 하나 깔아줄까?',
+    },
+    ja: {
+      focus: 'ずっと集中してたね。作業の間、集中できる音楽をかけようか?',
+      chill: '少し落ち着いた時間だね。ゆったりした曲を流そうか?',
+      upbeat: '一日の始まりだね。気分が上がる曲をかけようか?',
+      ambient: '夜も遅くて静かだね。控えめなアンビエントを流そうか?',
+    },
+    zh: {
+      focus: '你已经专注很久了。要不要放点专注音乐陪你工作?',
+      chill: '看起来是个放松的时刻。要不要放个轻松的背景音乐?',
+      upbeat: '正是开始一天的时候。要来点带劲的音乐吗?',
+      ambient: '夜深人静。要不要放点氛围音乐垫在下面?',
+    },
+    en: {
+      focus: 'You have been heads-down for a while. Want some focus music while you work?',
+      chill: 'Looks like a quieter moment. Want a chill mix in the background?',
+      upbeat: 'Starting up for the day. Want something upbeat to get going?',
+      ambient: 'Late and quiet. Want some ambient sound to sit under the work?',
+    },
+  };
+  return {
+    text: lines[lang][mood],
+    playPrompt: `▶ ${chips.play}`,
+    dismissPrompt: chips.dismiss,
+  };
+}
+
+function buildIdleMusicPlayAck(query: string, lang: IdleMusicLang): string {
+  switch (lang) {
+    case 'ko':
+      return `틀어줄게. 유튜브에서 "${query}" 찾아서 재생 준비해뒀어.`;
+    case 'ja':
+      return `再生するね。YouTubeで「${query}」を用意したよ。`;
+    case 'zh':
+      return `好，我在 YouTube 上找了 "${query}" 准备播放。`;
+    default:
+      return `Playing it. I lined up "${query}" in YouTube for you.`;
+  }
+}
+
+function buildIdleMusicDismissAck(lang: IdleMusicLang): string {
+  switch (lang) {
+    case 'ko':
+      return '알겠어. 필요하면 말해줘.';
+    case 'ja':
+      return '了解。必要になったら言ってね。';
+    case 'zh':
+      return '好的，需要的话随时说。';
+    default:
+      return 'No problem. Just say the word when you want some.';
+  }
+}
+
+function buildIdleMusicErrorAck(lang: IdleMusicLang): string {
+  switch (lang) {
+    case 'ko':
+      return '음악을 트는 데 문제가 있었어. 유튜브 앱을 열어두고 다시 시도해줘.';
+    case 'ja':
+      return '再生に失敗したよ。YouTubeアプリを開いてもう一度試してみて。';
+    case 'zh':
+      return '播放出错了。请打开 YouTube 应用后再试一次。';
+    default:
+      return 'I could not start the music. Open the YouTube app and try again.';
+  }
+}
+
+const AOI_IDLE_MUSIC_STORAGE_KEY = 'aoi:idleMusicState:v1';
+
+function loadAoiIdleMusicState(): AoiIdleMusicLearningState {
+  const fallback: AoiIdleMusicLearningState = {
+    ...DEFAULT_AOI_IDLE_MUSIC_STATE,
+    moodFeedback: {},
+    recentQueries: [],
+  };
+  try {
+    const raw = localStorage.getItem(AOI_IDLE_MUSIC_STORAGE_KEY);
+    if (!raw) {
+      return fallback;
+    }
+    const parsed = JSON.parse(raw) as Partial<AoiIdleMusicLearningState> | null;
+    if (
+      parsed &&
+      parsed.version === DEFAULT_AOI_IDLE_MUSIC_STATE.version &&
+      Array.isArray(parsed.recentQueries) &&
+      typeof parsed.moodFeedback === 'object' &&
+      parsed.moodFeedback !== null
+    ) {
+      return {
+        version: DEFAULT_AOI_IDLE_MUSIC_STATE.version,
+        moodFeedback: parsed.moodFeedback,
+        recentQueries: parsed.recentQueries,
+        lastOfferedAt: typeof parsed.lastOfferedAt === 'number' ? parsed.lastOfferedAt : 0,
+      };
+    }
+  } catch {
+    // Ignore malformed storage and start clean.
+  }
+  return fallback;
+}
+
+function saveAoiIdleMusicState(state: AoiIdleMusicLearningState): void {
+  try {
+    localStorage.setItem(AOI_IDLE_MUSIC_STORAGE_KEY, JSON.stringify(state));
+  } catch {
+    // Best-effort persistence; ignore quota / privacy-mode failures.
+  }
 }
 
 function buildMemoryAckMessage(
@@ -4936,6 +5074,33 @@ const ChatPanel: React.FC<{
   }, [emitAssistantMessage]);
 
   // Send message
+  // Aoi idle music nudge state. The learning state is persisted in localStorage
+  // (loaded once on mount); lastUserActivityAt drives the in-panel idle timer;
+  // the pending-offer ref lets handleSend recognize a tapped play/dismiss chip.
+  const idleMusicStateRef = useRef<AoiIdleMusicLearningState>(DEFAULT_AOI_IDLE_MUSIC_STATE);
+  const lastUserActivityAtRef = useRef<number>(Date.now());
+  const pendingIdleMusicOfferRef = useRef<{
+    playPrompt: string;
+    dismissPrompt: string;
+    query: string;
+    mood: AoiMusicMood;
+  } | null>(null);
+
+  useEffect(() => {
+    idleMusicStateRef.current = loadAoiIdleMusicState();
+  }, []);
+
+  // Language for idle-music copy, resolved from the latest user turn like TTS.
+  const resolveIdleMusicLang = useCallback((): IdleMusicLang => {
+    const latestUserText =
+      [...chatHistoryRef.current].reverse().find((message) => message.role === 'user')?.content ??
+      '';
+    return detectPreferredLanguage(
+      latestUserText,
+      normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+    );
+  }, []);
+
   const handleSend = useCallback(
     async (overrideText?: string) => {
       const text = (overrideText ?? input).trim();
@@ -4951,6 +5116,8 @@ const ChatPanel: React.FC<{
             )
           : '');
       if (!messageText || loading) return;
+      // Any send (typed or a tapped chip) counts as activity: reset the idle clock.
+      lastUserActivityAtRef.current = Date.now();
       const { mainConfig: liveMainConfig, dialogConfig: liveDialogConfig } =
         await refreshConversationConfigs();
       const outgoingUserMessage: ChatMessage = {
@@ -5263,6 +5430,67 @@ const ChatPanel: React.FC<{
         } catch (err) {
           console.error('[ChatPanel] Direct PE Analyst open dispatch failed', err);
         }
+      }
+
+      // Aoi idle music nudge: answer a pending "want some music?" offer here so a
+      // tapped chip does not fall through to the LLM. Play dispatches the exact
+      // recommended query (no parser round-trip); dismiss / anything-else folds an
+      // accept(+) / skip(-) signal into the learning state.
+      const pendingIdleMusicOffer = pendingIdleMusicOfferRef.current;
+      if (pendingIdleMusicOffer) {
+        pendingIdleMusicOfferRef.current = null;
+        if (messageText === pendingIdleMusicOffer.playPrompt) {
+          idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
+            mood: pendingIdleMusicOffer.mood,
+            accepted: true,
+          });
+          saveAoiIdleMusicState(idleMusicStateRef.current);
+          const lang = resolveIdleMusicLang();
+          try {
+            await dispatchAgentAction({
+              app_id: YOUTUBE_APP_ID,
+              action_type: 'OPEN_SEARCH',
+              params: { query: pendingIdleMusicOffer.query },
+            });
+            const ack = buildIdleMusicPlayAck(pendingIdleMusicOffer.query, lang);
+            emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
+            recordAoiMemoryTurn({
+              userMessage: messageText,
+              assistantMessage: ack,
+              toolCalls: ['direct:aoi_idle_music_play'],
+              source: 'direct_action',
+              llmConfig: selectedConfig,
+            });
+          } catch (err) {
+            console.error('[ChatPanel] Idle music play dispatch failed', err);
+            emitAssistantMessage({
+              id: String(Date.now()),
+              role: 'assistant',
+              content: buildIdleMusicErrorAck(lang),
+            });
+          }
+          return;
+        }
+        if (messageText === pendingIdleMusicOffer.dismissPrompt) {
+          idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
+            mood: pendingIdleMusicOffer.mood,
+            accepted: false,
+          });
+          saveAoiIdleMusicState(idleMusicStateRef.current);
+          emitAssistantMessage({
+            id: String(Date.now()),
+            role: 'assistant',
+            content: buildIdleMusicDismissAck(resolveIdleMusicLang()),
+          });
+          return;
+        }
+        // Implicit skip: the user moved on to something else. Record the signal
+        // and fall through so their actual message is handled normally.
+        idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
+          mood: pendingIdleMusicOffer.mood,
+          accepted: false,
+        });
+        saveAoiIdleMusicState(idleMusicStateRef.current);
       }
 
       if (!hasImageAttachments && isDirectYouTubeOpenIntent(text)) {
@@ -7873,6 +8101,83 @@ const ChatPanel: React.FC<{
     updateAoiAutonomyPanelSettingsFromPanel,
     visible,
   ]);
+
+  // Aoi idle music nudge: mirror the live gate inputs into a ref so the interval
+  // below reads them without being torn down and recreated on every render.
+  const idleMusicGateRef = useRef({
+    autonomyEnabled: false,
+    quietMode: false,
+    visible: false,
+    loading: false,
+  });
+  useEffect(() => {
+    idleMusicGateRef.current = {
+      autonomyEnabled: aoiAutonomyStatus?.policy?.enabled === true,
+      quietMode: aoiAutonomyPanelSettings.quietMode === true,
+      visible,
+      loading,
+    };
+  }, [aoiAutonomyStatus?.policy?.enabled, aoiAutonomyPanelSettings.quietMode, visible, loading]);
+
+  // When the user has been quietly idle in the panel, offer a mood-based song.
+  // Tapping the play chip plays it in the YouTube app (handled in handleSend).
+  useEffect(() => {
+    const IDLE_MUSIC_CHECK_INTERVAL_MS = 30_000;
+    const timer = window.setInterval(() => {
+      const gate = idleMusicGateRef.current;
+      const now = Date.now();
+      // Only accrue idle while the panel is visible and Aoi is not mid-response;
+      // otherwise keep resetting so returning to the panel does not fire instantly.
+      if (!gate.visible || gate.loading) {
+        lastUserActivityAtRef.current = now;
+        return;
+      }
+      if (pendingIdleMusicOfferRef.current) {
+        return;
+      }
+      const state = idleMusicStateRef.current;
+      const musicActive = getWindows().some((win) => win.appId === YOUTUBE_APP_ID);
+      if (
+        !shouldOfferIdleMusic({
+          now,
+          userIdleMs: now - lastUserActivityAtRef.current,
+          autonomyEnabled: gate.autonomyEnabled,
+          quietMode: gate.quietMode,
+          musicActive,
+          lastOfferedAt: state.lastOfferedAt,
+        })
+      ) {
+        return;
+      }
+      const recommendation = buildAoiMusicRecommendation({
+        now,
+        recentQueries: state.recentQueries,
+        moodFeedback: state.moodFeedback,
+      });
+      const copy = buildIdleMusicCardCopy(recommendation.mood, resolveIdleMusicLang());
+      pendingIdleMusicOfferRef.current = {
+        playPrompt: copy.playPrompt,
+        dismissPrompt: copy.dismissPrompt,
+        query: recommendation.query,
+        mood: recommendation.mood,
+      };
+      idleMusicStateRef.current = recordIdleMusicOffered(state, {
+        query: recommendation.query,
+        now,
+      });
+      saveAoiIdleMusicState(idleMusicStateRef.current);
+      emitAssistantMessage(
+        {
+          id: `aoi-idle-music-${now}`,
+          role: 'assistant',
+          content: copy.text,
+          suggestedReplies: [copy.playPrompt, copy.dismissPrompt],
+        },
+        { updateSuggestedReplies: true, speak: false },
+      );
+    }, IDLE_MUSIC_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [emitAssistantMessage, resolveIdleMusicLang]);
 
   useEffect(() => {
     if (
