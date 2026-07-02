@@ -1543,8 +1543,8 @@ export function runAoiAutonomySessionOpenWakeup(params: {
     ...params,
     reason: typeof params.userIdleMs === 'number' ? 'user_return_idle' : 'session_open',
     budget: {
-      maxSchedulerRuntimeMs: 15000,
-      maxBackgroundTickRuntimeMs: 12000,
+      maxSchedulerRuntimeMs: 150000,
+      maxBackgroundTickRuntimeMs: 120000,
       maxSourceCount: 3,
       maxGeneratedProposalCount: 2,
       wakeupCooldownMs: 60000,
@@ -1564,8 +1564,8 @@ export function runAoiAutonomyManualWakeup(params: {
     ...params,
     reason: 'manual_refresh',
     budget: {
-      maxSchedulerRuntimeMs: 15000,
-      maxBackgroundTickRuntimeMs: 12000,
+      maxSchedulerRuntimeMs: 150000,
+      maxBackgroundTickRuntimeMs: 120000,
       maxSourceCount: 3,
       maxGeneratedProposalCount: 2,
       wakeupCooldownMs: 0,

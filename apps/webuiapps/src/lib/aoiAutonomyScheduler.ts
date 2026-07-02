@@ -91,8 +91,13 @@ const MAX_RECENT_WAKEUPS = 20;
 const DEFAULT_SOURCE_TTL_MS = 5 * 60 * 1000;
 const DEFAULT_SOURCE_COOLDOWN_MS = 60 * 1000;
 const DEFAULT_WAKEUP_COOLDOWN_MS = 30 * 1000;
-const DEFAULT_SCHEDULER_RUNTIME_MS = 15_000;
-const DEFAULT_BACKGROUND_TICK_RUNTIME_MS = 12_000;
+// The background tick hosts LLM reflection / brief / goal synthesis when the
+// per-session network "thinking" switch is on, so its budget must absorb
+// multi-call LLM latency (the deterministic-era 12s budget failed every
+// network-enabled tick). The scheduler budget wraps sources + tick + scout +
+// the embed backfill, so it must stay above the tick budget.
+const DEFAULT_SCHEDULER_RUNTIME_MS = 150_000;
+const DEFAULT_BACKGROUND_TICK_RUNTIME_MS = 120_000;
 const DEFAULT_MAX_SOURCE_COUNT = 3;
 const DEFAULT_MAX_GENERATED_PROPOSALS = 2;
 
@@ -302,7 +307,7 @@ function normalizeBudget(
       budget?.maxSchedulerRuntimeMs,
       DEFAULT_AOI_AUTONOMY_WAKEUP_BUDGET.maxSchedulerRuntimeMs,
       1,
-      120_000,
+      300_000,
     ),
     maxBackgroundTickRuntimeMs: clampNumber(
       budget?.maxBackgroundTickRuntimeMs,

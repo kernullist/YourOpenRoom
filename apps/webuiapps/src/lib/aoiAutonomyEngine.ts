@@ -147,8 +147,10 @@ const BODY_MAX_CHARS = 320;
 const REASON_MAX_CHARS = 240;
 const CLAIM_MAX_CHARS = 240;
 const DEFAULT_BACKGROUND_TICK_MIN_INTERVAL_MS = 60_000;
-const DEFAULT_BACKGROUND_TICK_LOCK_MS = 120_000;
-const DEFAULT_BACKGROUND_TICK_MAX_RUNTIME_MS = 45_000;
+// The lock must outlive the longest budgeted tick (2x the 120s runtime budget)
+// so a slow LLM-participating tick cannot lose its lock mid-run.
+const DEFAULT_BACKGROUND_TICK_LOCK_MS = 240_000;
+const DEFAULT_BACKGROUND_TICK_MAX_RUNTIME_MS = 120_000;
 
 function recordAoiEngineTimelineBestEffort(record: () => void): void {
   try {

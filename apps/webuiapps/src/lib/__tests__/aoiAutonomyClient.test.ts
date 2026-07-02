@@ -1134,8 +1134,8 @@ describe('Aoi autonomy client dashboard', () => {
       quietMode: true,
     });
     expect(requestBody.budget).toMatchObject({
-      maxSchedulerRuntimeMs: 15000,
-      maxBackgroundTickRuntimeMs: 12000,
+      maxSchedulerRuntimeMs: 150000,
+      maxBackgroundTickRuntimeMs: 120000,
       maxSourceCount: 3,
       maxGeneratedProposalCount: 2,
       wakeupCooldownMs: 0,
