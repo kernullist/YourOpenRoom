@@ -18,6 +18,7 @@ import {
   aoiCardRiskLabel,
   aoiCardWhatChanged,
   aoiReflectionLanguageInstruction,
+  detectAoiCardLangFromText,
   normalizeAoiCardLang,
 } from '../aoiAutonomyCardI18n';
 
@@ -26,6 +27,16 @@ describe('normalizeAoiCardLang()', () => {
     expect(normalizeAoiCardLang('ko')).toBe('ko');
     expect(normalizeAoiCardLang('ko-KR')).toBe('ko');
     expect(normalizeAoiCardLang('KO')).toBe('ko');
+  });
+
+  it('detects the language from free text by script', () => {
+    expect(detectAoiCardLangFromText('이걸 목표로 관리하자')).toBe('ko');
+    expect(detectAoiCardLangFromText('Windows kernel research 다시 보여줘')).toBe('ko');
+    expect(detectAoiCardLangFromText('お願いします')).toBe('ja');
+    expect(detectAoiCardLangFromText('请帮我看看')).toBe('zh');
+    expect(detectAoiCardLangFromText('show me the latest research')).toBe('en');
+    expect(detectAoiCardLangFromText('')).toBe('en');
+    expect(detectAoiCardLangFromText(null)).toBe('en');
   });
 
   it('maps ja/zh prefixes and falls back to en', () => {

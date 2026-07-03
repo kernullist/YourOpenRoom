@@ -718,7 +718,9 @@ describe('runAoiAutonomyTick()', () => {
     });
     expect(reflections[0]).toMatchObject({
       kind: 'opportunity',
-      claim: expect.stringContaining('Open the matching Aoi research report'),
+      // The user message is Korean, so the tick authors the deterministic
+      // proposal (and thus this reflection's claim) in Korean.
+      claim: expect.stringContaining('일치하는 Aoi 리서치 보고서 열기'),
       evidenceRefs: expect.arrayContaining(['research:aoi-research-done-001/report']),
       proposedActions: expect.arrayContaining(['read_research_artifact']),
     });

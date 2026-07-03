@@ -35,6 +35,25 @@ function pick(lang: AoiCardLang, table: { ko: string; en: string }): string {
   return lang === 'ko' ? table.ko : table.en;
 }
 
+// Detect the card language from free text (e.g. the latest user message) by
+// script. Mirrors the chat's own reply-language detection so proposals are
+// authored in the same language the user is conversing in. Empty/Latin text ->
+// 'en'. Used server-side by the autonomy tick, which receives latestUserMessage
+// but has no browser locale.
+export function detectAoiCardLangFromText(text: string | null | undefined): AoiCardLang {
+  const value = text ?? '';
+  if (/[가-힣]/.test(value)) {
+    return 'ko';
+  }
+  if (/[぀-ヿ]/.test(value)) {
+    return 'ja';
+  }
+  if (/[一-鿿]/.test(value)) {
+    return 'zh';
+  }
+  return 'en';
+}
+
 export type AoiCardConfidenceKey =
   | 'low_evidence'
   | 'moderate_confidence'

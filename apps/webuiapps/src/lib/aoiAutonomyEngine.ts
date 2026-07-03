@@ -3,6 +3,7 @@ import type { LLMConfig } from './llmModels';
 import {
   aoiCardProposalText,
   aoiReflectionLanguageInstruction,
+  detectAoiCardLangFromText,
   type AoiCardLang,
 } from './aoiAutonomyCardI18n';
 import {
@@ -2595,6 +2596,12 @@ export async function runAoiAutonomyTick(
   const now = params.now ?? Date.now();
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const latestUserMessage = normalizeWhitespace(params.latestUserMessage || '');
+  // Author proposals in the operator's language. Prefer an explicit language, but
+  // when none is supplied (the common path) fall back to the language of the
+  // latest user message -- the same signal the chat uses for reply language --
+  // so a Korean conversation yields Korean proposal text. No signal -> English.
+  const effectiveAoiCardLanguage: AoiCardLang =
+    params.language ?? detectAoiCardLangFromText(latestUserMessage);
   // P1a continuous reasoning: the brief persisted at the end of the PREVIOUS tick.
   // Folded into the recall focus query below so an idle background tick recalls
   // memory about what Aoi was working on. Null on the first tick / older sessions
@@ -2833,7 +2840,7 @@ export async function runAoiAutonomyTick(
     latestUserMessage,
     now,
     extraFailures: kiraOutcomeResult.failureInputs,
-    ...(params.language ? { lang: params.language } : {}),
+    lang: effectiveAoiCardLanguage,
   });
   const llmResult = await runLlmReflection({
     bundle,
@@ -2851,9 +2858,9 @@ export async function runAoiAutonomyTick(
     previousBrief,
     // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
     goalSynthesisEnabled: params.goalSynthesisEnabled,
-    // Author proposal title/body/reason in the operator's configured language so
-    // the card is not shown in English to a non-English operator.
-    ...(params.language ? { language: params.language } : {}),
+    // Author proposal title/body/reason in the operator's language (explicit, or
+    // detected from the latest user message) so the card matches the conversation.
+    language: effectiveAoiCardLanguage,
     // Reflection draws from the same rolling daily token ledger as the brief
     // synthesizer, so all auto-path LLM spend is bounded.
     sessionsDir: params.sessionsDir,
