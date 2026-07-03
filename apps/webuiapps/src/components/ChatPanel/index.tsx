@@ -9076,7 +9076,8 @@ const ChatPanel: React.FC<{
                   </span>
                 </div>
                 <div className={styles.aoiInlineSuggestionTitle}>
-                  {sanitizeAoiProposalDisplayText(inlineAoiProposal.title, 120)}
+                  {inlineAoiProposalExplanation?.localizedTitle ??
+                    sanitizeAoiProposalDisplayText(inlineAoiProposal.title, 120)}
                 </div>
                 <div className={styles.aoiInlineSuggestionBody}>
                   {sanitizeAoiProposalDisplayText(

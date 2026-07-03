@@ -40,6 +40,7 @@ import {
   aoiCardEvidenceSummary,
   aoiCardLimitedEvidencePrefix,
   aoiCardMessageSummary,
+  aoiCardRecoveryText,
   aoiCardWhatChanged,
   type AoiCardApproveActionKey,
   type AoiCardLang,
@@ -356,6 +357,10 @@ export interface AoiProactiveExplanation {
   approvalBoundary: string;
   details: string[];
   lowEvidence: boolean;
+  // Proposal title in the current UI language. For recovery proposals this is
+  // re-derived from the recoveryPreview so a proposal persisted in another
+  // language still shows a localized title; otherwise it is the stored title.
+  localizedTitle: string;
 }
 
 export interface AoiRecoveryPreviewSummary {
@@ -1754,7 +1759,21 @@ export function buildAoiProactiveExplanation(params: {
   });
   const evidenceCount = params.proposal.evidenceRefs.length;
   const lowEvidence = evidenceCount <= 0 || params.proposal.confidence < 0.55;
-  const reason = sanitizeAoiProposalDisplayText(params.proposal.reason, 180);
+  // A recovery proposal's title/body/reason are fully determined by its
+  // recoveryPreview (failure kind + source), so re-derive them in the current UI
+  // language at render. This re-localizes a proposal that was persisted in another
+  // language (e.g. authored in English by a background tick) without regenerating
+  // it -- the stored text would otherwise stay in its original language.
+  const recoveryPreview = params.proposal.recoveryPreview;
+  const localizedRecoveryText = recoveryPreview
+    ? aoiCardRecoveryText(lang, recoveryPreview.failureKind, {
+        sourceRef: recoveryPreview.sourceRef,
+      })
+    : null;
+  const effectiveTitle = localizedRecoveryText?.title ?? params.proposal.title;
+  const effectiveBody = localizedRecoveryText?.body ?? params.proposal.body;
+  const effectiveReasonSource = localizedRecoveryText?.reason ?? params.proposal.reason;
+  const reason = sanitizeAoiProposalDisplayText(effectiveReasonSource, 180);
   const lowEvidenceFallbackReason =
     lang === 'ko' ? '제안으로만 남겨두는 게 좋겠습니다.' : 'this should stay as a suggestion.';
   const whyNow = lowEvidence
@@ -1774,11 +1793,11 @@ export function buildAoiProactiveExplanation(params: {
   // complete, short sentence. An LLM-authored body can be one long clause with no
   // early terminator; slicing it at 150 chars produced a mid-sentence "..."
   // fragment. In that case fall back to the (short, clean) title instead.
-  const bodySentence = firstSentenceOf(params.proposal.body);
+  const bodySentence = firstSentenceOf(effectiveBody);
   const bodySentenceUsable =
     bodySentence.length > 0 && bodySentence.length <= 150 && /[.!?]$/.test(bodySentence.trim());
   const subject = sanitizeAoiProposalDisplayText(
-    bodySentenceUsable ? bodySentence : params.proposal.title || bodySentence || whatChanged,
+    bodySentenceUsable ? bodySentence : effectiveTitle || bodySentence || whatChanged,
     150,
   );
   const approveAction = describeAoiApproveAction(params.proposal, action, lang);
@@ -1852,6 +1871,7 @@ export function buildAoiProactiveExplanation(params: {
     approvalBoundary,
     details,
     lowEvidence,
+    localizedTitle: sanitizeAoiProposalDisplayText(effectiveTitle, 120),
   };
 }
 
@@ -1904,6 +1924,7 @@ export function buildAoiBlockedProactiveExplanation(params: {
     approvalBoundary,
     details,
     lowEvidence: evidenceCount <= 0,
+    localizedTitle: sanitizeAoiProposalDisplayText(params.blockedProposal.title, 120),
   };
 }
 

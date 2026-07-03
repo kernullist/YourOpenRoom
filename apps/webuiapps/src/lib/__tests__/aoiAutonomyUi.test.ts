@@ -2030,8 +2030,53 @@ describe('Aoi autonomy UI helpers', () => {
     });
 
     expect(explanation.whatChanged).toContain('narrower recovery proposal');
-    expect(explanation.messageSummary).toContain('Kira validation failed');
+    // Recovery text is re-derived from recoveryPreview (failure kind + source),
+    // so the title/body come from the localized recovery table, not the fixture's
+    // stored title/reason.
+    expect(explanation.localizedTitle).toBe('Prepare Kira follow-up');
+    expect(explanation.messageSummary).toContain('failed Kira task');
     expect(explanation.messageSummary).toContain('Approve to');
+  });
+
+  it('re-localizes a recovery proposal persisted in English to Korean at render', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        trigger: 'failure_recovery',
+        // Stored (persisted) text is English -- authored by an earlier tick.
+        title: 'Refresh research with source check',
+        body: 'That failed because validation needs enough accepted sources to support the claim. I can prepare a narrower follow-up, ask one question, or stop.',
+        reason:
+          'Aoi classified research:aoi-research-x as research_insufficient_sources and found a bounded recovery action.',
+        risk: 'medium',
+        suggestedTools: ['start_research'],
+        riskSignals: ['failure-recovery', 'research_insufficient_sources'],
+        recoveryPreview: {
+          version: 1,
+          failureKind: 'research_insufficient_sources',
+          rootCauseSummary: 'Not enough accepted sources.',
+          evidenceRefs: ['research:aoi-research-x'],
+          proposedAction: {
+            kind: 'refresh_research',
+            label: 'Refresh research with source check',
+            reason: 'Retry with a source check.',
+          },
+          whyNarrowerOrSafer: 'Bounded to the failed run.',
+          retryCount: 0,
+          maxRetryCount: 1,
+          cooldownActive: false,
+          sourceRef: 'research:aoi-research-x',
+          failureSignature: 'failure:research_insufficient_sources:test',
+          nonGoals: ['Do not broaden scope.'],
+        },
+      }),
+      policy: makePolicy({ level: 'L4' }),
+      lang: 'ko',
+    });
+
+    expect(explanation.localizedTitle).toBe('출처 점검하며 리서치 재시도');
+    expect(explanation.messageSummary).toContain('실패했습니다');
+    expect(explanation.messageSummary).not.toContain('That failed because');
+    expect(explanation.messageSummary).toContain('승인하면');
   });
 
   it('does not claim a readable report for a failure-recovery proposal', () => {
