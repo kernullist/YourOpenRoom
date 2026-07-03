@@ -1304,6 +1304,7 @@ type NudgeLang = 'ko' | 'ja' | 'zh' | 'en';
 function buildIdleMusicCardCopy(
   mood: AoiMusicMood,
   lang: NudgeLang,
+  query: string,
 ): { text: string; playPrompt: string; dismissPrompt: string } {
   const chips = {
     ko: { play: '재생', dismiss: '다음에' },
@@ -1311,6 +1312,7 @@ function buildIdleMusicCardCopy(
     zh: { play: '播放', dismiss: '待会儿' },
     en: { play: 'Play', dismiss: 'Not now' },
   }[lang];
+  const recLabel = { ko: '추천', ja: 'おすすめ', zh: '推荐', en: 'Pick' }[lang];
   const lines: Record<NudgeLang, Record<AoiMusicMood, string>> = {
     ko: {
       focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
@@ -1337,8 +1339,9 @@ function buildIdleMusicCardCopy(
       ambient: 'Late and quiet. Want some ambient sound to sit under the work?',
     },
   };
+  const recommendation = query.trim() ? `\n🎵 ${recLabel}: "${query.trim()}"` : '';
   return {
-    text: lines[lang][mood],
+    text: `${lines[lang][mood]}${recommendation}`,
     playPrompt: `▶ ${chips.play}`,
     dismissPrompt: chips.dismiss,
   };
@@ -8434,7 +8437,11 @@ const ChatPanel: React.FC<{
         recentQueries: state.recentQueries,
         moodFeedback: state.moodFeedback,
       });
-      const copy = buildIdleMusicCardCopy(recommendation.mood, resolveNudgeLang());
+      const copy = buildIdleMusicCardCopy(
+        recommendation.mood,
+        resolveNudgeLang(),
+        recommendation.query,
+      );
       pendingIdleMusicOfferRef.current = {
         playPrompt: copy.playPrompt,
         dismissPrompt: copy.dismissPrompt,
