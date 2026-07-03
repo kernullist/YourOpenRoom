@@ -5269,12 +5269,14 @@ const ChatPanel: React.FC<{
 
   // Language for idle-music copy, resolved from the latest user turn like TTS.
   const resolveNudgeLang = useCallback((): NudgeLang => {
-    const latestUserText =
-      [...chatHistoryRef.current].reverse().find((message) => message.role === 'user')?.content ??
-      '';
-    return detectPreferredLanguage(
-      latestUserText,
+    // Match the proactive card: derive from the whole conversation (any role, so
+    // a Korean persona turn counts even before the user types), then the app
+    // language, then English. Otherwise idle music / news nudges default to
+    // English when there is no user message yet.
+    return deriveAoiCardLangFromMessages(
+      chatHistoryRef.current,
       normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+      getVibeInfo().systemSettings?.language?.current,
     );
   }, []);
 
