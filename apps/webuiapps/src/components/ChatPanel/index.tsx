@@ -8129,21 +8129,33 @@ const ChatPanel: React.FC<{
       aoiInlineSnoozedProposalIds,
     ],
   );
-  // Card language comes from the app's own language setting, not navigator or the
-  // global i18n layer (which drops Korean to English because 'ko' is not an
-  // enabled locale). This keeps the proactive card in the operator's language.
   const aoiVibeInfo = useVibeInfo();
   // Unlike the iframe apps (each calls fetchVibeInfo on mount), the host chat
-  // panel never populated vibe info, so systemSettings stayed null and the card
-  // language fell back to English. Fetch once on mount; it is cached and
-  // idempotent, and useVibeInfo re-renders when it resolves.
+  // panel never populated vibe info. Fetch once on mount so the app language
+  // setting is available as a fallback (cached/idempotent).
   useEffect(() => {
     void fetchVibeInfo().catch((error) => console.warn('[ChatPanel] fetchVibeInfo failed:', error));
   }, []);
-  const aoiCardLang: AoiCardLang = useMemo(
-    () => normalizeAoiCardLang(aoiVibeInfo.systemSettings?.language?.current),
-    [aoiVibeInfo.systemSettings?.language?.current],
-  );
+  // Resolve the card language from the SAME signal the assistant uses to pick
+  // its reply language: the conversation language of the latest user turn. In
+  // this app "Korean" comes from how the user converses, not a stored app
+  // setting, so systemSettings is often unset/English. Priority: conversation
+  // language -> app language setting -> English. Honors an explicit English
+  // response mode (detectPreferredLanguage returns 'en' for it).
+  const aoiCardLang: AoiCardLang = useMemo(() => {
+    const mode = normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode);
+    const latestUserText =
+      [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
+    const conversationLang = detectPreferredLanguage(latestUserText, mode);
+    if (conversationLang !== 'en') {
+      return conversationLang;
+    }
+    return normalizeAoiCardLang(aoiVibeInfo.systemSettings?.language?.current);
+  }, [
+    messages,
+    conversationPreferences?.responseLanguageMode,
+    aoiVibeInfo.systemSettings?.language?.current,
+  ]);
   const inlineAoiProposalActionPresentation = useMemo(
     () =>
       inlineAoiProposal
