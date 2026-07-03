@@ -60,6 +60,7 @@ import type {
   AoiVoiceRenderDecision,
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
+import type { AoiCardLang } from './aoiAutonomyCardI18n';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
 import type { AoiFieldEvent } from './aoiFieldEventLedger';
 import type { AoiFieldFeedbackLearningSummary } from './aoiFieldFeedbackLearning';
@@ -1508,6 +1509,7 @@ export async function runAoiAutonomyWakeup(params: {
   budget?: Partial<AoiAutonomyWakeupBudget>;
   quietMode?: boolean;
   userIdleMs?: number;
+  language?: AoiCardLang;
 }): Promise<AoiAutonomyWakeupResult> {
   const response = await fetch(`${API_PREFIX}/wakeup`, {
     method: 'POST',
@@ -1521,6 +1523,7 @@ export async function runAoiAutonomyWakeup(params: {
       budget: params.budget,
       quietMode: params.quietMode,
       userIdleMs: params.userIdleMs,
+      language: params.language,
     }),
   });
   const payload = await readJsonRecord(response, 'Failed to run Aoi autonomy wakeup.');
@@ -1538,6 +1541,7 @@ export function runAoiAutonomySessionOpenWakeup(params: {
   llmConfig?: unknown;
   quietMode?: boolean;
   userIdleMs?: number;
+  language?: AoiCardLang;
 }): Promise<AoiAutonomyWakeupResult> {
   return runAoiAutonomyWakeup({
     ...params,

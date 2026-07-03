@@ -3,6 +3,7 @@ import { resolve } from 'path';
 import type { Plugin } from 'vite';
 import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
 import { runAoiAutonomyBackgroundTick } from './aoiAutonomyEngine';
+import { normalizeAoiCardLang } from './aoiAutonomyCardI18n';
 import {
   resolveAoiAutonomyBackgroundConfigFromEnv,
   startAoiAutonomyBackgroundRunner,
@@ -1559,6 +1560,9 @@ export async function handleAoiAutonomyRequest(
         budget: getWakeupBudgetFromBody(body.budget),
         quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
+        ...(typeof body.language === 'string'
+          ? { language: normalizeAoiCardLang(body.language) }
+          : {}),
       });
       writeJson(res, 200, result);
       return true;

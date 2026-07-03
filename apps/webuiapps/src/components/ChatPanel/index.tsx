@@ -350,7 +350,7 @@ import {
   normalizeAoiCardLang,
   type AoiCardLang,
 } from '@/lib/aoiAutonomyCardI18n';
-import { fetchVibeInfo, useVibeInfo } from '@/lib/vibeInfo';
+import { fetchVibeInfo, getVibeInfo, useVibeInfo } from '@/lib/vibeInfo';
 import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import {
@@ -1255,6 +1255,29 @@ function detectPreferredLanguage(
   if (locale.startsWith('ja')) return 'ja';
   if (locale.startsWith('zh')) return 'zh';
   return 'en';
+}
+
+// Language for the Aoi proactive card. Proactive cards can appear before the
+// user has typed anything -- in this app "Korean" then comes only from the
+// assistant persona's own messages -- so scan the whole history (any role) for
+// the most recent non-Latin script, not just user turns. Falls back to the app
+// language setting, then English. An explicit English response mode wins.
+function deriveAoiCardLangFromMessages(
+  history: ReadonlyArray<{ role: string; content: unknown }>,
+  responseLanguageMode: ResponseLanguageMode,
+  systemLanguage: string | null | undefined,
+): AoiCardLang {
+  if (responseLanguageMode === 'english') {
+    return 'en';
+  }
+  for (let index = history.length - 1; index >= 0; index -= 1) {
+    const content = history[index]?.content;
+    const detected = detectReplyLanguage(typeof content === 'string' ? content : '');
+    if (detected !== 'en') {
+      return detected;
+    }
+  }
+  return normalizeAoiCardLang(systemLanguage);
 }
 
 // --- Aoi idle music nudge: localized copy + persisted learning state ---------
@@ -3872,6 +3895,14 @@ const ChatPanel: React.FC<{
     const latestUserMessage = [...chatHistoryRef.current]
       .reverse()
       .find((message) => message.role === 'user')?.content;
+    // Author generated proposals in the conversation language too (the tick
+    // otherwise only sees latestUserMessage, which is empty before the user
+    // types -- so a Korean persona-only chat would generate English proposals).
+    const autonomyLanguage = deriveAoiCardLangFromMessages(
+      chatHistoryRef.current,
+      normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+      getVibeInfo().systemSettings?.language?.current,
+    );
     const now = Date.now();
     const lastSeenStorageKey = `${AOI_OPERATOR_LAST_SEEN_STORAGE_PREFIX}${encodeURIComponent(
       sessionPathForAutonomy,
@@ -3896,6 +3927,7 @@ const ChatPanel: React.FC<{
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
         quietMode: aoiAutonomyPanelSettings.quietMode,
+        language: autonomyLanguage,
         ...(typeof userIdleMs === 'number' ? { userIdleMs } : {}),
       });
       if (sessionPathRef.current !== sessionPathForAutonomy) {
@@ -8136,26 +8168,22 @@ const ChatPanel: React.FC<{
   useEffect(() => {
     void fetchVibeInfo().catch((error) => console.warn('[ChatPanel] fetchVibeInfo failed:', error));
   }, []);
-  // Resolve the card language from the SAME signal the assistant uses to pick
-  // its reply language: the conversation language of the latest user turn. In
-  // this app "Korean" comes from how the user converses, not a stored app
-  // setting, so systemSettings is often unset/English. Priority: conversation
-  // language -> app language setting -> English. Honors an explicit English
-  // response mode (detectPreferredLanguage returns 'en' for it).
-  const aoiCardLang: AoiCardLang = useMemo(() => {
-    const mode = normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode);
-    const latestUserText =
-      [...messages].reverse().find((message) => message.role === 'user')?.content ?? '';
-    const conversationLang = detectPreferredLanguage(latestUserText, mode);
-    if (conversationLang !== 'en') {
-      return conversationLang;
-    }
-    return normalizeAoiCardLang(aoiVibeInfo.systemSettings?.language?.current);
-  }, [
-    messages,
-    conversationPreferences?.responseLanguageMode,
-    aoiVibeInfo.systemSettings?.language?.current,
-  ]);
+  // Resolve the card language from the conversation (see
+  // deriveAoiCardLangFromMessages): the most recent non-Latin script across all
+  // turns, then the app language setting, then English.
+  const aoiCardLang: AoiCardLang = useMemo(
+    () =>
+      deriveAoiCardLangFromMessages(
+        messages,
+        normalizeResponseLanguageMode(conversationPreferences?.responseLanguageMode),
+        aoiVibeInfo.systemSettings?.language?.current,
+      ),
+    [
+      messages,
+      conversationPreferences?.responseLanguageMode,
+      aoiVibeInfo.systemSettings?.language?.current,
+    ],
+  );
   const inlineAoiProposalActionPresentation = useMemo(
     () =>
       inlineAoiProposal

@@ -10,6 +10,7 @@ import {
   runAoiAutonomyBackgroundTick,
   type AoiAutonomyBackgroundTickParams,
 } from './aoiAutonomyEngine';
+import type { AoiCardLang } from './aoiAutonomyCardI18n';
 import { loadAoiMcpConnectorsFromConfigFile } from './aoiMcpConnectorsConfigFile';
 import { maybeRunAoiAutonomyLevelPromotion } from './aoiAutonomyLevelPromotionRunner';
 import { DEFAULT_LLM_DAILY_TOKEN_BUDGET, resolveAoiLlmTokenCeiling } from './aoiAutonomyLlmBudget';
@@ -170,6 +171,10 @@ export interface AoiAutonomyWakeupInput {
     runNow?: boolean;
     topicId?: string;
   };
+  // Operator's card language, forwarded to the background tick so generated
+  // proposals are authored in that language. Omitted -> tick derives it from the
+  // latest user message (English when none).
+  language?: AoiCardLang;
   now?: number;
   dependencies?: AoiAutonomySchedulerDependencies;
 }
@@ -1811,6 +1816,7 @@ async function runWakeupInternal(
           sessionPath,
           reason: tickReason,
           latestUserMessage: input.latestUserMessage,
+          ...(input.language ? { language: input.language } : {}),
           llmConfig: budget.allowNetwork ? (input.llmConfig ?? undefined) : undefined,
           // Server-capable reflection chat: the engine's default chat is the
           // browser client (relative /api/llm-proxy) which throws in the Node
