@@ -32,6 +32,18 @@ import {
   type AoiJarvisAutonomyGovernorAuditTrail,
   type AoiJarvisAutonomyGovernorPanelSummary,
 } from './aoiJarvisAutonomyGovernor';
+import {
+  aoiCardActionPresentationText,
+  aoiCardApprovalBoundary,
+  aoiCardApproveActionPhrase,
+  aoiCardConfidenceLabel,
+  aoiCardEvidenceSummary,
+  aoiCardLimitedEvidencePrefix,
+  aoiCardMessageSummary,
+  aoiCardWhatChanged,
+  type AoiCardApproveActionKey,
+  type AoiCardLang,
+} from './aoiAutonomyCardI18n';
 import { buildAoiActionLadderDecisions } from './aoiActionLadder';
 import {
   formatAoiCapabilityBrokerDecisionLine,
@@ -1575,11 +1587,8 @@ export function isAoiGoalCandidateProposal(proposal: Pick<AoiProposal, 'trigger'
   return proposal.trigger === 'goal_candidate';
 }
 
-function formatAoiEvidenceSummary(evidenceCount: number): string {
-  if (evidenceCount <= 0) {
-    return 'Limited evidence: no evidence refs are attached yet.';
-  }
-  return `${evidenceCount} evidence ref${evidenceCount === 1 ? '' : 's'} attached; details stay in the panel.`;
+function formatAoiEvidenceSummary(evidenceCount: number, lang: AoiCardLang = 'en'): string {
+  return aoiCardEvidenceSummary(lang, evidenceCount);
 }
 
 // First sentence of a proposal body, used to surface a human subject line in the
@@ -1600,44 +1609,67 @@ function firstSentenceOf(body: string): string {
 // tool id (read_research_artifact). Maps the proposal's accept action / suggested
 // tools to human words; falls back to "record this review" for a display-only
 // proposal that just logs an approval.
-function describeAoiApproveAction(
+function describeAoiApproveActionKey(
   proposal: AoiProposal,
   action: AoiProposalActionPresentation,
-): string {
+): AoiCardApproveActionKey {
   switch (proposal.acceptAction?.kind) {
     case 'start_research':
-      return 'start a research run';
+      return 'start_research';
     case 'create_kira_work':
-      return 'create one reviewed Kira work item';
+      return 'create_kira_work';
     case 'save_memory':
-      return 'save a memory note';
+      return 'save_memory';
     default:
       break;
   }
   const tools = proposal.suggestedTools ?? [];
-  if (tools.includes('read_research_artifact')) {
-    return 'read that research report';
+  // A failed / recovery-context proposal produced no research report, so never
+  // claim "read that research report" from its read_research_artifact tool hint;
+  // an approval here only records the review. Prevents a self-contradictory card
+  // ("the run failed" + "Approve to read that research report").
+  const isFailureRecoveryContext =
+    Boolean(proposal.recoveryPreview) ||
+    proposal.trigger === 'failure_recovery' ||
+    (proposal.riskSignals ?? []).includes('failure-recovery');
+  if (tools.includes('read_research_artifact') && !isFailureRecoveryContext) {
+    return 'read_research_artifact';
   }
   if (tools.includes('start_research')) {
-    return 'start a research run';
+    return 'start_research';
+  }
+  if (isFailureRecoveryContext) {
+    return 'record_review';
   }
   if (tools.includes('search_web')) {
-    return 'run a quick web search';
+    return 'search_web';
   }
   if (action.primaryRole === 'none') {
-    return 'record this review';
+    return 'record_review';
   }
-  return 'record this approval';
+  return 'record_approval';
 }
 
-function getAoiConfidenceLabel(confidence: number, evidenceCount: number): string {
+function describeAoiApproveAction(
+  proposal: AoiProposal,
+  action: AoiProposalActionPresentation,
+  lang: AoiCardLang = 'en',
+): string {
+  return aoiCardApproveActionPhrase(lang, describeAoiApproveActionKey(proposal, action));
+}
+
+function getAoiConfidenceLabel(
+  confidence: number,
+  evidenceCount: number,
+  lang: AoiCardLang = 'en',
+): string {
   if (evidenceCount <= 0 || confidence < 0.55) {
-    return 'low evidence';
+    return aoiCardConfidenceLabel(lang, 'low_evidence');
   }
   if (confidence < 0.7) {
-    return 'moderate confidence';
+    return aoiCardConfidenceLabel(lang, 'moderate_confidence');
   }
-  return 'good confidence';
+  return aoiCardConfidenceLabel(lang, 'good_confidence');
 }
 
 function triggerLabel(trigger: string): string {
@@ -1645,49 +1677,56 @@ function triggerLabel(trigger: string): string {
   return normalized || 'background check';
 }
 
-function describeAoiProposalChange(proposal: AoiProposal, policyReasons: string[]): string {
+function describeAoiProposalChange(
+  proposal: AoiProposal,
+  policyReasons: string[],
+  lang: AoiCardLang = 'en',
+): string {
   if (proposal.blockedReason || policyReasons.length > 0 || proposal.status === 'blocked') {
-    return 'A policy or evidence gate is blocking the next step.';
+    return aoiCardWhatChanged(lang, 'blocked_gate');
   }
   if (proposal.recoveryPreview) {
-    return `A narrower recovery proposal is available after ${proposal.recoveryPreview.failureKind.replace(/_/g, ' ')}.`;
+    return aoiCardWhatChanged(lang, 'recovery_available', {
+      failureKind: proposal.recoveryPreview.failureKind.replace(/_/g, ' '),
+    });
   }
   if (proposal.trigger === 'attention_broker') {
-    return 'A background event surfaced a proposal worth reviewing.';
+    return aoiCardWhatChanged(lang, 'attention_broker');
   }
   if (proposal.trigger === 'kira_outcome_followup') {
-    return 'Reviewed Kira work produced one follow-up note.';
+    return aoiCardWhatChanged(lang, 'kira_outcome_followup');
   }
   if (proposal.trigger === 'goal_continuation') {
-    return 'The active goal has a proposed next step.';
+    return aoiCardWhatChanged(lang, 'goal_continuation');
   }
   if (proposal.evidenceRefs.length <= 0) {
-    return 'A proposal exists, but supporting evidence is incomplete.';
+    return aoiCardWhatChanged(lang, 'incomplete_evidence');
   }
-  return `A ${triggerLabel(proposal.trigger)} proposal is ready for review.`;
+  return aoiCardWhatChanged(lang, 'generic', { triggerLabel: triggerLabel(proposal.trigger) });
 }
 
 function getAoiApprovalBoundary(
   proposal: AoiProposal,
   action: AoiProposalActionPresentation,
+  lang: AoiCardLang = 'en',
 ): string {
   if (proposal.acceptAction?.kind === 'create_kira_work') {
-    return 'I will not edit files directly; approval only creates one reviewed Kira work item.';
+    return aoiCardApprovalBoundary(lang, 'create_kira_work');
   }
   if (proposal.acceptAction?.kind === 'start_research') {
-    return 'I will not start a research run without explicit approval.';
+    return aoiCardApprovalBoundary(lang, 'start_research');
   }
   if (proposal.acceptAction?.kind === 'save_memory') {
-    return 'I will not promote memory or create a skill draft without explicit approval.';
+    return aoiCardApprovalBoundary(lang, 'save_memory');
   }
   if (proposal.risk === 'high') {
-    return 'High-risk work needs fresh explicit approval before any action.';
+    return aoiCardApprovalBoundary(lang, 'high_risk');
   }
   if (proposal.requiresUserApproval || proposal.acceptAction) {
-    return 'I will not run tools or change state without explicit approval.';
+    return aoiCardApprovalBoundary(lang, 'requires_approval');
   }
   if (action.primaryRole === 'none') {
-    return 'This explanation does not run tools or change state.';
+    return aoiCardApprovalBoundary(lang, 'display_only');
   }
   return action.mutationBoundary;
 }
@@ -1699,7 +1738,9 @@ export function buildAoiProactiveExplanation(params: {
   includeEvidence?: boolean;
   hasKiraPreview?: boolean;
   now?: number;
+  lang?: AoiCardLang;
 }): AoiProactiveExplanation {
+  const lang: AoiCardLang = params.lang ?? 'en';
   const policy = params.policy ?? DEFAULT_AOI_AUTONOMY_POLICY;
   const policyResult = checkAoiProposalPolicy({
     policy,
@@ -1709,15 +1750,18 @@ export function buildAoiProactiveExplanation(params: {
   });
   const action = buildAoiProposalActionPresentation(params.proposal, {
     hasKiraPreview: params.hasKiraPreview,
+    lang,
   });
   const evidenceCount = params.proposal.evidenceRefs.length;
   const lowEvidence = evidenceCount <= 0 || params.proposal.confidence < 0.55;
   const reason = sanitizeAoiProposalDisplayText(params.proposal.reason, 180);
+  const lowEvidenceFallbackReason =
+    lang === 'ko' ? '제안으로만 남겨두는 게 좋겠습니다.' : 'this should stay as a suggestion.';
   const whyNow = lowEvidence
-    ? `Limited evidence: ${reason || 'this should stay as a suggestion.'}`
+    ? aoiCardLimitedEvidencePrefix(lang, reason || lowEvidenceFallbackReason)
     : reason;
   const whatChanged = sanitizeAoiProposalDisplayText(
-    describeAoiProposalChange(params.proposal, policyResult.reasons),
+    describeAoiProposalChange(params.proposal, policyResult.reasons, lang),
     180,
   );
   const safeNextAction = sanitizeAoiProposalDisplayText(action.primaryLabel, 120);
@@ -1726,19 +1770,28 @@ export function buildAoiProactiveExplanation(params: {
   // and showed the internal tool id. Instead surface a short subject (the first
   // sentence of `body`, where the topic is recorded) and describe what Approve
   // does in human words (e.g. "read that research report"), not a tool id.
+  // Prefer the body's first sentence as the subject, but only when it is a
+  // complete, short sentence. An LLM-authored body can be one long clause with no
+  // early terminator; slicing it at 150 chars produced a mid-sentence "..."
+  // fragment. In that case fall back to the (short, clean) title instead.
+  const bodySentence = firstSentenceOf(params.proposal.body);
+  const bodySentenceUsable =
+    bodySentence.length > 0 && bodySentence.length <= 150 && /[.!?]$/.test(bodySentence.trim());
   const subject = sanitizeAoiProposalDisplayText(
-    firstSentenceOf(params.proposal.body) || params.proposal.title || whatChanged,
+    bodySentenceUsable ? bodySentence : params.proposal.title || bodySentence || whatChanged,
     150,
   );
-  const approveAction = describeAoiApproveAction(params.proposal, action);
+  const approveAction = describeAoiApproveAction(params.proposal, action, lang);
   const approvalBoundary = sanitizeAoiProposalDisplayText(
-    getAoiApprovalBoundary(params.proposal, action),
+    getAoiApprovalBoundary(params.proposal, action, lang),
     180,
   );
-  const evidenceSummary = formatAoiEvidenceSummary(evidenceCount);
-  const confidenceLabel = getAoiConfidenceLabel(params.proposal.confidence, evidenceCount);
+  const evidenceSummary = formatAoiEvidenceSummary(evidenceCount, lang);
+  const confidenceLabel = getAoiConfidenceLabel(params.proposal.confidence, evidenceCount, lang);
+  const lowEvidenceRationalePrefix =
+    lang === 'ko' ? '근거 부족, 먼저 검토: ' : 'Low evidence, review first: ';
   const oneLineRationale = sanitizeAoiProposalDisplayText(
-    lowEvidence ? `Low evidence, review first: ${reason || whatChanged}` : reason || whatChanged,
+    lowEvidence ? `${lowEvidenceRationalePrefix}${reason || whatChanged}` : reason || whatChanged,
     180,
   );
   const details = [
@@ -1756,8 +1809,26 @@ export function buildAoiProactiveExplanation(params: {
   // what Approve does. No field labels and no tool ids -- the card already shows
   // the title, the evidence/risk chips, and the "no tools run" hint separately.
   const subjectSentence = /[.!?]$/.test(subject) ? subject : `${subject}.`;
+  // Drop whyNow when it just repeats the subject (common for recovery proposals
+  // whose body and reason both describe the same failed run), so the card reads
+  // as one clean sentence instead of two spliced, overlapping fragments.
+  const normalizeForOverlap = (value: string): string =>
+    value
+      .toLowerCase()
+      .replace(/[.!?]+$/g, '')
+      .trim();
+  const normalizedSubject = normalizeForOverlap(subjectSentence);
+  const normalizedWhyNow = normalizeForOverlap(whyNow);
+  const whyNowRedundant =
+    normalizedWhyNow.length === 0 ||
+    normalizedSubject.includes(normalizedWhyNow) ||
+    normalizedWhyNow.includes(normalizedSubject);
   const messageSummary = sanitizeAoiProposalDisplayText(
-    `${subjectSentence} ${whyNow} Approve to ${approveAction}.`,
+    aoiCardMessageSummary(lang, {
+      subjectSentence,
+      whyNow: whyNowRedundant ? '' : whyNow,
+      approveActionPhrase: approveAction,
+    }),
     360,
   );
 
@@ -2145,53 +2216,57 @@ function getAoiMissionVisibleState(
 
 export function buildAoiProposalActionPresentation(
   proposal: AoiProposal,
-  options: { hasKiraPreview?: boolean } = {},
+  options: { hasKiraPreview?: boolean; lang?: AoiCardLang } = {},
 ): AoiProposalActionPresentation {
+  const lang: AoiCardLang = options.lang ?? 'en';
   const kind = proposal.acceptAction?.kind;
   if (proposal.status === 'blocked' || proposal.blockedReason) {
+    const text = aoiCardActionPresentationText(lang, 'blocked');
     return {
       visibleState: 'blocked',
-      primaryLabel: 'Show evidence',
-      primaryTitle: 'Show policy reasons, missing evidence, and a safe alternative.',
+      primaryLabel: text.primaryLabel,
+      primaryTitle: text.primaryTitle,
       primaryRole: 'none',
-      mutationBoundary: 'No mutation is available while this proposal is blocked.',
+      mutationBoundary: text.mutationBoundary,
       requiresPreviewBeforeFinal: kind === 'create_kira_work',
       finalActionAvailable: false,
     };
   }
 
   if (proposal.status === 'executed') {
+    const text = aoiCardActionPresentationText(lang, 'executed');
     return {
       visibleState: kind === 'create_kira_work' ? 'delegated_to_kira' : 'completed',
-      primaryLabel: 'Show evidence',
-      primaryTitle: 'Show evidence for the completed action.',
+      primaryLabel: text.primaryLabel,
+      primaryTitle: text.primaryTitle,
       primaryRole: 'none',
-      mutationBoundary: 'No additional mutation is available from this completed proposal.',
+      mutationBoundary: text.mutationBoundary,
       requiresPreviewBeforeFinal: false,
       finalActionAvailable: false,
     };
   }
 
   if (proposal.status === 'active') {
+    const text = aoiCardActionPresentationText(lang, 'active');
     return {
       visibleState: 'waiting_for_approval',
-      primaryLabel: 'Approve exact action',
-      primaryTitle:
-        'Record approval for this exact proposal. No tools run and no files are edited.',
+      primaryLabel: text.primaryLabel,
+      primaryTitle: text.primaryTitle,
       primaryRole: 'approve',
-      mutationBoundary: 'Records approval only. It does not run tools or edit files.',
+      mutationBoundary: text.mutationBoundary,
       requiresPreviewBeforeFinal: kind === 'create_kira_work',
       finalActionAvailable: false,
     };
   }
 
   if (proposal.status !== 'accepted') {
+    const text = aoiCardActionPresentationText(lang, 'unavailable', { status: proposal.status });
     return {
       visibleState: 'waiting_for_approval',
-      primaryLabel: 'Show evidence',
-      primaryTitle: `No primary action is available while status is ${proposal.status}.`,
+      primaryLabel: text.primaryLabel,
+      primaryTitle: text.primaryTitle,
       primaryRole: 'none',
-      mutationBoundary: 'No mutation is available for this proposal state.',
+      mutationBoundary: text.mutationBoundary,
       requiresPreviewBeforeFinal: kind === 'create_kira_work',
       finalActionAvailable: false,
     };

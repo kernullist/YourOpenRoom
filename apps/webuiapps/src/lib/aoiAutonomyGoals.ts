@@ -22,6 +22,14 @@ import type {
   AoiProposalAcceptActionKind,
 } from './aoiAutonomyTypes';
 import { redactAoiSensitiveContent, stripAoiSourceInstructions } from './aoiMemoryShared';
+import {
+  aoiCardGoalContinuationBody,
+  aoiCardGoalContinuationReason,
+  aoiCardGoalContinuePrefix,
+  aoiCardGoalText,
+  aoiCardGoalTrackPrefix,
+  type AoiCardLang,
+} from './aoiAutonomyCardI18n';
 
 const AUTONOMY_ROOT_DIR = 'aoi-autonomy';
 const GOALS_DIR = 'goals';
@@ -767,11 +775,13 @@ export function buildAoiGoalProposalFromUserMessage(params: {
   latestUserMessage: string;
   now: number;
   sourceRefs?: string[];
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   const message = sanitizeText(params.latestUserMessage, TEXT_MAX_CHARS);
   if (!looksLikeExplicitAoiGoalIntent(message)) {
     return null;
   }
+  const cardText = aoiCardGoalText(params.lang ?? 'en', 'from_user');
   const sourceRefs = normalizeStringArray(params.sourceRefs ?? ['observation:latest-user-message']);
   const goalId = `goal-candidate-${hashPart(`${params.sessionPath}:${message}`)}`;
   const risk: AoiAutonomyRisk = /(?:보안|security|driver|kernel|커널|위험|배포|release)/i.test(
@@ -799,15 +809,9 @@ export function buildAoiGoalProposalFromUserMessage(params: {
     id: createGoalId('aoi-proposal-goal', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText(`Track goal: ${title}`, 96),
-    body: truncateText(
-      'Aoi can remember this objective, keep a small evidence-backed plan, and propose continuations only through the existing approval flow.',
-      320,
-    ),
-    reason: truncateText(
-      'The latest user message explicitly asks Aoi to track or manage a multi-step objective.',
-      240,
-    ),
+    title: truncateText(aoiCardGoalTrackPrefix(params.lang ?? 'en', title), 96),
+    body: truncateText(cardText.body, 320),
+    reason: truncateText(cardText.reason, 240),
     trigger: 'goal_candidate',
     createdAt: params.now,
     updatedAt: params.now,
@@ -851,6 +855,7 @@ export function buildAoiGoalCandidateProposal(params: {
   now: number;
   risk?: AoiAutonomyRisk;
   confidence?: number;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   const sessionPath = normalizeSessionPath(params.sessionPath);
   if (!sessionPath) {
@@ -882,15 +887,9 @@ export function buildAoiGoalCandidateProposal(params: {
     id: createGoalId('aoi-proposal-goal-llm', params.now),
     sessionPath,
     status: 'active',
-    title: truncateText(`Track goal: ${title}`, 96),
-    body: truncateText(
-      'Aoi noticed a recurring pattern in recent activity and suggests tracking it as an objective. Approving activates a small evidence-backed goal; continuations still go through the existing approval flow.',
-      320,
-    ),
-    reason: truncateText(
-      'Recurring signals across recent observations suggest a multi-step objective worth tracking.',
-      240,
-    ),
+    title: truncateText(aoiCardGoalTrackPrefix(params.lang ?? 'en', title), 96),
+    body: truncateText(aoiCardGoalText(params.lang ?? 'en', 'candidate').body, 320),
+    reason: truncateText(aoiCardGoalText(params.lang ?? 'en', 'candidate').reason, 240),
     trigger: 'goal_candidate',
     createdAt: params.now,
     updatedAt: params.now,
@@ -1497,7 +1496,9 @@ export function buildAoiGoalContinuationProposals(params: {
   observations: AoiObservation[];
   activeProposals: AoiProposal[];
   now: number;
+  lang?: AoiCardLang;
 }): AoiProposal[] {
+  const lang: AoiCardLang = params.lang ?? 'en';
   const sessionPath = normalizeSessionPath(params.sessionPath);
   if (!sessionPath) {
     throw new Error('Invalid or missing sessionPath.');
@@ -1553,17 +1554,12 @@ export function buildAoiGoalContinuationProposals(params: {
       id: createGoalId('aoi-proposal-goal-continuation', params.now),
       sessionPath,
       status: 'active',
-      title: truncateText(`Continue goal: ${step.title}`, 96),
+      title: truncateText(aoiCardGoalContinuePrefix(lang, step.title), 96),
       body: truncateText(
-        `Aoi is tracking "${goal.title}". The next proposed step is: ${step.title}.`,
+        aoiCardGoalContinuationBody(lang, { goalTitle: goal.title, stepTitle: step.title }),
         320,
       ),
-      reason: truncateText(
-        goal.status === 'blocked'
-          ? 'The active goal is blocked by evidence and needs a smaller continuation decision.'
-          : 'The active goal has a pending evidence-backed plan step.',
-        240,
-      ),
+      reason: truncateText(aoiCardGoalContinuationReason(lang, goal.status === 'blocked'), 240),
       trigger: 'goal_continuation',
       createdAt: params.now,
       updatedAt: params.now,

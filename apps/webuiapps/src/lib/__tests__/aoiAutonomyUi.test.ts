@@ -2034,6 +2034,76 @@ describe('Aoi autonomy UI helpers', () => {
     expect(explanation.messageSummary).toContain('Approve to');
   });
 
+  it('does not claim a readable report for a failure-recovery proposal', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        trigger: 'failure_recovery',
+        title: 'Recover failed research',
+        body: 'The latest research run failed before producing a report.',
+        reason: 'The run reported an error and needs a bounded recovery.',
+        suggestedTools: ['read_research_artifact'],
+        riskSignals: ['failure-recovery'],
+      }),
+      policy: makePolicy(),
+    });
+
+    expect(explanation.messageSummary).toContain('Approve to record this review');
+    expect(explanation.messageSummary).not.toContain('read that research report');
+  });
+
+  it('uses the title as subject when the body has no short complete sentence', () => {
+    const longBody =
+      'Review the active recovery proposal for the failed latest Anti-Tamper trend research before ' +
+      'attempting another refresh because the recorded failure is still unresolved and pending review';
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        title: 'Review active research recovery',
+        body: longBody,
+        reason: 'The active proposal is still pending.',
+      }),
+      policy: makePolicy(),
+    });
+
+    expect(explanation.messageSummary.startsWith('Review active research recovery.')).toBe(true);
+    expect(explanation.messageSummary).not.toContain('...');
+  });
+
+  it('drops the reason when it merely repeats the subject', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        title: 'Refresh stale research',
+        body: 'The saved research is stale for a current-information question.',
+        reason: 'The saved research is stale for a current-information question.',
+        trigger: 'stale_research_memory',
+        suggestedTools: ['start_research'],
+      }),
+      policy: makePolicy(),
+    });
+
+    const phrase = 'stale for a current-information question';
+    const occurrences = explanation.messageSummary.split(phrase).length - 1;
+    expect(occurrences).toBe(1);
+    expect(explanation.messageSummary).toContain('Approve to start a research run');
+  });
+
+  it('renders the proactive card in Korean when lang is ko', () => {
+    const explanation = buildAoiProactiveExplanation({
+      proposal: makeProposal({
+        title: '리서치 복구 검토',
+        body: '실패한 리서치 실행을 다시 시도하기 전에 검토가 필요합니다.',
+        reason: '활성 제안이 아직 대기 중입니다.',
+      }),
+      policy: makePolicy(),
+      lang: 'ko',
+    });
+
+    expect(explanation.confidenceLabel).toBe('높은 확신');
+    expect(explanation.messageSummary).toContain('승인하면');
+    expect(explanation.messageSummary).toContain('열람');
+    expect(explanation.messageSummary).not.toMatch(/Approve to/);
+    expect(explanation.willNotDoWithoutApproval).toContain('승인');
+  });
+
   it('avoids confident wording when evidence is weak', () => {
     const explanation = buildAoiProactiveExplanation({
       proposal: makeProposal({

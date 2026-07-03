@@ -1,4 +1,5 @@
 import { createAoiAutonomyId } from './aoiAutonomyStore';
+import { aoiCardRecoveryText, type AoiCardLang } from './aoiAutonomyCardI18n';
 import type {
   AoiFailureKind,
   AoiProposal,
@@ -73,6 +74,9 @@ export interface AoiRecoveryProposalContext {
   now: number;
   cooldownMs?: number;
   maxRetryProposalsPerSource?: number;
+  // Operator's card language, used to author the recovery proposal's
+  // title/body/reason. Omitted -> English.
+  lang?: AoiCardLang;
 }
 
 const BODY_MAX_CHARS = 320;
@@ -543,7 +547,11 @@ function buildProposal(params: {
   failure: AoiClassifiedFailure;
   preview: AoiRecoveryPreview;
   now: number;
+  lang?: AoiCardLang;
 }): AoiProposal {
+  const cardText = aoiCardRecoveryText(params.lang ?? 'en', params.failure.kind, {
+    sourceRef: params.failure.sourceRef,
+  });
   const actionKind = params.preview.proposedAction.kind;
   const suggestedTools =
     actionKind === 'refresh_research'
@@ -569,15 +577,9 @@ function buildProposal(params: {
     id: createAoiAutonomyId('aoi-proposal-failure-recovery', params.now),
     sessionPath: params.failure.sessionPath,
     status: 'active',
-    title: truncateText(params.preview.proposedAction.label, TITLE_MAX_CHARS),
-    body: truncateText(
-      `That failed because validation needs ${validationNeed(params.failure)}. I can prepare a narrower follow-up, ask one question, or stop.`,
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      `Aoi classified ${params.failure.sourceRef} as ${params.failure.kind} and found a bounded recovery action.`,
-      REASON_MAX_CHARS,
-    ),
+    title: truncateText(cardText.title, TITLE_MAX_CHARS),
+    body: truncateText(cardText.body, BODY_MAX_CHARS),
+    reason: truncateText(cardText.reason, REASON_MAX_CHARS),
     trigger: 'failure_recovery',
     createdAt: params.now,
     updatedAt: params.now,
@@ -640,6 +642,7 @@ export function buildAoiFailureRecoveryProposal(params: {
       failure: params.failure,
       preview,
       now: params.context.now,
+      ...(params.context.lang ? { lang: params.context.lang } : {}),
     }),
   };
 }

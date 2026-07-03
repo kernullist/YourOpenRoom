@@ -356,6 +356,16 @@ describe('Aoi autonomy goals', () => {
     });
     expect(ambiguous).toBeNull();
 
+    const korean = buildAoiGoalProposalFromUserMessage({
+      sessionPath: SESSION_PATH,
+      latestUserMessage: '이걸 목표로 관리하자. 다음 단계까지 계속 추적해줘.',
+      now: NOW,
+      lang: 'ko',
+    });
+    expect(korean?.title.startsWith('목표 추적:')).toBe(true);
+    expect(korean?.body).toContain('기존 승인 흐름');
+    expect(korean?.reason).toContain('명시적으로 요청');
+
     const tick = await runAoiAutonomyTick({
       sessionsDir: root,
       sessionPath: SESSION_PATH,

@@ -341,6 +341,16 @@ import {
   type AoiAutonomyPanelSettings,
   type AoiOperatorFeedbackInboxPanelItem,
 } from '@/lib/aoiAutonomyUi';
+import {
+  aoiCardChromeLabel,
+  aoiCardEvidenceLabel,
+  aoiCardFeedbackLabel,
+  aoiCardFeedbackTitle,
+  aoiCardRiskLabel,
+  normalizeAoiCardLang,
+  type AoiCardLang,
+} from '@/lib/aoiAutonomyCardI18n';
+import { useVibeInfo } from '@/lib/vibeInfo';
 import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import {
@@ -8119,9 +8129,20 @@ const ChatPanel: React.FC<{
       aoiInlineSnoozedProposalIds,
     ],
   );
+  // Card language comes from the app's own language setting, not navigator or the
+  // global i18n layer (which drops Korean to English because 'ko' is not an
+  // enabled locale). This keeps the proactive card in the operator's language.
+  const aoiVibeInfo = useVibeInfo();
+  const aoiCardLang: AoiCardLang = useMemo(
+    () => normalizeAoiCardLang(aoiVibeInfo.systemSettings?.language?.current),
+    [aoiVibeInfo.systemSettings?.language?.current],
+  );
   const inlineAoiProposalActionPresentation = useMemo(
-    () => (inlineAoiProposal ? buildAoiProposalActionPresentation(inlineAoiProposal) : null),
-    [inlineAoiProposal],
+    () =>
+      inlineAoiProposal
+        ? buildAoiProposalActionPresentation(inlineAoiProposal, { lang: aoiCardLang })
+        : null,
+    [inlineAoiProposal, aoiCardLang],
   );
   const inlineAoiProposalExplanation = useMemo(
     () =>
@@ -8130,9 +8151,10 @@ const ChatPanel: React.FC<{
             proposal: inlineAoiProposal,
             policy: aoiAutonomyStatus?.policy,
             activeProposals: aoiAutonomyActiveProposals,
+            lang: aoiCardLang,
           })
         : null,
-    [aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, inlineAoiProposal],
+    [aoiAutonomyActiveProposals, aoiAutonomyStatus?.policy, inlineAoiProposal, aoiCardLang],
   );
   const aoiResumeBrief = aoiOperatorDigest.resumeBrief ?? null;
   const showAoiResumeBrief = Boolean(
@@ -8990,13 +9012,20 @@ const ChatPanel: React.FC<{
             <div className={styles.aoiInlineSuggestion} data-testid="aoi-inline-suggestion">
               <div className={styles.aoiInlineSuggestionMain}>
                 <div className={styles.aoiInlineSuggestionMeta}>
-                  <span>Aoi proposal</span>
+                  <span>{aoiCardChromeLabel(aoiCardLang, 'proposal_chip')}</span>
                   <span>{inlineAoiProposalExplanation?.confidenceLabel ?? 'proposal'}</span>
-                  <span>{inlineAoiProposalExplanation?.risk ?? inlineAoiProposal.risk} risk</span>
                   <span>
-                    evidence{' '}
-                    {inlineAoiProposalExplanation?.evidenceCount ??
-                      inlineAoiProposal.evidenceRefs.length}
+                    {aoiCardRiskLabel(
+                      aoiCardLang,
+                      inlineAoiProposalExplanation?.risk ?? inlineAoiProposal.risk,
+                    )}
+                  </span>
+                  <span>
+                    {aoiCardEvidenceLabel(
+                      aoiCardLang,
+                      inlineAoiProposalExplanation?.evidenceCount ??
+                        inlineAoiProposal.evidenceRefs.length,
+                    )}
                   </span>
                 </div>
                 <div className={styles.aoiInlineSuggestionTitle}>
@@ -9010,7 +9039,7 @@ const ChatPanel: React.FC<{
                 </div>
                 <div className={styles.aoiInlineSuggestionHint}>
                   {inlineAoiProposalExplanation?.willNotDoWithoutApproval ??
-                    'This is only a proposal. No tool has run.'}
+                    aoiCardChromeLabel(aoiCardLang, 'hint_fallback')}
                 </div>
               </div>
               <div className={styles.aoiInlineSuggestionActions}>
@@ -9021,22 +9050,23 @@ const ChatPanel: React.FC<{
                   disabled={aoiAutonomyActionId !== null}
                   title={
                     inlineAoiProposalActionPresentation?.primaryTitle ??
-                    'Record approval without executing tools'
+                    aoiCardChromeLabel(aoiCardLang, 'approve_fallback_title')
                   }
                 >
-                  {inlineAoiProposalActionPresentation?.primaryLabel ?? 'Approve exact action'}
+                  {inlineAoiProposalActionPresentation?.primaryLabel ??
+                    aoiCardChromeLabel(aoiCardLang, 'approve_fallback')}
                 </button>
                 <button
                   type="button"
                   className={styles.inlineActionBtn}
                   onClick={() => void decideAoiProposalFromPanel(inlineAoiProposal.id, 'snooze')}
                   disabled={aoiAutonomyActionId !== null}
-                  title={`Pause this proposal family by cooldown key: ${sanitizeAoiProposalDisplayText(
-                    inlineAoiProposal.cooldownKey,
-                    120,
-                  )}`}
+                  title={`${aoiCardChromeLabel(
+                    aoiCardLang,
+                    'pause_family',
+                  )}: ${sanitizeAoiProposalDisplayText(inlineAoiProposal.cooldownKey, 120)}`}
                 >
-                  Pause suggestion family
+                  {aoiCardChromeLabel(aoiCardLang, 'pause_family')}
                 </button>
                 {AOI_PROPOSAL_FEEDBACK_CONTROLS.filter((item) => item.category !== 'useful').map(
                   (item) => (
@@ -9052,9 +9082,9 @@ const ChatPanel: React.FC<{
                         )
                       }
                       disabled={aoiAutonomyActionId !== null}
-                      title={item.title}
+                      title={aoiCardFeedbackTitle(aoiCardLang, item.category, item.title)}
                     >
-                      {item.label}
+                      {aoiCardFeedbackLabel(aoiCardLang, item.category, item.label)}
                     </button>
                   ),
                 )}
@@ -9064,7 +9094,7 @@ const ChatPanel: React.FC<{
                   onClick={openAoiAutonomySettings}
                   title="Open Aoi Autonomy details"
                 >
-                  Details
+                  {aoiCardChromeLabel(aoiCardLang, 'details')}
                 </button>
               </div>
             </div>

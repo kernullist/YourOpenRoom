@@ -15,6 +15,7 @@ import {
 } from '../aoiAutonomyGoals';
 import {
   buildAoiAutonomyReflectionMessages,
+  dropRedundantAoiLlmReflectionProposals,
   runAoiAutonomyBackgroundTick,
   runAoiAutonomyTick,
   type AoiAutonomyReflectionChat,
@@ -1046,6 +1047,79 @@ describe('runAoiAutonomyTick()', () => {
     );
   });
 
+  it('authors the recovery proposal in the operator language when one is supplied', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-fail-ko-001',
+        status: 'failed',
+        phase: 'failed',
+        completedAt: undefined,
+        artifactAvailability: { manifest: true, report: false, sources: false, evidence: false },
+        error: {
+          code: 'research_run_timeout',
+          message: 'Timed out while reading sources.',
+          phase: 'reading_sources',
+          createdAt: NOW - 4_000,
+        },
+      }),
+    );
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'research_run',
+      language: 'ko',
+      now: NOW,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    expect(result.newActiveProposalCount).toBe(1);
+    expect(proposals[0].trigger).toBe('failure_recovery');
+    expect(proposals[0].title).toBe('리서치 좁혀서 재시도');
+    expect(proposals[0].body).toContain('실패했습니다');
+  });
+
+  it('purges a stale already-active meta proposal that re-narrates an active recovery proposal', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const recovery = makeProposal({
+      id: 'aoi-proposal-failure-recovery-int-001',
+      trigger: 'failure_recovery',
+      title: 'Refresh research narrowly',
+      suggestedTools: ['start_research'],
+      evidenceRefs: ['research:aoi-research-failed-int-001'],
+      riskSignals: ['failure-recovery', 'research_failed'],
+    });
+    const staleMeta = makeProposal({
+      id: 'aoi-proposal-llm-int-001',
+      trigger: 'llm_reflection',
+      title: 'Review active research recovery',
+      body: 'Review the active recovery proposal for the failed research before refreshing.',
+      reason: 'The active proposal is still pending while the failed run reports an error.',
+      suggestedTools: ['read_research_artifact'],
+      evidenceRefs: ['research:aoi-research-failed-int-001'],
+    });
+    saveAoiActiveProposals(root, SESSION_PATH, [staleMeta, recovery]);
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      now: NOW,
+    });
+
+    const remaining = loadAoiActiveProposals(root, SESSION_PATH);
+    expect(remaining.map((proposal) => proposal.id)).toEqual([
+      'aoi-proposal-failure-recovery-int-001',
+    ]);
+    expect(result.warnings).toContain(
+      'active_proposal_purged_redundant_recovery_narration:aoi-proposal-llm-int-001',
+    );
+  });
+
   it('suppresses repeated recovery proposals for the same failure source', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');
@@ -1469,6 +1543,156 @@ describe('buildAoiAutonomyReflectionMessages() continuity (P1a c3)', () => {
     });
     expect('continuity' in userPayload(messages)).toBe(false);
     expect(messages[0].content).not.toContain('continuity');
+  });
+
+  it('instructs the model not to re-narrate existing proposals or read a failed run report', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+    });
+    expect(messages[0].content).toMatch(/only purpose is to review, read, or narrate/i);
+    expect(messages[0].content).toMatch(
+      /do not suggest read_research_artifact for a research run that did not complete/i,
+    );
+  });
+
+  it('adds a language instruction naming the operator language when one is supplied', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      language: 'ko',
+    });
+    expect(messages[0].content).toMatch(/Author every human-readable field .*in Korean/i);
+  });
+
+  it('omits the language instruction by default so the prompt is unchanged', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+    });
+    expect(messages[0].content).not.toMatch(/Author every human-readable field/i);
+  });
+});
+
+describe('dropRedundantAoiLlmReflectionProposals()', () => {
+  const recoveryReference = makeProposal({
+    id: 'aoi-proposal-failure-recovery-001',
+    trigger: 'failure_recovery',
+    title: 'Refresh research narrowly',
+    suggestedTools: ['start_research'],
+    evidenceRefs: ['research:aoi-research-failed-001'],
+    riskSignals: ['failure-recovery', 'research_failed'],
+  });
+
+  function llmMetaProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+    return makeProposal({
+      id: 'aoi-proposal-llm-001',
+      trigger: 'llm_reflection',
+      title: 'Review active research recovery',
+      body: 'Review the active recovery proposal for the failed research before refreshing.',
+      reason: 'The active proposal is still pending while the failed run reports an error.',
+      suggestedTools: ['read_research_artifact'],
+      evidenceRefs: ['research:aoi-research-failed-001'],
+      ...partial,
+    });
+  }
+
+  it('drops an LLM read-only meta proposal that re-narrates an active recovery proposal', () => {
+    const result = dropRedundantAoiLlmReflectionProposals([llmMetaProposal()], [recoveryReference]);
+    expect(result.kept).toEqual([]);
+    expect(result.droppedIds).toEqual(['aoi-proposal-llm-001']);
+  });
+
+  it('keeps an LLM proposal that proposes genuinely new (mutating) work', () => {
+    const genuine = llmMetaProposal({
+      suggestedTools: ['start_research'],
+      acceptAction: {
+        kind: 'start_research',
+        params: { request: 'fresh run' },
+      },
+    });
+    const result = dropRedundantAoiLlmReflectionProposals([genuine], [recoveryReference]);
+    expect(result.kept).toEqual([genuine]);
+    expect(result.droppedIds).toEqual([]);
+  });
+
+  it('never touches non-LLM-origin proposals even when read-only and overlapping', () => {
+    const deterministic = llmMetaProposal({ id: 'aoi-proposal-failure-recovery-002' });
+    const result = dropRedundantAoiLlmReflectionProposals([deterministic], [recoveryReference]);
+    expect(result.kept).toEqual([deterministic]);
+    expect(result.droppedIds).toEqual([]);
+  });
+
+  it('keeps everything when there is no recovery-like reference proposal', () => {
+    const nonRecovery = makeProposal({ id: 'proposal-plain-001', riskSignals: [] });
+    const meta = llmMetaProposal();
+    const result = dropRedundantAoiLlmReflectionProposals([meta], [nonRecovery]);
+    expect(result.kept).toEqual([meta]);
+    expect(result.droppedIds).toEqual([]);
+  });
+
+  it('keeps an LLM proposal whose suggested tools are not purely read-only', () => {
+    const searching = llmMetaProposal({
+      acceptAction: undefined,
+      suggestedTools: ['search_web'],
+    });
+    const result = dropRedundantAoiLlmReflectionProposals([searching], [recoveryReference]);
+    expect(result.kept).toEqual([searching]);
+    expect(result.droppedIds).toEqual([]);
+  });
+
+  it('detects overlap through a direct proposal reference', () => {
+    const meta = llmMetaProposal({
+      evidenceRefs: ['proposal:aoi-proposal-failure-recovery-001'],
+    });
+    const result = dropRedundantAoiLlmReflectionProposals([meta], [recoveryReference]);
+    expect(result.droppedIds).toEqual(['aoi-proposal-llm-001']);
+  });
+
+  it('detects overlap through the recovery preview source ref', () => {
+    const reference = makeProposal({
+      id: 'aoi-proposal-failure-recovery-003',
+      trigger: 'goal_continuation',
+      riskSignals: [],
+      evidenceRefs: ['unrelated:ref'],
+      recoveryPreview: {
+        version: 1,
+        failureKind: 'research_failed',
+        rootCauseSummary: 'Research run failed.',
+        evidenceRefs: ['unrelated:ref'],
+        proposedAction: {
+          kind: 'refresh_research',
+          label: 'Refresh research narrowly',
+          reason: 'Retry with a smaller source budget.',
+        },
+        whyNarrowerOrSafer: 'Bounded to the failed run.',
+        retryCount: 0,
+        maxRetryCount: 1,
+        cooldownActive: false,
+        sourceRef: 'research:aoi-research-failed-777',
+        failureSignature: 'failure:research_failed:test',
+        nonGoals: ['Do not broaden scope.'],
+      },
+    });
+    const meta = llmMetaProposal({ evidenceRefs: ['research:aoi-research-failed-777'] });
+    const result = dropRedundantAoiLlmReflectionProposals([meta], [reference]);
+    expect(result.droppedIds).toEqual(['aoi-proposal-llm-001']);
+  });
+
+  it('purges an already-active meta proposal when the active list is passed as its own reference', () => {
+    const meta = llmMetaProposal();
+    const result = dropRedundantAoiLlmReflectionProposals(
+      [recoveryReference, meta],
+      [recoveryReference, meta],
+    );
+    expect(result.kept).toEqual([recoveryReference]);
+    expect(result.droppedIds).toEqual(['aoi-proposal-llm-001']);
   });
 });
 

@@ -1,6 +1,11 @@
 import type { ChatMessage, ToolDef } from './llmClient';
 import type { LLMConfig } from './llmModels';
 import {
+  aoiCardProposalText,
+  aoiReflectionLanguageInstruction,
+  type AoiCardLang,
+} from './aoiAutonomyCardI18n';
+import {
   applyAoiFeedbackCalibrationToProposal,
   checkAoiProposalPolicy,
   getAoiProposalFeedbackPriorityBoost,
@@ -204,6 +209,10 @@ export interface AoiAutonomyTickParams {
   // activate_goal acceptAction (display-only, user-approval-gated). Default/false
   // -> the prompt is unchanged and any goal candidate is dropped (fail-closed).
   goalSynthesisEnabled?: boolean;
+  // Operator's configured card language (ko|ja|zh|en). Threaded into the
+  // reflection prompt so authored proposal text matches the operator's language.
+  // Omitted -> English (prompt and existing behavior unchanged).
+  language?: AoiCardLang;
 }
 
 export interface AoiAutonomyBackgroundTickParams extends AoiAutonomyTickParams {
@@ -812,26 +821,25 @@ function buildResearchFollowupProposal(params: {
   run: AoiResearchRunSummary;
   latestUserMessage: string;
   now: number;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   const topicText = `${params.run.request} ${params.run.title || ''}`;
   if (!params.latestUserMessage || overlapScore(params.latestUserMessage, topicText) < 0.2) {
     return null;
   }
   const evidenceRefs = [`research:${params.run.id}`, `research:${params.run.id}/report`];
+  const text = aoiCardProposalText(params.lang ?? 'en', 'research_followup');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-research-open', params.now),
     sessionPath: params.run.sessionPath,
     status: 'active',
-    title: truncateText('Open the matching Aoi research report', TITLE_MAX_CHARS),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
     body: truncateText(
-      `A completed research run looks relevant to the current topic: ${params.run.title || params.run.request}`,
+      text.body.replace('{topic}', params.run.title || params.run.request),
       BODY_MAX_CHARS,
     ),
-    reason: truncateText(
-      'The latest user message overlaps with a completed Aoi research run.',
-      REASON_MAX_CHARS,
-    ),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'research_followup',
     createdAt: params.now,
     updatedAt: params.now,
@@ -860,6 +868,7 @@ function buildStaleResearchMemoryProposal(params: {
   latestUserMessage: string;
   now: number;
   sessionPath: string;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   if (!looksCurrentInfoRequest(params.latestUserMessage)) {
     return null;
@@ -875,20 +884,15 @@ function buildStaleResearchMemoryProposal(params: {
   ) {
     return null;
   }
+  const text = aoiCardProposalText(params.lang ?? 'en', 'stale_research');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-research-refresh', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText('Refresh stale Aoi research', TITLE_MAX_CHARS),
-    body: truncateText(
-      'The matching research memory is older than the freshness window for current-information questions.',
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      'The user appears to need current information, but the relevant research memory is stale.',
-      REASON_MAX_CHARS,
-    ),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
+    body: truncateText(text.body, BODY_MAX_CHARS),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'stale_research_memory',
     createdAt: params.now,
     updatedAt: params.now,
@@ -918,6 +922,7 @@ function buildProcedureCandidateProposal(params: {
   latestUserMessage: string;
   now: number;
   sessionPath: string;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   if (
     !looksRepeatedPatternRequest(params.latestUserMessage) ||
@@ -925,20 +930,15 @@ function buildProcedureCandidateProposal(params: {
   ) {
     return null;
   }
+  const text = aoiCardProposalText(params.lang ?? 'en', 'procedure_candidate');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-procedure', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText('Save this as a reusable Aoi procedure', TITLE_MAX_CHARS),
-    body: truncateText(
-      'The latest request sounds like a repeated workflow or preference that may be worth saving as a procedure.',
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      'Repeated workflows should be promoted only after explicit user approval.',
-      REASON_MAX_CHARS,
-    ),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
+    body: truncateText(text.body, BODY_MAX_CHARS),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'procedure_candidate',
     createdAt: params.now,
     updatedAt: params.now,
@@ -967,6 +967,7 @@ function buildRepeatedResearchProcedureProposal(params: {
   latestUserMessage: string;
   now: number;
   sessionPath: string;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   if (!looksRepeatedPatternRequest(params.latestUserMessage)) {
     return null;
@@ -984,20 +985,15 @@ function buildRepeatedResearchProcedureProposal(params: {
     return null;
   }
   const evidenceRefs = researchMemories.map((memory) => `memory:${memory.id}`);
+  const text = aoiCardProposalText(params.lang ?? 'en', 'repeated_research');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-procedure-research', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText('Promote repeated research workflow procedure', TITLE_MAX_CHARS),
-    body: truncateText(
-      'Aoi has multiple successful research memories that can be promoted into an approval-gated reusable procedure.',
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      'Repeated successful research workflows should become durable only after explicit user approval.',
-      REASON_MAX_CHARS,
-    ),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
+    body: truncateText(text.body, BODY_MAX_CHARS),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'procedure_candidate',
     createdAt: params.now,
     updatedAt: params.now,
@@ -1029,6 +1025,7 @@ function buildRepeatedKiraProcedureProposal(params: {
   latestUserMessage: string;
   now: number;
   sessionPath: string;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   if (!looksRepeatedPatternRequest(params.latestUserMessage)) {
     return null;
@@ -1046,20 +1043,15 @@ function buildRepeatedKiraProcedureProposal(params: {
     return null;
   }
   const evidenceRefs = kiraMemories.map((memory) => `memory:${memory.id}`);
+  const text = aoiCardProposalText(params.lang ?? 'en', 'repeated_kira');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-procedure-kira', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText('Promote repeated Kira review workflow procedure', TITLE_MAX_CHARS),
-    body: truncateText(
-      'Aoi has multiple reviewed Kira completion memories that can be promoted into a reusable procedure.',
-      BODY_MAX_CHARS,
-    ),
-    reason: truncateText(
-      'Repeated successful Kira outcomes should be saved as procedure memory only with explicit approval.',
-      REASON_MAX_CHARS,
-    ),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
+    body: truncateText(text.body, BODY_MAX_CHARS),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'procedure_candidate',
     createdAt: params.now,
     updatedAt: params.now,
@@ -1090,21 +1082,20 @@ function buildKiraAttentionProposal(params: {
   memory: AoiMemoryEntry;
   now: number;
   sessionPath: string;
+  lang?: AoiCardLang;
 }): AoiProposal | null {
   if (!hasTag(params.memory, 'needs-attention') && !hasTag(params.memory, 'interrupted')) {
     return null;
   }
+  const text = aoiCardProposalText(params.lang ?? 'en', 'kira_attention');
   return {
     version: 1,
     id: createAoiAutonomyId('aoi-proposal-kira-attention', params.now),
     sessionPath: params.sessionPath,
     status: 'active',
-    title: truncateText('Review waiting Kira automation', TITLE_MAX_CHARS),
+    title: truncateText(text.title, TITLE_MAX_CHARS),
     body: sanitizePromptText(params.memory.content, BODY_MAX_CHARS),
-    reason: truncateText(
-      'Kira has a stored automation outcome that may need user attention.',
-      REASON_MAX_CHARS,
-    ),
+    reason: truncateText(text.reason, REASON_MAX_CHARS),
     trigger: 'kira_attention',
     createdAt: params.now,
     updatedAt: params.now,
@@ -1136,13 +1127,16 @@ function buildDeterministicProposals(params: {
   latestUserMessage: string;
   now: number;
   extraFailures?: AoiFailureClassificationInput[];
+  lang?: AoiCardLang;
 }): AoiProposal[] {
+  const lang: AoiCardLang = params.lang ?? 'en';
   const proposals: AoiProposal[] = [];
   const goalCandidate = buildAoiGoalProposalFromUserMessage({
     sessionPath: params.sessionPath,
     latestUserMessage: params.latestUserMessage,
     now: params.now,
     sourceRefs: ['observation:latest-user-message'],
+    lang,
   });
   if (goalCandidate) {
     proposals.push(goalCandidate);
@@ -1154,6 +1148,7 @@ function buildDeterministicProposals(params: {
         run,
         latestUserMessage: params.latestUserMessage,
         now: params.now,
+        lang,
       });
       if (proposal) {
         proposals.push(proposal);
@@ -1170,6 +1165,7 @@ function buildDeterministicProposals(params: {
       activeProposals: [...params.bundle.activeProposals],
       recentDecisions: params.bundle.decisions,
       now: params.now,
+      lang,
     },
   });
   recordFailureRecoveryBuildEvents({
@@ -1187,6 +1183,7 @@ function buildDeterministicProposals(params: {
         latestUserMessage: params.latestUserMessage,
         now: params.now,
         sessionPath: params.sessionPath,
+        lang,
       });
       if (stale) {
         proposals.push(stale);
@@ -1197,6 +1194,7 @@ function buildDeterministicProposals(params: {
         memory,
         now: params.now,
         sessionPath: params.sessionPath,
+        lang,
       });
       if (kira) {
         proposals.push(kira);
@@ -1208,6 +1206,7 @@ function buildDeterministicProposals(params: {
     latestUserMessage: params.latestUserMessage,
     now: params.now,
     sessionPath: params.sessionPath,
+    lang,
   });
   if (procedure) {
     proposals.push(procedure);
@@ -1217,6 +1216,7 @@ function buildDeterministicProposals(params: {
     latestUserMessage: params.latestUserMessage,
     now: params.now,
     sessionPath: params.sessionPath,
+    lang,
   });
   if (repeatedResearch) {
     proposals.push(repeatedResearch);
@@ -1226,6 +1226,7 @@ function buildDeterministicProposals(params: {
     latestUserMessage: params.latestUserMessage,
     now: params.now,
     sessionPath: params.sessionPath,
+    lang,
   });
   if (repeatedKira) {
     proposals.push(repeatedKira);
@@ -1238,6 +1239,7 @@ function buildDeterministicProposals(params: {
       observations: params.bundle.observations,
       activeProposals: params.bundle.activeProposals,
       now: params.now,
+      lang,
     }),
   );
 
@@ -1262,6 +1264,89 @@ function buildEvidenceRefSet(params: {
     }
   }
   return refs;
+}
+
+// Read-only accept actions surface or inspect existing state; they never create
+// new work. Used to tell a pure "review/read" LLM proposal apart from one that
+// proposes genuinely new work.
+const AOI_READ_ONLY_ACCEPT_ACTION_KINDS: ReadonlySet<AoiProposalAcceptActionKind> = new Set([
+  'open_research_artifact',
+  'read_research_artifact',
+  'get_research_status',
+  'open_app',
+]);
+
+function aoiProposalIsReadOnlyMeta(proposal: AoiProposal): boolean {
+  const kind = proposal.acceptAction?.kind;
+  if (kind && !AOI_READ_ONLY_ACCEPT_ACTION_KINDS.has(kind)) {
+    return false;
+  }
+  // No accept action, or a read-only one: to count as pure "review" work the
+  // suggested tools must also be read-only (or empty), otherwise the proposal
+  // still asks to do something new.
+  return proposal.suggestedTools.every(
+    (tool) =>
+      tool === 'read_research_artifact' ||
+      tool === 'open_research_artifact' ||
+      tool === 'get_research_status',
+  );
+}
+
+function aoiProposalIsRecoveryLike(proposal: AoiProposal): boolean {
+  return Boolean(
+    proposal.recoveryPreview ||
+    proposal.trigger === 'failure_recovery' ||
+    proposal.riskSignals.includes('failure-recovery'),
+  );
+}
+
+// An LLM reflection proposal is redundant when it merely re-narrates a proposal
+// that already exists this tick -- e.g. "Review the active recovery proposal for
+// the failed research before refreshing" while the deterministic recovery
+// proposal for that same failed run is already active. Such read-only meta
+// proposals add no new action, duplicate the evidence, and (because they carry a
+// fresh LLM-invented cooldownKey) slip past the exact-cooldownKey duplicate gate
+// in checkAoiProposalPolicy, so they co-exist with the canonical recovery
+// proposal. Drop them so only the canonical recovery proposal is surfaced.
+// Conservative by design: only LLM-origin, read-only proposals whose evidence
+// overlaps an existing recovery-like proposal are pruned; genuine new work and
+// non-LLM proposals are never touched.
+export function dropRedundantAoiLlmReflectionProposals(
+  llmProposals: AoiProposal[],
+  referenceProposals: AoiProposal[],
+): { kept: AoiProposal[]; droppedIds: string[] } {
+  const recoveryReferences = referenceProposals.filter(aoiProposalIsRecoveryLike);
+  if (recoveryReferences.length === 0) {
+    return { kept: llmProposals, droppedIds: [] };
+  }
+  const kept: AoiProposal[] = [];
+  const droppedIds: string[] = [];
+  for (const proposal of llmProposals) {
+    const isLlmOrigin = proposal.id.startsWith('aoi-proposal-llm');
+    if (!isLlmOrigin || !aoiProposalIsReadOnlyMeta(proposal)) {
+      kept.push(proposal);
+      continue;
+    }
+    const proposalRefs = new Set(proposal.evidenceRefs);
+    const overlapsRecovery = recoveryReferences.some((reference) => {
+      if (reference.id === proposal.id) {
+        return false;
+      }
+      if (proposalRefs.has(`proposal:${reference.id}`)) {
+        return true;
+      }
+      if (reference.recoveryPreview && proposalRefs.has(reference.recoveryPreview.sourceRef)) {
+        return true;
+      }
+      return reference.evidenceRefs.some((ref) => proposalRefs.has(ref));
+    });
+    if (overlapsRecovery) {
+      droppedIds.push(proposal.id);
+      continue;
+    }
+    kept.push(proposal);
+  }
+  return { kept, droppedIds };
 }
 
 function recordAoiAttentionRelations(params: {
@@ -1376,6 +1461,10 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // P1a c4: when true, the prompt offers a goal-candidate acceptAction. Default
   // off -> no goal guidance is shown (prompt unchanged for the common case).
   goalSynthesisEnabled?: boolean;
+  // Operator's configured card language. When provided, the model is told to
+  // author title/body/reason in that language so the proposal card is not shown
+  // in English to a non-English operator. Omitted -> prompt unchanged.
+  language?: AoiCardLang;
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1451,7 +1540,12 @@ export function buildAoiAutonomyReflectionMessages(params: {
     'If confidence is low, return no proposal.',
     'Never store secrets, credentials, private keys, or tokens.',
     'High-risk proposals must set requiresUserApproval=true.',
+    'Do not create a proposal whose only purpose is to review, read, or narrate the status of an existing active proposal, an existing recovery proposal, or a failed run; those are already tracked. Propose only genuinely new work.',
+    'Do not suggest read_research_artifact for a research run that did not complete successfully; a failed run produced no report to read.',
   ];
+  if (params.language) {
+    systemLines.push(aoiReflectionLanguageInstruction(params.language));
+  }
   if (connectorsAvailable) {
     systemLines.push(
       'You may propose at most one connector_call acceptAction, and ONLY for a connectorRef + toolName listed in availableConnectors (every listed tool is read-only).',
@@ -1696,6 +1790,7 @@ export function parseAoiAutonomyReflectionResponse(
     // P1a c4: when true, an activate_goal acceptAction is accepted and rebuilt as
     // a display-only goal candidate. Absent/false -> any goal candidate is dropped.
     goalSynthesisEnabled?: boolean;
+    language?: AoiCardLang;
     now?: number;
   },
 ): { reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] } {
@@ -1818,6 +1913,7 @@ export function parseAoiAutonomyReflectionResponse(
         sourceRefs: evidenceRefs,
         risk: isRisk(proposal.risk) ? proposal.risk : 'low',
         ...(Number.isFinite(confidence) ? { confidence } : {}),
+        ...(params.language ? { lang: params.language } : {}),
         now,
       });
       if (!goalCandidate) {
@@ -1953,6 +2049,7 @@ async function runLlmReflection(params: {
   previousBrief?: AoiStrategicBrief | null;
   goalSynthesisEnabled?: boolean;
   llmDailyTokenBudget?: number;
+  language?: AoiCardLang;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -1973,6 +2070,7 @@ async function runLlmReflection(params: {
       availableConnectors,
       previousBrief: params.previousBrief ?? null,
       goalSynthesisEnabled: params.goalSynthesisEnabled === true,
+      ...(params.language ? { language: params.language } : {}),
     });
     // Budget gate: the reflection call is the largest auto-path LLM consumer.
     // It draws from the SAME rolling daily ledger as the brief synthesizer, so
@@ -2017,6 +2115,7 @@ async function runLlmReflection(params: {
       knownEvidenceRefs: params.knownEvidenceRefs,
       connectors: params.connectors,
       goalSynthesisEnabled: params.goalSynthesisEnabled === true,
+      ...(params.language ? { language: params.language } : {}),
       now: params.now,
     });
   } catch {
@@ -2734,6 +2833,7 @@ export async function runAoiAutonomyTick(
     latestUserMessage,
     now,
     extraFailures: kiraOutcomeResult.failureInputs,
+    ...(params.language ? { lang: params.language } : {}),
   });
   const llmResult = await runLlmReflection({
     bundle,
@@ -2751,6 +2851,9 @@ export async function runAoiAutonomyTick(
     previousBrief,
     // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
     goalSynthesisEnabled: params.goalSynthesisEnabled,
+    // Author proposal title/body/reason in the operator's configured language so
+    // the card is not shown in English to a non-English operator.
+    ...(params.language ? { language: params.language } : {}),
     // Reflection draws from the same rolling daily token ledger as the brief
     // synthesizer, so all auto-path LLM spend is bounded.
     sessionsDir: params.sessionsDir,
@@ -2763,12 +2866,42 @@ export async function runAoiAutonomyTick(
   }
 
   let activeProposals = loadAoiActiveProposals(params.sessionsDir, sessionPath);
+  // Also purge ALREADY-ACTIVE redundant meta proposals -- e.g. a stale LLM
+  // proposal that just re-narrates a still-active recovery proposal, persisted by
+  // an older tick before this guard existed. Same conservative criteria as the
+  // new-candidate filter (LLM-origin + read-only + overlaps an active recovery
+  // proposal), so a genuine active proposal is never removed. Persisted here
+  // immediately so it clears even on a tick that accepts no new proposals (the
+  // save near the end runs only when acceptedProposals is non-empty).
+  const { kept: keptActiveProposals, droppedIds: purgedActiveProposalIds } =
+    dropRedundantAoiLlmReflectionProposals(activeProposals, activeProposals);
+  if (purgedActiveProposalIds.length > 0) {
+    activeProposals = keptActiveProposals;
+    saveAoiActiveProposals(params.sessionsDir, sessionPath, activeProposals);
+    for (const purgedId of purgedActiveProposalIds) {
+      llmResult.warnings.push(`active_proposal_purged_redundant_recovery_narration:${purgedId}`);
+    }
+  }
   const recentDecisions = loadAoiProposalDecisions(params.sessionsDir, sessionPath);
+  // Prune LLM reflection proposals that merely re-narrate a recovery proposal
+  // already covered this tick (see dropRedundantAoiLlmReflectionProposals). The
+  // exact-cooldownKey duplicate gate cannot catch these because the LLM invents
+  // its own cooldownKey.
+  const { kept: keptLlmProposals, droppedIds: redundantLlmProposalIds } =
+    dropRedundantAoiLlmReflectionProposals(llmResult.proposals, [
+      ...activeProposals,
+      ...deterministicProposals,
+      ...attentionResult.proposals,
+      ...kiraOutcomeResult.proposals,
+    ]);
+  for (const droppedId of redundantLlmProposalIds) {
+    llmResult.warnings.push(`proposal_dropped_redundant_recovery_narration:${droppedId}`);
+  }
   const candidates = [
     ...attentionResult.proposals,
     ...kiraOutcomeResult.proposals,
     ...deterministicProposals,
-    ...llmResult.proposals,
+    ...keptLlmProposals,
   ]
     .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
     .sort((left, right) =>
