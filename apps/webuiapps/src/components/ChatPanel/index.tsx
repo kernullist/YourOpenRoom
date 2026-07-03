@@ -1257,6 +1257,21 @@ function detectPreferredLanguage(
   return 'en';
 }
 
+// An assistant bubble with no text, no attachments, and no image renders as a
+// blank box. Such a message can only come from a stale cached transcript (an
+// older build that persisted an empty-content message) or a bad emit; suppress
+// it so the chat never shows an empty bubble. User/tool messages and any message
+// carrying an attachment or image are always kept.
+function isEmptyAssistantBubble(msg: CharacterDisplayMessage): boolean {
+  if (msg.role !== 'assistant') {
+    return false;
+  }
+  const hasText =
+    typeof msg.content === 'string' ? msg.content.trim().length > 0 : Boolean(msg.content);
+  const hasAttachment = Array.isArray(msg.attachments) && msg.attachments.length > 0;
+  return !hasText && !hasAttachment && !msg.imageUrl;
+}
+
 // Language for the Aoi proactive card. Proactive cards can appear before the
 // user has typed anything -- in this app "Korean" then comes only from the
 // assistant persona's own messages -- so scan the whole history (any role) for
@@ -8749,47 +8764,49 @@ const ChatPanel: React.FC<{
                   : 'Click the gear icon to configure your LLM connection'}
               </div>
             )}
-            {messages.map((msg) => (
-              <React.Fragment key={msg.id}>
-                <div
-                  data-testid="chat-message"
-                  className={`${styles.message} ${
-                    msg.role === 'user'
-                      ? styles.user
-                      : msg.role === 'tool'
-                        ? styles.toolInfo
-                        : styles.assistant
-                  }`}
-                >
-                  {msg.role === 'assistant'
-                    ? renderMessageContent(
-                        msg.content,
-                        handleOpenLinkExternal,
-                        handleOpenLinkInBrowser,
-                      )
-                    : msg.content}
-                  {msg.attachments?.map((attachment) => (
-                    <div key={attachment.id} className={styles.messageAttachment}>
-                      <img
-                        src={attachment.dataUrl}
-                        alt={attachment.name}
-                        className={styles.messageAttachmentImage}
-                        data-testid="chat-message-image"
-                      />
-                      <span className={styles.messageAttachmentMeta}>
-                        {attachment.name} · {formatAttachmentSize(attachment.size)}
-                      </span>
-                    </div>
-                  ))}
-                  {msg.imageUrl && (
-                    <img src={msg.imageUrl} alt="Generated" className={styles.messageImage} />
+            {messages
+              .filter((msg) => !isEmptyAssistantBubble(msg))
+              .map((msg) => (
+                <React.Fragment key={msg.id}>
+                  <div
+                    data-testid="chat-message"
+                    className={`${styles.message} ${
+                      msg.role === 'user'
+                        ? styles.user
+                        : msg.role === 'tool'
+                          ? styles.toolInfo
+                          : styles.assistant
+                    }`}
+                  >
+                    {msg.role === 'assistant'
+                      ? renderMessageContent(
+                          msg.content,
+                          handleOpenLinkExternal,
+                          handleOpenLinkInBrowser,
+                        )
+                      : msg.content}
+                    {msg.attachments?.map((attachment) => (
+                      <div key={attachment.id} className={styles.messageAttachment}>
+                        <img
+                          src={attachment.dataUrl}
+                          alt={attachment.name}
+                          className={styles.messageAttachmentImage}
+                          data-testid="chat-message-image"
+                        />
+                        <span className={styles.messageAttachmentMeta}>
+                          {attachment.name} · {formatAttachmentSize(attachment.size)}
+                        </span>
+                      </div>
+                    ))}
+                    {msg.imageUrl && (
+                      <img src={msg.imageUrl} alt="Generated" className={styles.messageImage} />
+                    )}
+                  </div>
+                  {msg.toolCalls && msg.toolCalls.length > 0 && (
+                    <ActionsTaken calls={msg.toolCalls} />
                   )}
-                </div>
-                {msg.toolCalls && msg.toolCalls.length > 0 && (
-                  <ActionsTaken calls={msg.toolCalls} />
-                )}
-              </React.Fragment>
-            ))}
+                </React.Fragment>
+              ))}
             {loading && (
               <div className={styles.loading} data-testid="chat-loading">
                 <div className={styles.loadingMain}>
