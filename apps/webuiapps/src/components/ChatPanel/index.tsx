@@ -350,7 +350,7 @@ import {
   normalizeAoiCardLang,
   type AoiCardLang,
 } from '@/lib/aoiAutonomyCardI18n';
-import { useVibeInfo } from '@/lib/vibeInfo';
+import { fetchVibeInfo, useVibeInfo } from '@/lib/vibeInfo';
 import type { AoiShadowDecisionLabel } from '@/lib/aoiShadowModeEvaluation';
 import { buildAoiOperatorDigest } from '@/lib/aoiOperatorDigest';
 import {
@@ -8133,6 +8133,13 @@ const ChatPanel: React.FC<{
   // global i18n layer (which drops Korean to English because 'ko' is not an
   // enabled locale). This keeps the proactive card in the operator's language.
   const aoiVibeInfo = useVibeInfo();
+  // Unlike the iframe apps (each calls fetchVibeInfo on mount), the host chat
+  // panel never populated vibe info, so systemSettings stayed null and the card
+  // language fell back to English. Fetch once on mount; it is cached and
+  // idempotent, and useVibeInfo re-renders when it resolves.
+  useEffect(() => {
+    void fetchVibeInfo().catch((error) => console.warn('[ChatPanel] fetchVibeInfo failed:', error));
+  }, []);
   const aoiCardLang: AoiCardLang = useMemo(
     () => normalizeAoiCardLang(aoiVibeInfo.systemSettings?.language?.current),
     [aoiVibeInfo.systemSettings?.language?.current],
