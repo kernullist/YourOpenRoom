@@ -1329,11 +1329,19 @@ export function dropRedundantAoiLlmReflectionProposals(
       continue;
     }
     const proposalRefs = new Set(proposal.evidenceRefs);
+    // Include artifact refs and keep the raw list too: a meta proposal often
+    // cites a recovery proposal indirectly, e.g. via an observation wrapper ref
+    // like "observation:aoi-obs-proposal-<recoveryProposalId>", which contains
+    // the recovery id as a substring rather than matching it exactly.
+    const proposalRefList = [...proposal.evidenceRefs, ...(proposal.artifactRefs ?? [])];
     const overlapsRecovery = recoveryReferences.some((reference) => {
       if (reference.id === proposal.id) {
         return false;
       }
       if (proposalRefs.has(`proposal:${reference.id}`)) {
+        return true;
+      }
+      if (proposalRefList.some((ref) => ref.includes(reference.id))) {
         return true;
       }
       if (reference.recoveryPreview && proposalRefs.has(reference.recoveryPreview.sourceRef)) {

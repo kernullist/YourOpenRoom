@@ -1649,6 +1649,14 @@ describe('dropRedundantAoiLlmReflectionProposals()', () => {
     expect(result.droppedIds).toEqual([]);
   });
 
+  it('detects overlap when a recovery proposal is cited via an observation wrapper ref', () => {
+    const meta = llmMetaProposal({
+      evidenceRefs: ['observation:aoi-obs-proposal-aoi-proposal-failure-recovery-001'],
+    });
+    const result = dropRedundantAoiLlmReflectionProposals([meta], [recoveryReference]);
+    expect(result.droppedIds).toEqual(['aoi-proposal-llm-001']);
+  });
+
   it('detects overlap through a direct proposal reference', () => {
     const meta = llmMetaProposal({
       evidenceRefs: ['proposal:aoi-proposal-failure-recovery-001'],
