@@ -10,7 +10,9 @@ import type { LLMConfig } from './llmModels';
 
 const STATIC_PREFIX = '/written-by-me';
 const API_PREFIX = '/api/written-by-me';
-const DEFAULT_SOURCE_ROOT = 'F:/kernullist/written-by-me';
+// Vendored in-repo copy of the Written By Me app; vite.config passes an
+// absolute sourceRoot, so this relative fallback is only used if unset.
+const DEFAULT_SOURCE_ROOT = resolve(process.cwd(), 'written-by-me');
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MAX_FILE_SIZE_MB = 10;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
@@ -228,9 +230,14 @@ function getOutputDir(sourceRoot: string): string {
   return join(sourceRoot, 'output');
 }
 
+function getProfilesDir(sourceRoot: string): string {
+  return join(sourceRoot, 'profiles');
+}
+
 function ensureWrittenByMeDirs(sourceRoot: string): void {
   fs.mkdirSync(getUploadsDir(sourceRoot), { recursive: true });
   fs.mkdirSync(getOutputDir(sourceRoot), { recursive: true });
+  fs.mkdirSync(getProfilesDir(sourceRoot), { recursive: true });
 }
 
 function sourceIsReady(sourceRoot: string): boolean {
@@ -527,6 +534,160 @@ function saveAnalysisOutput(sourceRoot: string, skillMd: string): Promise<string
   const analysisId = randomUUID();
   const outputPath = join(getOutputDir(sourceRoot), `${analysisId}.md`);
   return fs.promises.writeFile(outputPath, skillMd, 'utf-8').then(() => analysisId);
+}
+
+// --- Saved style profiles + style conversion ---------------------------------
+// A profile persists an analyzed writing style (the Skill.md) under a name so it
+// can be reused across sessions to convert new text into that voice. Stored as
+// one JSON file per profile in <sourceRoot>/profiles, mirroring how output/ and
+// uploads/ live on the external app's filesystem.
+
+const PROFILE_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const MAX_PROFILE_NAME = 120;
+const MAX_PROFILES = 50;
+
+export type WrittenByMeConvertLanguage = 'same' | 'ko' | 'en';
+
+export interface WrittenByMeProfile {
+  version: 1;
+  id: string;
+  name: string;
+  skillMd: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export type WrittenByMeProfileSummary = Pick<
+  WrittenByMeProfile,
+  'id' | 'name' | 'createdAt' | 'updatedAt'
+>;
+
+export function normalizeWrittenByMeProfileName(value: unknown): string {
+  const raw = typeof value === 'string' ? value : '';
+  return raw.replace(/\s+/g, ' ').trim().slice(0, MAX_PROFILE_NAME);
+}
+
+export function readWrittenByMeProfile(profilesDir: string, id: string): WrittenByMeProfile | null {
+  if (!PROFILE_ID_PATTERN.test(id)) {
+    return null;
+  }
+  const filePath = join(profilesDir, `${id}.json`);
+  if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as Partial<WrittenByMeProfile>;
+    if (!parsed || typeof parsed.skillMd !== 'string' || !parsed.skillMd.trim()) {
+      return null;
+    }
+    return {
+      version: 1,
+      id,
+      name: normalizeWrittenByMeProfileName(parsed.name) || 'Untitled style',
+      skillMd: parsed.skillMd,
+      createdAt: typeof parsed.createdAt === 'number' ? parsed.createdAt : 0,
+      updatedAt: typeof parsed.updatedAt === 'number' ? parsed.updatedAt : 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function listWrittenByMeProfiles(profilesDir: string): WrittenByMeProfileSummary[] {
+  if (!fs.existsSync(profilesDir)) {
+    return [];
+  }
+  const summaries: WrittenByMeProfileSummary[] = [];
+  for (const file of fs.readdirSync(profilesDir)) {
+    if (!file.endsWith('.json')) {
+      continue;
+    }
+    const profile = readWrittenByMeProfile(profilesDir, file.slice(0, -5));
+    if (profile) {
+      summaries.push({
+        id: profile.id,
+        name: profile.name,
+        createdAt: profile.createdAt,
+        updatedAt: profile.updatedAt,
+      });
+    }
+  }
+  summaries.sort((left, right) => right.updatedAt - left.updatedAt);
+  return summaries;
+}
+
+export function saveWrittenByMeProfile(
+  profilesDir: string,
+  input: { name: unknown; skillMd: unknown; id?: string; now?: number },
+): WrittenByMeProfile {
+  const skillMd = typeof input.skillMd === 'string' ? input.skillMd : '';
+  if (!skillMd.trim()) {
+    throw new HttpError(400, 'A style (skillMd) is required to save a profile.');
+  }
+  fs.mkdirSync(profilesDir, { recursive: true });
+  const now = typeof input.now === 'number' ? input.now : Date.now();
+  const existing =
+    input.id && PROFILE_ID_PATTERN.test(input.id)
+      ? readWrittenByMeProfile(profilesDir, input.id)
+      : null;
+  const profile: WrittenByMeProfile = {
+    version: 1,
+    id: existing?.id ?? randomUUID(),
+    name: normalizeWrittenByMeProfileName(input.name) || 'Untitled style',
+    skillMd,
+    createdAt: existing?.createdAt ?? now,
+    updatedAt: now,
+  };
+  fs.writeFileSync(
+    join(profilesDir, `${profile.id}.json`),
+    JSON.stringify(profile, null, 2),
+    'utf-8',
+  );
+  return profile;
+}
+
+export function deleteWrittenByMeProfile(profilesDir: string, id: string): boolean {
+  if (!PROFILE_ID_PATTERN.test(id)) {
+    return false;
+  }
+  const filePath = join(profilesDir, `${id}.json`);
+  if (!fs.existsSync(filePath)) {
+    return false;
+  }
+  fs.unlinkSync(filePath);
+  return true;
+}
+
+export function normalizeWrittenByMeConvertLanguage(value: unknown): WrittenByMeConvertLanguage {
+  return value === 'ko' || value === 'en' ? value : 'same';
+}
+
+// Prompt that rewrites arbitrary text into the profiled author's voice. Same
+// language by default; when a target language is given it also translates while
+// keeping the style. Meaning is preserved -- this restyles, it does not summarize.
+export function buildWrittenByMeConvertPrompt(
+  text: string,
+  skillMd: string,
+  targetLanguage: WrittenByMeConvertLanguage,
+): string {
+  const languageDirective =
+    targetLanguage === 'ko'
+      ? 'Write the output in Korean, translating from the source language if needed.'
+      : targetLanguage === 'en'
+        ? 'Write the output in English, translating from the source language if needed.'
+        : 'Write the output in the same language as the source text.';
+  return `Rewrite the text below so it reads as if the profiled author wrote it, matching this writing style profile exactly:
+
+${skillMd}
+
+Rules:
+- Preserve the original meaning, facts, and intent. Do not add, drop, or summarize information.
+- Apply the profile's tone, vocabulary, sentence rhythm, and punctuation habits.
+- ${languageDirective}
+- Return ONLY the rewritten text, with no preamble, notes, or explanation.
+
+TEXT TO REWRITE:
+${text}`;
 }
 
 function loadExternalModules(sourceRoot: string): ExternalModules {
@@ -903,6 +1064,134 @@ Return ONLY the translated text with no additional commentary.`;
         urlStore.clear();
         clearDirectoryFiles(getUploadsDir(sourceRoot));
         writeJson(res, 200, { ok: true, cleared });
+        return true;
+      }
+
+      if (req.method === 'POST' && route === '/profiles') {
+        const body = await readJsonRequestBody(req);
+        const skillMd = getString(body.skillMd).trim();
+        if (!skillMd) {
+          writeJson(res, 400, { error: 'No style to save. Run an analysis first.' });
+          return true;
+        }
+        const requestedId = getString(body.id).trim();
+        const profilesDir = getProfilesDir(sourceRoot);
+        if (!requestedId && listWrittenByMeProfiles(profilesDir).length >= MAX_PROFILES) {
+          writeJson(res, 400, {
+            error: `Profile limit reached (${MAX_PROFILES}). Delete one before saving a new profile.`,
+          });
+          return true;
+        }
+        const saved = saveWrittenByMeProfile(profilesDir, {
+          name: body.name,
+          skillMd,
+          ...(requestedId ? { id: requestedId } : {}),
+        });
+        logEvent('info', `Saved style profile "${saved.name}" (${saved.id})`);
+        writeJson(res, 200, {
+          ok: true,
+          profile: {
+            id: saved.id,
+            name: saved.name,
+            createdAt: saved.createdAt,
+            updatedAt: saved.updatedAt,
+          },
+        });
+        return true;
+      }
+
+      if (req.method === 'GET' && route === '/profiles') {
+        writeJson(res, 200, {
+          ok: true,
+          profiles: listWrittenByMeProfiles(getProfilesDir(sourceRoot)),
+        });
+        return true;
+      }
+
+      const profileMatch = route.match(/^\/profiles\/([0-9a-f-]+)$/i);
+      if (profileMatch) {
+        const profileId = profileMatch[1];
+        if (req.method === 'GET') {
+          const profile = readWrittenByMeProfile(getProfilesDir(sourceRoot), profileId);
+          if (!profile) {
+            writeJson(res, 404, { error: 'Style profile not found.' });
+            return true;
+          }
+          writeJson(res, 200, { ok: true, profile });
+          return true;
+        }
+        if (req.method === 'DELETE') {
+          const deleted = deleteWrittenByMeProfile(getProfilesDir(sourceRoot), profileId);
+          if (!deleted) {
+            writeJson(res, 404, { error: 'Style profile not found.' });
+            return true;
+          }
+          logEvent('info', `Deleted style profile ${profileId}`);
+          writeJson(res, 200, { ok: true, deleted: true });
+          return true;
+        }
+      }
+
+      if (req.method === 'POST' && route === '/convert') {
+        const body = await readJsonRequestBody(req);
+        let skillMd = getString(body.skillMd).trim();
+        const profileId = getString(body.profileId).trim();
+        if (profileId) {
+          const profile = readWrittenByMeProfile(getProfilesDir(sourceRoot), profileId);
+          if (!profile) {
+            writeJson(res, 404, { error: 'Style profile not found.' });
+            return true;
+          }
+          skillMd = profile.skillMd;
+        }
+        if (!skillMd) {
+          writeJson(res, 400, { error: 'No style reference. Select or save a profile first.' });
+          return true;
+        }
+
+        const parts: string[] = [];
+        const pastedText = getString(body.text).trim();
+        if (pastedText) {
+          parts.push(pastedText);
+        }
+        const missingFileIds: string[] = [];
+        for (const fileId of normalizeIdArray(body.fileIds)) {
+          const stored = textStore.get(fileId);
+          if (stored) {
+            parts.push(stored.content);
+          } else {
+            missingFileIds.push(fileId);
+          }
+        }
+        const combined = parts.join('\n\n').trim();
+        if (!combined) {
+          writeJson(res, 400, { error: 'No text to convert. Paste text or upload a file first.' });
+          return true;
+        }
+        if (combined.length > MAX_TOTAL_CHARS) {
+          writeJson(res, 413, {
+            error: `Text too large (${combined.length} chars). Maximum is ${MAX_TOTAL_CHARS} characters.`,
+          });
+          return true;
+        }
+
+        const targetLanguage = normalizeWrittenByMeConvertLanguage(body.targetLanguage);
+        const prompt = buildWrittenByMeConvertPrompt(combined, skillMd, targetLanguage);
+        const config = getAoiConfigOrThrow(configFile);
+        logEvent('info', `Convert started (${combined.length} chars, target=${targetLanguage})`);
+        const converted = await callAoiMainTextModel(
+          config,
+          getRequestOrigin(req),
+          prompt,
+          Math.min(MAX_OUTPUT_TOKENS, 4096),
+        );
+        logEvent('info', `Convert complete: ${converted.length} chars`);
+        const response: Record<string, unknown> = { ok: true, converted };
+        if (missingFileIds.length > 0) {
+          response.warning = `${missingFileIds.length} uploaded file(s) could not be found. Please re-upload those files.`;
+          response.missingFileIds = missingFileIds;
+        }
+        writeJson(res, 200, response);
         return true;
       }
 

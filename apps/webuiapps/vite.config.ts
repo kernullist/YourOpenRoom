@@ -3926,6 +3926,7 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
       configFile: LLM_CONFIG_FILE,
     }),
     writtenByMePlugin({
+      sourceRoot: resolve(OPENROOM_ROOT, 'written-by-me'),
       configFile: LLM_CONFIG_FILE,
     }),
     aoiResearchPlugin({

@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Written By Me - AI Writing Style Analyzer</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div class="container">
+
+  <header class="header">
+    <h1>Written By Me</h1>
+    <p class="subtitle">Analyze your writing style, save it, and rewrite any new text in your voice.</p>
+  </header>
+
+  <div id="profilePanel" class="panel profile-panel">
+    <div class="panel-header">
+      <h2>My Style Profiles</h2>
+      <span class="badge" id="profileCount">0 saved</span>
+    </div>
+    <div class="profile-row">
+      <select id="profileSelect" class="profile-select">
+        <option value="">No profile selected</option>
+      </select>
+      <button type="button" class="btn btn-secondary" id="deleteProfileBtn" disabled>Delete</button>
+    </div>
+    <p class="profile-hint" id="profileHint">Pick a saved style to rewrite new text in your voice — or analyze below to create one.</p>
+  </div>
+
+  <div id="convertZone" class="panel convert-panel hidden">
+    <div class="panel-header">
+      <h2>Convert to My Style</h2>
+      <div class="convert-controls">
+        <label for="convertLang">Language:</label>
+        <select id="convertLang" class="convert-lang">
+          <option value="same" selected>Keep original</option>
+          <option value="ko">Korean</option>
+          <option value="en">English</option>
+        </select>
+      </div>
+    </div>
+    <textarea class="convert-input" id="convertInput" placeholder="Paste text to rewrite in your style. (Leave empty to use the files uploaded below.)"></textarea>
+    <div class="convert-actions">
+      <button type="button" class="btn btn-primary" id="convertBtn">Convert to My Style</button>
+      <span class="convert-status" id="convertStatus"></span>
+    </div>
+    <div class="convert-output hidden" id="convertOutput">
+      <pre class="skill-preview" id="convertPreview"></pre>
+      <div class="result-actions">
+        <button type="button" class="btn btn-secondary" id="convertCopyBtn">Copy</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel paste-panel">
+    <div class="panel-header">
+      <h2>Paste Text</h2>
+      <span class="badge" id="pasteCharCount">0 chars</span>
+    </div>
+    <div class="paste-entries" id="pasteEntries">
+      <div class="paste-entry" data-idx="0">
+        <input type="text" class="paste-title" placeholder="Title (e.g. email, blog post, notes)" value="">
+        <textarea class="paste-area" placeholder="Paste any text here — emails, notes, blog posts, commit messages, code snippets..."></textarea>
+        <button type="button" class="paste-remove-btn hidden" title="Remove">&times;</button>
+      </div>
+    </div>
+    <div class="paste-footer">
+      <button type="button" class="btn btn-secondary" id="addPasteBtn">+ Add Text</button>
+    </div>
+  </div>
+
+  <div class="divider"><span>or from URLs</span></div>
+
+  <div class="panel url-panel">
+    <div class="panel-header">
+      <h2>Add URLs</h2>
+      <span class="badge" id="urlCount">0 URLs</span>
+    </div>
+    <div class="url-input-row">
+      <input type="text" id="urlInput" class="url-input" placeholder="https://example.com/your-blog-post" enterkeyhint="done">
+      <button type="button" class="btn btn-secondary" id="addUrlBtn">Fetch</button>
+    </div>
+    <div class="url-list" id="urlList"></div>
+  </div>
+
+  <div class="divider"><span>or upload files</span></div>
+
+  <div id="uploadZone" class="panel upload-panel">
+    <div class="panel-header">
+      <h2>Upload Documents</h2>
+      <span class="badge" id="fileCount">0 files</span>
+    </div>
+    <div class="drop-zone" id="dropZone">
+      <input type="file" id="fileInput" multiple accept=".txt,.md,.csv,.log,.cpp,.c,.h,.hpp,.cs,.java,.py,.js,.ts,.jsx,.tsx,.rs,.go,.rb,.php,.swift,.kt,.html,.css,.scss,.json,.xml,.yaml,.yml,.docx,.pdf" hidden>
+      <div class="drop-zone-content">
+        <p>Drag and drop files here, or <button type="button" class="btn-inline" id="browseBtn">browse</button></p>
+      </div>
+    </div>
+    <div class="upload-status" id="uploadStatus"></div>
+    <div class="file-list" id="fileList"></div>
+  </div>
+
+  <div class="action-bar">
+    <div class="model-selector">
+      <label for="modelSelect">Model:</label>
+      <select id="modelSelect">
+        <option value="">Loading models...</option>
+      </select>
+      <span class="model-status hidden" id="modelStatus"></span>
+    </div>
+    <button type="button" class="btn btn-primary btn-large" id="analyzeBtn" disabled>
+      <span class="btn-label">Analyze My Style</span>
+      <span class="btn-spinner hidden" id="btnSpinner"></span>
+    </button>
+  </div>
+
+  <div id="resultZone" class="panel result-panel hidden">
+    <div class="panel-header">
+      <h2>Your Skill.md</h2>
+      <span class="badge badge-success" id="resultStatus">Ready</span>
+    </div>
+
+    <div class="result-preview">
+      <pre class="skill-preview" id="skillPreview"></pre>
+    </div>
+
+    <div class="result-actions">
+      <button type="button" class="btn btn-primary" id="downloadBtn">
+        Download Skill.md
+      </button>
+      <button type="button" class="btn btn-secondary" id="copyBtn">
+        Copy to Clipboard
+      </button>
+      <button type="button" class="btn btn-secondary" id="newAnalysisBtn">
+        Start New Analysis
+      </button>
+    </div>
+
+    <div class="save-profile-row">
+      <input type="text" id="profileNameInput" class="profile-name-input" placeholder="Name this style (e.g. My blog voice)">
+      <button type="button" class="btn btn-primary" id="saveProfileBtn">Save as My Style</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <div id="translateZone" class="panel translate-panel hidden">
+    <div class="panel-header">
+      <h2>Style Translate</h2>
+      <div class="translate-controls">
+        <label class="direction-label">
+          <input type="radio" name="translateDir" value="en2kr" checked> EN → KR
+        </label>
+        <label class="direction-label">
+          <input type="radio" name="translateDir" value="kr2en"> KR → EN
+        </label>
+      </div>
+    </div>
+    <textarea class="translate-input" id="translateInput" placeholder="Paste text to translate using your writing style..."></textarea>
+    <div class="translate-actions">
+      <button type="button" class="btn btn-primary" id="translateBtn">Translate</button>
+      <span class="translate-status" id="translateStatus"></span>
+    </div>
+    <div class="translate-output hidden" id="translateOutput">
+      <pre class="skill-preview" id="translatePreview"></pre>
+    </div>
+  </div>
+
+  <div id="logPanel" class="panel log-panel">
+    <div class="panel-header">
+      <h2>Activity Log</h2>
+      <button type="button" class="btn btn-secondary log-clear-btn" id="logClearBtn">Clear</button>
+    </div>
+    <div class="log-entries" id="logEntries">
+      <div class="log-entry log-placeholder">Waiting for activity...</div>
+    </div>
+  </div>
+
+</div>
+
+<footer class="footer">
+  <p>Written By Me &mdash; Your writing style, distilled into a Skill.md for AI agents.</p>
+  <p class="footer-config" id="footerConfig"></p>
+</footer>
+
+<script src="script.js?v=2"></script>
+</body>
+</html>
