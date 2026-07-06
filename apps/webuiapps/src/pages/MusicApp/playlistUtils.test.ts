@@ -14,6 +14,7 @@ import {
   removePlaylistItem,
   resolvePlaybackItems,
   resolvePlaylist,
+  rotatePlaybackOrder,
 } from './playlistUtils';
 
 function makeResult(id: string, title: string): YoutubeSearchResult {
@@ -115,5 +116,17 @@ describe('playlistUtils', () => {
       startedAt: 700,
     });
     expect(resultItems.map((item) => item.id)).toEqual(['aaa111', 'bbb222', 'ccc333']);
+  });
+
+  it('rotates a playback order without reshuffling it', () => {
+    const order = ['a', 'b', 'c', 'd'];
+
+    expect(rotatePlaybackOrder(order, 'c')).toEqual(['c', 'd', 'a', 'b']);
+    expect(rotatePlaybackOrder(order, 'a')).toEqual(order);
+    expect(rotatePlaybackOrder(order, 'missing')).toEqual(order);
+    expect(rotatePlaybackOrder([], 'a')).toEqual([]);
+    // The input array must never be mutated.
+    expect(order).toEqual(['a', 'b', 'c', 'd']);
+    expect(rotatePlaybackOrder(order, 'a')).not.toBe(order);
   });
 });

@@ -3,189 +3,59 @@ app_name: youtube
 app_display_name: YouTube
 version: "1.0.0"
 description: >
-  音乐播放器应用。歌曲存储在 songs/，播放列表存储在 playlists/，state.json 保存播放进度和模式。
-  支持 PLAY_SONG/PAUSE/RESUME/SEEK/SET_VOLUME 等操作类指令，歌曲与播放列表的 CRUD/REFRESH 指令，以及 SYNC_STATE 系统指令。
-  本文件仅定义 Agent 下发给前端的操作指令，用户本地操作由前端代码自行处理和上报。
+  YouTube 启动器应用。最近搜索、收藏主题、应用内播放列表与播放器偏好保存在 state.json 中，
+  可以在应用内直接打开 YouTube 搜索、指定视频与播放列表队列。本文件仅定义 Agent → 前端 的操作指令。
 displayDesc: >
-  极简风格音乐播放器，支持歌曲管理、自定义播放列表和多种播放模式，打造沉浸式听歌体验。
-
-# ============================================================
-# 以下 actions 仅用于 Agent → 前端 的指令下发。
-# Agent 在调用这些 action 之前，应当已经完成了云端文件的写入/修改/删除，
-# 下发 action 的目的是通知前端从云端同步最新数据并刷新 UI。
-# ============================================================
+  快速的 YouTube 搜索启动器，一条指令即可打开歌手、歌曲或主题搜索。
 
 actions:
-  # ========== 操作类 Action ==========
-  # 直接执行 App 方法，数据不匹配时自动刷新相关 Repo 后重试一次，再失败返回 error
-
-  - type: PLAY_SONG
-    name: 播放歌曲
+  - type: OPEN_SEARCH
+    name: 打开搜索
     description: >
-      播放指定歌曲。如果 songId 在当前内存中找不到，会自动刷新歌曲 Repo 后重试。
+      按关键词、歌手、歌曲或主题搜索 YouTube。应用会更新搜索状态并打开结果视图。
     params:
-      - name: songId
+      - name: query
         type: string
-        description: 歌曲 ID，如 song-001
+        description: 搜索关键词，例如 "IVE I AM"
         required: true
-
-  - type: PAUSE
-    name: 暂停播放
-    description: >
-      暂停当前正在播放的歌曲。
-
-  - type: RESUME
-    name: 继续播放
-    description: >
-      继续播放当前暂停的歌曲。
-
-  - type: NEXT_SONG
-    name: 下一首
-    description: >
-      切换到下一首歌曲，根据当前播放模式决定下一首。
-
-  - type: PREV_SONG
-    name: 上一首
-    description: >
-      切换到上一首歌曲。
-
-  - type: SET_VOLUME
-    name: 设置音量
-    description: >
-      调整播放音量。
-    params:
-      - name: volume
-        type: number
-        description: 音量值，范围 0.0 - 1.0
-        required: true
-
-  - type: SEEK
-    name: 跳转进度
-    description: >
-      跳转到指定播放位置。
-    params:
-      - name: time
-        type: number
-        description: 目标时间（秒）
-        required: true
-
-  - type: SELECT_PLAYLIST
-    name: 选择播放列表
-    description: >
-      切换到指定播放列表视图。如果 playlistId 在当前内存中找不到，会自动刷新播放列表 Repo 后重试。
-    params:
-      - name: playlistId
+      - name: autoplay
         type: string
-        description: 播放列表 ID，如 playlist-001
-        required: true
-
-  - type: SET_PLAY_MODE
-    name: 设置播放模式
-    description: >
-      切换播放模式。
-    params:
-      - name: mode
-        type: string
-        description: 播放模式，可选值为 "sequential"、"repeat-one"、"shuffle"
-        required: true
-
-  # ========== 数据变更类 Action ==========
-  # Agent 已完成数据写入，App 只需刷新对应 Repo 从云端拉取最新数据
-
-  - type: CREATE_SONG
-    name: 创建歌曲
-    description: >
-      Agent 已将新歌曲 JSON 写入 NAS /songs/ 目录，通知前端刷新歌曲 Repo 从云端同步最新数据。
-    params:
-      - name: filePath
-        type: string
-        description: Agent 写入的歌曲文件路径，如 /songs/song-006.json
-        required: true
-
-  - type: UPDATE_SONG
-    name: 更新歌曲
-    description: >
-      Agent 已更新 NAS 上的歌曲文件，通知前端刷新歌曲 Repo 从云端同步最新数据。
-    params:
-      - name: filePath
-        type: string
-        description: Agent 更新的歌曲文件路径，如 /songs/song-001.json
-        required: true
-
-  - type: DELETE_SONG
-    name: 删除歌曲
-    description: >
-      Agent 已删除 NAS 上的歌曲文件，通知前端刷新歌曲 Repo 移除对应数据。
-    params:
-      - name: songId
-        type: string
-        description: 被删除的歌曲 ID，如 song-001
-        required: true
-
-  - type: CREATE_PLAYLIST
-    name: 创建播放列表
-    description: >
-      Agent 已将新播放列表 JSON 写入 NAS /playlists/ 目录，通知前端刷新播放列表 Repo 从云端同步最新数据。
-    params:
-      - name: filePath
-        type: string
-        description: Agent 写入的播放列表文件路径，如 /playlists/playlist-003.json
-        required: true
-
-  - type: UPDATE_PLAYLIST
-    name: 更新播放列表
-    description: >
-      Agent 已更新 NAS 上的播放列表文件，通知前端刷新播放列表 Repo 从云端同步最新数据。
-    params:
-      - name: filePath
-        type: string
-        description: Agent 更新的播放列表文件路径，如 /playlists/playlist-001.json
-        required: true
-
-  - type: DELETE_PLAYLIST
-    name: 删除播放列表
-    description: >
-      Agent 已删除 NAS 上的播放列表文件，通知前端刷新播放列表 Repo 移除对应数据。
-    params:
-      - name: playlistId
-        type: string
-        description: 被删除的播放列表 ID，如 playlist-001
-        required: true
-
-  # ========== 刷新类 Action ==========
-  # 通知 App 重载指定 Repo 数据，支持 navigateTo 导航
-
-  - type: REFRESH_SONGS
-    name: 刷新歌曲列表
-    description: >
-      通知 App 重载歌曲数据，支持先导航到目标视图再刷新。
-    params:
-      - name: navigateTo
-        type: string
-        description: 刷新前先导航到的目标视图，如 "all-songs"
-        required: false
-      - name: focusId
-        type: string
-        description: 刷新后聚焦到的歌曲 ID
+        description: >
+          可选。设为 "1" 时自动播放第一条结果，而不是仅在播放器中加载待播。
         required: false
 
-  - type: REFRESH_PLAYLISTS
-    name: 刷新播放列表
+  - type: OPEN_HOME
+    name: 打开首页
     description: >
-      通知 App 重载播放列表数据，支持先导航到目标视图再刷新。
+      从应用内打开 YouTube 首页。
+    params: []
+
+  - type: OPEN_VIDEO
+    name: 打开视频
+    description: >
+      在应用内播放器弹窗中直接打开指定的 YouTube 视频链接。
+      默认自动开始播放，除非 autoplay 设为 "0"。
     params:
-      - name: navigateTo
+      - name: url
         type: string
-        description: 刷新前先导航到的目标视图，如 "playlist"
-        required: false
-      - name: focusId
+        description: 完整的 YouTube 视频链接，例如 "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+        required: true
+      - name: autoplay
         type: string
-        description: 刷新后聚焦到的播放列表 ID
+        description: >
+          可选。默认自动播放；设为 "0" 时仅在播放器中加载视频而不开始播放。
         required: false
 
-  # ========== 系统类 Action ==========
+  - type: PLAY_LAST_PLAYLIST
+    name: 播放最近播放列表
+    description: >
+      以应用内队列方式恢复最近播放过的播放列表（找不到时回退到当前选中的播放列表），
+      并沿用上次的播放模式（顺序或随机）。
+    params: []
 
   - type: SYNC_STATE
     name: 同步状态
     description: >
-      Agent 写入 state.json 到 NAS 后，通知 App 调用 initFromCloud() 拉取最新状态文件并逐字段应用到内存。
+      Agent 将 state.json 写入 NAS 后，通知应用重新读取状态文件，
+      并把每个字段（搜索、主题、播放列表、播放器偏好）应用到界面。
+    params: []

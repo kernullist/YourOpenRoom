@@ -71,7 +71,6 @@ const zh = {
     defaultTitle: 'YouTube',
     openExternal: '在新标签打开',
     backToResults: '返回结果列表',
-    clearPlayer: '清除当前播放',
     autoHide: '自动隐藏结果',
     autoHideOn: '开',
     autoHideOff: '关',

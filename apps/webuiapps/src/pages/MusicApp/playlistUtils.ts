@@ -215,3 +215,14 @@ export function resolvePlaybackItems(
     .map((itemId) => itemsById.get(itemId) || null)
     .filter((item): item is PlaylistItem => item !== null);
 }
+
+/**
+ * Rotates an existing playback order so it starts at the given item while
+ * preserving the relative order of every other entry. Used as a fallback for
+ * jumping inside a running queue without reshuffling it.
+ */
+export function rotatePlaybackOrder(order: string[], startId: string): string[] {
+  const startIndex = order.indexOf(startId);
+  if (startIndex <= 0) return [...order];
+  return [...order.slice(startIndex), ...order.slice(0, startIndex)];
+}

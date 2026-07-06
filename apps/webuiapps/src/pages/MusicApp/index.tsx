@@ -52,20 +52,23 @@ import {
   removePlaylistItem,
   resolvePlaylist,
   resolvePlaybackItems,
+  rotatePlaybackOrder,
   type Playlist,
   type PlaylistItem,
   type PlaylistPlayback,
   type PlaylistPlaybackMode,
 } from './playlistUtils';
+import {
+  buildEmbedUrl,
+  clampPlayerZoom,
+  MAX_PLAYER_ZOOM,
+  MIN_PLAYER_ZOOM,
+  PLAYER_ZOOM_STEP,
+} from './playerUtils';
+import { APP_ID, APP_NAME, STATE_FILE } from './actions/constants';
 import styles from './index.module.scss';
 
-const APP_ID = 3;
-const APP_NAME = 'youtube';
-const STATE_FILE = '/state.json';
 const MAX_RECENT_SEARCHES = 12;
-const MIN_PLAYER_ZOOM = 1;
-const MAX_PLAYER_ZOOM = 2;
-const PLAYER_ZOOM_STEP = 0.25;
 const YOUTUBE_IFRAME_API_URL = 'https://www.youtube.com/iframe_api';
 
 let youtubeIframeApiPromise: Promise<void> | null = null;
@@ -153,42 +156,6 @@ function buildSearchUrl(query: string): string {
 
 function buildHomeUrl(): string {
   return 'https://www.youtube.com/';
-}
-
-interface PlayerEmbedOptions {
-  autoplay?: boolean;
-  loopPlayback: boolean;
-  queueVideoIds?: string[];
-}
-
-function buildEmbedUrl(videoId: string, options: PlayerEmbedOptions): string {
-  const { autoplay = false, loopPlayback, queueVideoIds = [] } = options;
-  const params = new URLSearchParams({
-    rel: '0',
-    modestbranding: '1',
-    playsinline: '1',
-    enablejsapi: '1',
-    origin: window.location.origin,
-  });
-  const hasQueue = queueVideoIds.length > 1;
-  if (autoplay) {
-    params.set('autoplay', '1');
-  }
-  if (hasQueue) {
-    params.set('playlist', queueVideoIds.slice(1).join(','));
-    if (loopPlayback) {
-      params.set('loop', '1');
-    }
-  } else if (loopPlayback) {
-    params.set('loop', '1');
-    params.set('playlist', videoId);
-  }
-  return `https://www.youtube.com/embed/${videoId}?${params.toString()}`;
-}
-
-function clampPlayerZoom(value: number): number {
-  const normalized = Number.isFinite(value) ? value : 1;
-  return Math.min(MAX_PLAYER_ZOOM, Math.max(MIN_PLAYER_ZOOM, normalized));
 }
 
 function normalizeState(raw: unknown): AppState {
@@ -286,10 +253,15 @@ const YouTubeApp: React.FC = () => {
   const [playerZoom, setPlayerZoom] = useState(DEFAULT_STATE.playerZoom);
   const [resultListHidden, setResultListHidden] = useState(false);
   const resultListAutoHiddenRef = useRef(false);
-  const previousSelectedResultIdRef = useRef<string | null>(null);
   const previousResultsAutoHideRef = useRef(false);
   const playerIframeRef = useRef<HTMLIFrameElement | null>(null);
   const youtubePlayerRef = useRef<YoutubeIframePlayer | null>(null);
+  // Live mirrors for callbacks attached once per player instance.
+  const loopPlaybackRef = useRef(false);
+  const queueActiveRef = useRef(false);
+  // Monotonic token so a stale (slow) search response cannot clobber a view
+  // that was opened after the search started.
+  const searchRequestSeqRef = useRef(0);
 
   const saveState = useCallback(async (nextState: AppState) => {
     try {
@@ -297,6 +269,35 @@ const YouTubeApp: React.FC = () => {
     } catch (error) {
       console.error('[YouTubeApp] Failed to save state:', error);
     }
+  }, []);
+
+  // Reads state.json from the cloud and applies every field. Used both at
+  // init and for the SYNC_STATE agent action. Returns false when the state
+  // file has no content yet.
+  const applyCloudState = useCallback(async (): Promise<boolean> => {
+    const stateResult = await youtubeFileApi.readFile(STATE_FILE);
+    if (!stateResult.content) return false;
+    const parsed =
+      typeof stateResult.content === 'string'
+        ? JSON.parse(stateResult.content)
+        : stateResult.content;
+    const normalized = normalizeState(parsed);
+    setSearchQuery(normalized.searchQuery);
+    setRecentSearches(normalized.recentSearches);
+    setFavoriteTopics(normalized.favoriteTopics);
+    setPlaylists(normalized.playlists);
+    setActivePlaylistId(normalized.activePlaylistId);
+    setLastPlayedPlaylistId(normalized.lastPlayedPlaylistId);
+    setLastPlayedPlaylistMode(normalized.lastPlayedPlaylistMode);
+    setPlaylistNameDraft(
+      resolvePlaylist(normalized.playlists, normalized.activePlaylistId)?.name ||
+        DEFAULT_PLAYLIST_NAME,
+    );
+    setSidebarOpen(normalized.sidebarOpen);
+    setResultsAutoHide(normalized.resultsAutoHide);
+    setLoopPlayback(normalized.loopPlayback);
+    setPlayerZoom(clampPlayerZoom(normalized.playerZoom));
+    return true;
   }, []);
 
   const persistState = useCallback(
@@ -380,6 +381,8 @@ const YouTubeApp: React.FC = () => {
       ? [currentPlaybackItem.id]
       : [];
   const queueStartVideoId = currentQueueVideoIds[0] || currentPlaybackItem?.id || '';
+  const currentQueueKey = currentQueueVideoIds.join(',');
+  const queueActive = currentQueueVideoIds.length > 1;
 
   const currentResultSavedInActivePlaylist = Boolean(
     selectedResult && activePlaylistItems.some((item) => item.id === selectedResult.id),
@@ -397,19 +400,23 @@ const YouTubeApp: React.FC = () => {
       selected,
       playback,
       hideResults = false,
+      autoplay = false,
     }: {
       title: string;
       results: YoutubeSearchResult[];
       selected: YoutubeSearchResult | null;
       playback: PlaylistPlayback | null;
       hideResults?: boolean;
+      autoplay?: boolean;
     }) => {
+      searchRequestSeqRef.current += 1;
       setResultsOpen(true);
       setResultQuery(title);
       setSearchResults(results);
       setSelectedResult(selected);
       setActivePlayback(playback);
       setCurrentPlayingVideoId(selected?.id ?? null);
+      setAutoplayVideoId(autoplay && selected ? selected.id : null);
       setResultListHidden(hideResults);
       resultListAutoHiddenRef.current = hideResults;
       setResultsLoading(false);
@@ -444,10 +451,17 @@ const YouTubeApp: React.FC = () => {
       }));
 
       reportAction(APP_ID, 'OPEN_SEARCH', { query }, triggerBy);
+      const requestSeq = searchRequestSeqRef.current + 1;
+      searchRequestSeqRef.current = requestSeq;
       setResultsOpen(true);
-      setActivePlayback(null);
       setAutoplayVideoId(null);
-      setCurrentPlayingVideoId(null);
+      // A queue is stopped because its item list is about to be replaced, but
+      // a single playing video keeps running until the user picks a new one.
+      if (activePlayback) {
+        setActivePlayback(null);
+        setCurrentPlayingVideoId(null);
+        setSelectedResult(null);
+      }
       setResultQuery(query);
       setResultListHidden(false);
       resultListAutoHiddenRef.current = false;
@@ -455,20 +469,24 @@ const YouTubeApp: React.FC = () => {
       setResultsError(null);
       try {
         const results = await fetchYoutubeSearchResults(query);
+        if (searchRequestSeqRef.current !== requestSeq) return;
         setSearchResults(results);
-        setSelectedResult(results[0] ?? null);
-        if (options?.autoplay) {
-          setAutoplayVideoId(results[0]?.id ?? null);
+        if (options?.autoplay && results[0]) {
+          setSelectedResult(results[0]);
+          setCurrentPlayingVideoId(results[0].id);
+          setAutoplayVideoId(results[0].id);
         }
       } catch (error) {
+        if (searchRequestSeqRef.current !== requestSeq) return;
         setSearchResults([]);
-        setSelectedResult(null);
         setResultsError(error instanceof Error ? error.message : String(error));
       } finally {
-        setResultsLoading(false);
+        if (searchRequestSeqRef.current === requestSeq) {
+          setResultsLoading(false);
+        }
       }
     },
-    [persistState, searchQuery],
+    [activePlayback, persistState, searchQuery],
   );
 
   const openHome = useCallback(() => {
@@ -620,10 +638,11 @@ const YouTubeApp: React.FC = () => {
         results: playlistItemsToResults(targetPlaylist.items),
         selected: selectedItem,
         playback: null,
-        hideResults: false,
+        hideResults: resultsAutoHide,
+        autoplay: true,
       });
     },
-    [openResultsViewer, playlists, selectPlaylist],
+    [openResultsViewer, playlists, resultsAutoHide, selectPlaylist],
   );
 
   const startPlaylistPlayback = useCallback(
@@ -650,10 +669,10 @@ const YouTubeApp: React.FC = () => {
         results: orderedResults,
         selected: orderedResults[0] ?? null,
         playback,
-        hideResults: false,
+        hideResults: resultsAutoHide,
       });
     },
-    [openResultsViewer, persistState, playlists],
+    [openResultsViewer, persistState, playlists, resultsAutoHide],
   );
 
   const playLastPlayedPlaylist = useCallback((): string => {
@@ -684,7 +703,7 @@ const YouTubeApp: React.FC = () => {
       results: orderedResults,
       selected: orderedResults[0] ?? null,
       playback,
-      hideResults: false,
+      hideResults: resultsAutoHide,
     });
     return 'success';
   }, [
@@ -694,6 +713,7 @@ const YouTubeApp: React.FC = () => {
     openResultsViewer,
     persistState,
     playlists,
+    resultsAutoHide,
   ]);
 
   const removeItemFromPlaylist = useCallback(
@@ -780,46 +800,59 @@ const YouTubeApp: React.FC = () => {
     setResultsOpen(false);
     setActivePlayback(null);
     setCurrentPlayingVideoId(null);
+    setAutoplayVideoId(null);
     closePlaylistPicker();
   }, [closePlaylistPicker]);
-
-  const resetPlayerSelection = useCallback(() => {
-    setSelectedResult(null);
-    setActivePlayback(null);
-    setCurrentPlayingVideoId(null);
-    setResultListHidden(false);
-    resultListAutoHiddenRef.current = false;
-  }, []);
-
-  const handleBackAction = useCallback(() => {
-    if (resultListHidden) {
-      resultListAutoHiddenRef.current = false;
-      setResultListHidden(false);
-      return;
-    }
-    resetPlayerSelection();
-  }, [resetPlayerSelection, resultListHidden]);
 
   const toggleResultListVisibility = useCallback(() => {
     resultListAutoHiddenRef.current = false;
     setResultListHidden((prev) => !prev);
   }, []);
 
+  const hideListAfterExplicitSelect = useCallback(() => {
+    if (!resultsAutoHide) return;
+    setResultListHidden(true);
+    resultListAutoHiddenRef.current = true;
+  }, [resultsAutoHide]);
+
   const handleResultSelect = useCallback(
     (result: YoutubeSearchResult) => {
-      if (activePlayback && playbackPlaylist?.items.some((item) => item.id === result.id)) {
-        startPlaylistPlayback(activePlayback.playlistId, activePlayback.mode, result.id);
-      } else {
-        setActivePlayback(null);
+      const player = youtubePlayerRef.current;
+
+      if (activePlayback && activePlayback.order.includes(result.id)) {
+        // Jump inside the running queue without rebuilding it, so the visible
+        // order stays stable and the player iframe is not remounted.
+        if (player?.playVideoAt) {
+          player.playVideoAt(activePlayback.order.indexOf(result.id));
+        } else {
+          setActivePlayback({
+            ...activePlayback,
+            order: rotatePlaybackOrder(activePlayback.order, result.id),
+          });
+        }
         setCurrentPlayingVideoId(result.id);
         setSelectedResult(result);
-        if (resultsAutoHide) {
-          setResultListHidden(true);
-          resultListAutoHiddenRef.current = true;
-        }
+        hideListAfterExplicitSelect();
+        return;
       }
+
+      setActivePlayback(null);
+      if (selectedResult?.id === result.id && player) {
+        // Same card re-clicked: start/resume it, or pull the embed back if it
+        // navigated to a related video inside the iframe.
+        if (currentPlayingVideoId !== result.id && player.loadVideoById) {
+          player.loadVideoById(result.id);
+        } else {
+          player.playVideo?.();
+        }
+      } else {
+        setAutoplayVideoId(result.id);
+        setSelectedResult(result);
+      }
+      setCurrentPlayingVideoId(result.id);
+      hideListAfterExplicitSelect();
     },
-    [activePlayback, playbackPlaylist, resultsAutoHide, startPlaylistPlayback],
+    [activePlayback, currentPlayingVideoId, hideListAfterExplicitSelect, selectedResult],
   );
 
   const quickTopics = useMemo(
@@ -863,14 +896,30 @@ const YouTubeApp: React.FC = () => {
               selected: direct,
               playback: null,
               hideResults: resultsAutoHide,
+              autoplay: action.params?.autoplay !== '0',
             });
             return 'success';
+          }
+          case 'SYNC_STATE': {
+            try {
+              const restored = await applyCloudState();
+              return restored ? 'success' : 'error: state.json not found';
+            } catch (error) {
+              return `error: ${error instanceof Error ? error.message : String(error)}`;
+            }
           }
           default:
             return `error: unknown action_type ${action.action_type}`;
         }
       },
-      [openHome, openResultsViewer, playLastPlayedPlaylist, resultsAutoHide, submitSearch],
+      [
+        applyCloudState,
+        openHome,
+        openResultsViewer,
+        playLastPlayedPlaylist,
+        resultsAutoHide,
+        submitSearch,
+      ],
     ),
   );
 
@@ -899,29 +948,8 @@ const YouTubeApp: React.FC = () => {
         await fetchVibeInfo();
 
         try {
-          const stateResult = await youtubeFileApi.readFile(STATE_FILE);
-          if (stateResult.content) {
-            const parsed =
-              typeof stateResult.content === 'string'
-                ? JSON.parse(stateResult.content)
-                : stateResult.content;
-            const normalized = normalizeState(parsed);
-            setSearchQuery(normalized.searchQuery);
-            setRecentSearches(normalized.recentSearches);
-            setFavoriteTopics(normalized.favoriteTopics);
-            setPlaylists(normalized.playlists);
-            setActivePlaylistId(normalized.activePlaylistId);
-            setLastPlayedPlaylistId(normalized.lastPlayedPlaylistId);
-            setLastPlayedPlaylistMode(normalized.lastPlayedPlaylistMode);
-            setPlaylistNameDraft(
-              resolvePlaylist(normalized.playlists, normalized.activePlaylistId)?.name ||
-                DEFAULT_PLAYLIST_NAME,
-            );
-            setSidebarOpen(Boolean(normalized.sidebarOpen));
-            setResultsAutoHide(Boolean(normalized.resultsAutoHide));
-            setLoopPlayback(Boolean(normalized.loopPlayback));
-            setPlayerZoom(clampPlayerZoom(normalized.playerZoom));
-          } else {
+          const restored = await applyCloudState();
+          if (!restored) {
             await saveState(DEFAULT_STATE);
           }
         } catch {
@@ -944,7 +972,7 @@ const YouTubeApp: React.FC = () => {
       reportLifecycle(AppLifecycle.UNLOADING);
       reportLifecycle(AppLifecycle.DESTROYED);
     };
-  }, [saveState]);
+  }, [applyCloudState, saveState]);
 
   useEffect(() => {
     if (isLoading) return;
@@ -977,20 +1005,20 @@ const YouTubeApp: React.FC = () => {
     lastPlayedPlaylistMode,
   ]);
 
+  // Auto-hide reacts only to the toggle itself and to the selection being
+  // cleared. Hiding on selection changes is handled by explicit user picks
+  // (handleResultSelect / openResultsViewer); doing it here as well used to
+  // slam the list shut on programmatic changes such as queue auto-advance or
+  // search results arriving.
   useEffect(() => {
-    const previousSelectedResultId = previousSelectedResultIdRef.current;
     const previousResultsAutoHide = previousResultsAutoHideRef.current;
-    const currentSelectedResultId = selectedResult?.id ?? null;
-    const selectionChanged = currentSelectedResultId !== previousSelectedResultId;
     const autoHideEnabledNow = resultsAutoHide && !previousResultsAutoHide;
     const autoHideDisabledNow = !resultsAutoHide && previousResultsAutoHide;
 
-    if (!resultsOpen || !currentSelectedResultId) {
-      if (!currentSelectedResultId) {
-        setResultListHidden(false);
-        resultListAutoHiddenRef.current = false;
-      }
-    } else if (resultsAutoHide && (selectionChanged || autoHideEnabledNow)) {
+    if (!selectedResult) {
+      setResultListHidden(false);
+      resultListAutoHiddenRef.current = false;
+    } else if (resultsOpen && autoHideEnabledNow) {
       setResultListHidden(true);
       resultListAutoHiddenRef.current = true;
     } else if (autoHideDisabledNow && resultListAutoHiddenRef.current) {
@@ -998,7 +1026,6 @@ const YouTubeApp: React.FC = () => {
       resultListAutoHiddenRef.current = false;
     }
 
-    previousSelectedResultIdRef.current = currentSelectedResultId;
     previousResultsAutoHideRef.current = resultsAutoHide;
   }, [resultsAutoHide, resultsOpen, selectedResult]);
 
@@ -1049,6 +1076,20 @@ const YouTubeApp: React.FC = () => {
   }, [activePlayback, playbackPlaylist]);
 
   useEffect(() => {
+    loopPlaybackRef.current = loopPlayback;
+  }, [loopPlayback]);
+
+  useEffect(() => {
+    queueActiveRef.current = queueActive;
+  }, [queueActive]);
+
+  // Apply loop changes live through the iframe API so toggling loop never
+  // reloads the iframe (which used to restart the video from the beginning).
+  useEffect(() => {
+    youtubePlayerRef.current?.setLoop?.(queueActive && loopPlayback);
+  }, [loopPlayback, queueActive]);
+
+  useEffect(() => {
     if (!resultsOpen || !queueStartVideoId || !playerIframeRef.current) return;
 
     let cancelled = false;
@@ -1068,9 +1109,23 @@ const YouTubeApp: React.FC = () => {
         youtubePlayerRef.current?.destroy();
         youtubePlayerRef.current = new window.YT.Player(playerIframeRef.current, {
           events: {
-            onReady: syncCurrentVideoId,
+            onReady: () => {
+              youtubePlayerRef.current?.setLoop?.(
+                queueActiveRef.current && loopPlaybackRef.current,
+              );
+              syncCurrentVideoId();
+            },
             onStateChange: (event) => {
               if (!window.YT?.PlayerState) return;
+              if (event.data === window.YT.PlayerState.ENDED) {
+                // Native loop only exists for queue embeds; a single video is
+                // looped manually so the iframe never has to reload.
+                if (!queueActiveRef.current && loopPlaybackRef.current) {
+                  youtubePlayerRef.current?.seekTo?.(0, true);
+                  youtubePlayerRef.current?.playVideo?.();
+                }
+                return;
+              }
               const trackedStates: number[] = [
                 window.YT.PlayerState.PLAYING,
                 window.YT.PlayerState.BUFFERING,
@@ -1098,7 +1153,26 @@ const YouTubeApp: React.FC = () => {
       youtubePlayerRef.current?.destroy();
       youtubePlayerRef.current = null;
     };
-  }, [resultsOpen, queueStartVideoId, currentQueueVideoIds.join(','), loopPlayback]);
+  }, [resultsOpen, queueStartVideoId, currentQueueKey]);
+
+  // The viewer is closed with the explicit close button or Escape. Clicking
+  // the dark backdrop no longer closes it: a stray click while a video plays
+  // used to silently kill playback and drop the user back to the main screen.
+  useEffect(() => {
+    if (!resultsOpen) return;
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape' || event.isComposing) return;
+      if (playlistPickerOpen) {
+        closePlaylistPicker();
+        return;
+      }
+      closeResultsViewer();
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [closePlaylistPicker, closeResultsViewer, playlistPickerOpen, resultsOpen]);
 
   if (isLoading) {
     return (
@@ -1198,14 +1272,19 @@ const YouTubeApp: React.FC = () => {
               <Search size={18} className={styles.searchIcon} />
               <input
                 className={styles.searchInput}
+                data-testid="yt-search-input"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter') void submitSearch();
+                  if (e.key === 'Enter' && !e.nativeEvent.isComposing) void submitSearch();
                 }}
                 placeholder={t('search.placeholder')}
               />
-              <button className={styles.searchButton} onClick={() => void submitSearch()}>
+              <button
+                className={styles.searchButton}
+                data-testid="yt-search-submit"
+                onClick={() => void submitSearch()}
+              >
                 {t('search.action')}
               </button>
             </div>
@@ -1286,7 +1365,7 @@ const YouTubeApp: React.FC = () => {
                 <ListPlus size={18} />
                 <h2 className={styles.panelTitle}>{t('playlist.title')}</h2>
               </div>
-              <span className={styles.panelMeta}>
+              <span className={styles.panelMeta} data-testid="yt-playlist-summary">
                 {activePlaylist ? playlistSummary : t('playlist.noPlaylistSelected')}
               </span>
             </div>
@@ -1311,10 +1390,11 @@ const YouTubeApp: React.FC = () => {
             <div className={styles.playlistCreateRow}>
               <input
                 className={styles.playlistNameInput}
+                data-testid="yt-new-playlist-input"
                 value={newPlaylistDraft}
                 onChange={(event) => setNewPlaylistDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     createPlaylistFromDraft(false);
                   }
@@ -1323,6 +1403,7 @@ const YouTubeApp: React.FC = () => {
               />
               <button
                 className={styles.secondaryButton}
+                data-testid="yt-create-playlist"
                 onClick={() => createPlaylistFromDraft(false)}
               >
                 <Plus size={16} />
@@ -1344,7 +1425,7 @@ const YouTubeApp: React.FC = () => {
                       onChange={(event) => setPlaylistNameDraft(event.target.value)}
                       onBlur={savePlaylistName}
                       onKeyDown={(event) => {
-                        if (event.key === 'Enter') {
+                        if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                           event.preventDefault();
                           savePlaylistName();
                         }
@@ -1371,6 +1452,7 @@ const YouTubeApp: React.FC = () => {
                   </button>
                   <button
                     className={styles.secondaryButton}
+                    data-testid="yt-playlist-play-seq"
                     onClick={() => startPlaylistPlayback(activePlaylist.id, 'sequential')}
                     disabled={activePlaylistItems.length === 0}
                   >
@@ -1394,6 +1476,7 @@ const YouTubeApp: React.FC = () => {
                   </button>
                   <button
                     className={styles.textButton}
+                    data-testid="yt-playlist-delete"
                     onClick={() => deletePlaylist(activePlaylist.id)}
                     disabled={playlists.length <= 1}
                   >
@@ -1493,24 +1576,26 @@ const YouTubeApp: React.FC = () => {
       </main>
 
       {resultsOpen && (
-        <div className={styles.popupOverlay} onClick={closeResultsViewer}>
-          <div className={styles.popupCard} onClick={(e) => e.stopPropagation()}>
+        <div className={styles.popupOverlay} data-testid="yt-results-popup">
+          <div className={styles.popupCard}>
             <div className={styles.popupHeader}>
               <div className={styles.popupTitleWrap}>
                 <span className={styles.popupEyebrow}>{t('popup.label')}</span>
-                <strong className={styles.popupTitle}>
+                <strong className={styles.popupTitle} data-testid="yt-popup-title">
                   {activePlayback
                     ? playbackPlaylist?.name || DEFAULT_PLAYLIST_NAME
                     : resultQuery || t('popup.defaultTitle')}
                 </strong>
               </div>
               <div className={styles.popupActions}>
-                {selectedResult ? (
-                  <button className={styles.popupAction} onClick={handleBackAction}>
+                {selectedResult && resultListHidden ? (
+                  <button
+                    className={styles.popupAction}
+                    data-testid="yt-back-to-results"
+                    onClick={toggleResultListVisibility}
+                  >
                     <ArrowLeft size={16} />
-                    <span>
-                      {resultListHidden ? t('popup.backToResults') : t('popup.clearPlayer')}
-                    </span>
+                    <span>{t('popup.backToResults')}</span>
                   </button>
                 ) : null}
                 <button
@@ -1536,7 +1621,11 @@ const YouTubeApp: React.FC = () => {
                   <ExternalLink size={16} />
                   <span>{t('popup.openExternal')}</span>
                 </button>
-                <button className={styles.popupClose} onClick={closeResultsViewer}>
+                <button
+                  className={styles.popupClose}
+                  data-testid="yt-popup-close"
+                  onClick={closeResultsViewer}
+                >
                   <X size={18} />
                 </button>
               </div>
@@ -1565,6 +1654,7 @@ const YouTubeApp: React.FC = () => {
                     <button
                       key={result.id}
                       className={`${styles.resultCard} ${selectedResult?.id === result.id ? styles.resultCardActive : ''}`}
+                      data-testid={`yt-result-card-${result.id}`}
                       onClick={() => handleResultSelect(result)}
                     >
                       <div className={styles.resultThumbWrap}>
@@ -1603,7 +1693,9 @@ const YouTubeApp: React.FC = () => {
                     <div className={styles.playerHeader}>
                       <div className={styles.playerTitleBlock}>
                         <span className={styles.popupEyebrow}>{t('popup.nowPlaying')}</span>
-                        <strong className={styles.playerTitle}>{currentPlaybackItem.title}</strong>
+                        <strong className={styles.playerTitle} data-testid="yt-player-title">
+                          {currentPlaybackItem.title}
+                        </strong>
                         {activePlayback ? (
                           <span className={styles.playerQueueBadge}>
                             {activePlayback.mode === 'shuffle'
@@ -1623,6 +1715,7 @@ const YouTubeApp: React.FC = () => {
                       <div className={styles.playerControls}>
                         <button
                           className={`${styles.popupAction} ${loopPlayback ? styles.popupActionActive : ''}`}
+                          data-testid="yt-loop-toggle"
                           onClick={() => setLoopPlayback((prev) => !prev)}
                         >
                           <Repeat size={16} />
@@ -1635,6 +1728,7 @@ const YouTubeApp: React.FC = () => {
                           className={`${styles.popupAction} ${
                             currentResultSavedInActivePlaylist ? styles.popupActionActive : ''
                           }`}
+                          data-testid="yt-add-current"
                           onClick={handleAddToPlaylistClick}
                           disabled={
                             !selectedResult ||
@@ -1696,14 +1790,14 @@ const YouTubeApp: React.FC = () => {
                       }
                     >
                       <iframe
-                        key={`${queueStartVideoId}-${currentQueueVideoIds.join(',')}-${loopPlayback ? 'loop' : 'single'}`}
+                        key={`${queueStartVideoId}-${currentQueueKey}`}
                         ref={playerIframeRef}
+                        data-testid="yt-player-iframe"
                         title={currentPlaybackItem.title}
                         src={buildEmbedUrl(queueStartVideoId, {
                           autoplay:
                             Boolean(activePlayback) ||
                             (autoplayVideoId !== null && queueStartVideoId === autoplayVideoId),
-                          loopPlayback,
                           queueVideoIds: currentQueueVideoIds,
                         })}
                         className={styles.playerFrame}
@@ -1713,7 +1807,9 @@ const YouTubeApp: React.FC = () => {
                     </div>
                   </>
                 ) : (
-                  <div className={styles.resultEmpty}>{t('popup.selectVideo')}</div>
+                  <div className={styles.resultEmpty} data-testid="yt-player-empty">
+                    {t('popup.selectVideo')}
+                  </div>
                 )}
               </div>
             </div>
@@ -1734,7 +1830,7 @@ const YouTubeApp: React.FC = () => {
               </button>
             </div>
 
-            <div className={styles.playlistPickerList}>
+            <div className={styles.playlistPickerList} data-testid="yt-playlist-picker">
               {playlists.map((playlist) => {
                 const alreadyAdded = playlist.items.some((item) => item.id === selectedResult.id);
                 return (
@@ -1764,7 +1860,7 @@ const YouTubeApp: React.FC = () => {
                 value={newPlaylistDraft}
                 onChange={(event) => setNewPlaylistDraft(event.target.value)}
                 onKeyDown={(event) => {
-                  if (event.key === 'Enter') {
+                  if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
                     event.preventDefault();
                     createPlaylistFromDraft(true);
                   }

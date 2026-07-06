@@ -35,8 +35,29 @@ actions:
     name: Open Video
     description: >
       Open a specific YouTube watch URL or video directly inside the app player popup.
+      The video starts playing automatically unless autoplay is set to "0".
     params:
       - name: url
         type: string
         description: Full YouTube video URL, for example "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
         required: true
+      - name: autoplay
+        type: string
+        description: >
+          Optional. Playback starts automatically by default; set to "0" to only
+          cue the video in the player without starting it.
+        required: false
+
+  - type: PLAY_LAST_PLAYLIST
+    name: Play Last Playlist
+    description: >
+      Resume in-app queue playback of the most recently played playlist (falling back to the
+      active playlist) using the last used playback mode (sequential or shuffle).
+    params: []
+
+  - type: SYNC_STATE
+    name: Sync State
+    description: >
+      After the Agent has written state.json to NAS, notify the app to re-read the state file
+      and apply every field (searches, topics, playlists, player preferences) to the UI.
+    params: []

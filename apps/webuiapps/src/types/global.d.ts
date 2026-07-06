@@ -30,6 +30,11 @@ declare global {
   interface YoutubeIframePlayer {
     destroy: () => void;
     getVideoData: () => YoutubeVideoData;
+    playVideoAt?: (index: number) => void;
+    loadVideoById?: (videoId: string) => void;
+    playVideo?: () => void;
+    seekTo?: (seconds: number, allowSeekAhead?: boolean) => void;
+    setLoop?: (loopPlaylists: boolean) => void;
   }
 }
 

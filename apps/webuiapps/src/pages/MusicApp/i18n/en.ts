@@ -72,7 +72,6 @@ const en = {
     defaultTitle: 'YouTube',
     openExternal: 'Open in new tab',
     backToResults: 'Back to results',
-    clearPlayer: 'Clear player',
     autoHide: 'Auto-hide results',
     autoHideOn: 'On',
     autoHideOff: 'Off',
