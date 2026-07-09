@@ -116,16 +116,34 @@ export function chooseAoiMusicMood(
 }
 
 // Pick a query from the mood pool, skipping anything already in recentQueries.
-// When every pooled query is recent, rotate by the recent count so repeated idle
-// cards still vary instead of sticking on one entry.
+// When every pooled query is recent, fall back to the least-recently-offered one.
+// recentQueries is newest-first and recordIdleMusicOffered moves each offer back
+// to its front, so consecutive fallback picks keep cycling through the pool.
+// (A count-based rotation would stick: once the pool is exhausted the recent list
+// only reorders, its length stops changing, and one entry repeats forever.)
 function pickQuery(mood: AoiMusicMood, recentQueries: readonly string[]): string {
   const pool = MOOD_QUERIES[mood];
-  const recent = new Set(recentQueries.map((query) => query.trim().toLowerCase()));
-  const fresh = pool.find((query) => !recent.has(query.toLowerCase()));
-  if (fresh) {
-    return fresh;
+  const recencyRank = new Map<string, number>();
+  recentQueries.forEach((query, index) => {
+    const key = query.trim().toLowerCase();
+    if (!recencyRank.has(key)) {
+      recencyRank.set(key, index);
+    }
+  });
+  let leastRecent = pool[0];
+  let leastRecentRank = -1;
+  for (const query of pool) {
+    const rank = recencyRank.get(query.toLowerCase());
+    if (rank === undefined) {
+      // Never offered recently: take the first fresh entry in preference order.
+      return query;
+    }
+    if (rank > leastRecentRank) {
+      leastRecentRank = rank;
+      leastRecent = query;
+    }
   }
-  return pool[recentQueries.length % pool.length];
+  return leastRecent;
 }
 
 // Build one idle-time music recommendation. Pure: same inputs -> same output

@@ -5,6 +5,11 @@ import {
   chooseAoiMusicMood,
   type AoiMusicMood,
 } from '../aoiMusicRecommendation';
+import {
+  DEFAULT_AOI_IDLE_MUSIC_STATE,
+  recordIdleMusicOffered,
+  type AoiIdleMusicLearningState,
+} from '../aoiIdleMusicNudge';
 
 describe('chooseAoiMusicMood — time-of-day default', () => {
   it('maps each part of the day to its default mood', () => {
@@ -66,21 +71,70 @@ describe('buildAoiMusicRecommendation', () => {
     expect(second.mood).toBe('focus');
   });
 
-  it('rotates deterministically when every pooled query is recent', () => {
+  it('falls back to the least-recently-offered query when every pooled query is recent', () => {
     const focusPool = [
       'lofi hip hop radio beats to relax study to',
       'deep focus music for coding',
       'instrumental concentration music',
       'programming ambient focus mix',
     ];
-    // All four used -> rotate by recent count % pool length (4 % 4 = 0).
+    // recentQueries is newest-first, so the last entry is the least recent one.
     const rec = buildAoiMusicRecommendation({
       now: NOW,
       hourOfDay: 14,
       recentQueries: focusPool,
     });
-    expect(rec.query).toBe(focusPool[0]);
-    expect(focusPool).toContain(rec.query);
+    expect(rec.query).toBe(focusPool[3]);
+  });
+
+  it('keeps cycling the pool across repeated offers instead of repeating one query (regression)', () => {
+    // Simulate the real ChatPanel loop: build a recommendation, record the offer,
+    // feed the updated state back in. Before the LRU fallback, offer 5 onward
+    // returned the same query forever because the recent list only reordered and
+    // its length (the old rotation index) stopped changing.
+    let state: AoiIdleMusicLearningState = DEFAULT_AOI_IDLE_MUSIC_STATE;
+    const picks: string[] = [];
+    for (let i = 0; i < 12; i += 1) {
+      const rec = buildAoiMusicRecommendation({
+        now: NOW + i,
+        hourOfDay: 14,
+        recentQueries: state.recentQueries,
+        moodFeedback: state.moodFeedback,
+      });
+      picks.push(rec.query);
+      state = recordIdleMusicOffered(state, { query: rec.query, now: NOW + i });
+    }
+    for (let i = 1; i < picks.length; i += 1) {
+      expect(picks[i]).not.toBe(picks[i - 1]);
+    }
+    // Each lap of 4 offers covers the whole focus pool again.
+    expect(new Set(picks.slice(0, 4)).size).toBe(4);
+    expect(new Set(picks.slice(4, 8)).size).toBe(4);
+    expect(new Set(picks.slice(8, 12)).size).toBe(4);
+  });
+
+  it('ranks a duplicated recent entry by its most recent occurrence', () => {
+    const focusPool = [
+      'lofi hip hop radio beats to relax study to',
+      'deep focus music for coding',
+      'instrumental concentration music',
+      'programming ambient focus mix',
+    ];
+    // pool[0] appears twice (newest and, as a stale duplicate, oldest). Its rank
+    // must come from the newest occurrence, so the fallback picks pool[1] -- the
+    // true least-recent -- instead of re-offering the query from moments ago.
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      recentQueries: [
+        focusPool[0],
+        focusPool[3],
+        focusPool[2],
+        focusPool[1],
+        focusPool[0].toUpperCase(),
+      ],
+    });
+    expect(rec.query).toBe(focusPool[1]);
   });
 
   it('is case-insensitive when matching recent queries', () => {

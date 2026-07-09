@@ -3540,7 +3540,7 @@ const ChatPanel: React.FC<{
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages, loading]);
+  }, [messages, loading, suggestedReplies]);
 
   const addMessage = useCallback((msg: CharacterDisplayMessage) => {
     setMessages((prev) => [...prev, msg]);
@@ -8884,6 +8884,20 @@ const ChatPanel: React.FC<{
                 )}
               </div>
             )}
+            {/* Suggested Replies: inline after the last message so they hug the bubble */}
+            {suggestedReplies.length > 0 && !loading && (
+              <div className={styles.suggestedReplies}>
+                {suggestedReplies.map((reply, i) => (
+                  <button
+                    key={i}
+                    className={styles.suggestedReply}
+                    onClick={() => handleSuggestedReply(reply)}
+                  >
+                    {reply}
+                  </button>
+                ))}
+              </div>
+            )}
             <div ref={messagesEndRef} />
           </div>
 
@@ -9217,21 +9231,6 @@ const ChatPanel: React.FC<{
                   {aoiCardChromeLabel(aoiCardLang, 'details')}
                 </button>
               </div>
-            </div>
-          )}
-
-          {/* Suggested Replies */}
-          {suggestedReplies.length > 0 && !loading && (
-            <div className={styles.suggestedReplies}>
-              {suggestedReplies.map((reply, i) => (
-                <button
-                  key={i}
-                  className={styles.suggestedReply}
-                  onClick={() => handleSuggestedReply(reply)}
-                >
-                  {reply}
-                </button>
-              ))}
             </div>
           )}
 

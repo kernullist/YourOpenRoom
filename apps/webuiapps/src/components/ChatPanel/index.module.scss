@@ -403,7 +403,8 @@
   display: flex;
   flex-wrap: wrap;
   gap: 6px;
-  padding: 0 16px 8px;
+  /* Rendered inline inside .messages, which already provides 16px side padding. */
+  padding: 0;
 }
 
 .suggestedReply {
