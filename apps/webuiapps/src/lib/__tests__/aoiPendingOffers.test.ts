@@ -2,10 +2,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
+  loadPendingTastePoll,
   savePendingIdleMusicOffer,
   savePendingNewsOffer,
+  savePendingTastePoll,
   type PendingIdleMusicOffer,
   type PendingNewsOffer,
+  type PendingTastePoll,
 } from '../aoiPendingOffers';
 
 const MUSIC_KEY = 'aoi-pending-idle-music-offer-v1';
@@ -91,6 +94,53 @@ describe('aoiPendingOffers', () => {
     it('rejects a payload with a missing articleId', () => {
       localStorage.setItem(NEWS_KEY, JSON.stringify({ ...newsOffer, articleId: '' }));
       expect(loadPendingNewsOffer()).toBeNull();
+    });
+  });
+
+  describe('pending taste poll', () => {
+    const TASTE_KEY = 'aoi-pending-taste-poll-v1';
+    const poll: PendingTastePoll = {
+      questionId: 'vibe',
+      options: [
+        { id: 'calm_lofi', label: '잔잔한 로파이·칠' },
+        { id: 'depends', label: '그때그때 달라' },
+      ],
+    };
+
+    it('round-trips a poll across save and load (reload survival)', () => {
+      savePendingTastePoll(poll);
+      expect(loadPendingTastePoll()).toEqual(poll);
+    });
+
+    it('returns null when nothing is stored', () => {
+      expect(loadPendingTastePoll()).toBeNull();
+    });
+
+    it('clears the stored poll when saving null (poll consumed)', () => {
+      savePendingTastePoll(poll);
+      savePendingTastePoll(null);
+      expect(loadPendingTastePoll()).toBeNull();
+      expect(localStorage.getItem(TASTE_KEY)).toBeNull();
+    });
+
+    it('rejects malformed payloads', () => {
+      localStorage.setItem(TASTE_KEY, JSON.stringify({ ...poll, questionId: '' }));
+      expect(loadPendingTastePoll()).toBeNull();
+      localStorage.setItem(TASTE_KEY, JSON.stringify({ ...poll, options: [] }));
+      expect(loadPendingTastePoll()).toBeNull();
+      localStorage.setItem(
+        TASTE_KEY,
+        JSON.stringify({ ...poll, options: [{ id: 'x', label: '  ' }] }),
+      );
+      expect(loadPendingTastePoll()).toBeNull();
+      localStorage.setItem(
+        TASTE_KEY,
+        JSON.stringify({
+          ...poll,
+          options: Array.from({ length: 9 }, (_, i) => ({ id: `o${i}`, label: `L${i}` })),
+        }),
+      );
+      expect(loadPendingTastePoll()).toBeNull();
     });
   });
 });

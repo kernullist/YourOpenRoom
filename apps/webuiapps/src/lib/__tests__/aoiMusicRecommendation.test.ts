@@ -57,6 +57,7 @@ describe('buildAoiMusicRecommendation', () => {
     expect(rec.query).toBe('lofi hip hop radio beats to relax study to');
     expect(rec.why).toContain('focus music');
     expect(rec.cooldownKey).toBe('music:focus:lofi-hip-hop-radio-beats-to-relax-study-to');
+    expect(rec.source).toBe('pool');
     expect(AOI_MUSIC_MOODS).toContain(rec.mood);
   });
 
@@ -170,5 +171,97 @@ describe('buildAoiMusicRecommendation', () => {
     });
     expect(rec.mood).toBe('chill');
     expect(rec.query).toBe('chill lofi evening mix');
+  });
+});
+
+describe('buildAoiMusicRecommendation — personal taste signals', () => {
+  const NOW = 1_700_000_000_000;
+  const FOCUS_POOL = [
+    'lofi hip hop radio beats to relax study to',
+    'deep focus music for coding',
+    'instrumental concentration music',
+    'programming ambient focus mix',
+  ];
+
+  it('prefers a fresh personal query over the pool and labels its source', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM'],
+    });
+    expect(rec.query).toBe('IVE I AM');
+    expect(rec.source).toBe('personal');
+    expect(rec.cooldownKey).toBe('music:focus:IVE-I-AM');
+  });
+
+  it('alternates back to the pool right after a personal pick', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM', 'city pop mix'],
+      recentQueries: ['IVE I AM'],
+    });
+    expect(rec.query).toBe(FOCUS_POOL[0]);
+    expect(rec.source).toBe('pool');
+  });
+
+  it('falls back to the pool when every personal query was offered recently', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM'],
+      // Last offer came from the pool, so personal goes first but has nothing
+      // fresh left; the pool supplies the next unseen entry.
+      recentQueries: [FOCUS_POOL[0], 'IVE I AM'],
+    });
+    expect(rec.query).toBe(FOCUS_POOL[1]);
+    expect(rec.source).toBe('pool');
+  });
+
+  it('cycles the least-recently-offered candidate across both sources', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: ['IVE I AM'],
+      // Everything is recent; the personal query is the oldest offer.
+      recentQueries: [...FOCUS_POOL, 'IVE I AM'],
+    });
+    expect(rec.query).toBe('IVE I AM');
+    expect(rec.source).toBe('personal');
+  });
+
+  it('caps personal candidates at six per pick', () => {
+    const personals = ['p1', 'p2', 'p3', 'p4', 'p5', 'p6', 'p7'];
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      personalQueries: personals,
+      // Last offer was a pool entry, so personals go first; the first six are
+      // all recent and the seventh must NOT be considered.
+      recentQueries: [FOCUS_POOL[0], 'p1', 'p2', 'p3', 'p4', 'p5', 'p6'],
+    });
+    expect(rec.query).toBe(FOCUS_POOL[1]);
+    expect(rec.source).toBe('pool');
+  });
+
+  it('lets taste bias steer the mood over the time default', () => {
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      tasteMoodBias: { chill: 2 },
+    });
+    expect(rec.mood).toBe('chill');
+  });
+
+  it('keeps learned skip feedback stronger than taste bias', () => {
+    // Taste says chill (+2) but the user kept skipping chill cards (-3):
+    // the focus time default (+1) wins again.
+    const rec = buildAoiMusicRecommendation({
+      now: NOW,
+      hourOfDay: 14,
+      tasteMoodBias: { chill: 2 },
+      moodFeedback: { chill: -3 },
+    });
+    expect(rec.mood).toBe('focus');
   });
 });

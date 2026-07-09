@@ -12,6 +12,8 @@ export type AoiMusicMood = 'focus' | 'chill' | 'upbeat' | 'ambient';
 
 export const AOI_MUSIC_MOODS: readonly AoiMusicMood[] = ['focus', 'chill', 'upbeat', 'ambient'];
 
+export type AoiMusicQuerySource = 'personal' | 'pool';
+
 export interface AoiMusicRecommendation {
   mood: AoiMusicMood;
   // A YouTube search query the music app can run directly (OPEN_SEARCH params.query).
@@ -20,6 +22,8 @@ export interface AoiMusicRecommendation {
   why: string;
   // Stable dedupe key for the proposal / cooldown layer.
   cooldownKey: string;
+  // Where the query came from: the user's own taste signals or the curated pool.
+  source: AoiMusicQuerySource;
 }
 
 export interface AoiMusicRecommendationInput {
@@ -30,6 +34,14 @@ export interface AoiMusicRecommendationInput {
   // user keeps accepting outranks the time-of-day default; one they keep skipping
   // is pushed down.
   moodFeedback?: Partial<Record<AoiMusicMood, number>>;
+  // Additive per-mood bias from explicit taste-poll answers (aoiMusicTaste).
+  // Sits between the time-of-day default (+1) and learned feedback (max +-3):
+  // strong enough to steer, weak enough for repeated skips to override.
+  tasteMoodBias?: Partial<Record<AoiMusicMood, number>>;
+  // Personal query candidates (the user's own YouTube searches plus taste-poll
+  // seeds, strongest first). Preferred over the curated pool, alternating with
+  // it so cards mix the user's own finds with fresh ideas.
+  personalQueries?: readonly string[];
   // Test / caller override for the local hour (0-23). When absent it is derived
   // from `now` so the module stays pure and deterministic under test.
   hourOfDay?: number;
@@ -93,12 +105,14 @@ function defaultMoodForHour(hourOfDay: number): AoiMusicMood {
   return 'ambient';
 }
 
-// Choose the mood: start from the time-of-day default (+1) and add the learned
-// per-mood net feedback, then take the strongest. Ties resolve to the time
-// default (it holds the +1), so with no feedback the time mood always wins.
+// Choose the mood: start from the time-of-day default (+1), add the learned
+// per-mood net feedback and the explicit taste bias, then take the strongest.
+// Ties resolve to the first mood reaching the top score in AOI_MUSIC_MOODS
+// order (with no signals the time default holds the +1 and always wins).
 export function chooseAoiMusicMood(
   hourOfDay: number,
   moodFeedback?: Partial<Record<AoiMusicMood, number>>,
+  tasteMoodBias?: Partial<Record<AoiMusicMood, number>>,
 ): AoiMusicMood {
   const timeDefault = defaultMoodForHour(hourOfDay);
   let bestMood = timeDefault;
@@ -106,7 +120,8 @@ export function chooseAoiMusicMood(
   for (const mood of AOI_MUSIC_MOODS) {
     const base = mood === timeDefault ? 1 : 0;
     const learned = moodFeedback?.[mood] ?? 0;
-    const score = base + learned;
+    const taste = tasteMoodBias?.[mood] ?? 0;
+    const score = base + learned + taste;
     if (score > bestScore) {
       bestScore = score;
       bestMood = mood;
@@ -115,14 +130,31 @@ export function chooseAoiMusicMood(
   return bestMood;
 }
 
-// Pick a query from the mood pool, skipping anything already in recentQueries.
-// When every pooled query is recent, fall back to the least-recently-offered one.
-// recentQueries is newest-first and recordIdleMusicOffered moves each offer back
-// to its front, so consecutive fallback picks keep cycling through the pool.
-// (A count-based rotation would stick: once the pool is exhausted the recent list
-// only reorders, its length stops changing, and one entry repeats forever.)
-function pickQuery(mood: AoiMusicMood, recentQueries: readonly string[]): string {
+// Cap how many personal candidates compete per pick so a long search history
+// cannot fully crowd out the curated pool.
+const MAX_PERSONAL_CANDIDATES = 6;
+
+// Pick a query, skipping anything already in recentQueries. Personal candidates
+// (the user's own searches / taste seeds) are preferred over the mood pool, but
+// the two sources alternate: right after a personal pick the pool goes first,
+// so cards mix the user's own finds with fresh ideas instead of only echoing
+// search history. When every candidate is recent, fall back to the
+// least-recently-offered one. recentQueries is newest-first and
+// recordIdleMusicOffered moves each offer back to its front, so consecutive
+// fallback picks keep cycling. (A count-based rotation would stick: once
+// exhausted the recent list only reorders, its length stops changing, and one
+// entry repeats forever.)
+function pickQuery(
+  mood: AoiMusicMood,
+  recentQueries: readonly string[],
+  personalQueries: readonly string[] = [],
+): { query: string; source: AoiMusicQuerySource } {
   const pool = MOOD_QUERIES[mood];
+  const personal = personalQueries
+    .map((query) => query.trim())
+    .filter((query) => query.length > 0)
+    .slice(0, MAX_PERSONAL_CANDIDATES);
+
   const recencyRank = new Map<string, number>();
   recentQueries.forEach((query, index) => {
     const key = query.trim().toLowerCase();
@@ -130,20 +162,43 @@ function pickQuery(mood: AoiMusicMood, recentQueries: readonly string[]): string
       recencyRank.set(key, index);
     }
   });
-  let leastRecent = pool[0];
-  let leastRecentRank = -1;
-  for (const query of pool) {
-    const rank = recencyRank.get(query.toLowerCase());
-    if (rank === undefined) {
-      // Never offered recently: take the first fresh entry in preference order.
-      return query;
-    }
-    if (rank > leastRecentRank) {
-      leastRecentRank = rank;
-      leastRecent = query;
+
+  const personalKeys = new Set(personal.map((query) => query.toLowerCase()));
+  const lastOffered = recentQueries[0]?.trim().toLowerCase();
+  const lastWasPersonal = lastOffered !== undefined && personalKeys.has(lastOffered);
+  const candidateLists: Array<{ list: readonly string[]; source: AoiMusicQuerySource }> =
+    lastWasPersonal
+      ? [
+          { list: pool, source: 'pool' },
+          { list: personal, source: 'personal' },
+        ]
+      : [
+          { list: personal, source: 'personal' },
+          { list: pool, source: 'pool' },
+        ];
+
+  for (const { list, source } of candidateLists) {
+    const fresh = list.find((query) => !recencyRank.has(query.toLowerCase()));
+    if (fresh) {
+      return { query: fresh, source };
     }
   }
-  return leastRecent;
+
+  // Everything on offer was recommended recently: cycle from the least recent.
+  let leastRecent = pool[0];
+  let leastRecentSource: AoiMusicQuerySource = 'pool';
+  let leastRecentRank = -1;
+  for (const { list, source } of candidateLists) {
+    for (const query of list) {
+      const rank = recencyRank.get(query.toLowerCase());
+      if (rank !== undefined && rank > leastRecentRank) {
+        leastRecentRank = rank;
+        leastRecent = query;
+        leastRecentSource = source;
+      }
+    }
+  }
+  return { query: leastRecent, source: leastRecentSource };
 }
 
 // Build one idle-time music recommendation. Pure: same inputs -> same output
@@ -155,12 +210,13 @@ export function buildAoiMusicRecommendation(
     typeof input.hourOfDay === 'number' && Number.isFinite(input.hourOfDay)
       ? Math.min(23, Math.max(0, Math.trunc(input.hourOfDay)))
       : localHourFromNow(input.now);
-  const mood = chooseAoiMusicMood(hourOfDay, input.moodFeedback);
-  const query = pickQuery(mood, input.recentQueries ?? []);
+  const mood = chooseAoiMusicMood(hourOfDay, input.moodFeedback, input.tasteMoodBias);
+  const picked = pickQuery(mood, input.recentQueries ?? [], input.personalQueries ?? []);
   return {
     mood,
-    query,
+    query: picked.query,
     why: MOOD_WHY[mood],
-    cooldownKey: `music:${mood}:${query.replace(/\s+/g, '-')}`,
+    cooldownKey: `music:${mood}:${picked.query.replace(/\s+/g, '-')}`,
+    source: picked.source,
   };
 }

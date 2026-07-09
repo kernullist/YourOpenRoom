@@ -110,3 +110,47 @@ export function loadPendingNewsOffer(): PendingNewsOffer | null {
 export function savePendingNewsOffer(offer: PendingNewsOffer | null): void {
   writeJson(PENDING_NEWS_OFFER_STORAGE_KEY, offer);
 }
+
+// --- Taste poll ---------------------------------------------------------------
+
+export interface PendingTastePollOption {
+  id: string;
+  // The exact chip label shown to the user; answers are matched against it.
+  label: string;
+}
+
+export interface PendingTastePoll {
+  questionId: string;
+  options: PendingTastePollOption[];
+}
+
+const PENDING_TASTE_POLL_STORAGE_KEY = 'aoi-pending-taste-poll-v1';
+const MAX_TASTE_POLL_OPTIONS = 8;
+
+export function loadPendingTastePoll(): PendingTastePoll | null {
+  const parsed = readJson(PENDING_TASTE_POLL_STORAGE_KEY) as Partial<PendingTastePoll> | null;
+  if (
+    parsed &&
+    isNonEmptyString(parsed.questionId) &&
+    Array.isArray(parsed.options) &&
+    parsed.options.length > 0 &&
+    parsed.options.length <= MAX_TASTE_POLL_OPTIONS &&
+    parsed.options.every(
+      (option) =>
+        option &&
+        typeof option === 'object' &&
+        isNonEmptyString((option as PendingTastePollOption).id) &&
+        isNonEmptyString((option as PendingTastePollOption).label),
+    )
+  ) {
+    return {
+      questionId: parsed.questionId,
+      options: parsed.options.map((option) => ({ id: option.id, label: option.label })),
+    };
+  }
+  return null;
+}
+
+export function savePendingTastePoll(poll: PendingTastePoll | null): void {
+  writeJson(PENDING_TASTE_POLL_STORAGE_KEY, poll);
+}

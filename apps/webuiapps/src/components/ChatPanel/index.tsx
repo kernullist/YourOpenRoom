@@ -46,12 +46,31 @@ import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
+  loadPendingTastePoll,
   savePendingIdleMusicOffer,
   savePendingNewsOffer,
+  savePendingTastePoll,
   type PendingIdleMusicOffer,
   type PendingNewsOffer,
+  type PendingTastePoll,
 } from '@/lib/aoiPendingOffers';
-import { buildAoiMusicRecommendation, type AoiMusicMood } from '@/lib/aoiMusicRecommendation';
+import {
+  buildAoiMusicRecommendation,
+  type AoiMusicMood,
+  type AoiMusicQuerySource,
+} from '@/lib/aoiMusicRecommendation';
+import {
+  DEFAULT_AOI_MUSIC_TASTE_STATE,
+  deriveTasteProfile,
+  loadAoiMusicTasteState,
+  pickNextTasteQuestion,
+  recordTasteAnswer,
+  recordTasteQuestionAsked,
+  recordYouTubeSearch,
+  saveAoiMusicTasteState,
+  shouldAskTasteQuestion,
+  type AoiMusicTasteState,
+} from '@/lib/aoiMusicTaste';
 import {
   DEFAULT_AOI_IDLE_MUSIC_STATE,
   recordIdleMusicOffered,
@@ -1340,6 +1359,7 @@ function buildIdleMusicCardCopy(
   mood: AoiMusicMood,
   lang: NudgeLang,
   query: string,
+  source: AoiMusicQuerySource = 'pool',
 ): { text: string; playPrompt: string; dismissPrompt: string } {
   const chips = {
     ko: { play: '재생', dismiss: '다음에' },
@@ -1347,7 +1367,17 @@ function buildIdleMusicCardCopy(
     zh: { play: '播放', dismiss: '待会儿' },
     en: { play: 'Play', dismiss: 'Not now' },
   }[lang];
-  const recLabel = { ko: '추천', ja: 'おすすめ', zh: '推荐', en: 'Pick' }[lang];
+  // Personal picks (from the user's own searches / taste answers) say so, so
+  // the card reads as "I remembered" rather than a random suggestion.
+  const recLabel =
+    source === 'personal'
+      ? {
+          ko: '추천 (네 취향 반영)',
+          ja: 'おすすめ (好みから)',
+          zh: '推荐 (合你口味)',
+          en: 'Pick (from your taste)',
+        }[lang]
+      : { ko: '추천', ja: 'おすすめ', zh: '推荐', en: 'Pick' }[lang];
   const lines: Record<NudgeLang, Record<AoiMusicMood, string>> = {
     ko: {
       focus: '한참 집중하고 있었네. 작업하는 동안 집중용 음악 틀어줄까?',
@@ -1405,6 +1435,21 @@ function buildIdleMusicDismissAck(lang: NudgeLang): string {
       return '好的，需要的话随时说。';
     default:
       return 'No problem. Just say the word when you want some.';
+  }
+}
+
+// Ack for an answered taste poll: confirm the exact choice back so the user
+// sees what Aoi will remember.
+function buildTastePollAck(choiceLabel: string, lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return `좋아, "${choiceLabel}" 기억해둘게. 다음 추천부터 반영할게.`;
+    case 'ja':
+      return `了解、「${choiceLabel}」覚えておくね。次のおすすめから反映するよ。`;
+    case 'zh':
+      return `好，我记住"${choiceLabel}"了，下次推荐就会参考。`;
+    default:
+      return `Got it, I'll remember "${choiceLabel}" and fold it into my next picks.`;
   }
 }
 
@@ -5349,9 +5394,15 @@ const ChatPanel: React.FC<{
   const pendingNewsOfferRef = useRef<PendingNewsOffer | null>(null);
   const newsOfferInFlightRef = useRef(false);
 
+  // Music taste: the user's own YouTube searches + answered taste polls, fed
+  // into the idle-music recommendation (persisted in localStorage).
+  const musicTasteStateRef = useRef<AoiMusicTasteState>(DEFAULT_AOI_MUSIC_TASTE_STATE);
+  const pendingTastePollRef = useRef<PendingTastePoll | null>(null);
+
   useEffect(() => {
     idleMusicStateRef.current = loadAoiIdleMusicState();
     newsStateRef.current = loadAoiNewsState();
+    musicTasteStateRef.current = loadAoiMusicTasteState();
     // Nudge cards and their chips are restored from chat history, so a pending
     // offer must survive a reload too; otherwise a restored play chip skips the
     // accept path and falls through to the generic intent parser.
@@ -5361,6 +5412,39 @@ const ChatPanel: React.FC<{
     if (!pendingNewsOfferRef.current) {
       pendingNewsOfferRef.current = loadPendingNewsOffer();
     }
+    if (!pendingTastePollRef.current) {
+      pendingTastePollRef.current = loadPendingTastePoll();
+    }
+  }, []);
+
+  // Learn music taste from the user's own YouTube searches. Subscribes to the
+  // raw app-action stream: agent-triggered searches carry trigger_by=2 and are
+  // skipped, so Aoi's own recommendations never feed back into the profile.
+  // Deliberately independent of the LLM config -- taste learning works offline.
+  useEffect(() => {
+    const unsubscribe = onUserAction((event: unknown) => {
+      const evt = event as {
+        app_action?: {
+          app_id: number;
+          action_type: string;
+          params?: Record<string, string>;
+          trigger_by?: number;
+        };
+        action_result?: string;
+      };
+      if (evt.action_result !== undefined) return;
+      const action = evt.app_action;
+      if (!action || action.trigger_by === 2) return;
+      if (action.app_id !== YOUTUBE_APP_ID || action.action_type !== 'OPEN_SEARCH') return;
+      const next = recordYouTubeSearch(musicTasteStateRef.current, {
+        query: action.params?.query ?? '',
+      });
+      if (next !== musicTasteStateRef.current) {
+        musicTasteStateRef.current = next;
+        saveAoiMusicTasteState(next);
+      }
+    });
+    return unsubscribe;
   }, []);
 
   // Language for idle-music copy, resolved from the latest user turn like TTS.
@@ -5704,6 +5788,34 @@ const ChatPanel: React.FC<{
           return;
         } catch (err) {
           console.error('[ChatPanel] Direct PE Analyst open dispatch failed', err);
+        }
+      }
+
+      // Aoi taste poll: a tapped option chip is recorded straight into the taste
+      // profile (no LLM round-trip). Any other message is an implicit dismissal:
+      // the cooldown was already stamped when the poll was asked, so Aoi simply
+      // will not re-ask for a while and the message is handled normally below.
+      const pendingTastePoll = pendingTastePollRef.current;
+      if (pendingTastePoll) {
+        pendingTastePollRef.current = null;
+        savePendingTastePoll(null);
+        const chosen = pendingTastePoll.options.find((option) => option.label === messageText);
+        if (chosen) {
+          musicTasteStateRef.current = recordTasteAnswer(musicTasteStateRef.current, {
+            questionId: pendingTastePoll.questionId,
+            optionId: chosen.id,
+          });
+          saveAoiMusicTasteState(musicTasteStateRef.current);
+          const ack = buildTastePollAck(chosen.label, resolveNudgeLang());
+          emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
+          recordAoiMemoryTurn({
+            userMessage: messageText,
+            assistantMessage: ack,
+            toolCalls: ['direct:aoi_taste_poll_answer'],
+            source: 'direct_action',
+            llmConfig: selectedConfig,
+          });
+          return;
         }
       }
 
@@ -8495,7 +8607,11 @@ const ChatPanel: React.FC<{
         lastUserActivityAtRef.current = now;
         return;
       }
-      if (pendingIdleMusicOfferRef.current || pendingNewsOfferRef.current) {
+      if (
+        pendingIdleMusicOfferRef.current ||
+        pendingNewsOfferRef.current ||
+        pendingTastePollRef.current
+      ) {
         return;
       }
       const state = idleMusicStateRef.current;
@@ -8512,15 +8628,19 @@ const ChatPanel: React.FC<{
       ) {
         return;
       }
+      const taste = deriveTasteProfile(musicTasteStateRef.current);
       const recommendation = buildAoiMusicRecommendation({
         now,
         recentQueries: state.recentQueries,
         moodFeedback: state.moodFeedback,
+        tasteMoodBias: taste.moodBias,
+        personalQueries: taste.personalQueries,
       });
       const copy = buildIdleMusicCardCopy(
         recommendation.mood,
         resolveNudgeLang(),
         recommendation.query,
+        recommendation.source,
       );
       pendingIdleMusicOfferRef.current = {
         playPrompt: copy.playPrompt,
@@ -8544,6 +8664,61 @@ const ChatPanel: React.FC<{
         { updateSuggestedReplies: true, speak: false },
       );
     }, IDLE_MUSIC_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [emitAssistantMessage, resolveNudgeLang]);
+
+  // Aoi taste poll: occasionally ask one multiple-choice music-taste question
+  // and remember the answer for future recommendations. Shares the idle-music
+  // gate mirror (autonomy / quiet / visible / loading), never stacks on top of
+  // another pending card, and its own 24h cooldown keeps it to "once in a
+  // while" until the small question bank is exhausted.
+  useEffect(() => {
+    const TASTE_POLL_CHECK_INTERVAL_MS = 30_000;
+    const timer = window.setInterval(() => {
+      const gate = idleMusicGateRef.current;
+      const now = Date.now();
+      if (!gate.visible || gate.loading) {
+        return;
+      }
+      const state = musicTasteStateRef.current;
+      const question = pickNextTasteQuestion(state);
+      if (
+        !question ||
+        !shouldAskTasteQuestion({
+          now,
+          userIdleMs: now - lastUserActivityAtRef.current,
+          autonomyEnabled: gate.autonomyEnabled,
+          quietMode: gate.quietMode,
+          otherOfferPending: Boolean(
+            pendingIdleMusicOfferRef.current ||
+            pendingNewsOfferRef.current ||
+            pendingTastePollRef.current,
+          ),
+          lastAskedAt: state.lastAskedAt,
+          hasUnansweredQuestion: true,
+        })
+      ) {
+        return;
+      }
+      const lang = resolveNudgeLang();
+      const options = question.options.map((option) => ({
+        id: option.id,
+        label: option.labels[lang],
+      }));
+      pendingTastePollRef.current = { questionId: question.id, options };
+      savePendingTastePoll(pendingTastePollRef.current);
+      musicTasteStateRef.current = recordTasteQuestionAsked(state, { now });
+      saveAoiMusicTasteState(musicTasteStateRef.current);
+      emitAssistantMessage(
+        {
+          id: `aoi-taste-poll-${now}`,
+          role: 'assistant',
+          content: question.prompts[lang],
+          suggestedReplies: options.map((option) => option.label),
+        },
+        { updateSuggestedReplies: true, speak: false },
+      );
+    }, TASTE_POLL_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [emitAssistantMessage, resolveNudgeLang]);
 
@@ -8587,6 +8762,7 @@ const ChatPanel: React.FC<{
       if (
         pendingNewsOfferRef.current ||
         pendingIdleMusicOfferRef.current ||
+        pendingTastePollRef.current ||
         newsOfferInFlightRef.current
       ) {
         return;
@@ -8612,7 +8788,12 @@ const ChatPanel: React.FC<{
             fileApi: cyberNewsFileApi,
             allowNetwork: gate.allowNetwork,
           });
-          if (cancelled || pendingNewsOfferRef.current || pendingIdleMusicOfferRef.current) {
+          if (
+            cancelled ||
+            pendingNewsOfferRef.current ||
+            pendingIdleMusicOfferRef.current ||
+            pendingTastePollRef.current
+          ) {
             return;
           }
           const article = pickInterestingArticle(candidates, {
