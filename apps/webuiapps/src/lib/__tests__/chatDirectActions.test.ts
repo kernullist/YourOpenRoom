@@ -33,4 +33,40 @@ describe('parseDirectMusicIntent', () => {
       query: 'KATSEYE Gabriela Official MV',
     });
   });
+
+  it('extracts a bold recommendation when the user asks Aoi to choose', () => {
+    expect(
+      parseDirectMusicIntent('네가 골라', [
+        { role: 'assistant', content: '내 추천은 **sunset chill beats** 어때?' },
+      ]),
+    ).toEqual({ query: 'sunset chill beats' });
+  });
+
+  it('falls back to a dated girl-group mention in recent context', () => {
+    expect(
+      parseDirectMusicIntent('그걸로 가자', [
+        { role: 'assistant', content: '오늘은 6월 걸그룹 느낌이 좋겠는데.' },
+      ]),
+    ).toEqual({ query: '6월 걸그룹' });
+  });
+
+  it('returns null when the user defers but no recommendation exists', () => {
+    expect(
+      parseDirectMusicIntent('네가 골라', [{ role: 'assistant', content: '안녕!' }]),
+    ).toBeNull();
+  });
+
+  it('still extracts a normal title before a playback suffix', () => {
+    expect(parseDirectMusicIntent('chill lofi evening mix 재생')).toEqual({
+      query: 'chill lofi evening mix',
+    });
+  });
+
+  it('rejects a symbol-only title from a tapped play chip (regression)', () => {
+    // A restored "▶ 재생" reply chip must not become a YouTube search for "▶".
+    expect(parseDirectMusicIntent('▶ 재생')).toBeNull();
+    expect(parseDirectMusicIntent('🎵 재생')).toBeNull();
+    expect(parseDirectMusicIntent('play ▶')).toBeNull();
+    expect(parseDirectMusicIntent('틀어줘 ★★★')).toBeNull();
+  });
 });

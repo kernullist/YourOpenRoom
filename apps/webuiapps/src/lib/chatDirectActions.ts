@@ -5,9 +5,15 @@ export interface DirectMusicIntent {
 }
 
 const MUSIC_QUERY_SUFFIX_PATTERN = /\s*(?:노래|음악|곡|track|song|music)\s*$/i;
+// A usable search title needs at least one letter or digit (any script).
+// Symbol-only fragments -- a tapped "▶ 재생" reply chip, stray emoji -- must not
+// become YouTube queries; rejecting them lets the message fall through to the
+// normal conversation instead.
+const MUSIC_QUERY_WORD_CHAR_PATTERN = /[\p{L}\p{N}]/u;
 
 function cleanMusicQuery(value: string): string {
-  return value.trim().replace(MUSIC_QUERY_SUFFIX_PATTERN, '').trim();
+  const cleaned = value.trim().replace(MUSIC_QUERY_SUFFIX_PATTERN, '').trim();
+  return MUSIC_QUERY_WORD_CHAR_PATTERN.test(cleaned) ? cleaned : '';
 }
 
 function enrichMusicQueryFromHistory(
@@ -61,6 +67,19 @@ export function parseDirectMusicIntent(
   const trimmed = text.trim();
   if (!trimmed) return null;
 
+  // Deferral phrases ("play that one / you pick") must resolve against the
+  // recommendation in recent context BEFORE the generic suffix patterns run:
+  // "그걸로 가자" otherwise matches the `...로 가자` pattern and literally
+  // searches YouTube for "그걸". With no recommendation to resolve, return null
+  // so the conversation handles it instead of searching the pronoun.
+  if (
+    /^(?:네가|니가|너가)\s*골라[줘]?$/u.test(trimmed) ||
+    /^(?:그걸로|이걸로|추천대로)\s*(?:가자|해줘|하자)?$/u.test(trimmed)
+  ) {
+    const query = extractRecommendedMusicQuery(history);
+    return query ? { query } : null;
+  }
+
   const suffixPatterns = [
     /^(?<query>.+?)\s*(?:듣자|들어보자|틀어줘|재생해줘|재생해|들려줘|틀어|재생하자|재생)$/,
     /^(?<query>.+?)\s*(?:듣고 싶어|듣고싶어|듣고싶다|듣고 싶다)$/,
@@ -90,16 +109,6 @@ export function parseDirectMusicIntent(
     const query = cleanMusicQuery(match?.groups?.query ?? '');
     if (query) {
       return { query: enrichMusicQueryFromHistory(query, history) };
-    }
-  }
-
-  if (
-    /^(?:네가|니가|너가)\s*골라[줘]?$/u.test(trimmed) ||
-    /^(?:그걸로|이걸로|추천대로)\s*(?:가자|해줘|하자)?$/u.test(trimmed)
-  ) {
-    const query = extractRecommendedMusicQuery(history);
-    if (query) {
-      return { query };
     }
   }
 

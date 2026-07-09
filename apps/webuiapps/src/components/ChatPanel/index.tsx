@@ -43,6 +43,14 @@ import {
   type CurrentModelUsageStatus,
 } from '@/lib/llmClient';
 import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
+import {
+  loadPendingIdleMusicOffer,
+  loadPendingNewsOffer,
+  savePendingIdleMusicOffer,
+  savePendingNewsOffer,
+  type PendingIdleMusicOffer,
+  type PendingNewsOffer,
+} from '@/lib/aoiPendingOffers';
 import { buildAoiMusicRecommendation, type AoiMusicMood } from '@/lib/aoiMusicRecommendation';
 import {
   DEFAULT_AOI_IDLE_MUSIC_STATE,
@@ -57,7 +65,6 @@ import {
   recordNewsOffered,
   recordNewsOutcome,
   shouldOfferNewsNudge,
-  type AoiNewsCategory,
   type AoiNewsLearningState,
 } from '@/lib/aoiNewsNudge';
 import { loadCyberNewsCandidates } from '@/pages/CyberNews/aoiNewsFeed';
@@ -5336,26 +5343,24 @@ const ChatPanel: React.FC<{
   // the pending-offer ref lets handleSend recognize a tapped play/dismiss chip.
   const idleMusicStateRef = useRef<AoiIdleMusicLearningState>(DEFAULT_AOI_IDLE_MUSIC_STATE);
   const lastUserActivityAtRef = useRef<number>(Date.now());
-  const pendingIdleMusicOfferRef = useRef<{
-    playPrompt: string;
-    dismissPrompt: string;
-    query: string;
-    mood: AoiMusicMood;
-  } | null>(null);
+  const pendingIdleMusicOfferRef = useRef<PendingIdleMusicOffer | null>(null);
 
   const newsStateRef = useRef<AoiNewsLearningState>(DEFAULT_AOI_NEWS_STATE);
-  const pendingNewsOfferRef = useRef<{
-    playPrompt: string;
-    dismissPrompt: string;
-    articleId: string;
-    category: AoiNewsCategory;
-    title: string;
-  } | null>(null);
+  const pendingNewsOfferRef = useRef<PendingNewsOffer | null>(null);
   const newsOfferInFlightRef = useRef(false);
 
   useEffect(() => {
     idleMusicStateRef.current = loadAoiIdleMusicState();
     newsStateRef.current = loadAoiNewsState();
+    // Nudge cards and their chips are restored from chat history, so a pending
+    // offer must survive a reload too; otherwise a restored play chip skips the
+    // accept path and falls through to the generic intent parser.
+    if (!pendingIdleMusicOfferRef.current) {
+      pendingIdleMusicOfferRef.current = loadPendingIdleMusicOffer();
+    }
+    if (!pendingNewsOfferRef.current) {
+      pendingNewsOfferRef.current = loadPendingNewsOffer();
+    }
   }, []);
 
   // Language for idle-music copy, resolved from the latest user turn like TTS.
@@ -5709,6 +5714,7 @@ const ChatPanel: React.FC<{
       const pendingIdleMusicOffer = pendingIdleMusicOfferRef.current;
       if (pendingIdleMusicOffer) {
         pendingIdleMusicOfferRef.current = null;
+        savePendingIdleMusicOffer(null);
         if (messageText === pendingIdleMusicOffer.playPrompt) {
           idleMusicStateRef.current = recordIdleMusicOutcome(idleMusicStateRef.current, {
             mood: pendingIdleMusicOffer.mood,
@@ -5770,6 +5776,7 @@ const ChatPanel: React.FC<{
       const pendingNewsOffer = pendingNewsOfferRef.current;
       if (pendingNewsOffer) {
         pendingNewsOfferRef.current = null;
+        savePendingNewsOffer(null);
         if (messageText === pendingNewsOffer.playPrompt) {
           newsStateRef.current = recordNewsOutcome(newsStateRef.current, {
             category: pendingNewsOffer.category,
@@ -8521,6 +8528,7 @@ const ChatPanel: React.FC<{
         query: recommendation.query,
         mood: recommendation.mood,
       };
+      savePendingIdleMusicOffer(pendingIdleMusicOfferRef.current);
       idleMusicStateRef.current = recordIdleMusicOffered(state, {
         query: recommendation.query,
         now,
@@ -8623,6 +8631,7 @@ const ChatPanel: React.FC<{
             category: article.category,
             title: article.title,
           };
+          savePendingNewsOffer(pendingNewsOfferRef.current);
           newsStateRef.current = recordNewsOffered(newsStateRef.current, {
             articleId: article.id,
             now: stamp,
