@@ -6,9 +6,14 @@ import { resolve } from 'path';
 // (chat history, the YouTube state.json, autonomy state). The app seeds a default
 // character/mod into an empty home, so it renders normally. Because this home is
 // disposable, the destructive /api/openroom-reset used by agent-tools is safe to
-// enable here (OPENROOM_ALLOW_RESET below) — and it only affects the server
-// Playwright launches, never a reused real dev server (see reuseExistingServer).
+// enable here (OPENROOM_ALLOW_RESET below).
 const E2E_HOME_DIR = resolve(__dirname, 'e2e/.tmp-home');
+
+// The suite runs on its own port so it NEVER reuses a developer's real dev
+// server on 3000 (which serves the real home dir — its chat history and app
+// state leak into specs and fail them). reuseExistingServer can then only ever
+// match a previous Playwright-launched server here, which is always isolated.
+const E2E_PORT = 3100;
 
 export default defineConfig({
   testDir: './e2e',
@@ -27,7 +32,7 @@ export default defineConfig({
   timeout: 60_000,
   expect: { timeout: 15_000 },
   use: {
-    baseURL: 'http://localhost:3000',
+    baseURL: `http://localhost:${E2E_PORT}`,
     trace: 'on-first-retry',
     navigationTimeout: 45_000,
     actionTimeout: 20_000,
@@ -40,13 +45,14 @@ export default defineConfig({
   ],
   webServer: {
     command: 'pnpm dev',
-    url: 'http://localhost:3000',
-    // Reused locally for iteration speed: when a dev server is already running
-    // the session-isolation env below is NOT applied to it, so a fully isolated
-    // run needs no pre-existing server (always the case in CI).
+    url: `http://localhost:${E2E_PORT}`,
+    // Reused locally for iteration speed. Only a previous Playwright-launched
+    // server can be listening on E2E_PORT, and that one was started with the
+    // isolation env below, so reuse never points tests at real user data.
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,
     env: {
+      OPENROOM_DEV_PORT: String(E2E_PORT),
       OPENROOM_HOME: E2E_HOME_DIR,
       // Safe here because OPENROOM_HOME above is a disposable directory; the
       // reset can only wipe this throwaway home, never the developer's real one.

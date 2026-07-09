@@ -514,6 +514,7 @@ import {
   saveChatHistory,
   clearChatHistory,
   buildSessionPath,
+  planConversationRestore,
   type ChatHistoryData,
   type DisplayMessage,
 } from '@/lib/chatHistoryStorage';
@@ -3272,10 +3273,36 @@ const ChatPanel: React.FC<{
     aoiAgendaNudgeShownKeysRef.current = new Set();
     pendingAoiAgendaFollowUpRef.current = null;
     aoiAgendaFollowUpContextsByPromptRef.current.clear();
+    // Snapshot what is on screen when this load starts. If the user (or an e2e
+    // spec) sends a message while the persisted transcript is still in flight,
+    // the restore below must not clobber that live conversation.
+    const baselineMessageIds = new Set(messagesRef.current.map((msg) => msg.id));
     loadChatHistory(sessionPath).then(async (data) => {
       const loadedMessages = (data?.messages ?? []) as CharacterDisplayMessage[];
       const loadedHistory = data?.chatHistory ?? [];
       const hasSavedConversation = hasPersistedConversation(data);
+      const restorePlan = planConversationRestore({
+        baselineMessageIds,
+        liveMessages: messagesRef.current,
+        loadedMessages,
+      });
+
+      if (restorePlan.liveConversationStarted) {
+        // Keep the live exchange on screen. Prepend the restored transcript so
+        // older context is not lost and the next autosave persists the merged
+        // conversation instead of overwriting the saved one.
+        console.info('[ChatPanel] Conversation started during history load, merging restore', {
+          restoredCount: restorePlan.restoredPrefix.length,
+        });
+        if (hasSavedConversation && restorePlan.restoredPrefix.length > 0) {
+          setMessages((prev) => {
+            const prevIds = new Set(prev.map((msg) => msg.id));
+            return [...restorePlan.restoredPrefix.filter((msg) => !prevIds.has(msg.id)), ...prev];
+          });
+          setChatHistory((prev) => [...loadedHistory, ...prev]);
+        }
+        return;
+      }
 
       if (!hasSavedConversation) {
         console.info('[ChatPanel] No persisted conversation found, seeding prologue');

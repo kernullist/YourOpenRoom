@@ -4035,7 +4035,13 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     base: getBase(),
     server: {
       host: true,
-      port: 3000,
+      // Overridable so the Playwright suite can launch its own isolated server
+      // on a dedicated port instead of reusing (or colliding with) a
+      // developer's real dev server on 3000. strictPort only in that mode so a
+      // foreign process on the e2e port fails fast instead of silently
+      // auto-incrementing away from the URL Playwright polls.
+      port: Number(process.env.OPENROOM_DEV_PORT || 3000),
+      strictPort: Boolean(process.env.OPENROOM_DEV_PORT),
       // Pre-transform the heavy entry + shell modules at server start so cold
       // page loads (and parallel e2e workers hitting a fresh dev server) do not
       // each pay the on-demand transform cliff for the largest files.

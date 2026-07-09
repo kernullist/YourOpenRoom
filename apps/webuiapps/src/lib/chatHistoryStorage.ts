@@ -28,6 +28,43 @@ export function buildSessionPath(charId: string, modId: string): string {
   return `${charId}/${modId}`;
 }
 
+export interface ConversationRestorePlan<T> {
+  // True when a user message appeared after the history load started. The
+  // caller must keep the live conversation on screen and only prepend
+  // restoredPrefix instead of replacing state with the loaded transcript.
+  liveConversationStarted: boolean;
+  // Loaded messages not already on screen, in saved order, for prepending.
+  restoredPrefix: T[];
+}
+
+/**
+ * Decide how an async history restore may apply on top of the live message
+ * state. Guards the race where the user (or an e2e spec) sends a message while
+ * loadChatHistory is still in flight: a blind setMessages(loaded) would wipe
+ * that live conversation. Baseline ids are the messages that were on screen
+ * when the load STARTED, so a session switch (old messages still visible, none
+ * newly typed) restores normally while newly typed user messages block the
+ * replace and downgrade it to a prepend-merge.
+ */
+export function planConversationRestore<T extends Pick<DisplayMessage, 'id' | 'role'>>(params: {
+  baselineMessageIds: ReadonlySet<string>;
+  liveMessages: readonly T[];
+  loadedMessages: readonly T[];
+}): ConversationRestorePlan<T> {
+  const { baselineMessageIds, liveMessages, loadedMessages } = params;
+  const liveConversationStarted = liveMessages.some(
+    (msg) => msg.role === 'user' && !baselineMessageIds.has(msg.id),
+  );
+  if (!liveConversationStarted) {
+    return { liveConversationStarted: false, restoredPrefix: [] };
+  }
+  const liveIds = new Set(liveMessages.map((msg) => msg.id));
+  return {
+    liveConversationStarted: true,
+    restoredPrefix: loadedMessages.filter((msg) => !liveIds.has(msg.id)),
+  };
+}
+
 const API_PATH = '/api/session-data';
 
 function apiUrl(sessionPath: string, file: string): string {

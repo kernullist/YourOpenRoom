@@ -125,4 +125,107 @@ describe('chatHistoryStorage', () => {
       await expect(clearChatHistory(SESSION_PATH)).resolves.toBeUndefined();
     });
   });
+
+  describe('planConversationRestore', () => {
+    const loaded: DisplayMessage[] = [
+      { id: 'old-1', role: 'assistant', content: 'prologue' },
+      { id: 'old-2', role: 'user', content: 'earlier question' },
+      { id: 'old-3', role: 'assistant', content: 'earlier answer' },
+    ];
+
+    it('allows a normal restore when nothing was typed during the load', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set<string>(),
+        liveMessages: [],
+        loadedMessages: loaded,
+      });
+
+      expect(plan.liveConversationStarted).toBe(false);
+      expect(plan.restoredPrefix).toEqual([]);
+    });
+
+    it('allows a restore when only baseline messages are on screen (session switch)', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      // Previous session's user messages are still visible while the new
+      // session's transcript loads; they are all in the baseline snapshot.
+      const previousSession: DisplayMessage[] = [
+        { id: 'prev-user', role: 'user', content: 'from old session' },
+        { id: 'prev-reply', role: 'assistant', content: 'old reply' },
+      ];
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set(previousSession.map((msg) => msg.id)),
+        liveMessages: previousSession,
+        loadedMessages: loaded,
+      });
+
+      expect(plan.liveConversationStarted).toBe(false);
+    });
+
+    it('blocks the replace when a user message arrived during the load', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      const live: DisplayMessage[] = [
+        { id: 'live-user', role: 'user', content: 'typed while loading' },
+        { id: 'live-reply', role: 'assistant', content: 'streamed answer' },
+      ];
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set<string>(),
+        liveMessages: live,
+        loadedMessages: loaded,
+      });
+
+      expect(plan.liveConversationStarted).toBe(true);
+      expect(plan.restoredPrefix).toEqual(loaded);
+    });
+
+    it('ignores non-user messages that arrived during the load', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      // A nudge or tool line appearing on its own must not block the restore.
+      const live: DisplayMessage[] = [
+        { id: 'nudge-1', role: 'assistant', content: 'want some music?' },
+        { id: 'tool-1', role: 'tool', content: 'ran diagnostics' },
+      ];
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set<string>(),
+        liveMessages: live,
+        loadedMessages: loaded,
+      });
+
+      expect(plan.liveConversationStarted).toBe(false);
+    });
+
+    it('excludes messages already on screen from the restored prefix', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      const live: DisplayMessage[] = [
+        { id: 'old-1', role: 'assistant', content: 'prologue' },
+        { id: 'live-user', role: 'user', content: 'typed while loading' },
+      ];
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set(['old-1']),
+        liveMessages: live,
+        loadedMessages: loaded,
+      });
+
+      expect(plan.liveConversationStarted).toBe(true);
+      expect(plan.restoredPrefix.map((msg) => msg.id)).toEqual(['old-2', 'old-3']);
+    });
+
+    it('returns an empty prefix when the loaded transcript is empty', async () => {
+      const { planConversationRestore } = await import('../chatHistoryStorage');
+
+      const plan = planConversationRestore({
+        baselineMessageIds: new Set<string>(),
+        liveMessages: [{ id: 'live-user', role: 'user', content: 'hi' }],
+        loadedMessages: [],
+      });
+
+      expect(plan.liveConversationStarted).toBe(true);
+      expect(plan.restoredPrefix).toEqual([]);
+    });
+  });
 });

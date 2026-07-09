@@ -143,7 +143,7 @@ pnpm test:e2e:ui       # interactive UI mode
 
 - Config: `playwright.config.ts` (root)
 - Tests: `e2e/` directory
-- The web server (`pnpm dev`) is auto-launched on port 3000 and reused if already running.
+- The suite launches its own isolated dev server on port 3100 (throwaway `OPENROOM_HOME` under `e2e/.tmp-home`); it never touches or reuses a real dev server on port 3000. A previous e2e server on 3100 is reused for speed.
 - Only Chromium is configured by default; add projects in `playwright.config.ts` for Firefox/WebKit.
 - After completing code changes that affect UI or routing, run `pnpm test:e2e` and report pass/fail.
 
