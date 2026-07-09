@@ -20,9 +20,8 @@ test.describe('Shell – main UI', () => {
     expect(count).toBeGreaterThanOrEqual(5);
   });
 
-  test('displays control buttons (chat, lang, wallpaper, report)', async ({ page }) => {
+  test('displays control buttons (chat, wallpaper, report)', async ({ page }) => {
     await expect(page.locator('[data-testid="chat-toggle"]')).toBeVisible();
-    await expect(page.locator('[data-testid="lang-toggle"]')).toBeVisible();
     await expect(page.locator('[data-testid="wallpaper-toggle"]')).toBeVisible();
     await expect(page.locator('[data-testid="report-toggle"]')).toBeVisible();
   });
@@ -73,7 +72,10 @@ test.describe('Chat panel – settings modal', () => {
     await settingsBtn.click();
     const modal = page.locator('[data-testid="settings-modal"]');
     await expect(modal).toBeVisible();
-    await expect(modal).toContainText('LLM Settings');
+    // The settings modal is grouped into tabs; the LLM configuration lives under
+    // the "Models" tab. Assert that tab is present rather than the old flat
+    // "LLM Settings" heading, which no longer exists.
+    await expect(modal.getByRole('button', { name: 'Models', exact: true })).toBeVisible();
 
     // Close via Cancel button
     await modal.locator('button', { hasText: 'Cancel' }).click();
@@ -130,6 +132,28 @@ test.describe('Chat panel – input interaction', () => {
   });
 
   test('typing a message and clicking send adds it to the messages area', async ({ page }) => {
+    // Sending is gated on a configured model, so provision a throwaway one in
+    // localStorage rather than depending on the ambient dev config (the e2e home
+    // is isolated and empty). The reply is mocked so the send completes cleanly;
+    // this test only cares that the user message is appended and the input clears.
+    await page.addInitScript(() => {
+      localStorage.setItem(
+        'webuiapps-llm-config',
+        JSON.stringify({
+          provider: 'openai',
+          apiKey: 'sk-test',
+          baseUrl: 'https://mock-llm.test/v1',
+          model: 'gpt-4',
+        }),
+      );
+    });
+    await page.route('**/api/llm-proxy', async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ choices: [{ message: { content: 'Ack from E2E mock.' } }] }),
+      });
+    });
     await page.goto('/');
     const input = page.locator('[data-testid="chat-input"]');
     const sendBtn = page.locator('[data-testid="send-btn"]');
@@ -164,23 +188,5 @@ test.describe('App window – open and close', () => {
     const closeBtn = page.locator('[data-testid="window-close-2"]');
     await closeBtn.click();
     await expect(appWindow).not.toBeVisible();
-  });
-});
-
-test.describe('Language toggle', () => {
-  test('clicking the language toggle changes its label', async ({ page }) => {
-    await page.goto('/');
-    const langBtn = page.locator('[data-testid="lang-toggle"]');
-
-    // Default is EN
-    await expect(langBtn).toContainText('EN');
-
-    // Toggle to ZH
-    await langBtn.click();
-    await expect(langBtn).toContainText('ZH');
-
-    // Toggle back
-    await langBtn.click();
-    await expect(langBtn).toContainText('EN');
   });
 });

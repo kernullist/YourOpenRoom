@@ -9,8 +9,8 @@
 
 ## State File `/state.json`
 
-This app is a YouTube search launcher with in-app playlists. It does not maintain separate song
-or playlist files. Everything it needs is stored in `state.json`.
+This app is a YouTube search launcher with in-app playlists. It does not maintain separate song or
+playlist files. Everything it needs is stored in `state.json`.
 
 | Field                  | Type          | Default            | Description                                                                                |
 | ---------------------- | ------------- | ------------------ | ------------------------------------------------------------------------------------------ |
@@ -92,7 +92,7 @@ Notes:
 ## In-App Player Behavior
 
 - Clicking a result or playlist item in the app starts playback immediately.
-- During playlist queue playback, clicking another queue entry jumps to it without
-  reshuffling the queue or reloading the player.
+- During playlist queue playback, clicking another queue entry jumps to it without reshuffling the
+  queue or reloading the player.
 - Toggling loop, zoom, or the results list never reloads the player iframe.
 - The player popup is closed only by its close button or the Escape key.

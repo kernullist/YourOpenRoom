@@ -741,17 +741,44 @@ function buildAoiTrendSourcesOpenAck(params: {
   return lines.join('\n');
 }
 
+// Run a low-priority background task once the browser is idle. Used to keep the
+// mount-time autonomy/kira burst OUT of the critical page-load window: firing ~20
+// data requests while the app is still loading its module graph starves the dev
+// server's connection pool and delays first paint. Falls back to a short timeout
+// where requestIdleCallback is unavailable (older browsers, jsdom/happy-dom).
+function scheduleIdle(callback: () => void): () => void {
+  if (typeof window === 'undefined') {
+    return () => {};
+  }
+  const win = window as Window & {
+    requestIdleCallback?: (cb: () => void, opts?: { timeout: number }) => number;
+    cancelIdleCallback?: (handle: number) => void;
+  };
+  if (typeof win.requestIdleCallback === 'function') {
+    const handle = win.requestIdleCallback(callback, { timeout: 3000 });
+    return () => win.cancelIdleCallback?.(handle);
+  }
+  const timer = window.setTimeout(callback, 800);
+  return () => window.clearTimeout(timer);
+}
+
+// Background poller requests must not pin a dev-server connection indefinitely
+// when the endpoint (or a backing daemon) is slow or wedged.
+const KIRA_FETCH_TIMEOUT_MS = 15000;
+
 async function triggerKiraAutomationScan(sessionPath: string): Promise<void> {
   await fetch('/api/kira-automation/scan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ sessionPath }),
+    signal: AbortSignal.timeout(KIRA_FETCH_TIMEOUT_MS),
   });
 }
 
 async function drainKiraAutomationEvents(sessionPath: string): Promise<KiraAutomationEvent[]> {
   const res = await fetch(
     `/api/kira-automation/events?sessionPath=${encodeURIComponent(sessionPath)}`,
+    { signal: AbortSignal.timeout(KIRA_FETCH_TIMEOUT_MS) },
   );
   if (!res.ok) throw new Error(`Kira automation event API error ${res.status}`);
   const data = (await res.json()) as { events?: KiraAutomationEvent[] };
@@ -4696,13 +4723,25 @@ const ChatPanel: React.FC<{
   }, [refreshAoiAutonomy, showSettings]);
 
   useEffect(() => {
-    void refreshAoiAutonomy({ silent: true });
-    void runAoiAutonomySessionOpenTick();
+    // Defer the initial autonomy dashboard load + session-open wakeup until the
+    // browser is idle. These fire ~18 parallel dashboard reads plus a wakeup
+    // tick; running them during initial mount competes with the module-graph
+    // load for the browser's handful of connections and badly delays first paint
+    // (worst on the Vite dev server). The session-open tick refreshes the
+    // dashboard at its tail, and the in-flight guard dedupes the two, so a single
+    // refresh reaches the UI once loading has settled.
+    const cancelIdle = scheduleIdle(() => {
+      void refreshAoiAutonomy({ silent: true });
+      void runAoiAutonomySessionOpenTick();
+    });
     const intervalId = window.setInterval(() => {
       void refreshAoiAutonomy({ silent: true });
     }, 300000);
 
-    return () => window.clearInterval(intervalId);
+    return () => {
+      cancelIdle();
+      window.clearInterval(intervalId);
+    };
   }, [refreshAoiAutonomy, runAoiAutonomySessionOpenTick, sessionPath]);
 
   useEffect(() => {
@@ -5187,10 +5226,16 @@ const ChatPanel: React.FC<{
       }
     };
 
-    void triggerKiraAutomationScan(sessionPath).catch((error) => {
-      logger.error('ChatPanel', 'Initial Kira automation scan failed:', error);
+    // Deferred to browser-idle for the same reason as the autonomy load above:
+    // the initial Kira scan + event drain must not compete with the module-graph
+    // load during first paint.
+    const cancelIdle = scheduleIdle(() => {
+      if (disposed) return;
+      void triggerKiraAutomationScan(sessionPath).catch((error) => {
+        logger.error('ChatPanel', 'Initial Kira automation scan failed:', error);
+      });
+      void pollKiraAutomationEvents();
     });
-    void pollKiraAutomationEvents();
 
     const timer = window.setInterval(() => {
       void pollKiraAutomationEvents();
@@ -5198,6 +5243,7 @@ const ChatPanel: React.FC<{
 
     return () => {
       disposed = true;
+      cancelIdle();
       window.clearInterval(timer);
     };
   }, [emitAssistantMessage, sessionPath]);

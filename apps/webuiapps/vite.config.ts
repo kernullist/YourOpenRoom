@@ -45,10 +45,18 @@ import {
 import { searchWorkspaceSymbol } from './src/lib/openVscodeSymbol';
 import { validateWorkspaceCommand } from './src/lib/workspaceCommandPolicy';
 
-const LLM_CONFIG_FILE = resolve(os.homedir(), '.openroom', 'config.json');
-const SESSIONS_DIR = resolve(os.homedir(), '.openroom', 'sessions');
-const CHARACTERS_FILE = resolve(os.homedir(), '.openroom', 'characters.json');
-const MODS_FILE = resolve(os.homedir(), '.openroom', 'mods.json');
+const OPENROOM_HOME = process.env.OPENROOM_HOME
+  ? resolve(process.env.OPENROOM_HOME)
+  : resolve(os.homedir(), '.openroom');
+const LLM_CONFIG_FILE = resolve(OPENROOM_HOME, 'config.json');
+// The sessions dir holds all per-session state (chat history, app data such as
+// the YouTube state.json, autonomy state). It is env-overridable so e2e runs can
+// point at a throwaway directory instead of polluting the developer's real data.
+const SESSIONS_DIR = process.env.OPENROOM_SESSIONS_DIR
+  ? resolve(process.env.OPENROOM_SESSIONS_DIR)
+  : resolve(OPENROOM_HOME, 'sessions');
+const CHARACTERS_FILE = resolve(OPENROOM_HOME, 'characters.json');
+const MODS_FILE = resolve(OPENROOM_HOME, 'mods.json');
 const OPENROOM_ROOT = resolve(__dirname, '../..');
 const CODEX_CLI_FALLBACK_MODEL = 'gpt-5.5';
 const DEFAULT_TAVILY_SEARCH_ENDPOINT = 'https://api.tavily.com/search';
@@ -4028,6 +4036,17 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
     server: {
       host: true,
       port: 3000,
+      // Pre-transform the heavy entry + shell modules at server start so cold
+      // page loads (and parallel e2e workers hitting a fresh dev server) do not
+      // each pay the on-demand transform cliff for the largest files.
+      warmup: {
+        clientFiles: [
+          './src/index.tsx',
+          './src/components/Shell/index.tsx',
+          './src/components/ChatPanel/index.tsx',
+          './src/components/AppWindow/index.tsx',
+        ],
+      },
     },
     define: {
       __APP__: JSON.stringify(env.APP_ENVIRONMENT),

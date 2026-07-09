@@ -65,9 +65,9 @@ test.describe('YouTube app – in-app viewer UX flows', () => {
     );
     await page.route('https://www.youtube.com/**', (route) => route.abort());
     await page.route('https://i.ytimg.com/**', (route) => route.abort());
-    // The chat panel's autonomy/automation pollers wait on a daemon that is
-    // not running during e2e. Their hanging requests would otherwise pin all
-    // six HTTP/1.1 dev-server connections and starve module loading.
+    // A YouTube UI test should not depend on the chat panel's background
+    // autonomy/automation traffic. The pollers are already deferred to browser
+    // idle app-side, so this is defensive isolation rather than a load fix.
     await page.route('**/api/aoi-autonomy/**', (route) => route.abort());
     await page.route('**/api/kira-automation/**', (route) => route.abort());
   });

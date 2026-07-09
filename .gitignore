@@ -93,6 +93,8 @@ coverage/
 test-results/
 playwright-report/
 blob-report/
+e2e/.tmp-home/
+e2e/.tmp-home-probe/
 
 # pnpm
 .pnpm-store/

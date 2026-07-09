@@ -3,6 +3,12 @@
   "globalDependencies": [
     "**/.env.*local"
   ],
+  "globalPassThroughEnv": [
+    "OPENROOM_HOME",
+    "OPENROOM_SESSIONS_DIR",
+    "OPENROOM_ALLOW_RESET",
+    "AOI_AUTONOMY_BACKGROUND"
+  ],
   "tasks": {
     "build": {
       "dependsOn": [

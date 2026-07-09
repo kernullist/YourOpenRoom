@@ -9,40 +9,40 @@
 
 ## 状态文件 `/state.json`
 
-这个应用是一个带应用内播放列表的 YouTube 搜索启动器。它不维护单独的歌曲或播放列表文件，
-所有数据都保存在 `state.json` 中。
+这个应用是一个带应用内播放列表的 YouTube 搜索启动器。它不维护单独的歌曲或播放列表文件，所有数据都保存在
+`state.json` 中。
 
-| 字段                   | 类型          | 默认值           | 说明                                             |
-| ---------------------- | ------------- | ---------------- | ------------------------------------------------ |
-| searchQuery            | string        | `""`             | 当前搜索关键词                                   |
-| recentSearches         | SearchEntry[] | `[]`             | 最近的 YouTube 搜索记录                          |
-| favoriteTopics         | string[]      | 预置列表         | 已保存的一键主题                                 |
-| playlists              | Playlist[]    | 一个空播放列表   | 应用内播放列表，保存收藏的视频                   |
-| activePlaylistId       | string\|null  | 默认播放列表     | 当前选中（用于编辑/添加）的播放列表              |
-| lastPlayedPlaylistId   | string\|null  | `null`           | 最近以队列方式播放过的播放列表                   |
-| lastPlayedPlaylistMode | string\|null  | `null`           | 上次的队列模式：`"sequential"` 或 `"shuffle"`    |
-| sidebarOpen            | boolean       | `false`          | 左侧已保存主题侧栏是否展开                       |
-| resultsAutoHide        | boolean       | `false`          | 选中视频后是否自动收起应用内搜索结果列表         |
-| loopPlayback           | boolean       | `false`          | 应用内播放器是否循环当前视频或队列               |
-| playerZoom             | number        | `1`              | 应用内播放器缩放系数，`1` 表示 100%              |
+| 字段                   | 类型          | 默认值         | 说明                                          |
+| ---------------------- | ------------- | -------------- | --------------------------------------------- |
+| searchQuery            | string        | `""`           | 当前搜索关键词                                |
+| recentSearches         | SearchEntry[] | `[]`           | 最近的 YouTube 搜索记录                       |
+| favoriteTopics         | string[]      | 预置列表       | 已保存的一键主题                              |
+| playlists              | Playlist[]    | 一个空播放列表 | 应用内播放列表，保存收藏的视频                |
+| activePlaylistId       | string\|null  | 默认播放列表   | 当前选中（用于编辑/添加）的播放列表           |
+| lastPlayedPlaylistId   | string\|null  | `null`         | 最近以队列方式播放过的播放列表                |
+| lastPlayedPlaylistMode | string\|null  | `null`         | 上次的队列模式：`"sequential"` 或 `"shuffle"` |
+| sidebarOpen            | boolean       | `false`        | 左侧已保存主题侧栏是否展开                    |
+| resultsAutoHide        | boolean       | `false`        | 选中视频后是否自动收起应用内搜索结果列表      |
+| loopPlayback           | boolean       | `false`        | 应用内播放器是否循环当前视频或队列            |
+| playerZoom             | number        | `1`            | 应用内播放器缩放系数，`1` 表示 100%           |
 
 ### SearchEntry
 
-| 字段      | 类型   | 说明                 |
-| --------- | ------ | -------------------- |
-| id        | string | 搜索记录唯一 ID      |
-| query     | string | 搜索关键词文本       |
-| createdAt | number | 毫秒级时间戳         |
+| 字段      | 类型   | 说明            |
+| --------- | ------ | --------------- |
+| id        | string | 搜索记录唯一 ID |
+| query     | string | 搜索关键词文本  |
+| createdAt | number | 毫秒级时间戳    |
 
 ### Playlist
 
-| 字段      | 类型           | 说明                     |
-| --------- | -------------- | ------------------------ |
-| id        | string         | 播放列表唯一 ID          |
-| name      | string         | 播放列表显示名称         |
-| items     | PlaylistItem[] | 按顺序保存的视频         |
-| createdAt | number         | 毫秒级时间戳             |
-| updatedAt | number         | 最后一次修改的时间戳     |
+| 字段      | 类型           | 说明                 |
+| --------- | -------------- | -------------------- |
+| id        | string         | 播放列表唯一 ID      |
+| name      | string         | 播放列表显示名称     |
+| items     | PlaylistItem[] | 按顺序保存的视频     |
+| createdAt | number         | 毫秒级时间戳         |
+| updatedAt | number         | 最后一次修改的时间戳 |
 
 ### PlaylistItem
 
