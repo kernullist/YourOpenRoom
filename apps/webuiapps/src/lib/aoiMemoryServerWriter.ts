@@ -655,17 +655,7 @@ export async function saveServerAoiMemoryCandidatesWithEmbedding(
   return merged.memories;
 }
 
-export function syncAoiMemoryFromKiraAutomationEventServer(
-  sessionsDir: string,
-  sessionPath: string,
-  event: AoiKiraAutomationEvent,
-  context?: AoiKiraAutomationMemoryContext,
-): AoiMemoryEntry[] {
-  const candidates = buildAoiKiraAutomationMemoryCandidates(event, context);
-  if (candidates.length === 0) {
-    return loadServerAoiMemories(sessionsDir);
-  }
-
+function buildAoiKiraAutomationEpisodeInput(event: AoiKiraAutomationEvent): AoiMemoryEpisodeInput {
   const episodeInput: AoiMemoryEpisodeInput = {
     id: makeAoiKiraAutomationEpisodeId(event.id),
     source: 'kira_automation',
@@ -677,9 +667,55 @@ export function syncAoiMemoryFromKiraAutomationEventServer(
   if (Number.isFinite(event.createdAt)) {
     episodeInput.createdAt = event.createdAt;
   }
+  return episodeInput;
+}
 
-  const episode = saveServerAoiMemoryEpisode(sessionsDir, sessionPath, episodeInput);
+export function syncAoiMemoryFromKiraAutomationEventServer(
+  sessionsDir: string,
+  sessionPath: string,
+  event: AoiKiraAutomationEvent,
+  context?: AoiKiraAutomationMemoryContext,
+): AoiMemoryEntry[] {
+  const candidates = buildAoiKiraAutomationMemoryCandidates(event, context);
+  if (candidates.length === 0) {
+    return loadServerAoiMemories(sessionsDir);
+  }
+  const episode = saveServerAoiMemoryEpisode(
+    sessionsDir,
+    sessionPath,
+    buildAoiKiraAutomationEpisodeInput(event),
+  );
   return saveServerAoiMemoryCandidates(sessionsDir, sessionPath, candidates, episode.id);
+}
+
+// Embed-on-write variant of syncAoiMemoryFromKiraAutomationEventServer: embeds the
+// new Kira automation memory as soon as the event is recorded, so it is
+// semantically recallable without waiting for the (default-OFF) autonomy loop's
+// tick backfill or the embed sweep (P4.3). Provider null (no embedding key) ->
+// lexical fallback, byte-identical to the sync variant.
+export async function syncAoiMemoryFromKiraAutomationEventServerWithEmbedding(
+  sessionsDir: string,
+  sessionPath: string,
+  event: AoiKiraAutomationEvent,
+  provider: AoiEmbeddingProvider | null | undefined,
+  context?: AoiKiraAutomationMemoryContext,
+): Promise<AoiMemoryEntry[]> {
+  const candidates = buildAoiKiraAutomationMemoryCandidates(event, context);
+  if (candidates.length === 0) {
+    return loadServerAoiMemories(sessionsDir);
+  }
+  const episode = saveServerAoiMemoryEpisode(
+    sessionsDir,
+    sessionPath,
+    buildAoiKiraAutomationEpisodeInput(event),
+  );
+  return saveServerAoiMemoryCandidatesWithEmbedding(
+    sessionsDir,
+    sessionPath,
+    candidates,
+    episode.id,
+    provider,
+  );
 }
 
 function buildAoiResearchRunEpisodeInput(manifest: AoiResearchManifest): AoiMemoryEpisodeInput {

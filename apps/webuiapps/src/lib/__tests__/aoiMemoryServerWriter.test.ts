@@ -11,6 +11,7 @@ import {
   saveServerAoiMemoryCandidates,
   saveServerAoiMemoryCandidatesWithEmbedding,
   syncAoiMemoryFromKiraAutomationEventServer,
+  syncAoiMemoryFromKiraAutomationEventServerWithEmbedding,
   syncAoiMemoryFromResearchRunServer,
   syncAoiMemoryFromResearchRunServerWithEmbedding,
   unarchiveServerAoiMemories,
@@ -535,6 +536,54 @@ describe('Aoi server memory embed-on-write', () => {
     );
     expect(research).toBeDefined();
     expect(research?.embedding).toBeUndefined();
+  });
+
+  it('embeds a Kira automation memory on write when a provider is supplied (P4.3)', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    await syncAoiMemoryFromKiraAutomationEventServerWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      {
+        id: 'event-embed-kira',
+        workId: 'work-embed',
+        title: 'Add review controls',
+        projectName: 'YourOpenRoom',
+        message: 'Kira completed the work.',
+        createdAt: 100,
+        type: 'completed',
+      },
+      fakeProvider(),
+      { reviewApproved: true, validationPassedCount: 1, validationFailedCount: 0 },
+    );
+
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory.embedding).toEqual([0.4, 0.5, 0.6]);
+    expect(memory.embeddingModel).toBe('test-embed-model');
+  });
+
+  it('persists a Kira automation memory without a vector when no provider is configured', async () => {
+    const sessionsDir = makeTempSessionsDir();
+
+    await syncAoiMemoryFromKiraAutomationEventServerWithEmbedding(
+      sessionsDir,
+      'aoi/default',
+      {
+        id: 'event-embed-kira-2',
+        workId: 'work-embed-2',
+        title: 'Add review controls',
+        projectName: 'YourOpenRoom',
+        message: 'Kira completed the work.',
+        createdAt: 100,
+        type: 'completed',
+      },
+      null,
+      { reviewApproved: true, validationPassedCount: 1, validationFailedCount: 0 },
+    );
+
+    const [memory] = loadServerAoiMemories(sessionsDir);
+    expect(memory).toBeDefined();
+    expect(memory.embedding).toBeUndefined();
   });
 
   it('consolidates near-duplicate embedded server memories, keeping superseded files on disk', async () => {

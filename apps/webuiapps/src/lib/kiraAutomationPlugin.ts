@@ -22,7 +22,8 @@ import {
   type LLMReasoningSummary,
   type LLMVerbosity,
 } from './llmModels';
-import { syncAoiMemoryFromKiraAutomationEventServer } from './aoiMemoryServerWriter';
+import { syncAoiMemoryFromKiraAutomationEventServerWithEmbedding } from './aoiMemoryServerWriter';
+import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import type { AoiKiraAutomationMemoryContext } from './aoiMemoryShared';
 
 const execFileAsync = promisify(execFileCallback);
@@ -4295,6 +4296,35 @@ function buildKiraAutomationAoiMemoryContext(
   return context;
 }
 
+// P4.3: record the Aoi memory for a Kira automation event, embedding it on write
+// so it is semantically recallable immediately -- not only after the (default-OFF)
+// autonomy loop's tick backfill / embed sweep. The provider is resolved from the
+// operator config file (~/.openroom/config.json, the sibling of the sessions dir
+// by daemon/dev convention) with an env fallback; null (no key) -> lexical
+// fallback, byte-identical to before. Best-effort + fire-and-forget so the
+// synchronous enqueue path is never blocked; a rejected embed just logs and the
+// memory still persists via the underlying save.
+export function recordKiraAutomationAoiMemory(
+  sessionsDir: string,
+  sessionPath: string,
+  event: KiraAutomationEvent,
+): void {
+  const memoryContext = buildKiraAutomationAoiMemoryContext(sessionsDir, sessionPath, event);
+  const embeddingProvider = createServerAoiEmbeddingProvider({
+    configFile: resolve(dirname(sessionsDir), 'config.json'),
+    env: process.env,
+  });
+  void syncAoiMemoryFromKiraAutomationEventServerWithEmbedding(
+    sessionsDir,
+    sessionPath,
+    event,
+    embeddingProvider,
+    memoryContext,
+  ).catch((error) => {
+    console.warn('[Kira] Failed to embed Aoi memory for automation event:', error);
+  });
+}
+
 function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutomationEvent): void {
   if (shouldSuppressAutomationEvent(event)) return;
   const queuePath = getAutomationEventQueuePath(sessionsDir, sessionPath);
@@ -4304,8 +4334,7 @@ function enqueueEvent(sessionsDir: string, sessionPath: string, event: KiraAutom
   queue.push(event);
   writeJsonFile(queuePath, queue);
   try {
-    const memoryContext = buildKiraAutomationAoiMemoryContext(sessionsDir, sessionPath, event);
-    syncAoiMemoryFromKiraAutomationEventServer(sessionsDir, sessionPath, event, memoryContext);
+    recordKiraAutomationAoiMemory(sessionsDir, sessionPath, event);
   } catch (error) {
     console.warn('[Kira] Failed to record Aoi memory for automation event:', error);
   }
