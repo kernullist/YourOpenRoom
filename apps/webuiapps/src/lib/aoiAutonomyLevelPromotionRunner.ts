@@ -2,6 +2,8 @@ import {
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowRecordReport,
+  loadAoiFollowThroughEvents,
+  loadAoiFollowThroughLearningSummary,
   loadAoiOperatorAdaptiveReviewStates,
   loadAoiOperatorFeedbackLabelActions,
   loadAoiOperatorTracePromotionDecisions,
@@ -12,6 +14,7 @@ import {
   saveAoiAutonomyPolicy,
 } from './aoiAutonomyStore';
 import { buildAoiClosedLoopMetrics } from './aoiClosedLoopMetrics';
+import { buildAoiFeedbackCompression } from './aoiFeedbackCompression';
 import {
   evaluateAoiAutonomyLevelPromotion,
   resolveAoiAutonomyLevelPromotionConfig,
@@ -145,6 +148,20 @@ export function buildAoiAutonomyLevelPromotionScorecard(
     now,
   });
 
+  // Feedback compression (P1.4): restore defence-in-depth by supplying the
+  // feedback-compression evidence the assembler previously omitted, so the gates
+  // that depend on it (e.g. the compression signal behind canIncreaseTrust) are
+  // evaluated from real operator-label + follow-through data instead of defaulting
+  // to pass. Built from already-loaded label actions plus loadable follow-through
+  // events / learning; additive + block-only (never relaxes a gate).
+  const feedbackCompression = buildAoiFeedbackCompression({
+    sessionPath,
+    labelActions,
+    followThroughEvents: loadAoiFollowThroughEvents(sessionsDir, sessionPath, now),
+    followThroughLearning: loadAoiFollowThroughLearningSummary(sessionsDir, sessionPath, now),
+    now,
+  });
+
   // Candidate evidence from real session data, plus the operator-reviewed promotion
   // decisions / review states. Both are loaded from the actor-gated operator store
   // and re-filtered to actor === 'user' at this trust boundary (defense in depth on
@@ -189,6 +206,7 @@ export function buildAoiAutonomyLevelPromotionScorecard(
     tracePromotionReport,
     adaptiveAcceptancePack,
     closedLoopMetrics,
+    feedbackCompression,
     directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
 }

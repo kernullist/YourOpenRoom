@@ -524,6 +524,39 @@ describe('buildAoiAutonomyLevelPromotionScorecard closed-loop metrics wiring (P1
   });
 });
 
+describe('buildAoiAutonomyLevelPromotionScorecard feedback-compression evidence (P1.4)', () => {
+  it('evaluates the trust gate from real data (blocks without a positive label, not default pass)', () => {
+    const root = makeRoot();
+    // Empty session: no explicit positive operator label -> compression blocks a trust
+    // increase. Before P1.4 the assembler omitted feedbackCompression, so this gate
+    // defaulted to pass; now it is evaluated from real operator-label data.
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+
+    const metric = card.metrics.find(
+      (item) => item.id === 'field.feedback_compression_trust_allowed',
+    );
+    expect(metric?.value).toBe(0);
+    const gate = card.gates.find((item) => item.id === 'gate.feedback_compression_trust_label');
+    expect(gate?.status).toBe('block');
+    // Additive + safe: still a display-only scorecard, and it only adds a block.
+    expect(card.actionAuthority).toBe('display_only');
+  });
+
+  it('allows the trust gate once a positive operator label exists', () => {
+    const root = makeRoot();
+    seedLabeledFieldEvidence(root); // records a 'useful' (positive) operator label
+
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+
+    const metric = card.metrics.find(
+      (item) => item.id === 'field.feedback_compression_trust_allowed',
+    );
+    expect(metric?.value).toBe(1);
+    const gate = card.gates.find((item) => item.id === 'gate.feedback_compression_trust_label');
+    expect(gate?.status).toBe('pass');
+  });
+});
+
 describe('maybeRunAoiAutonomyLevelPromotion operator-unlocked escalation', () => {
   it('reaches trusted_operator and promotes the level after the operator promotes the full set', () => {
     const root = makeRoot();
