@@ -13,6 +13,7 @@ import {
   loadConfigSync,
   saveConfig,
   chat,
+  extractLlmUsageTotalTokens,
   checkCodexAuthStatus,
   checkClaudeCliConnection,
   fetchCurrentModelUsage,
@@ -146,6 +147,33 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('extractLlmUsageTotalTokens() (P3.4)', () => {
+  it('reads OpenAI-style total_tokens', () => {
+    expect(extractLlmUsageTotalTokens({ total_tokens: 1234 })).toBe(1234);
+  });
+
+  it('sums Anthropic-style input + output tokens when there is no total', () => {
+    expect(extractLlmUsageTotalTokens({ input_tokens: 300, output_tokens: 120 })).toBe(420);
+  });
+
+  it('falls back to prompt + completion tokens', () => {
+    expect(extractLlmUsageTotalTokens({ prompt_tokens: 50, completion_tokens: 25 })).toBe(75);
+  });
+
+  it('returns undefined for missing / zero / malformed usage', () => {
+    expect(extractLlmUsageTotalTokens(undefined)).toBeUndefined();
+    expect(extractLlmUsageTotalTokens(null)).toBeUndefined();
+    expect(extractLlmUsageTotalTokens('nope')).toBeUndefined();
+    expect(extractLlmUsageTotalTokens({})).toBeUndefined();
+    expect(extractLlmUsageTotalTokens({ total_tokens: 0 })).toBeUndefined();
+    expect(extractLlmUsageTotalTokens({ total_tokens: -5 })).toBeUndefined();
+  });
+
+  it('truncates a fractional total to an integer', () => {
+    expect(extractLlmUsageTotalTokens({ total_tokens: 12.9 })).toBe(12);
+  });
 });
 
 describe('getDefaultProviderConfig()', () => {

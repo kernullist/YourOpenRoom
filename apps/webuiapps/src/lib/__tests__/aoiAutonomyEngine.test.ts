@@ -672,10 +672,11 @@ const TEST_LLM_CONFIG: LLMConfig = {
   model: 'test-model',
 };
 
-function reflectionChat(content: string): AoiAutonomyReflectionChat {
+function reflectionChat(content: string, usageTotalTokens?: number): AoiAutonomyReflectionChat {
   return (async () => ({
     content,
     toolCalls: [],
+    ...(usageTotalTokens !== undefined ? { usage: { totalTokens: usageTotalTokens } } : {}),
   })) as AoiAutonomyReflectionChat;
 }
 
@@ -828,6 +829,32 @@ describe('runAoiAutonomyTick()', () => {
     expect(result.strategicBrief?.recentOutcomes).toContain('Build green on the driver branch');
     // Factual fields stay deterministic even when the LLM authors the narrative.
     expect(result.strategicBrief?.acceptedCount).toBe(1);
+  });
+
+  it('charges REAL provider token usage to the budget when the client surfaces it (P3.4)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      llmConfig: TEST_LLM_CONFIG,
+      // Both the reflection call and the brief synthesizer use this mock; each surfaces
+      // 4321 real tokens, so the ledger must charge 4321 x 2 -- NOT the (much smaller,
+      // non-multiple) chars/4 estimate that would be recorded without real usage.
+      reflectionChat: reflectionChat(
+        JSON.stringify({ focusSummary: 'Keep hardening the kernel driver telemetry path' }),
+        4321,
+      ),
+      now: NOW,
+    });
+
+    const ledger = loadAoiLlmBudgetState(root, SESSION_PATH);
+    expect(ledger?.callCount).toBe(2);
+    expect(ledger?.tokensSpent).toBe(4321 * 2);
   });
 
   it('falls back to the deterministic brief when the token budget is exhausted (P1a c2)', async () => {

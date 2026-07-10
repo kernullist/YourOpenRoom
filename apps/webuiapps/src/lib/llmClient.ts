@@ -337,6 +337,31 @@ interface LLMResponse {
   content: string;
   toolCalls: ToolCall[];
   reasoningContent?: string;
+  // P3.4: real provider token usage (total prompt+completion) when the provider returns
+  // it; omitted when the provider/response does not expose usage.
+  usage?: { totalTokens: number };
+}
+
+// P3.4: extract a positive total-token count from a provider usage object (OpenAI-style
+// total_tokens, or input+output). Returns undefined when unavailable so accounting falls
+// back to the estimate.
+export function extractLlmUsageTotalTokens(raw: unknown): number | undefined {
+  if (!raw || typeof raw !== 'object') {
+    return undefined;
+  }
+  const usage = raw as {
+    total_tokens?: unknown;
+    input_tokens?: unknown;
+    output_tokens?: unknown;
+    prompt_tokens?: unknown;
+    completion_tokens?: unknown;
+  };
+  const asInt = (value: unknown): number => (typeof value === 'number' && value > 0 ? value : 0);
+  const total =
+    asInt(usage.total_tokens) ||
+    asInt(usage.input_tokens) + asInt(usage.output_tokens) ||
+    asInt(usage.prompt_tokens) + asInt(usage.completion_tokens);
+  return total > 0 ? Math.trunc(total) : undefined;
 }
 
 export interface ChatRequestOptions {
@@ -998,12 +1023,14 @@ async function chatOpenAI(
     'calledNames=',
     calledNames,
   );
+  const usageTokens = extractLlmUsageTotalTokens(data.usage);
   return {
     content: choice?.tool_calls?.length
       ? stripThinkTags(choice?.content || '')
       : parsedInline.content,
     toolCalls,
     reasoningContent: choice?.reasoning_content,
+    ...(usageTokens !== undefined ? { usage: { totalTokens: usageTokens } } : {}),
   };
 }
 
@@ -1120,9 +1147,11 @@ async function chatOpenAIResponses(
     }
   }
 
+  const usageTokens = extractLlmUsageTotalTokens((data as { usage?: unknown }).usage);
   return {
     content: stripThinkTags(data.output_text || contentParts.join('')).trim(),
     toolCalls,
+    ...(usageTokens !== undefined ? { usage: { totalTokens: usageTokens } } : {}),
   };
 }
 
@@ -1277,5 +1306,10 @@ async function chatAnthropic(
     'calledNames=',
     calledNames,
   );
-  return { content: stripThinkTags(content), toolCalls };
+  const usageTokens = extractLlmUsageTotalTokens((data as { usage?: unknown }).usage);
+  return {
+    content: stripThinkTags(content),
+    toolCalls,
+    ...(usageTokens !== undefined ? { usage: { totalTokens: usageTokens } } : {}),
+  };
 }

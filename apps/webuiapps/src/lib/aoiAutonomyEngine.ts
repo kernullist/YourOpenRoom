@@ -176,6 +176,10 @@ interface AoiAutonomyReflectionResponse {
   content: string;
   toolCalls: unknown[];
   reasoningContent?: string;
+  // P3.4: real provider token usage when the client surfaces it; absent -> callers fall
+  // back to the chars/4 estimate (fail-closed, so a missing/wrong usage never under-charges
+  // the ceiling).
+  usage?: { totalTokens: number };
 }
 
 export type AoiAutonomyReflectionChat = (
@@ -2145,7 +2149,12 @@ async function runLlmReflection(params: {
         recordAoiLlmSpend(
           budgetCheck.rolledState,
           params.now,
-          Math.max(1, promptTokens + estimateAoiLlmTokens(response.content ?? '')),
+          // P3.4: charge real provider usage when surfaced; else the chars/4 estimate.
+          Math.max(
+            1,
+            response.usage?.totalTokens ??
+              promptTokens + estimateAoiLlmTokens(response.content ?? ''),
+          ),
         ),
       );
     } catch {
@@ -2316,10 +2325,13 @@ async function maybeUpgradeAoiStrategicBriefFocusWithLlm(params: {
     const reflectionChat =
       params.reflectionChat ?? ((await import('./llmClient')).chat as AoiAutonomyReflectionChat);
     let responseText = '';
+    // P3.4: real provider usage when surfaced; undefined -> fall back to the estimate below.
+    let responseUsageTokens: number | undefined;
     let upgraded = params.brief;
     try {
       const response = await reflectionChat(messages, [], params.llmConfig);
       responseText = response.content ?? '';
+      responseUsageTokens = response.usage?.totalTokens;
       const structured = parseAoiStrategicBriefStructuredResponse(responseText);
       if (structured) {
         // P3.3: take the LLM's narrative framing (focus + re-framed threads/outcomes) but
@@ -2359,7 +2371,8 @@ async function maybeUpgradeAoiStrategicBriefFocusWithLlm(params: {
         recordAoiLlmSpend(
           check.rolledState,
           params.now,
-          Math.max(1, promptTokens + estimateAoiLlmTokens(responseText)),
+          // P3.4: charge real usage when the provider surfaced it; else the estimate.
+          Math.max(1, responseUsageTokens ?? promptTokens + estimateAoiLlmTokens(responseText)),
         ),
       );
     } catch {
