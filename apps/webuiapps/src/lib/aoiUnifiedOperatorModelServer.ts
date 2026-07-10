@@ -1,10 +1,14 @@
 import {
   loadAoiEnvironmentSourceRegistry,
   loadAoiFollowThroughLearningSummary,
+  loadAoiOutcomeSignalRecords,
+  loadAoiProposalDecisions,
 } from './aoiAutonomyStore';
 import { loadAoiMissionState } from './aoiAutonomyMission';
 import { loadServerAoiMemories } from './aoiMemoryServerWriter';
 import { loadAoiInterestProfile } from './aoiProactiveBriefStore';
+import { buildAoiClosedLoopMetrics } from './aoiClosedLoopMetrics';
+import { buildAoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
 import {
   buildAoiUnifiedOperatorSnapshot,
   summarizeAoiUnifiedOperatorSnapshot,
@@ -22,11 +26,12 @@ import {
 // its operator summary are display_only by construction.
 //
 // Inputs are assembled from the stores with clean (sessionsDir, sessionPath, now) loaders:
-// memories, interest profile, follow-through learning, mission, and the environment source
-// registry. Inputs that need extra live context (the context router needs a user message;
-// the readiness scorecard needs its own multi-loader assembly; capability-broker decisions
-// are a distinct decision type) are left undefined -- the builder treats every input as
-// optional, so the snapshot is simply built from the sections that have real backing data.
+// memories, interest profile, follow-through learning, mission, the environment source
+// registry, and a readiness scorecard backed by the real closed-loop metrics (decisions +
+// outcomes). The only inputs left undefined are those needing extra live context (the
+// context router needs a user message; capability-broker decisions are a distinct decision
+// type) -- the builder treats every input as optional, so the snapshot is built from the
+// sections that have real backing data.
 
 export interface AoiUnifiedOperatorSnapshotFromStoresParams {
   sessionPath: string;
@@ -39,6 +44,22 @@ export function loadAoiUnifiedOperatorSnapshotFromStores(
   params: AoiUnifiedOperatorSnapshotFromStoresParams,
 ): AoiUnifiedOperatorSnapshot {
   const { sessionPath, now } = params;
+  // Readiness is backed by the REAL closed-loop metrics: measured per-capability
+  // precision / action-success / interruption / recall over the actual decision +
+  // outcome logs (the outcome log is now populated by real executed outcomes -- P5.2).
+  // buildAoiJarvisReadinessScorecard treats every other input as optional, so a scorecard
+  // built from closedLoopMetrics alone is a real (if partial) readiness signal.
+  const closedLoopMetrics = buildAoiClosedLoopMetrics({
+    sessionPath,
+    decisions: loadAoiProposalDecisions(sessionsDir, sessionPath),
+    outcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath),
+    now,
+  });
+  const readinessScorecard = buildAoiJarvisReadinessScorecard({
+    sessionPath,
+    now,
+    closedLoopMetrics,
+  });
   return buildAoiUnifiedOperatorSnapshot({
     sessionPath,
     now,
@@ -48,6 +69,7 @@ export function loadAoiUnifiedOperatorSnapshotFromStores(
     followThroughLearning: loadAoiFollowThroughLearningSummary(sessionsDir, sessionPath, now),
     mission: loadAoiMissionState(sessionsDir, sessionPath),
     sourceRegistry: loadAoiEnvironmentSourceRegistry(sessionsDir, sessionPath, now),
+    readinessScorecard,
   });
 }
 

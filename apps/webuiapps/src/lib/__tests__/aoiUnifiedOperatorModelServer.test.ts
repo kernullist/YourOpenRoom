@@ -65,6 +65,12 @@ describe('loadAoiUnifiedOperatorSnapshotFromStores (P5.3)', () => {
     // The store loaders are actually wired in: their evidence flows into the snapshot.
     expect(snapshot.evidenceRefs).toContain('follow_through_learning:v1');
     expect(snapshot.evidenceRefs.some((ref) => ref.startsWith('source-registry:'))).toBe(true);
+    // A readiness scorecard (backed by closed-loop metrics) is now always assembled, so the
+    // readiness section is no longer the empty "no scorecard provided" placeholder.
+    expect(snapshot.readiness.summary).not.toBe('No readiness scorecard was provided.');
+    expect(snapshot.readiness.cannotKnow).not.toContain(
+      'Aoi cannot know delivery readiness without a readiness scorecard.',
+    );
   });
 
   it('reads real seeded stores and still builds a well-formed display_only snapshot', () => {
