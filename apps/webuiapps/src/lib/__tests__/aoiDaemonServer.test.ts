@@ -180,6 +180,101 @@ describe('daemon graceful shutdown (POST /shutdown)', () => {
   });
 });
 
+describe('daemon memory decay routes (P4.1)', () => {
+  const MEM_PATH = 'aoi/memory-v2/memories/decay-cand-1.json';
+
+  function oldCandidateMemory(): Record<string, unknown> {
+    return {
+      version: 2,
+      id: 'decay-cand-1',
+      scope: 'user',
+      type: 'fact',
+      status: 'active',
+      content: 'An old, low-confidence, unused fact.',
+      normalizedContent: 'an old, low-confidence, unused fact.',
+      importance: 0.2,
+      confidence: 0.3,
+      hits: 1,
+      createdAt: 1,
+      updatedAt: Date.now() - 100 * 24 * 60 * 60 * 1000, // ~100d old -> past the 90d floor
+      sourceEpisodeIds: ['ep-1'],
+      tags: [],
+      entities: [],
+    };
+  }
+
+  async function seedMemory(base: string, body: Record<string, unknown>): Promise<void> {
+    const res = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  it('previews -> archives an approved candidate -> restores it (soft-delete lifecycle)', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    const api = `${base}/api/aoi-autonomy`;
+    await seedMemory(base, oldCandidateMemory());
+
+    // Read-only preview: the old memory is a candidate; capture the approval fingerprint.
+    const preview = await fetch(`${api}/memory/decay-preview`);
+    expect(preview.status).toBe(200);
+    const previewBody = (await preview.json()) as {
+      ok: boolean;
+      candidates: Array<{ id: string }>;
+      fingerprint: string;
+    };
+    expect(previewBody.ok).toBe(true);
+    expect(previewBody.candidates.map((candidate) => candidate.id)).toContain('decay-cand-1');
+
+    // Apply with the reviewed fingerprint -> archived (soft-delete).
+    const apply = await fetch(`${api}/memory/decay-apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: previewBody.fingerprint }),
+    });
+    expect(apply.status).toBe(200);
+    expect((await apply.json()) as { archivedCount?: number }).toMatchObject({ archivedCount: 1 });
+
+    // The file is kept, flipped to status 'archived' (recoverable, not deleted).
+    const archived = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
+    expect(((await archived.json()) as { status?: string }).status).toBe('archived');
+
+    // Restore -> active again (ungated recovery).
+    const restore = await fetch(`${api}/memory/decay-restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['decay-cand-1'] }),
+    });
+    expect(restore.status).toBe(200);
+    expect((await restore.json()) as { unarchivedCount?: number }).toMatchObject({
+      unarchivedCount: 1,
+    });
+    const restored = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
+    expect(((await restored.json()) as { status?: string }).status).toBe('active');
+  });
+
+  it('rejects an apply whose fingerprint does not match the reviewed set (nothing archived)', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    await seedMemory(base, oldCandidateMemory());
+
+    const res = await fetch(`${base}/api/aoi-autonomy/memory/decay-apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: 'stale-or-tampered' }),
+    });
+    expect(res.status).toBe(409);
+    expect(((await res.json()) as { code?: string }).code).toBe('decay_approval_mismatch');
+
+    // Fail-closed: the memory is still active (never archived on a mismatch).
+    const still = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
+    expect(((await still.json()) as { status?: string }).status).toBe('active');
+  });
+});
+
 describe('daemon crash-restart (P0.5)', () => {
   it('reclaims a stale loop lock left by a crashed daemon and starts the loop', async () => {
     const sessionsDir = makeTempSessionsDir();

@@ -12,6 +12,11 @@ import {
 } from './aoiAutonomyBackgroundRunner';
 import { acquireAoiAutonomyLoopLock } from './aoiAutonomyLoopLock';
 import {
+  archiveServerAoiMemories,
+  computeServerAoiMemoryDecayDryRun,
+  unarchiveServerAoiMemories,
+} from './aoiMemoryServerWriter';
+import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
   startAoiMemoryEmbedSweep,
   type AoiMemoryEmbedSweepHandle,
@@ -2006,6 +2011,49 @@ export async function handleAoiAutonomyRequest(
         ok: true,
         sessionPath,
         policy,
+      });
+      return true;
+    }
+
+    // P4.1: memory decay/forgetting operator surface. Store-wide + soft-delete only
+    // (status='archived', recoverable). The dry-run is READ-ONLY; apply is gated by a
+    // content-addressed approval fingerprint so nothing is ever archived without the
+    // operator approving the exact reviewed set; restore is ungated (non-destructive).
+    if (req.method === 'GET' && route === '/memory/decay-preview') {
+      const dryRun = computeServerAoiMemoryDecayDryRun(sessionsDir, { now: Date.now() });
+      writeJson(res, 200, { ok: true, ...dryRun });
+      return true;
+    }
+    if (req.method === 'POST' && route === '/memory/decay-apply') {
+      const body = await readJsonBody(req);
+      const ids = (Array.isArray(body.ids) ? body.ids : []).filter(
+        (id): id is string => typeof id === 'string',
+      );
+      const approvalFingerprint =
+        typeof body.approvalFingerprint === 'string' ? body.approvalFingerprint : '';
+      const result = archiveServerAoiMemories(sessionsDir, ids, { approvalFingerprint });
+      if (result.rejected) {
+        // The reviewed set drifted (fingerprint mismatch) -- nothing was written.
+        writeJson(res, 409, { ok: false, rejected: true, code: 'decay_approval_mismatch' });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        archivedCount: result.archivedCount,
+        changedIds: result.changedIds,
+      });
+      return true;
+    }
+    if (req.method === 'POST' && route === '/memory/decay-restore') {
+      const body = await readJsonBody(req);
+      const ids = (Array.isArray(body.ids) ? body.ids : []).filter(
+        (id): id is string => typeof id === 'string',
+      );
+      const result = unarchiveServerAoiMemories(sessionsDir, ids);
+      writeJson(res, 200, {
+        ok: true,
+        unarchivedCount: result.unarchivedCount,
+        changedIds: result.changedIds,
       });
       return true;
     }
