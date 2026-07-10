@@ -10,6 +10,7 @@ import {
   createAoiGeminiEmbeddingProvider,
   type AoiEmbeddingProvider,
 } from './aoiMemoryEmbedding';
+import { createAoiLocalEmbeddingProvider } from './aoiLocalEmbedding';
 
 // Server-only resolver for the Aoi memory embedding provider. The autonomy
 // engines run in Node and cannot read the browser-persisted config via the dev
@@ -73,6 +74,12 @@ export function createServerAoiEmbeddingProvider(params: {
       baseUrl: 'https://api.openai.com/v1',
       model: AOI_EMBEDDING_DEFAULT_MODEL,
     });
+  }
+  // Offline fallback (P4.4): opt-in local hash embedder so the keyless default is
+  // not dark (semantic recall + consolidation get real vectors, no egress). Only
+  // when NO cloud key is configured above, so it never overrides a real provider.
+  if (env.AOI_LOCAL_EMBEDDER === '1' || env.AOI_LOCAL_EMBEDDER === 'true') {
+    return createAoiLocalEmbeddingProvider();
   }
   return null;
 }
