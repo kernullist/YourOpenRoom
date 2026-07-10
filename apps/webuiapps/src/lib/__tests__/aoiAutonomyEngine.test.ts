@@ -3230,6 +3230,44 @@ describe('runAoiAutonomyWakeup()', () => {
     );
   });
 
+  it('persists field-shadow records when capture is enabled via policy alone -- no env (P5.4)', async () => {
+    const root = makeTempRoot();
+    // Operator opt-in via the policy field; env stays OFF so this proves the policy path.
+    saveAoiAutonomyPolicy(
+      root,
+      SESSION_PATH,
+      {
+        enabled: true,
+        previewMode: true,
+        level: 'L4',
+        confidenceFloor: 0.55,
+        maxActiveProposals: 8,
+        maxProposalsPerTick: 4,
+        fieldShadowCaptureEnabled: true,
+      },
+      NOW,
+    );
+    upsertAoiOpportunity(root, SESSION_PATH, makeFieldShadowOpportunityInput(), NOW);
+    delete process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE;
+    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBe(0);
+
+    await runAoiAutonomyWakeup({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual_refresh',
+      sourceIds: [],
+      budget: {
+        maxSourceCount: 0,
+        maxGeneratedProposalCount: 0,
+        wakeupCooldownMs: 0,
+      },
+      now: NOW,
+    });
+
+    // Policy opt-in alone (env OFF) triggers the same records-only capture.
+    expect(loadAoiFieldShadowDecisionRecords(root, SESSION_PATH, NOW).length).toBeGreaterThan(0);
+  });
+
   it('does not persist field-shadow records when capture is disabled', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

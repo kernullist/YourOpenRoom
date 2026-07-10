@@ -1874,7 +1874,14 @@ async function runWakeupInternal(
   // un-promoted candidates until a human labels + reviews them. This path persists
   // records/field-events only (recordAoiFieldShadowDecisionIntegration); it writes
   // no autonomy level or trust, and never labels or promotes.
-  if (process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE === '1') {
+  // P5.4: capture fires on the env ceiling OR the operator's per-session opt-in
+  // (policy.fieldShadowCaptureEnabled), so the trust on-ramp can accrue from the settings
+  // UI without an env var. Env is checked first (short-circuit); default-off policy ->
+  // byte-identical to the env-only gate. Still records-only + zero-mutation (see below).
+  if (
+    process.env.AOI_AUTONOMY_FIELD_SHADOW_CAPTURE === '1' ||
+    loadAoiAutonomyPolicy(input.sessionsDir, sessionPath).fieldShadowCaptureEnabled === true
+  ) {
     try {
       const shadowOpportunities = loadAoiActiveOpportunities(input.sessionsDir, sessionPath, now);
       if (shadowOpportunities.length > 0) {

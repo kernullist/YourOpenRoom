@@ -3251,6 +3251,11 @@ export interface AoiAutonomyPolicy {
   previewMode: boolean;
   level: AoiAutonomyLevel;
   proactiveSuggestionsEnabled: boolean;
+  // P5.4: operator opt-in to field-shadow capture (grows the readiness DENOMINATOR so
+  // the trust on-ramp can accrue) tied to the settings UI instead of only an env var.
+  // Optional + default off -> behavior is byte-identical until the operator enables it;
+  // the env ceiling still applies and loop-written records never auto-promote.
+  fieldShadowCaptureEnabled?: boolean;
   confidenceFloor: number;
   maxActiveProposals: number;
   maxProposalsPerTick: number;
