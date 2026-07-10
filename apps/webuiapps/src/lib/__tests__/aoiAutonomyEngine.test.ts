@@ -81,6 +81,7 @@ import type {
   AoiProposal,
   AoiProposalDecision,
   AoiProactiveBriefCandidate,
+  AoiReflection,
   AoiStrategicBrief,
   AoiWorkspaceSnapshot,
 } from '../aoiAutonomyTypes';
@@ -1545,6 +1546,80 @@ describe('buildAoiAutonomyReflectionMessages() continuity (P1a c3)', () => {
     });
     expect('continuity' in userPayload(messages)).toBe(false);
     expect(messages[0].content).not.toContain('continuity');
+  });
+
+  function reflection(over: Partial<AoiReflection>): AoiReflection {
+    return {
+      version: 1,
+      id: 'r',
+      observationIds: [],
+      sessionPath: SESSION_PATH,
+      createdAt: NOW,
+      kind: 'opportunity',
+      claim: 'a claim',
+      evidenceRefs: [],
+      confidence: 0.5,
+      risk: 'low',
+      proposedMemoryCandidates: [],
+      proposedActions: [],
+      ...over,
+    };
+  }
+
+  it('carries recent reflections as sanitized non-evidence prioritization context (P3.2)', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      recentReflections: [
+        reflection({
+          id: 'r1',
+          kind: 'failure_postmortem',
+          claim: 'The delete kept failing on a locked file.',
+        }),
+      ],
+    });
+    expect(messages[0].content).toContain('recentReflections');
+    expect(messages[0].content).toMatch(/not evidence/i);
+    const carried = userPayload(messages).recentReflections as Array<{
+      kind: string;
+      claim: string;
+    }>;
+    expect(carried).toHaveLength(1);
+    expect(carried[0]).toMatchObject({
+      kind: 'failure_postmortem',
+      claim: 'The delete kept failing on a locked file.',
+    });
+  });
+
+  it('caps carried reflections at the most recent K (P3.2)', () => {
+    const many = Array.from({ length: 8 }, (_unused, index) =>
+      reflection({ id: `r${index}`, claim: `claim ${index}` }),
+    );
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      recentReflections: many,
+    });
+    const carried = userPayload(messages).recentReflections as Array<{ claim: string }>;
+    // MAX_REFLECTION_PROMPT_CARRIED = 5, keeping the LAST (most recent) 5.
+    expect(carried).toHaveLength(5);
+    expect(carried[0].claim).toBe('claim 3');
+    expect(carried[4].claim).toBe('claim 7');
+  });
+
+  it('omits the recentReflections block entirely without reflections (parity, P3.2)', () => {
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+    });
+    expect('recentReflections' in userPayload(messages)).toBe(false);
+    expect(messages[0].content).not.toContain('recentReflections');
   });
 
   it('instructs the model not to re-narrate existing proposals or read a failed run report', () => {

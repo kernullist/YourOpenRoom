@@ -45,6 +45,7 @@ import {
 } from './aoiAutonomyRecovery';
 import {
   appendAoiReflection,
+  loadAoiReflections,
   beginAoiAutonomyTick,
   buildAoiAutonomyStatus,
   completeAoiAutonomyTick,
@@ -146,6 +147,11 @@ const MAX_REFLECTION_PROMPT_PROPOSALS = 8;
 const MAX_REFLECTION_PROMPT_MEMORIES = 10;
 const MAX_REFLECTION_PROMPT_CONNECTORS = 12;
 const MAX_REFLECTION_PROMPT_CONNECTOR_TOOLS = 16;
+// P3.2: how many of Aoi's own recent reflections are carried into the next tick's prompt,
+// and the per-reflection claim char cap. Bounded so accumulated cognition never blows up
+// the prompt or leaks unsanitized bodies.
+const MAX_REFLECTION_PROMPT_CARRIED = 5;
+const REFLECTION_CARRIED_CLAIM_MAX_CHARS = 200;
 const STALE_RESEARCH_MEMORY_MS = 30 * 24 * 60 * 60 * 1000;
 const RECENT_RUN_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 const TITLE_MAX_CHARS = 96;
@@ -1467,6 +1473,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // sanitized continuity block is added to the prompt as PRIORITIZATION context
   // only -- it is not evidence and is never citable in evidenceRefs.
   previousBrief?: AoiStrategicBrief | null;
+  // P3.2: the last K of Aoi's own reflections, fed back so reasoning accumulates and
+  // self-corrects across ticks instead of restarting each tick. Same discipline as
+  // previousBrief -- sanitized, bounded PRIORITIZATION context only; never evidence,
+  // never citable in evidenceRefs. Absent/empty -> prompt unchanged.
+  recentReflections?: readonly AoiReflection[];
   // P1a c4: when true, the prompt offers a goal-candidate acceptAction. Default
   // off -> no goal guidance is shown (prompt unchanged for the common case).
   goalSynthesisEnabled?: boolean;
@@ -1541,6 +1552,18 @@ export function buildAoiAutonomyReflectionMessages(params: {
       continuity.blockedThreads.length > 0 ||
       continuity.recentOutcomes.length > 0);
 
+  // P3.2: carry the most recent reflections forward as sanitized, capped prioritization
+  // context so cognition accumulates across ticks. Bounded (last K, char-capped) and
+  // non-citable -- the systemLines instruction below forbids using them as evidence.
+  const recentReflectionContext = (params.recentReflections ?? [])
+    .slice(-MAX_REFLECTION_PROMPT_CARRIED)
+    .map((reflection) => ({
+      kind: reflection.kind,
+      claim: sanitizePromptText(reflection.claim, REFLECTION_CARRIED_CLAIM_MAX_CHARS),
+    }))
+    .filter((entry) => entry.claim.length > 0);
+  const recentReflectionsAvailable = recentReflectionContext.length > 0;
+
   const systemLines = [
     'You are Aoi Autonomy read-only reflection evaluator.',
     'Return strict JSON only.',
@@ -1566,6 +1589,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
   if (continuityAvailable) {
     systemLines.push(
       'A "continuity" field summarizes what you were working on last (prior focus, open/blocked threads, recent outcomes). Use it ONLY to prioritize; it is NOT evidence and must never appear in evidenceRefs.',
+    );
+  }
+  if (recentReflectionsAvailable) {
+    systemLines.push(
+      'A "recentReflections" field lists your own recent reflections (kind + claim). Use them ONLY to prioritize, build on, or avoid repeating prior reasoning; they are NOT evidence and must never appear in evidenceRefs.',
     );
   }
   if (params.goalSynthesisEnabled) {
@@ -1622,6 +1650,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         memories,
         activeProposals,
         ...(continuityAvailable ? { continuity } : {}),
+        ...(recentReflectionsAvailable ? { recentReflections: recentReflectionContext } : {}),
         ...(connectorsAvailable ? { availableConnectors } : {}),
         outputSchema: {
           reflections: [
@@ -2078,6 +2107,9 @@ async function runLlmReflection(params: {
       queryEmbeddingModel: params.queryEmbeddingModel ?? null,
       availableConnectors,
       previousBrief: params.previousBrief ?? null,
+      // P3.2: feed prior reflections (persisted before this tick) back so cognition
+      // accumulates across ticks. The builder caps + sanitizes them.
+      recentReflections: loadAoiReflections(params.sessionsDir, params.sessionPath),
       goalSynthesisEnabled: params.goalSynthesisEnabled === true,
       ...(params.language ? { language: params.language } : {}),
     });
