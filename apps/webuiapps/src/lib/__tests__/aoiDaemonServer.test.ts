@@ -180,6 +180,64 @@ describe('daemon graceful shutdown (POST /shutdown)', () => {
   });
 });
 
+describe('daemon crash-restart (P0.5)', () => {
+  it('reclaims a stale loop lock left by a crashed daemon and starts the loop', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const lockPath = join(sessionsDir, '.aoi-autonomy-loop.lock');
+    // Simulate a crash: a loop lock owned by a dead pid on THIS host (a clean stop
+    // would have released it; a crash leaves it behind). A very high pid is not a
+    // live process, so the lock is stale and must be reclaimed on restart.
+    fs.writeFileSync(
+      lockPath,
+      JSON.stringify({
+        kind: 'aoi-autonomy-loop',
+        pid: 2147483646,
+        host: os.hostname(),
+        startedAt: 1,
+      }),
+    );
+    // Durable state that must survive the restart.
+    saveAoiStrategicBrief(sessionsDir, 'aoi/default', {
+      version: 1,
+      sessionPath: 'aoi/default',
+      generatedAt: 1_700_000_000_000,
+      tickReason: 'periodic',
+      focusSummary: 'Survive a daemon restart',
+      openThreads: [],
+      blockedThreads: [],
+      recentOutcomes: [],
+      observationHighlights: [],
+      evidenceRefs: [],
+      acceptedCount: 0,
+      blockedCount: 0,
+      observationCount: 0,
+      synthesizedBy: 'deterministic',
+    });
+
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: {},
+    });
+    liveDaemons.push(handle);
+
+    // The restart reclaimed the stale lock and started the loop from known-good state.
+    expect(handle.backgroundRunning).toBe(true);
+    const reclaimed = JSON.parse(fs.readFileSync(lockPath, 'utf-8')) as { pid?: number };
+    expect(reclaimed.pid).toBe(process.pid);
+
+    // State continuity: the pre-restart brief is still served.
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/strategic-brief?sessionPath=aoi/default`,
+    );
+    const body = (await res.json()) as { brief?: { focusSummary?: string } | null };
+    expect(body.brief?.focusSummary).toBe('Survive a daemon restart');
+  });
+});
+
 describe('daemon session-data store', () => {
   it('serves session-data read/write/list and session-reset (durable memory endpoint)', async () => {
     const handle = await bootTestDaemon();
