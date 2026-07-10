@@ -6,9 +6,12 @@ import {
   loadAoiOperatorFeedbackLabelActions,
   loadAoiOperatorTracePromotionDecisions,
   loadAoiOutcomeLearningSummary,
+  loadAoiOutcomeSignalRecords,
+  loadAoiProposalDecisions,
   saveAoiAutonomyLevelPromotionGateState,
   saveAoiAutonomyPolicy,
 } from './aoiAutonomyStore';
+import { buildAoiClosedLoopMetrics } from './aoiClosedLoopMetrics';
 import {
   evaluateAoiAutonomyLevelPromotion,
   resolveAoiAutonomyLevelPromotionConfig,
@@ -128,6 +131,20 @@ export function buildAoiAutonomyLevelPromotionScorecard(
   const outcomeLearning = loadAoiOutcomeLearningSummary(sessionsDir, sessionPath, now);
   const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
 
+  // Closed-loop capability metrics (P1.2): turn the session's real proposal-decision
+  // + outcome telemetry into per-capability precision / success / recall so the
+  // scorecard's capability-precision gates become LIVE instead of dark. SAFETY: these
+  // gates can only BLOCK or WARN, never lift -- an insufficient sample yields null
+  // rates (no gate), so a session without enough telemetry is byte-identical to
+  // before. (recallMiss injection from shadow / feedback-compression is a follow-up;
+  // omitted here -> 0, a safe "no recall-miss signal".)
+  const closedLoopMetrics = buildAoiClosedLoopMetrics({
+    sessionPath,
+    decisions: loadAoiProposalDecisions(sessionsDir, sessionPath),
+    outcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath, now),
+    now,
+  });
+
   // Candidate evidence from real session data, plus the operator-reviewed promotion
   // decisions / review states. Both are loaded from the actor-gated operator store
   // and re-filtered to actor === 'user' at this trust boundary (defense in depth on
@@ -171,6 +188,7 @@ export function buildAoiAutonomyLevelPromotionScorecard(
     outcomeLearning,
     tracePromotionReport,
     adaptiveAcceptancePack,
+    closedLoopMetrics,
     directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
 }

@@ -7,6 +7,7 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import {
   appendAoiOperatorAdaptiveReviewState,
   appendAoiOperatorTracePromotionDecision,
+  appendAoiProposalDecision,
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
   loadAoiFieldShadowRecordReport,
@@ -30,7 +31,11 @@ import {
   createAoiTracePromotionDecision,
 } from '../aoiTracePromotion';
 import type { AoiAutonomyLevelPromotionConfig } from '../aoiAutonomyLevelPromotion';
-import type { AoiAutonomyLevel, AoiOperatorTraceExport } from '../aoiAutonomyTypes';
+import type {
+  AoiAutonomyLevel,
+  AoiOperatorTraceExport,
+  AoiProposalDecision,
+} from '../aoiAutonomyTypes';
 import type { AoiJarvisReadinessScorecard } from '../aoiJarvisReadinessScorecard';
 import type { AoiShadowDecision } from '../aoiShadowModeEvaluation';
 
@@ -465,6 +470,57 @@ describe('buildAoiAutonomyLevelPromotionScorecard operator promotion wiring', ()
     // The assembler now loads the operator-authored promotions and folds them into
     // the trace/adaptive reports -> every candidate is promoted -> rate is 1.
     expect(metricValue(after, 'field.promoted_replay_pass_rate')).toBe(1);
+  });
+});
+
+describe('buildAoiAutonomyLevelPromotionScorecard closed-loop metrics wiring (P1.2)', () => {
+  function seedAcceptedDecisions(root: string, now: number): void {
+    const base = (index: number, over: Partial<AoiProposalDecision> = {}): AoiProposalDecision => ({
+      version: 1,
+      id: `aoi-dec-cl-${index}`,
+      proposalId: `aoi-prop-cl-${index}`,
+      sessionPath: SESSION,
+      cooldownKey: 'closed-loop',
+      action: 'accept',
+      actor: 'user',
+      createdAt: now,
+      previousStatus: 'active',
+      nextStatus: 'active',
+      evidenceRefs: ['e'],
+      ...over,
+    });
+    // 4 accepted, 1 flagged unsafe (a correctness failure) -> precision 3/4 = 0.75,
+    // above the 0.6 floor but below the 0.8 target -> a WARNING gate, never a block/lift.
+    appendAoiProposalDecision(root, base(1));
+    appendAoiProposalDecision(root, base(2));
+    appendAoiProposalDecision(root, base(3));
+    appendAoiProposalDecision(root, base(4, { feedbackCategory: 'unsafe' }));
+  }
+
+  it('emits no closed-loop capability metric on a session without enough telemetry', () => {
+    const root = makeRoot();
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+    // Below the min sample -> null rates -> no capability metric/gate (byte-identical).
+    expect(card.metrics.some((metric) => metric.id === 'capability.proposal_precision')).toBe(
+      false,
+    );
+  });
+
+  it('wires real decision telemetry into a live capability-precision gate (warning, never a lift)', () => {
+    const root = makeRoot();
+    seedAcceptedDecisions(root, 5000);
+
+    const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
+
+    // The metric now exists -> closedLoopMetrics is wired into the scorecard.
+    const metric = card.metrics.find((item) => item.id === 'capability.proposal_precision');
+    expect(metric).toBeDefined();
+    // The gate is LIVE: 0.75 precision is a near-miss -> warning, not a hard block.
+    const gate = card.gates.find((item) => item.id === 'gate.capability_proposal_precision');
+    expect(gate?.status).toBe('warning');
+    // It can only gate, never lift: still a display-only scorecard below trusted_operator.
+    expect(card.actionAuthority).toBe('display_only');
+    expect(card.level).not.toBe('trusted_operator');
   });
 });
 
