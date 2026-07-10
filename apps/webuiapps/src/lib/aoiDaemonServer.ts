@@ -20,6 +20,7 @@ import {
   type AoiDaemonHealthSnapshot,
   type AoiDaemonHealthTracker,
 } from './aoiDaemonHealth';
+import { recordAoiDaemonCycleFlightRecords } from './aoiDaemonFlightRecorder';
 
 // Standalone headless autonomy daemon.
 //
@@ -198,7 +199,14 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   });
   backgroundHandle = startAoiAutonomyBackgroundFromEnv(pluginOptions, env, {
     defaultStart: true,
-    onCycle: healthHooks.onCycle,
+    onCycle: (result) => {
+      healthHooks.onCycle(result);
+      // P2.4: mirror each self-initiated background wakeup into the operator flight
+      // recorder so headless 24/7 activity is auditable in the same surface as
+      // foreground decisions. recordAoiDaemonCycleFlightRecords is best-effort
+      // internally -- a record write never stalls the loop.
+      recordAoiDaemonCycleFlightRecords(pluginOptions.sessionsDir, result);
+    },
     onError: healthHooks.onError,
   });
   // Loop-independent memory embed sweep (OFF unless AOI_AUTONOMY_EMBED_SWEEP is
