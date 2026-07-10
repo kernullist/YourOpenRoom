@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
@@ -153,6 +153,29 @@ describe('daemon health endpoint (GET /healthz)', () => {
     expect(post.status).toBe(404);
     // A prefix look-alike must not match (exact path / query-only).
     const lookAlike = await fetch(`${base}/healthz-not-real`);
+    expect(lookAlike.status).toBe(404);
+  });
+});
+
+describe('daemon graceful shutdown (POST /shutdown)', () => {
+  it('acks then gracefully closes the server', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/shutdown`, { method: 'POST' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { ok?: boolean; shuttingDown?: boolean };
+    expect(body.ok).toBe(true);
+    expect(body.shuttingDown).toBe(true);
+    // The deferred close() stops the listening server (timing-robust: poll the
+    // socket state rather than race a follow-up request).
+    await vi.waitFor(() => expect(handle.server.listening).toBe(false), { timeout: 2000 });
+  });
+
+  it('does not treat GET /shutdown or a look-alike path as the trigger', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    const get = await fetch(`${base}/shutdown`);
+    expect(get.status).toBe(404);
+    const lookAlike = await fetch(`${base}/shutdown-not-real`, { method: 'POST' });
     expect(lookAlike.status).toBe(404);
   });
 });

@@ -95,6 +95,18 @@ function isHealthzRequest(req: IncomingMessage): boolean {
   return url === '/healthz' || url.startsWith('/healthz?');
 }
 
+// POST /shutdown -- a loopback-only graceful-stop trigger (P0.3). Lets Stop-App.ps1
+// end the daemon cleanly (release the loop lock, close the server) before falling
+// back to a force-kill, so the SIGINT/SIGTERM graceful path is actually exercised
+// on Windows (where Stop-Process -Force never raises those signals).
+function isShutdownRequest(req: IncomingMessage): boolean {
+  if ((req.method ?? 'GET') !== 'POST') {
+    return false;
+  }
+  const url = req.url ?? '';
+  return url === '/shutdown' || url.startsWith('/shutdown?');
+}
+
 // Boot a headless autonomy server: serves /api/aoi-autonomy/* and (when opted
 // in via env) runs the background loop. Does NOT install signal handlers or
 // read process.argv -- that is the entrypoint's job (runAoiDaemonMain), which
@@ -126,11 +138,26 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     startedAt: bootAt,
     loopRunning: () => backgroundHandle !== null,
   });
+  // Forward reference: assigned once close() is defined below, so the /shutdown
+  // handler can trigger a graceful stop. A no-op until then (no request can arrive
+  // before listen() resolves and the sync boot block finishes assigning it).
+  let requestShutdown: () => void = () => {};
 
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
     // Cheap, session-less readiness probe answered before any autonomy routing.
     if (isHealthzRequest(req)) {
       writeHealth(res, health.snapshot(Date.now()));
+      return;
+    }
+    // Loopback-only graceful-stop trigger: ack first, then close on a later tick so
+    // the 200 flushes before the socket goes away.
+    if (isShutdownRequest(req)) {
+      res.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Cache-Control': 'no-store',
+      });
+      res.end(JSON.stringify({ ok: true, shuttingDown: true }));
+      requestShutdown();
       return;
     }
     // Native http has no next(); chain the shared middlewares (autonomy first,
@@ -198,6 +225,14 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
         resolveClose();
       });
     });
+  };
+
+  // Wire the /shutdown handler now that close() exists. Deferred a tick so the 200
+  // response flushes before the server stops accepting connections.
+  requestShutdown = () => {
+    setTimeout(() => {
+      void close();
+    }, 10);
   };
 
   return {

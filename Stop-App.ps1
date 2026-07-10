@@ -334,9 +334,36 @@ do
             }
             else
             {
-                Write-Step "Stopping the Aoi daemon."
-                Stop-Process -Id (@($daemonProcesses | ForEach-Object { [int]$_.ProcessId })) -Force -ErrorAction SilentlyContinue
-                Start-Sleep -Milliseconds 500
+                # P0.3: ask the daemon to stop gracefully (release the loop lock,
+                # close the server) BEFORE force-killing. On Windows Stop-Process
+                # -Force never raises the SIGINT/SIGTERM the daemon traps, so its
+                # graceful path would otherwise never run. Best-effort against the
+                # default loopback port; any failure falls through to the force-kill.
+                Write-Step "Stopping the Aoi daemon (graceful first)."
+                try
+                {
+                    $null = Invoke-WebRequest -Uri "http://127.0.0.1:7333/shutdown" -Method Post -TimeoutSec 3 -UseBasicParsing -ErrorAction Stop
+                    for ($i = 0; $i -lt 20; $i++)
+                    {
+                        Start-Sleep -Milliseconds 150
+                        if (@(Get-AoiDaemonProcesses -RepoRoot $repoRoot).Count -eq 0)
+                        {
+                            break
+                        }
+                    }
+                }
+                catch
+                {
+                    Write-Step "Graceful /shutdown unavailable; falling back to force-stop."
+                }
+
+                # Force-kill only whatever did not stop gracefully.
+                $daemonStillUp = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
+                if ($daemonStillUp.Count -gt 0)
+                {
+                    Stop-Process -Id (@($daemonStillUp | ForEach-Object { [int]$_.ProcessId })) -Force -ErrorAction SilentlyContinue
+                    Start-Sleep -Milliseconds 500
+                }
 
                 $daemonRemaining = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
                 if ($daemonRemaining.Count -gt 0)
