@@ -1,5 +1,6 @@
 dist
 dist-daemon
+dist-field-ci-gate
 .next
 node_modules
 apps/*/node_modules

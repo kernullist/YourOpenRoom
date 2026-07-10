@@ -7,6 +7,8 @@ packages/*/dist
 dist
 apps/*/dist-daemon
 dist-daemon
+apps/*/dist-field-ci-gate
+dist-field-ci-gate
 
 # Turborepo
 .turbo
