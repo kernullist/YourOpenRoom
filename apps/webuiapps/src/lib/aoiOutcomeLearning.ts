@@ -45,6 +45,35 @@ export interface AoiOutcomeSignalInput {
   createdAt?: number;
 }
 
+// P5.2: turn a REAL executed approved-command result into an outcome-signal input so
+// the unified ledger -- and thus the closed-loop promotion metric -- sees actual
+// executed outcomes, not just counterfactual shadow decisions. A server-side approved
+// command IS a validation that really ran, so it maps to the existing 'validation_run'
+// kind (already an EXECUTION_OUTCOME_KIND in aoiClosedLoopMetrics); normalize derives
+// the pass/fail result from validationPassed. Both source ids are set so the metric can
+// attribute the outcome to its capability by decision OR proposal. The eventId is keyed
+// on the command audit so replaying the same execution never double-writes.
+export function deriveAoiExecutedCommandOutcomeSignal(params: {
+  sessionPath: string;
+  proposalId: string;
+  decisionId: string;
+  commandAuditId: string;
+  commandOk: boolean;
+}): Partial<AoiOutcomeSignalRecord> & Partial<AoiOutcomeSignalInput> {
+  return {
+    eventId: `executed-command:${params.commandAuditId}`,
+    sessionPath: params.sessionPath,
+    outcomeKind: 'validation_run',
+    signalKind: 'passive_outcome',
+    sourceProposalId: params.proposalId,
+    sourceDecisionId: params.decisionId,
+    // The command audit is the provenance trail; sourceValidationRef links it without
+    // needing a (readonly-typed) evidenceRefs array on this input.
+    sourceValidationRef: `aoi-command-audit:${params.commandAuditId}`,
+    validationPassed: params.commandOk,
+  };
+}
+
 type RawOutcomeSignalInput = Partial<AoiOutcomeSignalInput> & Partial<AoiOutcomeSignalRecord>;
 
 interface OutcomePolicy {

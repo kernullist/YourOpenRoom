@@ -34,6 +34,7 @@ import {
   loadAoiCommandAuditRecords,
   loadAoiActiveProposals,
   loadAoiObservations,
+  loadAoiOutcomeSignalRecords,
   loadAoiProposalDecisions,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
@@ -1532,6 +1533,19 @@ describe('executeAoiProposal()', () => {
     expect(
       relations.nodes.some((node) => node.ref === 'aoi-command-audit:aoi-command-audit-test-001'),
     ).toBe(true);
+    // P5.2: the real executed command left an outcome signal in the unified ledger,
+    // attributed to its proposal (and the execution decision), so the closed-loop
+    // promotion metric sees the actual executed result -- not just the counterfactual
+    // shadow.
+    const executedOutcome = loadAoiOutcomeSignalRecords(root, 'aoi/default').find(
+      (signal) => signal.sourceProposalId === 'proposal-test-001',
+    );
+    expect(executedOutcome?.outcomeKind).toBe('validation_run');
+    expect(executedOutcome?.result).toBe('positive');
+    expect(executedOutcome?.sourceDecisionId).toBeTruthy();
+    expect(executedOutcome?.sourceValidationRef).toBe(
+      'aoi-command-audit:aoi-command-audit-test-001',
+    );
   });
 
   it('blocks expired approved command acceptance before runner execution', async () => {

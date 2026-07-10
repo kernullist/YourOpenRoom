@@ -15,7 +15,9 @@ import {
   loadAoiAutonomyPolicy,
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
+  appendAoiOutcomeSignalRecord,
 } from './aoiAutonomyStore';
+import { deriveAoiExecutedCommandOutcomeSignal } from './aoiOutcomeLearning';
 import { ingestAoiObservation } from './aoiAutonomyObserver';
 import {
   readAoiResearchRunArtifact,
@@ -1515,6 +1517,25 @@ export async function executeAoiProposal(params: {
         },
         now,
       });
+      // P5.2: also record the REAL executed-command result in the unified outcome
+      // ledger so the closed-loop promotion metric sees actual executed outcomes, not
+      // just counterfactual shadow. Best-effort -- a ledger write never blocks or fails
+      // a real execution.
+      try {
+        appendAoiOutcomeSignalRecord(
+          params.sessionsDir,
+          deriveAoiExecutedCommandOutcomeSignal({
+            sessionPath,
+            proposalId: proposal.id,
+            decisionId: transition.decision.id,
+            commandAuditId: audit.id,
+            commandOk: commandResult.ok,
+          }),
+          now,
+        );
+      } catch {
+        // best-effort: real executed-outcome capture never blocks execution.
+      }
       recordServerAoiRunLedgerEvent({
         sessionsDir: params.sessionsDir,
         sessionPath,
