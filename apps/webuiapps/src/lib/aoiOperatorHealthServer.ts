@@ -11,7 +11,9 @@ import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
 import {
   evaluateAoiOperatorHealth,
   type AoiOperatorHealthConfigSnapshot,
+  type AoiOperatorHealthReplayScenario,
 } from './aoiOperatorHealth';
+import { runBuiltInAoiOperatorReplayFixtures, type AoiReplayReport } from './aoiOperatorReplay';
 import {
   loadAoiInterestProfile,
   loadAoiProactiveBriefCalibrationLabels,
@@ -112,6 +114,10 @@ export function buildAoiOperatorHealthState(params: {
   sessionPath: string;
   configFile: string;
   now?: number;
+  // P5.3: live replay scenarios so replay-backed health blockers can actually fire. When
+  // omitted the health state is replay-agnostic (backward compatible); callers that want
+  // the dark replay model live pass buildAoiOperatorHealthReplayScenarios().
+  replayScenarios?: AoiOperatorHealthReplayScenario[];
 }): AoiOperatorHealthState {
   const now = params.now ?? Date.now();
   const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath);
@@ -282,6 +288,27 @@ export function buildAoiOperatorHealthState(params: {
     commandAudits,
     config,
     proactiveBriefDiagnostics,
+    ...(params.replayScenarios ? { replayScenarios: params.replayScenarios } : {}),
     now,
   });
+}
+
+// P5.3: map a replay report (from the previously-dark aoiOperatorReplay model) into the
+// health state's replay-scenario shape. A non-passing fixture becomes a failed scenario,
+// which the health evaluator raises as a replay_scenario_failed blocker.
+export function toAoiOperatorHealthReplayScenario(
+  report: AoiReplayReport,
+): AoiOperatorHealthReplayScenario {
+  return {
+    fixtureId: report.fixtureId,
+    failed: !report.passed,
+    summary: report.summary,
+    evidenceRefs: [`replay:${report.fixtureId}`],
+  };
+}
+
+// Run the built-in operator replay fixtures and adapt them for the health state, so the
+// served operator health reflects real replay results rather than nothing.
+export function buildAoiOperatorHealthReplayScenarios(): AoiOperatorHealthReplayScenario[] {
+  return runBuiltInAoiOperatorReplayFixtures().map(toAoiOperatorHealthReplayScenario);
 }

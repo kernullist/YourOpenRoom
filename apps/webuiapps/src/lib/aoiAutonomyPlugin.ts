@@ -136,7 +136,10 @@ import {
   recordAoiDirectChatOffer,
   saveAoiDirectChatBudgetState,
 } from './aoiDirectChatBudget';
-import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
+import {
+  buildAoiOperatorHealthReplayScenarios,
+  buildAoiOperatorHealthState,
+} from './aoiOperatorHealthServer';
 import {
   findAoiPlaybook,
   loadAoiActivePlaybooks,
@@ -945,6 +948,9 @@ export async function handleAoiAutonomyRequest(
           sessionsDir,
           sessionPath,
           configFile,
+          // P5.3: feed the built-in operator replay fixtures so replay-backed health
+          // blockers actually fire (the model was previously dark).
+          replayScenarios: buildAoiOperatorHealthReplayScenarios(),
         }),
       });
       return true;
