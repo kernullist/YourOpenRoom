@@ -2575,6 +2575,33 @@ export function loadAoiOperatorFeedbackLabelActions(
   );
 }
 
+// Operator feedback labels that mean "Aoi was actually WRONG" -- a correction the
+// closed-loop metrics + trust calibration should learn from (vs noise/interruption
+// labels like too_much/wrong_timing, which are handled separately).
+const AOI_CORRECTION_FEEDBACK_LABELS: ReadonlySet<string> = new Set(['wrong_source', 'unsafe']);
+
+// P1.1: derive a `user_correction` outcome-signal input from a correction feedback
+// label, or null when the label is not a user-authored correction. Pure. The
+// outcome links via sourceDecisionId (best-effort: attributes to a proposal
+// decision when the id matches; otherwise it is an unlinked negative signal that
+// may only LOWER trust -- never raise it).
+export function deriveAoiUserCorrectionOutcome(
+  action: AoiOperatorFeedbackLabelAction,
+): Partial<AoiOutcomeSignalRecord> | null {
+  if (action.actor !== 'user' || !AOI_CORRECTION_FEEDBACK_LABELS.has(action.label)) {
+    return null;
+  }
+  return {
+    eventId: `user-correction:${action.id}`,
+    sessionPath: action.sessionPath,
+    outcomeKind: 'user_correction',
+    result: 'negative',
+    sourceDecisionId: action.decisionId,
+    explicitLabel: action.label,
+    evidenceRefs: action.evidenceRefs,
+  };
+}
+
 export function recordAoiOperatorFeedbackLabelAction(
   sessionsDir: string,
   input: AoiOperatorFeedbackLabelInput,
@@ -2593,6 +2620,14 @@ export function recordAoiOperatorFeedbackLabelAction(
     normalizedSessionPath,
   );
   writeJsonAtomic(paths.fieldShadowFeedbackLabels, [...existing, action]);
+  // P1.1: a correction label is an organic user_correction outcome -- emit it into
+  // the unified outcome-signal ledger so the outcome -> trust calibration learns
+  // from it. Best-effort; non-correction labels ('useful', ...) emit nothing (so
+  // existing callers are byte-identical).
+  const correction = deriveAoiUserCorrectionOutcome(action);
+  if (correction) {
+    appendAoiOutcomeSignalRecord(sessionsDir, correction, action.createdAt);
+  }
   return action;
 }
 

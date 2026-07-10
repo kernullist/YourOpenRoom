@@ -907,3 +907,43 @@ describe('Aoi operator timeline storage and trace export', () => {
     expect(summary.lastExportRedactionCount).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe('recordAoiOperatorFeedbackLabelAction user_correction emission (P1.1)', () => {
+  const SESSION = 'aoi/default';
+
+  function recordLabel(root: string, label: string, actor?: 'user' | 'system'): void {
+    recordAoiOperatorFeedbackLabelAction(root, {
+      sessionPath: SESSION,
+      decisionRecordId: 'rec-uc-1',
+      decisionId: 'dec-uc-1',
+      label: label as never,
+      sourceKinds: ['workspace_build'],
+      evidenceRefs: ['workspace:validation'],
+      ...(actor ? { actor } : {}),
+      now: 1000,
+    });
+  }
+
+  it('emits a user_correction outcome for a correction label (wrong_source / unsafe)', () => {
+    const root = makeTempRoot();
+    recordLabel(root, 'unsafe');
+
+    const outcomes = loadAoiOutcomeSignalRecords(root, SESSION, 2000);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0].outcomeKind).toBe('user_correction');
+    expect(outcomes[0].sourceDecisionId).toBe('dec-uc-1');
+    expect(outcomes[0].explicitLabel).toBe('unsafe');
+  });
+
+  it('emits nothing for a non-correction label', () => {
+    const root = makeTempRoot();
+    recordLabel(root, 'useful');
+    expect(loadAoiOutcomeSignalRecords(root, SESSION, 2000)).toHaveLength(0);
+  });
+
+  it('emits nothing for a system-authored correction label (user-authored only)', () => {
+    const root = makeTempRoot();
+    recordLabel(root, 'unsafe', 'system');
+    expect(loadAoiOutcomeSignalRecords(root, SESSION, 2000)).toHaveLength(0);
+  });
+});
