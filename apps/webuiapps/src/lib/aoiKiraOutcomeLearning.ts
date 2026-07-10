@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { join } from 'path';
 import { createAoiObservation } from './aoiAutonomyObserver';
-import { createAoiAutonomyId } from './aoiAutonomyStore';
+import { appendAoiOutcomeSignalRecord, createAoiAutonomyId } from './aoiAutonomyStore';
 import type { AoiFailureClassificationInput } from './aoiAutonomyRecovery';
 import type { AoiRelationIndex } from './aoiAutonomyRelations';
 import { saveServerAoiMemoryCandidates } from './aoiMemoryServerWriter';
@@ -13,10 +13,13 @@ import {
   type AoiMemoryCandidate,
 } from './aoiMemoryShared';
 import type {
+  AoiFollowThroughResult,
   AoiGoal,
   AoiKiraOutcomeEvent,
   AoiKiraOutcomeKind,
   AoiObservation,
+  AoiOutcomeSignalKind,
+  AoiOutcomeSignalRecord,
   AoiProposal,
 } from './aoiAutonomyTypes';
 
@@ -884,6 +887,67 @@ function outcomeFailureInput(outcome: AoiKiraOutcomeEvent): AoiFailureClassifica
   };
 }
 
+// P1.3: converge Kira outcome events into the unified outcome-signal ledger.
+// Each LINKED (sourceProposalId-bearing) EXECUTION outcome maps to an
+// AoiOutcomeSignalRecord input so the closed-loop capability metrics and the
+// outcome -> trust calibration learn from real Kira execution results (the two
+// outcome systems -- AoiKiraOutcomeEvent and AoiOutcomeSignalRecord -- were
+// previously disjoint). SAFETY: only LINKED outcomes are emitted (unlinked ones
+// are not attributable to a capability, per the governance constraint), and the
+// non-execution 'kira_needs_clarification' kind is intentionally skipped. Pure.
+const KIRA_OUTCOME_SIGNAL_MAP: Partial<
+  Record<AoiKiraOutcomeKind, { outcomeKind: AoiOutcomeSignalKind; result: AoiFollowThroughResult }>
+> = {
+  kira_integrated: { outcomeKind: 'commit_created', result: 'positive' },
+  kira_work_completed: { outcomeKind: 'work_order_approved', result: 'positive' },
+  kira_validation_failed: { outcomeKind: 'validation_run', result: 'failed' },
+  kira_review_rejected: { outcomeKind: 'work_order_rejected', result: 'negative' },
+  kira_work_blocked: { outcomeKind: 'work_order_rejected', result: 'blocked' },
+  // kira_needs_clarification: omitted on purpose (a question, not an execution outcome).
+};
+
+export function deriveAoiOutcomeSignalsFromKiraOutcomes(
+  events: readonly AoiKiraOutcomeEvent[],
+): Array<Partial<AoiOutcomeSignalRecord>> {
+  const signals: Array<Partial<AoiOutcomeSignalRecord>> = [];
+  for (const event of events) {
+    if (!event.sourceProposalId) {
+      continue; // unlinked -> not attributable to a capability; skip.
+    }
+    const mapping = KIRA_OUTCOME_SIGNAL_MAP[event.kind];
+    if (!mapping) {
+      continue;
+    }
+    signals.push({
+      // Stable, per-outcome id so re-running a tick over the SAME outcome (which the
+      // runner de-dupes into duplicateOutcomes anyway) never double-writes.
+      eventId: `kira-outcome:${event.id}`,
+      sessionPath: event.sessionPath,
+      outcomeKind: mapping.outcomeKind,
+      result: mapping.result,
+      sourceProposalId: event.sourceProposalId,
+      evidenceRefs: event.evidenceRefs,
+    });
+  }
+  return signals;
+}
+
+// Persist the derived outcome signals to the unified ledger. Best-effort: a bad
+// record is skipped by normalize (append throws only on an invalid sessionPath,
+// which linked Kira events always carry). Returns the count actually written.
+export function persistAoiKiraOutcomeSignals(
+  sessionsDir: string,
+  events: readonly AoiKiraOutcomeEvent[],
+  now: number,
+): number {
+  let written = 0;
+  for (const signal of deriveAoiOutcomeSignalsFromKiraOutcomes(events)) {
+    appendAoiOutcomeSignalRecord(sessionsDir, signal, now);
+    written += 1;
+  }
+  return written;
+}
+
 export function runAoiKiraOutcomeLearning(
   input: AoiKiraOutcomeLearningInput,
 ): AoiKiraOutcomeLearningResult {
@@ -922,6 +986,11 @@ export function runAoiKiraOutcomeLearning(
       failureInputs.push(failure);
     }
   }
+
+  // P1.3: mirror the fresh linked execution outcomes into the unified outcome-signal
+  // ledger (the runner already does store I/O -- saveOutcomeMemory above). Only fresh
+  // (de-duped) outcomes reach here, so an outcome is emitted at most once.
+  persistAoiKiraOutcomeSignals(input.sessionsDir, freshOutcomes, input.now);
 
   return {
     outcomes,
