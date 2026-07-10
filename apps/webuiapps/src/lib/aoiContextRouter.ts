@@ -952,6 +952,71 @@ function buildKiraCandidates(params: {
   });
 }
 
+// Surface durable chat / preference / fact memories (the user's remembered facts
+// and tastes) as low-priority context candidates so daemon-side cognition can
+// recall them. Previously ONLY kira-tagged memories reached the router
+// (buildKiraCandidates), leaving chat/preference/fact memory invisible to the loop
+// even though it was loaded (P4.2). kira + automation memories keep their dedicated
+// builder and are excluded here to avoid double-surfacing.
+export function buildDurableMemoryCandidates(params: {
+  memories: AoiMemoryEntry[];
+  latestUserMessage: string;
+  registry: AoiEnvironmentSourceRegistry;
+  mission: AoiMissionState | null;
+  now: number;
+  queryEmbedding?: number[] | null;
+  queryEmbeddingModel?: string | null;
+}): AoiContextSourceSummary[] {
+  const sourceId = SOURCE_ID_BY_KIND.manual_note;
+  if (!sourceAllowed(params.registry, sourceId)) {
+    return [];
+  }
+  const message = params.latestUserMessage;
+  const durable = params.memories.filter((memory) => {
+    const tags = new Set(memory.tags.map((tag) => tag.toLowerCase()));
+    // active-only (superseded/archived stay out -- the load-bearing recall filter);
+    // exclude kira/automation (their own builder handles them).
+    return memory.status === 'active' && !tags.has('kira') && !tags.has('automation');
+  });
+  // Same fused lexical+semantic ranking + cap as the kira path: with no query
+  // embedding this is a stable lexical top-K.
+  const ranked = selectRelevantAoiMemoriesByEmbedding(durable, message, {
+    queryEmbedding: params.queryEmbedding,
+    queryEmbeddingModel: params.queryEmbeddingModel ?? null,
+    limit: 10,
+  });
+  const missionEvidence = missionRefs(params.mission);
+  return ranked.map((memory) => {
+    const overlap = scoreAoiMemoryRelevance({
+      query: message,
+      content: `${memory.content} ${memory.entities.join(' ')}`,
+      embedding: memory.embedding,
+      embeddingModel: memory.embeddingModel,
+      queryEmbedding: params.queryEmbedding,
+      queryEmbeddingModel: params.queryEmbeddingModel ?? null,
+    });
+    const linkedToMission = missionEvidence.some((ref) => memory.content.includes(ref));
+    const freshness = getFreshness(memory.updatedAt, params.now);
+    const score = 0.2 + overlap * 0.4 + (linkedToMission ? 0.16 : 0) + scoreFreshness(freshness);
+    return makeSummary({
+      sourceId,
+      kind: 'manual_note',
+      label: 'Aoi durable memory',
+      displayName: 'Memory',
+      summary: memory.content,
+      evidenceRefs: [`memory:${memory.id}`],
+      relevanceScore: score,
+      confidence: clamp(memory.confidence, 0, 0.9),
+      freshness,
+      scoreReasons: dedupeStrings([
+        overlap > 0 ? 'message overlaps a durable memory' : undefined,
+        linkedToMission ? 'linked to active mission' : undefined,
+      ]),
+      updatedAt: memory.updatedAt,
+    });
+  });
+}
+
 function buildBrowserCandidates(params: {
   browserContexts: AoiBrowserContextMetadata[];
   latestUserMessage: string;
@@ -1257,6 +1322,15 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
     ...buildAppCandidates({ latestUserMessage, registry, mission, now }),
     ...buildResearchCandidates({ runs, latestUserMessage, registry, mission, now }),
     ...buildKiraCandidates({
+      memories,
+      latestUserMessage,
+      registry,
+      mission,
+      now,
+      queryEmbedding: params.queryEmbedding ?? null,
+      queryEmbeddingModel: params.queryEmbeddingModel ?? null,
+    }),
+    ...buildDurableMemoryCandidates({
       memories,
       latestUserMessage,
       registry,
