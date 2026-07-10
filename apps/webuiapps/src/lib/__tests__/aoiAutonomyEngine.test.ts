@@ -796,6 +796,40 @@ describe('runAoiAutonomyTick()', () => {
     expect(ledger?.tokensSpent ?? 0).toBeGreaterThan(0);
   });
 
+  it('lets the LLM author a structured brief (threads + outcomes); counts stay deterministic (P3.3)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(root, makeManifest());
+
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(
+        JSON.stringify({
+          focusSummary: 'Harden the kernel telemetry path',
+          openThreads: ['Reproduce the ETW telemetry gap', 'Add a kernel callback probe'],
+          blockedThreads: ['Awaiting L5 approval for the risky delete'],
+          recentOutcomes: ['Build green on the driver branch'],
+        }),
+      ),
+      now: NOW,
+    });
+
+    expect(result.strategicBrief?.synthesizedBy).toBe('llm');
+    expect(result.strategicBrief?.focusSummary).toBe('Harden the kernel telemetry path');
+    // P3.3: the LLM now authors the narrative framing, not just the focus line.
+    expect(result.strategicBrief?.openThreads).toContain('Reproduce the ETW telemetry gap');
+    expect(result.strategicBrief?.blockedThreads).toContain(
+      'Awaiting L5 approval for the risky delete',
+    );
+    expect(result.strategicBrief?.recentOutcomes).toContain('Build green on the driver branch');
+    // Factual fields stay deterministic even when the LLM authors the narrative.
+    expect(result.strategicBrief?.acceptedCount).toBe(1);
+  });
+
   it('falls back to the deterministic brief when the token budget is exhausted (P1a c2)', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

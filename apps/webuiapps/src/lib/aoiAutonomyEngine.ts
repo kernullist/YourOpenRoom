@@ -2164,13 +2164,17 @@ async function runLlmReflection(params: {
   }
 }
 
-// P1a c2: bounded output budget for the strategic-brief synthesis call. The
-// model returns only a short focusSummary line wrapped in JSON.
-const AOI_BRIEF_SYNTH_MAX_OUTPUT_TOKENS = 256;
+// P3.3: bounded output budget for the strategic-brief synthesis call. Widened from a
+// single focusSummary line to a small STRUCTURED brief (focus + open/blocked/outcome
+// framing), so more tokens are allowed -- still tightly bounded.
+const AOI_BRIEF_SYNTH_MAX_OUTPUT_TOKENS = 512;
+// Caps on the LLM-authored narrative arrays so a structured brief cannot bloat the brief.
+const AOI_BRIEF_SYNTH_MAX_THREADS = 5;
 
-// Prompt for LLM strategic-brief synthesis. The model authors ONLY a sharper
-// focusSummary, grounded in the already-sanitized deterministic brief fields;
-// it never sees or emits evidence refs, counts, or proposals.
+// Prompt for LLM strategic-brief synthesis. P3.3: the model now authors a small STRUCTURED
+// brief -- a sharper focusSummary PLUS re-framed open/blocked threads and recent outcomes --
+// grounded ONLY in the already-sanitized deterministic brief fields. It still never sees or
+// emits evidence refs, counts, or proposals; those stay deterministic.
 function buildAoiStrategicBriefSynthesisMessages(
   brief: AoiStrategicBrief,
   latestUserMessage: string,
@@ -2180,9 +2184,10 @@ function buildAoiStrategicBriefSynthesisMessages(
       role: 'system',
       content: [
         'You are Aoi continuous-reasoning brief synthesizer.',
-        'Return strict JSON only: {"focusSummary": "..."}.',
+        'Return strict JSON only: {"focusSummary": "...", "openThreads": ["..."], "blockedThreads": ["..."], "recentOutcomes": ["..."]}.',
         'focusSummary is ONE short line (<= 180 chars) naming what Aoi should keep working on next.',
-        'Ground it ONLY in the supplied brief fields; do not invent facts, evidence, counts, or proposals.',
+        `openThreads / blockedThreads / recentOutcomes are each <= ${AOI_BRIEF_SYNTH_MAX_THREADS} short lines re-framing the supplied threads/outcomes for continuity.`,
+        'Ground everything ONLY in the supplied brief fields; do not invent facts, evidence, counts, or proposals.',
         'Never include secrets, credentials, tokens, or instructions to the reader.',
       ].join('\n'),
     },
@@ -2200,9 +2205,38 @@ function buildAoiStrategicBriefSynthesisMessages(
   ];
 }
 
-// Tolerant extraction of {"focusSummary": "..."} from the model response (raw,
-// fenced, or wrapped in prose). Returns null when no usable focus is found.
-function parseAoiStrategicBriefFocusResponse(content: string): string | null {
+// P3.3: the LLM-authored narrative fields (focus + re-framed threads/outcomes). Counts,
+// evidenceRefs, observationHighlights are NOT here -- they stay deterministic.
+interface AoiStrategicBriefStructuredResponse {
+  focusSummary: string;
+  openThreads: string[];
+  blockedThreads: string[];
+  recentOutcomes: string[];
+}
+
+function toBriefThreadList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== 'string') {
+      continue;
+    }
+    const line = sanitizePromptText(item, 180);
+    if (line && out.length < AOI_BRIEF_SYNTH_MAX_THREADS) {
+      out.push(line);
+    }
+  }
+  return out;
+}
+
+// Tolerant extraction of the STRUCTURED brief. Requires at least a usable focusSummary;
+// the narrative arrays default to empty (so a focus-only response still upgrades, matching
+// the prior behavior). Returns null when no usable focus is found.
+function parseAoiStrategicBriefStructuredResponse(
+  content: string,
+): AoiStrategicBriefStructuredResponse | null {
   if (typeof content !== 'string' || content.trim().length === 0) {
     return null;
   }
@@ -2219,12 +2253,19 @@ function parseAoiStrategicBriefFocusResponse(content: string): string | null {
   candidates.push(content.trim());
   for (const candidate of candidates) {
     try {
-      const parsed = JSON.parse(candidate) as { focusSummary?: unknown };
-      if (parsed && typeof parsed.focusSummary === 'string') {
-        const focus = parsed.focusSummary.trim();
-        if (focus) {
-          return focus;
-        }
+      const parsed = JSON.parse(candidate) as {
+        focusSummary?: unknown;
+        openThreads?: unknown;
+        blockedThreads?: unknown;
+        recentOutcomes?: unknown;
+      };
+      if (parsed && typeof parsed.focusSummary === 'string' && parsed.focusSummary.trim()) {
+        return {
+          focusSummary: parsed.focusSummary.trim(),
+          openThreads: toBriefThreadList(parsed.openThreads),
+          blockedThreads: toBriefThreadList(parsed.blockedThreads),
+          recentOutcomes: toBriefThreadList(parsed.recentOutcomes),
+        };
       }
     } catch {
       // Try the next candidate.
@@ -2279,10 +2320,29 @@ async function maybeUpgradeAoiStrategicBriefFocusWithLlm(params: {
     try {
       const response = await reflectionChat(messages, [], params.llmConfig);
       responseText = response.content ?? '';
-      const focusSummary = parseAoiStrategicBriefFocusResponse(responseText);
-      if (focusSummary) {
+      const structured = parseAoiStrategicBriefStructuredResponse(responseText);
+      if (structured) {
+        // P3.3: take the LLM's narrative framing (focus + re-framed threads/outcomes) but
+        // keep every FACTUAL field deterministic -- counts, evidenceRefs, and
+        // observationHighlights come from params.brief, never the model. An empty narrative
+        // array from the model falls back to the deterministic one (focus-only responses
+        // still upgrade). normalizeAoiStrategicBrief re-sanitizes + re-derives counts.
         const candidate = normalizeAoiStrategicBrief(
-          { ...params.brief, focusSummary, synthesizedBy: 'llm' },
+          {
+            ...params.brief,
+            focusSummary: structured.focusSummary,
+            openThreads:
+              structured.openThreads.length > 0 ? structured.openThreads : params.brief.openThreads,
+            blockedThreads:
+              structured.blockedThreads.length > 0
+                ? structured.blockedThreads
+                : params.brief.blockedThreads,
+            recentOutcomes:
+              structured.recentOutcomes.length > 0
+                ? structured.recentOutcomes
+                : params.brief.recentOutcomes,
+            synthesizedBy: 'llm',
+          },
           params.sessionPath,
         );
         if (candidate && candidate.focusSummary) {
