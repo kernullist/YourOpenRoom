@@ -1,7 +1,9 @@
+import { spawn } from 'child_process';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'http';
 import { homedir } from 'os';
 import { resolve } from 'path';
 import { fileURLToPath } from 'url';
+import { superviseAoiDaemon } from './aoiDaemonSupervisor';
 import {
   createAoiAutonomyMiddleware,
   startAoiAutonomyBackgroundFromEnv,
@@ -359,9 +361,58 @@ function isMainEntry(): boolean {
   }
 }
 
-if (isMainEntry()) {
-  void runAoiDaemonMain().catch((error) => {
-    logError('failed to start', error);
-    process.exit(1);
+// Supervisor entry (P0.1): `node aoiDaemonServer.js --supervise` keeps a child
+// daemon (this same bundle, run without --supervise) alive across crashes with
+// restart-on-exit + backoff + crash-loop give-up. The restart brain lives in
+// aoiDaemonSupervisor (fully unit-tested); this is the thin real-process adapter
+// (spawn / signal wiring), the same untested-entry-glue class as runAoiDaemonMain.
+function runAoiDaemonSupervisorMain(): void {
+  const selfPath = fileURLToPath(import.meta.url);
+  logInfo('supervisor: keeping the Aoi daemon alive (restart-on-crash + crash-loop guard).');
+  const handle = superviseAoiDaemon({
+    spawnChild: () => {
+      const child = spawn(process.execPath, [selfPath], { stdio: 'inherit', env: process.env });
+      return {
+        onExit: (listener) => {
+          child.on('exit', (code) => listener(code));
+        },
+        kill: () => {
+          child.kill();
+        },
+      };
+    },
+    onEvent: (event) => {
+      if (event.type === 'gave_up') {
+        logError(
+          'supervisor: the daemon is crash-looping; giving up',
+          `${event.recentCrashes} crashes inside the window`,
+        );
+        process.exit(1);
+      } else if (event.type === 'crashed') {
+        logInfo(
+          `supervisor: daemon exited (code ${event.code}); restart #${event.recentCrashes} in ${event.restartInMs}ms`,
+        );
+      } else {
+        logInfo(`supervisor: ${event.type}`);
+      }
+    },
   });
+  const stop = (signal: string): void => {
+    logInfo(`supervisor received ${signal}, stopping the daemon.`);
+    handle.stop();
+    process.exit(0);
+  };
+  process.on('SIGINT', () => stop('SIGINT'));
+  process.on('SIGTERM', () => stop('SIGTERM'));
+}
+
+if (isMainEntry()) {
+  if (process.argv.includes('--supervise')) {
+    runAoiDaemonSupervisorMain();
+  } else {
+    void runAoiDaemonMain().catch((error) => {
+      logError('failed to start', error);
+      process.exit(1);
+    });
+  }
 }
