@@ -12,6 +12,12 @@ import {
 import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundRunner';
 import type { AoiMemoryEmbedSweepHandle } from './aoiMemoryEmbedSweep';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
+import {
+  createAoiDaemonHealthHooks,
+  createAoiDaemonHealthTracker,
+  type AoiDaemonHealthSnapshot,
+  type AoiDaemonHealthTracker,
+} from './aoiDaemonHealth';
 
 // Standalone headless autonomy daemon.
 //
@@ -23,14 +29,21 @@ import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessi
 // implementation and one on-disk session store.
 //
 // Safety posture (unchanged from the plugin):
-//   - The background loop stays OFF unless AOI_AUTONOMY_BACKGROUND is opted in;
-//     running the daemon with the flag unset only serves the inspection routes.
+//   - The daemon is a dedicated autonomy host, so it starts the background loop
+//     by DEFAULT (defaultStart) -- AOI_AUTONOMY_BACKGROUND=0 is the hard-off
+//     ceiling. The loop merely ticks; per-session policy.enabled (default false)
+//     is the actual on/off, so a fresh daemon idles safely (every session
+//     skipped) until the operator enables one from the settings UI. (An earlier
+//     version of this comment claimed the loop was OFF-by-default; that describes
+//     the Vite plugin, not the daemon -- see startAoiAutonomyBackgroundFromEnv.)
 //   - Every execution gate (L5 + content-addressed approval for irreversible
 //     effects, SSRF / DNS-rebind guards, and the structural no-self-promotion
 //     barrier) lives in the reused modules and is not relaxed here.
 //   - Loopback-only bind by default: the control surface includes side-effecting
 //     routes (proposal/execute, policy), so it must never reach a public
 //     interface without a deliberate opt-in plus an authenticating proxy.
+//   - GET /healthz is an unauthenticated, metadata-only readiness probe (uptime,
+//     loop-running, per-cycle counts, error total) with no session content.
 
 const DEFAULT_DAEMON_HOST = '127.0.0.1';
 const DEFAULT_DAEMON_PORT = 7333;
@@ -65,6 +78,23 @@ function writeNotFound(res: ServerResponse): void {
   res.end(JSON.stringify({ error: 'Not found.', code: 'route_not_found' }));
 }
 
+function writeHealth(res: ServerResponse, snapshot: AoiDaemonHealthSnapshot): void {
+  res.writeHead(200, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Cache-Control': 'no-store',
+  });
+  res.end(JSON.stringify(snapshot));
+}
+
+// GET /healthz (and the trailing-query form) -- a metadata-only readiness probe.
+function isHealthzRequest(req: IncomingMessage): boolean {
+  if ((req.method ?? 'GET') !== 'GET') {
+    return false;
+  }
+  const url = req.url ?? '';
+  return url === '/healthz' || url.startsWith('/healthz?');
+}
+
 // Boot a headless autonomy server: serves /api/aoi-autonomy/* and (when opted
 // in via env) runs the background loop. Does NOT install signal handlers or
 // read process.argv -- that is the entrypoint's job (runAoiDaemonMain), which
@@ -87,7 +117,22 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   const sessionDataMiddleware: SessionDataMiddleware = createSessionDataMiddleware({
     sessionsDir: pluginOptions.sessionsDir,
   });
+
+  // Observability: the health tracker reads loop-running via a thunk so it can be
+  // created here (before the post-listen loop start) without a boot-ordering dance.
+  const bootAt = Date.now();
+  let backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null = null;
+  const health: AoiDaemonHealthTracker = createAoiDaemonHealthTracker({
+    startedAt: bootAt,
+    loopRunning: () => backgroundHandle !== null,
+  });
+
   const server = createServer((req: IncomingMessage, res: ServerResponse) => {
+    // Cheap, session-less readiness probe answered before any autonomy routing.
+    if (isHealthzRequest(req)) {
+      writeHealth(res, health.snapshot(Date.now()));
+      return;
+    }
     // Native http has no next(); chain the shared middlewares (autonomy first,
     // then session-data) and turn anything neither owns into a 404.
     autonomyMiddleware(req, res, () => {
@@ -116,8 +161,17 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   // the operator turns Aoi on/off from the settings UI (per-session policy.enabled,
   // default false -> a safe idle no-op) without touching env. Null only when
   // AOI_AUTONOMY_BACKGROUND is explicitly off (hard ceiling).
-  const backgroundHandle: AoiAutonomyBackgroundRunnerHandle | null =
-    startAoiAutonomyBackgroundFromEnv(pluginOptions, env, { defaultStart: true });
+  const healthHooks = createAoiDaemonHealthHooks({
+    tracker: health,
+    now: Date.now,
+    logCycle: logInfo,
+    logError: (error) => logError('background cycle failed', error),
+  });
+  backgroundHandle = startAoiAutonomyBackgroundFromEnv(pluginOptions, env, {
+    defaultStart: true,
+    onCycle: healthHooks.onCycle,
+    onError: healthHooks.onError,
+  });
   // Loop-independent memory embed sweep (OFF unless AOI_AUTONOMY_EMBED_SWEEP is
   // opted in). Started AFTER the loop so an enabled loop holds the single-instance
   // lock and the sweep no-ops; the sweep only embeds when the loop is off. Its

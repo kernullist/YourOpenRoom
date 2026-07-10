@@ -7,6 +7,7 @@ import { normalizeAoiCardLang } from './aoiAutonomyCardI18n';
 import {
   resolveAoiAutonomyBackgroundConfigFromEnv,
   startAoiAutonomyBackgroundRunner,
+  type AoiAutonomyBackgroundCycleResult,
   type AoiAutonomyBackgroundRunnerHandle,
 } from './aoiAutonomyBackgroundRunner';
 import { acquireAoiAutonomyLoopLock } from './aoiAutonomyLoopLock';
@@ -2607,7 +2608,17 @@ export function createAoiAutonomyMiddleware(
 export function startAoiAutonomyBackgroundFromEnv(
   options: AoiAutonomyPluginOptions,
   env: Record<string, string | undefined> = process.env,
-  { defaultStart = false }: { defaultStart?: boolean } = {},
+  {
+    defaultStart = false,
+    onCycle,
+    onError,
+  }: {
+    defaultStart?: boolean;
+    // Observability hooks (used by the daemon health tracker). Optional so the
+    // Vite plugin path is unchanged.
+    onCycle?: (result: AoiAutonomyBackgroundCycleResult) => void;
+    onError?: (error: unknown) => void;
+  } = {},
 ): AoiAutonomyBackgroundRunnerHandle | null {
   const backgroundConfig = resolveAoiAutonomyBackgroundConfigFromEnv(env);
   // defaultStart hosts (the standalone daemon) run the loop unless AOI_AUTONOMY_BACKGROUND
@@ -2650,6 +2661,8 @@ export function startAoiAutonomyBackgroundFromEnv(
     // Resolve the user's main model from the config file so the background
     // loop can drive LLM reasoning (only used when allowNetwork is on).
     loadLlmConfig: () => loadAoiMainLlmConfig(configFile),
+    ...(onCycle ? { onCycle } : {}),
+    ...(onError ? { onError } : {}),
   });
   // Release the lock when the loop stops so a clean shutdown frees the dir for
   // the next process (a crash leaves a stale lock that the next acquire reclaims).

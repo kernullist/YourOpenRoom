@@ -109,6 +109,54 @@ describe('startAoiDaemon', () => {
   });
 });
 
+describe('daemon health endpoint (GET /healthz)', () => {
+  it('serves a metadata-only readiness snapshot with the loop running by default', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get('cache-control')).toBe('no-store');
+    const body = (await res.json()) as {
+      status?: string;
+      loopRunning?: boolean;
+      cognitionActive?: boolean;
+      cyclesCompleted?: number;
+      lastCycle?: unknown;
+      uptimeMs?: number;
+      errorsTotal?: number;
+    };
+    expect(body.status).toBe('ok');
+    expect(body.loopRunning).toBe(true);
+    // No cycle fires within the test window (5-min interval, not run-immediately),
+    // so cognition is not yet active and no cycle summary exists.
+    expect(body.cognitionActive).toBe(false);
+    expect(body.cyclesCompleted).toBe(0);
+    expect(body.lastCycle).toBeNull();
+    expect(typeof body.uptimeMs).toBe('number');
+    expect(body.uptimeMs).toBeGreaterThanOrEqual(0);
+    expect(body.errorsTotal).toBe(0);
+  });
+
+  it('reports loopRunning=false when the loop is hard-disabled', async () => {
+    const handle = await bootTestDaemon({ AOI_AUTONOMY_BACKGROUND: '0' });
+    const res = await fetch(`http://127.0.0.1:${handle.port}/healthz?probe=1`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { loopRunning?: boolean; cognitionActive?: boolean };
+    expect(body.loopRunning).toBe(false);
+    expect(body.cognitionActive).toBe(false);
+  });
+
+  it('does not treat a non-GET /healthz or a look-alike path as the probe', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    // POST /healthz is not the probe -> falls through to 404.
+    const post = await fetch(`${base}/healthz`, { method: 'POST' });
+    expect(post.status).toBe(404);
+    // A prefix look-alike must not match (exact path / query-only).
+    const lookAlike = await fetch(`${base}/healthz-not-real`);
+    expect(lookAlike.status).toBe(404);
+  });
+});
+
 describe('daemon session-data store', () => {
   it('serves session-data read/write/list and session-reset (durable memory endpoint)', async () => {
     const handle = await bootTestDaemon();
