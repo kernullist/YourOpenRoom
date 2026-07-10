@@ -10,6 +10,7 @@ import {
 } from '../aoiDaemonServer';
 import { startAoiAutonomyBackgroundFromEnv } from '../aoiAutonomyPlugin';
 import { saveAoiStrategicBrief } from '../aoiStrategicBrief';
+import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import { buildAoiAppOperationDispatch } from '../aoiAppOperationDispatch';
 import { appendAoiAppOperationDispatch } from '../aoiAutonomyStore';
 import type { AoiAppOperationDispatch, AoiStrategicBrief } from '../aoiAutonomyTypes';
@@ -272,6 +273,47 @@ describe('daemon memory decay routes (P4.1)', () => {
     // Fail-closed: the memory is still active (never archived on a mismatch).
     const still = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
     expect(((await still.json()) as { status?: string }).status).toBe('active');
+  });
+
+  it('writes an audit-ledger entry on archive and on restore', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: {},
+    });
+    liveDaemons.push(handle);
+    const api = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+
+    // Seed a decay candidate directly on disk (same store the daemon reads).
+    const memDir = join(sessionsDir, 'aoi', 'memory-v2', 'memories');
+    fs.mkdirSync(memDir, { recursive: true });
+    fs.writeFileSync(join(memDir, 'decay-cand-1.json'), JSON.stringify(oldCandidateMemory()));
+
+    const preview = (await (await fetch(`${api}/memory/decay-preview`)).json()) as {
+      fingerprint: string;
+    };
+    await fetch(`${api}/memory/decay-apply`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: preview.fingerprint }),
+    });
+    // The archive left an audit trail (soft-delete is destructive-adjacent).
+    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, 'aoi/default'))).toContain(
+      'memory_archived',
+    );
+
+    await fetch(`${api}/memory/decay-restore`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: ['decay-cand-1'] }),
+    });
+    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, 'aoi/default'))).toContain(
+      'memory_restored',
+    );
   });
 });
 

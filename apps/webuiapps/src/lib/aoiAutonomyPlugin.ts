@@ -16,6 +16,7 @@ import {
   computeServerAoiMemoryDecayDryRun,
   unarchiveServerAoiMemories,
 } from './aoiMemoryServerWriter';
+import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
   startAoiMemoryEmbedSweep,
@@ -2037,6 +2038,22 @@ export async function handleAoiAutonomyRequest(
         writeJson(res, 409, { ok: false, rejected: true, code: 'decay_approval_mismatch' });
         return true;
       }
+      // Audit trail for the destructive-adjacent op (best-effort; never blocks it).
+      if (result.archivedCount > 0) {
+        try {
+          recordServerAoiRunLedgerEvent({
+            sessionsDir,
+            sessionPath: 'aoi/default',
+            type: 'memory_archived',
+            message: `Archived ${result.archivedCount} memory(ies) via operator-approved decay.`,
+            goalSummary: 'Aoi memory decay (archive)',
+            toolNames: ['memory_decay'],
+            status: 'completed',
+          });
+        } catch {
+          // best-effort audit
+        }
+      }
       writeJson(res, 200, {
         ok: true,
         archivedCount: result.archivedCount,
@@ -2050,6 +2067,21 @@ export async function handleAoiAutonomyRequest(
         (id): id is string => typeof id === 'string',
       );
       const result = unarchiveServerAoiMemories(sessionsDir, ids);
+      if (result.unarchivedCount > 0) {
+        try {
+          recordServerAoiRunLedgerEvent({
+            sessionsDir,
+            sessionPath: 'aoi/default',
+            type: 'memory_restored',
+            message: `Restored ${result.unarchivedCount} archived memory(ies).`,
+            goalSummary: 'Aoi memory decay (restore)',
+            toolNames: ['memory_decay'],
+            status: 'completed',
+          });
+        } catch {
+          // best-effort audit
+        }
+      }
       writeJson(res, 200, {
         ok: true,
         unarchivedCount: result.unarchivedCount,

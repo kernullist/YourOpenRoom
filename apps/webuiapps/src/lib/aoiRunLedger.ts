@@ -44,7 +44,9 @@ export type AoiRunLedgerEventType =
   | 'kira_followup_proposed'
   | 'kira_outcome_duplicate_ignored'
   | 'run_completed'
-  | 'run_failed';
+  | 'run_failed'
+  | 'memory_archived'
+  | 'memory_restored';
 
 export interface AoiRunGoal {
   summary: string;
