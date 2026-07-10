@@ -11,7 +11,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # fetch-depth: 0 so the Aoi field gate can diff the branch against origin/main.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: pnpm/action-setup@v4
 
@@ -27,3 +30,12 @@ jobs:
 
       - name: Build
         run: pnpm build
+
+      # P5.1: enforce the Aoi field acceptance gate. It classifies the changed files,
+      # runs the field-grounded acceptance pack, and exits non-zero when a required gate
+      # fails (docs-only / no-autonomy changes are skipped -> exit 0).
+      - name: Aoi field acceptance gate
+        run: |
+          git fetch --no-tags origin main
+          pnpm --filter @openroom/webuiapps field-ci:build
+          pnpm --filter @openroom/webuiapps field-ci -- --base origin/main
