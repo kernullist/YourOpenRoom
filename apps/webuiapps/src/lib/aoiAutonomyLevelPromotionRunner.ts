@@ -78,7 +78,12 @@ export function runAoiAutonomyLevelPromotion(
     now,
   });
 
-  if (options.config.enabled) {
+  // Persist the sustained-window gate state whenever EITHER promotion path is
+  // active. The low-tier path (config.lowTierEnabled) needs this too: without it a
+  // low-tier promotion never accumulates its consecutive-positive streak and, worse,
+  // loses its baselineLevel on the next load -> a low-tier grant could not be rolled
+  // back on regression (P1.5). Byte-identical when both flags are off (no write).
+  if (options.config.enabled || options.config.lowTierEnabled) {
     saveAoiAutonomyLevelPromotionGateState(sessionsDir, sessionPath, decision.nextGateState);
   }
 

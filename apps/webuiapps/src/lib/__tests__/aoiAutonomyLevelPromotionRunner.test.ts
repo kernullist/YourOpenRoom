@@ -557,6 +557,107 @@ describe('buildAoiAutonomyLevelPromotionScorecard feedback-compression evidence 
   });
 });
 
+describe('runAoiAutonomyLevelPromotion low-tier field-readiness path (P1.5)', () => {
+  // A low-tier-positive scorecard: the overall gate PASSES and the readiness rung is
+  // supervised_prepare (>= the low-tier bar) but it is NOT trusted_operator, so the
+  // strict path stays inactive -- only the low-tier path can act, capped at L3.
+  const lowTierPositive = (): AoiJarvisReadinessScorecard =>
+    scorecard({ level: 'supervised_prepare', canIncreaseTrust: false, gateStatus: 'pass' });
+  const lowTierConfig = (): AoiAutonomyLevelPromotionConfig =>
+    config({ enabled: false, lowTierEnabled: true });
+
+  it('promotes L2 -> L3, persists the gate state, and audits it', () => {
+    const root = makeRoot();
+    seedPolicyLevel(root, 'L2');
+    const events: Array<{ type: string }> = [];
+
+    const decision = runAoiAutonomyLevelPromotion(root, SESSION, {
+      scorecard: lowTierPositive(),
+      config: lowTierConfig(),
+      now: 5000,
+      recordLedger: (event) => events.push(event),
+    });
+
+    expect(decision.action).toBe('promote');
+    expect(decision.nextLevel).toBe('L3');
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L3');
+    // The fix: low-tier now persists gate state (so the streak + baseline survive).
+    expect(loadAoiAutonomyLevelPromotionGateState(root, SESSION)?.lastManagedLevel).toBe('L3');
+    expect(events[0]?.type).toBe('autonomy_level_promoted');
+  });
+
+  it('holds at the L3 low-tier ceiling and never reaches the L4 mutation line', () => {
+    const root = makeRoot();
+    seedPolicyLevel(root, 'L3');
+
+    const decision = runAoiAutonomyLevelPromotion(root, SESSION, {
+      scorecard: lowTierPositive(),
+      config: lowTierConfig(),
+      now: 5000,
+    });
+
+    expect(decision.action).toBe('hold');
+    expect(decision.reason).toContain('at_ceiling');
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L3');
+  });
+
+  it('rolls a low-tier grant back to baseline on regression', () => {
+    const root = makeRoot();
+    seedPolicyLevel(root, 'L3');
+    saveAoiAutonomyLevelPromotionGateState(root, SESSION, {
+      version: 1,
+      sessionPath: SESSION,
+      baselineLevel: 'L2',
+      lastManagedLevel: 'L3',
+      positiveSince: null,
+      consecutivePositive: 0,
+      lastEvaluatedAt: 0,
+      history: [],
+      updatedAt: 0,
+    });
+    const events: Array<{ type: string }> = [];
+
+    const decision = runAoiAutonomyLevelPromotion(root, SESSION, {
+      // No longer positive -> neither path active -> snap back to the human baseline.
+      scorecard: scorecard({
+        level: 'field_preview',
+        canIncreaseTrust: false,
+        gateStatus: 'warning',
+      }),
+      config: lowTierConfig(),
+      now: 6000,
+      recordLedger: (event) => events.push(event),
+    });
+
+    expect(decision.action).toBe('rollback');
+    expect(decision.nextLevel).toBe('L2');
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L2');
+    expect(events[0]?.type).toBe('autonomy_level_rolled_back');
+  });
+
+  it('is reachable via the AOI_AUTONOMY_AUTO_PROMOTE_LOW_TIER env flag (holds on an empty session)', () => {
+    const root = makeRoot();
+    seedPolicyLevel(root, 'L2');
+
+    const result = maybeRunAoiAutonomyLevelPromotion({
+      sessionsDir: root,
+      sessionPath: SESSION,
+      env: {
+        AOI_AUTONOMY_AUTO_PROMOTE_LOW_TIER: '1',
+        AOI_AUTONOMY_AUTO_PROMOTE_SUSTAIN_MS: '0',
+        AOI_AUTONOMY_AUTO_PROMOTE_MIN_CONSECUTIVE: '1',
+      },
+      now: 5000,
+    });
+
+    // The low-tier path is active (not a null no-op), but an empty session is not
+    // low-tier positive (gate does not pass), so it conservatively holds at L2.
+    expect(result).not.toBeNull();
+    expect(result?.changed).toBe(false);
+    expect(loadAoiAutonomyPolicy(root, SESSION).level).toBe('L2');
+  });
+});
+
 describe('maybeRunAoiAutonomyLevelPromotion operator-unlocked escalation', () => {
   it('reaches trusted_operator and promotes the level after the operator promotes the full set', () => {
     const root = makeRoot();
