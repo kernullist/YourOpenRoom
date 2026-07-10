@@ -18,6 +18,7 @@ import {
 } from './aoiMemoryServerWriter';
 import { loadAoiMemoryEmbeddingStatus } from './aoiMemoryEmbeddingStatus';
 import { loadAoiUnifiedOperatorSummaryFromStores } from './aoiUnifiedOperatorModelServer';
+import { loadAoiProactiveTrendReadinessFromStores } from './aoiProactiveTrendReadinessServer';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
@@ -2048,6 +2049,16 @@ export async function handleAoiAutonomyRequest(
         now: Date.now(),
       });
       writeJson(res, 200, { ok: true, summary });
+      return true;
+    }
+    // P5.4: read-only trust on-ramp readiness accrual (sample count -> directChatReady +
+    // blockers) so the operator can see the trust ladder progress.
+    if (req.method === 'GET' && route === '/operator/readiness-accrual') {
+      const readiness = loadAoiProactiveTrendReadinessFromStores(sessionsDir, {
+        sessionPath: 'aoi/default',
+        now: Date.now(),
+      });
+      writeJson(res, 200, { ok: true, readiness });
       return true;
     }
     if (req.method === 'POST' && route === '/memory/decay-apply') {

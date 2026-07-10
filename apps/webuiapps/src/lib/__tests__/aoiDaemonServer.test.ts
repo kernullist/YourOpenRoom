@@ -782,3 +782,22 @@ describe('daemon unified operator snapshot route (P5.3)', () => {
     expect(body.summary.sessionPath).toBe('aoi/default');
   });
 });
+
+describe('daemon readiness-accrual route (P5.4)', () => {
+  it('serves the trust on-ramp readiness accrual (sample count -> directChatReady)', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/readiness-accrual`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      readiness: { status: string; sampleCount: number; directChatReady: boolean };
+    };
+    expect(body.ok).toBe(true);
+    // A fresh session is measuring / not ready, with a numeric sample count and a boolean gate.
+    expect(typeof body.readiness.sampleCount).toBe('number');
+    expect(typeof body.readiness.directChatReady).toBe('boolean');
+    expect(body.readiness.directChatReady).toBe(false);
+  });
+});
