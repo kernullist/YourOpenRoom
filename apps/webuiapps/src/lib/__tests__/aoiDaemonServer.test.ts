@@ -764,3 +764,21 @@ describe('daemon memory embedding-status route (P4.4)', () => {
     expect(body.pendingCount).toBe(1);
   });
 });
+
+describe('daemon unified operator snapshot route (P5.3)', () => {
+  it('serves the display_only unified operator summary built from real stores', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/unified-snapshot`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      summary: { actionAuthority: string; sessionPath: string };
+    };
+    expect(body.ok).toBe(true);
+    // The previously-dark model is now surfaced -- display_only by construction.
+    expect(body.summary.actionAuthority).toBe('display_only');
+    expect(body.summary.sessionPath).toBe('aoi/default');
+  });
+});

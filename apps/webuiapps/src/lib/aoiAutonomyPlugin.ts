@@ -17,6 +17,7 @@ import {
   unarchiveServerAoiMemories,
 } from './aoiMemoryServerWriter';
 import { loadAoiMemoryEmbeddingStatus } from './aoiMemoryEmbeddingStatus';
+import { loadAoiUnifiedOperatorSummaryFromStores } from './aoiUnifiedOperatorModelServer';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
@@ -2031,6 +2032,16 @@ export async function handleAoiAutonomyRequest(
     if (req.method === 'GET' && route === '/memory/embedding-status') {
       const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
       writeJson(res, 200, { ok: true, ...status });
+      return true;
+    }
+    // P5.3: surface the (previously dark) unified operator model, built from the real
+    // server stores. Serves the display_only summary; strictly read-only.
+    if (req.method === 'GET' && route === '/operator/unified-snapshot') {
+      const summary = loadAoiUnifiedOperatorSummaryFromStores(sessionsDir, {
+        sessionPath: 'aoi/default',
+        now: Date.now(),
+      });
+      writeJson(res, 200, { ok: true, summary });
       return true;
     }
     if (req.method === 'POST' && route === '/memory/decay-apply') {
