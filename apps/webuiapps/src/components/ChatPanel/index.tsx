@@ -14156,6 +14156,27 @@ const SettingsModal: React.FC<{
                         </button>
                       </div>
                       <div className={styles.promptBudgetMetric}>
+                        <span className={styles.promptBudgetLabel}>Field-shadow capture</span>
+                        <button
+                          type="button"
+                          className={
+                            aoiAutonomyPolicy?.fieldShadowCaptureEnabled
+                              ? styles.saveBtn
+                              : styles.cancelBtn
+                          }
+                          onClick={() =>
+                            void onUpdateAoiAutonomyPolicy({
+                              fieldShadowCaptureEnabled:
+                                !aoiAutonomyPolicy?.fieldShadowCaptureEnabled,
+                            })
+                          }
+                          disabled={!aoiAutonomyPolicy || aoiAutonomyActionId === 'policy'}
+                          data-testid="aoi-field-shadow-capture-toggle"
+                        >
+                          {aoiAutonomyPolicy?.fieldShadowCaptureEnabled ? 'On' : 'Off'}
+                        </button>
+                      </div>
+                      <div className={styles.promptBudgetMetric}>
                         <span className={styles.promptBudgetLabel}>Scout policy</span>
                         <button
                           type="button"
