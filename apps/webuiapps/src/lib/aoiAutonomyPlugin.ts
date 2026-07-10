@@ -16,6 +16,7 @@ import {
   computeServerAoiMemoryDecayDryRun,
   unarchiveServerAoiMemories,
 } from './aoiMemoryServerWriter';
+import { loadAoiMemoryEmbeddingStatus } from './aoiMemoryEmbeddingStatus';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
@@ -2023,6 +2024,13 @@ export async function handleAoiAutonomyRequest(
     if (req.method === 'GET' && route === '/memory/decay-preview') {
       const dryRun = computeServerAoiMemoryDecayDryRun(sessionsDir, { now: Date.now() });
       writeJson(res, 200, { ok: true, ...dryRun });
+      return true;
+    }
+    // P4.4: read-only embedding-coverage status so the operator can see whether a
+    // provider is configured and how many active memories are still lexical-only.
+    if (req.method === 'GET' && route === '/memory/embedding-status') {
+      const status = loadAoiMemoryEmbeddingStatus(sessionsDir, { configFile });
+      writeJson(res, 200, { ok: true, ...status });
       return true;
     }
     if (req.method === 'POST' && route === '/memory/decay-apply') {

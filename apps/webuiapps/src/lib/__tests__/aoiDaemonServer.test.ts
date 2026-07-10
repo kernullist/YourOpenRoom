@@ -706,3 +706,61 @@ describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', 
     expect(((await res.json()) as { code?: string }).code).toBe('invalid_session_path');
   });
 });
+
+describe('daemon memory embedding-status route (P4.4)', () => {
+  function memoryFileBody(id: string, embedding?: number[]): Record<string, unknown> {
+    return {
+      version: 2,
+      id,
+      scope: 'user',
+      type: 'fact',
+      status: 'active',
+      content: `A fact ${id}.`,
+      normalizedContent: `a fact ${id}.`,
+      importance: 0.5,
+      confidence: 0.8,
+      hits: 1,
+      createdAt: 1,
+      updatedAt: 1,
+      sourceEpisodeIds: ['ep-1'],
+      tags: [],
+      entities: [],
+      ...(embedding ? { embedding, embeddingModel: 'test-model' } : {}),
+    };
+  }
+
+  async function seed(base: string, id: string, embedding?: number[]): Promise<void> {
+    const path = `aoi/memory-v2/memories/${id}.json`;
+    const res = await fetch(`${base}/api/session-data?path=${encodeURIComponent(path)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(memoryFileBody(id, embedding)),
+    });
+    expect(res.status).toBe(200);
+  }
+
+  it('reports active/embedded/pending counts and a keyless (no-provider) default', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    await seed(base, 'embed-1', [0.1, 0.2]);
+    await seed(base, 'embed-2');
+
+    const res = await fetch(`${base}/api/aoi-autonomy/memory/embedding-status`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok: boolean;
+      providerConfigured: boolean;
+      providerModel: string | null;
+      activeCount: number;
+      embeddedCount: number;
+      pendingCount: number;
+    };
+    expect(body.ok).toBe(true);
+    // No embedding key in the test config -> keyless, so recall is lexical-only.
+    expect(body.providerConfigured).toBe(false);
+    expect(body.providerModel).toBeNull();
+    expect(body.activeCount).toBe(2);
+    expect(body.embeddedCount).toBe(1);
+    expect(body.pendingCount).toBe(1);
+  });
+});
