@@ -217,8 +217,8 @@ describe('deriveAoiExecutedActionOutcomeSignal (P5.2 -- file/app/connector)', ()
 
   it('feeds a capability actionSuccessRate as a real execution outcome', () => {
     const decisions = [
-      decision({ id: 'dec-w', actionKind: 'app_operation', proposalId: 'p-w' }),
-      decision({ id: 'dec-l', actionKind: 'app_operation', proposalId: 'p-l' }),
+      decision({ id: 'dec-w', actionKind: 'app_action', proposalId: 'p-w' }),
+      decision({ id: 'dec-l', actionKind: 'app_action', proposalId: 'p-l' }),
     ];
     const outcomes = [
       normalizeAoiOutcomeSignalRecord(
@@ -254,7 +254,7 @@ describe('deriveAoiExecutedActionOutcomeSignal (P5.2 -- file/app/connector)', ()
       now: NOW,
       minSample: 2,
     });
-    const cap = report.capabilities.find((c) => c.capability === 'app_operation');
+    const cap = report.capabilities.find((c) => c.capability === 'app_action');
     expect(cap?.actionSuccessRate).toBeCloseTo(0.5, 3);
   });
 });
