@@ -9,6 +9,8 @@ apps/*/dist-daemon
 dist-daemon
 apps/*/dist-field-ci-gate
 dist-field-ci-gate
+apps/*/dist-real-field-acceptance
+dist-real-field-acceptance
 
 # Turborepo
 .turbo

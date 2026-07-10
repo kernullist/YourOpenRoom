@@ -1,6 +1,7 @@
 dist
 dist-daemon
 dist-field-ci-gate
+dist-real-field-acceptance
 .next
 node_modules
 apps/*/node_modules

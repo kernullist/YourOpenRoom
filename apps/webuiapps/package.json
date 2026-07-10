@@ -20,7 +20,9 @@
     "test:coverage": "vitest run --coverage",
     "field-ci:gate": "vitest run src/lib/__tests__/aoiFieldCiGate.test.ts src/lib/__tests__/aoiFieldGroundedJarvisAcceptancePack.test.ts src/lib/__tests__/aoiRealFieldOperationsAcceptancePack.test.ts",
     "field-ci:build": "vite build --config vite.field-ci-gate.config.ts",
-    "field-ci": "node dist-field-ci-gate/aoiFieldCiGate.js"
+    "field-ci": "node dist-field-ci-gate/aoiFieldCiGate.js",
+    "real-field:build": "vite build --config vite.real-field-acceptance.config.ts",
+    "real-field": "node dist-real-field-acceptance/aoiRealFieldAcceptance.js"
   },
   "dependencies": {
     "framer-motion": "^12.34.0",
