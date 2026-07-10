@@ -237,7 +237,12 @@ function makeServerMemoryId(prefix: string): string {
   return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
-function mergeServerAoiMemoryCandidates(
+// Exported so a drift test can assert byte-for-byte parity with the browser
+// mergeAoiMemoryCandidates (aoiMemoryManager). The two are independent copies of
+// the same merge/normalization contract; only the SAVE wrappers differ (the server
+// path adds embed-on-write). Keeping merge itself identical is the invariant P4.6
+// locks.
+export function mergeServerAoiMemoryCandidates(
   existing: AoiMemoryEntry[],
   candidates: AoiMemoryCandidate[],
   params: { sessionPath: string; episodeId: string; now?: number },
