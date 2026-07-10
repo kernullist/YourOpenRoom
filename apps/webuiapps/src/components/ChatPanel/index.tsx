@@ -594,6 +594,7 @@ import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
+import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
 import { AoiOperatorSnapshotPanel } from './AoiOperatorSnapshotPanel';
 import { AoiPreferenceDashboard } from './AoiPreferenceDashboard';
 import { AoiReplayPromotionPanel } from './AoiReplayPromotionPanel';
@@ -16037,6 +16038,8 @@ const SettingsModal: React.FC<{
               <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
 
               <AoiOperatorSnapshotPanel />
+
+              <AoiMemoryDecayPanel />
 
               <AoiPreferenceDashboard
                 sessionPath={aoiReplaySessionPath}
