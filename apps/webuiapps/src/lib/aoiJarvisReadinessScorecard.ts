@@ -11,6 +11,7 @@ import type { AoiPersonalSourceRealityCheck } from './aoiPersonalSourceRealityCh
 import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShadowModeEvaluation';
 import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 import type { AoiTracePromotionReport } from './aoiTracePromotion';
+import type { AoiClosedLoopMetricsReport } from './aoiClosedLoopMetrics';
 
 const DEFAULT_NOW = 1_800_000_000_000;
 const WRONG_SOURCE_BLOCK_THRESHOLD = 0.2;
@@ -22,6 +23,20 @@ const STALE_SOURCE_HONESTY_MINIMUM = 0.8;
 const MAX_REFS = 24;
 const MAX_RECOMMENDATIONS = 8;
 
+// Closed-loop capability-precision gate thresholds. A measured rate below the
+// FLOOR (with sufficient sample) hard-blocks trust promotion; below the TARGET
+// warns. Null rates (insufficient sample) never block. Kept conservative so poor
+// measured quality holds Aoi at its current tier rather than escalating.
+const PROPOSAL_PRECISION_TARGET = 0.8;
+const PROPOSAL_PRECISION_FLOOR = 0.6;
+const ACTION_SUCCESS_TARGET = 0.8;
+const ACTION_SUCCESS_FLOOR = 0.6;
+const INTERRUPTION_PRECISION_TARGET = 0.8;
+const INTERRUPTION_PRECISION_FLOOR = 0.6;
+const MEMORY_RECALL_TARGET = 0.85;
+const MEMORY_RECALL_FLOOR = 0.7;
+const RECALL_MISS_WARNING_THRESHOLD = 5;
+
 export type AoiJarvisReadinessMetricGroup =
   | 'shadow_usefulness'
   | 'safety'
@@ -29,7 +44,8 @@ export type AoiJarvisReadinessMetricGroup =
   | 'source_honesty'
   | 'mission_continuity'
   | 'replay'
-  | 'work_orders';
+  | 'work_orders'
+  | 'capability_precision';
 
 export type AoiJarvisReadinessMetricUnit = 'rate' | 'count' | 'boolean';
 
@@ -156,6 +172,10 @@ export interface AoiJarvisReadinessScorecardInput {
   tracePromotionReport?: AoiTracePromotionReport | null;
   promotedFixtureCandidates?: readonly AoiJarvisReadinessCandidateSummary[];
   directChatOptInEnabled?: boolean | null;
+  // Closed-loop capability metrics (aoiClosedLoopMetrics). When present, their
+  // per-capability precision / success / interruption / memory-recall feed a
+  // dedicated metric group + gates so measured quality gates trust promotion.
+  closedLoopMetrics?: AoiClosedLoopMetricsReport | null;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -709,23 +729,33 @@ function groupLabel(group: AoiJarvisReadinessMetricGroup): string {
       return 'Replay';
     case 'work_orders':
       return 'Work orders';
+    case 'capability_precision':
+      return 'Capability precision';
     default:
       return group;
   }
 }
 
+const BASE_METRIC_GROUPS: readonly AoiJarvisReadinessMetricGroup[] = [
+  'shadow_usefulness',
+  'safety',
+  'privacy',
+  'source_honesty',
+  'mission_continuity',
+  'replay',
+  'work_orders',
+];
+
 function buildMetricGroups(
   metrics: readonly AoiJarvisReadinessMetric[],
 ): AoiJarvisReadinessMetricGroupSummary[] {
-  const groups: AoiJarvisReadinessMetricGroup[] = [
-    'shadow_usefulness',
-    'safety',
-    'privacy',
-    'source_honesty',
-    'mission_continuity',
-    'replay',
-    'work_orders',
-  ];
+  // The capability_precision group only participates when closed-loop metrics
+  // actually contributed metrics; otherwise it is omitted entirely so the score
+  // is unchanged from before this group existed (backward compatible).
+  const hasCapabilityPrecision = metrics.some((item) => item.group === 'capability_precision');
+  const groups: AoiJarvisReadinessMetricGroup[] = hasCapabilityPrecision
+    ? [...BASE_METRIC_GROUPS, 'capability_precision']
+    : [...BASE_METRIC_GROUPS];
   return groups.map((group) => {
     const groupMetrics = metrics.filter((item) => item.group === group);
     const totalWeight = groupMetrics.reduce((total, item) => total + item.weight, 0);
@@ -755,6 +785,7 @@ function scoreFromGroups(groups: readonly AoiJarvisReadinessMetricGroupSummary[]
     mission_continuity: 1,
     replay: 1.1,
     work_orders: 1,
+    capability_precision: 1.2,
   };
   const totalWeight = groups.reduce((total, group) => total + weights[group.group], 0);
   const weighted = groups.reduce((total, group) => total + group.score * weights[group.group], 0);
@@ -1044,6 +1075,153 @@ function buildRecommendations(params: {
   }
 
   return recommendations.slice(0, MAX_RECOMMENDATIONS);
+}
+
+// Closed-loop capability metrics -> readiness metrics. Only dimensions with a
+// non-null (sufficient-sample) rate are emitted, so "no signal" never inflates
+// or deflates the group score.
+function buildCapabilityPrecisionMetrics(
+  report: AoiClosedLoopMetricsReport | null | undefined,
+): AoiJarvisReadinessMetric[] {
+  if (!report) {
+    return [];
+  }
+  const overall = report.overall;
+  const evidenceRefs = overall.evidenceRefs;
+  const out: AoiJarvisReadinessMetric[] = [];
+  const add = (id: string, label: string, value: number | null, target: number): void => {
+    if (value === null) {
+      return;
+    }
+    out.push(
+      metric({
+        id,
+        group: 'capability_precision',
+        label,
+        value,
+        target,
+        unit: 'rate',
+        passed: value >= target,
+        weight: 1,
+        evidenceRefs,
+      }),
+    );
+  };
+  add(
+    'capability.proposal_precision',
+    'Proposal precision',
+    overall.proposalPrecision,
+    PROPOSAL_PRECISION_TARGET,
+  );
+  add(
+    'capability.action_success',
+    'Action success rate',
+    overall.actionSuccessRate,
+    ACTION_SUCCESS_TARGET,
+  );
+  add(
+    'capability.interruption_precision',
+    'Interruption precision',
+    overall.interruptionPrecision,
+    INTERRUPTION_PRECISION_TARGET,
+  );
+  add(
+    'capability.memory_recall',
+    'Memory recall quality',
+    overall.memoryRecallQuality,
+    MEMORY_RECALL_TARGET,
+  );
+  return out;
+}
+
+function capabilityGate(
+  id: string,
+  label: string,
+  value: number | null,
+  floor: number,
+  target: number,
+  evidenceRefs: string[],
+): AoiJarvisReadinessGate {
+  if (value === null) {
+    return gate({
+      id,
+      label,
+      status: 'pass',
+      reason: `Insufficient sample to measure ${label.toLowerCase()}; not gating.`,
+      evidenceRefs,
+    });
+  }
+  const status: AoiJarvisReadinessGateStatus =
+    value < floor ? 'block' : value < target ? 'warning' : 'pass';
+  return gate({
+    id,
+    label,
+    status,
+    reason:
+      status === 'block'
+        ? `${label} ${value.toFixed(2)} is below the hard floor ${floor.toFixed(2)}; blocking trust increase.`
+        : status === 'warning'
+          ? `${label} ${value.toFixed(2)} is below target ${target.toFixed(2)}; hold current tier.`
+          : `${label} ${value.toFixed(2)} meets target ${target.toFixed(2)}.`,
+    evidenceRefs,
+    blockerRefs: status === 'block' ? [`capability:${id}`] : [],
+  });
+}
+
+// Closed-loop capability metrics -> readiness gates. The four rate gates can
+// block (feeding gateStatus + hardSafetyBlocked); the recall-miss gate only warns.
+function buildCapabilityPrecisionGates(
+  report: AoiClosedLoopMetricsReport | null | undefined,
+): AoiJarvisReadinessGate[] {
+  if (!report) {
+    return [];
+  }
+  const overall = report.overall;
+  const evidenceRefs = overall.evidenceRefs;
+  return [
+    capabilityGate(
+      'gate.capability_proposal_precision',
+      'Proposal precision',
+      overall.proposalPrecision,
+      PROPOSAL_PRECISION_FLOOR,
+      PROPOSAL_PRECISION_TARGET,
+      evidenceRefs,
+    ),
+    capabilityGate(
+      'gate.capability_action_success',
+      'Action success rate',
+      overall.actionSuccessRate,
+      ACTION_SUCCESS_FLOOR,
+      ACTION_SUCCESS_TARGET,
+      evidenceRefs,
+    ),
+    capabilityGate(
+      'gate.capability_interruption_precision',
+      'Interruption precision',
+      overall.interruptionPrecision,
+      INTERRUPTION_PRECISION_FLOOR,
+      INTERRUPTION_PRECISION_TARGET,
+      evidenceRefs,
+    ),
+    capabilityGate(
+      'gate.capability_memory_recall',
+      'Memory recall quality',
+      overall.memoryRecallQuality,
+      MEMORY_RECALL_FLOOR,
+      MEMORY_RECALL_TARGET,
+      evidenceRefs,
+    ),
+    gate({
+      id: 'gate.capability_recall_miss',
+      label: 'Recall miss volume',
+      status: overall.recallMiss >= RECALL_MISS_WARNING_THRESHOLD ? 'warning' : 'pass',
+      reason:
+        overall.recallMiss >= RECALL_MISS_WARNING_THRESHOLD
+          ? `${overall.recallMiss} should-have-spoken misses in window; review recall before escalating.`
+          : `${overall.recallMiss} recall miss(es) in window.`,
+      evidenceRefs,
+    }),
+  ];
 }
 
 export function buildAoiJarvisReadinessScorecard(
@@ -1768,6 +1946,9 @@ export function buildAoiJarvisReadinessScorecard(
     }),
   ];
 
+  metrics.push(...buildCapabilityPrecisionMetrics(input.closedLoopMetrics));
+  gates.push(...buildCapabilityPrecisionGates(input.closedLoopMetrics));
+
   const metricGroups = buildMetricGroups(metrics);
   const score = scoreFromGroups(metricGroups);
   const gateStatus: AoiJarvisReadinessOverallGateStatus = gates.some(
@@ -1785,6 +1966,11 @@ export function buildAoiJarvisReadinessScorecard(
     'gate.wrong_source_rate',
     'gate.feedback_compression_trust_label',
     'gate.outcome_only_trust_increase_block',
+    // Measured capability quality below the hard floor also holds trust down.
+    'gate.capability_proposal_precision',
+    'gate.capability_action_success',
+    'gate.capability_interruption_precision',
+    'gate.capability_memory_recall',
   ].some((id) => gates.some((item) => item.id === id && item.status === 'block'));
   const level = levelFor({
     score,

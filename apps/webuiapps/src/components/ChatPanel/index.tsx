@@ -46,12 +46,15 @@ import { parseDirectMusicIntent } from '@/lib/chatDirectActions';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
+  loadPendingPreferencePoll,
   loadPendingTastePoll,
   savePendingIdleMusicOffer,
   savePendingNewsOffer,
+  savePendingPreferencePoll,
   savePendingTastePoll,
   type PendingIdleMusicOffer,
   type PendingNewsOffer,
+  type PendingPreferencePoll,
   type PendingTastePoll,
 } from '@/lib/aoiPendingOffers';
 import {
@@ -71,6 +74,27 @@ import {
   shouldAskTasteQuestion,
   type AoiMusicTasteState,
 } from '@/lib/aoiMusicTaste';
+import {
+  PREFERENCE_POLL_QUESTIONS,
+  buildPreferencePollMemoryCandidate,
+  countUnansweredPreferenceQuestions,
+  getPreferenceQuestionPrefKey,
+  loadAoiPreferencePollState,
+  pickNextPreferenceQuestion,
+  recordPreferenceAnswer,
+  recordPreferenceQuestionAsked,
+  saveAoiPreferencePollState,
+  shouldAskPreferenceQuestion,
+  type AoiPreferenceLang,
+} from '@/lib/aoiPreferencePoll';
+import {
+  GENERATED_EXPANSION_COOLDOWN_MS,
+  GENERATED_EXPANSION_LOW_WATERMARK,
+  expandAoiPreferenceQuestionBank,
+  generatedQuestionsToSeedShape,
+  loadAoiGeneratedQuestionsState,
+  saveAoiGeneratedQuestionsState,
+} from '@/lib/aoiPreferenceQuestionGen';
 import {
   DEFAULT_AOI_IDLE_MUSIC_STATE,
   recordIdleMusicOffered,
@@ -148,6 +172,7 @@ import {
   saveAoiManualMemory,
   saveAoiPreferenceMemory,
   shouldTreatAoiMemoryAsPermanent,
+  syncAoiMemoryFromPreferencePoll,
   syncAoiMemoryFromTurn,
   type AoiMemoryEntry,
   type AoiMemoryEpisodeSource,
@@ -569,6 +594,7 @@ import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
+import { AoiPreferenceDashboard } from './AoiPreferenceDashboard';
 import { AoiReplayPromotionPanel } from './AoiReplayPromotionPanel';
 import styles from './index.module.scss';
 
@@ -1450,6 +1476,21 @@ function buildTastePollAck(choiceLabel: string, lang: NudgeLang): string {
       return `好，我记住"${choiceLabel}"了，下次推荐就会参考。`;
     default:
       return `Got it, I'll remember "${choiceLabel}" and fold it into my next picks.`;
+  }
+}
+
+// Ack for an answered preference poll: confirm the exact choice back and note
+// that Aoi will apply it to future judgments, not just one feature.
+function buildPreferencePollAck(choiceLabel: string, lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return `좋아, "${choiceLabel}" 기억해둘게. 앞으로 판단할 때 참고할게.`;
+    case 'ja':
+      return `了解、「${choiceLabel}」覚えておくね。これからの判断で参考にするよ。`;
+    case 'zh':
+      return `好，我记住"${choiceLabel}"了，以后判断时会参考。`;
+    default:
+      return `Got it, I'll remember "${choiceLabel}" and use it in future judgments.`;
   }
 }
 
@@ -5399,6 +5440,12 @@ const ChatPanel: React.FC<{
   const musicTasteStateRef = useRef<AoiMusicTasteState>(DEFAULT_AOI_MUSIC_TASTE_STATE);
   const pendingTastePollRef = useRef<PendingTastePoll | null>(null);
 
+  // Preference poll: occasional multiple-choice questions about the user's
+  // technical interests, working style, and personal tastes. The answer state is
+  // the localStorage poll store (single source of truth, shared with the
+  // preference dashboard); only the in-flight pending card is held in a ref.
+  const pendingPreferencePollRef = useRef<PendingPreferencePoll | null>(null);
+
   useEffect(() => {
     idleMusicStateRef.current = loadAoiIdleMusicState();
     newsStateRef.current = loadAoiNewsState();
@@ -5414,6 +5461,9 @@ const ChatPanel: React.FC<{
     }
     if (!pendingTastePollRef.current) {
       pendingTastePollRef.current = loadPendingTastePoll();
+    }
+    if (!pendingPreferencePollRef.current) {
+      pendingPreferencePollRef.current = loadPendingPreferencePoll();
     }
   }, []);
 
@@ -5459,6 +5509,54 @@ const ChatPanel: React.FC<{
       getVibeInfo().systemSettings?.language?.current,
     );
   }, []);
+
+  // Aoi self-expands the preference bank from what it already knows (interest
+  // profile + memories): deterministic "how deep?" questions always, plus
+  // LLM-authored questions/categories when a usable chat config is set. Auto-runs
+  // behind a cooldown when the answerable pool is low, and on demand from the
+  // dashboard (manual=true bypasses the cooldown). Best-effort; never throws.
+  const runPreferenceBankExpansion = useCallback(
+    async (options?: { manual?: boolean }): Promise<number> => {
+      const sessionPathForGen = sessionPathRef.current;
+      if (!sessionPathForGen) {
+        return 0;
+      }
+      const now = Date.now();
+      const existing = loadAoiGeneratedQuestionsState();
+      if (
+        !options?.manual &&
+        existing.lastGeneratedAt > 0 &&
+        now - existing.lastGeneratedAt < GENERATED_EXPANSION_COOLDOWN_MS
+      ) {
+        return 0;
+      }
+      let memories: AoiMemoryEntry[] = [];
+      try {
+        memories = await loadAoiMemories();
+      } catch {
+        memories = [];
+      }
+      const activeMemories = memories.filter(
+        (memory) =>
+          memory.status === 'active' &&
+          (!memory.sessionPath || memory.sessionPath === sessionPathForGen),
+      );
+      const lang = resolveNudgeLang();
+      const pollState = loadAoiPreferencePollState();
+      const { state: nextGen, addedCount } = await expandAoiPreferenceQuestionBank({
+        memories: activeMemories,
+        existing,
+        seedPrompts: PREFERENCE_POLL_QUESTIONS.map((question) => question.prompts[lang]),
+        answeredIds: Object.keys(pollState.answers),
+        lang,
+        llmConfig: config,
+        now,
+      });
+      saveAoiGeneratedQuestionsState(nextGen);
+      return addedCount;
+    },
+    [resolveNudgeLang, config],
+  );
 
   const handleSend = useCallback(
     async (overrideText?: string) => {
@@ -5815,6 +5913,62 @@ const ChatPanel: React.FC<{
             source: 'direct_action',
             llmConfig: selectedConfig,
           });
+          return;
+        }
+      }
+
+      // Aoi preference poll: a tapped option chip is recorded into the poll state
+      // and persisted as a structured preference memory (no LLM round-trip), so it
+      // flows into the interest profile / curiosity engine / preference context
+      // for later judgments. Any other message is an implicit dismissal: the
+      // cooldown was already stamped when the poll was asked.
+      const pendingPreferencePoll = pendingPreferencePollRef.current;
+      if (pendingPreferencePoll) {
+        pendingPreferencePollRef.current = null;
+        savePendingPreferencePoll(null);
+        const chosen = pendingPreferencePoll.options.find((option) => option.label === messageText);
+        if (chosen) {
+          const lang = resolveNudgeLang();
+          const generatedQuestions = generatedQuestionsToSeedShape(
+            loadAoiGeneratedQuestionsState(),
+          );
+          saveAoiPreferencePollState(
+            recordPreferenceAnswer(
+              loadAoiPreferencePollState(),
+              {
+                questionId: pendingPreferencePoll.questionId,
+                optionId: chosen.id,
+              },
+              generatedQuestions,
+            ),
+          );
+          const candidate = buildPreferencePollMemoryCandidate(
+            {
+              questionId: pendingPreferencePoll.questionId,
+              optionId: chosen.id,
+              lang,
+            },
+            generatedQuestions,
+          );
+          if (candidate) {
+            void syncAoiMemoryFromPreferencePoll(sessionPathRef.current, {
+              questionId: pendingPreferencePoll.questionId,
+              optionLabel: chosen.label,
+              candidate,
+              prefKey:
+                getPreferenceQuestionPrefKey(
+                  pendingPreferencePoll.questionId,
+                  generatedQuestions,
+                ) ?? undefined,
+              embeddingProvider: aoiEmbeddingProviderRef.current,
+            })
+              .then(setAoiMemories)
+              .catch((error) => {
+                console.warn('[ChatPanel] Aoi preference poll memory sync failed', error);
+              });
+          }
+          const ack = buildPreferencePollAck(chosen.label, lang);
+          emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
           return;
         }
       }
@@ -8610,7 +8764,8 @@ const ChatPanel: React.FC<{
       if (
         pendingIdleMusicOfferRef.current ||
         pendingNewsOfferRef.current ||
-        pendingTastePollRef.current
+        pendingTastePollRef.current ||
+        pendingPreferencePollRef.current
       ) {
         return;
       }
@@ -8692,7 +8847,8 @@ const ChatPanel: React.FC<{
           otherOfferPending: Boolean(
             pendingIdleMusicOfferRef.current ||
             pendingNewsOfferRef.current ||
-            pendingTastePollRef.current,
+            pendingTastePollRef.current ||
+            pendingPreferencePollRef.current,
           ),
           lastAskedAt: state.lastAskedAt,
           hasUnansweredQuestion: true,
@@ -8721,6 +8877,72 @@ const ChatPanel: React.FC<{
     }, TASTE_POLL_CHECK_INTERVAL_MS);
     return () => window.clearInterval(timer);
   }, [emitAssistantMessage, resolveNudgeLang]);
+
+  // Aoi preference poll: occasionally ask one multiple-choice question about the
+  // user's technical interests and working style, then persist the answer as a
+  // structured preference memory so it informs later judgments. Same gate mirror
+  // and 24h/idle cadence as the music taste poll; never stacks on another card
+  // (including the music poll) so at most one nudge is pending at a time.
+  useEffect(() => {
+    const PREFERENCE_POLL_CHECK_INTERVAL_MS = 30_000;
+    const timer = window.setInterval(() => {
+      const gate = idleMusicGateRef.current;
+      const now = Date.now();
+      if (!gate.visible || gate.loading) {
+        return;
+      }
+      const state = loadAoiPreferencePollState();
+      const generatedQuestions = generatedQuestionsToSeedShape(loadAoiGeneratedQuestionsState());
+      // Keep the bank ahead of the user: when few answerable questions remain,
+      // have Aoi expand it from what it knows (own cooldown gates the frequency).
+      if (
+        gate.autonomyEnabled &&
+        !gate.quietMode &&
+        countUnansweredPreferenceQuestions(state, generatedQuestions) <=
+          GENERATED_EXPANSION_LOW_WATERMARK
+      ) {
+        void runPreferenceBankExpansion();
+      }
+      const question = pickNextPreferenceQuestion(state, generatedQuestions);
+      if (
+        !question ||
+        !shouldAskPreferenceQuestion({
+          now,
+          userIdleMs: now - lastUserActivityAtRef.current,
+          autonomyEnabled: gate.autonomyEnabled,
+          quietMode: gate.quietMode,
+          otherOfferPending: Boolean(
+            pendingIdleMusicOfferRef.current ||
+            pendingNewsOfferRef.current ||
+            pendingTastePollRef.current ||
+            pendingPreferencePollRef.current,
+          ),
+          lastAskedAt: state.lastAskedAt,
+          hasUnansweredQuestion: true,
+        })
+      ) {
+        return;
+      }
+      const lang = resolveNudgeLang();
+      const options = question.options.map((option) => ({
+        id: option.id,
+        label: option.labels[lang],
+      }));
+      pendingPreferencePollRef.current = { questionId: question.id, options };
+      savePendingPreferencePoll(pendingPreferencePollRef.current);
+      saveAoiPreferencePollState(recordPreferenceQuestionAsked(state, { now }));
+      emitAssistantMessage(
+        {
+          id: `aoi-preference-poll-${now}`,
+          role: 'assistant',
+          content: question.prompts[lang],
+          suggestedReplies: options.map((option) => option.label),
+        },
+        { updateSuggestedReplies: true, speak: false },
+      );
+    }, PREFERENCE_POLL_CHECK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [emitAssistantMessage, resolveNudgeLang, runPreferenceBankExpansion]);
 
   // Aoi cyber-news nudge: live gate mirror (adds allowNetwork for the fetch).
   const newsGateRef = useRef({
@@ -8763,6 +8985,7 @@ const ChatPanel: React.FC<{
         pendingNewsOfferRef.current ||
         pendingIdleMusicOfferRef.current ||
         pendingTastePollRef.current ||
+        pendingPreferencePollRef.current ||
         newsOfferInFlightRef.current
       ) {
         return;
@@ -8792,7 +9015,8 @@ const ChatPanel: React.FC<{
             cancelled ||
             pendingNewsOfferRef.current ||
             pendingIdleMusicOfferRef.current ||
-            pendingTastePollRef.current
+            pendingTastePollRef.current ||
+            pendingPreferencePollRef.current
           ) {
             return;
           }
@@ -9670,6 +9894,10 @@ const ChatPanel: React.FC<{
           }}
           aoiMcpConnectorsConfig={aoiMcpConnectorsConfig}
           aoiReplaySessionPath={sessionPath}
+          aoiPreferenceLang={resolveNudgeLang()}
+          onGenerateAoiPreferenceQuestions={async () => {
+            await runPreferenceBankExpansion({ manual: true });
+          }}
           onSaveAoiMcpConnectorsConfig={(cfg) => {
             setAoiMcpConnectorsConfig(cfg);
             void saveAoiMcpConnectorsConfig(cfg).catch((error) => {
@@ -10390,6 +10618,8 @@ const SettingsModal: React.FC<{
   onSaveAoiEmbeddingConfig: (config: AoiEmbeddingConfig | null) => void;
   aoiMcpConnectorsConfig: AoiMcpConnectorsConfig | null;
   aoiReplaySessionPath: string;
+  aoiPreferenceLang: AoiPreferenceLang;
+  onGenerateAoiPreferenceQuestions: () => Promise<void>;
   onSaveAoiMcpConnectorsConfig: (config: AoiMcpConnectorsConfig) => void;
   onResetAll: () => void;
   onSave: (
@@ -10498,6 +10728,8 @@ const SettingsModal: React.FC<{
   onSaveAoiEmbeddingConfig,
   aoiMcpConnectorsConfig,
   aoiReplaySessionPath,
+  aoiPreferenceLang,
+  onGenerateAoiPreferenceQuestions,
   onSaveAoiMcpConnectorsConfig,
   onResetAll,
   onSave,
@@ -15802,6 +16034,13 @@ const SettingsModal: React.FC<{
               </div>
 
               <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
+
+              <AoiPreferenceDashboard
+                sessionPath={aoiReplaySessionPath}
+                lang={aoiPreferenceLang}
+                onMemoriesChanged={onRefreshAoiMemories}
+                onGenerate={onGenerateAoiPreferenceQuestions}
+              />
 
               <div className={styles.settingsSectionCard} data-testid="aoi-memory-inspector">
                 <div className={styles.settingsSectionHeader}>

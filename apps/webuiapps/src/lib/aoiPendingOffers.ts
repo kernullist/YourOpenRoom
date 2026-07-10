@@ -154,3 +154,55 @@ export function loadPendingTastePoll(): PendingTastePoll | null {
 export function savePendingTastePoll(poll: PendingTastePoll | null): void {
   writeJson(PENDING_TASTE_POLL_STORAGE_KEY, poll);
 }
+
+// --- Preference poll ----------------------------------------------------------
+
+// The general preference poll (aoiPreferencePoll) reuses the same restore
+// contract as the music taste poll: its card + option chips are restored from
+// chat history after a reload, so the pending poll behind the chips must survive
+// too. It carries the questionId plus each option's exact chip label (answers
+// are matched against the label) and the optionId used to persist the answer.
+
+export interface PendingPreferencePollOption {
+  id: string;
+  // The exact chip label shown to the user; answers are matched against it.
+  label: string;
+}
+
+export interface PendingPreferencePoll {
+  questionId: string;
+  options: PendingPreferencePollOption[];
+}
+
+const PENDING_PREFERENCE_POLL_STORAGE_KEY = 'aoi-pending-preference-poll-v1';
+const MAX_PREFERENCE_POLL_OPTIONS = 8;
+
+export function loadPendingPreferencePoll(): PendingPreferencePoll | null {
+  const parsed = readJson(
+    PENDING_PREFERENCE_POLL_STORAGE_KEY,
+  ) as Partial<PendingPreferencePoll> | null;
+  if (
+    parsed &&
+    isNonEmptyString(parsed.questionId) &&
+    Array.isArray(parsed.options) &&
+    parsed.options.length > 0 &&
+    parsed.options.length <= MAX_PREFERENCE_POLL_OPTIONS &&
+    parsed.options.every(
+      (option) =>
+        option &&
+        typeof option === 'object' &&
+        isNonEmptyString((option as PendingPreferencePollOption).id) &&
+        isNonEmptyString((option as PendingPreferencePollOption).label),
+    )
+  ) {
+    return {
+      questionId: parsed.questionId,
+      options: parsed.options.map((option) => ({ id: option.id, label: option.label })),
+    };
+  }
+  return null;
+}
+
+export function savePendingPreferencePoll(poll: PendingPreferencePoll | null): void {
+  writeJson(PENDING_PREFERENCE_POLL_STORAGE_KEY, poll);
+}

@@ -26,6 +26,9 @@ const EXCLUDED_MEMORY_TAGS = new Set([
   'api-key',
   'access-token',
   'temporary-instruction',
+  // Preference-poll answers about working style / personal taste: they inform the
+  // preference prompt block but must not surface as technical interest topics.
+  'preference-only',
 ]);
 
 const INTEREST_LIKE_TAGS = new Set([

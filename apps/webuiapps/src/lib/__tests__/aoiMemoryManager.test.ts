@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   maliciousProcedureSourceFixture,
   updatedFactMemoryFixture,
@@ -8,13 +8,21 @@ import {
   buildAoiMemoryPrompt,
   distillAoiMemoryCandidatesWithLlm,
   extractHeuristicAoiMemoryCandidates,
+  forgetAoiPreferencePollMemory,
+  loadAoiMemories,
   mergeAoiMemoryCandidates,
   normalizeAoiMemoryCandidate,
   parseAoiMemoryDistillerResponse,
   scoreAoiMemoryForQuery,
   selectAoiMemoriesForPrompt,
+  syncAoiMemoryFromPreferencePoll,
   type AoiMemoryEntry,
 } from '../aoiMemoryManager';
+import {
+  buildPreferencePollMemoryCandidate,
+  getPreferenceQuestionPrefKey,
+  tastePrefTag,
+} from '../aoiPreferencePoll';
 import type { ChatMessage, ToolDef } from '../llmClient';
 import type { LLMConfig } from '../llmModels';
 
@@ -581,5 +589,148 @@ describe('Aoi LLM memory distiller', () => {
 
     expect(candidates).toEqual([]);
     expect(calls).toBe(0);
+  });
+});
+
+// In-memory emulation of the /api/session-data memory store (list + read + write)
+// so the preference-poll IO functions run their real load -> select -> write
+// orchestration against a faithful backend without touching the network.
+const MEMORY_ROOT = 'aoi/memory-v2/memories';
+
+function installMemoryFetch(seed: AoiMemoryEntry[]): Map<string, unknown> {
+  const store = new Map<string, unknown>();
+  for (const memory of seed) {
+    store.set(`${MEMORY_ROOT}/${memory.id}.json`, memory);
+  }
+  const fetchMock = vi.fn(async (input: string, init?: { method?: string; body?: string }) => {
+    const url = new URL(input, 'http://localhost');
+    const path = url.searchParams.get('path') ?? '';
+    const action = url.searchParams.get('action');
+    const method = init?.method ?? 'GET';
+    const reply = (value: unknown) => ({ ok: true, json: async () => value });
+    if (method === 'POST') {
+      store.set(path, JSON.parse(init?.body ?? '{}'));
+      return reply({});
+    }
+    if (method === 'DELETE') {
+      store.delete(path);
+      return reply({});
+    }
+    if (action === 'list') {
+      const files = [...store.keys()]
+        .filter((key) => key.startsWith(`${path}/`) && key.endsWith('.json'))
+        .map((key) => ({ path: key, type: 0 }));
+      return reply({ files });
+    }
+    return reply(store.get(path) ?? {});
+  });
+  vi.stubGlobal('fetch', fetchMock as unknown as typeof fetch);
+  return store;
+}
+
+describe('syncAoiMemoryFromPreferencePoll()', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('supersedes a differing prior pick for the key, then saves the new answer', async () => {
+    const prefKey = getPreferenceQuestionPrefKey('focus_area');
+    expect(prefKey).toBeTruthy();
+    const prefTag = tastePrefTag(prefKey as string);
+    const stale = makeMemory({
+      id: 'stale-1',
+      type: 'preference',
+      status: 'active',
+      content: 'Interested in kernel internals.',
+      normalizedContent: 'interested in kernel internals.',
+      tags: [prefTag, 'taste-poll'],
+    });
+    const store = installMemoryFetch([stale]);
+    const candidate = buildPreferencePollMemoryCandidate({
+      questionId: 'focus_area',
+      optionId: 'anti_cheat',
+      lang: 'en',
+    });
+    expect(candidate).toBeTruthy();
+
+    const result = await syncAoiMemoryFromPreferencePoll('aoi/default', {
+      questionId: 'focus_area',
+      optionLabel: 'Anti-cheat / game security',
+      candidate: candidate!,
+      prefKey: prefKey as string,
+    });
+
+    // The prior pick is superseded (kept on disk, not deleted) ...
+    const persistedStale = store.get(`${MEMORY_ROOT}/stale-1.json`) as AoiMemoryEntry;
+    expect(persistedStale.status).toBe('superseded');
+    // ... and exactly one active memory now carries the preference key.
+    expect(
+      result.some((memory) => memory.status === 'active' && memory.tags.includes(prefTag)),
+    ).toBe(true);
+    const reloaded = await loadAoiMemories();
+    expect(
+      reloaded.filter((memory) => memory.status === 'active' && memory.tags.includes(prefTag))
+        .length,
+    ).toBe(1);
+  });
+
+  it('skips the supersede step and just saves when no prefKey is provided', async () => {
+    installMemoryFetch([]);
+    const candidate = buildPreferencePollMemoryCandidate({
+      questionId: 'focus_area',
+      optionId: 'reverse_engineering',
+      lang: 'en',
+    });
+    const result = await syncAoiMemoryFromPreferencePoll('aoi/default', {
+      questionId: 'focus_area',
+      optionLabel: 'Reverse engineering',
+      candidate: candidate!,
+    });
+    expect(result.length).toBeGreaterThan(0);
+  });
+});
+
+describe('forgetAoiPreferencePollMemory()', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('archives the active taste memories for the key and refreshes the list', async () => {
+    const prefTag = tastePrefTag('focus-area');
+    const active = makeMemory({
+      id: 'taste-1',
+      type: 'preference',
+      status: 'active',
+      content: 'Anti-cheat / game security',
+      tags: [prefTag, 'taste-poll'],
+    });
+    const store = installMemoryFetch([active]);
+
+    const result = await forgetAoiPreferencePollMemory('aoi/default', 'focus-area');
+
+    const persisted = store.get(`${MEMORY_ROOT}/taste-1.json`) as AoiMemoryEntry;
+    expect(persisted.status).toBe('archived');
+    // The refreshed list surfaces it only as archived, never still-active.
+    expect(result.some((memory) => memory.id === 'taste-1' && memory.status === 'active')).toBe(
+      false,
+    );
+  });
+
+  it('is a no-op when no active memory matches the key', async () => {
+    const store = installMemoryFetch([
+      makeMemory({
+        id: 'other',
+        type: 'preference',
+        status: 'active',
+        tags: ['pref:taste.other'],
+      }),
+    ]);
+    const before = store.get(`${MEMORY_ROOT}/other.json`);
+
+    const result = await forgetAoiPreferencePollMemory('aoi/default', 'focus-area');
+
+    // The unrelated memory is left byte-identical (no archive write).
+    expect(store.get(`${MEMORY_ROOT}/other.json`)).toBe(before);
+    expect(result.some((memory) => memory.id === 'other')).toBe(true);
   });
 });

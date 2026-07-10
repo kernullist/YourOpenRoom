@@ -2,12 +2,15 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   loadPendingIdleMusicOffer,
   loadPendingNewsOffer,
+  loadPendingPreferencePoll,
   loadPendingTastePoll,
   savePendingIdleMusicOffer,
   savePendingNewsOffer,
+  savePendingPreferencePoll,
   savePendingTastePoll,
   type PendingIdleMusicOffer,
   type PendingNewsOffer,
+  type PendingPreferencePoll,
   type PendingTastePoll,
 } from '../aoiPendingOffers';
 
@@ -141,6 +144,55 @@ describe('aoiPendingOffers', () => {
         }),
       );
       expect(loadPendingTastePoll()).toBeNull();
+    });
+  });
+
+  describe('pending preference poll', () => {
+    const PREFERENCE_KEY = 'aoi-pending-preference-poll-v1';
+    const poll: PendingPreferencePoll = {
+      questionId: 'focus_area',
+      options: [
+        { id: 'kernel_internals', label: 'Windows 커널·드라이버 내부' },
+        { id: 'anti_cheat', label: '안티치트·게임 보안' },
+      ],
+    };
+
+    it('round-trips a poll across save and load (reload survival)', () => {
+      savePendingPreferencePoll(poll);
+      expect(loadPendingPreferencePoll()).toEqual(poll);
+    });
+
+    it('returns null when nothing is stored', () => {
+      expect(loadPendingPreferencePoll()).toBeNull();
+    });
+
+    it('clears the stored poll when saving null (poll consumed)', () => {
+      savePendingPreferencePoll(poll);
+      savePendingPreferencePoll(null);
+      expect(loadPendingPreferencePoll()).toBeNull();
+      expect(localStorage.getItem(PREFERENCE_KEY)).toBeNull();
+    });
+
+    it('rejects malformed payloads', () => {
+      localStorage.setItem(PREFERENCE_KEY, '{not json');
+      expect(loadPendingPreferencePoll()).toBeNull();
+      localStorage.setItem(PREFERENCE_KEY, JSON.stringify({ ...poll, questionId: '' }));
+      expect(loadPendingPreferencePoll()).toBeNull();
+      localStorage.setItem(PREFERENCE_KEY, JSON.stringify({ ...poll, options: [] }));
+      expect(loadPendingPreferencePoll()).toBeNull();
+      localStorage.setItem(
+        PREFERENCE_KEY,
+        JSON.stringify({ ...poll, options: [{ id: 'x', label: '  ' }] }),
+      );
+      expect(loadPendingPreferencePoll()).toBeNull();
+      localStorage.setItem(
+        PREFERENCE_KEY,
+        JSON.stringify({
+          ...poll,
+          options: Array.from({ length: 9 }, (_, i) => ({ id: `o${i}`, label: `L${i}` })),
+        }),
+      );
+      expect(loadPendingPreferencePoll()).toBeNull();
     });
   });
 });

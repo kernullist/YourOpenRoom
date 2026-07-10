@@ -16,6 +16,11 @@ import {
   type AoiKiraAutomationMemoryContext,
 } from './aoiMemoryShared';
 import { resolveAoiPreferenceContext } from './aoiPreferenceMemory';
+import {
+  selectStaleTasteMemoryIds,
+  selectTasteMemoryIdsToForget,
+  tastePrefTag,
+} from './aoiPreferencePoll';
 
 export { buildAoiKiraAutomationMemoryCandidates };
 export type { AoiKiraAutomationEvent, AoiKiraAutomationMemoryContext };
@@ -1014,6 +1019,95 @@ export async function saveAoiManualMemory(
     outcome: 'manual memory saved',
   });
   return saveAoiMemoryCandidates(sessionPath, [candidate], episode.id);
+}
+
+// Persist a structured preference memory from an answered preference poll. The
+// answer is an explicit user choice (a tapped chip or a dashboard pick), so it is
+// written directly as a candidate -- no LLM distillation -- and then flows into
+// the preference prompt block (and, for interest-category answers, the interest
+// profile) like any other preference memory.
+//
+// Before writing, any prior active taste memory for the same preference key whose
+// content differs is superseded, so the store never holds two contradictory picks
+// for one question when the user changes an answer. `prefKey` is the shared key of
+// the answered question (e.g. 'focus-area'); when absent the supersede step is
+// skipped and this behaves like a plain candidate save.
+export async function syncAoiMemoryFromPreferencePoll(
+  sessionPath: string,
+  params: {
+    questionId: string;
+    optionLabel: string;
+    candidate: AoiMemoryCandidate;
+    prefKey?: string;
+    embeddingProvider?: AoiEmbeddingProvider | null;
+  },
+): Promise<AoiMemoryEntry[]> {
+  if (params.prefKey) {
+    const prefTag = tastePrefTag(params.prefKey);
+    const existing = await loadAoiMemories();
+    const newNormalizedContent = normalizeMemoryContent(params.candidate.content);
+    const staleIds = selectStaleTasteMemoryIds(existing, {
+      prefTag,
+      newNormalizedContent,
+      sessionPath,
+    });
+    if (staleIds.length > 0) {
+      const now = Date.now();
+      const staleSet = new Set(staleIds);
+      await Promise.all(
+        existing
+          .filter((memory) => staleSet.has(memory.id))
+          .map((memory) =>
+            writeJson(memoryFilePath(memory.id), {
+              ...memory,
+              status: 'superseded',
+              updatedAt: now,
+            } satisfies AoiMemoryEntry),
+          ),
+      );
+    }
+  }
+  const episode = await saveAoiMemoryEpisode(sessionPath, {
+    source: 'direct_action',
+    userMessage: params.optionLabel,
+    assistantMessage: params.candidate.content,
+    toolCalls: [`aoi_preference_poll_answer:${params.questionId}`],
+    outcome: 'preference poll answered',
+  });
+  return saveAoiMemoryCandidates(sessionPath, [params.candidate], episode.id, {
+    embeddingProvider: params.embeddingProvider,
+  });
+}
+
+// Archive the active taste memories for one preference key (dashboard "clear"),
+// so a forgotten answer stops influencing later judgments. Returns the refreshed
+// memory list; a no-op returns the current list unchanged.
+export async function forgetAoiPreferencePollMemory(
+  sessionPath: string,
+  prefKey: string,
+): Promise<AoiMemoryEntry[]> {
+  const memories = await loadAoiMemories();
+  const forgetIds = selectTasteMemoryIdsToForget(memories, {
+    prefTag: tastePrefTag(prefKey),
+    sessionPath,
+  });
+  if (forgetIds.length === 0) {
+    return memories;
+  }
+  const now = Date.now();
+  const forgetSet = new Set(forgetIds);
+  await Promise.all(
+    memories
+      .filter((memory) => forgetSet.has(memory.id))
+      .map((memory) =>
+        writeJson(memoryFilePath(memory.id), {
+          ...memory,
+          status: 'archived',
+          updatedAt: now,
+        } satisfies AoiMemoryEntry),
+      ),
+  );
+  return loadAoiMemories();
 }
 
 export async function syncAoiMemoryFromTurn(

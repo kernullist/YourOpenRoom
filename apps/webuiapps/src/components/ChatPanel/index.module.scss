@@ -1536,6 +1536,52 @@
   font-weight: 600;
 }
 
+.preferenceCategory {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.preferenceCategoryLabel {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(255, 255, 255, 0.6);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.preferenceQuestionHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.preferenceOptionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preferenceHeaderActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.preferenceGeneratedBadge {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--color-yellow-10, rgba(250, 234, 95, 0.1));
+  color: var(--color-yellow, #faea5f);
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: middle;
+}
+
 .connectorToolList {
   display: flex;
   flex-direction: column;
