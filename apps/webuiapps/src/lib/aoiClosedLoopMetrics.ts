@@ -67,6 +67,8 @@ const EXECUTION_OUTCOME_KINDS = new Set([
   'commit_created',
   'work_order_approved',
   'work_order_rejected',
+  // P5.2: real executed-action outcomes count toward a capability's success rate.
+  'proposal_executed',
 ]);
 
 export interface AoiClosedLoopCapabilityMetric {

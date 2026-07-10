@@ -152,6 +152,9 @@ export type AoiOutcomeSignalKind =
   | 'work_order_rejected'
   | 'validation_run'
   | 'commit_created'
+  // P5.2: a proposal's real executed action (file mutation / app action / connector
+  // call) succeeded or failed -- the strongest, non-counterfactual execution signal.
+  | 'proposal_executed'
   | 'user_correction';
 
 export type AoiOutcomePrivacyState = 'metadata_only' | 'redacted' | 'synthetic' | 'unknown';

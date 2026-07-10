@@ -9,6 +9,7 @@ import {
   loadAoiAppActionAuditRecords,
   loadAoiAppOperationDispatches,
   loadAoiArchivedProposals,
+  loadAoiOutcomeSignalRecords,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
@@ -327,6 +328,14 @@ describe('executeAoiProposal() app actions', () => {
     expect(audits[0].applied).toBe(true);
     expect(audits[0].capabilityId).toBe('twitter:schema:create_post');
     expect(audits[0].evidenceRefs.some((ref) => ref.startsWith('decision:'))).toBe(true);
+    // P5.2: the real executed app action left a proposal_executed outcome in the unified
+    // ledger so the closed-loop metric sees the actual result, not just shadow.
+    const executedOutcome = loadAoiOutcomeSignalRecords(root, 'aoi/default').find(
+      (signal) => signal.sourceProposalId === 'proposal-aa-001',
+    );
+    expect(executedOutcome?.outcomeKind).toBe('proposal_executed');
+    expect(executedOutcome?.result).toBe('positive');
+    expect(executedOutcome?.sourceValidationRef).toBe(`aoi-app-action-audit:${audits[0].id}`);
   });
 
   it('blocks a file_backed app action below L5 and never touches the file', async () => {

@@ -61,6 +61,12 @@ const EXPECTED_POLICY: Record<
     direction: 'boost',
     result: 'positive',
   },
+  proposal_executed: {
+    confidence: 0.45,
+    target: 'readiness',
+    direction: 'boost',
+    result: 'positive',
+  },
   user_correction: {
     confidence: 0.62,
     target: 'source',

@@ -74,6 +74,31 @@ export function deriveAoiExecutedCommandOutcomeSignal(params: {
   };
 }
 
+// P5.2: the non-command executed action kinds (file mutation / app action / connector
+// call) share one shape -- a real audited effect that succeeded or failed. They map to
+// the 'proposal_executed' kind (an EXECUTION_OUTCOME_KIND). actionKind is the hyphenated
+// audit namespace ('file-mutation' | 'app-action' | 'connector-call') so the eventId and
+// sourceValidationRef line up with the real audit ref emitted by executeAoiProposal.
+export function deriveAoiExecutedActionOutcomeSignal(params: {
+  sessionPath: string;
+  proposalId: string;
+  decisionId: string;
+  actionKind: 'file-mutation' | 'app-action' | 'connector-call';
+  auditId: string;
+  ok: boolean;
+}): Partial<AoiOutcomeSignalRecord> & Partial<AoiOutcomeSignalInput> {
+  return {
+    eventId: `executed-action:${params.actionKind}:${params.auditId}`,
+    sessionPath: params.sessionPath,
+    outcomeKind: 'proposal_executed',
+    signalKind: 'passive_outcome',
+    sourceProposalId: params.proposalId,
+    sourceDecisionId: params.decisionId,
+    sourceValidationRef: `aoi-${params.actionKind}-audit:${params.auditId}`,
+    validationPassed: params.ok,
+  };
+}
+
 type RawOutcomeSignalInput = Partial<AoiOutcomeSignalInput> & Partial<AoiOutcomeSignalRecord>;
 
 interface OutcomePolicy {
@@ -256,6 +281,22 @@ function defaultPolicy(input: AoiOutcomeSignalInput): OutcomePolicy {
             ? 'Failed validation is a stronger readiness warning.'
             : 'Validation run is useful evidence but does not bypass approval or privacy gates.',
       };
+    case 'proposal_executed':
+      // P5.2: a real executed action (file mutation / app action / connector call).
+      // Slightly stronger than a validation run -- the action actually happened -- but
+      // still never a privacy or mutation-safety waiver.
+      return {
+        confidence: input.validationPassed === false ? 0.55 : 0.45,
+        action: input.validationPassed === false ? 'failed' : 'executed',
+        result: input.validationPassed === false ? 'failed' : 'positive',
+        target: 'readiness',
+        direction: input.validationPassed === false ? 'suppress' : 'boost',
+        magnitude: input.validationPassed === false ? 0.32 : 0.2,
+        reason:
+          input.validationPassed === false
+            ? 'A failed real execution is a strong readiness warning for this capability.'
+            : 'A successful real execution is strong evidence but does not bypass approval or privacy gates.',
+      };
     case 'commit_created':
       return {
         confidence: 0.44,
@@ -304,6 +345,7 @@ function normalizeOutcomeKind(value: unknown): AoiOutcomeSignalKind | null {
     value === 'work_order_rejected' ||
     value === 'validation_run' ||
     value === 'commit_created' ||
+    value === 'proposal_executed' ||
     value === 'user_correction'
   ) {
     return value;

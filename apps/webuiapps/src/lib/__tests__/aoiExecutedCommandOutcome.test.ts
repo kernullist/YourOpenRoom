@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  deriveAoiExecutedActionOutcomeSignal,
   deriveAoiExecutedCommandOutcomeSignal,
   normalizeAoiOutcomeSignalRecord,
 } from '../aoiOutcomeLearning';
@@ -157,5 +158,103 @@ describe('executed-command outcome feeds the closed-loop metric (P5.2)', () => {
     const runCommand = report.capabilities.find((c) => c.capability === 'run_command');
     // One real success + one real failure attributed to run_command -> 50% success.
     expect(runCommand?.actionSuccessRate).toBeCloseTo(0.5, 3);
+  });
+});
+
+describe('deriveAoiExecutedActionOutcomeSignal (P5.2 -- file/app/connector)', () => {
+  it('maps each executed action kind to a proposal_executed signal linked to its audit', () => {
+    for (const actionKind of ['file-mutation', 'app-action', 'connector-call'] as const) {
+      const signal = deriveAoiExecutedActionOutcomeSignal({
+        sessionPath: SESSION,
+        proposalId: 'prop-1',
+        decisionId: 'dec-1',
+        actionKind,
+        auditId: 'aud-9',
+        ok: true,
+      });
+      expect(signal).toMatchObject({
+        eventId: `executed-action:${actionKind}:aud-9`,
+        outcomeKind: 'proposal_executed',
+        signalKind: 'passive_outcome',
+        sourceProposalId: 'prop-1',
+        sourceDecisionId: 'dec-1',
+        sourceValidationRef: `aoi-${actionKind}-audit:aud-9`,
+        validationPassed: true,
+      });
+    }
+  });
+
+  it('normalizes a success to a positive proposal_executed record and a failure to failed', () => {
+    const pass = normalizeAoiOutcomeSignalRecord(
+      deriveAoiExecutedActionOutcomeSignal({
+        sessionPath: SESSION,
+        proposalId: 'p',
+        decisionId: 'd',
+        actionKind: 'app-action',
+        auditId: 'a1',
+        ok: true,
+      }),
+      SESSION,
+      NOW,
+    );
+    expect(pass?.outcomeKind).toBe('proposal_executed');
+    expect(pass?.result).toBe('positive');
+
+    const fail = normalizeAoiOutcomeSignalRecord(
+      deriveAoiExecutedActionOutcomeSignal({
+        sessionPath: SESSION,
+        proposalId: 'p',
+        decisionId: 'd',
+        actionKind: 'connector-call',
+        auditId: 'a2',
+        ok: false,
+      }),
+      SESSION,
+      NOW,
+    );
+    expect(fail?.result).toBe('failed');
+  });
+
+  it('feeds a capability actionSuccessRate as a real execution outcome', () => {
+    const decisions = [
+      decision({ id: 'dec-w', actionKind: 'app_operation', proposalId: 'p-w' }),
+      decision({ id: 'dec-l', actionKind: 'app_operation', proposalId: 'p-l' }),
+    ];
+    const outcomes = [
+      normalizeAoiOutcomeSignalRecord(
+        deriveAoiExecutedActionOutcomeSignal({
+          sessionPath: SESSION,
+          proposalId: 'p-w',
+          decisionId: 'dec-w',
+          actionKind: 'app-action',
+          auditId: 'aud-w',
+          ok: true,
+        }),
+        SESSION,
+        NOW,
+      ),
+      normalizeAoiOutcomeSignalRecord(
+        deriveAoiExecutedActionOutcomeSignal({
+          sessionPath: SESSION,
+          proposalId: 'p-l',
+          decisionId: 'dec-l',
+          actionKind: 'connector-call',
+          auditId: 'aud-l',
+          ok: false,
+        }),
+        SESSION,
+        NOW,
+      ),
+    ].filter((record): record is AoiOutcomeSignalRecord => record !== null);
+
+    const report = buildAoiClosedLoopMetrics({
+      sessionPath: SESSION,
+      decisions,
+      outcomes,
+      now: NOW,
+      minSample: 2,
+    });
+    const cap = report.capabilities.find((c) => c.capability === 'app_operation');
+    expect(cap?.actionSuccessRate).toBeCloseTo(0.5, 3);
   });
 });

@@ -17,7 +17,10 @@ import {
   normalizeAoiAutonomySessionPath,
   appendAoiOutcomeSignalRecord,
 } from './aoiAutonomyStore';
-import { deriveAoiExecutedCommandOutcomeSignal } from './aoiOutcomeLearning';
+import {
+  deriveAoiExecutedActionOutcomeSignal,
+  deriveAoiExecutedCommandOutcomeSignal,
+} from './aoiOutcomeLearning';
 import { ingestAoiObservation } from './aoiAutonomyObserver';
 import {
   readAoiResearchRunArtifact,
@@ -1643,6 +1646,24 @@ export async function executeAoiProposal(params: {
         status: mutationResult.ok ? 'completed' : 'failed',
         now,
       });
+      // P5.2: record the real executed file-mutation outcome in the unified ledger so
+      // the closed-loop metric sees the actual result. Best-effort -- never blocks.
+      try {
+        appendAoiOutcomeSignalRecord(
+          params.sessionsDir,
+          deriveAoiExecutedActionOutcomeSignal({
+            sessionPath,
+            proposalId: proposal.id,
+            decisionId: transition.decision.id,
+            actionKind: 'file-mutation',
+            auditId: audit.id,
+            ok: mutationResult.ok,
+          }),
+          now,
+        );
+      } catch {
+        // best-effort: real executed-outcome capture never blocks execution.
+      }
       try {
         ingestAoiObservation(
           params.sessionsDir,
@@ -1770,6 +1791,24 @@ export async function executeAoiProposal(params: {
         status: appActionResult.ok ? 'completed' : 'failed',
         now,
       });
+      // P5.2: record the real executed app-action outcome in the unified ledger.
+      // Best-effort -- never blocks execution.
+      try {
+        appendAoiOutcomeSignalRecord(
+          params.sessionsDir,
+          deriveAoiExecutedActionOutcomeSignal({
+            sessionPath,
+            proposalId: proposal.id,
+            decisionId: transition.decision.id,
+            actionKind: 'app-action',
+            auditId: audit.id,
+            ok: appActionResult.ok,
+          }),
+          now,
+        );
+      } catch {
+        // best-effort: real executed-outcome capture never blocks execution.
+      }
       try {
         ingestAoiObservation(
           params.sessionsDir,
@@ -1842,6 +1881,24 @@ export async function executeAoiProposal(params: {
         status: connectorCallResult.ok ? 'completed' : 'failed',
         now,
       });
+      // P5.2: record the real executed connector-call outcome in the unified ledger.
+      // Best-effort -- never blocks execution.
+      try {
+        appendAoiOutcomeSignalRecord(
+          params.sessionsDir,
+          deriveAoiExecutedActionOutcomeSignal({
+            sessionPath,
+            proposalId: proposal.id,
+            decisionId: transition.decision.id,
+            actionKind: 'connector-call',
+            auditId: audit.id,
+            ok: connectorCallResult.ok,
+          }),
+          now,
+        );
+      } catch {
+        // best-effort: real executed-outcome capture never blocks execution.
+      }
       try {
         ingestAoiObservation(
           params.sessionsDir,
