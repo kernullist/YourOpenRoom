@@ -16,7 +16,7 @@ import {
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
 import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
-import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import { loadActiveAoiMemoriesViaIndex } from './aoiMemoryIndex';
 import {
   scoreAoiMemoryRelevance,
   selectRelevantAoiMemoriesByEmbedding,
@@ -1275,7 +1275,8 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
   // (buildKiraCandidates, the source-freshness contracts) already filters active, so
   // this is byte-identical today; it hardens the surface now that consolidation
   // supersedes near-duplicates -- superseded/archived must never resurface here.
-  const memories = (params.memories ?? loadServerAoiMemories(params.sessionsDir)).filter(
+  // P4.5: when memories are not injected, load only the active bodies via the index.
+  const memories = (params.memories ?? loadActiveAoiMemoriesViaIndex(params.sessionsDir)).filter(
     (memory) => memory.status === 'active',
   );
   const workspaceSnapshot =

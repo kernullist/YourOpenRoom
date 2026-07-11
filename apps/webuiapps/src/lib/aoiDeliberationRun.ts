@@ -33,7 +33,7 @@ import {
   type AoiMemoryEntry,
 } from './aoiMemoryShared';
 import { selectRelevantAoiMemoriesByEmbedding } from './aoiMemoryEmbedding';
-import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import { loadActiveAoiMemoriesViaIndex } from './aoiMemoryIndex';
 import { listAoiResearchRunSummaries } from './aoiResearchPlugin';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import { loadAoiWorkspaceSnapshot } from './aoiWorkspaceSignals';
@@ -1222,7 +1222,7 @@ export function runAoiDeliberationForSession(
   }
   const memories =
     input.memories ??
-    loadServerAoiMemories(input.sessionsDir).filter(
+    loadActiveAoiMemoriesViaIndex(input.sessionsDir).filter(
       (memory) =>
         memory.status === 'active' && (!memory.sessionPath || memory.sessionPath === sessionPath),
     );

@@ -27,7 +27,7 @@ import type {
 } from './aoiAutonomyTypes';
 import { scoreAoiFollowThroughLearningForKey } from './aoiFollowThroughLearning';
 import { selectRelevantAoiMemoriesByEmbedding } from './aoiMemoryEmbedding';
-import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import { loadActiveAoiMemoriesViaIndex } from './aoiMemoryIndex';
 import {
   redactAoiSensitiveContent,
   stripAoiSourceInstructions,
@@ -1269,7 +1269,7 @@ export function runAoiCuriosityEngineForSession(
   const now = input.now ?? Date.now();
   const memories =
     input.memories ??
-    loadServerAoiMemories(input.sessionsDir).filter(
+    loadActiveAoiMemoriesViaIndex(input.sessionsDir).filter(
       (memory) =>
         memory.status === 'active' && (!memory.sessionPath || memory.sessionPath === sessionPath),
     );

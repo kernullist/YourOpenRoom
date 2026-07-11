@@ -408,6 +408,29 @@ export function loadServerAoiMemories(sessionsDir: string): AoiMemoryEntry[] {
     .sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
+// P4.5: the memories directory, for the memory index to stat files cheaply (mtime/size,
+// no body reads) so it can end the per-turn full scan.
+export function resolveAoiMemoriesDir(sessionsDir: string): string {
+  return join(sessionsDir, AOI_MEMORY_ROOT, 'memories');
+}
+
+// P4.5: read ONLY the given memory bodies (the index-selected candidate set), instead of
+// the whole store. Missing/corrupt files are skipped. Preserves the requested id order so a
+// pre-sorted candidate list stays sorted.
+export function loadServerAoiMemoriesByIds(
+  sessionsDir: string,
+  ids: readonly string[],
+): AoiMemoryEntry[] {
+  const out: AoiMemoryEntry[] = [];
+  for (const id of ids) {
+    const memory = readJsonFile<AoiMemoryEntry>(memoryFilePath(sessionsDir, id));
+    if (memory?.id && memory?.content) {
+      out.push(memory);
+    }
+  }
+  return out;
+}
+
 const MAX_SERVER_EMBED_BATCH = 32;
 
 // Embed active server memories that still lack a vector (best-effort, bounded), so

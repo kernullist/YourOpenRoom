@@ -114,7 +114,7 @@ import type {
   AoiFollowThroughLearningSummary,
   AoiReflection,
 } from './aoiAutonomyTypes';
-import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import { loadActiveAoiMemoriesViaIndex } from './aoiMemoryIndex';
 import {
   containsAoiSensitiveContent,
   redactAoiSensitiveContent,
@@ -468,7 +468,9 @@ function collectAoiAutonomyObservations(params: {
   maxObservations?: number;
 }): CandidateBundle {
   const researchRuns = listAoiResearchRunSummaries(params.sessionsDir, params.sessionPath);
-  const memories = loadServerAoiMemories(params.sessionsDir).filter(
+  // P4.5: recall reads only the active bodies the index selects (skips archived/superseded);
+  // the explicit active + sessionPath filter keeps the result identical to the full scan.
+  const memories = loadActiveAoiMemoriesViaIndex(params.sessionsDir).filter(
     (memory) =>
       memory.status === 'active' &&
       (!memory.sessionPath || memory.sessionPath === params.sessionPath),

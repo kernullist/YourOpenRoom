@@ -1,9 +1,10 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { queryAoiMemories, summarizeAoiMemoryLedger } from '../aoiMemoryLedger';
+import * as memoryIndex from '../aoiMemoryIndex';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 const tempRoots: string[] = [];
@@ -177,5 +178,56 @@ describe('summarizeAoiMemoryLedger', () => {
     const summary = summarizeAoiMemoryLedger(root);
     expect(summary.total).toBe(0);
     expect(summary.bySource).toEqual({ chat: 0, automation: 0, research: 0 });
+  });
+});
+
+describe('P4.5 index integration', () => {
+  it('builds the rebuildable index on first query (index.json appears beside memories/)', () => {
+    const root = makeRoot();
+    seedMixed(root);
+    expect(fs.existsSync(join(root, 'aoi', 'memory-v2', 'index.json'))).toBe(false);
+    queryAoiMemories(root);
+    expect(fs.existsSync(join(root, 'aoi', 'memory-v2', 'index.json'))).toBe(true);
+  });
+
+  it('self-heals: a memory archived on disk stops matching an active query (never stale-hidden)', () => {
+    const root = makeRoot();
+    writeMemory(root, { id: 'live', status: 'active' });
+    // Prime the index.
+    expect(queryAoiMemories(root).map((m) => m.id)).toEqual(['live']);
+
+    // Archive it on disk (changes size -> index detects the change on the next query).
+    writeMemory(root, { id: 'live', status: 'archived' });
+    expect(queryAoiMemories(root).map((m) => m.id)).toEqual([]);
+    // ...and the reverse: it reappears once active again.
+    writeMemory(root, { id: 'live', status: 'active' });
+    expect(queryAoiMemories(root).map((m) => m.id)).toEqual(['live']);
+    // The summary reflects the same live state without a full re-scan.
+    expect(summarizeAoiMemoryLedger(root).byStatus.active).toBe(1);
+  });
+
+  it('a newly written memory is picked up by the very next query (no stale exclusion)', () => {
+    const root = makeRoot();
+    writeMemory(root, { id: 'first', updatedAt: 1 });
+    queryAoiMemories(root);
+    writeMemory(root, { id: 'second', updatedAt: 2 });
+    expect(queryAoiMemories(root).map((m) => m.id)).toEqual(['second', 'first']);
+  });
+
+  it('falls back to the authoritative full scan when the index throws (query + summarize)', () => {
+    const root = makeRoot();
+    seedMixed(root);
+    const spy = vi.spyOn(memoryIndex, 'loadOrRefreshAoiMemoryIndex').mockImplementation(() => {
+      throw new Error('index unavailable');
+    });
+    try {
+      // Fail-safe path returns the SAME results as the index path -> no memory hidden.
+      expect(new Set(queryAoiMemories(root).map((m) => m.id))).toEqual(
+        new Set(['chat-1', 'kira-1', 'research-1']),
+      );
+      expect(summarizeAoiMemoryLedger(root).total).toBe(5);
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

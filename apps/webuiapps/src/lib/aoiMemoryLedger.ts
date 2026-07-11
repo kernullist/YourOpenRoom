@@ -19,8 +19,13 @@ import {
   type AoiMemoryStatus,
   type AoiMemoryType,
 } from './aoiMemoryShared';
-import { loadServerAoiMemories } from './aoiMemoryServerWriter';
+import { loadServerAoiMemories, loadServerAoiMemoriesByIds } from './aoiMemoryServerWriter';
 import { selectRelevantAoiMemoriesByEmbedding } from './aoiMemoryEmbedding';
+import {
+  loadOrRefreshAoiMemoryIndex,
+  selectAoiMemoryIndexIds,
+  type AoiMemoryIndexEntry,
+} from './aoiMemoryIndex';
 
 function toArray<T>(value: T | T[] | undefined): T[] | undefined {
   if (value === undefined) {
@@ -88,18 +93,38 @@ function memoryMatchesCriteria(
   return true;
 }
 
+// Metadata-filter the store via the P4.5 index (reads ONLY the matched candidate bodies),
+// falling back to the authoritative full scan on any index error. Returns the matched
+// memories in recency order, identical to the full-scan filter.
+function matchAoiMemoriesViaIndex(
+  sessionsDir: string,
+  criteria: AoiMemoryQueryCriteria,
+  statuses: AoiMemoryStatus[],
+): AoiMemoryEntry[] {
+  try {
+    const index = loadOrRefreshAoiMemoryIndex(sessionsDir);
+    const ids = selectAoiMemoryIndexIds(index, criteria, statuses);
+    // Read only the candidate bodies, preserving the index's recency order.
+    return loadServerAoiMemoriesByIds(sessionsDir, ids);
+  } catch {
+    // Fail-safe: the full scan stays authoritative, so a broken index never hides a memory.
+    return loadServerAoiMemories(sessionsDir).filter((memory) =>
+      memoryMatchesCriteria(memory, criteria, statuses),
+    );
+  }
+}
+
 // Query the whole server memory store by the given criteria. Defaults to status
 // 'active'. With `text` the result is relevance-ranked and capped to `limit` (or
 // the full matched set when no limit); otherwise it is recency-ordered
-// (loadServerAoiMemories sorts by updatedAt desc) and sliced to `limit`.
+// (updatedAt desc) and sliced to `limit`. P4.5: the metadata filter runs against the
+// rebuildable index so only the matched candidate bodies are read, not the whole store.
 export function queryAoiMemories(
   sessionsDir: string,
   criteria: AoiMemoryQueryCriteria = {},
 ): AoiMemoryEntry[] {
   const statuses = toArray(criteria.status) ?? ['active'];
-  const matched = loadServerAoiMemories(sessionsDir).filter((memory) =>
-    memoryMatchesCriteria(memory, criteria, statuses),
-  );
+  const matched = matchAoiMemoriesViaIndex(sessionsDir, criteria, statuses);
   if (criteria.text && criteria.text.trim()) {
     return selectRelevantAoiMemoriesByEmbedding(matched, criteria.text, {
       queryEmbedding: criteria.queryEmbedding ?? null,
@@ -121,12 +146,16 @@ export interface AoiMemoryLedgerSummary {
   byType: Record<AoiMemoryType, number>;
 }
 
-// Enumerate the whole store for observability -- counts across EVERY status (a full
-// ledger view, not just active). bySource uses membership, so a multi-source memory
-// counts in each of its categories and bySource may sum to more than `total`;
-// byStatus / byScope / byType are exclusive and sum to `total`.
-export function summarizeAoiMemoryLedger(sessionsDir: string): AoiMemoryLedgerSummary {
-  const memories = loadServerAoiMemories(sessionsDir);
+// One facet of the store used for counting -- satisfied by BOTH an index entry (metadata,
+// no body) and a full memory, so the summary path and its fallback share one counter.
+interface AoiMemoryLedgerFacet {
+  status: AoiMemoryStatus;
+  scope: AoiMemoryScope;
+  type: AoiMemoryType;
+  sources: AoiMemorySourceCategory[];
+}
+
+function summarizeAoiMemoryFacets(facets: readonly AoiMemoryLedgerFacet[]): AoiMemoryLedgerSummary {
   const bySource: Record<AoiMemorySourceCategory, number> = {
     chat: 0,
     automation: 0,
@@ -143,13 +172,42 @@ export function summarizeAoiMemoryLedger(sessionsDir: string): AoiMemoryLedgerSu
     action: 0,
     emotion: 0,
   };
-  for (const memory of memories) {
-    byStatus[memory.status] += 1;
-    byScope[memory.scope] += 1;
-    byType[memory.type] += 1;
-    for (const source of deriveAoiMemorySources(memory)) {
+  for (const facet of facets) {
+    byStatus[facet.status] += 1;
+    byScope[facet.scope] += 1;
+    byType[facet.type] += 1;
+    for (const source of facet.sources) {
       bySource[source] += 1;
     }
   }
-  return { total: memories.length, bySource, byStatus, byScope, byType };
+  return { total: facets.length, bySource, byStatus, byScope, byType };
+}
+
+// Enumerate the whole store for observability -- counts across EVERY status (a full
+// ledger view, not just active). bySource uses membership, so a multi-source memory
+// counts in each of its categories and bySource may sum to more than `total`;
+// byStatus / byScope / byType are exclusive and sum to `total`. P4.5: served from the index
+// (status/scope/type/sources are all cached) so NO memory body is read, falling back to the
+// full scan on any index error.
+export function summarizeAoiMemoryLedger(sessionsDir: string): AoiMemoryLedgerSummary {
+  try {
+    const index = loadOrRefreshAoiMemoryIndex(sessionsDir);
+    return summarizeAoiMemoryFacets(
+      index.entries.map((entry: AoiMemoryIndexEntry) => ({
+        status: entry.status,
+        scope: entry.scope,
+        type: entry.type,
+        sources: entry.sources,
+      })),
+    );
+  } catch {
+    return summarizeAoiMemoryFacets(
+      loadServerAoiMemories(sessionsDir).map((memory) => ({
+        status: memory.status,
+        scope: memory.scope,
+        type: memory.type,
+        sources: deriveAoiMemorySources(memory),
+      })),
+    );
+  }
 }
