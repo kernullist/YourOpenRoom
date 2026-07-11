@@ -68,6 +68,8 @@ import {
 import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
 import { buildAoiServerJarvisAutonomyGovernor } from './aoiServerJarvisGovernor';
 import { runAoiAutonomousExecuteForWakeup } from './aoiAutonomousExecuteProductionDeps';
+import { runAoiProactivePushForSession } from './aoiProactivePushSession';
+import { createAoiWebhookPushTransport } from './aoiProactivePushTransport';
 import { planAoiProactiveBriefTopics } from './aoiProactiveBriefPlanner';
 import {
   loadAoiInterestProfile,
@@ -1548,6 +1550,36 @@ async function runProactiveScoutForWakeup(params: {
     trendBlockedReasons = [
       ...new Set(trendAdvisor.opinionCards.flatMap((card) => card.directChatBlockedReasons)),
     ].slice(0, 16);
+    // P2.1: emit any direct_chat cards through the out-of-panel push channel. Gated by a
+    // configured webhook URL (the operator's opt-in): absent -> pushOptIn false, so nothing is
+    // appended and the inert transport delivers nothing. Own try -> never affects the advisor.
+    try {
+      const webhookUrl =
+        typeof process.env.AOI_PUSH_WEBHOOK_URL === 'string'
+          ? process.env.AOI_PUSH_WEBHOOK_URL.trim()
+          : '';
+      await runAoiProactivePushForSession({
+        sessionsDir: params.input.sessionsDir,
+        sessionPath,
+        candidates: trendAdvisor.opinionCards
+          .filter((card) => card.deliveryMode === 'direct_chat')
+          .map((card) => ({
+            id: card.id,
+            sessionPath,
+            title: card.title,
+            deliveryMode: card.deliveryMode,
+            directChatAllowed: card.directChatAllowed,
+            risk: 'low' as const,
+            deepLinkRef: card.id,
+          })),
+        pushOptIn: webhookUrl.length > 0,
+        budgetAllowed: !directChatBudgetExhausted,
+        transport: webhookUrl ? createAoiWebhookPushTransport({ webhookUrl }) : undefined,
+        now: params.now,
+      });
+    } catch {
+      // best-effort: proactive push never affects the wakeup or the trend advisor.
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : 'trend advisor update failed';
     trendWarnings.push(`trend_advisor_update_failed:${message.slice(0, 160)}`);
