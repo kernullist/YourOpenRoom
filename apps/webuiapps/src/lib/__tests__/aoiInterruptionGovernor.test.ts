@@ -3,6 +3,7 @@ import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import { buildAoiOpportunityInboxPanelSummary } from '../aoiAutonomyUi';
 import {
   buildAoiInterruptionGovernorDecisions,
+  capAoiOpportunityDeliveryRecommendation,
   decideAoiInterruptionDelivery,
 } from '../aoiInterruptionGovernor';
 import type { AoiJarvisAutonomyGovernorDecision } from '../aoiJarvisAutonomyGovernor';
@@ -457,5 +458,30 @@ describe('Aoi Interruption Governor', () => {
     expect(summary.itemLabels[0]?.interruptionBlockedLabels.join(' ')).toContain(
       'Direct chat is not opted in',
     );
+  });
+});
+
+describe('capAoiOpportunityDeliveryRecommendation (P5.5)', () => {
+  it('downgrades a too-loud recommendation to the governor mode', () => {
+    expect(capAoiOpportunityDeliveryRecommendation('direct_chat', 'dashboard')).toBe('dashboard');
+    expect(capAoiOpportunityDeliveryRecommendation('inline_card', 'quiet_notification')).toBe(
+      'quiet_notification',
+    );
+    // 'hidden' has no opportunity equivalent -> the quietest surface.
+    expect(capAoiOpportunityDeliveryRecommendation('direct_chat', 'hidden')).toBe('dashboard');
+  });
+
+  it('never escalates above the current recommendation', () => {
+    expect(capAoiOpportunityDeliveryRecommendation('dashboard', 'direct_chat')).toBe('dashboard');
+    expect(capAoiOpportunityDeliveryRecommendation('quiet_notification', 'inline_card')).toBe(
+      'quiet_notification',
+    );
+  });
+
+  it('leaves an already-matching recommendation unchanged', () => {
+    expect(capAoiOpportunityDeliveryRecommendation('direct_chat', 'direct_chat')).toBe(
+      'direct_chat',
+    );
+    expect(capAoiOpportunityDeliveryRecommendation('dashboard', 'dashboard')).toBe('dashboard');
   });
 });

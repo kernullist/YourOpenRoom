@@ -11,6 +11,7 @@ import type {
   AoiInterruptionDeliveryMode,
   AoiInterruptionGovernorDecision,
   AoiOpportunity,
+  AoiOpportunityDeliveryRecommendation,
   AoiProactiveBriefFeedback,
   AoiProactiveTrendAdvisorState,
   AoiProactiveTrendDeliveryEvent,
@@ -553,4 +554,44 @@ export function buildAoiInterruptionGovernorDecisions(
       deliberationRun: latestRunForOpportunity(input.deliberationRuns, opportunity.id),
     }),
   );
+}
+
+// P5.5: loudness ranking of an opportunity delivery recommendation. Higher == more intrusive.
+const DELIVERY_RECOMMENDATION_RANK: Record<AoiOpportunityDeliveryRecommendation, number> = {
+  dashboard: 0,
+  quiet_notification: 1,
+  inline_card: 2,
+  direct_chat: 3,
+};
+
+// Map the governor's decided delivery mode onto the opportunity's recommendation vocabulary
+// (the governor's 'hidden' has no opportunity equivalent -> the quietest, 'dashboard').
+function governorModeToRecommendation(
+  mode: AoiInterruptionDeliveryMode,
+): AoiOpportunityDeliveryRecommendation {
+  switch (mode) {
+    case 'direct_chat':
+      return 'direct_chat';
+    case 'inline_card':
+      return 'inline_card';
+    case 'quiet_notification':
+      return 'quiet_notification';
+    default:
+      // 'dashboard' | 'hidden' -> the quietest opportunity surface.
+      return 'dashboard';
+  }
+}
+
+// P5.5: make the interruption governor the real delivery gate for an opportunity -- but ONLY
+// ever DOWNGRADE (make quieter), never escalate. So the governor's budget / quiet-window /
+// confidence / risk / graded-urgency logic can pull a too-eager 'direct_chat' down to a quiet
+// surface, while a bug or a missing input can only make Aoi quieter, never more intrusive.
+export function capAoiOpportunityDeliveryRecommendation(
+  current: AoiOpportunityDeliveryRecommendation,
+  governorMode: AoiInterruptionDeliveryMode,
+): AoiOpportunityDeliveryRecommendation {
+  const governorRec = governorModeToRecommendation(governorMode);
+  return DELIVERY_RECOMMENDATION_RANK[governorRec] < DELIVERY_RECOMMENDATION_RANK[current]
+    ? governorRec
+    : current;
 }

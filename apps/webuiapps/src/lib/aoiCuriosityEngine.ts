@@ -2,6 +2,7 @@ import { loadAoiActiveGoals } from './aoiAutonomyGoals';
 import { loadAoiMissionState } from './aoiAutonomyMission';
 import {
   loadAoiActiveProposals,
+  loadAoiAutonomyPolicy,
   loadAoiFollowThroughLearningSummary,
   loadAoiProposalDecisions,
   normalizeAoiAutonomySessionPath,
@@ -9,6 +10,10 @@ import {
   type AoiOpportunityUpsertInput,
   type AoiOpportunityUpsertResult,
 } from './aoiAutonomyStore';
+import {
+  buildAoiInterruptionGovernorDecisions,
+  capAoiOpportunityDeliveryRecommendation,
+} from './aoiInterruptionGovernor';
 import type {
   AoiAutonomyRisk,
   AoiGoal,
@@ -1315,18 +1320,54 @@ export function runAoiCuriosityEngineForSession(
     followThroughLearning,
     maxCandidates: input.maxCandidates,
   });
-  const upserted = result.candidates.map((candidate) =>
-    upsertAoiOpportunity(
+  const inputs = result.candidates.map((candidate) => toAoiOpportunityUpsertInput(candidate));
+  const upserted = inputs.map((upsertInput) =>
+    upsertAoiOpportunity(input.sessionsDir, sessionPath, upsertInput, now),
+  );
+  // P5.5: make the interruption governor the REAL delivery gate. Run each just-persisted
+  // opportunity through decideAoiInterruptionDelivery and DOWNGRADE (never escalate) its
+  // deliveryRecommendation to the governor's decided mode -- so the graded budget / quiet-
+  // window / confidence / risk logic actually gates delivery instead of the producer's own
+  // recommendation. Downgrade-only: a bug or a missing input can only make Aoi quieter.
+  const policy = loadAoiAutonomyPolicy(input.sessionsDir, sessionPath);
+  const decisions = buildAoiInterruptionGovernorDecisions({
+    sessionPath,
+    opportunities: upserted.map((item) => item.opportunity),
+    policy,
+    directChatOptIn: policy.proactiveBriefing.directChatHookOptIn === true,
+    ...(followThroughLearning ? { followThroughLearning } : {}),
+    ...(input.proactiveTrendAdvisor ? { proactiveTrendAdvisor: input.proactiveTrendAdvisor } : {}),
+    now,
+  });
+  const decisionByOpportunityId = new Map(
+    decisions.map((decision) => [decision.opportunityId, decision]),
+  );
+  const gated = upserted.map((item, index) => {
+    const decision = decisionByOpportunityId.get(item.opportunity.id);
+    if (!decision) {
+      return item;
+    }
+    const capped = capAoiOpportunityDeliveryRecommendation(
+      item.opportunity.deliveryRecommendation,
+      decision.deliveryMode,
+    );
+    if (capped === item.opportunity.deliveryRecommendation) {
+      return item;
+    }
+    // Persist the governor-decided (quieter) mode; keep the ORIGINAL created flag so the
+    // create/update counts reflect the first write, not this cap.
+    const reupserted = upsertAoiOpportunity(
       input.sessionsDir,
       sessionPath,
-      toAoiOpportunityUpsertInput(candidate),
+      { ...inputs[index], deliveryRecommendation: capped },
       now,
-    ),
-  );
+    );
+    return { ...reupserted, created: item.created };
+  });
   return {
     ...result,
-    upserted,
-    createdCount: upserted.filter((item) => item.created).length,
-    updatedCount: upserted.filter((item) => !item.created).length,
+    upserted: gated,
+    createdCount: gated.filter((item) => item.created).length,
+    updatedCount: gated.filter((item) => !item.created).length,
   };
 }

@@ -406,4 +406,32 @@ describe('Aoi Curiosity Engine', () => {
     });
     expect(active.flatMap((item) => item.evidenceRefs)).toContain('generated_by:curiosity_engine');
   });
+
+  it('caps opportunity delivery through the interruption governor (P5.5)', () => {
+    const root = makeTempRoot();
+    // No policy saved -> the default policy is disabled/preview, so the governor blocks a loud
+    // interruption. The persisted opportunities must therefore be DOWNGRADED to the quiet
+    // 'dashboard' surface -- the governor, not the producer's recommendation, is the gate.
+    const run = runAoiCuriosityEngineForSession({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      memories: [makeMemory()],
+      interestProfile: makeProfile(),
+      researchRuns: [makeResearchRun()],
+      workspaceSnapshot: makeWorkspaceSnapshot(),
+      // A Kira validation failure yields an 'inline_card' candidate -> the disabled policy's
+      // governor downgrades it, exercising the re-persist (cap) path.
+      kiraOutcomes: [makeKiraOutcome()],
+      maxCandidates: 4,
+    });
+    expect(run.createdCount).toBeGreaterThan(0);
+    const active = loadAoiActiveOpportunities(root, SESSION_PATH, NOW);
+    // A candidate started as inline_card, so the cap actually downgraded at least one.
+    expect(active.length).toBeGreaterThan(0);
+    // Every delivery recommendation is governor-gated down to the quietest surface.
+    expect(active.every((item) => item.deliveryRecommendation === 'dashboard')).toBe(true);
+    // The cap never escalates: it only ever produces dashboard here (never direct_chat).
+    expect(active.some((item) => item.deliveryRecommendation === 'direct_chat')).toBe(false);
+  });
 });
