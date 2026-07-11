@@ -3256,6 +3256,14 @@ export interface AoiAutonomyPolicy {
   // Optional + default off -> behavior is byte-identical until the operator enables it;
   // the env ceiling still applies and loop-written records never auto-promote.
   fieldShadowCaptureEnabled?: boolean;
+  // P3.1: operator opt-in to the bounded reason-act-observe reflection loop. When on, the
+  // reflection MAY inspect the already-loaded working set in more detail (read-only, pure
+  // functions of the loaded bundle -- no new I/O, no writes, same evidence set) across a few
+  // capped LLM turns before returning the SAME final {reflections, proposals} JSON. Optional +
+  // default off -> the reflection stays a single call and the prompt is byte-identical until
+  // the operator enables it; the shared daily token ledger + step cap still bound all spend,
+  // and the final proposals go through the unchanged display-only / approval-gated parse.
+  agenticReflectionEnabled?: boolean;
   confidenceFloor: number;
   maxActiveProposals: number;
   maxProposalsPerTick: number;

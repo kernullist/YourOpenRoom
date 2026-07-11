@@ -93,10 +93,25 @@ describe('Aoi autonomy policy defaults', () => {
     expect(DEFAULT_AOI_AUTONOMY_POLICY.previewMode).toBe(true);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.level).toBe('L1');
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveSuggestionsEnabled).toBe(false);
+    // P3.1: the bounded reason-act-observe reflection loop is OFF by default.
+    expect(DEFAULT_AOI_AUTONOMY_POLICY.agenticReflectionEnabled).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.enabled).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.allowBackgroundScout).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.proactiveBriefing.directChatHookOptIn).toBe(false);
     expect(DEFAULT_AOI_AUTONOMY_POLICY.maxActiveProposals).toBeLessThanOrEqual(8);
+  });
+
+  it('normalizes agenticReflectionEnabled: opt-in true survives, absent/garbage -> false (P3.1)', () => {
+    expect(
+      normalizeAoiAutonomyPolicy({ agenticReflectionEnabled: true }).agenticReflectionEnabled,
+    ).toBe(true);
+    // Absent -> falls back to the conservative default (off).
+    expect(normalizeAoiAutonomyPolicy({}).agenticReflectionEnabled).toBe(false);
+    // Non-boolean -> coerced to the fallback (off), never truthy-accidentally-enabled.
+    expect(
+      normalizeAoiAutonomyPolicy({ agenticReflectionEnabled: 'yes' as unknown as boolean })
+        .agenticReflectionEnabled,
+    ).toBe(false);
   });
 
   it('normalizes partial policy values with bounded numeric limits', () => {

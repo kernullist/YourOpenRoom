@@ -245,6 +245,7 @@ export const DEFAULT_AOI_AUTONOMY_POLICY: AoiAutonomyPolicy = {
   level: 'L1',
   proactiveSuggestionsEnabled: false,
   fieldShadowCaptureEnabled: false,
+  agenticReflectionEnabled: false,
   confidenceFloor: 0.55,
   maxActiveProposals: 8,
   maxProposalsPerTick: 3,
@@ -698,6 +699,10 @@ export function normalizeAoiAutonomyPolicy(
     fieldShadowCaptureEnabled: normalizeBoolean(
       raw.fieldShadowCaptureEnabled,
       fallback.fieldShadowCaptureEnabled ?? false,
+    ),
+    agenticReflectionEnabled: normalizeBoolean(
+      raw.agenticReflectionEnabled,
+      fallback.agenticReflectionEnabled ?? false,
     ),
     confidenceFloor: clampNumber(raw.confidenceFloor, fallback.confidenceFloor, 0, 1),
     maxActiveProposals: Math.round(

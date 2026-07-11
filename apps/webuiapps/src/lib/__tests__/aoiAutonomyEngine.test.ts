@@ -16,6 +16,8 @@ import {
 import {
   buildAoiAutonomyReflectionMessages,
   dropRedundantAoiLlmReflectionProposals,
+  executeReadOnlyReflectionTool,
+  parseAgenticReflectionToolCall,
   runAoiAutonomyBackgroundTick,
   runAoiAutonomyTick,
   type AoiAutonomyReflectionChat,
@@ -78,6 +80,7 @@ import type {
   AoiInterestProfile,
   AoiInterestTopic,
   AoiMissionState,
+  AoiObservation,
   AoiProposal,
   AoiProposalDecision,
   AoiProactiveBriefCandidate,
@@ -680,6 +683,52 @@ function reflectionChat(content: string, usageTotalTokens?: number): AoiAutonomy
   })) as AoiAutonomyReflectionChat;
 }
 
+// P3.1: a reflection chat that replies with a DIFFERENT scripted content per turn (the
+// last entry repeats), recording each turn's inbound messages so a test can assert the
+// tool_result was fed back into the next turn.
+function sequencedReflectionChat(contents: string[]): {
+  chat: AoiAutonomyReflectionChat;
+  callCount: () => number;
+  callMessages: (index: number) => unknown[];
+} {
+  const recorded: unknown[][] = [];
+  let index = 0;
+  const chat = (async (messages: unknown[]) => {
+    // The strategic-brief synthesizer shares this same chat fn within a tick; only script
+    // the reflection-evaluator turns so its call does not consume the scripted sequence.
+    if (!JSON.stringify(messages).includes('reflection evaluator')) {
+      return { content: '{}', toolCalls: [] };
+    }
+    recorded.push(messages);
+    const content = contents[Math.min(index, contents.length - 1)] ?? '{}';
+    index += 1;
+    return { content, toolCalls: [] };
+  }) as unknown as AoiAutonomyReflectionChat;
+  return {
+    chat,
+    callCount: () => recorded.length,
+    callMessages: (i: number) => recorded[i] ?? [],
+  };
+}
+
+// P3.1: enable autonomy AND opt in to the bounded reason-act-observe reflection loop.
+function enableAgenticReflectionPolicy(root: string): void {
+  saveAoiAutonomyPolicy(
+    root,
+    SESSION_PATH,
+    {
+      enabled: true,
+      previewMode: true,
+      level: 'L4',
+      confidenceFloor: 0.55,
+      maxActiveProposals: 8,
+      maxProposalsPerTick: 4,
+      agenticReflectionEnabled: true,
+    },
+    NOW,
+  );
+}
+
 afterEach(() => {
   for (const root of tempRoots.splice(0)) {
     fs.rmSync(root, { recursive: true, force: true });
@@ -1014,6 +1063,140 @@ describe('runAoiAutonomyTick()', () => {
       'Map the ETW telemetry gap',
     );
     expect(goalCandidate?.requiresUserApproval).toBe(true);
+  });
+
+  it('runs the bounded reason-act-observe loop: inspects the working set, then emits the final proposal (P3.1)', async () => {
+    const root = makeTempRoot();
+    enableAgenticReflectionPolicy(root);
+    // Turn 1: the model inspects the working set via a read-only tool. Turn 2: it returns
+    // the final answer. The loop must execute the tool, feed the observation back, and
+    // parse the final answer through the unchanged (display-only, approval-gated) path.
+    const toolCall = JSON.stringify({ tool_call: { name: 'list_working_set', args: {} } });
+    const finalJson = JSON.stringify({
+      reflections: [],
+      proposals: [
+        {
+          title: 'track the recurring telemetry objective',
+          body: 'A recurring multi-step objective across recent activity.',
+          reason: 'It keeps recurring across observations.',
+          confidence: 0.8,
+          evidenceRefs: ['observation:latest-user-message'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: {
+              title: 'Harden kernel telemetry',
+              userIntentSummary: 'Finish hardening the kernel telemetry path',
+            },
+          },
+        },
+      ],
+    });
+    const seq = sequencedReflectionChat([toolCall, finalJson]);
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: seq.chat,
+      goalSynthesisEnabled: true,
+      llmDailyTokenBudget: 1_000_000,
+      now: NOW,
+    });
+
+    // The loop took exactly two turns: one inspection, then the final answer.
+    expect(seq.callCount()).toBe(2);
+    // The second turn's inbound messages carry the tool_result from the first turn, so the
+    // model's inspection is genuinely observed (reason -> act -> observe).
+    expect(JSON.stringify(seq.callMessages(1))).toContain('tool_result');
+    // The final answer flowed through the unchanged parse -> the display-only, approval-
+    // gated goal candidate was emitted, proving the loop concluded and stayed safe.
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeDefined();
+    expect(goalCandidate?.requiresUserApproval).toBe(true);
+    // no-self-direction preserved even through the loop: proposed, never activated.
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toHaveLength(0);
+  });
+
+  it('fails closed (emits no LLM proposal) when the agentic loop never concludes (P3.1)', async () => {
+    const root = makeTempRoot();
+    enableAgenticReflectionPolicy(root);
+    // The model NEVER returns a final answer -- only tool calls. The loop must stop at the
+    // step cap and emit nothing (never propose from an unfinished reasoning chain).
+    const alwaysToolCall = JSON.stringify({ tool_call: { name: 'list_working_set', args: {} } });
+    const seq = sequencedReflectionChat([alwaysToolCall]);
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: seq.chat,
+      goalSynthesisEnabled: true,
+      llmDailyTokenBudget: 1_000_000,
+      now: NOW,
+    });
+
+    // Bounded: the loop stopped at the step cap and never fanned out further.
+    expect(seq.callCount()).toBe(4);
+    // Fail-closed: no LLM proposal is emitted from an unfinished reasoning chain.
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeUndefined();
+  });
+
+  it('fails closed when the daily token budget is exhausted before the agentic loop starts (P3.1)', async () => {
+    const root = makeTempRoot();
+    enableAgenticReflectionPolicy(root);
+    const toolCall = JSON.stringify({ tool_call: { name: 'list_working_set', args: {} } });
+    const seq = sequencedReflectionChat([toolCall]);
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: seq.chat,
+      goalSynthesisEnabled: true,
+      // A tiny ceiling: the budget gate rejects the first turn before any call is made.
+      llmDailyTokenBudget: 1,
+      now: NOW,
+    });
+
+    // The budget gate short-circuited the loop: the reflection LLM was never called...
+    expect(seq.callCount()).toBe(0);
+    // ...and nothing is proposed (fail-closed).
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeUndefined();
+  });
+
+  it('leaves the reflection prompt byte-identical when the agentic loop is off (P3.1)', () => {
+    // Pattern #7 discipline: the opt-in must be inert until enabled. The default builder
+    // output (agenticToolsEnabled omitted) must equal the explicitly-disabled output.
+    const base = {
+      observations: [] as AoiObservation[],
+      memories: [] as AoiMemoryEntry[],
+      activeProposals: [] as AoiProposal[],
+      latestUserMessage: 'kernel telemetry',
+    };
+    const off = buildAoiAutonomyReflectionMessages({ ...base });
+    const explicitlyOff = buildAoiAutonomyReflectionMessages({
+      ...base,
+      agenticToolsEnabled: false,
+    });
+    const on = buildAoiAutonomyReflectionMessages({ ...base, agenticToolsEnabled: true });
+    expect(JSON.stringify(off)).toEqual(JSON.stringify(explicitlyOff));
+    // When on, the prompt gains the read-only tool instruction (and only then).
+    expect(JSON.stringify(off)).not.toContain('tool_call');
+    expect(JSON.stringify(on)).toContain('list_working_set');
   });
 
   it('drops an activate_goal candidate when goal synthesis is not opted in (P1a c4)', async () => {
@@ -4121,5 +4304,156 @@ describe('runAoiAutonomyWakeup()', () => {
       id: result.record.id,
       status: 'failed',
     });
+  });
+});
+
+// P3.1: the pure building blocks of the bounded reason-act-observe loop. These are the
+// tool-call detector and the read-only tool executor -- side-effect-free, so they are
+// unit-tested directly without a tick.
+function makeObservationFixture(partial: Partial<AoiObservation> = {}): AoiObservation {
+  return {
+    version: 1,
+    id: 'observation-p31-001',
+    source: 'chat',
+    sessionPath: SESSION_PATH,
+    createdAt: NOW,
+    summary: 'The operator keeps returning to the kernel telemetry hardening objective.',
+    memoryIds: [],
+    artifactRefs: [],
+    proposalIds: [],
+    riskSignals: ['recurring'],
+    dedupeKey: 'observation-p31-dedupe',
+    ...partial,
+  };
+}
+
+describe('parseAgenticReflectionToolCall() (P3.1)', () => {
+  it('returns null for a final {reflections, proposals} answer', () => {
+    const finalAnswer = JSON.stringify({ reflections: [], proposals: [] });
+    expect(parseAgenticReflectionToolCall(finalAnswer)).toBeNull();
+  });
+
+  it('parses a valid tool_call with args', () => {
+    const content = JSON.stringify({
+      tool_call: { name: 'get_memory_detail', args: { id: 'memory-1' } },
+    });
+    expect(parseAgenticReflectionToolCall(content)).toEqual({
+      name: 'get_memory_detail',
+      args: { id: 'memory-1' },
+    });
+  });
+
+  it('defaults args to an empty object when absent or non-object', () => {
+    expect(
+      parseAgenticReflectionToolCall(JSON.stringify({ tool_call: { name: 'list_working_set' } })),
+    ).toEqual({
+      name: 'list_working_set',
+      args: {},
+    });
+    expect(
+      parseAgenticReflectionToolCall(JSON.stringify({ tool_call: { name: 'x', args: [1, 2] } })),
+    ).toEqual({ name: 'x', args: {} });
+  });
+
+  it('returns null when the tool_call name is missing or not a string', () => {
+    expect(parseAgenticReflectionToolCall(JSON.stringify({ tool_call: { args: {} } }))).toBeNull();
+    expect(parseAgenticReflectionToolCall(JSON.stringify({ tool_call: { name: 42 } }))).toBeNull();
+    expect(
+      parseAgenticReflectionToolCall(JSON.stringify({ tool_call: { name: '  ' } })),
+    ).toBeNull();
+  });
+
+  it('returns null for a non-object tool_call, non-JSON, or non-string input', () => {
+    expect(parseAgenticReflectionToolCall(JSON.stringify({ tool_call: 'go' }))).toBeNull();
+    expect(parseAgenticReflectionToolCall('not json at all')).toBeNull();
+    expect(parseAgenticReflectionToolCall('[]')).toBeNull();
+    expect(parseAgenticReflectionToolCall(123 as unknown as string)).toBeNull();
+  });
+
+  it('returns null when a brace-delimited slice is present but not valid JSON', () => {
+    // extractJsonObject finds the { ... } slice, but JSON.parse throws -> fail-closed null.
+    expect(parseAgenticReflectionToolCall('prefix { not: valid, json } suffix')).toBeNull();
+  });
+});
+
+describe('executeReadOnlyReflectionTool() (P3.1)', () => {
+  it('list_working_set returns memory + observation ids from the loaded bundle', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'list_working_set', args: {} },
+      {
+        memories: [makeMemory({ id: 'm-1' }), makeMemory({ id: 'm-2' })],
+        observations: [makeObservationFixture({ id: 'o-1' })],
+      },
+    );
+    expect(result).toEqual({
+      memories: [
+        { id: 'm-1', type: 'agent/fact' },
+        { id: 'm-2', type: 'agent/fact' },
+      ],
+      observations: [{ id: 'o-1', source: 'chat' }],
+    });
+  });
+
+  it('get_memory_detail returns the fuller (sanitized) content for a known id', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'get_memory_detail', args: { id: 'm-detail' } },
+      {
+        memories: [makeMemory({ id: 'm-detail', content: 'full memory body', tags: ['a', 'b'] })],
+        observations: [],
+      },
+    );
+    expect(result).toMatchObject({
+      id: 'm-detail',
+      type: 'agent/fact',
+      content: 'full memory body',
+      tags: ['a', 'b'],
+    });
+  });
+
+  it('get_memory_detail fails closed with memory_not_found for a missing id', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'get_memory_detail', args: { id: 'nope' } },
+      { memories: [makeMemory({ id: 'm-1' })], observations: [] },
+    );
+    expect(result).toEqual({ error: 'memory_not_found' });
+  });
+
+  it('get_observation_detail returns the fuller summary + risk signals + evidence refs', () => {
+    const observation = makeObservationFixture({ id: 'o-detail', summary: 'a longer summary' });
+    const result = executeReadOnlyReflectionTool(
+      { name: 'get_observation_detail', args: { id: 'o-detail' } },
+      { memories: [], observations: [observation] },
+    );
+    expect(result).toMatchObject({
+      id: 'o-detail',
+      source: 'chat',
+      summary: 'a longer summary',
+      riskSignals: ['recurring'],
+    });
+    expect(Array.isArray((result as { evidenceRefs?: unknown }).evidenceRefs)).toBe(true);
+  });
+
+  it('get_observation_detail fails closed with observation_not_found for a missing id', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'get_observation_detail', args: { id: 'missing' } },
+      { memories: [], observations: [makeObservationFixture({ id: 'o-1' })] },
+    );
+    expect(result).toEqual({ error: 'observation_not_found' });
+  });
+
+  it('returns unknown_tool for an unrecognized tool name (fail-closed)', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'delete_everything', args: {} },
+      { memories: [], observations: [] },
+    );
+    expect(result).toEqual({ error: 'unknown_tool' });
+  });
+
+  it('treats a non-string id as missing rather than throwing', () => {
+    const result = executeReadOnlyReflectionTool(
+      { name: 'get_memory_detail', args: { id: 123 } },
+      { memories: [makeMemory({ id: 'm-1' })], observations: [] },
+    );
+    expect(result).toEqual({ error: 'memory_not_found' });
   });
 });

@@ -1489,6 +1489,10 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // author title/body/reason in that language so the proposal card is not shown
   // in English to a non-English operator. Omitted -> prompt unchanged.
   language?: AoiCardLang;
+  // P3.1: when true, the prompt tells the model it MAY first inspect the working set
+  // in more detail via read-only tools (a bounded reason-act-observe loop) before
+  // returning the final JSON. Default off -> the prompt is byte-identical (single shot).
+  agenticToolsEnabled?: boolean;
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1604,6 +1608,13 @@ export function buildAoiAutonomyReflectionMessages(params: {
     systemLines.push(
       'You MAY propose at most one goal candidate via acceptAction.kind="activate_goal" with params.title and params.userIntentSummary, ONLY when recent observations show a recurring multi-step objective worth tracking. Cite supplied evidenceRefs; it is display-only and requires explicit user approval before any goal is created.',
       'For an activate_goal candidate you MAY also decompose the objective into params.planSteps: at most 4 concrete steps, each {"title": short, "doneCriteria": ["how you know it is done"]}. Keep them concrete and bounded; they stay display-only and require approval. Omit planSteps if you cannot decompose it concretely.',
+    );
+  }
+  if (params.agenticToolsEnabled) {
+    systemLines.push(
+      'Before answering you MAY inspect the working set in more detail. To inspect, return ONLY {"tool_call": {"name": "...", "args": {...}}} (nothing else) and you will receive {"tool_result": ...}; then continue reasoning.',
+      'Read-only tools (no side effects): list_working_set (no args) lists every memory+observation id, including any beyond the previews above; get_memory_detail {"id"} returns one memory full text; get_observation_detail {"id"} returns one observation full summary + riskSignals.',
+      'The tools only re-read the already-supplied working set; they add NO new evidence, so evidenceRefs must still cite only the originally supplied observation/memory ids. You have a small step budget, so inspect only what you need, then return the final {reflections, proposals} JSON.',
     );
   }
 
@@ -2083,6 +2094,240 @@ export function parseAoiAutonomyReflectionResponse(
 // reflection call shares the SAME rolling daily ledger as the brief synthesizer.
 const AOI_REFLECTION_BUDGET_OUTPUT_TOKENS = 1500;
 
+// --- P3.1: bounded reason-act-observe reflection loop --------------------------
+// When the operator opts in (policy.agenticReflectionEnabled), the reflection may
+// take a few capped LLM turns, inspecting the ALREADY-LOADED working set in more
+// detail via read-only tools before emitting the SAME final {reflections, proposals}
+// JSON. Safety: the tools are pure functions of the loaded bundle (no new I/O, no
+// writes, no new evidence); every turn draws the shared daily token ledger; the step
+// cap bounds per-tick turns; and it fails closed (empty result) if the chain never
+// concludes or the budget is exhausted mid-loop.
+
+// Max LLM turns per agentic tick (each turn is one budget-charged call). Small so a
+// tick cannot fan out; the daily token ledger bounds spend across ticks regardless.
+const MAX_AGENTIC_REFLECTION_STEPS = 4;
+// Detail caps for the read-only tool observations (fuller than the seed-prompt
+// previews so inspection is worthwhile, still bounded so a tool result cannot bloat
+// the context). Sanitized on the way out.
+const AGENTIC_REFLECTION_MEMORY_DETAIL_CHARS = 1200;
+const AGENTIC_REFLECTION_OBSERVATION_DETAIL_CHARS = 800;
+const AGENTIC_REFLECTION_MAX_LIST = 40;
+const AGENTIC_REFLECTION_MAX_TAGS = 12;
+const AGENTIC_REFLECTION_MAX_RISK_SIGNALS = 12;
+
+interface AgenticReflectionToolCall {
+  name: string;
+  args: Record<string, unknown>;
+}
+
+// Detect a read-only tool-call turn vs a final answer. A response is a tool call ONLY
+// when its JSON carries a tool_call object with a non-empty string name; anything else
+// (including today's {reflections, proposals} response) returns null and is treated as
+// the final answer -- so an opted-in tick that never calls a tool degrades to the exact
+// single-shot behavior, and the disabled path is unaffected.
+export function parseAgenticReflectionToolCall(content: string): AgenticReflectionToolCall | null {
+  if (typeof content !== 'string') {
+    return null;
+  }
+  const json = extractJsonObject(content);
+  if (!json) {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') {
+    return null;
+  }
+  const rawCall = (parsed as { tool_call?: unknown }).tool_call;
+  if (!rawCall || typeof rawCall !== 'object') {
+    return null;
+  }
+  const name = (rawCall as { name?: unknown }).name;
+  if (typeof name !== 'string' || name.trim().length === 0) {
+    return null;
+  }
+  const rawArgs = (rawCall as { args?: unknown }).args;
+  const args =
+    rawArgs && typeof rawArgs === 'object' && !Array.isArray(rawArgs)
+      ? (rawArgs as Record<string, unknown>)
+      : {};
+  return { name: name.trim(), args };
+}
+
+// Execute one read-only reflection tool against the loaded bundle. PURE: it only
+// re-reads the already-loaded, already-sanitized working set (no disk, no network, no
+// mutation) and returns fuller detail than the seed-prompt previews. The evidenceRefs it
+// surfaces are the SAME refs already known to the parse, so no new citable evidence is
+// introduced. Unknown tool / missing id -> a structured error observation (fail-closed:
+// the loop simply continues and eventually hits the step cap).
+export function executeReadOnlyReflectionTool(
+  toolCall: AgenticReflectionToolCall,
+  bundle: Pick<CandidateBundle, 'memories' | 'observations'>,
+): Record<string, unknown> {
+  const args = toolCall.args ?? {};
+  switch (toolCall.name) {
+    case 'list_working_set': {
+      return {
+        memories: bundle.memories.slice(0, AGENTIC_REFLECTION_MAX_LIST).map((memory) => ({
+          id: memory.id,
+          type: `${memory.scope}/${memory.type}`,
+        })),
+        observations: bundle.observations
+          .slice(0, AGENTIC_REFLECTION_MAX_LIST)
+          .map((observation) => ({
+            id: observation.id,
+            source: observation.source,
+          })),
+      };
+    }
+    case 'get_memory_detail': {
+      const id = typeof args.id === 'string' ? args.id : '';
+      const memory = bundle.memories.find((entry) => entry.id === id);
+      if (!memory) {
+        return { error: 'memory_not_found' };
+      }
+      return {
+        id: memory.id,
+        type: `${memory.scope}/${memory.type}`,
+        content: sanitizePromptText(memory.content, AGENTIC_REFLECTION_MEMORY_DETAIL_CHARS),
+        tags: memory.tags.slice(0, AGENTIC_REFLECTION_MAX_TAGS),
+        updatedAt: memory.updatedAt,
+      };
+    }
+    case 'get_observation_detail': {
+      const id = typeof args.id === 'string' ? args.id : '';
+      const observation = bundle.observations.find((entry) => entry.id === id);
+      if (!observation) {
+        return { error: 'observation_not_found' };
+      }
+      return {
+        id: observation.id,
+        source: observation.source,
+        summary: sanitizePromptText(
+          observation.summary,
+          AGENTIC_REFLECTION_OBSERVATION_DETAIL_CHARS,
+        ),
+        riskSignals: observation.riskSignals.slice(0, AGENTIC_REFLECTION_MAX_RISK_SIGNALS),
+        evidenceRefs: makeEvidenceRefsFromObservation(observation),
+      };
+    }
+    default: {
+      return { error: 'unknown_tool' };
+    }
+  }
+}
+
+// One budget-gated reflection LLM call. Loads the CURRENT rolling ledger, fails closed
+// when the daily ceiling is exhausted (persisting the rolled window so a broken window
+// still advances), otherwise calls and records the real-or-estimated spend so a broken
+// endpoint cannot be retried for free. Shared by the single-shot path and the agentic
+// loop so ALL auto-path reflection spend draws one ledger and each loop turn re-checks
+// against the prior turn's recorded spend.
+async function runChargedReflectionCall(params: {
+  messages: ChatMessage[];
+  reflectionChat: AoiAutonomyReflectionChat;
+  llmConfig: LLMConfig;
+  sessionsDir: string;
+  sessionPath: string;
+  llmDailyTokenBudget?: number;
+  now: number;
+}): Promise<{ ok: true; content: string } | { ok: false; warning: string }> {
+  const ceilingTokens = resolveAoiLlmTokenCeiling(params.llmDailyTokenBudget);
+  const promptTokens = estimateAoiLlmTokens(JSON.stringify(params.messages));
+  const budgetCheck = checkAoiLlmBudget({
+    state: loadAoiLlmBudgetState(params.sessionsDir, params.sessionPath),
+    sessionPath: params.sessionPath,
+    now: params.now,
+    windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+    ceilingTokens,
+    estimatedTokens: promptTokens + AOI_REFLECTION_BUDGET_OUTPUT_TOKENS,
+  });
+  if (!budgetCheck.allowed) {
+    try {
+      saveAoiLlmBudgetState(params.sessionsDir, params.sessionPath, budgetCheck.rolledState);
+    } catch {
+      // Budget persistence is best-effort.
+    }
+    return { ok: false, warning: 'reflection_llm_budget_exhausted' };
+  }
+  const response = await params.reflectionChat(params.messages, [], params.llmConfig);
+  try {
+    saveAoiLlmBudgetState(
+      params.sessionsDir,
+      params.sessionPath,
+      recordAoiLlmSpend(
+        budgetCheck.rolledState,
+        params.now,
+        // P3.4: charge real provider usage when surfaced; else the chars/4 estimate.
+        Math.max(
+          1,
+          response.usage?.totalTokens ??
+            promptTokens + estimateAoiLlmTokens(response.content ?? ''),
+        ),
+      ),
+    );
+  } catch {
+    // Budget persistence is best-effort.
+  }
+  return { ok: true, content: response.content };
+}
+
+// The bounded reason-act-observe loop. Runs up to MAX_AGENTIC_REFLECTION_STEPS
+// budget-charged turns: each turn either returns a read-only tool_call (executed
+// against the loaded bundle, observation appended, loop continues) or the final answer
+// (parsed through the unchanged parse -> same display-only / approval-gated safety).
+// Fails closed: budget exhaustion mid-loop or reaching the step cap without a final
+// answer yields no proposals (never emit proposals from an unfinished reasoning chain).
+async function runAgenticReflectionLoop(params: {
+  seedMessages: ChatMessage[];
+  bundle: CandidateBundle;
+  reflectionChat: AoiAutonomyReflectionChat;
+  llmConfig: LLMConfig;
+  sessionsDir: string;
+  sessionPath: string;
+  llmDailyTokenBudget?: number;
+  now: number;
+  parse: (content: string) => {
+    reflections: AoiReflection[];
+    proposals: AoiProposal[];
+    warnings: string[];
+  };
+}): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
+  const messages: ChatMessage[] = [...params.seedMessages];
+  const warnings: string[] = [];
+  for (let step = 0; step < MAX_AGENTIC_REFLECTION_STEPS; step += 1) {
+    const charged = await runChargedReflectionCall({
+      messages,
+      reflectionChat: params.reflectionChat,
+      llmConfig: params.llmConfig,
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      llmDailyTokenBudget: params.llmDailyTokenBudget,
+      now: params.now,
+    });
+    if (!charged.ok) {
+      warnings.push(charged.warning);
+      return { reflections: [], proposals: [], warnings };
+    }
+    const toolCall = parseAgenticReflectionToolCall(charged.content);
+    if (!toolCall) {
+      // No tool call -> this IS the final answer; parse exactly as the single-shot path.
+      const parsed = params.parse(charged.content);
+      return { ...parsed, warnings: [...warnings, ...parsed.warnings] };
+    }
+    const observation = executeReadOnlyReflectionTool(toolCall, params.bundle);
+    messages.push({ role: 'assistant', content: charged.content });
+    messages.push({ role: 'user', content: JSON.stringify({ tool_result: observation }) });
+  }
+  // Reached the step cap without a final answer: fail closed.
+  warnings.push('reflection_agentic_step_cap');
+  return { reflections: [], proposals: [], warnings };
+}
+
 async function runLlmReflection(params: {
   bundle: CandidateBundle;
   sessionsDir: string;
@@ -2099,15 +2344,20 @@ async function runLlmReflection(params: {
   goalSynthesisEnabled?: boolean;
   llmDailyTokenBudget?: number;
   language?: AoiCardLang;
+  // P3.1: operator opt-in to the bounded reason-act-observe loop. Default/false ->
+  // the single-shot path below runs and the prompt is byte-identical.
+  agenticReflectionEnabled?: boolean;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
     return { reflections: [], proposals: [], warnings: [] };
   }
+  const llmConfig = params.llmConfig;
   try {
     const reflectionChat =
       params.reflectionChat ?? ((await import('./llmClient')).chat as AoiAutonomyReflectionChat);
     const availableConnectors = buildAoiMcpConnectorCatalog(params.connectors);
+    const agenticEnabled = params.agenticReflectionEnabled === true;
     const messages = buildAoiAutonomyReflectionMessages({
       observations: params.bundle.observations,
       memories: params.bundle.memories,
@@ -2123,58 +2373,58 @@ async function runLlmReflection(params: {
       recentReflections: loadAoiReflections(params.sessionsDir, params.sessionPath),
       goalSynthesisEnabled: params.goalSynthesisEnabled === true,
       ...(params.language ? { language: params.language } : {}),
+      // P3.1: only when opted in does the prompt offer the read-only inspection tools.
+      agenticToolsEnabled: agenticEnabled,
     });
-    // Budget gate: the reflection call is the largest auto-path LLM consumer.
-    // It draws from the SAME rolling daily ledger as the brief synthesizer, so
-    // ALL auto-path LLM spend is bounded. Exhausted -> skip (fail-closed) and
-    // persist the rolled window; otherwise record the estimated spend after the
-    // call (an attempted call always counts so a broken endpoint cannot be
-    // retried for free).
-    const ceilingTokens = resolveAoiLlmTokenCeiling(params.llmDailyTokenBudget);
-    const promptTokens = estimateAoiLlmTokens(JSON.stringify(messages));
-    const budgetCheck = checkAoiLlmBudget({
-      state: loadAoiLlmBudgetState(params.sessionsDir, params.sessionPath),
-      sessionPath: params.sessionPath,
-      now: params.now,
-      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
-      ceilingTokens,
-      estimatedTokens: promptTokens + AOI_REFLECTION_BUDGET_OUTPUT_TOKENS,
-    });
-    if (!budgetCheck.allowed) {
-      try {
-        saveAoiLlmBudgetState(params.sessionsDir, params.sessionPath, budgetCheck.rolledState);
-      } catch {
-        // Budget persistence is best-effort.
-      }
-      return { reflections: [], proposals: [], warnings: ['reflection_llm_budget_exhausted'] };
+    // The final answer -- single-shot or the last agentic turn -- always goes through
+    // this unchanged parse, so all display-only / approval-gated / evidence-validated
+    // safety is identical regardless of the loop.
+    const parseFinal = (content: string) =>
+      parseAoiAutonomyReflectionResponse(content, {
+        sessionPath: params.sessionPath,
+        knownEvidenceRefs: params.knownEvidenceRefs,
+        connectors: params.connectors,
+        goalSynthesisEnabled: params.goalSynthesisEnabled === true,
+        ...(params.language ? { language: params.language } : {}),
+        now: params.now,
+      });
+    // P3.1: opted-in -> bounded reason-act-observe loop (read-only tools over the loaded
+    // bundle, shared budget ledger per turn, step cap, fail-closed). A tick that never
+    // calls a tool degrades to the exact single-shot result.
+    if (agenticEnabled) {
+      return await runAgenticReflectionLoop({
+        seedMessages: messages,
+        bundle: params.bundle,
+        reflectionChat,
+        llmConfig,
+        sessionsDir: params.sessionsDir,
+        sessionPath: params.sessionPath,
+        ...(params.llmDailyTokenBudget !== undefined
+          ? { llmDailyTokenBudget: params.llmDailyTokenBudget }
+          : {}),
+        now: params.now,
+        parse: parseFinal,
+      });
     }
-    const response = await reflectionChat(messages, [], params.llmConfig);
-    try {
-      saveAoiLlmBudgetState(
-        params.sessionsDir,
-        params.sessionPath,
-        recordAoiLlmSpend(
-          budgetCheck.rolledState,
-          params.now,
-          // P3.4: charge real provider usage when surfaced; else the chars/4 estimate.
-          Math.max(
-            1,
-            response.usage?.totalTokens ??
-              promptTokens + estimateAoiLlmTokens(response.content ?? ''),
-          ),
-        ),
-      );
-    } catch {
-      // Budget persistence is best-effort.
-    }
-    return parseAoiAutonomyReflectionResponse(response.content, {
+    // Single-shot path (unchanged behavior). Budget gate: the reflection call is the
+    // largest auto-path LLM consumer and draws the SAME rolling daily ledger as the brief
+    // synthesizer, so ALL auto-path LLM spend is bounded. Exhausted -> skip (fail-closed);
+    // an attempted call always records its spend so a broken endpoint is not retried free.
+    const charged = await runChargedReflectionCall({
+      messages,
+      reflectionChat,
+      llmConfig,
+      sessionsDir: params.sessionsDir,
       sessionPath: params.sessionPath,
-      knownEvidenceRefs: params.knownEvidenceRefs,
-      connectors: params.connectors,
-      goalSynthesisEnabled: params.goalSynthesisEnabled === true,
-      ...(params.language ? { language: params.language } : {}),
+      ...(params.llmDailyTokenBudget !== undefined
+        ? { llmDailyTokenBudget: params.llmDailyTokenBudget }
+        : {}),
       now: params.now,
     });
+    if (!charged.ok) {
+      return { reflections: [], proposals: [], warnings: [charged.warning] };
+    }
+    return parseFinal(charged.content);
   } catch {
     return { reflections: [], proposals: [], warnings: ['reflection_llm_failed'] };
   }
@@ -2985,6 +3235,8 @@ export async function runAoiAutonomyTick(
     // synthesizer, so all auto-path LLM spend is bounded.
     sessionsDir: params.sessionsDir,
     llmDailyTokenBudget: params.llmDailyTokenBudget,
+    // P3.1: operator opt-in to the bounded reason-act-observe reflection loop.
+    agenticReflectionEnabled: policy.agenticReflectionEnabled === true,
     now,
   });
 
