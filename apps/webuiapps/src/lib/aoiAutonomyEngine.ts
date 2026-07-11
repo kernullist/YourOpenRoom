@@ -1460,6 +1460,108 @@ function recordAoiKiraOutcomeRelationsForResult(params: {
   }
 }
 
+// --- P3.5: evidence-grounded goal proposals ------------------------------------
+// A goal should reflect a pattern that RECURS, not a single stray observation. These
+// deterministic helpers (a) surface recurring observation clusters -- evidence anchors
+// (a memory/artifact) that MULTIPLE distinct observations converge on -- to ground an
+// activate_goal candidate, and (b) build a stable dedupe key so a candidate that
+// duplicates an already-active goal is dropped. No LLM, no I/O, no mutation.
+
+const AOI_RECURRING_CLUSTER_MIN_COUNT = 2;
+const AOI_RECURRING_CLUSTER_MAX = 5;
+const AOI_RECURRING_CLUSTER_MAX_SUMMARIES = 3;
+const AOI_RECURRING_CLUSTER_MAX_EVIDENCE = 8;
+
+export interface AoiRecurringObservationCluster {
+  // The shared evidence anchor (memory:<id> / artifact:<ref>) the cluster converges on.
+  anchorRef: string;
+  // How many DISTINCT observations converge on the anchor (>= AOI_RECURRING_CLUSTER_MIN_COUNT).
+  count: number;
+  // The observation evidence refs in the cluster -- all citable (subset of knownEvidenceRefs).
+  evidenceRefs: string[];
+  // A few sanitized observation summaries so the model can name the recurring pattern.
+  summaries: string[];
+}
+
+// Cluster recent observations by the memory/artifact anchors they share. An anchor that
+// >= 2 distinct observations reference is a recurring theme worth a goal. Deterministic:
+// insertion-ordered map + stable sort by count. Returns the top clusters, bounded for the
+// prompt. Empty when nothing recurs (the caller then leaves the prompt unchanged).
+export function buildAoiRecurringObservationClusters(
+  observations: AoiObservation[],
+): AoiRecurringObservationCluster[] {
+  const byAnchor = new Map<string, AoiObservation[]>();
+  for (const observation of observations) {
+    const anchors = new Set<string>();
+    for (const memoryId of observation.memoryIds) {
+      if (typeof memoryId === 'string' && memoryId.trim().length > 0) {
+        anchors.add(`memory:${memoryId}`);
+      }
+    }
+    for (const artifactRef of observation.artifactRefs) {
+      if (typeof artifactRef === 'string' && artifactRef.trim().length > 0) {
+        anchors.add(`artifact:${artifactRef}`);
+      }
+    }
+    for (const anchor of anchors) {
+      const list = byAnchor.get(anchor);
+      if (list) {
+        list.push(observation);
+      } else {
+        byAnchor.set(anchor, [observation]);
+      }
+    }
+  }
+  const clusters: AoiRecurringObservationCluster[] = [];
+  for (const [anchorRef, list] of byAnchor) {
+    const distinct = Array.from(new Map(list.map((o) => [o.id, o])).values());
+    if (distinct.length < AOI_RECURRING_CLUSTER_MIN_COUNT) {
+      continue;
+    }
+    const evidenceRefs: string[] = [];
+    for (const observation of distinct) {
+      for (const ref of makeEvidenceRefsFromObservation(observation)) {
+        if (
+          !evidenceRefs.includes(ref) &&
+          evidenceRefs.length < AOI_RECURRING_CLUSTER_MAX_EVIDENCE
+        ) {
+          evidenceRefs.push(ref);
+        }
+      }
+    }
+    clusters.push({
+      anchorRef,
+      count: distinct.length,
+      evidenceRefs,
+      summaries: distinct
+        .slice(0, AOI_RECURRING_CLUSTER_MAX_SUMMARIES)
+        .map((o) => sanitizePromptText(o.summary, 160))
+        .filter((summary) => summary.length > 0),
+    });
+  }
+  // Most-recurring first; bounded for prompt size.
+  clusters.sort((a, b) => b.count - a.count);
+  return clusters.slice(0, AOI_RECURRING_CLUSTER_MAX);
+}
+
+// Stable key for de-duplicating an activate_goal candidate against the active goals. Same
+// normalization for both sides so a case/whitespace variant of an existing objective does
+// not spawn a second goal candidate.
+export function normalizeAoiGoalDedupeKey(title: string, intent: string): string {
+  return `${title ?? ''} ${intent ?? ''}`.toLowerCase().replace(/\s+/g, ' ').trim().slice(0, 160);
+}
+
+export function buildAoiActiveGoalDedupeKeys(goals: readonly AoiGoal[]): Set<string> {
+  const keys = new Set<string>();
+  for (const goal of goals) {
+    const key = normalizeAoiGoalDedupeKey(goal.title, goal.userIntentSummary);
+    if (key.length > 0) {
+      keys.add(key);
+    }
+  }
+  return keys;
+}
+
 export function buildAoiAutonomyReflectionMessages(params: {
   observations: AoiObservation[];
   memories: AoiMemoryEntry[];
@@ -1493,6 +1595,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // in more detail via read-only tools (a bounded reason-act-observe loop) before
   // returning the final JSON. Default off -> the prompt is byte-identical (single shot).
   agenticToolsEnabled?: boolean;
+  // P3.5: recurring observation clusters (evidence anchors multiple observations converge
+  // on) offered to GROUND an activate_goal candidate in a pattern that recurs. Only shown
+  // when goal synthesis is enabled AND at least one cluster exists; absent/empty -> prompt
+  // unchanged. It is evidence (its evidenceRefs are citable), unlike continuity/reflections.
+  recurringClusters?: AoiRecurringObservationCluster[];
 }): ChatMessage[] {
   const observations = params.observations
     .slice(0, MAX_REFLECTION_PROMPT_OBSERVATIONS)
@@ -1572,6 +1679,12 @@ export function buildAoiAutonomyReflectionMessages(params: {
     .filter((entry) => entry.claim.length > 0);
   const recentReflectionsAvailable = recentReflectionContext.length > 0;
 
+  // P3.5: recurring observation clusters are grounding EVIDENCE for a goal candidate. Only
+  // surfaced when goal synthesis is on (they are useless otherwise) and non-empty, so the
+  // default prompt is unchanged.
+  const recurringClusters = params.goalSynthesisEnabled ? (params.recurringClusters ?? []) : [];
+  const recurringClustersAvailable = recurringClusters.length > 0;
+
   const systemLines = [
     'You are Aoi Autonomy read-only reflection evaluator.',
     'Return strict JSON only.',
@@ -1609,6 +1722,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
       'You MAY propose at most one goal candidate via acceptAction.kind="activate_goal" with params.title and params.userIntentSummary, ONLY when recent observations show a recurring multi-step objective worth tracking. Cite supplied evidenceRefs; it is display-only and requires explicit user approval before any goal is created.',
       'For an activate_goal candidate you MAY also decompose the objective into params.planSteps: at most 4 concrete steps, each {"title": short, "doneCriteria": ["how you know it is done"]}. Keep them concrete and bounded; they stay display-only and require approval. Omit planSteps if you cannot decompose it concretely.',
     );
+    if (recurringClustersAvailable) {
+      systemLines.push(
+        'A "recurringClusters" field lists evidence anchors that MULTIPLE observations converge on (count = how many). PREFER to ground an activate_goal candidate in a recurring cluster -- a goal should reflect a pattern that recurs, not a single stray observation. Cite that cluster\'s evidenceRefs. If nothing recurs, do not force a goal.',
+      );
+    }
   }
   if (params.agenticToolsEnabled) {
     systemLines.push(
@@ -1669,6 +1787,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         ...(continuityAvailable ? { continuity } : {}),
         ...(recentReflectionsAvailable ? { recentReflections: recentReflectionContext } : {}),
         ...(connectorsAvailable ? { availableConnectors } : {}),
+        ...(recurringClustersAvailable ? { recurringClusters } : {}),
         outputSchema: {
           reflections: [
             {
@@ -1845,6 +1964,10 @@ export function parseAoiAutonomyReflectionResponse(
     // P1a c4: when true, an activate_goal acceptAction is accepted and rebuilt as
     // a display-only goal candidate. Absent/false -> any goal candidate is dropped.
     goalSynthesisEnabled?: boolean;
+    // P3.5: normalized keys of the already-active goals. An activate_goal candidate whose
+    // (title + intent) matches an active goal is dropped so a duplicate goal is not
+    // proposed. Absent -> no dedupe (behavior unchanged).
+    activeGoalDedupeKeys?: Set<string>;
     language?: AoiCardLang;
     now?: number;
   },
@@ -1978,6 +2101,15 @@ export function parseAoiAutonomyReflectionResponse(
       });
       if (!goalCandidate) {
         warnings.push('proposal_goal_candidate_rejected');
+        continue;
+      }
+      // P3.5: drop a candidate that duplicates an already-active goal (dedupe on the
+      // normalized title+intent) so the same objective is not proposed twice.
+      if (
+        params.activeGoalDedupeKeys &&
+        params.activeGoalDedupeKeys.has(normalizeAoiGoalDedupeKey(goalTitle, goalIntent))
+      ) {
+        warnings.push('proposal_goal_candidate_duplicate');
         continue;
       }
       if (
@@ -2347,6 +2479,9 @@ async function runLlmReflection(params: {
   // P3.1: operator opt-in to the bounded reason-act-observe loop. Default/false ->
   // the single-shot path below runs and the prompt is byte-identical.
   agenticReflectionEnabled?: boolean;
+  // P3.5: normalized keys of the active goals, so a goal candidate that duplicates a live
+  // goal is dropped in the parse.
+  activeGoalDedupeKeys?: Set<string>;
   now: number;
 }): Promise<{ reflections: AoiReflection[]; proposals: AoiProposal[]; warnings: string[] }> {
   if (!params.llmConfig) {
@@ -2375,6 +2510,9 @@ async function runLlmReflection(params: {
       ...(params.language ? { language: params.language } : {}),
       // P3.1: only when opted in does the prompt offer the read-only inspection tools.
       agenticToolsEnabled: agenticEnabled,
+      // P3.5: recurring observation clusters ground an activate_goal candidate in a pattern
+      // that recurs. Only surfaced when goal synthesis is on (the builder also gates on that).
+      recurringClusters: buildAoiRecurringObservationClusters(params.bundle.observations),
     });
     // The final answer -- single-shot or the last agentic turn -- always goes through
     // this unchanged parse, so all display-only / approval-gated / evidence-validated
@@ -2385,6 +2523,9 @@ async function runLlmReflection(params: {
         knownEvidenceRefs: params.knownEvidenceRefs,
         connectors: params.connectors,
         goalSynthesisEnabled: params.goalSynthesisEnabled === true,
+        ...(params.activeGoalDedupeKeys
+          ? { activeGoalDedupeKeys: params.activeGoalDedupeKeys }
+          : {}),
         ...(params.language ? { language: params.language } : {}),
         now: params.now,
       });
@@ -3237,6 +3378,8 @@ export async function runAoiAutonomyTick(
     llmDailyTokenBudget: params.llmDailyTokenBudget,
     // P3.1: operator opt-in to the bounded reason-act-observe reflection loop.
     agenticReflectionEnabled: policy.agenticReflectionEnabled === true,
+    // P3.5: dedupe an activate_goal candidate against the already-active goals.
+    activeGoalDedupeKeys: buildAoiActiveGoalDedupeKeys(activeGoalsForTick),
     now,
   });
 

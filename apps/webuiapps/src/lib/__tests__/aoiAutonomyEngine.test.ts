@@ -14,10 +14,14 @@ import {
   saveAoiActiveGoals,
 } from '../aoiAutonomyGoals';
 import {
+  buildAoiActiveGoalDedupeKeys,
   buildAoiAutonomyReflectionMessages,
+  buildAoiRecurringObservationClusters,
   dropRedundantAoiLlmReflectionProposals,
   executeReadOnlyReflectionTool,
+  normalizeAoiGoalDedupeKey,
   parseAgenticReflectionToolCall,
+  parseAoiAutonomyReflectionResponse,
   runAoiAutonomyBackgroundTick,
   runAoiAutonomyTick,
   type AoiAutonomyReflectionChat,
@@ -1063,6 +1067,58 @@ describe('runAoiAutonomyTick()', () => {
       'Map the ETW telemetry gap',
     );
     expect(goalCandidate?.requiresUserApproval).toBe(true);
+  });
+
+  it('drops a goal candidate that duplicates an already-active goal (P3.5)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    // An active goal already tracks this exact objective.
+    saveAoiActiveGoals(root, SESSION_PATH, [
+      makeGoal({
+        id: 'aoi-goal-existing-telemetry',
+        title: 'Harden kernel telemetry',
+        userIntentSummary: 'Finish hardening the kernel telemetry path',
+      }),
+    ]);
+    // The reflection proposes the SAME objective (case/spacing variant) as a new goal.
+    const goalJson = JSON.stringify({
+      reflections: [],
+      proposals: [
+        {
+          title: 'track the recurring telemetry objective',
+          body: 'A recurring multi-step objective across recent activity.',
+          reason: 'It keeps recurring across observations.',
+          confidence: 0.8,
+          evidenceRefs: ['observation:latest-user-message'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: {
+              title: 'Harden Kernel Telemetry',
+              userIntentSummary: 'Finish hardening the kernel telemetry path',
+            },
+          },
+        },
+      ],
+    });
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(goalJson),
+      goalSynthesisEnabled: true,
+      now: NOW,
+    });
+
+    // Deduped: no NEW goal candidate proposal is created for the already-active objective.
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeUndefined();
+    // And the loop certainly did not activate a second goal.
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toHaveLength(1);
   });
 
   it('runs the bounded reason-act-observe loop: inspects the working set, then emits the final proposal (P3.1)', async () => {
@@ -4455,5 +4511,153 @@ describe('executeReadOnlyReflectionTool() (P3.1)', () => {
       { memories: [makeMemory({ id: 'm-1' })], observations: [] },
     );
     expect(result).toEqual({ error: 'memory_not_found' });
+  });
+});
+
+describe('buildAoiRecurringObservationClusters() (P3.5)', () => {
+  it('clusters observations that converge on a shared memory anchor (>= 2 distinct)', () => {
+    const clusters = buildAoiRecurringObservationClusters([
+      makeObservationFixture({ id: 'o-1', memoryIds: ['mem-telemetry'] }),
+      makeObservationFixture({ id: 'o-2', memoryIds: ['mem-telemetry'] }),
+      makeObservationFixture({ id: 'o-3', memoryIds: ['mem-other'] }),
+    ]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]).toMatchObject({ anchorRef: 'memory:mem-telemetry', count: 2 });
+    expect(clusters[0].evidenceRefs.length).toBeGreaterThan(0);
+    expect(clusters[0].summaries.length).toBeGreaterThan(0);
+  });
+
+  it('does not cluster a memory referenced by only one observation', () => {
+    const clusters = buildAoiRecurringObservationClusters([
+      makeObservationFixture({ id: 'o-1', memoryIds: ['mem-solo'] }),
+    ]);
+    expect(clusters).toEqual([]);
+  });
+
+  it('clusters on a shared artifact anchor too', () => {
+    const clusters = buildAoiRecurringObservationClusters([
+      makeObservationFixture({ id: 'o-1', artifactRefs: ['artifact-x'] }),
+      makeObservationFixture({ id: 'o-2', artifactRefs: ['artifact-x'] }),
+    ]);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0].anchorRef).toBe('artifact:artifact-x');
+  });
+
+  it('sorts clusters by recurrence count (most-recurring first)', () => {
+    const clusters = buildAoiRecurringObservationClusters([
+      makeObservationFixture({ id: 'o-1', memoryIds: ['mem-a'] }),
+      makeObservationFixture({ id: 'o-2', memoryIds: ['mem-a'] }),
+      makeObservationFixture({ id: 'o-3', memoryIds: ['mem-a', 'mem-b'] }),
+      makeObservationFixture({ id: 'o-4', memoryIds: ['mem-b'] }),
+    ]);
+    expect(clusters).toHaveLength(2);
+    expect(clusters[0]).toMatchObject({ anchorRef: 'memory:mem-a', count: 3 });
+    expect(clusters[1]).toMatchObject({ anchorRef: 'memory:mem-b', count: 2 });
+  });
+
+  it('ignores blank anchor ids', () => {
+    const clusters = buildAoiRecurringObservationClusters([
+      makeObservationFixture({ id: 'o-1', memoryIds: ['', '  '] }),
+      makeObservationFixture({ id: 'o-2', memoryIds: [''] }),
+    ]);
+    expect(clusters).toEqual([]);
+  });
+});
+
+describe('goal dedupe keys (P3.5)', () => {
+  it('normalizes case + whitespace so variants collapse to one key', () => {
+    const a = normalizeAoiGoalDedupeKey('Harden Kernel  Telemetry', 'Finish   the path');
+    const b = normalizeAoiGoalDedupeKey('harden kernel telemetry', 'finish the path');
+    expect(a).toBe(b);
+  });
+
+  it('builds a set of keys and skips empty ones', () => {
+    const keys = buildAoiActiveGoalDedupeKeys([
+      makeGoal({ title: 'Alpha', userIntentSummary: 'do alpha' }),
+      makeGoal({ title: '', userIntentSummary: '' }),
+    ]);
+    expect(keys.has(normalizeAoiGoalDedupeKey('Alpha', 'do alpha'))).toBe(true);
+    expect(keys.has('')).toBe(false);
+    expect(keys.size).toBe(1);
+  });
+});
+
+describe('parseAoiAutonomyReflectionResponse goal dedupe (P3.5)', () => {
+  const knownEvidenceRefs = new Set(['observation:latest-user-message']);
+  const goalJson = JSON.stringify({
+    reflections: [],
+    proposals: [
+      {
+        title: 'track the recurring objective',
+        body: 'A recurring multi-step objective.',
+        reason: 'It recurs.',
+        confidence: 0.8,
+        evidenceRefs: ['observation:latest-user-message'],
+        acceptAction: {
+          kind: 'activate_goal',
+          params: { title: 'Harden telemetry', userIntentSummary: 'Finish the path' },
+        },
+      },
+    ],
+  });
+
+  it('drops the candidate when its key matches an active goal', () => {
+    const result = parseAoiAutonomyReflectionResponse(goalJson, {
+      sessionPath: SESSION_PATH,
+      knownEvidenceRefs,
+      goalSynthesisEnabled: true,
+      activeGoalDedupeKeys: new Set([
+        normalizeAoiGoalDedupeKey('Harden telemetry', 'Finish the path'),
+      ]),
+      now: NOW,
+    });
+    expect(result.proposals).toHaveLength(0);
+    expect(result.warnings).toContain('proposal_goal_candidate_duplicate');
+  });
+
+  it('keeps the candidate when no active goal matches', () => {
+    const result = parseAoiAutonomyReflectionResponse(goalJson, {
+      sessionPath: SESSION_PATH,
+      knownEvidenceRefs,
+      goalSynthesisEnabled: true,
+      activeGoalDedupeKeys: new Set([
+        normalizeAoiGoalDedupeKey('Unrelated goal', 'something else'),
+      ]),
+      now: NOW,
+    });
+    expect(result.proposals.some((proposal) => proposal.trigger === 'goal_candidate')).toBe(true);
+  });
+});
+
+describe('buildAoiAutonomyReflectionMessages recurring-cluster grounding (P3.5)', () => {
+  const cluster = {
+    anchorRef: 'memory:mem-telemetry',
+    count: 2,
+    evidenceRefs: ['observation:o-1', 'observation:o-2'],
+    summaries: ['recurring telemetry gap'],
+  };
+
+  it('adds the recurringClusters grounding only when goal synthesis is enabled', () => {
+    const withGrounding = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      goalSynthesisEnabled: true,
+      recurringClusters: [cluster],
+    });
+    const serialized = JSON.stringify(withGrounding);
+    expect(serialized).toContain('recurringClusters');
+    expect(serialized).toContain('memory:mem-telemetry');
+  });
+
+  it('omits recurringClusters when goal synthesis is off (prompt unchanged)', () => {
+    const withoutGoals = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      goalSynthesisEnabled: false,
+      recurringClusters: [cluster],
+    });
+    expect(JSON.stringify(withoutGoals)).not.toContain('recurringClusters');
   });
 });
