@@ -63,6 +63,8 @@ import {
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { loadAoiStrategicBrief } from './aoiStrategicBrief';
+import { getAoiApprovedAppActionPolicyForProposal } from './aoiAutonomyPolicy';
+import { selectAoiServerValidatedAppDispatches } from './aoiServerAppDispatchValidation';
 import { recordAoiAppOperationDispatchResult } from './aoiAppOperationDispatchServer';
 import { recordAoiFieldFeedbackLearningAction } from './aoiFieldFeedbackLearning';
 import { buildAoiOperatorFeedbackInbox } from './aoiOperatorFeedbackInbox';
@@ -688,13 +690,25 @@ export async function handleAoiAutonomyRequest(
       // P2/B3-1: the connected client bridge polls 'pending' app-operation dispatches
       // and runs each over the agent->app bus (the server loop cannot postMessage to an
       // app iframe). Read-only: returns the queued records; dispatch is the client's job.
-      const pending = loadAoiAppOperationDispatches(sessionsDir, sessionPath).filter(
-        (record) => record.status === 'pending',
+      //
+      // P2.2: re-check the content-addressed approval fingerprint SERVER-SIDE before
+      // advertising, so the daemon never hands the bridge a dispatch whose approval
+      // changed/vanished since queueing. The client bridge still re-checks before it
+      // publishes -- this is defense in depth, not a replacement.
+      const proposalsById = new Map(
+        loadAoiActiveProposals(sessionsDir, sessionPath).map((proposal) => [proposal.id, proposal]),
       );
+      const dispatchSelection = selectAoiServerValidatedAppDispatches({
+        records: loadAoiAppOperationDispatches(sessionsDir, sessionPath),
+        lookupProposal: (proposalId) => proposalsById.get(proposalId) ?? null,
+        recomputeApprovalFingerprint: (proposal) =>
+          getAoiApprovedAppActionPolicyForProposal(proposal, Date.now()).approvalFingerprint,
+      });
       writeJson(res, 200, {
         ok: true,
         sessionPath,
-        pending,
+        pending: dispatchSelection.eligible,
+        rejected: dispatchSelection.rejected,
       });
       return true;
     }

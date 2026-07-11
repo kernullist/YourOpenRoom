@@ -12,8 +12,13 @@ import { startAoiAutonomyBackgroundFromEnv } from '../aoiAutonomyPlugin';
 import { saveAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
 import { buildAoiAppOperationDispatch } from '../aoiAppOperationDispatch';
-import { appendAoiAppOperationDispatch } from '../aoiAutonomyStore';
-import type { AoiAppOperationDispatch, AoiStrategicBrief } from '../aoiAutonomyTypes';
+import {
+  appendAoiAppOperationDispatch,
+  loadAoiActiveProposals,
+  saveAoiActiveProposals,
+} from '../aoiAutonomyStore';
+import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
+import type { AoiAppOperationDispatch, AoiProposal, AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
 const liveDaemons: AoiDaemonHandle[] = [];
@@ -576,7 +581,49 @@ describe('daemon strategic-brief route', () => {
 });
 
 describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', () => {
+  function makeAppActionProposal(): AoiProposal {
+    return {
+      version: 1,
+      id: 'prop-1',
+      sessionPath: 'aoi/default',
+      status: 'active',
+      title: 'Play the queued track',
+      body: 'x',
+      reason: 'x',
+      trigger: 'x',
+      createdAt: 1_700_000_000_000,
+      updatedAt: 1_700_000_000_000,
+      cooldownKey: 'k',
+      confidence: 0.8,
+      risk: 'low',
+      requiredAutonomyLevel: 'L3',
+      requiresUserApproval: false,
+      suggestedTools: [],
+      evidenceRefs: [],
+      memoryIds: [],
+      artifactRefs: [],
+      riskSignals: [],
+      acceptAction: {
+        kind: 'app_action',
+        params: { appName: 'musicApp', actionType: 'PLAY_TRACK', trackId: '123' },
+      },
+    };
+  }
+
   function seedPendingDispatch(sessionsDir: string): AoiAppOperationDispatch {
+    // The GET route now re-checks the approval fingerprint SERVER-SIDE, so the dispatch
+    // must have a backing proposal whose recomputed fingerprint matches. Derive it from
+    // the seeded proposal (the fingerprint is content-addressed + time-independent).
+    saveAoiActiveProposals(sessionsDir, 'aoi/default', [makeAppActionProposal()]);
+    // Derive the fingerprint from the LOADED proposal so it matches exactly what the
+    // route recomputes (guards against any save/load normalization).
+    const loaded = loadAoiActiveProposals(sessionsDir, 'aoi/default').find(
+      (p) => p.id === 'prop-1',
+    );
+    const approvalFingerprint = getAoiApprovedAppActionPolicyForProposal(
+      loaded as AoiProposal,
+      1_700_000_000_000,
+    ).approvalFingerprint;
     return appendAoiAppOperationDispatch(
       sessionsDir,
       'aoi/default',
@@ -586,10 +633,10 @@ describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', 
         appName: 'musicApp',
         actionType: 'PLAY_TRACK',
         params: { trackId: '123' },
-        approvalFingerprint: 'fp-abc',
-        proposalId: 'p1',
-        decisionId: 'd1',
-        evidenceRefs: ['proposal:p1'],
+        approvalFingerprint,
+        proposalId: 'prop-1',
+        decisionId: 'dec-1',
+        evidenceRefs: ['proposal:prop-1'],
         now: 1_700_000_000_000,
       }),
     );
@@ -651,6 +698,42 @@ describe('daemon app-operation-dispatch route (B3-1 client-mediated dispatch)', 
     const afterRes = await fetch(`${base}?sessionPath=aoi/default`);
     const afterBody = (await afterRes.json()) as { pending?: AoiAppOperationDispatch[] };
     expect(afterBody.pending).toHaveLength(0);
+  });
+
+  it('GET drops a dispatch whose stored approval fingerprint no longer matches (P2.2 server re-check)', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    // A backing proposal exists, but the dispatch carries a stale fingerprint that the
+    // server-side recompute will not match.
+    saveAoiActiveProposals(sessionsDir, 'aoi/default', [makeAppActionProposal()]);
+    const seeded = appendAoiAppOperationDispatch(
+      sessionsDir,
+      'aoi/default',
+      buildAoiAppOperationDispatch({
+        sessionPath: 'aoi/default',
+        appId: 7,
+        appName: 'musicApp',
+        actionType: 'PLAY_TRACK',
+        params: { trackId: '123' },
+        approvalFingerprint: 'fp-stale-does-not-match',
+        proposalId: 'prop-1',
+        decisionId: 'dec-1',
+        evidenceRefs: ['proposal:prop-1'],
+        now: 1_700_000_000_000,
+      }),
+    );
+    const handle = await bootDaemonOn(sessionsDir);
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/app-operation-dispatch?sessionPath=aoi/default`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      pending?: AoiAppOperationDispatch[];
+      rejected?: { id: string; reason: string }[];
+    };
+    // Never advertised to the client bridge...
+    expect(body.pending).toHaveLength(0);
+    // ...and surfaced as rejected for operator observability.
+    expect(body.rejected).toEqual([{ id: seeded.id, reason: 'approval_fingerprint_mismatch' }]);
   });
 
   it('POST returns 404 for an unknown dispatch id', async () => {
