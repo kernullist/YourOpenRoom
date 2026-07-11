@@ -942,6 +942,10 @@ export function buildAoiGoalCandidateProposal(params: {
   risk?: AoiAutonomyRisk;
   confidence?: number;
   lang?: AoiCardLang;
+  // P3.6: LLM-proposed plan steps from the reflection. When they pass the decomposition
+  // safety blockers, the candidate carries a decomposed plan; otherwise the deterministic
+  // template (buildAoiPlanForGoal is fail-closed).
+  planSteps?: unknown;
 }): AoiProposal | null {
   const sessionPath = normalizeSessionPath(params.sessionPath);
   if (!sessionPath) {
@@ -967,6 +971,7 @@ export function buildAoiGoalCandidateProposal(params: {
     sourceRefs,
     risk,
     now: params.now,
+    llmProposedSteps: params.planSteps,
   });
   return {
     version: 1,

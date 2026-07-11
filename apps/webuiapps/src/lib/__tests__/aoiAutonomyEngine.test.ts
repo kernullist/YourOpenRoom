@@ -966,6 +966,56 @@ describe('runAoiAutonomyTick()', () => {
     expect(loadAoiActiveGoals(root, SESSION_PATH)).toHaveLength(0);
   });
 
+  it('decomposes the objective into the candidate plan when the LLM proposes planSteps (P3.6)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    const goalJson = JSON.stringify({
+      reflections: [],
+      proposals: [
+        {
+          title: 'track the recurring telemetry objective',
+          body: 'A recurring multi-step objective across recent activity.',
+          reason: 'It keeps recurring across observations.',
+          confidence: 0.8,
+          evidenceRefs: ['observation:latest-user-message'],
+          acceptAction: {
+            kind: 'activate_goal',
+            params: {
+              title: 'Harden kernel telemetry',
+              userIntentSummary: 'Finish hardening the kernel telemetry path',
+              planSteps: [
+                { title: 'Map the ETW telemetry gap', doneCriteria: ['The gap is documented'] },
+                { title: 'Draft a kernel callback probe', doneCriteria: ['A probe plan exists'] },
+              ],
+            },
+          },
+        },
+      ],
+    });
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'tell me about kernel telemetry',
+      llmConfig: TEST_LLM_CONFIG,
+      reflectionChat: reflectionChat(goalJson),
+      goalSynthesisEnabled: true,
+      now: NOW,
+    });
+
+    const goalCandidate = loadAoiActiveProposals(root, SESSION_PATH).find(
+      (proposal) => proposal.trigger === 'goal_candidate',
+    );
+    expect(goalCandidate).toBeDefined();
+    // P3.6: the candidate carries the LLM-DECOMPOSED plan (the ETW step), not just the
+    // fixed template -- still display-only + user-approval-gated.
+    expect(JSON.stringify(goalCandidate?.acceptAction?.params)).toContain(
+      'Map the ETW telemetry gap',
+    );
+    expect(goalCandidate?.requiresUserApproval).toBe(true);
+  });
+
   it('drops an activate_goal candidate when goal synthesis is not opted in (P1a c4)', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

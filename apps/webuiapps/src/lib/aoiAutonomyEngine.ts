@@ -1603,6 +1603,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
   if (params.goalSynthesisEnabled) {
     systemLines.push(
       'You MAY propose at most one goal candidate via acceptAction.kind="activate_goal" with params.title and params.userIntentSummary, ONLY when recent observations show a recurring multi-step objective worth tracking. Cite supplied evidenceRefs; it is display-only and requires explicit user approval before any goal is created.',
+      'For an activate_goal candidate you MAY also decompose the objective into params.planSteps: at most 4 concrete steps, each {"title": short, "doneCriteria": ["how you know it is done"]}. Keep them concrete and bounded; they stay display-only and require approval. Omit planSteps if you cannot decompose it concretely.',
     );
   }
 
@@ -1637,6 +1638,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
       params: {
         title: 'short goal title',
         userIntentSummary: 'the objective to pursue, grounded in the supplied observations',
+        planSteps: [{ title: 'optional concrete step', doneCriteria: ['how you know it is done'] }],
       },
     };
   }
@@ -1956,6 +1958,11 @@ export function parseAoiAutonomyReflectionResponse(
         risk: isRisk(proposal.risk) ? proposal.risk : 'low',
         ...(Number.isFinite(confidence) ? { confidence } : {}),
         ...(params.language ? { lang: params.language } : {}),
+        // P3.6: the LLM may decompose the objective into plan steps; the candidate builder
+        // safety-blocks + falls back to the template.
+        ...(goalActionParams.planSteps !== undefined
+          ? { planSteps: goalActionParams.planSteps }
+          : {}),
         now,
       });
       if (!goalCandidate) {

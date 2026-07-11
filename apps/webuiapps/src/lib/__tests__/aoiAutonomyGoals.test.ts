@@ -1005,4 +1005,22 @@ describe('P3.6 LLM-assisted plan decomposition', () => {
     const workOrder = buildAoiBoundedWorkOrderFromGoalStep(goal!, mapStep!);
     expect(workOrder.actionAuthority).toBe('display_only');
   });
+
+  it('a reflection-authored goal candidate carries the LLM-decomposed plan (P3.6 emission)', () => {
+    const proposal = buildAoiGoalCandidateProposal({
+      sessionPath: SESSION_PATH,
+      title: 'Harden kernel telemetry',
+      userIntentSummary: 'Harden the Windows kernel telemetry path',
+      sourceRefs: ['obs:kernel'],
+      risk: 'medium',
+      now: NOW,
+      planSteps: [
+        { title: 'Map the ETW telemetry gap', doneCriteria: ['The gap is documented'] },
+        { title: 'Draft a kernel callback probe', doneCriteria: ['A probe plan exists'] },
+      ],
+    });
+    expect(proposal).not.toBeNull();
+    // The candidate's acceptAction plan is the LLM-decomposed one (not the fixed template).
+    expect(JSON.stringify(proposal?.acceptAction?.params)).toContain('Map the ETW telemetry gap');
+  });
 });
