@@ -5,6 +5,8 @@ import {
 } from './aoiApprovedConnectorCallPolicy';
 import {
   assertAoiMcpConnectorEndpointResolvesPublic,
+  buildAoiMcpConnectorPinnedDispatcher,
+  type AoiMcpConnectorAddressResolver,
   type AoiMcpConnectorHostLookup,
 } from './aoiMcpConnectorDnsGuard';
 import {
@@ -12,7 +14,7 @@ import {
   resolveTrustedAoiMcpConnector,
   type AoiMcpConnectorsConfig,
 } from './aoiMcpConnectorRegistry';
-import { getOrCreateMcpHttpClient } from './idaMcpHttpClient';
+import { McpHttpClient } from './idaMcpHttpClient';
 import type {
   AoiApprovedConnectorCallPolicy,
   AoiApprovedConnectorCallRequest,
@@ -61,17 +63,37 @@ export interface AoiApprovedConnectorCallRunnerOptions {
   // Injectable hostname resolver for the execute-time DNS-rebind re-check. Tests
   // pass a stub so they stay offline; production uses the Node 'dns' default.
   resolveHost?: AoiMcpConnectorHostLookup;
+  // P2.5: injectable all-records resolver for the connect-time IP-pinning dispatcher.
+  resolveAddresses?: AoiMcpConnectorAddressResolver;
   now?: number;
 }
 
-const defaultConnectorCallTransport: AoiConnectorCallTransport = {
-  callTool({ endpointUrl, toolName, args }) {
-    return getOrCreateMcpHttpClient(endpointUrl).callTool(toolName, args);
-  },
-  readResource({ endpointUrl, resourceUri }) {
-    return getOrCreateMcpHttpClient(endpointUrl).readResource(resourceUri);
-  },
-};
+// P2.5: the default connector transport now PINS the connection to a DNS-validated public IP
+// via an undici dispatcher, closing the DNS-rebind TOCTOU (validation + connect are atomic;
+// fetch no longer re-resolves independently). A fresh pinned client is built per endpoint so
+// the shared getOrCreateMcpHttpClient (idaPePlugin's loopback transport) is never touched.
+function buildPinnedConnectorTransport(options: {
+  allowPrivateHost?: boolean;
+  resolveAddresses?: AoiMcpConnectorAddressResolver;
+}): AoiConnectorCallTransport {
+  const dispatcher = buildAoiMcpConnectorPinnedDispatcher({
+    allowPrivateHost: options.allowPrivateHost === true,
+    ...(options.resolveAddresses ? { resolveAddresses: options.resolveAddresses } : {}),
+  });
+  return {
+    callTool({ endpointUrl, toolName, args }) {
+      return new McpHttpClient(endpointUrl, 'openroom-connector', '0.2.0', dispatcher).callTool(
+        toolName,
+        args,
+      );
+    },
+    readResource({ endpointUrl, resourceUri }) {
+      return new McpHttpClient(endpointUrl, 'openroom-connector', '0.2.0', dispatcher).readResource(
+        resourceUri,
+      );
+    },
+  };
+}
 
 function sha256Hex(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -215,7 +237,12 @@ export async function applyAoiApprovedConnectorCall(
     });
   }
 
-  const transport = options.transport ?? defaultConnectorCallTransport;
+  const transport =
+    options.transport ??
+    buildPinnedConnectorTransport({
+      allowPrivateHost: entry.allowPrivateHost,
+      ...(options.resolveAddresses ? { resolveAddresses: options.resolveAddresses } : {}),
+    });
   const isReadResource = request.toolName === AOI_MCP_READ_RESOURCE_METHOD;
   const resourceUri = (request.resourceUri ?? '').trim();
   if (isReadResource && !resourceUri) {

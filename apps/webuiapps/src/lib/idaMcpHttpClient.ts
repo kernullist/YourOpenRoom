@@ -40,11 +40,22 @@ export class McpHttpClient {
   private requestCounter = 1;
   private initPromise: Promise<void> | null = null;
   private readonly requestTimeoutMs = 5000;
+  // P2.5: an optional undici dispatcher. When set (only by the connector RPC runner, via a
+  // DNS-rebind-pinning Agent), every fetch pins the connection to a pre-validated public IP.
+  // Absent (the shared getOrCreateMcpHttpClient path -- idaPePlugin loopback) -> plain fetch.
+  private readonly dispatcher?: unknown;
 
-  constructor(endpoint: string, clientName: string, clientVersion: string) {
+  constructor(endpoint: string, clientName: string, clientVersion: string, dispatcher?: unknown) {
     this.endpoint = endpoint;
     this.clientName = clientName;
     this.clientVersion = clientVersion;
+    this.dispatcher = dispatcher;
+  }
+
+  // Merge the pinning dispatcher into a fetch init when present. `dispatcher` is an undici
+  // RequestInit extension not in the DOM RequestInit type, so cast at this single boundary.
+  private withDispatcher(init: RequestInit): RequestInit {
+    return this.dispatcher ? ({ ...init, dispatcher: this.dispatcher } as RequestInit) : init;
   }
 
   async initialize(): Promise<void> {
@@ -101,12 +112,15 @@ export class McpHttpClient {
   async terminate(): Promise<void> {
     if (!this.sessionId) return;
     try {
-      await fetch(this.endpoint, {
-        method: 'DELETE',
-        headers: {
-          'Mcp-Session-Id': this.sessionId,
-        },
-      });
+      await fetch(
+        this.endpoint,
+        this.withDispatcher({
+          method: 'DELETE',
+          headers: {
+            'Mcp-Session-Id': this.sessionId,
+          },
+        }),
+      );
     } catch {
       // Ignore session cleanup failures.
     } finally {
@@ -152,16 +166,19 @@ export class McpHttpClient {
       allowMissingSession: false,
     });
     const { controller, timeoutId } = this.createTimeoutController();
-    const response = await fetch(this.endpoint, {
-      method: 'POST',
-      headers,
-      signal: controller.signal,
-      body: JSON.stringify({
-        jsonrpc: '2.0',
-        method,
-        ...(params ? { params } : {}),
-      } satisfies JsonRpcRequest),
-    }).finally(() => clearTimeout(timeoutId));
+    const response = await fetch(
+      this.endpoint,
+      this.withDispatcher({
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify({
+          jsonrpc: '2.0',
+          method,
+          ...(params ? { params } : {}),
+        } satisfies JsonRpcRequest),
+      }),
+    ).finally(() => clearTimeout(timeoutId));
 
     if (!(response.status === 202 || response.status === 200)) {
       const text = await response.text();
@@ -183,12 +200,15 @@ export class McpHttpClient {
     });
 
     const { controller, timeoutId } = this.createTimeoutController();
-    const response = await fetch(this.endpoint, {
-      method: 'POST',
-      headers,
-      signal: controller.signal,
-      body: JSON.stringify(request),
-    }).finally(() => clearTimeout(timeoutId));
+    const response = await fetch(
+      this.endpoint,
+      this.withDispatcher({
+        method: 'POST',
+        headers,
+        signal: controller.signal,
+        body: JSON.stringify(request),
+      }),
+    ).finally(() => clearTimeout(timeoutId));
 
     const nextSessionId = response.headers.get('mcp-session-id');
     if (nextSessionId) {
