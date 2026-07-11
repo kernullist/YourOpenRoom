@@ -79,6 +79,8 @@ import {
   synthesizeAoiStrategicBrief,
 } from './aoiStrategicBrief';
 import {
+  AOI_LLM_MAX_CALLS_PER_WINDOW,
+  AOI_LLM_PER_CALL_TOKEN_CEILING,
   DEFAULT_LLM_BUDGET_WINDOW_MS,
   checkAoiLlmBudget,
   estimateAoiLlmTokens,
@@ -2377,6 +2379,10 @@ async function runChargedReflectionCall(params: {
     windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
     ceilingTokens,
     estimatedTokens: promptTokens + AOI_REFLECTION_BUDGET_OUTPUT_TOKENS,
+    // P3.4 tiered budgets: bound a single oversized call + runaway call volume under the
+    // daily ceiling (the P3.1 loop can make several calls per tick).
+    perCallCeilingTokens: AOI_LLM_PER_CALL_TOKEN_CEILING,
+    maxCallsPerWindow: AOI_LLM_MAX_CALLS_PER_WINDOW,
   });
   if (!budgetCheck.allowed) {
     try {
@@ -2711,6 +2717,9 @@ async function maybeUpgradeAoiStrategicBriefFocusWithLlm(params: {
       windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
       ceilingTokens: ceiling,
       estimatedTokens: promptTokens + AOI_BRIEF_SYNTH_MAX_OUTPUT_TOKENS,
+      // P3.4 tiered budgets: same per-call + per-window sub-tiers as the reflection call.
+      perCallCeilingTokens: AOI_LLM_PER_CALL_TOKEN_CEILING,
+      maxCallsPerWindow: AOI_LLM_MAX_CALLS_PER_WINDOW,
     });
     if (!check.allowed) {
       try {

@@ -127,6 +127,86 @@ describe('checkAoiLlmBudget', () => {
     });
     expect(result.allowed).toBe(true);
   });
+
+  it('rejects a single call over the per-call token tier even with daily budget free (P3.4)', () => {
+    const blocked = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 1_000_000,
+      estimatedTokens: 60_000,
+      perCallCeilingTokens: 48_000,
+    });
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe('llm_token_budget_per_call_exceeded');
+  });
+
+  it('allows a call within the per-call token tier (P3.4)', () => {
+    const ok = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 1_000_000,
+      estimatedTokens: 5000,
+      perCallCeilingTokens: 48_000,
+    });
+    expect(ok.allowed).toBe(true);
+  });
+
+  it('rejects once the per-window call-count tier is reached, even with tokens left (P3.4)', () => {
+    const blocked = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0, callCount: 480 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 1_000_000,
+      estimatedTokens: 300,
+      maxCallsPerWindow: 480,
+    });
+    expect(blocked.allowed).toBe(false);
+    expect(blocked.reason).toBe('llm_token_budget_call_count_exceeded');
+  });
+
+  it('allows while under the per-window call-count tier (P3.4)', () => {
+    const ok = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0, callCount: 479 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 1_000_000,
+      estimatedTokens: 300,
+      maxCallsPerWindow: 480,
+    });
+    expect(ok.allowed).toBe(true);
+  });
+
+  it('does not enforce the sub-tiers when their params are absent (behavior unchanged)', () => {
+    const ok = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0, callCount: 10_000 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 1_000_000,
+      estimatedTokens: 500_000,
+    });
+    expect(ok.allowed).toBe(true);
+  });
+
+  it('unlimited daily opt-out (ceiling 0) disables the sub-tiers too (P3.4)', () => {
+    const ok = checkAoiLlmBudget({
+      state: makeState({ tokensSpent: 0, callCount: 10_000 }),
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+      windowMs: DEFAULT_LLM_BUDGET_WINDOW_MS,
+      ceilingTokens: 0,
+      estimatedTokens: 500_000,
+      perCallCeilingTokens: 48_000,
+      maxCallsPerWindow: 480,
+    });
+    expect(ok.allowed).toBe(true);
+  });
 });
 
 describe('recordAoiLlmSpend', () => {

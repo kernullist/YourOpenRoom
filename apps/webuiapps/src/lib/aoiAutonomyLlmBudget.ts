@@ -22,6 +22,15 @@ const BUDGET_FILE_NAME = 'llm-budget-state.json';
 export const DEFAULT_LLM_DAILY_TOKEN_BUDGET = 200_000;
 export const DEFAULT_LLM_BUDGET_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+// P3.4 tiered budgets: two sub-tiers UNDER the rolling daily ceiling, so no single call
+// and no runaway call VOLUME can consume the day at once (the daily token ceiling alone
+// misses many-tiny-calls). Both are generous -- a normal auto-path call is ~a few thousand
+// tokens and a tick makes at most a handful of calls (the P3.1 loop is step-capped at 4) --
+// so realistic operation never trips them; they bound only the pathological tail. An
+// explicit unlimited daily opt-out (ceilingTokens<=0) disables these too.
+export const AOI_LLM_PER_CALL_TOKEN_CEILING = 48_000;
+export const AOI_LLM_MAX_CALLS_PER_WINDOW = 480;
+
 export interface AoiLlmBudgetState {
   version: 1;
   sessionPath: string;
@@ -77,6 +86,12 @@ export function checkAoiLlmBudget(params: {
   windowMs: number;
   ceilingTokens: number;
   estimatedTokens: number;
+  // P3.4: optional per-CALL token tier -- a single call whose estimate exceeds this is
+  // rejected regardless of remaining daily budget. Absent/<=0 -> not enforced.
+  perCallCeilingTokens?: number;
+  // P3.4: optional per-WINDOW call-count tier -- once the rolling window has made this many
+  // calls, further calls are rejected even if tokens remain. Absent/<=0 -> not enforced.
+  maxCallsPerWindow?: number;
 }): AoiLlmBudgetCheckResult {
   const windowMs = params.windowMs > 0 ? params.windowMs : DEFAULT_LLM_BUDGET_WINDOW_MS;
   let rolled: AoiLlmBudgetState;
@@ -86,9 +101,34 @@ export function checkAoiLlmBudget(params: {
     rolled = { ...params.state, sessionPath: params.sessionPath, windowMs };
   }
   if (params.ceilingTokens <= 0) {
+    // Explicit unlimited opt-out disables ALL tiers (deliberate).
     return { allowed: true, rolledState: rolled };
   }
   const estimate = Math.max(0, params.estimatedTokens);
+  // P3.4 per-call tier: fail-closed on a single oversized call.
+  if (
+    typeof params.perCallCeilingTokens === 'number' &&
+    params.perCallCeilingTokens > 0 &&
+    estimate > params.perCallCeilingTokens
+  ) {
+    return {
+      allowed: false,
+      reason: 'llm_token_budget_per_call_exceeded',
+      rolledState: rolled,
+    };
+  }
+  // P3.4 per-window call-count tier: fail-closed on runaway call volume.
+  if (
+    typeof params.maxCallsPerWindow === 'number' &&
+    params.maxCallsPerWindow > 0 &&
+    rolled.callCount >= params.maxCallsPerWindow
+  ) {
+    return {
+      allowed: false,
+      reason: 'llm_token_budget_call_count_exceeded',
+      rolledState: rolled,
+    };
+  }
   if (rolled.tokensSpent + estimate <= params.ceilingTokens) {
     return { allowed: true, rolledState: rolled };
   }
