@@ -446,6 +446,10 @@ import {
   isAoiToolAllowedAtLevel,
 } from '@/lib/aoiAutonomyPolicy';
 import { runAoiAppOperationDispatchBridge } from '@/lib/aoiAppOperationDispatchBridge';
+import {
+  useAoiDurableDispatchBridge,
+  AOI_DURABLE_DISPATCH_BRIDGE_INTERVAL_MS,
+} from '@/lib/useAoiDurableDispatchBridge';
 import { buildAoiJarvisReadinessScorecard } from '@/lib/aoiJarvisReadinessScorecard';
 import { buildAoiMissionControlState } from '@/lib/aoiMissionControlRuntime';
 import { buildAoiSourceFreshnessContracts } from '@/lib/aoiSourceFreshnessContract';
@@ -3235,6 +3239,8 @@ const ChatPanel: React.FC<{
   const aoiJarvisAutonomyGovernorAuditKeyRef = useRef<string | null>(null);
   const aoiAutonomyActiveProposalsRef = useRef(aoiAutonomyActiveProposals);
   aoiAutonomyActiveProposalsRef.current = aoiAutonomyActiveProposals;
+  const aoiAutonomyArchivedProposalsRef = useRef(aoiAutonomyArchivedProposals);
+  aoiAutonomyArchivedProposalsRef.current = aoiAutonomyArchivedProposals;
   const aoiAutonomyBlockedProposalsRef = useRef(aoiAutonomyBlockedProposals);
   aoiAutonomyBlockedProposalsRef.current = aoiAutonomyBlockedProposals;
   // Mirror ref created here so callbacks above can read it; the value is assigned
@@ -4063,6 +4069,22 @@ const ChatPanel: React.FC<{
     },
     [runAoiAppOperationDispatchBridgeNow],
   );
+
+  // P2.2: durable, reconnecting client dispatch bridge. While mounted, drain any pending
+  // app-operation dispatches the daemon queued on a fixed interval (using the current proposals
+  // for the approval re-check), so a dispatch does not wait for a manual refresh. Stable callback
+  // reading refs so the interval never resets; the drain is best-effort so a transient failure
+  // just retries next tick.
+  const drainAoiDispatchBridge = useCallback(() => {
+    void runAoiAppOperationDispatchBridgeNow([
+      ...aoiAutonomyActiveProposalsRef.current,
+      ...aoiAutonomyArchivedProposalsRef.current,
+    ]);
+  }, [runAoiAppOperationDispatchBridgeNow]);
+  useAoiDurableDispatchBridge({
+    drain: drainAoiDispatchBridge,
+    intervalMs: AOI_DURABLE_DISPATCH_BRIDGE_INTERVAL_MS,
+  });
 
   const handleAoiAutonomyAdvancedVisible = useCallback(() => {
     void refreshAoiAutonomy();
