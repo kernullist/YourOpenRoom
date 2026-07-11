@@ -12,6 +12,7 @@ import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import type { AoiAutonomyLevelPromotionGateState } from './aoiAutonomyLevelPromotion';
 import type { AoiTracePromotionDecision } from './aoiTracePromotion';
 import type { AoiAdaptiveAcceptanceReviewState } from './aoiAdaptiveAcceptanceCuration';
+import type { AoiProactivePushDeliveryRecord } from './aoiProactivePushDelivery';
 import {
   createAoiApprovedCommandRequest,
   evaluateAoiApprovedCommandPolicy,
@@ -128,6 +129,7 @@ export interface AoiAutonomyPaths {
   appOperationDispatchDir: string;
   tickState: string;
   levelPromotionState: string;
+  proactivePushQueue: string;
   evalDir: string;
   environmentSources: string;
   timelineDir: string;
@@ -557,6 +559,7 @@ export function resolveAoiAutonomyPaths(
     appOperationDispatchDir: join(root, 'app-operation-dispatch'),
     tickState: join(root, 'tick-state.json'),
     levelPromotionState: join(root, 'level-promotion-state.json'),
+    proactivePushQueue: join(root, 'proactive-push-queue.json'),
     evalDir: join(root, 'eval'),
     environmentSources: join(root, 'environment-sources.json'),
     timelineDir,
@@ -1449,6 +1452,44 @@ export function saveAoiActiveProposals(
   const normalized = proposals.map(normalizeRecordSessionPath);
   writeJsonAtomic(paths.activeProposals, normalized);
   return normalized;
+}
+
+function isAoiProactivePushDeliveryRecord(value: unknown): value is AoiProactivePushDeliveryRecord {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const record = value as Partial<AoiProactivePushDeliveryRecord>;
+  return (
+    record.version === 1 &&
+    typeof record.id === 'string' &&
+    typeof record.sessionPath === 'string' &&
+    typeof record.title === 'string' &&
+    typeof record.deepLink === 'string' &&
+    typeof record.createdAt === 'number'
+  );
+}
+
+// P2.1: the persisted pending-push queue (out-of-panel proactive delivery). A single JSON
+// array so the pure queue helpers (append/select/markConsumed) round-trip; capped so it can
+// never grow unbounded when no channel is draining it.
+export function loadAoiProactivePushQueue(
+  sessionsDir: string,
+  sessionPath: string,
+): AoiProactivePushDeliveryRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const raw = readJson<unknown>(paths.proactivePushQueue);
+  return Array.isArray(raw) ? raw.filter(isAoiProactivePushDeliveryRecord) : [];
+}
+
+export function saveAoiProactivePushQueue(
+  sessionsDir: string,
+  sessionPath: string,
+  queue: readonly AoiProactivePushDeliveryRecord[],
+): AoiProactivePushDeliveryRecord[] {
+  const paths = resolveAoiAutonomyPaths(sessionsDir, sessionPath);
+  const cleaned = queue.filter(isAoiProactivePushDeliveryRecord).slice(-200);
+  writeJsonAtomic(paths.proactivePushQueue, cleaned);
+  return cleaned;
 }
 
 export function saveAoiArchivedProposals(
