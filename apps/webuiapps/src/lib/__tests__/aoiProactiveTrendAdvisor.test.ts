@@ -3,6 +3,7 @@ import * as os from 'os';
 import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
+import { buildAoiServerJarvisAutonomyGovernor } from '../aoiServerJarvisGovernor';
 import type {
   AoiAutonomyPolicy,
   AoiInterestProfile,
@@ -325,6 +326,36 @@ describe('Aoi proactive trend advisor', () => {
       ]),
     );
     expect(state.directChatHookCount).toBe(1);
+  });
+
+  it('caps trend delivery through the server governor when one is supplied (P5.5 trend half)', () => {
+    // The SAME card that is direct_chat without a governor (previous test) is downgraded when a
+    // real server governor is supplied. Over EMPTY stores the governor blocks direct_chat (no
+    // earned closed-loop readiness), so the graded governor -- not the advisor's own gate --
+    // decides. Downgrade-only.
+    const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-trend-gov-'));
+    try {
+      const jarvisGovernor = buildAoiServerJarvisAutonomyGovernor({
+        sessionsDir: root,
+        sessionPath: SESSION_PATH,
+        configFile: join(root, 'config.json'),
+        now: NOW,
+      });
+      const state = buildAoiProactiveTrendAdvisorState({
+        sessionPath: SESSION_PATH,
+        policy: makePolicy(true),
+        profile: makeProfile(),
+        candidates: [makeCandidate()],
+        fieldMetrics: makeFieldMetrics(),
+        now: NOW,
+        persist: false,
+        jarvisGovernor,
+      });
+      expect(state.opinionCards[0].deliveryMode).not.toBe('direct_chat');
+      expect(state.opinionCards[0].directChatAllowed).toBe(false);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('downgrades a direct-chat trend to an inline card when the per-day budget is exhausted (P3-2a)', () => {

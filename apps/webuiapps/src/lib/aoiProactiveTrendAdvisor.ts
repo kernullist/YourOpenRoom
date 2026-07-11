@@ -10,9 +10,12 @@ import {
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
 import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughLearning';
+import { decideAoiInterruptionDelivery } from './aoiInterruptionGovernor';
+import type { AoiJarvisAutonomyGovernorDecision } from './aoiJarvisAutonomyGovernor';
 import type {
   AoiAutonomyPolicy,
   AoiAutonomyRisk,
+  AoiOpportunity,
   AoiInterestProfile,
   AoiInterestTopic,
   AoiOperatorHealthCapability,
@@ -78,6 +81,9 @@ export interface AoiProactiveTrendPaths {
 export interface BuildAoiProactiveTrendAdvisorStateInput {
   sessionsDir?: string;
   sessionPath: string;
+  // P5.5: the server-computed governor -- when supplied, trend-card delivery is capped by the
+  // canonical interruption governor (downgrade-only). Absent -> the advisor's own decision.
+  jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
   policy?: AoiAutonomyPolicy | null;
   profile?: AoiInterestProfile | null;
   candidates?: AoiProactiveBriefCandidate[];
@@ -1667,6 +1673,98 @@ export function buildAoiProactiveTrendAdvisorReadiness(params: {
   };
 }
 
+// P5.5: loudness ranking of a trend delivery mode. 'blocked' (not delivered) is quietest.
+const TREND_DELIVERY_MODE_RANK: Record<AoiProactiveTrendDeliveryMode, number> = {
+  blocked: 0,
+  dashboard: 1,
+  quiet_notification: 2,
+  inline_card: 3,
+  direct_chat: 4,
+};
+
+// P5.5: cap a trend card's delivery mode by the interruption governor -- DOWNGRADE ONLY. The
+// governor's 'hidden' maps to the quietest visible surface ('dashboard'); other modes map
+// straight across. The result is the QUIETER of (current, governor), so the graded governor can
+// pull a too-eager 'direct_chat' down while never escalating.
+function capAoiTrendDeliveryModeByGovernor(
+  current: AoiProactiveTrendDeliveryMode,
+  governorMode: 'dashboard' | 'hidden' | 'direct_chat' | 'inline_card' | 'quiet_notification',
+): AoiProactiveTrendDeliveryMode {
+  const governorTrend: AoiProactiveTrendDeliveryMode =
+    governorMode === 'direct_chat'
+      ? 'direct_chat'
+      : governorMode === 'inline_card'
+        ? 'inline_card'
+        : governorMode === 'quiet_notification'
+          ? 'quiet_notification'
+          : 'dashboard';
+  return TREND_DELIVERY_MODE_RANK[governorTrend] < TREND_DELIVERY_MODE_RANK[current]
+    ? governorTrend
+    : current;
+}
+
+// P5.5: route a trend card through the CANONICAL interruption governor so the graded budget /
+// quiet-window / confidence / risk / opt-in / jarvis logic ACTUALLY gates delivery. Only runs
+// when a jarvisGovernor is supplied (server-side, via buildAoiServerJarvisAutonomyGovernor) --
+// without it the governor's direct_chat gate would fail closed and over-suppress, so callers
+// that lack it (e.g. unit tests) skip this and keep the advisor's own blockReasons decision.
+// Downgrade-only: it can pull a too-eager direct_chat down, never escalate.
+function applyTrendGovernorGate(params: {
+  sessionPath: string;
+  cardId: string;
+  title: string;
+  confidence: number;
+  risk: AoiAutonomyRisk;
+  novelty: number;
+  evidenceRefs: string[];
+  deliveryMode: AoiProactiveTrendDeliveryMode;
+  blockReasonsEmpty: boolean;
+  policy?: AoiAutonomyPolicy | null;
+  feedback: AoiProactiveBriefFeedback[];
+  jarvisGovernor: AoiJarvisAutonomyGovernorDecision;
+  now: number;
+}): { deliveryMode: AoiProactiveTrendDeliveryMode; directChatAllowed: boolean } {
+  const governorOpportunity: AoiOpportunity = {
+    version: 1,
+    id: params.cardId,
+    sessionPath: params.sessionPath,
+    sourceKind: 'interest',
+    title: params.title,
+    curiosityQuestion: params.title,
+    whyNow: '',
+    evidenceNeed: '',
+    suggestedNextAction: '',
+    risk: params.risk,
+    confidence: params.confidence,
+    urgency: params.novelty,
+    novelty: params.novelty,
+    deliveryRecommendation: 'dashboard',
+    status: 'active',
+    evidenceRefs: params.evidenceRefs,
+    dedupeKey: params.cardId,
+    createdAt: params.now,
+    updatedAt: params.now,
+    expiresAt: params.now + 7 * 24 * 60 * 60 * 1000,
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+  const decision = decideAoiInterruptionDelivery({
+    sessionPath: params.sessionPath,
+    opportunity: governorOpportunity,
+    ...(params.policy ? { policy: params.policy } : {}),
+    feedback: params.feedback,
+    directChatOptIn: params.policy?.proactiveBriefing.directChatHookOptIn === true,
+    jarvisGovernor: params.jarvisGovernor,
+    now: params.now,
+  });
+  const cappedMode = capAoiTrendDeliveryModeByGovernor(params.deliveryMode, decision.deliveryMode);
+  return {
+    deliveryMode: cappedMode,
+    directChatAllowed:
+      params.blockReasonsEmpty && decision.directChatAllowed && cappedMode === 'direct_chat',
+  };
+}
+
 export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   sessionPath: string;
   candidate: AoiProactiveBriefCandidate;
@@ -1680,6 +1778,9 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   sourceStaleAfterMs?: number;
   directChatBudgetExhausted?: boolean;
   directChatConfidenceFloorRelief?: boolean;
+  // P5.5: the server-computed governor. When present, the card's delivery is capped by the
+  // canonical governor (downgrade-only). Absent -> the advisor's own blockReasons decide.
+  jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
 }): AoiProactiveTrendSnapshot | null {
   const now = params.now ?? Date.now();
   const candidate = params.candidate;
@@ -1757,31 +1858,53 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
       (interestDrift.status === 'aligned' ? 0.03 : interestDrift.status === 'watch' ? -0.08 : -0.2),
     0.55,
   );
-  const deliveryMode = deliveryModeForTrend({
+  const rawDeliveryMode = deliveryModeForTrend({
     candidate,
     novelty,
     freshness,
     sourceStrong,
     blockReasons,
   });
+  const cardId = makeStableId('aoi-trend', `${params.sessionPath}:${topicId}:${candidate.id}`);
+  const cardTitle = sanitizeText(candidate.title, 160) || 'Source-backed trend item';
+  // P5.5: when a server-computed governor is supplied, cap delivery through it (downgrade-only);
+  // otherwise keep the advisor's own decision (tests + any caller without a governor).
+  const governed = params.jarvisGovernor
+    ? applyTrendGovernorGate({
+        sessionPath: resolveSessionPath(params.sessionPath),
+        cardId,
+        title: cardTitle,
+        confidence,
+        risk: normalizeRisk(candidate.risk),
+        novelty: clampScore(candidate.score, 0.5),
+        evidenceRefs,
+        deliveryMode: rawDeliveryMode,
+        blockReasonsEmpty: blockReasons.length === 0,
+        policy: params.policy,
+        feedback: params.feedback ?? [],
+        jarvisGovernor: params.jarvisGovernor,
+        now,
+      })
+    : { deliveryMode: rawDeliveryMode, directChatAllowed: blockReasons.length === 0 };
+  const deliveryMode = governed.deliveryMode;
   const sourceHosts = unique(sources.map((source) => source.host)).slice(0, 6);
   const chatHookText =
     deliveryMode === 'direct_chat'
       ? buildChatHookText({
           topicLabel: topicLabel || 'Interest topic',
-          title: sanitizeText(candidate.title, 160) || 'Source-backed trend item',
+          title: cardTitle,
           myTake: opinion.myTake,
           sourceHosts,
         })
       : undefined;
   return {
     version: 1,
-    id: makeStableId('aoi-trend', `${params.sessionPath}:${topicId}:${candidate.id}`),
+    id: cardId,
     sessionPath: resolveSessionPath(params.sessionPath),
     topicId,
     topicLabel: topicLabel || 'Interest topic',
     candidateId: candidate.id,
-    title: sanitizeText(candidate.title, 160) || 'Source-backed trend item',
+    title: cardTitle,
     ...opinion,
     confidence,
     noveltyScore: clampScore(candidate.score, 0.5),
@@ -1794,7 +1917,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     delivery: {
       mode: deliveryMode,
       summary: deliverySummary({ mode: deliveryMode, novelty, blockReasons }),
-      directChatAllowed: blockReasons.length === 0,
+      directChatAllowed: governed.directChatAllowed,
       directChatBlockedReasons: blockReasons,
       controls,
       ...(chatHookText ? { chatHookText } : {}),
@@ -2443,6 +2566,7 @@ export function buildAoiProactiveTrendAdvisorState(
         sourceStaleAfterMs: input.sourceStaleAfterMs,
         directChatBudgetExhausted: input.directChatBudgetExhausted,
         directChatConfidenceFloorRelief: input.directChatConfidenceFloorRelief,
+        ...(input.jarvisGovernor ? { jarvisGovernor: input.jarvisGovernor } : {}),
       }),
     )
     .filter((snapshot): snapshot is AoiProactiveTrendSnapshot => snapshot !== null);

@@ -66,6 +66,7 @@ import {
   type AoiProactiveBriefScoutResult,
 } from './aoiProactiveBriefScout';
 import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
+import { buildAoiServerJarvisAutonomyGovernor } from './aoiServerJarvisGovernor';
 import { planAoiProactiveBriefTopics } from './aoiProactiveBriefPlanner';
 import {
   loadAoiInterestProfile,
@@ -1509,6 +1510,20 @@ async function runProactiveScoutForWakeup(params: {
       typeof params.input.userIdleMs === 'number' &&
       params.input.userIdleMs >= DEFAULT_USER_RETURN_IDLE_MS &&
       params.input.userIdleMs <= controls.maxSessionIdleMs;
+    // P5.5: compute the governor server-side so trend-card delivery is gated by the canonical
+    // interruption governor (readiness / budget / quiet / jarvis), not the advisor's own gate.
+    // Read-only + best-effort; a failure leaves the advisor's own decision in place.
+    let trendJarvisGovernor: ReturnType<typeof buildAoiServerJarvisAutonomyGovernor> | null = null;
+    try {
+      trendJarvisGovernor = buildAoiServerJarvisAutonomyGovernor({
+        sessionsDir: params.input.sessionsDir,
+        sessionPath,
+        configFile: params.input.configFile ?? '',
+        now: params.now,
+      });
+    } catch {
+      trendJarvisGovernor = null;
+    }
     const trendAdvisor = buildAoiProactiveTrendAdvisorState({
       sessionsDir: params.input.sessionsDir,
       sessionPath,
@@ -1521,6 +1536,7 @@ async function runProactiveScoutForWakeup(params: {
       now: params.now,
       directChatBudgetExhausted,
       directChatConfidenceFloorRelief,
+      ...(trendJarvisGovernor ? { jarvisGovernor: trendJarvisGovernor } : {}),
     });
     trendSnapshotCount = trendAdvisor.snapshots.length;
     trendOpinionCardCount = trendAdvisor.opinionCards.length;
