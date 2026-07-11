@@ -40,6 +40,53 @@ export const inertAoiProactivePushTransport: AoiProactivePushTransport = {
   },
 };
 
+type AoiWebhookFetch = (
+  url: string,
+  init: { method: string; headers: Record<string, string>; body: string; signal?: AbortSignal },
+) => Promise<{ ok: boolean; status: number }>;
+
+// A REAL out-of-panel channel: the roadmap's "OS/webhook notifier" variant. Each record is
+// POSTed as a small JSON payload to the operator-configured webhook URL. Only the display-only,
+// already-sanitized fields (id / sanitized title / slug-safe deep link) are sent -- never raw
+// card content. Off by default: an empty URL yields an inert transport. Injectable fetch for
+// tests. A non-2xx or a network error is a non-delivery (the record stays pending), never a throw.
+export function createAoiWebhookPushTransport(params: {
+  webhookUrl: string;
+  fetchImpl?: AoiWebhookFetch;
+}): AoiProactivePushTransport {
+  const url = typeof params.webhookUrl === 'string' ? params.webhookUrl.trim() : '';
+  if (!url) {
+    return inertAoiProactivePushTransport;
+  }
+  return {
+    async send(record) {
+      const fetchImpl =
+        params.fetchImpl ?? (globalThis.fetch as unknown as AoiWebhookFetch | undefined);
+      if (!fetchImpl) {
+        return { delivered: false, detail: 'no_fetch_available' };
+      }
+      try {
+        const response = await fetchImpl(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            id: record.id,
+            title: record.title,
+            deepLink: record.deepLink,
+            createdAt: record.createdAt,
+          }),
+        });
+        if (response.ok) {
+          return { delivered: true };
+        }
+        return { delivered: false, detail: `webhook_status_${response.status}` };
+      } catch {
+        return { delivered: false, detail: 'webhook_request_failed' };
+      }
+    },
+  };
+}
+
 export interface AoiProactivePushDeliveryOutcome {
   recordId: string;
   delivered: boolean;

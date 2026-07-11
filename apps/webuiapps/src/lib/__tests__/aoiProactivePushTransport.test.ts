@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { AoiProactivePushDeliveryRecord } from '../aoiProactivePushDelivery';
 import {
+  createAoiWebhookPushTransport,
   inertAoiProactivePushTransport,
   runAoiProactivePushDelivery,
   type AoiProactivePushTransport,
@@ -133,5 +134,84 @@ describe('runAoiProactivePushDelivery (P2.1 transport)', () => {
   it('the exported inert transport reports the fail-closed detail', async () => {
     const result = await inertAoiProactivePushTransport.send(makeRecord());
     expect(result).toEqual({ delivered: false, detail: 'no_transport_configured' });
+  });
+});
+
+describe('createAoiWebhookPushTransport (P2.1 real channel)', () => {
+  it('returns the inert transport when no URL is configured (off by default)', async () => {
+    const transport = createAoiWebhookPushTransport({ webhookUrl: '   ' });
+    expect(transport).toBe(inertAoiProactivePushTransport);
+    expect(await transport.send(makeRecord())).toEqual({
+      delivered: false,
+      detail: 'no_transport_configured',
+    });
+  });
+
+  it('POSTs only the display-only fields and reports delivered on a 2xx', async () => {
+    const fetchImpl = vi.fn(
+      async (
+        _url: string,
+        _init: { method: string; headers: Record<string, string>; body: string },
+      ) => ({
+        ok: true,
+        status: 200,
+      }),
+    );
+    const transport = createAoiWebhookPushTransport({
+      webhookUrl: 'https://hooks.example/aoi',
+      fetchImpl,
+    });
+    const result = await transport.send(makeRecord({ id: 'p-9' }));
+    expect(result).toEqual({ delivered: true });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0];
+    expect(url).toBe('https://hooks.example/aoi');
+    expect(init.method).toBe('POST');
+    const body = JSON.parse(init.body);
+    expect(body).toEqual({
+      id: 'p-9',
+      title: 'A trend you care about moved',
+      deepLink: 'openroom://aoi/aoi/default?card=c1',
+      createdAt: NOW - 1000,
+    });
+  });
+
+  it('treats a non-2xx response as a non-delivery (record stays pending)', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: false, status: 503 }));
+    const transport = createAoiWebhookPushTransport({
+      webhookUrl: 'https://hooks.example/aoi',
+      fetchImpl,
+    });
+    expect(await transport.send(makeRecord())).toEqual({
+      delivered: false,
+      detail: 'webhook_status_503',
+    });
+  });
+
+  it('treats a thrown request as a non-delivery (never throws)', async () => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('network down');
+    });
+    const transport = createAoiWebhookPushTransport({
+      webhookUrl: 'https://hooks.example/aoi',
+      fetchImpl,
+    });
+    expect(await transport.send(makeRecord())).toEqual({
+      delivered: false,
+      detail: 'webhook_request_failed',
+    });
+  });
+
+  it('drains a queue through the webhook transport end-to-end', async () => {
+    const fetchImpl = vi.fn(async () => ({ ok: true, status: 200 }));
+    const transport = createAoiWebhookPushTransport({
+      webhookUrl: 'https://hooks.example/aoi',
+      fetchImpl,
+    });
+    const queue = [makeRecord({ id: 'a' }), makeRecord({ id: 'b' })];
+    const result = await runAoiProactivePushDelivery({ queue, transport, now: NOW });
+    expect(result.transportConfigured).toBe(true);
+    expect(result.delivered).toEqual(['a', 'b']);
+    expect(result.queue.every((r) => r.consumedAt === NOW)).toBe(true);
   });
 });
