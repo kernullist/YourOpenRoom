@@ -55,6 +55,11 @@ import {
 } from './aoiApprovedCommandPolicy';
 import { runAoiApprovedCommand } from './aoiApprovedCommandRunner';
 import {
+  createAoiCommandScopeCheckpoint,
+  rollbackAoiCommandScopeCheckpointOnFailure,
+} from './aoiCommandScopeCheckpoint';
+import type { AoiActionCheckpoint } from './aoiActionCheckpoint';
+import {
   createAoiApprovedFileMutationRequest,
   evaluateAoiApprovedFileMutationPolicy,
   normalizeAoiApprovedFileMutationPolicy,
@@ -885,6 +890,26 @@ async function executeAllowedProposalAction(params: {
     if (!policy.allowed) {
       throw new Error(`approved_command_blocked:${policy.blockReasons.join(',')}`);
     }
+    // P2.6: snapshot the declared touched-scopes BEFORE the command runs so a FAILED command is
+    // recoverable, mirroring the file-mutation runner. Best-effort + fail-open: no declared
+    // scopes / an unbounded scope / a snapshot error -> no checkpoint, and the command runs
+    // exactly as before. Only a scope-declaring proposal is ever affected.
+    const declaredCommandScopes = normalizeValidationScopes(
+      params.proposal.acceptAction?.params?.touchedFileScopes ??
+        params.proposal.acceptAction?.params?.touched_file_scopes,
+    );
+    let commandScopeCheckpoint: AoiActionCheckpoint | null = null;
+    if (declaredCommandScopes.length > 0 && params.workspaceRoot) {
+      try {
+        commandScopeCheckpoint = createAoiCommandScopeCheckpoint({
+          workspaceRoot: params.workspaceRoot,
+          declaredScopes: declaredCommandScopes,
+          now: params.now,
+        }).checkpoint;
+      } catch {
+        commandScopeCheckpoint = null;
+      }
+    }
     const result = await (
       params.dependencies.runApprovedCommand ??
       ((runnerParams: {
@@ -904,11 +929,20 @@ async function executeAllowedProposalAction(params: {
       workspaceRoot: params.workspaceRoot,
       now: params.now,
     });
+    // On a FAILED command, restore the declared touched-scopes to their pre-run bytes.
+    const commandRecovery = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint: commandScopeCheckpoint,
+      commandOk: result.ok,
+      workspaceRoot: params.workspaceRoot ?? '',
+      now: params.now,
+    });
     return {
       kind: action.kind,
       policy,
       commandResult: result,
       auditRecord: result.auditRecord,
+      ...(commandScopeCheckpoint ? { commandScopeCheckpointId: commandScopeCheckpoint.id } : {}),
+      ...(commandRecovery.rolledBack ? { commandScopeRolledBack: true } : {}),
     } as unknown as Record<string, unknown>;
   }
 

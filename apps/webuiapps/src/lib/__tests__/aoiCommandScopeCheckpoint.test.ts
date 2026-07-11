@@ -1,11 +1,12 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import { join } from 'path';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   buildAoiCommandTouchedScopeManifest,
   createAoiCommandScopeCheckpoint,
+  rollbackAoiCommandScopeCheckpointOnFailure,
   verifyAoiCommandTouchedScopeBoundary,
   type AoiCommandTouchedScopeManifest,
 } from '../aoiCommandScopeCheckpoint';
@@ -312,5 +313,100 @@ describe('verifyAoiCommandTouchedScopeBoundary (P2.6 command)', () => {
     });
     expect(result.ok).toBe(false);
     expect(result.outOfScope).toEqual(['src/a.ts']);
+  });
+});
+
+describe('rollbackAoiCommandScopeCheckpointOnFailure (P2.6 command recovery)', () => {
+  it('does nothing when the command succeeded', () => {
+    const rollbackFn = vi.fn();
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint: { id: 'c1' } as never,
+      commandOk: true,
+      workspaceRoot: '/tmp/x',
+      now: NOW,
+      rollbackFn: rollbackFn as never,
+    });
+    expect(outcome.rolledBack).toBe(false);
+    expect(rollbackFn).not.toHaveBeenCalled();
+  });
+
+  it('does nothing when there is no checkpoint', () => {
+    const rollbackFn = vi.fn();
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint: null,
+      commandOk: false,
+      workspaceRoot: '/tmp/x',
+      now: NOW,
+      rollbackFn: rollbackFn as never,
+    });
+    expect(outcome.rolledBack).toBe(false);
+    expect(rollbackFn).not.toHaveBeenCalled();
+  });
+
+  it('rolls back when a checkpointed command failed', () => {
+    const rollbackFn = vi.fn(() => ({ ok: true }) as never);
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint: { id: 'c1' } as never,
+      commandOk: false,
+      workspaceRoot: '/tmp/x',
+      now: NOW,
+      rollbackFn: rollbackFn as never,
+    });
+    expect(outcome.rolledBack).toBe(true);
+    expect(rollbackFn).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails open when the rollback throws (never corrupts a run)', () => {
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint: { id: 'c1' } as never,
+      commandOk: false,
+      workspaceRoot: '/tmp/x',
+      now: NOW,
+      rollbackFn: (() => {
+        throw new Error('disk gone');
+      }) as never,
+    });
+    expect(outcome.rolledBack).toBe(false);
+    expect(outcome.result).toBeNull();
+  });
+
+  it('restores the real pre-run bytes of a declared scope when the command failed', () => {
+    const root = makeRoot();
+    write(root, 'gen/out.txt', 'original');
+    const { checkpoint } = createAoiCommandScopeCheckpoint({
+      workspaceRoot: root,
+      declaredScopes: ['gen'],
+      now: NOW,
+    });
+    expect(checkpoint).not.toBeNull();
+    // Simulate the command mutating a declared-scope file, then failing.
+    fs.writeFileSync(join(root, 'gen/out.txt'), 'mutated-by-failed-command');
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint,
+      commandOk: false,
+      workspaceRoot: root,
+      now: NOW,
+    });
+    expect(outcome.rolledBack).toBe(true);
+    expect(fs.readFileSync(join(root, 'gen/out.txt'), 'utf8')).toBe('original');
+  });
+
+  it('keeps the mutation when the command succeeded (no recovery)', () => {
+    const root = makeRoot();
+    write(root, 'gen/out.txt', 'original');
+    const { checkpoint } = createAoiCommandScopeCheckpoint({
+      workspaceRoot: root,
+      declaredScopes: ['gen'],
+      now: NOW,
+    });
+    fs.writeFileSync(join(root, 'gen/out.txt'), 'legit-output');
+    const outcome = rollbackAoiCommandScopeCheckpointOnFailure({
+      checkpoint,
+      commandOk: true,
+      workspaceRoot: root,
+      now: NOW,
+    });
+    expect(outcome.rolledBack).toBe(false);
+    expect(fs.readFileSync(join(root, 'gen/out.txt'), 'utf8')).toBe('legit-output');
   });
 });

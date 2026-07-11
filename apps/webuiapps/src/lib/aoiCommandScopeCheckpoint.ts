@@ -2,7 +2,12 @@ import * as fs from 'fs';
 import { createHash } from 'crypto';
 import { isAbsolute, join, relative, resolve } from 'path';
 
-import { createAoiActionCheckpoint, type AoiActionCheckpoint } from './aoiActionCheckpoint';
+import {
+  createAoiActionCheckpoint,
+  rollbackAoiActionCheckpoint,
+  type AoiActionCheckpoint,
+  type AoiActionCheckpointRollbackResult,
+} from './aoiActionCheckpoint';
 
 // P2.6 (command half): give a `run_command` a real fs checkpoint.
 //
@@ -333,4 +338,37 @@ export function verifyAoiCommandTouchedScopeBoundary(params: {
     inScope: Array.from(new Set(inScope)).sort(),
     outOfScope: Array.from(new Set(outOfScope)).sort(),
   };
+}
+
+export interface AoiCommandScopeRecoveryOutcome {
+  rolledBack: boolean;
+  result: AoiActionCheckpointRollbackResult | null;
+}
+
+// The recovery step for a checkpointed run_command, mirroring the file-mutation runner: if the
+// command FAILED, restore the declared touched-scopes to their pre-run byte state; on success,
+// keep the changes (nothing to recover). Best-effort + fail-open -- no checkpoint, a succeeded
+// command, or a rollback error each leaves the working tree untouched and never throws, so a
+// recovery bug can only ever DECLINE to roll back, never corrupt a good run. The rollback fn is
+// injectable for tests.
+export function rollbackAoiCommandScopeCheckpointOnFailure(params: {
+  checkpoint: AoiActionCheckpoint | null;
+  commandOk: boolean;
+  workspaceRoot: string;
+  now: number;
+  rollbackFn?: typeof rollbackAoiActionCheckpoint;
+}): AoiCommandScopeRecoveryOutcome {
+  if (!params.checkpoint || params.commandOk) {
+    return { rolledBack: false, result: null };
+  }
+  const rollback = params.rollbackFn ?? rollbackAoiActionCheckpoint;
+  try {
+    const result = rollback(params.checkpoint, {
+      workspaceRoot: params.workspaceRoot,
+      now: params.now,
+    });
+    return { rolledBack: true, result };
+  } catch {
+    return { rolledBack: false, result: null };
+  }
 }
