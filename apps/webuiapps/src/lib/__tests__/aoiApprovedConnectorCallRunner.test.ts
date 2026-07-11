@@ -29,7 +29,7 @@ function connectors(): AoiMcpConnectorsConfig {
         trusted: true,
         allowedTools: [
           { name: 'search_issues', readOnly: true },
-          { name: 'create_issue', readOnly: false },
+          { name: 'create_issue', readOnly: false, compensatingAction: 'delete the created issue' },
         ],
         allowReadResource: true,
         allowPrivateHost: false,

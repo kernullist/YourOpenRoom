@@ -2686,6 +2686,9 @@ export type AoiConnectorCallBlockReason =
   // Side-effecting live RPC is enabled (hard env gate) but the approved action did
   // not carry the explicit irreversibility acknowledgment that side effects require.
   | 'irreversible_approval_not_acknowledged'
+  // P2.6: a side-effecting tool that does not declare a compensating action (an undo path) is
+  // ineligible -- an effect that cannot be bounded/rolled back stays blocked.
+  | 'compensating_action_not_declared'
   | 'approval_missing'
   | 'approval_expired'
   | 'approval_connector_changed'

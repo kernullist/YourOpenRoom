@@ -30,6 +30,10 @@ export interface AoiMcpConnectorTool {
   name: string;
   // readOnly tools have no external side effect and are eligible for live RPC.
   readOnly: boolean;
+  // P2.6: a short, human-declared compensating action (how the side effect is undone) for a
+  // side-effecting tool. Required before a side-effecting tool is eligible for a live call --
+  // an effect that cannot be bounded/rolled back stays blocked. Ignored for read-only tools.
+  compensatingAction?: string;
 }
 
 export interface AoiMcpConnectorEntry {
@@ -66,6 +70,9 @@ export interface AoiMcpConnectorToolClassification {
   allowed: boolean;
   readOnly: boolean;
   reason?: 'tool_not_allow_listed' | 'read_resource_not_allowed' | 'missing_tool_name';
+  // P2.6: the tool's declared compensating action (undo path), surfaced so the call policy can
+  // require it before a side-effecting tool is eligible. Absent for read-only / unknown tools.
+  compensatingAction?: string;
 }
 
 export const AOI_MCP_READ_RESOURCE_METHOD = 'resources/read';
@@ -224,9 +231,14 @@ function normalizeConnectorTool(value: unknown): AoiMcpConnectorTool | null {
   if (!name) {
     return null;
   }
+  const compensatingAction =
+    typeof record.compensatingAction === 'string'
+      ? record.compensatingAction.replace(/\s+/g, ' ').trim().slice(0, 240)
+      : '';
   return {
     name,
     readOnly: record.readOnly === true,
+    ...(compensatingAction ? { compensatingAction } : {}),
   };
 }
 
@@ -243,9 +255,11 @@ function normalizeConnectorTools(value: unknown): AoiMcpConnectorTool[] {
     // Last write wins, but a read-only flag is never silently downgraded by a
     // later duplicate that forgot to set it.
     const existing = byName.get(tool.name);
+    const compensatingAction = tool.compensatingAction ?? existing?.compensatingAction;
     byName.set(tool.name, {
       name: tool.name,
       readOnly: tool.readOnly || Boolean(existing?.readOnly),
+      ...(compensatingAction ? { compensatingAction } : {}),
     });
     if (byName.size >= MAX_TOOLS_PER_CONNECTOR) {
       break;
@@ -349,7 +363,11 @@ export function classifyAoiMcpConnectorTool(
   if (!tool) {
     return { allowed: false, readOnly: false, reason: 'tool_not_allow_listed' };
   }
-  return { allowed: true, readOnly: tool.readOnly };
+  return {
+    allowed: true,
+    readOnly: tool.readOnly,
+    ...(tool.compensatingAction ? { compensatingAction: tool.compensatingAction } : {}),
+  };
 }
 
 export function summarizeAoiMcpConnectorsConfig(

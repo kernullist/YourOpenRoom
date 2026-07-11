@@ -26,7 +26,7 @@ function connectors(): AoiMcpConnectorsConfig {
         trusted: true,
         allowedTools: [
           { name: 'search_issues', readOnly: true },
-          { name: 'create_issue', readOnly: false },
+          { name: 'create_issue', readOnly: false, compensatingAction: 'delete the created issue' },
         ],
         allowReadResource: true,
         allowPrivateHost: false,
@@ -115,6 +115,35 @@ describe('evaluateAoiApprovedConnectorCallPolicy', () => {
     expect(policy.routing).toBe('side_effecting');
     expect(policy.requiresIrreversibleApproval).toBe(true);
     expect(policy.rationale.join(' ')).toMatch(/irreversible/i);
+  });
+
+  it('blocks a side-effecting tool that declares no compensating action (P2.6)', () => {
+    const noCompensation = normalizeAoiMcpConnectorsConfig({
+      connectors: [
+        {
+          id: 'jira',
+          name: 'Jira',
+          endpointUrl: 'https://mcp.example.com/jira',
+          enabled: true,
+          trusted: true,
+          // create_issue is side-effecting but declares NO undo path -> ineligible.
+          allowedTools: [{ name: 'create_issue', readOnly: false }],
+          allowReadResource: true,
+          allowPrivateHost: false,
+        },
+      ],
+    });
+    const policy = evaluateAoiApprovedConnectorCallPolicy(
+      request({
+        toolName: 'create_issue',
+        args: { project: 'OPS' },
+        acknowledgeIrreversible: true,
+      }),
+      { connectors: noCompensation, now: NOW, allowSideEffecting: true },
+    );
+    expect(policy.allowed).toBe(false);
+    // Blocked even with the env gate on + the irreversibility ack -- an unbounded effect stays out.
+    expect(policy.blockReasons).toContain('compensating_action_not_declared');
   });
 
   it('leaves a read-only call unaffected when the env gate is on', () => {

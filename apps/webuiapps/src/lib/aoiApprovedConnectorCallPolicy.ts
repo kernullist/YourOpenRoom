@@ -234,6 +234,12 @@ export function evaluateAoiApprovedConnectorCallPolicy(
       // env gate; even then it demands an explicit irreversibility acknowledgment on
       // the approved action (a stronger, separate consent than a read-only call).
       routing = 'side_effecting';
+      // P2.6: a side-effecting tool must declare a compensating action (an undo path) before it
+      // is eligible at all -- an effect that cannot be bounded/rolled back stays blocked,
+      // independent of the env gate + irreversibility acknowledgment.
+      if (!classification.compensatingAction) {
+        blockReasons.push('compensating_action_not_declared');
+      }
       if (!options.allowSideEffecting) {
         blockReasons.push('side_effecting_live_rpc_not_enabled');
       } else {
