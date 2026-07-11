@@ -18,9 +18,36 @@ import {
   buildAoiJarvisAutonomyGovernor,
   type AoiJarvisAutonomyGovernorDecision,
 } from './aoiJarvisAutonomyGovernor';
-import { buildAoiJarvisReadinessScorecard } from './aoiJarvisReadinessScorecard';
+import {
+  buildAoiJarvisReadinessScorecard,
+  type AoiJarvisReadinessScorecard,
+} from './aoiJarvisReadinessScorecard';
 import { buildAoiOperatorHealthState } from './aoiOperatorHealthServer';
 import { buildAoiSourceFreshnessContracts } from './aoiSourceFreshnessContract';
+
+// The readiness half, exposed on its own so the P2.3 autonomous-execute loop can source the
+// trusted_operator gate WITHOUT assembling the whole governor. Readiness is backed by the REAL
+// closed-loop metrics (decisions + executed outcomes), exactly as the P5.3 server snapshot does.
+export function buildAoiServerJarvisReadinessScorecard(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  now: number;
+}): AoiJarvisReadinessScorecard {
+  const { sessionsDir, sessionPath, now } = params;
+  const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
+  const closedLoopMetrics = buildAoiClosedLoopMetrics({
+    sessionPath,
+    decisions: loadAoiProposalDecisions(sessionsDir, sessionPath),
+    outcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath),
+    now,
+  });
+  return buildAoiJarvisReadinessScorecard({
+    sessionPath,
+    now,
+    closedLoopMetrics,
+    directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
+  });
+}
 
 export function buildAoiServerJarvisAutonomyGovernor(params: {
   sessionsDir: string;
@@ -30,19 +57,10 @@ export function buildAoiServerJarvisAutonomyGovernor(params: {
 }): AoiJarvisAutonomyGovernorDecision {
   const { sessionsDir, sessionPath, configFile, now } = params;
   const policy = loadAoiAutonomyPolicy(sessionsDir, sessionPath);
-  // Readiness backed by the REAL closed-loop metrics (decisions + executed outcomes), exactly
-  // as the P5.3 server snapshot does -- a real (if partial) readiness signal.
-  const closedLoopMetrics = buildAoiClosedLoopMetrics({
-    sessionPath,
-    decisions: loadAoiProposalDecisions(sessionsDir, sessionPath),
-    outcomes: loadAoiOutcomeSignalRecords(sessionsDir, sessionPath),
-    now,
-  });
-  const jarvisReadinessScorecard = buildAoiJarvisReadinessScorecard({
+  const jarvisReadinessScorecard = buildAoiServerJarvisReadinessScorecard({
+    sessionsDir,
     sessionPath,
     now,
-    closedLoopMetrics,
-    directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
   const operatorHealth = buildAoiOperatorHealthState({ sessionsDir, sessionPath, configFile, now });
   const sourceFreshnessContracts = buildAoiSourceFreshnessContracts({

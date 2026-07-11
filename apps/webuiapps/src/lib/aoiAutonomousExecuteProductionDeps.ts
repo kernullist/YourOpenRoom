@@ -17,8 +17,13 @@ import { hasAoiApprovalSandboxRecoveryEvidence } from './aoiApprovalSandbox';
 import { normalizeAoiApprovedAppActionPolicy } from './aoiApprovedAppActionPolicy';
 import { getAoiApprovedAppActionPolicyForProposal } from './aoiAutonomyPolicy';
 import { executeAoiProposal } from './aoiAutonomyExecution';
-import type { AoiAutonomousExecuteLoopDeps } from './aoiAutonomousExecuteLoop';
+import {
+  runAoiAutonomousExecuteLoop,
+  type AoiAutonomousExecuteLoopDeps,
+  type AoiAutonomousExecuteLoopResult,
+} from './aoiAutonomousExecuteLoop';
 import type { AoiAutonomousExecuteEligibilityInput } from './aoiAutonomousExecuteEligibility';
+import { buildAoiServerJarvisReadinessScorecard } from './aoiServerJarvisGovernor';
 import type { AoiJarvisReadinessLevel } from './aoiJarvisReadinessScorecard';
 import type { AoiProposal, AoiProposalDecision } from './aoiAutonomyTypes';
 
@@ -129,4 +134,53 @@ export function createAoiAutonomousExecuteProductionDeps(
       return { executed: result.executed === true };
     },
   };
+}
+
+// The daemon wakeup entry point. ENV-GATE FIRST: in production (AOI_AUTONOMY_SELF_EXECUTE unset)
+// this returns inert WITHOUT computing readiness, building deps, or touching the execute path --
+// a near-zero-cost no-op. Only when explicitly enabled does it resolve readiness once, build the
+// production deps, and run the bounded loop. The scheduler calls this best-effort so it can never
+// break a wakeup.
+export async function runAoiAutonomousExecuteForWakeup(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  configFile: string;
+  serverOrigin: string;
+  workspaceRoot?: string;
+  now: number;
+  sessionBudget?: number;
+  env?: Record<string, string | undefined>;
+  // Test injection: skip the real readiness computation / real deps.
+  readinessLevel?: AoiJarvisReadinessLevel;
+  deps?: AoiAutonomousExecuteLoopDeps;
+}): Promise<AoiAutonomousExecuteLoopResult> {
+  const env = params.env ?? process.env;
+  if (env.AOI_AUTONOMY_SELF_EXECUTE !== '1') {
+    return { enabled: false, executed: [], skipped: [] };
+  }
+  const readinessLevel =
+    params.readinessLevel ??
+    buildAoiServerJarvisReadinessScorecard({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      now: params.now,
+    }).level;
+  const deps =
+    params.deps ??
+    createAoiAutonomousExecuteProductionDeps({
+      sessionsDir: params.sessionsDir,
+      sessionPath: params.sessionPath,
+      configFile: params.configFile,
+      serverOrigin: params.serverOrigin,
+      workspaceRoot: params.workspaceRoot,
+      readinessLevel,
+    });
+  return runAoiAutonomousExecuteLoop({
+    sessionsDir: params.sessionsDir,
+    sessionPath: params.sessionPath,
+    now: params.now,
+    sessionBudget: params.sessionBudget,
+    env,
+    deps,
+  });
 }

@@ -1,12 +1,29 @@
-import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import { join } from 'path';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createAoiAutonomousExecuteProductionDeps } from '../aoiAutonomousExecuteProductionDeps';
+import {
+  createAoiAutonomousExecuteProductionDeps,
+  runAoiAutonomousExecuteForWakeup,
+} from '../aoiAutonomousExecuteProductionDeps';
 import { classifyAoiAutonomousExecuteEligibility } from '../aoiAutonomousExecuteEligibility';
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
+import { appendAoiProposalDecision, saveAoiActiveProposals } from '../aoiAutonomyStore';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 import type { AoiProposalExecutionResult } from '../aoiAutonomyExecution';
 
 const NOW = 1_800_000_000_000;
+const tempRoots: string[] = [];
+
+afterEach(() => {
+  while (tempRoots.length > 0) {
+    const root = tempRoots.pop();
+    if (root) {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
 
 function makeAppActionProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
   return {
@@ -235,5 +252,63 @@ describe('createAoiAutonomousExecuteProductionDeps.executeProposal (P2.3)', () =
       now: NOW,
     });
     expect(result).toEqual({ executed: false });
+  });
+});
+
+describe('runAoiAutonomousExecuteForWakeup (P2.3 daemon entry)', () => {
+  function makeRoot(): string {
+    const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'aoi-wakeup-exec-')));
+    tempRoots.push(root);
+    return root;
+  }
+
+  it('is inert without the env gate, WITHOUT computing readiness or touching stores', async () => {
+    // A non-existent sessionsDir would throw if readiness were computed -> proves the short-circuit.
+    const result = await runAoiAutonomousExecuteForWakeup({
+      sessionsDir: join(os.tmpdir(), 'aoi-wakeup-does-not-exist-xyz'),
+      sessionPath: 'aoi/default',
+      configFile: '/tmp/config.json',
+      serverOrigin: 'http://127.0.0.1:3000',
+      now: NOW,
+      env: {}, // gate off
+    });
+    expect(result).toEqual({ enabled: false, executed: [], skipped: [] });
+  });
+
+  it('runs the bounded loop when enabled, using injected readiness + deps (no real execution)', async () => {
+    const root = makeRoot();
+    const proposal = makeAppActionProposal();
+    saveAoiActiveProposals(root, 'aoi/default', [proposal]);
+    appendAoiProposalDecision(root, makeAcceptDecision(proposal));
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteForWakeup({
+      sessionsDir: root,
+      sessionPath: 'aoi/default',
+      configFile: '/tmp/config.json',
+      serverOrigin: 'http://127.0.0.1:3000',
+      now: NOW,
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      readinessLevel: 'trusted_operator',
+      deps: {
+        resolveEligibility: ({ decision, proposal: p, sessionBudgetRemaining, now }) => {
+          const standing = getAoiApprovedAppActionPolicyForProposal(p, now);
+          return {
+            actionKind: 'app_action',
+            hasCheckpoint: true,
+            approvalFingerprint: standing.approvalFingerprint,
+            currentFingerprint: standing.approvalFingerprint,
+            approvalExpiresAt: standing.expiresAt,
+            readinessLevel: 'trusted_operator',
+            sessionBudgetRemaining,
+            acceptDecisionActor: decision.actor === 'user' ? 'user' : null,
+            now,
+          };
+        },
+        executeProposal,
+      },
+    });
+    expect(result.enabled).toBe(true);
+    expect(result.executed).toEqual([proposal.id]);
+    expect(executeProposal).toHaveBeenCalledTimes(1);
   });
 });

@@ -67,6 +67,7 @@ import {
 } from './aoiProactiveBriefScout';
 import { buildAoiProactiveTrendAdvisorState } from './aoiProactiveTrendAdvisor';
 import { buildAoiServerJarvisAutonomyGovernor } from './aoiServerJarvisGovernor';
+import { runAoiAutonomousExecuteForWakeup } from './aoiAutonomousExecuteProductionDeps';
 import { planAoiProactiveBriefTopics } from './aoiProactiveBriefPlanner';
 import {
   loadAoiInterestProfile,
@@ -1995,6 +1996,27 @@ async function runWakeupInternal(
     now,
     budget,
   });
+  // P2.3: after the tick settles proposals, run the bounded autonomous-execute loop. ENV-GATE
+  // FIRST + best-effort: default-OFF (AOI_AUTONOMY_SELF_EXECUTE unset) -> inert no-op that never
+  // computes readiness or touches the execute path. When enabled it only ever self-invokes a
+  // checkpoint-backed, user-approved, fingerprint-matched, trusted_operator app_action; it never
+  // authors an acceptance. Wrapped so a failure can never break the wakeup.
+  try {
+    await runAoiAutonomousExecuteForWakeup({
+      sessionsDir: input.sessionsDir,
+      sessionPath,
+      configFile: input.configFile ?? '',
+      serverOrigin: input.serverOrigin ?? 'http://127.0.0.1:3000',
+      workspaceRoot: input.workspaceRoot,
+      now,
+    });
+  } catch (error) {
+    warnings.push(
+      error instanceof Error
+        ? `Autonomous-execute loop failed: ${error.message}`
+        : 'Autonomous-execute loop failed.',
+    );
+  }
   const completedAt = input.now ?? getNow();
   const record: AoiAutonomyWakeupRecord = {
     version: 1,
