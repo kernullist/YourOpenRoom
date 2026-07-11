@@ -325,6 +325,7 @@ import {
   recordAoiFieldFeedback,
   recordAoiOperatorFlightDecision,
   recordAoiOperatorVoiceDecision,
+  recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   recordAoiProactiveTrendDeliveryEvent,
   recordAoiProposalFeedback,
@@ -340,6 +341,12 @@ import {
   type AoiFieldFeedbackResponse,
   type AoiProactiveBriefListResponse,
 } from '@/lib/aoiAutonomyClient';
+import {
+  buildAoiDirectChatDismissedSignal,
+  buildAoiProposalIgnoredSignal,
+  buildAoiProposalOpenedSignal,
+  createAoiOutcomeJunctureTracker,
+} from '@/lib/aoiOutcomeSignalJunctures';
 import {
   AOI_AUTONOMY_UI_LEVELS,
   appendAoiAgendaNudgeDecisionFeedbackHistory,
@@ -3215,6 +3222,15 @@ const ChatPanel: React.FC<{
   const aoiDirectTrendChatIdsRef = useRef(new Set<string>());
   const aoiAgendaNudgeShownKeysRef = useRef(new Set<string>());
   const aoiOperatorVoiceSpokenKeysRef = useRef(new Set<string>());
+  // P1.1: emit outcome signals at real UI junctures, each at most once per subject.
+  const aoiOutcomeJunctureTrackerRef = useRef(createAoiOutcomeJunctureTracker());
+  // The last direct-chat card that was OFFERED to the user; used to record an
+  // implicit dismissal when the user sends an unrelated message instead.
+  const aoiOfferedDirectChatCardRef = useRef<{
+    id: string;
+    topicId?: string;
+    evidenceRefs?: string[];
+  } | null>(null);
   const aoiOperatorVoiceDecisionRecordKeyRef = useRef('');
   const aoiJarvisAutonomyGovernorAuditKeyRef = useRef<string | null>(null);
   const aoiAutonomyActiveProposalsRef = useRef(aoiAutonomyActiveProposals);
@@ -4430,6 +4446,15 @@ const ChatPanel: React.FC<{
         }
         if (action === 'dismiss') {
           setAoiInlineDismissedProposalIds((prev) => new Set(prev).add(proposalId));
+          // P1.1: an ignored proposal is a soft negative timing signal.
+          const ignoredSignal = buildAoiProposalIgnoredSignal(result.proposal, {
+            decisionId: result.decision.id,
+          });
+          if (ignoredSignal && aoiOutcomeJunctureTrackerRef.current.claim(ignoredSignal.key)) {
+            void recordAoiOutcomeSignal(sessionPathForAutonomy, ignoredSignal.input).catch(
+              () => {},
+            );
+          }
         }
         if (action === 'snooze') {
           setAoiInlineSnoozedProposalIds((prev) => new Set(prev).add(proposalId));
@@ -5631,6 +5656,17 @@ const ChatPanel: React.FC<{
       } else {
         aoiTrendFollowUpContextsByPromptRef.current.clear();
         aoiAgendaFollowUpContextsByPromptRef.current.clear();
+        // P1.1: the user sent an unrelated message while a direct-chat card was
+        // offered -> record it as an implicit dismissal (once per card).
+        const offeredDirectChatCard = aoiOfferedDirectChatCardRef.current;
+        if (offeredDirectChatCard) {
+          const dismissedSignal = buildAoiDirectChatDismissedSignal(offeredDirectChatCard);
+          if (dismissedSignal && aoiOutcomeJunctureTrackerRef.current.claim(dismissedSignal.key)) {
+            void recordAoiOutcomeSignal(sessionPathRef.current, dismissedSignal.input).catch(
+              () => {},
+            );
+          }
+        }
       }
       hasUserInteractedRef.current = true;
       stopAoiTtsPlayback();
@@ -8606,6 +8642,15 @@ const ChatPanel: React.FC<{
   const directAoiTrendCard = aoiGovernorAllowsDirectChat
     ? (aoiProactiveBriefs?.trendAdvisor?.directChatCard ?? null)
     : null;
+  // Remember the last offered direct-chat card so handleSend can record an
+  // implicit dismissal (P1.1). Mirrors the sessionPathRef render-assignment idiom.
+  if (directAoiTrendCard) {
+    aoiOfferedDirectChatCardRef.current = {
+      id: directAoiTrendCard.id,
+      topicId: directAoiTrendCard.topicId,
+      evidenceRefs: directAoiTrendCard.evidenceRefs,
+    };
+  }
   const aoiAgendaChatNudge = useMemo(
     () =>
       aoiGovernorAllowsDirectChat
@@ -11079,6 +11124,17 @@ const SettingsModal: React.FC<{
   );
   const [pendingAoiMemoryActionId, setPendingAoiMemoryActionId] = useState<string | null>(null);
   const [expandedAoiProposalId, setExpandedAoiProposalId] = useState<string | null>(null);
+  // P1.1: opening a proposal's evidence is a weak interest signal; emit once per proposal.
+  const aoiProposalOpenedTrackerRef = useRef(createAoiOutcomeJunctureTracker());
+  const emitAoiProposalOpenedSignal = useCallback(
+    (subject: { id: string; cooldownKey?: string }) => {
+      const openedSignal = buildAoiProposalOpenedSignal(subject);
+      if (openedSignal && aoiProposalOpenedTrackerRef.current.claim(openedSignal.key)) {
+        void recordAoiOutcomeSignal(aoiReplaySessionPath, openedSignal.input).catch(() => {});
+      }
+    },
+    [aoiReplaySessionPath],
+  );
   const [expandedAoiMissionEvidence, setExpandedAoiMissionEvidence] = useState(false);
   const aoiMissionPanelSummary = useMemo(
     () => buildAoiMissionPanelSummary(aoiMissionState, expandedAoiMissionEvidence),
@@ -14467,11 +14523,14 @@ const SettingsModal: React.FC<{
                                   <button
                                     type="button"
                                     className={styles.inlineActionBtn}
-                                    onClick={() =>
+                                    onClick={() => {
+                                      if (expandedAoiProposalId !== item.proposalId) {
+                                        emitAoiProposalOpenedSignal({ id: item.proposalId });
+                                      }
                                       setExpandedAoiProposalId((prev) =>
                                         prev === item.proposalId ? null : item.proposalId,
-                                      )
-                                    }
+                                      );
+                                    }}
                                     title="Show inbox evidence"
                                   >
                                     {expanded ? (
@@ -15918,11 +15977,14 @@ const SettingsModal: React.FC<{
                                     <button
                                       type="button"
                                       className={styles.inlineActionBtn}
-                                      onClick={() =>
+                                      onClick={() => {
+                                        if (expandedAoiProposalId !== proposal.id) {
+                                          emitAoiProposalOpenedSignal(proposal);
+                                        }
                                         setExpandedAoiProposalId((prev) =>
                                           prev === proposal.id ? prev : proposal.id,
-                                        )
-                                      }
+                                        );
+                                      }}
                                       disabled={proposalPending}
                                       title="Ask Aoi to explain evidence before approval"
                                     >
@@ -15945,11 +16007,15 @@ const SettingsModal: React.FC<{
                                   <button
                                     type="button"
                                     className={styles.inlineActionBtn}
-                                    onClick={() =>
+                                    data-testid={`aoi-proposal-expand-${proposal.id}`}
+                                    onClick={() => {
+                                      if (expandedAoiProposalId !== proposal.id) {
+                                        emitAoiProposalOpenedSignal(proposal);
+                                      }
                                       setExpandedAoiProposalId((prev) =>
                                         prev === proposal.id ? null : proposal.id,
-                                      )
-                                    }
+                                      );
+                                    }}
                                     title="Show proposal evidence and policy details"
                                   >
                                     {expanded ? (
