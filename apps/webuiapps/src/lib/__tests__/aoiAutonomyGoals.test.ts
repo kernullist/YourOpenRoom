@@ -10,6 +10,9 @@ import {
   buildAoiGoalCandidateProposal,
   buildAoiGoalContinuationProposals,
   buildAoiGoalProposalFromUserMessage,
+  buildAoiPlanForGoal,
+  buildAoiPlanStepsFromLlmProposal,
+  parseAoiProposedPlanStepsParam,
   firstOpenStep,
   loadAoiActiveGoals,
   loadAoiArchivedGoals,
@@ -826,5 +829,180 @@ describe('Aoi autonomy goals', () => {
     expect(loadAoiActiveProposals(root, SESSION_PATH).map((item) => item.id)).toEqual([
       proposal.id,
     ]);
+  });
+});
+
+describe('P3.6 LLM-assisted plan decomposition', () => {
+  it('decomposes valid LLM steps into bounded, display-only plan steps', () => {
+    const steps = buildAoiPlanStepsFromLlmProposal({
+      goalId: 'g1',
+      rawSteps: [
+        { title: 'Map the ETW telemetry gap', doneCriteria: ['The gap is documented'] },
+        { title: 'Draft a kernel callback probe', doneCriteria: ['A probe plan exists'] },
+      ],
+      sourceRefs: ['obs:1'],
+      risk: 'medium',
+      now: NOW,
+    });
+    expect(steps).not.toBeNull();
+    expect(steps).toHaveLength(2);
+    expect(steps?.[0].title).toBe('Map the ETW telemetry gap');
+    // Display-only: LLM-decomposed steps never carry action authority.
+    expect(steps?.every((step) => step.allowedActionKind === 'none')).toBe(true);
+    expect(steps?.[0].doneCriteria).toContain('The gap is documented');
+  });
+
+  it('rejects an over-long (broad-scope) decomposition', () => {
+    const rawSteps = Array.from({ length: 5 }, (_unused, index) => ({
+      title: `Step ${index}`,
+      doneCriteria: [`done ${index}`],
+    }));
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps,
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  it('rejects an ambiguous decomposition (empty title or no done-criterion)', () => {
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps: [{ title: '', doneCriteria: ['x'] }],
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps: [{ title: 'A step', doneCriteria: [] }],
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null for a non-array / empty proposal', () => {
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps: 'nope',
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps: [],
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+    // A non-object element (not a { title, doneCriteria }) rejects the whole decomposition.
+    expect(
+      buildAoiPlanStepsFromLlmProposal({
+        goalId: 'g1',
+        rawSteps: [123],
+        sourceRefs: [],
+        risk: 'low',
+        now: NOW,
+      }),
+    ).toBeNull();
+  });
+
+  it('parses a JSON-string planSteps param and passes arrays through (fail-closed)', () => {
+    expect(parseAoiProposedPlanStepsParam('[{"title":"a"}]')).toEqual([{ title: 'a' }]);
+    expect(parseAoiProposedPlanStepsParam('not json')).toBeUndefined();
+    expect(parseAoiProposedPlanStepsParam([{ title: 'a' }])).toEqual([{ title: 'a' }]);
+    expect(parseAoiProposedPlanStepsParam(undefined)).toBeUndefined();
+  });
+
+  it('buildAoiPlanForGoal uses valid LLM steps but falls back to the template otherwise', () => {
+    const planned = buildAoiPlanForGoal({
+      goalId: 'g1',
+      sessionPath: SESSION_PATH,
+      userIntentSummary: 'Harden the telemetry path',
+      sourceRefs: ['obs:1'],
+      risk: 'medium',
+      now: NOW,
+      llmProposedSteps: [{ title: 'Map the ETW gap', doneCriteria: ['documented'] }],
+    });
+    // The read + review bookends frame the LLM-decomposed middle.
+    expect(planned.steps.some((step) => step.title === 'Map the ETW gap')).toBe(true);
+
+    // An unusable decomposition -> the deterministic template (no LLM title).
+    const templated = buildAoiPlanForGoal({
+      goalId: 'g2',
+      sessionPath: SESSION_PATH,
+      userIntentSummary: 'Harden the telemetry path',
+      sourceRefs: ['obs:1'],
+      risk: 'medium',
+      now: NOW,
+      llmProposedSteps: [{ title: '', doneCriteria: [] }],
+    });
+    expect(templated.steps.some((step) => step.title === 'Map the ETW gap')).toBe(false);
+    expect(templated.steps.length).toBeGreaterThan(0);
+  });
+
+  it('activates a goal whose LLM-authored proposal carried decomposed plan steps (end-to-end)', () => {
+    const root = makeTempRoot();
+    const proposal: AoiProposal = {
+      version: 1,
+      id: 'proposal-p36-001',
+      sessionPath: SESSION_PATH,
+      status: 'active',
+      title: 'Track the kernel telemetry goal',
+      body: 'Harden the Windows kernel telemetry path.',
+      reason: 'A recurring multi-step objective worth tracking.',
+      trigger: 'goal_continuation',
+      createdAt: NOW,
+      updatedAt: NOW,
+      cooldownKey: 'goal:p36',
+      confidence: 0.8,
+      risk: 'medium',
+      requiredAutonomyLevel: 'L4',
+      requiresUserApproval: true,
+      suggestedTools: [],
+      evidenceRefs: ['obs:kernel'],
+      memoryIds: [],
+      artifactRefs: ['obs:kernel'],
+      riskSignals: [],
+      acceptAction: {
+        kind: 'activate_goal',
+        params: {
+          title: 'Harden kernel telemetry',
+          userIntentSummary: 'Harden the Windows kernel telemetry path',
+          planSteps: JSON.stringify([
+            { title: 'Map the ETW telemetry gap', doneCriteria: ['The gap is documented'] },
+            { title: 'Draft a kernel callback probe', doneCriteria: ['A probe plan exists'] },
+          ]),
+        },
+      },
+    };
+
+    const goal = activateAoiGoalFromProposal({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      proposal,
+      now: NOW,
+    });
+    expect(goal).not.toBeNull();
+    // The goal's plan carries the LLM-decomposed steps, display-only.
+    const mapStep = goal?.plan.steps.find((step) => step.title === 'Map the ETW telemetry gap');
+    expect(mapStep).toBeDefined();
+    expect(mapStep?.allowedActionKind).toBe('none');
+    // A bounded, display-only work order builds from that step (envelope preserved).
+    const workOrder = buildAoiBoundedWorkOrderFromGoalStep(goal!, mapStep!);
+    expect(workOrder.actionAuthority).toBe('display_only');
   });
 });

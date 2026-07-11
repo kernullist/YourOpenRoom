@@ -341,6 +341,73 @@ export function looksLikeExplicitAoiGoalIntent(value: string | undefined): boole
   );
 }
 
+// P3.6: max LLM-decomposed plan steps. The broad-scope blocker rejects an over-long
+// decomposition -- a novel objective that fans out too far is a review red flag, not a plan.
+const MAX_LLM_PROPOSED_PLAN_STEPS = 4;
+
+// P3.6: turn LLM-proposed plan-step descriptions into bounded, DISPLAY-ONLY AoiPlanSteps,
+// or null when the decomposition is unusable (fail-closed -> the caller keeps the
+// deterministic template). Every step is allowedActionKind:'none' -- purely descriptive; it
+// carries no action authority, and buildAoiBoundedWorkOrderFromGoalStep still forces
+// display_only + approval downstream. Safety blockers reject over-reach: a broad-scope
+// decomposition (too many steps) or an ambiguous one (a step with no concrete title or
+// done-criterion).
+export function buildAoiPlanStepsFromLlmProposal(params: {
+  goalId: string;
+  rawSteps: unknown;
+  sourceRefs: string[];
+  risk: AoiAutonomyRisk;
+  now: number;
+}): AoiPlanStep[] | null {
+  if (!Array.isArray(params.rawSteps) || params.rawSteps.length === 0) {
+    return null;
+  }
+  if (params.rawSteps.length > MAX_LLM_PROPOSED_PLAN_STEPS) {
+    return null; // broad-scope blocker
+  }
+  const sourceRefs = normalizeStringArray(params.sourceRefs, 12);
+  const steps: AoiPlanStep[] = [];
+  for (const raw of params.rawSteps) {
+    if (!raw || typeof raw !== 'object') {
+      return null;
+    }
+    const record = raw as { title?: unknown; doneCriteria?: unknown };
+    const title = typeof record.title === 'string' ? sanitizeText(record.title, 120) : '';
+    const doneCriteria = normalizeStringArray(record.doneCriteria, 4);
+    if (!title || doneCriteria.length === 0) {
+      return null; // ambiguous-objective blocker
+    }
+    steps.push(
+      makePlanStep({
+        goalId: params.goalId,
+        kind: 'draft',
+        title,
+        expectedEvidence: doneCriteria,
+        allowedActionKind: 'none',
+        doneCriteria,
+        evidenceRefs: sourceRefs,
+        risk: params.risk === 'high' ? 'medium' : 'low',
+        now: params.now,
+      }),
+    );
+  }
+  return steps;
+}
+
+// P3.6: proposal acceptAction params are string-keyed, so LLM-proposed plan steps arrive as
+// a JSON string; parse it to an array (fail-closed to undefined so a malformed value keeps
+// the deterministic template). An already-array value passes through.
+export function parseAoiProposedPlanStepsParam(value: unknown): unknown {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return undefined;
+    }
+  }
+  return value;
+}
+
 export function buildAoiPlanForGoal(params: {
   goalId: string;
   sessionPath: string;
@@ -348,6 +415,10 @@ export function buildAoiPlanForGoal(params: {
   sourceRefs: string[];
   risk: AoiAutonomyRisk;
   now: number;
+  // P3.6: optional LLM-proposed plan steps. When they pass buildAoiPlanStepsFromLlmProposal
+  // (bounded + concrete), they replace the deterministic intent-based middle step; otherwise
+  // the template stands (fail-closed). The read + review bookends stay deterministic.
+  llmProposedSteps?: unknown;
 }): AoiPlan {
   const sourceRefs = normalizeStringArray(params.sourceRefs, 12);
   const steps: AoiPlanStep[] = [
@@ -366,7 +437,22 @@ export function buildAoiPlanForGoal(params: {
     }),
   ];
 
-  if (isCurrentInfoIntent(params.userIntentSummary)) {
+  const llmSteps =
+    params.llmProposedSteps !== undefined
+      ? buildAoiPlanStepsFromLlmProposal({
+          goalId: params.goalId,
+          rawSteps: params.llmProposedSteps,
+          sourceRefs,
+          risk: params.risk,
+          now: params.now,
+        })
+      : null;
+  if (llmSteps) {
+    // P3.6: the LLM decomposed the objective into concrete, bounded steps -- use them in
+    // place of the single deterministic intent step. The read + review bookends still frame
+    // them, and each step stays display_only.
+    steps.push(...llmSteps);
+  } else if (isCurrentInfoIntent(params.userIntentSummary)) {
     steps.push(
       makePlanStep({
         goalId: params.goalId,
@@ -975,6 +1061,10 @@ export function activateAoiGoalFromProposal(params: {
     owner,
     plan: actionParams.plan,
   })?.plan;
+  // P3.6: LLM-decomposed plan steps take precedence over a defaulted template so the
+  // reflection's decomposition actually shapes the plan; buildAoiPlanForGoal still safety-
+  // blocks + falls back to the template when the steps are unusable.
+  const llmProposedSteps = parseAoiProposedPlanStepsParam(actionParams.planSteps);
   const goal: AoiGoal = {
     version: 1,
     id: goalId,
@@ -990,7 +1080,7 @@ export function activateAoiGoalFromProposal(params: {
     risk,
     owner,
     plan:
-      providedPlan && providedPlan.steps.length > 0
+      llmProposedSteps === undefined && providedPlan && providedPlan.steps.length > 0
         ? {
             ...providedPlan,
             id: `plan-${hashPart(goalId)}`,
@@ -1011,6 +1101,7 @@ export function activateAoiGoalFromProposal(params: {
             sourceRefs,
             risk,
             now,
+            llmProposedSteps,
           }),
   };
   saveAoiActiveGoals(params.sessionsDir, sessionPath, [goal, ...activeGoals]);
