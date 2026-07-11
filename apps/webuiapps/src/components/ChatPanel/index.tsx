@@ -493,11 +493,13 @@ import {
 } from '@/lib/aoiApprovedCommandPolicy';
 import type { AoiAutonomyEvaluationResult } from '@/lib/aoiAutonomyEvaluation';
 import {
+  buildAoiRegisteredSkillToolsCatalog,
   buildAoiSkillsPrompt,
   createUserAoiWorkshopSkill,
   loadAoiSkillsWorkshop,
   removeAoiWorkshopSkill,
   resolveAoiActiveSkills,
+  resolveAoiRegisteredSkillTools,
   saveAoiSkillsWorkshop,
   summarizeAoiSkillsWorkshop,
   updateAoiWorkshopSkill,
@@ -6366,7 +6368,11 @@ const ChatPanel: React.FC<{
     const runGoal = createAoiRunGoalFromMessage(latestUserMessage);
     const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
     const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
-    const skillsPrompt = buildAoiSkillsPrompt(activeSkillMatches);
+    // P5.8: append the read-only tools registered by trusted skills as advisory capability
+    // context (always available, not trigger-gated). Empty when no skill registers a tool.
+    const skillsPrompt =
+      buildAoiSkillsPrompt(activeSkillMatches) +
+      buildAoiRegisteredSkillToolsCatalog(resolveAoiRegisteredSkillTools(aoiSkillsRef.current));
     const mcpPluginPrompt = buildAoiMcpPluginPrompt(aoiMcpPluginsRef.current);
     console.info('[ChatPanel] Tool selection', {
       latestUserMessage,

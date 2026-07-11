@@ -1,3 +1,16 @@
+// P5.8: a skill may register a REAL executable tool (read-only first) into the capability
+// catalog. It is advisory capability metadata -- resolving a tool NEVER auto-executes it;
+// invocation still flows through the normal per-action approval machinery. A skill's tool is
+// only registered when the skill is human-TRUSTED (see resolveAoiRegisteredSkillTools).
+export interface AoiSkillTool {
+  // Stable slug id for the tool (e.g. 'read_research_index').
+  name: string;
+  description: string;
+  // Read-only FIRST: only read-only tools may be registered for now. Normalization drops any
+  // tool descriptor that does not assert readOnly === true.
+  readOnly: true;
+}
+
 export interface AoiWorkshopSkill {
   id: string;
   name: string;
@@ -9,6 +22,10 @@ export interface AoiWorkshopSkill {
   source: 'built-in' | 'user';
   createdAt: number;
   updatedAt: number;
+  // Optional executable capability this skill registers (read-only first). Present only when
+  // the skill author attached one; it is registered into the capability catalog ONLY while
+  // the skill is trusted + enabled.
+  tool?: AoiSkillTool;
 }
 
 export interface AoiWorkshopSkillMatch {
@@ -23,6 +40,8 @@ export interface AoiSkillsWorkshopSummary {
   trusted: number;
   builtIn: number;
   user: number;
+  // P5.8: how many read-only tools are actually registered (from trusted + enabled skills).
+  registeredTools: number;
 }
 
 const STORAGE_KEY = 'openroom-aoi-skills-workshop-v1';
@@ -104,20 +123,52 @@ export function saveAoiSkillsWorkshop(skills: AoiWorkshopSkill[]): void {
   }
 }
 
+// P5.8: sanitize a skill's registered tool. Enforces read-only-first -- a descriptor that
+// does not assert readOnly === true, or lacks a usable name, is dropped (returns undefined),
+// so an untrusted or malformed tool can never enter the catalog as executable.
+export function sanitizeAoiSkillTool(value: unknown): AoiSkillTool | undefined {
+  if (!value || typeof value !== 'object') {
+    return undefined;
+  }
+  const record = value as Partial<AoiSkillTool>;
+  if (record.readOnly !== true || typeof record.name !== 'string') {
+    return undefined;
+  }
+  const name = slugify(record.name);
+  if (!name || name === 'skill') {
+    return undefined;
+  }
+  return {
+    name,
+    description: truncateSingleLine(
+      typeof record.description === 'string' ? record.description : '',
+      180,
+    ),
+    readOnly: true,
+  };
+}
+
 export function normalizeAoiWorkshopSkills(skills: AoiWorkshopSkill[]): AoiWorkshopSkill[] {
   return mergeBuiltInAoiSkills(skills)
-    .map((skill) => ({
-      ...skill,
-      name: truncateSingleLine(skill.name, 80),
-      description: truncateSingleLine(skill.description, 180),
-      triggerTerms: skill.triggerTerms
-        .map((term) => term.trim())
-        .filter(Boolean)
-        .slice(0, 16),
-      body: truncateText(skill.body.trim(), MAX_SKILL_BODY_CHARS),
-      enabled: Boolean(skill.enabled),
-      trusted: Boolean(skill.trusted),
-    }))
+    .map((skill) => {
+      // Strip the raw tool from the spread so an invalid descriptor cannot survive; only the
+      // sanitized (read-only, well-formed) tool is re-added.
+      const { tool: rawTool, ...rest } = skill;
+      const tool = sanitizeAoiSkillTool(rawTool);
+      return {
+        ...rest,
+        name: truncateSingleLine(skill.name, 80),
+        description: truncateSingleLine(skill.description, 180),
+        triggerTerms: skill.triggerTerms
+          .map((term) => term.trim())
+          .filter(Boolean)
+          .slice(0, 16),
+        body: truncateText(skill.body.trim(), MAX_SKILL_BODY_CHARS),
+        enabled: Boolean(skill.enabled),
+        trusted: Boolean(skill.trusted),
+        ...(tool ? { tool } : {}),
+      };
+    })
     .sort((left, right) => {
       if (left.source !== right.source) {
         return left.source === 'built-in' ? -1 : 1;
@@ -131,10 +182,14 @@ export function createUserAoiWorkshopSkill(params: {
   description?: string;
   triggerTerms?: string[];
   body: string;
+  // P5.8: an optional read-only tool the skill registers. It starts UNTRUSTED (the skill
+  // does), so it is not registered into the catalog until the operator trusts the skill.
+  tool?: unknown;
   now?: number;
 }): AoiWorkshopSkill {
   const now = params.now ?? Date.now();
   const name = truncateSingleLine(params.name.trim() || 'Untitled skill', 80);
+  const tool = sanitizeAoiSkillTool(params.tool);
   return {
     id: `user-${slugify(name)}-${now.toString(36)}`,
     name,
@@ -149,6 +204,7 @@ export function createUserAoiWorkshopSkill(params: {
     source: 'user',
     createdAt: now,
     updatedAt: now,
+    ...(tool ? { tool } : {}),
   };
 }
 
@@ -172,7 +228,7 @@ export function updateAoiWorkshopSkill(
   skills: AoiWorkshopSkill[],
   skillId: string,
   updates: Partial<
-    Pick<AoiWorkshopSkill, 'enabled' | 'trusted' | 'body' | 'description' | 'triggerTerms'>
+    Pick<AoiWorkshopSkill, 'enabled' | 'trusted' | 'body' | 'description' | 'triggerTerms' | 'tool'>
   >,
   now = Date.now(),
 ): AoiWorkshopSkill[] {
@@ -210,6 +266,41 @@ export function resolveAoiActiveSkills(
     .slice(0, maxSkills);
 }
 
+// P5.8: the read-only tools ACTUALLY registered into the capability catalog. The trust gate
+// is the same one that gates active skills: a tool is registered ONLY from a skill that is
+// enabled AND human-trusted, so an untrusted (or disabled) skill's tool is never registered.
+// Deduped by tool name (first trusted registrant wins). Registration is advisory metadata --
+// invocation still requires the normal per-action approval.
+export function resolveAoiRegisteredSkillTools(skills: AoiWorkshopSkill[]): AoiSkillTool[] {
+  const seen = new Set<string>();
+  const tools: AoiSkillTool[] = [];
+  for (const skill of normalizeAoiWorkshopSkills(skills)) {
+    if (!skill.enabled || !skill.trusted || !skill.tool) {
+      continue;
+    }
+    if (seen.has(skill.tool.name)) {
+      continue;
+    }
+    seen.add(skill.tool.name);
+    tools.push(skill.tool);
+  }
+  return tools.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+// Advisory catalog of the registered read-only tools, surfaced so the model/operator can see
+// what capabilities are available. Empty string when nothing is registered.
+export function buildAoiRegisteredSkillToolsCatalog(tools: AoiSkillTool[]): string {
+  if (tools.length === 0) {
+    return '';
+  }
+  const lines = [
+    '',
+    'Aoi registered read-only tools (invocation still requires approval):',
+    ...tools.map((tool) => `- ${tool.name}: ${tool.description}`),
+  ];
+  return `\n${lines.join('\n')}`;
+}
+
 export function buildAoiSkillsPrompt(matches: AoiWorkshopSkillMatch[]): string {
   if (matches.length === 0) {
     return '';
@@ -236,6 +327,7 @@ export function summarizeAoiSkillsWorkshop(skills: AoiWorkshopSkill[]): AoiSkill
     trusted: normalized.filter((skill) => skill.trusted).length,
     builtIn: normalized.filter((skill) => skill.source === 'built-in').length,
     user: normalized.filter((skill) => skill.source === 'user').length,
+    registeredTools: resolveAoiRegisteredSkillTools(normalized).length,
   };
 }
 
