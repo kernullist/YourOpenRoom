@@ -4,6 +4,7 @@ import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { DEFAULT_AOI_AUTONOMY_POLICY } from '../aoiAutonomyPolicy';
 import { buildAoiServerJarvisAutonomyGovernor } from '../aoiServerJarvisGovernor';
+import { buildAoiCurrentSituation, saveAoiCurrentSituation } from '../aoiCurrentSituationModel';
 import type {
   AoiAutonomyPolicy,
   AoiInterestProfile,
@@ -283,6 +284,81 @@ describe('Aoi proactive trend advisor', () => {
         expect.stringContaining('dig deeper'),
         expect.stringContaining('open the source evidence'),
       ]),
+    );
+  });
+
+  it('cites the fresh live situation on every card authored this pass (SA4.3)', () => {
+    const explicit = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(false),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      fieldMetrics: makeFieldMetrics(),
+      situationRef: 'situation:abc123def4567890',
+      now: NOW,
+    });
+    expect(explicit.snapshots[0].evidenceRefs).toContain('situation:abc123def4567890');
+
+    const withoutSituation = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(false),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+    });
+    expect(
+      withoutSituation.snapshots[0].evidenceRefs.some((ref) => ref.startsWith('situation:')),
+    ).toBe(false);
+
+    // sessionsDir path: a FRESH persisted situation is loaded + cited; a stale
+    // one is ignored (stale fusions never ground a new card).
+    const root = tempRoot();
+    const situation = buildAoiCurrentSituation({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      mission: {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        status: 'active',
+        activeGoalId: 'goal-1',
+        focusSummary: 'Track reversing trends',
+        waitingOn: 'none',
+        nextRecommendedAction: 'continue',
+        evidenceRefs: ['proposal:p-1'],
+        sourceRefs: {},
+        transitions: [],
+        createdAt: NOW - 1000,
+        updatedAt: NOW,
+      } as never,
+    });
+    saveAoiCurrentSituation(root, situation);
+    const loaded = buildAoiProactiveTrendAdvisorState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(false),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ id: 'aoi-brief-trend-loaded' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+    });
+    expect(loaded.snapshots[0].evidenceRefs).toContain(`situation:${situation.id}`);
+
+    saveAoiCurrentSituation(root, { ...situation, staleAt: NOW - 1 });
+    const stale = buildAoiProactiveTrendAdvisorState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(false),
+      profile: makeProfile(),
+      candidates: [makeCandidate({ id: 'aoi-brief-trend-stale' })],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+    });
+    const staleSnapshot = stale.snapshots.find((item) =>
+      item.evidenceRefs.includes('brief:aoi-brief-trend-stale'),
+    );
+    expect(staleSnapshot?.evidenceRefs.some((ref) => ref.startsWith('situation:')) ?? false).toBe(
+      false,
     );
   });
 

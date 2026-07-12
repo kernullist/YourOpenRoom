@@ -10,6 +10,7 @@ import {
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
 import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughLearning';
+import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { decideAoiInterruptionDelivery } from './aoiInterruptionGovernor';
 import type { AoiJarvisAutonomyGovernorDecision } from './aoiJarvisAutonomyGovernor';
 import type {
@@ -103,6 +104,10 @@ export interface BuildAoiProactiveTrendAdvisorStateInput {
   // path: explicit opt-in + idle within the active window + P3-2a budget room), relax the
   // direct-chat confidence floor by a bounded delta. Default/false -> byte-identical behavior.
   directChatConfidenceFloorRelief?: boolean;
+  // SA4.3: explicit situation ref override. Absent + sessionsDir present -> the
+  // fresh persisted current-situation ref is loaded and cited on every card
+  // built this pass; null -> no citation.
+  situationRef?: string | null;
 }
 
 export interface BuildAoiProactiveTrendAdvisorDiagnosticsInput {
@@ -1781,6 +1786,9 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   // P5.5: the server-computed governor. When present, the card's delivery is capped by the
   // canonical governor (downgrade-only). Absent -> the advisor's own blockReasons decide.
   jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
+  // SA4.3: the fresh current-situation ref (situation:<id>). When present, the
+  // card cites the live context it was authored under. Additive evidence only.
+  situationRef?: string | null;
 }): AoiProactiveTrendSnapshot | null {
   const now = params.now ?? Date.now();
   const candidate = params.candidate;
@@ -1789,6 +1797,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     `brief:${candidate.id}`,
     ...candidate.evidenceRefs.map((ref) => sanitizeText(ref, 180)).filter(Boolean),
     ...sources.map((source) => `source:${source.host}`),
+    ...(params.situationRef ? [sanitizeText(params.situationRef, 180)] : []),
   ]).slice(0, 24);
   if (sources.length === 0 || evidenceRefs.length === 0) {
     return null;
@@ -2551,6 +2560,22 @@ export function buildAoiProactiveTrendAdvisorState(
       ? loadAoiProactiveTrendDeliveryEvents(input.sessionsDir, sessionPath, now)
       : []);
 
+  // SA4.3: cite the live context every card authored this pass was built
+  // under. Explicit override wins; otherwise load the persisted situation and
+  // cite it only while fresh (stale fusions never ground a new card).
+  const situationRef =
+    input.situationRef !== undefined
+      ? input.situationRef
+      : (() => {
+          if (!input.sessionsDir) {
+            return null;
+          }
+          const situation = loadAoiCurrentSituation(input.sessionsDir, sessionPath);
+          return situation && situation.staleAt > now && situation.segments.length > 0
+            ? `situation:${situation.id}`
+            : null;
+        })();
+
   const snapshotsFromCandidates = (input.candidates ?? [])
     .map((candidate) =>
       buildAoiProactiveTrendSnapshotFromCandidate({
@@ -2564,6 +2589,7 @@ export function buildAoiProactiveTrendAdvisorState(
         existingDeliveryEvents,
         now,
         sourceStaleAfterMs: input.sourceStaleAfterMs,
+        situationRef,
         directChatBudgetExhausted: input.directChatBudgetExhausted,
         directChatConfidenceFloorRelief: input.directChatConfidenceFloorRelief,
         ...(input.jarvisGovernor ? { jarvisGovernor: input.jarvisGovernor } : {}),

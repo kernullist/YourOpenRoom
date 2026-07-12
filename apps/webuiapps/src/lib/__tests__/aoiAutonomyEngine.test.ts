@@ -815,6 +815,23 @@ describe('runAoiAutonomyTick()', () => {
     expect(situation?.segments.every((segment) => segment.evidenceRefs.length > 0)).toBe(true);
     expect(situation?.headline).toContain('active app musicapp');
     expect(situation?.generatedAt).toBe(NOW + 2000);
+
+    // SA4.3: a proposal authored under a grounded situation cites it. Seed a
+    // completed research run so the third tick creates a deterministic
+    // proposal, then assert the live-context citation is attached.
+    writeResearchManifest(root, makeManifest());
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      latestUserMessage: 'Windows kernel driver security research 다시 보여줘',
+      now: NOW + 4000,
+    });
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    const researchProposal = proposals.find((item) => item.trigger === 'research_followup');
+    expect(researchProposal).toBeDefined();
+    const citedSituation = loadAoiCurrentSituation(root, SESSION_PATH);
+    expect(researchProposal?.evidenceRefs).toContain(`situation:${citedSituation?.id}`);
   });
 
   it('creates a deterministic proposal to open a matching completed research report', async () => {
@@ -1617,7 +1634,14 @@ describe('runAoiAutonomyTick()', () => {
       suggestedTools: ['start_research'],
       requiresUserApproval: true,
     });
-    expect(proposals[0].evidenceRefs).toEqual(['memory:memory-stale-001']);
+    // SA4.3 appends the live-situation citation to every tick-authored
+    // proposal; the memory evidence stays the primary ref.
+    expect(proposals[0].evidenceRefs[0]).toBe('memory:memory-stale-001');
+    expect(
+      proposals[0].evidenceRefs
+        .slice(1)
+        .every((ref) => ref.startsWith('situation:') || ref === 'memory:memory-stale-001'),
+    ).toBe(true);
   });
 
   it('proposes approval-gated procedure promotion for repeated successful research memories', async () => {

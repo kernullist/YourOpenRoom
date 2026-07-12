@@ -3567,12 +3567,26 @@ export async function runAoiAutonomyTick(
   for (const droppedId of redundantLlmProposalIds) {
     llmResult.warnings.push(`proposal_dropped_redundant_recovery_narration:${droppedId}`);
   }
+  // SA4.3: every proposal authored this tick cites the live situation it was
+  // authored under (only when the situation has grounded segments). Additive
+  // evidence only -- no gate is relaxed and requireEvidenceRefs still holds.
+  const attachSituationCitation = (proposal: AoiProposal): AoiProposal => {
+    if (currentSituation.segments.length === 0) {
+      return proposal;
+    }
+    const situationRef = `situation:${currentSituation.id}`;
+    if (proposal.evidenceRefs.includes(situationRef)) {
+      return proposal;
+    }
+    return { ...proposal, evidenceRefs: [...proposal.evidenceRefs, situationRef] };
+  };
   const candidates = [
     ...attentionResult.proposals,
     ...kiraOutcomeResult.proposals,
     ...deterministicProposals,
     ...keptLlmProposals,
   ]
+    .map(attachSituationCitation)
     .map((proposal) => applyAoiFeedbackCalibrationToProposal(proposal, recentDecisions))
     .sort((left, right) =>
       sortProposalPriority(
