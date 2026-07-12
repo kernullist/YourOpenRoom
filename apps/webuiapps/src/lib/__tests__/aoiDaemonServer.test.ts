@@ -19,6 +19,7 @@ import {
   updateAoiEnvironmentSource,
 } from '../aoiAutonomyStore';
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
+import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
 import type { AoiAppOperationDispatch, AoiProposal, AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
@@ -214,6 +215,43 @@ describe('activity stream routes (SA1.2)', () => {
     expect(summaryBody.summary?.consented).toBe(true);
     expect(summaryBody.summary?.activeEventCount).toBe(1);
     expect(summaryBody.summary?.activeAppId).toBe('musicapp');
+  });
+});
+
+describe('intent route (SA2.2)', () => {
+  it('serves the persisted display-only intent state with an explicit stale flag', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+
+    const missing = await fetch(`${base}/intent`);
+    expect(missing.status).toBe(400);
+
+    const empty = await fetch(`${base}/intent?sessionPath=aoi/default`);
+    expect(empty.status).toBe(200);
+    const emptyBody = (await empty.json()) as { intent?: unknown; stale?: unknown };
+    expect(emptyBody.intent).toBeNull();
+    expect(emptyBody.stale).toBeNull();
+
+    saveAoiIntentState(sessionsDir, {
+      ...buildAoiIntentState({ sessionPath: 'aoi/default', now: Date.now() }),
+      staleAt: Date.now() + 60_000,
+    });
+    const served = await fetch(`${base}/intent?sessionPath=aoi/default`);
+    const servedBody = (await served.json()) as {
+      intent?: { actionAuthority?: string } | null;
+      stale?: boolean | null;
+    };
+    expect(servedBody.intent?.actionAuthority).toBe('display_only');
+    expect(servedBody.stale).toBe(false);
   });
 });
 

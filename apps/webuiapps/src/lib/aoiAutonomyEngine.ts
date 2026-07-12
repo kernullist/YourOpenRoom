@@ -54,6 +54,7 @@ import {
   loadAoiActiveProposals,
   loadAoiArchivedProposals,
   loadAoiAutonomyPolicy,
+  loadAoiEnvironmentSourceRegistry,
   loadAoiFollowThroughLearningSummary,
   loadAoiObservations,
   loadAoiOutcomeLearningSummary,
@@ -134,6 +135,8 @@ import {
   createAoiWorkspaceObservations,
 } from './aoiWorkspaceSignals';
 import { createAoiActivityObservations, loadAoiActivityStreamSummary } from './aoiActivityStream';
+import { buildAoiIntentState, saveAoiIntentState, type AoiIntentState } from './aoiIntentInference';
+import { loadAoiPersonalSignalMetadataSummaries } from './aoiPersonalSignalConnectors';
 import {
   recordAoiProposalBlockedTimelineEvent,
   recordAoiProposalCreatedTimelineEvent,
@@ -1584,6 +1587,10 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // sanitized continuity block is added to the prompt as PRIORITIZATION context
   // only -- it is not evidence and is never citable in evidenceRefs.
   previousBrief?: AoiStrategicBrief | null;
+  // SA2.2: the current evidence-cited intent state built this tick. Rendered as
+  // a compact "currentIntent" prioritization block; its refs stay citable only
+  // where they also appear in observations. Absent/null -> prompt unchanged.
+  intentState?: AoiIntentState | null;
   // P3.2: the last K of Aoi's own reflections, fed back so reasoning accumulates and
   // self-corrects across ticks instead of restarting each tick. Same discipline as
   // previousBrief -- sanitized, bounded PRIORITIZATION context only; never evidence,
@@ -1690,6 +1697,19 @@ export function buildAoiAutonomyReflectionMessages(params: {
   const recurringClusters = params.goalSynthesisEnabled ? (params.recurringClusters ?? []) : [];
   const recurringClustersAvailable = recurringClusters.length > 0;
 
+  // SA2.2: the current evidence-cited intent as a compact prioritization block.
+  // Sanitized + bounded; its refs are citable ONLY where they also appear in the
+  // supplied observations (the parse validates against knownEvidenceRefs anyway).
+  const intentContext = params.intentState?.current
+    ? {
+        kind: params.intentState.current.kind,
+        label: sanitizePromptText(params.intentState.current.label, 120),
+        confidence: params.intentState.current.confidence,
+        evidenceRefs: params.intentState.current.evidenceRefs.slice(0, 6),
+      }
+    : null;
+  const intentAvailable = intentContext !== null && intentContext.label.length > 0;
+
   const systemLines = [
     'You are Aoi Autonomy read-only reflection evaluator.',
     'Return strict JSON only.',
@@ -1720,6 +1740,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
   if (recentReflectionsAvailable) {
     systemLines.push(
       'A "recentReflections" field lists your own recent reflections (kind + claim). Use them ONLY to prioritize, build on, or avoid repeating prior reasoning; they are NOT evidence and must never appear in evidenceRefs.',
+    );
+  }
+  if (intentAvailable) {
+    systemLines.push(
+      'A "currentIntent" field states the inferred current user intent (kind, label, confidence, evidenceRefs). PREFER work that helps this intent RIGHT NOW. Cite one of its evidenceRefs only when the same ref also appears in observations.',
     );
   }
   if (params.goalSynthesisEnabled) {
@@ -1790,6 +1815,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         memories,
         activeProposals,
         ...(continuityAvailable ? { continuity } : {}),
+        ...(intentAvailable ? { currentIntent: intentContext } : {}),
         ...(recentReflectionsAvailable ? { recentReflections: recentReflectionContext } : {}),
         ...(connectorsAvailable ? { availableConnectors } : {}),
         ...(recurringClustersAvailable ? { recurringClusters } : {}),
@@ -2482,6 +2508,9 @@ async function runLlmReflection(params: {
   knownEvidenceRefs: Set<string>;
   connectors?: AoiMcpConnectorsConfig | null;
   previousBrief?: AoiStrategicBrief | null;
+  // SA2.2: the current-intent state built earlier this tick (prioritization
+  // context in the prompt; absent -> prompt unchanged).
+  intentState?: AoiIntentState | null;
   goalSynthesisEnabled?: boolean;
   llmDailyTokenBudget?: number;
   language?: AoiCardLang;
@@ -2512,6 +2541,8 @@ async function runLlmReflection(params: {
       queryEmbeddingModel: params.queryEmbeddingModel ?? null,
       availableConnectors,
       previousBrief: params.previousBrief ?? null,
+      // SA2.2: current-intent prioritization block (built + persisted this tick).
+      intentState: params.intentState ?? null,
       // P3.2: feed prior reflections (persisted before this tick) back so cognition
       // accumulates across ticks. The builder caps + sanitizes them.
       recentReflections: loadAoiReflections(params.sessionsDir, params.sessionPath),
@@ -3197,6 +3228,29 @@ export async function runAoiAutonomyTick(
       now,
     }),
   );
+  // SA2.2: infer + persist the evidence-cited current-intent state from the
+  // already consent-gated live signals. Observation-only: it feeds the context
+  // router and the reflection prompt as prioritization context, never authority.
+  const intentState: AoiIntentState = buildAoiIntentState({
+    sessionPath,
+    now,
+    registry: loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, now),
+    activitySummary,
+    workspaceSnapshot,
+    mission: missionForAttention,
+    ...(latestUserMessage ? { latestUserMessage } : {}),
+    researchRuns: bundle.researchRuns,
+    personalMetadata: loadAoiPersonalSignalMetadataSummaries({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      now,
+    }),
+  });
+  try {
+    saveAoiIntentState(params.sessionsDir, intentState);
+  } catch {
+    // Best-effort persistence; the in-memory state still feeds this tick.
+  }
   const attentionResult = runAoiAttentionBroker({
     sessionPath,
     now,
@@ -3389,6 +3443,8 @@ export async function runAoiAutonomyTick(
     // P1a c3: feed the prior tick's brief into the reflection prompt as
     // prioritization-only continuity context (never evidence).
     previousBrief,
+    // SA2.2: current-intent prioritization context (built + persisted above).
+    intentState,
     // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
     goalSynthesisEnabled: params.goalSynthesisEnabled,
     // Author proposal title/body/reason in the operator's language (explicit, or

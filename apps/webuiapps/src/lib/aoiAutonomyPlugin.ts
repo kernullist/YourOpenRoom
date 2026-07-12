@@ -88,6 +88,7 @@ import {
   recordAoiContextSourceFeedback,
 } from './aoiContextRouter';
 import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActivityStream';
+import { loadAoiIntentState } from './aoiIntentInference';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
@@ -2193,6 +2194,28 @@ export async function handleAoiAutonomyRequest(
         ok: true,
         sessionPath,
         summary: loadAoiActivityStreamSummary(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/intent') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // SA2.2: read-only, display-only current-intent state persisted by the
+      // tick. Stale is surfaced explicitly so consumers never treat an old
+      // inference as "now".
+      const intent = loadAoiIntentState(sessionsDir, sessionPath);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        intent,
+        stale: intent ? intent.staleAt <= Date.now() : null,
       });
       return true;
     }

@@ -5,7 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { buildAoiContextRouterResult, buildDurableMemoryCandidates } from '../aoiContextRouter';
 import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { updateAoiEnvironmentSource } from '../aoiAutonomyStore';
-import { recordAoiActivityEvent } from '../aoiActivityStream';
+import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from '../aoiActivityStream';
+import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 function memory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
@@ -231,6 +232,66 @@ describe('live activity context candidates (SA1.4)', () => {
     expect(candidate?.freshness).toBe('stale');
     expect(candidate?.scoreReasons).toContain('activity-outside-fresh-window');
     expect(candidate?.scoreReasons).toContain('active-app-mentioned');
+  });
+
+  it('boosts intent-aligned sources and ignores stale intent states (SA2.2)', () => {
+    const root = makeTempRoot();
+    consentActivity(root);
+    recordAoiActivityEvent(root, SESSION_PATH, { kind: 'app_opened', appId: 'musicapp' }, NOW);
+    recordAoiActivityEvent(
+      root,
+      SESSION_PATH,
+      { kind: 'app_action', appId: 'musicapp', actionType: 'PLAY_TRACK', observedAt: NOW + 1000 },
+      NOW + 1000,
+    );
+    const intentState = buildAoiIntentState({
+      sessionPath: SESSION_PATH,
+      now: NOW + 2000,
+      activitySummary: loadAoiActivityStreamSummary(root, SESSION_PATH, NOW + 2000),
+    });
+    expect(intentState.current?.kind).toBe('media');
+
+    const withoutIntent = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'status?',
+      intentState: null,
+      now: NOW + 2000,
+    });
+    const aligned = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'status?',
+      intentState,
+      // A non-aligned candidate (manual_note) proves the boost is selective.
+      memories: [
+        memory({ id: 'note-1', content: 'status note about kernel work', tags: ['fact'] }),
+      ],
+      now: NOW + 2000,
+    });
+
+    const baseCandidate = withoutIntent.candidateSources.find(
+      (item) => item.sourceId === 'app-activity',
+    );
+    const boosted = aligned.candidateSources.find((item) => item.sourceId === 'app-activity');
+    expect(boosted?.scoreReasons).toContain('aligned with current intent:media');
+    const noteCandidate = aligned.candidateSources.find((item) => item.kind === 'manual_note');
+    expect(noteCandidate?.scoreReasons ?? []).not.toContain('aligned with current intent:media');
+    expect(boosted?.relevanceScore ?? 0).toBeCloseTo(
+      (baseCandidate?.relevanceScore ?? 0) + 0.12,
+      2,
+    );
+
+    // A persisted-but-stale intent state must not boost anything.
+    saveAoiIntentState(root, { ...intentState, staleAt: NOW + 2000 });
+    const staleLoaded = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'status?',
+      now: NOW + 2000,
+    });
+    const unboosted = staleLoaded.candidateSources.find((item) => item.sourceId === 'app-activity');
+    expect(unboosted?.scoreReasons ?? []).not.toContain('aligned with current intent:media');
   });
 
   it('respects an injected null activity summary (no ledger read)', () => {

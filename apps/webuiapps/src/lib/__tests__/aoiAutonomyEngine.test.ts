@@ -44,6 +44,7 @@ import {
 } from '../aoiAutonomyStore';
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { recordAoiActivityEvent } from '../aoiActivityStream';
+import { buildAoiIntentState, loadAoiIntentState } from '../aoiIntentInference';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
 import {
@@ -755,6 +756,12 @@ describe('runAoiAutonomyTick()', () => {
     expect(
       darkObservations.some((observation) => observation.dedupeKey.startsWith('activity:')),
     ).toBe(false);
+    // SA2.2: the tick persists an intent state even while sources are dark --
+    // with an explicit cannotKnow instead of a guessed current intent.
+    const darkIntent = loadAoiIntentState(root, SESSION_PATH);
+    expect(darkIntent).not.toBeNull();
+    expect(darkIntent?.current).toBeNull();
+    expect(darkIntent?.cannotKnow.join(' ')).toContain('app-activity source is not consented');
 
     updateAoiEnvironmentSource(root, SESSION_PATH, {
       sourceId: 'app-activity',
@@ -789,6 +796,13 @@ describe('runAoiAutonomyTick()', () => {
       riskSignals: ['activity-signal'],
     });
     expect(activityObservation?.summary).toContain('active app=musicapp');
+
+    // SA2.2: with live musicapp interaction the persisted intent is 'media',
+    // evidence-cited from the activity stream.
+    const liveIntent = loadAoiIntentState(root, SESSION_PATH);
+    expect(liveIntent?.current?.kind).toBe('media');
+    expect(liveIntent?.current?.evidenceRefs.some((ref) => ref.startsWith('activity:'))).toBe(true);
+    expect(liveIntent?.generatedAt).toBe(NOW + 2000);
   });
 
   it('creates a deterministic proposal to open a matching completed research report', async () => {
@@ -1947,6 +1961,67 @@ describe('buildAoiAutonomyReflectionMessages() continuity (P1a c3)', () => {
     });
     expect('continuity' in userPayload(messages)).toBe(false);
     expect(messages[0].content).not.toContain('continuity');
+  });
+
+  it('adds a currentIntent block when an intent state carries a current hypothesis (SA2.2)', () => {
+    const intentState = buildAoiIntentState({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      workspaceSnapshot: {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        collectedAt: NOW,
+        workspaceLabel: 'YourOpenRoom',
+        sourceIds: ['workspace-git'],
+        git: {
+          version: 1,
+          branchName: 'main',
+          branchChanged: false,
+          isDirty: true,
+          changedFileCount: 2,
+          stagedFileCount: 0,
+          unstagedFileCount: 2,
+          untrackedFileCount: 0,
+          statusSummary: 'dirty: 2 changed',
+          changedFiles: [],
+        },
+        validation: {
+          version: 1,
+          result: 'unknown',
+          touchedFileScopes: [],
+          freshness: 'fresh',
+          evidenceRefs: [],
+        },
+        freshness: 'fresh',
+        evidenceRefs: [`workspace:snapshot:${NOW}`],
+        warnings: [],
+      },
+    });
+    expect(intentState.current?.kind).toBe('coding');
+
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      intentState,
+    });
+    expect(messages[0].content).toContain('currentIntent');
+    expect(userPayload(messages).currentIntent).toMatchObject({
+      kind: 'coding',
+      confidence: 0.45,
+      evidenceRefs: expect.arrayContaining([`workspace:snapshot:${NOW}`]),
+    });
+
+    const without = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      intentState: null,
+    });
+    expect('currentIntent' in userPayload(without)).toBe(false);
+    expect(without[0].content).not.toContain('currentIntent');
   });
 
   function reflection(over: Partial<AoiReflection>): AoiReflection {

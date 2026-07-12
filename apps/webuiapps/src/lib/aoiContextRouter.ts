@@ -53,6 +53,7 @@ import {
   loadAoiActivityStreamSummary,
   type AoiActivityStreamSummary,
 } from './aoiActivityStream';
+import { loadAoiIntentState, type AoiIntentKind, type AoiIntentState } from './aoiIntentInference';
 
 const BROWSER_CONTEXT_FILE = 'browser-context.json';
 const CONTEXT_FEEDBACK_FILE = 'context-feedback.json';
@@ -114,6 +115,10 @@ export interface AoiContextRouterInput {
   queryEmbeddingModel?: string | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
   activitySummary?: AoiActivityStreamSummary | null;
+  // SA2.2: the current-intent state. Undefined -> loaded from disk; null ->
+  // no intent alignment (injection for tests/tick reuse). Stale states are
+  // treated as absent.
+  intentState?: AoiIntentState | null;
   decisions?: AoiProposalDecision[];
   researchRuns?: AoiResearchRunSummary[];
   browserContexts?: AoiBrowserContextMetadata[];
@@ -1144,6 +1149,48 @@ function buildPersonalSignalCandidates(params: {
     .filter((summary): summary is AoiContextSourceSummary => summary !== null);
 }
 
+// SA2.2: which source kinds each intent kind makes MORE relevant right now.
+// Alignment is a bounded, additive boost -- it never resurrects a source the
+// consent/freshness penalties rejected (those still dominate the score).
+const INTENT_ALIGNED_SOURCE_KINDS: Record<AoiIntentKind, readonly AoiContextSourceKind[]> = {
+  coding: ['workspace_git', 'workspace_build'],
+  debugging: ['workspace_git', 'workspace_build'],
+  researching: ['research_runs'],
+  writing: ['app_activity', 'app_state'],
+  communicating: ['app_activity', 'app_state'],
+  media: ['app_activity', 'app_state'],
+  planning: ['kira_board', 'app_activity'],
+  meeting_prep: ['calendar_metadata'],
+  idle: [],
+};
+const INTENT_ALIGNMENT_BOOST = 0.12;
+
+function applyIntentAlignment(params: {
+  summary: AoiContextSourceSummary;
+  intentState: AoiIntentState | null;
+  now: number;
+}): AoiContextSourceSummary {
+  const current = params.intentState?.current ?? null;
+  if (!current || (params.intentState?.staleAt ?? 0) <= params.now) {
+    return params.summary;
+  }
+  if (!INTENT_ALIGNED_SOURCE_KINDS[current.kind].includes(params.summary.kind)) {
+    return params.summary;
+  }
+  return {
+    ...params.summary,
+    relevanceScore: clamp(
+      Number((params.summary.relevanceScore + INTENT_ALIGNMENT_BOOST).toFixed(3)),
+      0,
+      1,
+    ),
+    scoreReasons: dedupeStrings(
+      [...params.summary.scoreReasons, `aligned with current intent:${current.kind}`],
+      8,
+    ),
+  };
+}
+
 // SA1.4: the live-activity stream as a ranked context candidate. Reads the
 // consent-gated summary (fail-closed loader), so a dark/revoked source yields
 // no candidate; freshness runs on the minutes-scale live window, not the 7d
@@ -1435,7 +1482,15 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
     }),
   ];
 
+  // SA2.2: intent alignment runs BEFORE the contract/feedback penalties so
+  // consent/freshness rejection always dominates an intent boost.
+  const intentState =
+    params.intentState === undefined
+      ? loadAoiIntentState(params.sessionsDir, sessionPath)
+      : params.intentState;
+
   const candidateSources = rawCandidates
+    .map((summary) => applyIntentAlignment({ summary, intentState, now }))
     .map((summary) =>
       applySourceFreshnessContract({
         summary,
