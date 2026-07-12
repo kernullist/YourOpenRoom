@@ -12,6 +12,7 @@ import type { AoiShadowDecisionLabel, AoiShadowDecisionReport } from './aoiShado
 import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
 import type { AoiTracePromotionReport } from './aoiTracePromotion';
 import type { AoiClosedLoopMetricsReport } from './aoiClosedLoopMetrics';
+import type { AoiCognitionReadinessScorecard } from './aoiCognitionReadiness';
 
 const DEFAULT_NOW = 1_800_000_000_000;
 const WRONG_SOURCE_BLOCK_THRESHOLD = 0.2;
@@ -176,6 +177,11 @@ export interface AoiJarvisReadinessScorecardInput {
   // per-capability precision / success / interruption / memory-recall feed a
   // dedicated metric group + gates so measured quality gates trust promotion.
   closedLoopMetrics?: AoiClosedLoopMetricsReport | null;
+  // SA5.2: the cognition-readiness scorecard (grounding accuracy). Strictly
+  // TIGHTEN-ONLY: a failed grounding gate adds a hard block; a passing one
+  // adds a pass gate that can never lift the level or score. Absent -> no gate
+  // (the null-sample = no-gate rule).
+  cognitionReadiness?: AoiCognitionReadinessScorecard | null;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -1170,6 +1176,32 @@ function capabilityGate(
 
 // Closed-loop capability metrics -> readiness gates. The four rate gates can
 // block (feeding gateStatus + hardSafetyBlocked); the recall-miss gate only warns.
+// SA5.2: grounding accuracy as a TIGHTEN-ONLY promotion gate. A cognition
+// scorecard whose hard grounding gates failed (uncited segment/intent,
+// stale-fresh claim, live-citation floor) must HOLD trust; a passing one adds
+// a pass gate that cannot lift anything. Absent -> no gate.
+function buildCognitionGroundingGates(
+  scorecard: AoiCognitionReadinessScorecard | null | undefined,
+): AoiJarvisReadinessGate[] {
+  if (!scorecard) {
+    return [];
+  }
+  const blocked = scorecard.canSupportPromotion !== true;
+  return [
+    {
+      version: 1,
+      id: 'gate.cognition_grounding',
+      label: 'Cognition grounding accuracy',
+      status: blocked ? 'block' : 'pass',
+      reason: blocked
+        ? `Cognition grounding gates failed (level ${scorecard.level}, score ${scorecard.score}); grounding must hold trust.`
+        : `Cognition readiness ${scorecard.level} (score ${scorecard.score}).`,
+      evidenceRefs: scorecard.evidenceRefs.slice(0, 8),
+      blockerRefs: blocked ? ['cognition-readiness:blocked'] : [],
+    },
+  ];
+}
+
 function buildCapabilityPrecisionGates(
   report: AoiClosedLoopMetricsReport | null | undefined,
 ): AoiJarvisReadinessGate[] {
@@ -1948,6 +1980,7 @@ export function buildAoiJarvisReadinessScorecard(
 
   metrics.push(...buildCapabilityPrecisionMetrics(input.closedLoopMetrics));
   gates.push(...buildCapabilityPrecisionGates(input.closedLoopMetrics));
+  gates.push(...buildCognitionGroundingGates(input.cognitionReadiness));
 
   const metricGroups = buildMetricGroups(metrics);
   const score = scoreFromGroups(metricGroups);

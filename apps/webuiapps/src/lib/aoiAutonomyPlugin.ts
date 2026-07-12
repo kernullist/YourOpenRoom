@@ -90,6 +90,7 @@ import {
 import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActivityStream';
 import { loadAoiIntentState } from './aoiIntentInference';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
+import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
@@ -2239,6 +2240,29 @@ export async function handleAoiAutonomyRequest(
         sessionPath,
         situation,
         stale: situation ? situation.staleAt <= Date.now() : null,
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/cognition-readiness') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // SA5.2: read-only grounding-accuracy scorecard assembled from the real
+      // stores. Display-only; consumers may use it only to hold trust.
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        scorecard: buildAoiServerCognitionReadinessScorecard({
+          sessionsDir,
+          sessionPath,
+          now: Date.now(),
+        }),
       });
       return true;
     }

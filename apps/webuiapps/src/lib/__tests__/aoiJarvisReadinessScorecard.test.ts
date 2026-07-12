@@ -153,3 +153,56 @@ describe('buildAoiJarvisReadinessScorecard feedback compression gate', () => {
     });
   });
 });
+
+describe('buildAoiJarvisReadinessScorecard cognition grounding gate (SA5.2)', () => {
+  function makeCognitionScorecard(canSupportPromotion: boolean) {
+    return {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      generatedAt: NOW,
+      score: canSupportPromotion ? 88 : 20,
+      level: canSupportPromotion ? 'live_grounded' : 'ungrounded',
+      gateStatus: canSupportPromotion ? 'pass' : 'blocked',
+      canSupportPromotion,
+      metrics: [],
+      gates: [],
+      recommendations: [],
+      evidenceRefs: ['situation:situation-test'],
+      cannotKnow: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    } as never;
+  }
+
+  it('blocks the readiness gate when cognition grounding failed (tighten-only)', () => {
+    const scorecard = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      cognitionReadiness: makeCognitionScorecard(false),
+    });
+
+    const gate = scorecard.gates.find((item) => item.id === 'gate.cognition_grounding');
+    expect(gate).toMatchObject({ status: 'block' });
+    expect(gate?.blockerRefs).toContain('cognition-readiness:blocked');
+    expect(scorecard.gateStatus).toBe('blocked');
+    expect(scorecard.canIncreaseTrust).toBe(false);
+  });
+
+  it('adds only a pass gate when grounding holds -- never lifts anything', () => {
+    const baseline = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+    });
+    const withCognition = buildAoiJarvisReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      cognitionReadiness: makeCognitionScorecard(true),
+    });
+
+    const gate = withCognition.gates.find((item) => item.id === 'gate.cognition_grounding');
+    expect(gate).toMatchObject({ status: 'pass' });
+    expect(withCognition.score).toBeLessThanOrEqual(baseline.score);
+    expect(withCognition.level).toBe(baseline.level);
+    expect(withCognition.canIncreaseTrust).toBe(baseline.canIncreaseTrust);
+  });
+});

@@ -313,6 +313,63 @@ describe('situation route (SA4.2)', () => {
   });
 });
 
+describe('cognition-readiness route (SA5.2)', () => {
+  it('serves the display-only grounding scorecard assembled from real stores', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+
+    const missing = await fetch(`${base}/cognition-readiness`);
+    expect(missing.status).toBe(400);
+
+    const empty = await fetch(`${base}/cognition-readiness?sessionPath=aoi/default`);
+    expect(empty.status).toBe(200);
+    const emptyBody = (await empty.json()) as {
+      scorecard?: { level?: string; actionAuthority?: string; cannotKnow?: string[] };
+    };
+    expect(emptyBody.scorecard?.level).toBe('ungrounded');
+    expect(emptyBody.scorecard?.actionAuthority).toBe('display_only');
+    expect(emptyBody.scorecard?.cannotKnow?.join(' ')).toContain('No current-situation brief');
+
+    const now = Date.now();
+    saveAoiCurrentSituation(
+      sessionsDir,
+      buildAoiCurrentSituation({
+        sessionPath: 'aoi/default',
+        now,
+        mission: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          status: 'active',
+          activeGoalId: 'goal-1',
+          focusSummary: 'Measure grounding',
+          waitingOn: 'none',
+          nextRecommendedAction: 'continue',
+          evidenceRefs: ['proposal:p-1'],
+          sourceRefs: {},
+          transitions: [],
+          createdAt: now - 1000,
+          updatedAt: now,
+        } as never,
+      }),
+    );
+    const grounded = await fetch(`${base}/cognition-readiness?sessionPath=aoi/default`);
+    const groundedBody = (await grounded.json()) as {
+      scorecard?: { level?: string; score?: number };
+    };
+    expect(groundedBody.scorecard?.level).toBe('sensing');
+    expect(groundedBody.scorecard?.score ?? 0).toBeGreaterThan(0);
+  });
+});
+
 describe('daemon health endpoint (GET /healthz)', () => {
   it('serves a metadata-only readiness snapshot with the loop running by default', async () => {
     const handle = await bootTestDaemon();

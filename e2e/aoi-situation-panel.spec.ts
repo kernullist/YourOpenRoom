@@ -26,6 +26,11 @@ test.describe('Chat settings – Aoi current situation panel', () => {
     await expect(panel.locator('[data-testid="aoi-situation-panel-body"]')).toBeVisible({
       timeout: 15000,
     });
+    // SA5.2: the grounding scorecard line renders from the real backend.
+    await expect(panel.locator('[data-testid="aoi-cognition-readiness-line"]')).toContainText(
+      /Cognition readiness: (ungrounded|sensing|inferring|grounded|live_grounded)/,
+      { timeout: 15000 },
+    );
 
     await modal.locator('button', { hasText: 'Cancel' }).click();
     await expect(modal).not.toBeVisible();

@@ -62,6 +62,38 @@ function okSituation() {
   };
 }
 
+function okReadiness() {
+  return {
+    ok: true,
+    scorecard: {
+      version: 1,
+      sessionPath: 'aoi/default',
+      generatedAt: 1,
+      score: 88,
+      level: 'live_grounded',
+      gateStatus: 'pass',
+      canSupportPromotion: true,
+      metrics: [],
+      gates: [],
+      recommendations: [],
+      evidenceRefs: [],
+      cannotKnow: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    },
+  };
+}
+
+function routeKeyedFetch(situationBody: unknown, readinessBody: unknown) {
+  return vi.fn(async (input: unknown) => {
+    const url = String(input);
+    if (url.includes('/cognition-readiness')) {
+      return jsonResponse(readinessBody);
+    }
+    return jsonResponse(situationBody);
+  });
+}
+
 describe('AoiSituationPanel (SA4.4)', () => {
   afterEach(() => {
     cleanup();
@@ -69,7 +101,7 @@ describe('AoiSituationPanel (SA4.4)', () => {
   });
 
   it('fetches and renders the display_only situation brief with citations', async () => {
-    const fetchMock = vi.fn(async (_input: unknown) => jsonResponse(okSituation()));
+    const fetchMock = routeKeyedFetch(okSituation(), okReadiness());
     vi.stubGlobal('fetch', fetchMock);
     render(<AoiSituationPanel sessionPath="aoi/default" />);
     await waitFor(() => expect(screen.getByTestId('aoi-situation-panel-body')).toBeTruthy());
@@ -84,6 +116,40 @@ describe('AoiSituationPanel (SA4.4)', () => {
     expect(screen.getByTestId('aoi-situation-cannot-know').textContent).toContain(
       'cannot know the workspace state',
     );
+    // SA5.2: the grounding scorecard line renders alongside the brief.
+    await waitFor(() =>
+      expect(screen.getByTestId('aoi-cognition-readiness-line').textContent).toContain(
+        'live_grounded (score 88, gate pass)',
+      ),
+    );
+  });
+
+  it('keeps the brief visible when the readiness fetch fails (best-effort line)', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/cognition-readiness')) {
+        return jsonResponse({}, false);
+      }
+      return jsonResponse(okSituation());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AoiSituationPanel sessionPath="aoi/default" />);
+    await waitFor(() => expect(screen.getByTestId('aoi-situation-panel-body')).toBeTruthy());
+    expect(screen.queryByTestId('aoi-cognition-readiness-line')).toBeNull();
+  });
+
+  it('keeps the brief visible when the readiness fetch throws', async () => {
+    const fetchMock = vi.fn(async (input: unknown) => {
+      const url = String(input);
+      if (url.includes('/cognition-readiness')) {
+        throw new Error('network down');
+      }
+      return jsonResponse(okSituation());
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    render(<AoiSituationPanel sessionPath="aoi/default" />);
+    await waitFor(() => expect(screen.getByTestId('aoi-situation-panel-body')).toBeTruthy());
+    expect(screen.queryByTestId('aoi-cognition-readiness-line')).toBeNull();
   });
 
   it('renders the empty state when no situation has been fused yet', async () => {

@@ -14,6 +14,7 @@ import {
   saveAoiAutonomyPolicy,
 } from './aoiAutonomyStore';
 import { buildAoiClosedLoopMetrics } from './aoiClosedLoopMetrics';
+import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import { buildAoiFeedbackCompression } from './aoiFeedbackCompression';
 import {
   evaluateAoiAutonomyLevelPromotion,
@@ -212,6 +213,13 @@ export function buildAoiAutonomyLevelPromotionScorecard(
     adaptiveAcceptancePack,
     closedLoopMetrics,
     feedbackCompression,
+    // SA5.2: grounding accuracy as a tighten-only promotion gate -- failed
+    // cognition grounding HOLDS the level; it can never lift it.
+    cognitionReadiness: buildAoiServerCognitionReadinessScorecard({
+      sessionsDir,
+      sessionPath,
+      now,
+    }),
     directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
 }

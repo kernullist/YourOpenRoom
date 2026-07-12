@@ -14,6 +14,7 @@
 import { loadAoiAutonomyPolicy, loadAoiEnvironmentSourceRegistry } from './aoiAutonomyStore';
 import { loadAoiOutcomeSignalRecords, loadAoiProposalDecisions } from './aoiAutonomyStore';
 import { buildAoiClosedLoopMetrics } from './aoiClosedLoopMetrics';
+import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
 import {
   buildAoiJarvisAutonomyGovernor,
   type AoiJarvisAutonomyGovernorDecision,
@@ -45,6 +46,13 @@ export function buildAoiServerJarvisReadinessScorecard(params: {
     sessionPath,
     now,
     closedLoopMetrics,
+    // SA5.2: grounding accuracy as a tighten-only gate -- failed cognition
+    // grounding HOLDS trust; it can never lift it.
+    cognitionReadiness: buildAoiServerCognitionReadinessScorecard({
+      sessionsDir,
+      sessionPath,
+      now,
+    }),
     directChatOptInEnabled: policy.proactiveBriefing.directChatHookOptIn ?? null,
   });
 }

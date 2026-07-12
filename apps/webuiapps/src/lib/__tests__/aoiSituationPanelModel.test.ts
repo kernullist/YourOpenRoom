@@ -1,8 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAoiCognitionReadinessRoute,
   buildAoiSituationPanelViewModel,
   buildAoiSituationRoute,
+  parseAoiCognitionReadinessResponse,
   parseAoiSituationResponse,
+  summarizeAoiCognitionReadinessLine,
 } from '../aoiSituationPanelModel';
 import { buildAoiCurrentSituation } from '../aoiCurrentSituationModel';
 
@@ -62,6 +65,41 @@ describe('aoiSituationPanelModel', () => {
   it('marks a stale situation explicitly', () => {
     const parsed = parseAoiSituationResponse({ ok: true, situation: makeSituation(), stale: true });
     expect(buildAoiSituationPanelViewModel(parsed!).stateLabel).toBe('stale');
+  });
+
+  it('parses and summarizes the cognition-readiness scorecard (SA5.2)', () => {
+    const scorecard = {
+      version: 1,
+      sessionPath: SESSION_PATH,
+      generatedAt: NOW,
+      score: 88,
+      level: 'live_grounded',
+      gateStatus: 'pass',
+      canSupportPromotion: true,
+      metrics: [],
+      gates: [],
+      recommendations: [],
+      evidenceRefs: [],
+      cannotKnow: [],
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+    expect(buildAoiCognitionReadinessRoute('aoi/default')).toBe(
+      '/api/aoi-autonomy/cognition-readiness?sessionPath=aoi%2Fdefault',
+    );
+    const parsed = parseAoiCognitionReadinessResponse({ ok: true, scorecard });
+    expect(parsed?.score).toBe(88);
+    expect(summarizeAoiCognitionReadinessLine(parsed!)).toBe(
+      'Cognition readiness: live_grounded (score 88, gate pass)',
+    );
+    expect(parseAoiCognitionReadinessResponse({ ok: false, scorecard })).toBeNull();
+    expect(
+      parseAoiCognitionReadinessResponse({
+        ok: true,
+        scorecard: { ...scorecard, actionAuthority: 'execute' },
+      }),
+    ).toBeNull();
+    expect(parseAoiCognitionReadinessResponse(null)).toBeNull();
   });
 
   it('rejects malformed payloads fail-closed', () => {

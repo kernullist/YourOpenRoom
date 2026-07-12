@@ -526,6 +526,20 @@ export function saveAoiCurrentSituation(
   return situation;
 }
 
+// How many situation briefs the bounded history holds (grounding practice
+// count for the cognition-readiness scorecard). Fail-closed zero.
+export function countAoiCurrentSituationHistory(sessionsDir: string, sessionPath: string): number {
+  try {
+    const paths = resolveAoiCurrentSituationPaths(sessionsDir, sessionPath);
+    if (!fs.existsSync(paths.history)) {
+      return 0;
+    }
+    return fs.readFileSync(paths.history, 'utf-8').split(/\r?\n/).filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
 export function loadAoiCurrentSituation(
   sessionsDir: string,
   sessionPath: string,

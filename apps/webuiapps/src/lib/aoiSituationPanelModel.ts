@@ -1,4 +1,5 @@
 import type { AoiCurrentSituation } from './aoiCurrentSituationModel';
+import type { AoiCognitionReadinessScorecard } from './aoiCognitionReadiness';
 
 // SA4.4 (client): pure parse + view model for the GET /api/aoi-autonomy/situation
 // response, kept out of the React component so the contract is unit-tested
@@ -7,9 +8,41 @@ import type { AoiCurrentSituation } from './aoiCurrentSituationModel';
 // server-only fs assembly lives in aoiCurrentSituationModel).
 
 export const AOI_SITUATION_ROUTE_PREFIX = '/api/aoi-autonomy/situation';
+export const AOI_COGNITION_READINESS_ROUTE_PREFIX = '/api/aoi-autonomy/cognition-readiness';
 
 export function buildAoiSituationRoute(sessionPath: string): string {
   return `${AOI_SITUATION_ROUTE_PREFIX}?sessionPath=${encodeURIComponent(sessionPath)}`;
+}
+
+export function buildAoiCognitionReadinessRoute(sessionPath: string): string {
+  return `${AOI_COGNITION_READINESS_ROUTE_PREFIX}?sessionPath=${encodeURIComponent(sessionPath)}`;
+}
+
+// SA5.2: parse + project the grounding scorecard for the panel. Fail-closed
+// null on malformed / non-display-only payloads.
+export function parseAoiCognitionReadinessResponse(
+  payload: unknown,
+): AoiCognitionReadinessScorecard | null {
+  if (!payload || typeof payload !== 'object') {
+    return null;
+  }
+  const body = payload as { ok?: boolean; scorecard?: AoiCognitionReadinessScorecard };
+  if (
+    body.ok !== true ||
+    !body.scorecard ||
+    typeof body.scorecard !== 'object' ||
+    body.scorecard.version !== 1 ||
+    body.scorecard.actionAuthority !== 'display_only'
+  ) {
+    return null;
+  }
+  return body.scorecard;
+}
+
+export function summarizeAoiCognitionReadinessLine(
+  scorecard: AoiCognitionReadinessScorecard,
+): string {
+  return `Cognition readiness: ${scorecard.level} (score ${scorecard.score}, gate ${scorecard.gateStatus})`;
 }
 
 export interface AoiSituationPanelResponse {
