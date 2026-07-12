@@ -16,6 +16,7 @@ import {
   appendAoiAppOperationDispatch,
   loadAoiActiveProposals,
   saveAoiActiveProposals,
+  updateAoiEnvironmentSource,
 } from '../aoiAutonomyStore';
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
 import type { AoiAppOperationDispatch, AoiProposal, AoiStrategicBrief } from '../aoiAutonomyTypes';
@@ -112,6 +113,107 @@ describe('startAoiDaemon', () => {
     const handle = await bootTestDaemon();
     await handle.close();
     await expect(handle.close()).resolves.toBeUndefined();
+  });
+});
+
+describe('activity stream routes (SA1.2)', () => {
+  it('refuses capture while dark, then records and serves after explicit consent', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+
+    const missingGet = await fetch(`${base}/activity`);
+    expect(missingGet.status).toBe(400);
+    expect(((await missingGet.json()) as { code?: string }).code).toBe('invalid_session_path');
+    const missingPost = await fetch(`${base}/activity/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ kind: 'app_opened', appId: 'musicapp' }),
+    });
+    expect(missingPost.status).toBe(400);
+    expect(((await missingPost.json()) as { code?: string }).code).toBe('invalid_session_path');
+
+    const blocked = await fetch(`${base}/activity/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionPath: 'aoi/default',
+        kind: 'app_opened',
+        appId: 'musicapp',
+      }),
+    });
+    expect(blocked.status).toBe(403);
+    const blockedBody = (await blocked.json()) as { code?: string; reasons?: string[] };
+    expect(blockedBody.code).toBe('activity_source_blocked');
+    expect(blockedBody.reasons).toContain('source_disabled');
+
+    const darkSummary = await fetch(`${base}/activity?sessionPath=aoi/default`);
+    expect(darkSummary.status).toBe(200);
+    const darkBody = (await darkSummary.json()) as {
+      summary?: { consented?: boolean; activeEventCount?: number; cannotKnow?: string[] };
+    };
+    expect(darkBody.summary?.consented).toBe(false);
+    expect(darkBody.summary?.activeEventCount).toBe(0);
+    expect(darkBody.summary?.cannotKnow?.join(' ')).toContain('not consented');
+
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'app-activity',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled live activity awareness for this session.',
+        lastReviewedAt: Date.now(),
+      },
+    });
+
+    const recorded = await fetch(`${base}/activity/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionPath: 'aoi/default',
+        kind: 'app_action',
+        appId: 'musicapp',
+        actionType: 'PLAY_TRACK',
+      }),
+    });
+    expect(recorded.status).toBe(200);
+    const recordedBody = (await recorded.json()) as {
+      ok?: boolean;
+      event?: { appId?: string; actionType?: string; summary?: string };
+    };
+    expect(recordedBody.ok).toBe(true);
+    expect(recordedBody.event).toMatchObject({
+      appId: 'musicapp',
+      actionType: 'PLAY_TRACK',
+    });
+
+    const invalid = await fetch(`${base}/activity/event`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionPath: 'aoi/default',
+        kind: 'keylog',
+        appId: 'musicapp',
+      }),
+    });
+    expect(invalid.status).toBe(400);
+    const invalidBody = (await invalid.json()) as { code?: string };
+    expect(invalidBody.code).toBe('invalid_activity_event');
+
+    const summary = await fetch(`${base}/activity?sessionPath=aoi/default`);
+    const summaryBody = (await summary.json()) as {
+      summary?: { consented?: boolean; activeEventCount?: number; activeAppId?: string | null };
+    };
+    expect(summaryBody.summary?.consented).toBe(true);
+    expect(summaryBody.summary?.activeEventCount).toBe(1);
+    expect(summaryBody.summary?.activeAppId).toBe('musicapp');
   });
 });
 

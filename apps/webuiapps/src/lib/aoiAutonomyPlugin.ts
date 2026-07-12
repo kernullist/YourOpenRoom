@@ -87,6 +87,7 @@ import {
   recordAoiBrowserContextMetadata,
   recordAoiContextSourceFeedback,
 } from './aoiContextRouter';
+import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActivityStream';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
@@ -2173,6 +2174,69 @@ export async function handleAoiAutonomyRequest(
           code: statusCode === 404 ? 'source_not_found' : 'invalid_source_update',
         });
       }
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/activity') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // SA1.2: read-only, display-only activity summary. The loader itself is
+      // consent-gated (fail-closed) -- a non-consented source yields an empty
+      // summary carrying an explicit cannotKnow statement, never data.
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        summary: loadAoiActivityStreamSummary(sessionsDir, sessionPath),
+      });
+      return true;
+    }
+
+    if (req.method === 'POST' && route === '/activity/event') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // SA1.2: metadata-only capture. recordAoiActivityEvent enforces the
+      // app-activity consent gate server-side and derives the stored summary
+      // from validated slugs -- request free text never enters the store.
+      const result = recordAoiActivityEvent(sessionsDir, sessionPath, {
+        kind: body.kind,
+        appId: body.appId,
+        actionType: body.actionType,
+        observedAt: typeof body.observedAt === 'number' ? body.observedAt : undefined,
+      });
+      if (!result.recorded) {
+        const blockedByConsent = result.reasons.some(
+          (reason) =>
+            reason === 'source_disabled' ||
+            reason === 'explicit_target_scope_required' ||
+            reason === 'source_consent_review_required' ||
+            reason === 'registry_unreadable' ||
+            reason.startsWith('operation_not_allowed'),
+        );
+        writeJson(res, blockedByConsent ? 403 : 400, {
+          error: 'Activity event was not recorded.',
+          code: blockedByConsent ? 'activity_source_blocked' : 'invalid_activity_event',
+          reasons: result.reasons,
+        });
+        return true;
+      }
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        event: result.event,
+      });
       return true;
     }
 
