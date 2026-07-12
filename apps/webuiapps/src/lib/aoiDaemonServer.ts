@@ -5,6 +5,12 @@ import { resolve } from 'path';
 import { fileURLToPath } from 'url';
 import { superviseAoiDaemon } from './aoiDaemonSupervisor';
 import {
+  igniteAoiActiveAssistant,
+  sleepAoiActiveAssistant,
+  resolveAoiIgnitionCommand,
+  type AoiIgnitionCommand,
+} from './aoiActiveAssistantPolicy';
+import {
   createAoiAutonomyMiddleware,
   startAoiAutonomyBackgroundFromEnv,
   startAoiMemoryEmbedSweepFromEnv,
@@ -414,8 +420,53 @@ function runAoiDaemonSupervisorMain(): void {
   process.on('SIGTERM', () => stop('SIGTERM'));
 }
 
+// Ignition entry: `node aoiDaemonServer.js --ignite [sessionPath]` wakes Aoi into the SAFE
+// active-assistant tier (proposes / reaches out / reasons / learns; every real action stays
+// supervised; autonomous self-execution stays OFF -- it is env-gated, unreachable from a policy).
+// `--sleep [sessionPath]` reverts. This writes the session policy and exits; it does not boot the
+// server. Idempotent and reversible.
+function runAoiIgnitionCliMain(
+  command: AoiIgnitionCommand,
+  env: Record<string, string | undefined>,
+): void {
+  const { sessionsDir } = resolveAoiDaemonOptionsFromEnv(env);
+  const result =
+    command.action === 'ignite'
+      ? igniteAoiActiveAssistant({ sessionsDir, sessionPath: command.sessionPath })
+      : sleepAoiActiveAssistant({ sessionsDir, sessionPath: command.sessionPath });
+  logInfo(`sessions dir: ${sessionsDir}`);
+  if (command.action === 'ignite') {
+    logInfo(
+      `Aoi ACTIVE-ASSISTANT ignited for ${result.sessionPath}` +
+        (result.wasEnabled ? ' (was already enabled; refreshed).' : '.'),
+    );
+    logInfo(
+      'It now proposes, reaches out, reasons, and earns trust -- but every real action stays ' +
+        'behind your approval. Autonomous self-execution is OFF (env-gated, unreachable here).',
+    );
+  } else {
+    logInfo(`Aoi returned to DORMANT for ${result.sessionPath} (all autonomy layers off).`);
+  }
+  logInfo(
+    `enabled=${result.policy.enabled} previewMode=${result.policy.previewMode} ` +
+      `proactive=${result.policy.proactiveSuggestionsEnabled} cognition=${result.policy.agenticReflectionEnabled} ` +
+      `fieldShadow=${result.policy.fieldShadowCaptureEnabled} directChatOptIn=${result.policy.proactiveBriefing.directChatHookOptIn}`,
+  );
+  if (command.action === 'ignite') {
+    logInfo('Keep the daemon running (or a client mounted) for the loop to act on this.');
+  }
+}
+
 if (isMainEntry()) {
-  if (process.argv.includes('--supervise')) {
+  const ignition = resolveAoiIgnitionCommand(process.argv);
+  if (ignition) {
+    try {
+      runAoiIgnitionCliMain(ignition, process.env);
+    } catch (error) {
+      logError('ignition failed', error);
+      process.exit(1);
+    }
+  } else if (process.argv.includes('--supervise')) {
     runAoiDaemonSupervisorMain();
   } else {
     void runAoiDaemonMain().catch((error) => {
