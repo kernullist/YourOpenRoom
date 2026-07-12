@@ -160,6 +160,17 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     quietModeBehavior: 'record_only',
   },
   {
+    id: 'app-activity',
+    kind: 'app_activity',
+    label: 'Live app activity stream',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
     id: 'browser-context',
     kind: 'browser_context',
     label: 'Explicit browser page context',

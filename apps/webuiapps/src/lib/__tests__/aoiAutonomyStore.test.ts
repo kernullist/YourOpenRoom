@@ -400,12 +400,21 @@ describe('Aoi environment source registry storage', () => {
       'kira-board',
       'research-runs',
       'app-state',
+      'app-activity',
       'browser-context',
       'manual-note',
       'calendar-metadata',
       'gmail-metadata',
       'notes-metadata',
     ]);
+    expect(registry.sources.find((source) => source.id === 'app-activity')).toMatchObject({
+      enabled: false,
+      kind: 'app_activity',
+      risk: 'high',
+      privateByDefault: true,
+      scope: 'explicit_target',
+      allowedOperations: ['read_metadata', 'summarize_counts'],
+    });
     expect(registry.sources.find((source) => source.id === 'browser-context')).toMatchObject({
       enabled: false,
       risk: 'high',
@@ -456,10 +465,10 @@ describe('Aoi environment source registry storage', () => {
 
     const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);
     expect(status).toMatchObject({
-      environmentSourceCount: 10,
+      environmentSourceCount: 11,
       enabledEnvironmentSourceCount: 5,
-      highRiskEnvironmentSourceCount: 3,
-      privateEnvironmentSourceCount: 3,
+      highRiskEnvironmentSourceCount: 4,
+      privateEnvironmentSourceCount: 4,
       lastEnvironmentSourceObservedAt: 1500,
     });
   });

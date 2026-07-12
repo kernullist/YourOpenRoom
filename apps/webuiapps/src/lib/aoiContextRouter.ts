@@ -64,6 +64,7 @@ const SOURCE_ID_BY_KIND: Record<AoiEnvironmentSourceKind, string> = {
   kira_board: 'kira-board',
   research_runs: 'research-runs',
   app_state: 'app-state',
+  app_activity: 'app-activity',
   browser_context: 'browser-context',
   manual_note: 'manual-note',
   calendar_metadata: 'calendar-metadata',

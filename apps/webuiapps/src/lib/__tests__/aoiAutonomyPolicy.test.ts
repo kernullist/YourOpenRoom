@@ -245,6 +245,7 @@ describe('Aoi environment source policy', () => {
       'kira_board',
       'research_runs',
       'app_state',
+      'app_activity',
       'browser_context',
       'manual_note',
       'calendar_metadata',
@@ -356,6 +357,58 @@ describe('Aoi environment source policy', () => {
       allowed: true,
       reasons: [],
     });
+  });
+
+  it('keeps the live app activity stream dark until explicit reviewed consent', () => {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+
+    const dark = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: 'app-activity',
+      operation: 'read_metadata',
+    });
+    expect(dark.allowed).toBe(false);
+    expect(dark.reasons).toContain('source_disabled');
+    expect(dark.reasons).toContain('explicit_target_scope_required');
+    expect(dark.source).toMatchObject({
+      kind: 'app_activity',
+      enabled: false,
+      privateByDefault: true,
+      scope: 'explicit_target',
+      quietModeBehavior: 'suppress',
+      risk: 'high',
+    });
+
+    const consented = {
+      ...registry,
+      sources: registry.sources.map((source) =>
+        source.id === 'app-activity'
+          ? {
+              ...source,
+              enabled: true,
+              consentReason: 'User enabled live activity awareness for this session.',
+              lastReviewedAt: 1200,
+            }
+          : source,
+      ),
+    };
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry: consented,
+        sourceId: 'app-activity',
+        operation: 'read_metadata',
+      }),
+    ).toMatchObject({
+      allowed: true,
+      reasons: [],
+    });
+    expect(
+      checkAoiEnvironmentSourceOperation({
+        registry: consented,
+        sourceId: 'app-activity',
+        operation: 'summarize',
+      }).reasons,
+    ).toContain('operation_not_allowed:summarize');
   });
 
   it('blocks disabled sources and disallowed operations', () => {

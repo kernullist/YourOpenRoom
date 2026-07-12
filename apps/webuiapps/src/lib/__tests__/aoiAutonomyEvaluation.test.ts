@@ -2767,6 +2767,58 @@ describe('Aoi autonomy evaluation', () => {
     expect(JSON.stringify(contracts)).not.toContain('private launch plan body');
   });
 
+  it('holds app activity to a metadata-only boundary and a minutes-scale stale window', () => {
+    const now = 10_000_000;
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    const consented = {
+      ...registry,
+      sources: registry.sources.map((source) =>
+        source.id === 'app-activity'
+          ? {
+              ...source,
+              enabled: true,
+              consentReason: 'User enabled live activity awareness for this session.',
+              lastReviewedAt: 2000,
+              lastObservedAt: now - 20 * 60 * 1000,
+            }
+          : source,
+      ),
+    };
+
+    const fresh = buildAoiSourceFreshnessContracts({
+      sourceRegistry: consented,
+      now,
+    }).find((contract) => contract.sourceId === 'app-activity');
+    expect(fresh?.consentState).toBe('granted');
+    expect(fresh?.freshnessState).toBe('fresh');
+    expect(fresh?.staleAfterMs).toBe(30 * 60 * 1000);
+    expect(fresh?.scopeState).toBe('metadata_only');
+    expect(fresh?.bodyAccessState).toBe('metadata_only');
+    expect(fresh?.dataScope).toContain('action-type');
+    expect(fresh?.cannotKnow.map((item) => item.code)).toContain('app_activity_body_not_read');
+
+    const stale = buildAoiSourceFreshnessContracts({
+      sourceRegistry: {
+        ...consented,
+        sources: consented.sources.map((source) =>
+          source.id === 'app-activity'
+            ? { ...source, lastObservedAt: now - 40 * 60 * 1000 }
+            : source,
+        ),
+      },
+      now,
+    }).find((contract) => contract.sourceId === 'app-activity');
+    expect(stale?.freshnessState).toBe('stale');
+
+    const dark = buildAoiSourceFreshnessContracts({
+      sourceRegistry: registry,
+      now,
+    }).find((contract) => contract.sourceId === 'app-activity');
+    expect(dark?.consentState).toBe('disabled');
+    expect(dark?.freshnessState).toBe('disabled');
+    expect(dark?.cannotKnow.map((item) => item.code)).toContain('source_disabled');
+  });
+
   it('keeps stale memory facts out of current-truth source contracts', () => {
     const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 6000);
     const contracts = buildAoiSourceFreshnessContracts({

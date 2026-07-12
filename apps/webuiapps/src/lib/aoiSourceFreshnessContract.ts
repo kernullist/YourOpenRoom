@@ -101,6 +101,16 @@ export interface AoiSourceFreshnessDashboardContext {
 }
 
 const DEFAULT_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+// Live activity is only meaningful on a minutes scale; a week-old activity
+// event must never ground a "current" claim.
+const APP_ACTIVITY_STALE_AFTER_MS = 30 * 60 * 1000;
+
+function defaultStaleAfterMsForKind(kind: AoiEnvironmentSourceKind): number {
+  if (kind === 'app_activity') {
+    return APP_ACTIVITY_STALE_AFTER_MS;
+  }
+  return DEFAULT_STALE_AFTER_MS;
+}
 const MAX_REFS = 16;
 const WINDOWS_PRIVATE_PATH_PATTERN = /(?:[A-Za-z]:\\|\\\\)[^\s'"`<>|]+/g;
 const UNIX_PRIVATE_PATH_PATTERN =
@@ -249,7 +259,7 @@ function scopeStateForSource(source: AoiEnvironmentSource): AoiSourceScopeState 
   if (isPersonalKind(source.kind)) {
     return 'metadata_only';
   }
-  if (source.kind === 'browser_context') {
+  if (source.kind === 'browser_context' || source.kind === 'app_activity') {
     return 'metadata_only';
   }
   return source.scope;
@@ -259,7 +269,7 @@ function bodyAccessStateForSource(source: AoiEnvironmentSource): AoiSourceBodyAc
   if (isPersonalKind(source.kind)) {
     return 'body_disabled';
   }
-  if (source.kind === 'browser_context') {
+  if (source.kind === 'browser_context' || source.kind === 'app_activity') {
     return 'metadata_only';
   }
   return 'not_applicable';
@@ -280,6 +290,9 @@ function dataScopeForSource(source: AoiEnvironmentSource): string {
   }
   if (source.kind === 'app_state') {
     return 'OpenRoom app route and display context metadata';
+  }
+  if (source.kind === 'app_activity') {
+    return 'live app open/close/action-type and timestamp metadata only';
   }
   if (source.kind === 'browser_context') {
     return 'explicit browser page title, host, redacted URL, and purpose metadata';
@@ -336,6 +349,13 @@ function personalBodyCannotKnow(source: AoiEnvironmentSource): AoiSourceCannotKn
       'browser_body_not_read',
       'Aoi cannot know the current page body, form contents, authenticated state, or unredacted URL from browser metadata.',
       [`environment-source:${source.id}`, 'browser-context:metadata'],
+    );
+  }
+  if (source.kind === 'app_activity') {
+    return makeCannotKnow(
+      'app_activity_body_not_read',
+      'Aoi cannot know app content, user inputs, or action parameters from app activity; only app ids, action types, and timestamps.',
+      [`environment-source:${source.id}`, 'app-activity:metadata'],
     );
   }
   return null;
@@ -495,7 +515,8 @@ function buildContractForSource(
     disconnectedSourceIds.add(source.id);
   }
   const failureHint = input.sourceFailureHints?.find((item) => item.sourceId === source.id);
-  const staleAfterMs = input.staleAfterMsBySourceId?.[source.id] ?? DEFAULT_STALE_AFTER_MS;
+  const staleAfterMs =
+    input.staleAfterMsBySourceId?.[source.id] ?? defaultStaleAfterMsForKind(source.kind);
   const timestamps = sourceTimestamps({
     source,
     input,

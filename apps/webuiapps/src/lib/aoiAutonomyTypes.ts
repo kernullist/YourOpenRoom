@@ -19,6 +19,7 @@ export type AoiEnvironmentSourceKind =
   | 'kira_board'
   | 'research_runs'
   | 'app_state'
+  | 'app_activity'
   | 'browser_context'
   | 'manual_note'
   | AoiPersonalSignalSourceKind;
