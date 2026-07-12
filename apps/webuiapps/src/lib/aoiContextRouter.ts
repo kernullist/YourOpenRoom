@@ -54,6 +54,7 @@ import {
   type AoiActivityStreamSummary,
 } from './aoiActivityStream';
 import { loadAoiIntentState, type AoiIntentKind, type AoiIntentState } from './aoiIntentInference';
+import { salienceFreshnessAdjustment, scoreAoiSalience } from './aoiSalienceModel';
 
 const BROWSER_CONTEXT_FILE = 'browser-context.json';
 const CONTEXT_FEEDBACK_FILE = 'context-feedback.json';
@@ -454,6 +455,7 @@ function applyFeedbackPenalties(params: {
   decisions: AoiProposalDecision[];
   contextFeedback: AoiContextSourceFeedback[];
   trustCalibrationProfile?: AoiTrustCalibrationProfile | null;
+  now: number;
 }): AoiContextSourceSummary {
   let penalty = 0;
   const reasons = [...params.summary.scoreReasons];
@@ -519,7 +521,9 @@ function applyFeedbackPenalties(params: {
     penalty += trustCalibration.sourceSelectionPenalty;
     reasons.push(`penalized by trust calibration:${sourceKind}`);
   }
-  penalty -= scoreFreshness(params.summary.freshness);
+  // SA3.2: the freshness re-application uses the same continuous curve as the
+  // builder swap for live kinds, so this second weight cannot cliff either.
+  penalty -= freshnessScoreFor(params.summary, params.now);
   return {
     ...params.summary,
     relevanceScore: clamp(Number((params.summary.relevanceScore - penalty).toFixed(3)), 0, 1),
@@ -1149,6 +1153,70 @@ function buildPersonalSignalCandidates(params: {
     .filter((summary): summary is AoiContextSourceSummary => summary !== null);
 }
 
+// SA3.2: live source kinds whose builder-side DISCRETE freshness component is
+// replaced by the continuous salience curve. A 1-second-old and a 29-minute-old
+// activity signal no longer score identically, and crossing the window no
+// longer cliff-drops -- the score fades smoothly between the same endpoints.
+// Slow sources (research/kira/personal/memory) stay on contract freshness.
+const SALIENCE_DECAY_KINDS = new Set<AoiContextSourceKind>([
+  'app_activity',
+  'browser_context',
+  'workspace_git',
+  'workspace_build',
+]);
+
+// The continuous freshness contribution for a candidate: live kinds with a
+// real timestamp fade on the salience curve; everything else keeps the
+// discrete label scoring. Used in BOTH weighting passes (builder swap + the
+// feedback-penalty re-application) so no pass reintroduces a window cliff.
+function freshnessScoreFor(summary: AoiContextSourceSummary, now: number): number {
+  if (
+    SALIENCE_DECAY_KINDS.has(summary.kind) &&
+    typeof summary.updatedAt === 'number' &&
+    Number.isFinite(summary.updatedAt) &&
+    summary.updatedAt > 0
+  ) {
+    return salienceFreshnessAdjustment(
+      scoreAoiSalience({ kind: summary.kind, observedAt: summary.updatedAt }, now).decayFactor,
+    );
+  }
+  return scoreFreshness(summary.freshness);
+}
+
+function applySalienceDecay(params: {
+  summary: AoiContextSourceSummary;
+  now: number;
+}): AoiContextSourceSummary {
+  if (!SALIENCE_DECAY_KINDS.has(params.summary.kind)) {
+    return params.summary;
+  }
+  if (
+    typeof params.summary.updatedAt !== 'number' ||
+    !Number.isFinite(params.summary.updatedAt) ||
+    params.summary.updatedAt <= 0
+  ) {
+    return params.summary;
+  }
+  const salience = scoreAoiSalience(
+    { kind: params.summary.kind, observedAt: params.summary.updatedAt },
+    params.now,
+  );
+  // Swap the discrete builder freshness contribution for the continuous one.
+  const adjustment =
+    salienceFreshnessAdjustment(salience.decayFactor) - scoreFreshness(params.summary.freshness);
+  if (adjustment === 0) {
+    return params.summary;
+  }
+  return {
+    ...params.summary,
+    relevanceScore: clamp(Number((params.summary.relevanceScore + adjustment).toFixed(3)), 0, 1),
+    scoreReasons: dedupeStrings(
+      [...params.summary.scoreReasons, `salience decay ${salience.decayFactor.toFixed(2)}`],
+      8,
+    ),
+  };
+}
+
 // SA2.2: which source kinds each intent kind makes MORE relevant right now.
 // Alignment is a bounded, additive boost -- it never resurrects a source the
 // consent/freshness penalties rejected (those still dominate the score).
@@ -1490,6 +1558,7 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
       : params.intentState;
 
   const candidateSources = rawCandidates
+    .map((summary) => applySalienceDecay({ summary, now }))
     .map((summary) => applyIntentAlignment({ summary, intentState, now }))
     .map((summary) =>
       applySourceFreshnessContract({
@@ -1503,6 +1572,7 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
         decisions,
         contextFeedback,
         trustCalibrationProfile,
+        now,
       }),
     )
     .filter((summary) => summary.relevanceScore > 0)

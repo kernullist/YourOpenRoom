@@ -190,7 +190,7 @@ describe('live activity context candidates (SA1.4)', () => {
     expect(result.candidateSources.some((item) => item.sourceId === 'app-activity')).toBe(false);
   });
 
-  it('keeps out-of-window activity only when the user asks about that app (stale, penalized)', () => {
+  it('decays out-of-window activity gradually -- low unasked, lifted when asked about', () => {
     const root = makeTempRoot();
     consentActivity(root);
     recordAoiActivityEvent(
@@ -205,9 +205,9 @@ describe('live activity context candidates (SA1.4)', () => {
       NOW - 40 * 60 * 1000,
     );
     // The source itself was observed just now (fresh contract), but the last
-    // EVENT is 40 minutes old -- outside the 30-minute live window. The stale
-    // scoring is double-weighted (builder + penalty pass), so the candidate
-    // survives only with the explicit active-app mention boost.
+    // EVENT is 40 minutes old -- outside the 30-minute live window. With the
+    // SA3.2 continuous decay the candidate fades to a LOW score instead of
+    // vanishing at the window edge; asking about the app lifts it.
     updateAoiEnvironmentSource(root, SESSION_PATH, {
       sourceId: 'app-activity',
       patch: { lastObservedAt: NOW },
@@ -220,7 +220,11 @@ describe('live activity context candidates (SA1.4)', () => {
       latestUserMessage: 'status?',
       now: NOW,
     });
-    expect(unrelated.candidateSources.some((item) => item.sourceId === 'app-activity')).toBe(false);
+    const unaskedCandidate = unrelated.candidateSources.find(
+      (item) => item.sourceId === 'app-activity',
+    );
+    expect(unaskedCandidate?.freshness).toBe('stale');
+    expect(unaskedCandidate?.relevanceScore ?? 0).toBeLessThan(0.1);
 
     const asking = buildAoiContextRouterResult({
       sessionsDir: root,
@@ -232,6 +236,7 @@ describe('live activity context candidates (SA1.4)', () => {
     expect(candidate?.freshness).toBe('stale');
     expect(candidate?.scoreReasons).toContain('activity-outside-fresh-window');
     expect(candidate?.scoreReasons).toContain('active-app-mentioned');
+    expect(candidate?.relevanceScore ?? 0).toBeGreaterThan(unaskedCandidate?.relevanceScore ?? 0);
   });
 
   it('boosts intent-aligned sources and ignores stale intent states (SA2.2)', () => {
@@ -292,6 +297,107 @@ describe('live activity context candidates (SA1.4)', () => {
     });
     const unboosted = staleLoaded.candidateSources.find((item) => item.sourceId === 'app-activity');
     expect(unboosted?.scoreReasons ?? []).not.toContain('aligned with current intent:media');
+  });
+
+  it('fades live activity smoothly with age instead of a window cliff (SA3.2)', () => {
+    const scoreAtAge = (ageMs: number): number => {
+      const root = makeTempRoot();
+      consentActivity(root);
+      recordAoiActivityEvent(
+        root,
+        SESSION_PATH,
+        {
+          kind: 'app_action',
+          appId: 'musicapp',
+          actionType: 'PLAY_TRACK',
+          observedAt: NOW - ageMs,
+        },
+        NOW - ageMs,
+      );
+      // Keep the freshness CONTRACT fresh so only the candidate-side decay
+      // varies with age (isolates the SA3.2 curve).
+      updateAoiEnvironmentSource(root, SESSION_PATH, {
+        sourceId: 'app-activity',
+        patch: { lastObservedAt: NOW },
+        now: NOW,
+      });
+      const result = buildAoiContextRouterResult({
+        sessionsDir: root,
+        sessionPath: SESSION_PATH,
+        latestUserMessage: 'what is musicapp doing?',
+        intentState: null,
+        now: NOW,
+      });
+      return (
+        result.candidateSources.find((item) => item.sourceId === 'app-activity')?.relevanceScore ??
+        0
+      );
+    };
+
+    const fresh = scoreAtAge(1000);
+    const tenMinutes = scoreAtAge(10 * 60 * 1000);
+    const twentyFiveMinutes = scoreAtAge(25 * 60 * 1000);
+    const justPastWindow = scoreAtAge(31 * 60 * 1000);
+
+    // Monotone decay: each older signal scores strictly lower.
+    expect(tenMinutes).toBeLessThan(fresh);
+    expect(twentyFiveMinutes).toBeLessThan(tenMinutes);
+    expect(justPastWindow).toBeLessThan(twentyFiveMinutes);
+    // No cliff at the window edge: crossing 30min moves the score by a small
+    // continuous step, not the old discrete fresh->stale jump (~0.26+).
+    expect(twentyFiveMinutes - justPastWindow).toBeLessThan(0.15);
+    expect(justPastWindow).toBeGreaterThan(0);
+  });
+
+  it('tags decayed live candidates with a salience reason (SA3.2)', () => {
+    const root = makeTempRoot();
+    consentActivity(root);
+    recordAoiActivityEvent(
+      root,
+      SESSION_PATH,
+      {
+        kind: 'app_action',
+        appId: 'musicapp',
+        actionType: 'PLAY_TRACK',
+        observedAt: NOW - 10 * 60 * 1000,
+      },
+      NOW - 10 * 60 * 1000,
+    );
+
+    const result = buildAoiContextRouterResult({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'musicapp status',
+      intentState: null,
+      now: NOW,
+    });
+    const candidate = result.candidateSources.find((item) => item.sourceId === 'app-activity');
+    expect(candidate?.scoreReasons.some((reason) => reason.startsWith('salience decay'))).toBe(
+      true,
+    );
+
+    // A zero-age signal has an exactly-zero adjustment: no decay tag.
+    const zeroAgeRoot = makeTempRoot();
+    consentActivity(zeroAgeRoot);
+    recordAoiActivityEvent(
+      zeroAgeRoot,
+      SESSION_PATH,
+      { kind: 'app_action', appId: 'musicapp', actionType: 'PLAY_TRACK', observedAt: NOW },
+      NOW,
+    );
+    const zeroAge = buildAoiContextRouterResult({
+      sessionsDir: zeroAgeRoot,
+      sessionPath: SESSION_PATH,
+      latestUserMessage: 'musicapp status',
+      intentState: null,
+      now: NOW,
+    });
+    const freshCandidate = zeroAge.candidateSources.find(
+      (item) => item.sourceId === 'app-activity',
+    );
+    expect(freshCandidate?.scoreReasons.some((reason) => reason.startsWith('salience decay'))).toBe(
+      false,
+    );
   });
 
   it('respects an injected null activity summary (no ledger read)', () => {
