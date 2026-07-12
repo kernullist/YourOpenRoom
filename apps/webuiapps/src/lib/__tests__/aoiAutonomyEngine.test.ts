@@ -45,6 +45,7 @@ import {
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
 import { recordAoiActivityEvent } from '../aoiActivityStream';
 import { buildAoiIntentState, loadAoiIntentState } from '../aoiIntentInference';
+import { buildAoiCurrentSituation, loadAoiCurrentSituation } from '../aoiCurrentSituationModel';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
 import {
@@ -803,6 +804,17 @@ describe('runAoiAutonomyTick()', () => {
     expect(liveIntent?.current?.kind).toBe('media');
     expect(liveIntent?.current?.evidenceRefs.some((ref) => ref.startsWith('activity:'))).toBe(true);
     expect(liveIntent?.generatedAt).toBe(NOW + 2000);
+
+    // SA4.2: the tick also persists the fused current-situation brief with the
+    // live activity segment cited, and every segment carries evidence.
+    const situation = loadAoiCurrentSituation(root, SESSION_PATH);
+    expect(situation).not.toBeNull();
+    expect(situation?.id.startsWith('situation-')).toBe(true);
+    expect(situation?.segments.some((segment) => segment.kind === 'activity')).toBe(true);
+    expect(situation?.segments.some((segment) => segment.kind === 'intent')).toBe(true);
+    expect(situation?.segments.every((segment) => segment.evidenceRefs.length > 0)).toBe(true);
+    expect(situation?.headline).toContain('active app musicapp');
+    expect(situation?.generatedAt).toBe(NOW + 2000);
   });
 
   it('creates a deterministic proposal to open a matching completed research report', async () => {
@@ -2022,6 +2034,56 @@ describe('buildAoiAutonomyReflectionMessages() continuity (P1a c3)', () => {
     });
     expect('currentIntent' in userPayload(without)).toBe(false);
     expect(without[0].content).not.toContain('currentIntent');
+  });
+
+  it('adds a citable currentSituation block when a situation brief exists (SA4.2)', () => {
+    const situation = buildAoiCurrentSituation({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      mission: {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        status: 'active',
+        activeGoalId: 'goal-9',
+        focusSummary: 'Ship the situational awareness roadmap',
+        waitingOn: 'none',
+        nextRecommendedAction: 'continue',
+        evidenceRefs: ['proposal:p-9'],
+        sourceRefs: {},
+        transitions: [],
+        createdAt: NOW - 1000,
+        updatedAt: NOW,
+      } as never,
+    });
+    expect(situation.segments.length).toBeGreaterThan(0);
+
+    const messages = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      situation,
+    });
+    expect(messages[0].content).toContain('currentSituation');
+    expect(messages[0].content).toContain('CITE situation:<id>');
+    const payload = userPayload(messages).currentSituation as {
+      id?: string;
+      headline?: string;
+      focusItems?: Array<{ evidenceRefs?: string[] }>;
+    };
+    expect(payload.id).toBe(situation.id);
+    expect(payload.headline?.length ?? 0).toBeGreaterThan(0);
+    expect(payload.focusItems?.every((item) => (item.evidenceRefs?.length ?? 0) > 0)).toBe(true);
+
+    const without = buildAoiAutonomyReflectionMessages({
+      observations: [],
+      memories: [],
+      activeProposals: [],
+      latestUserMessage: '',
+      situation: null,
+    });
+    expect('currentSituation' in userPayload(without)).toBe(false);
+    expect(without[0].content).not.toContain('currentSituation');
   });
 
   function reflection(over: Partial<AoiReflection>): AoiReflection {

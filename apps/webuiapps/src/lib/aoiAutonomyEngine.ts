@@ -136,6 +136,11 @@ import {
 } from './aoiWorkspaceSignals';
 import { createAoiActivityObservations, loadAoiActivityStreamSummary } from './aoiActivityStream';
 import { buildAoiIntentState, saveAoiIntentState, type AoiIntentState } from './aoiIntentInference';
+import {
+  buildAoiCurrentSituation,
+  saveAoiCurrentSituation,
+  type AoiCurrentSituation,
+} from './aoiCurrentSituationModel';
 import { loadAoiPersonalSignalMetadataSummaries } from './aoiPersonalSignalConnectors';
 import {
   recordAoiProposalBlockedTimelineEvent,
@@ -1591,6 +1596,10 @@ export function buildAoiAutonomyReflectionMessages(params: {
   // a compact "currentIntent" prioritization block; its refs stay citable only
   // where they also appear in observations. Absent/null -> prompt unchanged.
   intentState?: AoiIntentState | null;
+  // SA4.2: the evidence-cited current-situation brief. Unlike continuity it IS
+  // evidence -- the caller registers situation:<id> + its refs as known
+  // evidence, so the model may cite them. Absent/null -> prompt unchanged.
+  situation?: AoiCurrentSituation | null;
   // P3.2: the last K of Aoi's own reflections, fed back so reasoning accumulates and
   // self-corrects across ticks instead of restarting each tick. Same discipline as
   // previousBrief -- sanitized, bounded PRIORITIZATION context only; never evidence,
@@ -1710,6 +1719,24 @@ export function buildAoiAutonomyReflectionMessages(params: {
     : null;
   const intentAvailable = intentContext !== null && intentContext.label.length > 0;
 
+  // SA4.2: the current-situation brief as CITABLE evidence context. Compact:
+  // headline + top focus items with their refs + explicit blind spots.
+  const situationContext =
+    params.situation && params.situation.segments.length > 0
+      ? {
+          id: params.situation.id,
+          headline: sanitizePromptText(params.situation.headline, 200),
+          focusItems: params.situation.focusItems.slice(0, 4).map((item) => ({
+            title: sanitizePromptText(item.title, 120),
+            evidenceRefs: item.evidenceRefs.slice(0, 4),
+          })),
+          cannotKnow: params.situation.cannotKnow
+            .slice(0, 3)
+            .map((statement) => sanitizePromptText(statement, 140)),
+        }
+      : null;
+  const situationAvailable = situationContext !== null;
+
   const systemLines = [
     'You are Aoi Autonomy read-only reflection evaluator.',
     'Return strict JSON only.',
@@ -1745,6 +1772,11 @@ export function buildAoiAutonomyReflectionMessages(params: {
   if (intentAvailable) {
     systemLines.push(
       'A "currentIntent" field states the inferred current user intent (kind, label, confidence, evidenceRefs). PREFER work that helps this intent RIGHT NOW. Cite one of its evidenceRefs only when the same ref also appears in observations.',
+    );
+  }
+  if (situationAvailable) {
+    systemLines.push(
+      'A "currentSituation" field is the evidence-cited fusion of what is happening NOW (headline + focusItems with evidenceRefs + cannotKnow blind spots). PREFER proposals aligned with it, and when a proposal draws on the live context, CITE situation:<id> or the focus item refs in evidenceRefs. Never claim anything the cannotKnow list says is unknowable.',
     );
   }
   if (params.goalSynthesisEnabled) {
@@ -1816,6 +1848,7 @@ export function buildAoiAutonomyReflectionMessages(params: {
         activeProposals,
         ...(continuityAvailable ? { continuity } : {}),
         ...(intentAvailable ? { currentIntent: intentContext } : {}),
+        ...(situationAvailable ? { currentSituation: situationContext } : {}),
         ...(recentReflectionsAvailable ? { recentReflections: recentReflectionContext } : {}),
         ...(connectorsAvailable ? { availableConnectors } : {}),
         ...(recurringClustersAvailable ? { recurringClusters } : {}),
@@ -2511,6 +2544,9 @@ async function runLlmReflection(params: {
   // SA2.2: the current-intent state built earlier this tick (prioritization
   // context in the prompt; absent -> prompt unchanged).
   intentState?: AoiIntentState | null;
+  // SA4.2: the evidence-cited current-situation brief built this tick. Its
+  // refs are registered as known evidence by the caller, so it is CITABLE.
+  situation?: AoiCurrentSituation | null;
   goalSynthesisEnabled?: boolean;
   llmDailyTokenBudget?: number;
   language?: AoiCardLang;
@@ -2543,6 +2579,8 @@ async function runLlmReflection(params: {
       previousBrief: params.previousBrief ?? null,
       // SA2.2: current-intent prioritization block (built + persisted this tick).
       intentState: params.intentState ?? null,
+      // SA4.2: citable current-situation block.
+      situation: params.situation ?? null,
       // P3.2: feed prior reflections (persisted before this tick) back so cognition
       // accumulates across ticks. The builder caps + sanitizes them.
       recentReflections: loadAoiReflections(params.sessionsDir, params.sessionPath),
@@ -3231,6 +3269,11 @@ export async function runAoiAutonomyTick(
   // SA2.2: infer + persist the evidence-cited current-intent state from the
   // already consent-gated live signals. Observation-only: it feeds the context
   // router and the reflection prompt as prioritization context, never authority.
+  const personalMetadataSummaries = loadAoiPersonalSignalMetadataSummaries({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    now,
+  });
   const intentState: AoiIntentState = buildAoiIntentState({
     sessionPath,
     now,
@@ -3240,16 +3283,35 @@ export async function runAoiAutonomyTick(
     mission: missionForAttention,
     ...(latestUserMessage ? { latestUserMessage } : {}),
     researchRuns: bundle.researchRuns,
-    personalMetadata: loadAoiPersonalSignalMetadataSummaries({
-      sessionsDir: params.sessionsDir,
-      sessionPath,
-      now,
-    }),
+    personalMetadata: personalMetadataSummaries,
   });
   try {
     saveAoiIntentState(params.sessionsDir, intentState);
   } catch {
     // Best-effort persistence; the in-memory state still feeds this tick.
+  }
+  // SA4.2: fuse the consented signals into THE evidence-cited current-situation
+  // brief for this wakeup and persist it. Conversation recency is metadata only:
+  // a message this tick, else the newest consented chat_turn activity marker.
+  const lastChatTurnAt = latestUserMessage
+    ? now
+    : (activitySummary.recentEvents.find((event) => event.kind === 'chat_turn')?.observedAt ??
+      null);
+  const currentSituation = buildAoiCurrentSituation({
+    sessionPath,
+    now,
+    mission: missionForAttention,
+    intentState,
+    activitySummary,
+    workspaceSnapshot,
+    personalMetadata: personalMetadataSummaries,
+    researchRuns: bundle.researchRuns,
+    lastUserMessageAt: lastChatTurnAt,
+  });
+  try {
+    saveAoiCurrentSituation(params.sessionsDir, currentSituation);
+  } catch {
+    // Best-effort persistence; the in-memory situation still feeds this tick.
   }
   const attentionResult = runAoiAttentionBroker({
     sessionPath,
@@ -3420,6 +3482,12 @@ export async function runAoiAutonomyTick(
     observations: bundle.observations,
     activeProposals: bundle.activeProposals,
   });
+  // SA4.2: the situation brief and its (already consent-gated, cited) segment
+  // refs are citable evidence -- proposals can ground on the live context.
+  knownEvidenceRefs.add(`situation:${currentSituation.id}`);
+  for (const ref of currentSituation.evidenceRefs) {
+    knownEvidenceRefs.add(ref);
+  }
   const deterministicProposals = buildDeterministicProposals({
     sessionsDir: params.sessionsDir,
     bundle,
@@ -3445,6 +3513,8 @@ export async function runAoiAutonomyTick(
     previousBrief,
     // SA2.2: current-intent prioritization context (built + persisted above).
     intentState,
+    // SA4.2: the evidence-cited situation brief (citable, unlike continuity).
+    situation: currentSituation,
     // P1a c4: explicit opt-in (on top of network) for LLM goal synthesis.
     goalSynthesisEnabled: params.goalSynthesisEnabled,
     // Author proposal title/body/reason in the operator's language (explicit, or

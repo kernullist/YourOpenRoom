@@ -20,6 +20,7 @@ import {
 } from '../aoiAutonomyStore';
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
 import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
+import { buildAoiCurrentSituation, saveAoiCurrentSituation } from '../aoiCurrentSituationModel';
 import type { AoiAppOperationDispatch, AoiProposal, AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
@@ -251,6 +252,63 @@ describe('intent route (SA2.2)', () => {
       stale?: boolean | null;
     };
     expect(servedBody.intent?.actionAuthority).toBe('display_only');
+    expect(servedBody.stale).toBe(false);
+  });
+});
+
+describe('situation route (SA4.2)', () => {
+  it('serves the persisted display-only situation brief with an explicit stale flag', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+
+    const missing = await fetch(`${base}/situation`);
+    expect(missing.status).toBe(400);
+    expect(((await missing.json()) as { code?: string }).code).toBe('invalid_session_path');
+
+    const empty = await fetch(`${base}/situation?sessionPath=aoi/default`);
+    expect(empty.status).toBe(200);
+    const emptyBody = (await empty.json()) as { situation?: unknown; stale?: unknown };
+    expect(emptyBody.situation).toBeNull();
+    expect(emptyBody.stale).toBeNull();
+
+    const now = Date.now();
+    saveAoiCurrentSituation(
+      sessionsDir,
+      buildAoiCurrentSituation({
+        sessionPath: 'aoi/default',
+        now,
+        mission: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          status: 'active',
+          activeGoalId: 'goal-1',
+          focusSummary: 'Serve the situation brief',
+          waitingOn: 'none',
+          nextRecommendedAction: 'continue',
+          evidenceRefs: ['proposal:p-1'],
+          sourceRefs: {},
+          transitions: [],
+          createdAt: now - 1000,
+          updatedAt: now,
+        } as never,
+      }),
+    );
+    const served = await fetch(`${base}/situation?sessionPath=aoi/default`);
+    const servedBody = (await served.json()) as {
+      situation?: { actionAuthority?: string; headline?: string } | null;
+      stale?: boolean | null;
+    };
+    expect(servedBody.situation?.actionAuthority).toBe('display_only');
+    expect((servedBody.situation?.headline?.length ?? 0) > 0).toBe(true);
     expect(servedBody.stale).toBe(false);
   });
 });

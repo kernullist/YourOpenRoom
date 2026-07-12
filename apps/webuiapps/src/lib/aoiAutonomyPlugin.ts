@@ -89,6 +89,7 @@ import {
 } from './aoiContextRouter';
 import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActivityStream';
 import { loadAoiIntentState } from './aoiIntentInference';
+import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
@@ -2216,6 +2217,28 @@ export async function handleAoiAutonomyRequest(
         sessionPath,
         intent,
         stale: intent ? intent.staleAt <= Date.now() : null,
+      });
+      return true;
+    }
+
+    if (req.method === 'GET' && route === '/situation') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      // SA4.2: read-only, display-only current-situation brief persisted by the
+      // tick. Staleness is explicit so consumers never present an old fusion
+      // as "now".
+      const situation = loadAoiCurrentSituation(sessionsDir, sessionPath);
+      writeJson(res, 200, {
+        ok: true,
+        sessionPath,
+        situation,
+        stale: situation ? situation.staleAt <= Date.now() : null,
       });
       return true;
     }
