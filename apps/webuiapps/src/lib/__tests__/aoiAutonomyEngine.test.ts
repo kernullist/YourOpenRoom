@@ -43,6 +43,7 @@ import {
   type AoiOpportunityUpsertInput,
 } from '../aoiAutonomyStore';
 import { loadAoiAutonomySchedulerState, runAoiAutonomyWakeup } from '../aoiAutonomyScheduler';
+import { recordAoiActivityEvent } from '../aoiActivityStream';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
 import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
 import {
@@ -740,6 +741,56 @@ afterEach(() => {
 });
 
 describe('runAoiAutonomyTick()', () => {
+  it('observes live app activity only after the source is consented (SA1.4)', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      now: NOW,
+    });
+    const darkObservations = loadAoiObservations(root, SESSION_PATH);
+    expect(
+      darkObservations.some((observation) => observation.dedupeKey.startsWith('activity:')),
+    ).toBe(false);
+
+    updateAoiEnvironmentSource(root, SESSION_PATH, {
+      sourceId: 'app-activity',
+      patch: {
+        enabled: true,
+        consentReason: 'User enabled live activity awareness for this session.',
+        lastReviewedAt: NOW,
+      },
+      now: NOW,
+    });
+    recordAoiActivityEvent(
+      root,
+      SESSION_PATH,
+      { kind: 'app_action', appId: 'musicapp', actionType: 'PLAY_TRACK' },
+      NOW + 1000,
+    );
+
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'manual',
+      now: NOW + 2000,
+    });
+
+    const observations = loadAoiObservations(root, SESSION_PATH);
+    const activityObservation = observations.find((observation) =>
+      observation.dedupeKey.startsWith('activity:'),
+    );
+    expect(activityObservation).toBeDefined();
+    expect(activityObservation).toMatchObject({
+      source: 'app',
+      riskSignals: ['activity-signal'],
+    });
+    expect(activityObservation?.summary).toContain('active app=musicapp');
+  });
+
   it('creates a deterministic proposal to open a matching completed research report', async () => {
     const root = makeTempRoot();
     enablePolicy(root, 'L4');

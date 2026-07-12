@@ -133,6 +133,7 @@ import {
   collectAndPersistAoiWorkspaceSnapshot,
   createAoiWorkspaceObservations,
 } from './aoiWorkspaceSignals';
+import { createAoiActivityObservations, loadAoiActivityStreamSummary } from './aoiActivityStream';
 import {
   recordAoiProposalBlockedTimelineEvent,
   recordAoiProposalCreatedTimelineEvent,
@@ -3186,6 +3187,16 @@ export async function runAoiAutonomyTick(
       }),
     );
   }
+  // SA1.4: live-activity awareness. The loader is consent-gated (fail-closed):
+  // a dark/revoked app-activity source yields an empty, cannot-know summary and
+  // therefore no observation. Observation-only -- context, never authority.
+  const activitySummary = loadAoiActivityStreamSummary(params.sessionsDir, sessionPath, now);
+  bundle.observations.push(
+    ...createAoiActivityObservations({
+      summary: activitySummary,
+      now,
+    }),
+  );
   const attentionResult = runAoiAttentionBroker({
     sessionPath,
     now,

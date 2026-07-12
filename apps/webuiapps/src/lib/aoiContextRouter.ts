@@ -47,6 +47,12 @@ import type {
 } from './aoiAutonomyTypes';
 import type { AoiResearchRunSummary } from './aoiResearchTypes';
 import type { AoiSourceFreshnessContract } from './aoiSourceFreshnessContract';
+import {
+  AOI_ACTIVITY_FRESH_WINDOW_MS,
+  describeAoiActivityStreamSummary,
+  loadAoiActivityStreamSummary,
+  type AoiActivityStreamSummary,
+} from './aoiActivityStream';
 
 const BROWSER_CONTEXT_FILE = 'browser-context.json';
 const CONTEXT_FEEDBACK_FILE = 'context-feedback.json';
@@ -107,6 +113,7 @@ export interface AoiContextRouterInput {
   queryEmbedding?: number[] | null;
   queryEmbeddingModel?: string | null;
   workspaceSnapshot?: AoiWorkspaceSnapshot | null;
+  activitySummary?: AoiActivityStreamSummary | null;
   decisions?: AoiProposalDecision[];
   researchRuns?: AoiResearchRunSummary[];
   browserContexts?: AoiBrowserContextMetadata[];
@@ -1137,6 +1144,66 @@ function buildPersonalSignalCandidates(params: {
     .filter((summary): summary is AoiContextSourceSummary => summary !== null);
 }
 
+// SA1.4: the live-activity stream as a ranked context candidate. Reads the
+// consent-gated summary (fail-closed loader), so a dark/revoked source yields
+// no candidate; freshness runs on the minutes-scale live window, not the 7d
+// snapshot window.
+function buildActivityCandidates(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  summary?: AoiActivityStreamSummary | null;
+  latestUserMessage: string;
+  registry: AoiEnvironmentSourceRegistry;
+  now: number;
+}): AoiContextSourceSummary[] {
+  if (!sourceAllowed(params.registry, SOURCE_ID_BY_KIND.app_activity, 'summarize_counts')) {
+    return [];
+  }
+  const summary =
+    params.summary === undefined
+      ? loadAoiActivityStreamSummary(params.sessionsDir, params.sessionPath, params.now)
+      : params.summary;
+  if (!summary || !summary.consented || summary.activeEventCount === 0) {
+    return [];
+  }
+  const freshness: AoiSignalFreshness =
+    summary.lastEventAgeMs !== null && summary.lastEventAgeMs <= AOI_ACTIVITY_FRESH_WINDOW_MS
+      ? 'fresh'
+      : 'stale';
+  const activeAppMentioned =
+    summary.activeAppId !== null &&
+    params.latestUserMessage.toLowerCase().includes(summary.activeAppId);
+  const hasInteraction = summary.kindCounts.app_action > 0;
+  return [
+    makeSummary({
+      sourceId: SOURCE_ID_BY_KIND.app_activity,
+      kind: 'app_activity',
+      label: 'Live app activity',
+      summary: describeAoiActivityStreamSummary(summary),
+      evidenceRefs: summary.evidenceRefs,
+      relevanceScore: clamp(
+        0.24 +
+          (activeAppMentioned ? 0.2 : 0) +
+          (hasInteraction ? 0.06 : 0) +
+          scoreFreshness(freshness),
+        0,
+        1,
+      ),
+      confidence: freshness === 'fresh' ? 0.72 : 0.5,
+      freshness,
+      scoreReasons: [
+        'live-activity-stream',
+        ...(activeAppMentioned ? ['active-app-mentioned'] : []),
+        ...(hasInteraction ? ['app-interaction-observed'] : []),
+        freshness === 'fresh' ? 'activity-fresh-window' : 'activity-outside-fresh-window',
+      ],
+      updatedAt: summary.lastEventAt ?? params.now,
+      displayName: 'Live app activity',
+      redactionState: 'redacted',
+    }),
+  ];
+}
+
 function buildWorkspaceCandidates(params: {
   snapshot: AoiWorkspaceSnapshot | null;
   latestUserMessage: string;
@@ -1357,6 +1424,14 @@ export function buildAoiContextRouterResult(params: AoiContextRouterInput): AoiC
       latestUserMessage,
       registry,
       mission,
+    }),
+    ...buildActivityCandidates({
+      sessionsDir: params.sessionsDir,
+      sessionPath,
+      summary: params.activitySummary,
+      latestUserMessage,
+      registry,
+      now,
     }),
   ];
 

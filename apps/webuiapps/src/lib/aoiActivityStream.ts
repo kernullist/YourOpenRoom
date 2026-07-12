@@ -23,8 +23,12 @@ import {
   updateAoiEnvironmentSource,
 } from './aoiAutonomyStore';
 import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
+import type { AoiObservation } from './aoiAutonomyTypes';
 
 export const AOI_ACTIVITY_SOURCE_ID = 'app-activity';
+// Live activity counts as "current" on a minutes scale only (matches the
+// app_activity source freshness window in aoiSourceFreshnessContract).
+export const AOI_ACTIVITY_FRESH_WINDOW_MS = 30 * 60 * 1000;
 
 const ACTIVITY_DIR = 'activity';
 const ACTIVITY_EVENTS_FILE = 'events.jsonl';
@@ -549,6 +553,55 @@ export function buildAoiActivityStreamSummary(params: {
     mutationCount: 0,
     zeroMutation: true,
   };
+}
+
+// Compact one-line description of the live stream for candidates/observations.
+// Built ONLY from validated slugs and counts -- safe by construction.
+export function describeAoiActivityStreamSummary(summary: AoiActivityStreamSummary): string {
+  const lastAge =
+    summary.lastEventAgeMs === null
+      ? 'never'
+      : `${Math.max(0, Math.round(summary.lastEventAgeMs / 60_000))}m ago`;
+  const topApps = summary.appCounts
+    .slice(0, 3)
+    .map((entry) => `${entry.appId}:${entry.eventCount}`)
+    .join(', ');
+  return (
+    `Live activity: active app=${summary.activeAppId ?? 'none'}; ` +
+    `events=${summary.activeEventCount}; last=${lastAge}` +
+    (topApps ? `; top=${topApps}.` : '.')
+  );
+}
+
+// Derive tick observations from the (already consent-gated) activity summary.
+// Observation-only: feeds cognition context, never authority. The dedupe key
+// buckets by fresh-window so an unchanged stream does not re-observe each tick.
+export function createAoiActivityObservations(params: {
+  summary: AoiActivityStreamSummary;
+  now?: number;
+}): AoiObservation[] {
+  const summary = params.summary;
+  if (!summary.consented || summary.activeEventCount === 0 || summary.lastEventAt === null) {
+    return [];
+  }
+  const bucket = Math.floor(summary.lastEventAt / AOI_ACTIVITY_FRESH_WINDOW_MS);
+  const dedupeKey = `activity:${summary.activeAppId ?? 'none'}:${bucket}`;
+  return [
+    {
+      version: 1,
+      id: `aoi-obs-activity-${hashText(`${summary.sessionPath}:${dedupeKey}`)}`,
+      source: 'app',
+      sessionPath: summary.sessionPath,
+      createdAt: summary.lastEventAt,
+      summary: describeAoiActivityStreamSummary(summary),
+      payloadRef: `environment-source:${AOI_ACTIVITY_SOURCE_ID}`,
+      memoryIds: [],
+      artifactRefs: summary.evidenceRefs.slice(0, 8),
+      proposalIds: [],
+      riskSignals: ['activity-signal'],
+      dedupeKey,
+    },
+  ];
 }
 
 export function loadAoiActivityStreamSummary(

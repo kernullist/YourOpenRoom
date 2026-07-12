@@ -3,9 +3,12 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  AOI_ACTIVITY_FRESH_WINDOW_MS,
   AOI_ACTIVITY_SOURCE_ID,
   buildAoiActivityStreamSummary,
   checkAoiActivityStreamConsent,
+  createAoiActivityObservations,
+  describeAoiActivityStreamSummary,
   loadAoiActivityEvents,
   loadAoiActivityStreamSummary,
   normalizeAoiActivityEvent,
@@ -327,5 +330,80 @@ describe('Aoi activity stream summary', () => {
     });
     expect(summary.activeAppId).toBeNull();
     expect(summary.cannotKnow.join(' ')).toContain('no live activity');
+  });
+});
+
+describe('Aoi activity tick observations (SA1.4)', () => {
+  function makeConsentedSummaryRoot(): string {
+    const root = makeTempRoot();
+    consentActivitySource(root);
+    recordAoiActivityEvent(root, SESSION_PATH, { kind: 'app_opened', appId: 'musicapp' }, NOW);
+    recordAoiActivityEvent(
+      root,
+      SESSION_PATH,
+      { kind: 'app_action', appId: 'musicapp', actionType: 'PLAY_TRACK', observedAt: NOW + 1000 },
+      NOW + 1000,
+    );
+    return root;
+  }
+
+  it('derives one display-only observation from a live summary', () => {
+    const root = makeConsentedSummaryRoot();
+    const summary = loadAoiActivityStreamSummary(root, SESSION_PATH, NOW + 2000);
+
+    const observations = createAoiActivityObservations({ summary, now: NOW + 2000 });
+    expect(observations).toHaveLength(1);
+    expect(observations[0]).toMatchObject({
+      version: 1,
+      source: 'app',
+      sessionPath: SESSION_PATH,
+      createdAt: NOW + 1000,
+      riskSignals: ['activity-signal'],
+    });
+    expect(observations[0]?.summary).toContain('active app=musicapp');
+    expect(observations[0]?.dedupeKey).toBe(
+      `activity:musicapp:${Math.floor((NOW + 1000) / AOI_ACTIVITY_FRESH_WINDOW_MS)}`,
+    );
+    expect(observations[0]?.artifactRefs).toContain(`environment-source:${AOI_ACTIVITY_SOURCE_ID}`);
+  });
+
+  it('dedupe key is stable within the fresh window so ticks do not re-observe', () => {
+    const root = makeConsentedSummaryRoot();
+    const summary = loadAoiActivityStreamSummary(root, SESSION_PATH, NOW + 2000);
+
+    const first = createAoiActivityObservations({ summary, now: NOW + 2000 });
+    const second = createAoiActivityObservations({ summary, now: NOW + 60_000 });
+    expect(first[0]?.dedupeKey).toBe(second[0]?.dedupeKey);
+    expect(first[0]?.id).toBe(second[0]?.id);
+  });
+
+  it('yields no observation for a dark or empty stream', () => {
+    expect(
+      createAoiActivityObservations({
+        summary: buildAoiActivityStreamSummary({
+          sessionPath: SESSION_PATH,
+          events: [],
+          consented: false,
+          now: NOW,
+        }),
+        now: NOW,
+      }),
+    ).toEqual([]);
+    expect(
+      createAoiActivityObservations({
+        summary: buildAoiActivityStreamSummary({ sessionPath: SESSION_PATH, events: [], now: NOW }),
+        now: NOW,
+      }),
+    ).toEqual([]);
+  });
+
+  it('describes the stream from validated slugs only', () => {
+    const root = makeConsentedSummaryRoot();
+    const summary = loadAoiActivityStreamSummary(root, SESSION_PATH, NOW + 61_000);
+    const line = describeAoiActivityStreamSummary(summary);
+    expect(line).toContain('active app=musicapp');
+    expect(line).toContain('events=2');
+    expect(line).toContain('last=1m ago');
+    expect(line).toContain('top=musicapp:2');
   });
 });
