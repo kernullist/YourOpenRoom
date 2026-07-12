@@ -6538,13 +6538,20 @@ export function buildAoiEnvironmentSourcePanelSummaries(
   const operation = options.operation ?? 'summarize';
   return registry.sources.map((source) => {
     const personalSource = isAoiPersonalSignalSourceKind(source.kind);
+    // Sources whose consent flow IS the panel toggle: enabling stamps an
+    // explicit consentReason + lastReviewedAt. Personal metadata sources and
+    // the live app-activity stream belong here; browser-context stays locked
+    // (its explicit-target flow is the per-page capture action).
+    const consentToggleSource = personalSource || source.kind === 'app_activity';
     const gateOperation =
-      personalSource && operation === 'summarize' ? 'summarize_counts' : operation;
+      consentToggleSource && operation === 'summarize' ? 'summarize_counts' : operation;
     const gatedFromEnable =
-      !source.enabled && !personalSource && (source.risk === 'high' || source.privateByDefault);
+      !source.enabled &&
+      !consentToggleSource &&
+      (source.risk === 'high' || source.privateByDefault);
     const consentSummary = source.consentReason
       ? source.consentReason
-      : gatedFromEnable || personalSource
+      : gatedFromEnable || consentToggleSource
         ? 'Explicit target consent is required before Aoi can use this source.'
         : 'No consent reason recorded.';
 
@@ -6584,16 +6591,17 @@ export function buildAoiEnvironmentSourcePanelSummaries(
       gateReason: buildAoiEnvironmentSourceGateReason(source, registry, gateOperation),
       canToggle: !gatedFromEnable,
       canClear:
-        personalSource && Boolean(source.enabled || source.consentReason || source.lastReviewedAt),
+        consentToggleSource &&
+        Boolean(source.enabled || source.consentReason || source.lastReviewedAt),
       toggleTitle: gatedFromEnable
         ? 'This high-risk or private source needs an explicit target flow before enabling.'
-        : personalSource && !source.enabled
-          ? 'Enable this personal metadata source after reviewing its exact metadata scope.'
+        : consentToggleSource && !source.enabled
+          ? 'Enable this metadata-only source after reviewing its exact metadata scope.'
           : source.enabled
             ? 'Disable this environment source.'
             : 'Enable this environment source for metadata-only observation.',
-      clearTitle: personalSource
-        ? 'Disable this personal source and clear consent, review, and observation state.'
+      clearTitle: consentToggleSource
+        ? 'Disable this source and clear consent, review, and observation state.'
         : 'No clear action is available for this source.',
     };
   });

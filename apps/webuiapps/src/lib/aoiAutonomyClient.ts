@@ -1645,6 +1645,46 @@ export async function recordAoiContextSourceFeedback(
   };
 }
 
+export interface AoiActivityEventRecordInput {
+  kind: 'app_opened' | 'app_closed' | 'app_focused' | 'app_action' | 'chat_turn';
+  appId?: string;
+  actionType?: string;
+  observedAt?: number;
+}
+
+export interface AoiActivityEventRecordResponse {
+  ok: boolean;
+  sessionPath: string;
+}
+
+// SA1.3: metadata-only live-activity capture. The server route re-enforces the
+// app-activity consent gate fail-closed (403 while dark) -- callers treat this
+// as best-effort and must never let a rejection break the interaction flow.
+export async function recordAoiActivityEvent(
+  sessionPath: string,
+  input: AoiActivityEventRecordInput,
+): Promise<AoiActivityEventRecordResponse> {
+  const response = await fetch(`${API_PREFIX}/activity/event`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      kind: input.kind,
+      appId: input.appId,
+      actionType: input.actionType,
+      observedAt: input.observedAt,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi activity event.');
+  return {
+    ok: payload.ok === true,
+    sessionPath:
+      typeof payload.sessionPath === 'string' && payload.sessionPath.trim()
+        ? payload.sessionPath
+        : sessionPath,
+  };
+}
+
 export async function fetchAoiAutonomyDashboard(
   sessionPath: string,
 ): Promise<AoiAutonomyDashboardSnapshot> {

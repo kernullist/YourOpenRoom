@@ -327,6 +327,7 @@ import {
   recordAoiOperatorVoiceDecision,
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
+  recordAoiActivityEvent,
   recordAoiProactiveTrendDeliveryEvent,
   recordAoiProposalFeedback,
   resetAoiProactiveBriefCooldown,
@@ -347,6 +348,10 @@ import {
   buildAoiProposalOpenedSignal,
   createAoiOutcomeJunctureTracker,
 } from '@/lib/aoiOutcomeSignalJunctures';
+import {
+  isAoiActivityCaptureConsented,
+  mapAoiUserActionToActivityCapture,
+} from '@/lib/aoiActivityCapture';
 import {
   AOI_AUTONOMY_UI_LEVELS,
   appendAoiAgendaNudgeDecisionFeedbackHistory,
@@ -3266,6 +3271,9 @@ const ChatPanel: React.FC<{
 
   const sessionPathRef = useRef(sessionPath);
   sessionPathRef.current = sessionPath;
+  // SA1.3: consent pre-check source for activity capture (server re-enforces).
+  const aoiEnvironmentSourcesRef = useRef(aoiEnvironmentSources);
+  aoiEnvironmentSourcesRef.current = aoiEnvironmentSources;
   const openingLocalizationCacheRef = useRef(
     new Map<string, { prologue: string; replies: string[] }>(),
   );
@@ -5281,9 +5289,6 @@ const ChatPanel: React.FC<{
   // Listen for user actions from apps
   useEffect(() => {
     const unsubscribe = onUserAction((event: unknown) => {
-      const cfg = configRef.current;
-      if (!hasUsableLLMConfig(cfg)) return;
-
       const evt = event as {
         app_action?: {
           app_id: number;
@@ -5293,6 +5298,27 @@ const ChatPanel: React.FC<{
         };
         action_result?: string;
       };
+      // SA1.3: metadata-only live-activity capture, independent of the LLM
+      // config (observing does not require a model). Best-effort: consent is
+      // pre-checked here and re-enforced server-side; a rejection must never
+      // break the interaction flow.
+      if (
+        evt.action_result === undefined &&
+        evt.app_action &&
+        isAoiActivityCaptureConsented(aoiEnvironmentSourcesRef.current)
+      ) {
+        const captureInput = mapAoiUserActionToActivityCapture(
+          evt.app_action,
+          (appId) => APP_REGISTRY.find((a) => a.appId === appId)?.appName ?? null,
+        );
+        if (captureInput) {
+          void recordAoiActivityEvent(sessionPathRef.current, captureInput).catch(() => undefined);
+        }
+      }
+
+      const cfg = configRef.current;
+      if (!hasUsableLLMConfig(cfg)) return;
+
       logger.info('ChatPanel', 'onUserAction received:', evt);
       if (evt.action_result !== undefined) return;
       const action = evt.app_action;
@@ -5627,6 +5653,13 @@ const ChatPanel: React.FC<{
       if (!messageText || loading) return;
       // Any send (typed or a tapped chip) counts as activity: reset the idle clock.
       lastUserActivityAtRef.current = Date.now();
+      // SA1.3: metadata-only chat-turn marker ("a turn happened", never the
+      // content). Consent-gated client-side and re-enforced server-side.
+      if (isAoiActivityCaptureConsented(aoiEnvironmentSourcesRef.current)) {
+        void recordAoiActivityEvent(sessionPathRef.current, { kind: 'chat_turn' }).catch(
+          () => undefined,
+        );
+      }
       const { mainConfig: liveMainConfig, dialogConfig: liveDialogConfig } =
         await refreshConversationConfigs();
       const outgoingUserMessage: ChatMessage = {

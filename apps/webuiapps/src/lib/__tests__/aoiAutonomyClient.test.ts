@@ -9,6 +9,7 @@ import {
   fetchAoiProactiveBriefs,
   prepareAoiPlaybookPreview,
   recordAoiFieldFeedback,
+  recordAoiActivityEvent,
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   resetAoiProactiveBriefCooldown,
@@ -1171,5 +1172,55 @@ describe('Aoi autonomy client dashboard', () => {
 
     expect(result.ok).toBe(false);
     expect(result.record.status).toBe('failed');
+  });
+});
+
+describe('recordAoiActivityEvent (SA1.3)', () => {
+  it('posts metadata-only activity events and maps the response', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      const url = String(input);
+      if (url === '/api/aoi-autonomy/activity/event' && init?.method === 'POST') {
+        requestBodies.push(JSON.parse(String(init.body)) as Record<string, unknown>);
+        return jsonResponse({ ok: true, sessionPath: 'aoi/default', event: null });
+      }
+      throw new Error(`Unexpected URL: ${url}`);
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await recordAoiActivityEvent('aoi/default', {
+      kind: 'app_action',
+      appId: 'musicapp',
+      actionType: 'PLAY_TRACK',
+    });
+
+    expect(result).toEqual({ ok: true, sessionPath: 'aoi/default' });
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        kind: 'app_action',
+        appId: 'musicapp',
+        actionType: 'PLAY_TRACK',
+      },
+    ]);
+  });
+
+  it('rejects when the server refuses capture (fail-closed 403 while dark)', async () => {
+    const fetchMock = vi.fn(
+      async () =>
+        new Response(
+          JSON.stringify({
+            error: 'Activity event was not recorded.',
+            code: 'activity_source_blocked',
+            reasons: ['source_disabled'],
+          }),
+          { status: 403, headers: { 'Content-Type': 'application/json' } },
+        ),
+    );
+    vi.stubGlobal('fetch', fetchMock);
+
+    await expect(recordAoiActivityEvent('aoi/default', { kind: 'chat_turn' })).rejects.toThrow(
+      'Activity event was not recorded.',
+    );
   });
 });

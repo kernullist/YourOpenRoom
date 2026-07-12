@@ -262,6 +262,19 @@ function makeEnvironmentSourceRegistry(
         quietModeBehavior: 'suppress',
         updatedAt: 1000,
       },
+      {
+        version: 1,
+        id: 'app-activity',
+        kind: 'app_activity',
+        label: 'Live app activity stream',
+        enabled: false,
+        scope: 'explicit_target',
+        risk: 'high',
+        allowedOperations: ['read_metadata', 'summarize_counts'],
+        privateByDefault: true,
+        quietModeBehavior: 'suppress',
+        updatedAt: 1000,
+      },
     ],
     ...partial,
   };
@@ -1798,6 +1811,39 @@ describe('Aoi autonomy UI helpers', () => {
     expect(notes?.willNotReadOrDoLabel).toContain('full note bodies');
     expect(notes?.gateReason).toContain('source consent review required');
     expect(notes?.toggleTitle).toContain('metadata scope');
+
+    // SA1.3: the live-activity stream is consented THROUGH the panel toggle
+    // (the enable button stamps consentReason + lastReviewedAt), so it must be
+    // togglable + clearable despite being high-risk/private -- unlike
+    // browser-context, whose explicit-target flow is the per-page capture.
+    const activity = summaries.find((summary) => summary.id === 'app-activity');
+    expect(activity).toMatchObject({
+      enabled: false,
+      canToggle: true,
+      canClear: false,
+      riskLabel: 'high',
+      privateLabel: 'private by default',
+    });
+    expect(activity?.toggleTitle).toContain('metadata scope');
+    const consentedActivity = buildAoiEnvironmentSourcePanelSummaries(
+      makeEnvironmentSourceRegistry({
+        sources: makeEnvironmentSourceRegistry().sources.map((source) =>
+          source.id === 'app-activity'
+            ? {
+                ...source,
+                enabled: true,
+                consentReason: 'User enabled live activity awareness.',
+                lastReviewedAt: 2000,
+              }
+            : source,
+        ),
+      }),
+    ).find((summary) => summary.id === 'app-activity');
+    expect(consentedActivity).toMatchObject({
+      enabled: true,
+      canToggle: true,
+      canClear: true,
+    });
   });
 
   it('redacts explicit browser context URLs before UI or prompt display', () => {
