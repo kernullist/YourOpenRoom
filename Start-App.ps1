@@ -3,7 +3,13 @@ param
 (
     [int]$Port = 3000,
     [string]$HostAddress = "127.0.0.1",
-    [switch]$Install
+    [switch]$Install,
+    # Also register the boot-persistent Aoi daemon service (scheduled task, survives
+    # logoff/reboot). Needs an elevated shell; without it Start-App still runs the
+    # self-healing in-process supervised daemon for this session.
+    [switch]$InstallService,
+    # Force the in-process supervised daemon even if the boot service task exists.
+    [switch]$NoService
 )
 
 Set-StrictMode -Version Latest
@@ -364,13 +370,10 @@ function Test-AoiDaemonBundleStale
     return $newestSourceTime -gt $bundleTime
 }
 
-function Start-AoiDaemon
+function Confirm-AoiDaemonBundle
 {
     param
     (
-        [Parameter(Mandatory = $true)]
-        [string]$RepoRoot,
-
         [Parameter(Mandatory = $true)]
         [string]$AppDir,
 
@@ -378,7 +381,6 @@ function Start-AoiDaemon
         [string]$PnpmPath
     )
 
-    $daemonPort = Get-AoiDaemonPort
     $bundlePath = Join-Path $AppDir "dist-daemon\aoiDaemonServer.js"
 
     if (Test-AoiDaemonBundleStale -AppDir $AppDir -BundlePath $bundlePath)
@@ -396,6 +398,26 @@ function Start-AoiDaemon
         throw "Aoi daemon bundle was not found at $bundlePath."
     }
 
+    return $bundlePath
+}
+
+function Start-AoiDaemon
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+
+        [Parameter(Mandatory = $true)]
+        [string]$AppDir,
+
+        [Parameter(Mandatory = $true)]
+        [string]$PnpmPath
+    )
+
+    $daemonPort = Get-AoiDaemonPort
+    $bundlePath = Confirm-AoiDaemonBundle -AppDir $AppDir -PnpmPath $PnpmPath
+
     $nodeCommand = Get-Command node -ErrorAction SilentlyContinue
     if ($null -eq $nodeCommand)
     {
@@ -405,52 +427,31 @@ function Start-AoiDaemon
     $stdoutLog = Join-Path $AppDir "dist-daemon\aoi-daemon.out.log"
     $stderrLog = Join-Path $AppDir "dist-daemon\aoi-daemon.err.log"
 
-    # Jarvis autonomy (cognition/memory/proactive tier). These make Aoi think,
-    # propose, remember, and reach out MORE; none of them run a side-effecting
-    # action without the existing approval gates, so they are safe to default on.
-    # Set only when unset so an explicit shell value still wins, and the node
-    # daemon (started below) inherits them. AOI_AUTONOMY_BACKGROUND=0 is still the
-    # hard off switch.
-    #
-    # Action tier (operator-enabled): these reduce human-in-the-loop friction and
-    # open real effects. They still require earned trusted_operator readiness plus
-    # the unchanged hard gates -- L5 + content-addressed approval, per-call
-    # irreversibility ack for side-effecting connectors, and the DNS-rebind guard --
-    # so flipping them on does not by itself let Aoi act without approval; it opens
-    # the capability once the operator promotion is earned. Auto-promotion is left
-    # off on purpose: the level is pinned at L5 manually, so auto-promote (hard-cap
-    # L4) could only roll it back.
-    $jarvisAutonomyEnv = [ordered]@{
-        'AOI_AUTONOMY_GOAL_SYNTHESIS'         = '1'
-        'AOI_AUTONOMY_CONSOLIDATION'          = '1'
-        'AOI_AUTONOMY_EMBED_SWEEP'            = '1'
-        'AOI_AUTONOMY_IDLE_CONFIDENCE_SURGE'  = '1'
-        'AOI_AUTONOMY_FIELD_SHADOW_CAPTURE'   = '1'
-        'AOI_AUTONOMY_APP_OP_LIVE_DISPATCH'   = '1'
-        'AOI_AUTONOMY_APPROVAL_TTL'           = '1'
-        'AOI_MCP_SIDE_EFFECTING_RPC'          = '1'
-    }
-    foreach ($key in $jarvisAutonomyEnv.Keys)
-    {
-        if ([string]::IsNullOrEmpty([Environment]::GetEnvironmentVariable($key)))
-        {
-            [Environment]::SetEnvironmentVariable($key, $jarvisAutonomyEnv[$key])
-        }
-    }
+    # Jarvis autonomy env, single-sourced so the in-process launch here and the
+    # boot-persistent scheduled task run with the identical tier. Set only when
+    # unset (an explicit shell value still wins); the daemon started below and its
+    # supervised child both inherit them. AOI_AUTONOMY_BACKGROUND=0 is still the
+    # hard off switch; autonomous self-execution stays behind its own gate.
+    . (Join-Path $RepoRoot "Set-AoiDaemonEnv.ps1")
+    Set-AoiDaemonEnv
 
-    Write-Step ("Starting Aoi daemon on port {0} (logs: apps\webuiapps\dist-daemon\aoi-daemon.*.log)." -f $daemonPort)
+    Write-Step ("Starting supervised Aoi daemon on port {0} (self-healing; logs: apps\webuiapps\dist-daemon\aoi-daemon.*.log)." -f $daemonPort)
 
-    # The absolute bundle path keeps the repo root in the command line, which is
-    # what Get-AoiDaemonProcesses and the dev-cleanup exemption match against.
+    # --supervise keeps a child daemon alive across crashes (restart + backoff +
+    # crash-loop guard). The launched process is the SUPERVISOR; the real HTTP
+    # server is the child it spawns, so the port listener is owned by the child,
+    # not by $daemonProcess.Id. The absolute bundle path keeps the repo root in the
+    # command line, which is what Get-AoiDaemonProcesses and the dev-cleanup
+    # exemption match against.
     $daemonProcess = Start-Process -FilePath $nodeCommand.Source `
-        -ArgumentList @('"{0}"' -f $bundlePath) `
+        -ArgumentList @(('"{0}"' -f $bundlePath), '--supervise') `
         -WorkingDirectory $AppDir `
         -WindowStyle Hidden `
         -RedirectStandardOutput $stdoutLog `
         -RedirectStandardError $stderrLog `
         -PassThru
 
-    $deadline = [datetime]::UtcNow.AddSeconds(15)
+    $deadline = [datetime]::UtcNow.AddSeconds(20)
     $listening = $false
 
     while ([datetime]::UtcNow -lt $deadline)
@@ -460,8 +461,8 @@ function Start-AoiDaemon
             break
         }
 
+        # Any listener on the Aoi daemon port -- the supervised child owns it.
         $listener = Get-NetTCPConnection -State Listen -LocalPort $daemonPort -ErrorAction SilentlyContinue |
-            Where-Object { [int]$_.OwningProcess -eq [int]$daemonProcess.Id } |
             Select-Object -First 1
 
         if ($null -ne $listener)
@@ -483,14 +484,98 @@ function Start-AoiDaemon
 
         if ($daemonProcess.HasExited)
         {
-            throw "Aoi daemon exited early (exit code $($daemonProcess.ExitCode)). $errorTail"
+            throw "Aoi supervisor exited early (exit code $($daemonProcess.ExitCode)). $errorTail"
         }
 
         Stop-Process -Id $daemonProcess.Id -Force -ErrorAction SilentlyContinue
-        throw "Aoi daemon did not listen on port $daemonPort within 15 seconds. $errorTail"
+        throw "Aoi daemon did not listen on port $daemonPort within 20 seconds. $errorTail"
     }
 
-    Write-Step ("Aoi daemon is running (PID {0}, http://127.0.0.1:{1})." -f $daemonProcess.Id, $daemonPort)
+    Write-Step ("Supervised Aoi daemon is running (supervisor PID {0}, http://127.0.0.1:{1})." -f $daemonProcess.Id, $daemonPort)
+}
+
+# Bring up the boot-persistent daemon service (Scheduled Task 'AoiAutonomyDaemon'),
+# which survives logoff/reboot -- start-at-logon + the in-task supervisor. Registering
+# it needs elevation, so that is opt-in ($AllowInstall, from -InstallService); by
+# default we only USE an already-registered task. Returns $true when the daemon is
+# listening under the task; $false otherwise, so the caller falls back to the
+# no-admin in-process supervisor.
+function Start-AoiDaemonBootService
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+
+        [switch]$AllowInstall
+    )
+
+    if ($null -eq (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue))
+    {
+        return $false
+    }
+
+    $taskName = 'AoiAutonomyDaemon'
+    $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+
+    if ($null -eq $existing)
+    {
+        if (-not $AllowInstall)
+        {
+            return $false
+        }
+
+        $installer = Join-Path $RepoRoot "Install-AoiDaemonService.ps1"
+        if (-not (Test-Path -LiteralPath $installer -PathType Leaf))
+        {
+            return $false
+        }
+
+        Write-Step "Registering the boot-persistent Aoi daemon service (Scheduled Task '$taskName')."
+        try
+        {
+            & $installer -SkipBuild
+        }
+        catch
+        {
+            Write-Warning ("Service registration failed (run PowerShell as Administrator to install it): {0}" -f $_.Exception.Message)
+        }
+
+        $existing = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+        if ($null -eq $existing)
+        {
+            Write-Warning "Could not register the boot service (needs elevation). Using the in-process supervisor instead."
+            return $false
+        }
+    }
+
+    try
+    {
+        Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    }
+    catch
+    {
+        Write-Warning ("Starting the Aoi daemon service task failed: {0}" -f $_.Exception.Message)
+        return $false
+    }
+
+    $daemonPort = Get-AoiDaemonPort
+    $deadline = [datetime]::UtcNow.AddSeconds(25)
+    while ([datetime]::UtcNow -lt $deadline)
+    {
+        $listener = Get-NetTCPConnection -State Listen -LocalPort $daemonPort -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        if ($null -ne $listener)
+        {
+            Write-Step ("Aoi daemon service is running (Scheduled Task '{0}', http://127.0.0.1:{1}); starts at every logon." -f $taskName, $daemonPort)
+            return $true
+        }
+
+        Start-Sleep -Milliseconds 300
+    }
+
+    Write-Step "Aoi daemon service did not come up in time; falling back to the in-process supervisor."
+    return $false
 }
 
 do
@@ -523,7 +608,7 @@ do
         Write-Step "App: $appDir"
         Write-Step "URL: http://$HostAddress`:$Port"
 
-        # Aoi daemon: start it only when it is not already running.
+        # Aoi daemon: bring up the always-on supervised service; skip if already running.
         $daemonProcesses = @(Get-AoiDaemonProcesses -RepoRoot $repoRoot)
         if ($daemonProcesses.Count -gt 0)
         {
@@ -532,14 +617,48 @@ do
         }
         else
         {
+            # Ensure the bundle exists before either the service or the fallback runs it.
             try
             {
-                Start-AoiDaemon -RepoRoot $repoRoot -AppDir $appDir -PnpmPath $pnpmCommand.Source
+                [void](Confirm-AoiDaemonBundle -AppDir $appDir -PnpmPath $pnpmCommand.Source)
             }
             catch
             {
-                Write-Warning ("Aoi daemon start failed: {0}" -f $_.Exception.Message)
-                Write-Step "Continuing with the dev server only."
+                Write-Warning ("Aoi daemon bundle build failed: {0}" -f $_.Exception.Message)
+            }
+
+            # Prefer the boot-persistent Scheduled Task service (survives logoff/reboot,
+            # -InstallService registers it -- needs elevation); otherwise run the
+            # self-healing in-process supervisor (no admin, survives crashes + this shell).
+            $serviceStarted = $false
+            if (-not $NoService)
+            {
+                try
+                {
+                    $serviceStarted = Start-AoiDaemonBootService -RepoRoot $repoRoot -AllowInstall:$InstallService
+                }
+                catch
+                {
+                    Write-Warning ("Aoi daemon service start failed: {0}" -f $_.Exception.Message)
+                    $serviceStarted = $false
+                }
+            }
+
+            if (-not $serviceStarted)
+            {
+                try
+                {
+                    Start-AoiDaemon -RepoRoot $repoRoot -AppDir $appDir -PnpmPath $pnpmCommand.Source
+                    if (-not $InstallService)
+                    {
+                        Write-Step "For boot-persistence (survives reboot), run (elevated): .\Start-App.ps1 -InstallService  or  .\Install-AoiDaemonService.ps1"
+                    }
+                }
+                catch
+                {
+                    Write-Warning ("Aoi daemon start failed: {0}" -f $_.Exception.Message)
+                    Write-Step "Continuing with the dev server only."
+                }
             }
         }
 

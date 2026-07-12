@@ -28,7 +28,9 @@
 #>
 [CmdletBinding()]
 param(
-    [switch]$Uninstall
+    [switch]$Uninstall,
+    # Skip the up-front daemon:build (the caller already ensured the bundle).
+    [switch]$SkipBuild
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,14 +68,39 @@ if ($null -eq $pnpm)
 }
 
 # Build the daemon bundle up front so the supervised child exists at logon.
-Write-Step "Building the Aoi daemon bundle (pnpm daemon:build)."
-& $pnpm.Source --dir $AppDir run daemon:build
-if ($LASTEXITCODE -ne 0)
+if ($SkipBuild)
 {
-    throw "pnpm daemon:build failed with exit code $LASTEXITCODE."
+    Write-Step "Skipping daemon:build (-SkipBuild)."
+}
+else
+{
+    Write-Step "Building the Aoi daemon bundle (pnpm daemon:build)."
+    & $pnpm.Source --dir $AppDir run daemon:build
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "pnpm daemon:build failed with exit code $LASTEXITCODE."
+    }
 }
 
-$action = New-ScheduledTaskAction -Execute $pnpm.Source -Argument 'run daemon:supervise' -WorkingDirectory $AppDir
+# The task must run the daemon with the SAME Jarvis autonomy env as an interactive
+# launch, but a Scheduled Task does not inherit any shell environment. So run it
+# through a PowerShell host that dot-sources the single-source env setter first,
+# then `pnpm daemon:supervise`. Resolve a PS host with an absolute path (the task
+# has no interactive PATH).
+$psHost = (Get-Command pwsh -ErrorAction SilentlyContinue)
+if ($null -eq $psHost)
+{
+    $psHost = (Get-Command powershell -ErrorAction SilentlyContinue)
+}
+if ($null -eq $psHost)
+{
+    throw "Neither pwsh nor powershell was found on PATH."
+}
+
+$envSetter = Join-Path $RepoRoot 'Set-AoiDaemonEnv.ps1'
+$innerCommand = ". '$envSetter'; Set-AoiDaemonEnv; & '$($pnpm.Source)' --dir '$AppDir' run daemon:supervise"
+$taskArgument = "-NoProfile -ExecutionPolicy Bypass -Command `"$innerCommand`""
+$action = New-ScheduledTaskAction -Execute $psHost.Source -Argument $taskArgument -WorkingDirectory $AppDir
 $trigger = New-ScheduledTaskTrigger -AtLogOn
 # Restart-on-failure gives a second resilience layer if the supervisor itself dies;
 # the supervisor already handles daemon crashes. Keep the process hidden + long-lived.
@@ -85,14 +112,27 @@ $settings = New-ScheduledTaskSettingsSet `
     -RestartInterval (New-TimeSpan -Minutes 1) `
     -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
 
-Register-ScheduledTask `
-    -TaskName $TaskName `
-    -Action $action `
-    -Trigger $trigger `
-    -Settings $settings `
-    -Description 'Keeps the Aoi autonomy daemon alive (start-at-logon + supervisor restart-on-crash).' `
-    -Force | Out-Null
+try
+{
+    Register-ScheduledTask `
+        -TaskName $TaskName `
+        -Action $action `
+        -Trigger $trigger `
+        -Settings $settings `
+        -Description 'Keeps the Aoi autonomy daemon alive (start-at-logon + supervisor restart-on-crash).' `
+        -Force -ErrorAction Stop | Out-Null
+}
+catch
+{
+    throw ("Register-ScheduledTask failed: {0}. Run this in an ELEVATED (Administrator) PowerShell." -f $_.Exception.Message)
+}
 
-Write-Step "Registered '$TaskName' (starts at logon, runs 'pnpm daemon:supervise')."
+# Registration can fail non-terminating on some hosts; confirm the task really exists.
+if ($null -eq (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue))
+{
+    throw "The '$TaskName' scheduled task was not registered. Run this in an ELEVATED (Administrator) PowerShell."
+}
+
+Write-Step "Registered '$TaskName' (starts at logon, runs the supervised daemon with the Jarvis autonomy env)."
 Write-Step "Start it now with:  Start-ScheduledTask -TaskName $TaskName"
 Write-Step "Stop/remove with:   ./Install-AoiDaemonService.ps1 -Uninstall"
