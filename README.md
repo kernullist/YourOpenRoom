@@ -265,6 +265,8 @@ These tools are guarded by the current implementation:
   source/evidence ledgers are fetched per selected run. Missing Tavily config, rejected private or
   local URLs, failed source reads, malformed model JSON, artifact caps, duplicate active requests,
   and max-concurrency limits are surfaced as run status or API errors instead of hidden retries.
+  The end-to-end run deadline defaults to 12 minutes and can be tuned with
+  `AOI_RESEARCH_RUN_TIMEOUT_MS`; production overrides are clamped to 1-30 minutes.
   Completed research runs also write dated, permanent `research_run` summaries into Aoi memory v2 so
   later chat turns can recall the result and reopen the report artifact when more detail is needed.
 - Aoi memory v2 supports permanent memories for explicit "remember forever" / "never forget"

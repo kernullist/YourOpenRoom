@@ -1824,6 +1824,10 @@ describe('Aoi autonomy UI helpers', () => {
       riskLabel: 'high',
       privateLabel: 'private by default',
     });
+    expect(activity?.metadataScopeLabel).toContain('validated app ID');
+    expect(activity?.metadataScopeLabel).toContain('24 hours');
+    expect(activity?.willNotReadOrDoLabel).toContain('window titles');
+    expect(activity?.willNotReadOrDoLabel).toContain('screenshots');
     expect(activity?.toggleTitle).toContain('metadata scope');
     const consentedActivity = buildAoiEnvironmentSourcePanelSummaries(
       makeEnvironmentSourceRegistry({

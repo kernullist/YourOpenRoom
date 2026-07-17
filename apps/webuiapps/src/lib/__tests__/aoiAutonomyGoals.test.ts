@@ -624,6 +624,59 @@ describe('Aoi autonomy goals', () => {
     });
   });
 
+  it('lets a canonical validated outcome resolve an evidence-blocked completed plan', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+    const blockedAllStepsDone: AoiGoal = {
+      ...goal,
+      status: 'blocked',
+      plan: {
+        ...goal.plan,
+        steps: goal.plan.steps.map((step) => ({ ...step, status: 'done' as const })),
+      },
+    };
+    saveAoiActiveGoals(root, SESSION_PATH, [blockedAllStepsDone]);
+    const outcome = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'validated-block-recovery-outcome-001',
+        sourceValidationRef: 'validation:block-recovery-001',
+        outcomeKind: 'validation_run',
+        validationPassed: true,
+        privacyState: 'metadata_only',
+        evidenceRefs: [`goal:${blockedAllStepsDone.id}`],
+        createdAt: NOW + 3000,
+      },
+      SESSION_PATH,
+      NOW + 3000,
+    );
+    if (!outcome) {
+      throw new Error('Expected normalized outcome.');
+    }
+
+    const result = updateAoiGoalProgressFromOutcomeSignals({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [outcome],
+      now: NOW + 4000,
+    });
+
+    expect(result.updatedOutcomeIds).toEqual([outcome.id]);
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        kind: 'completed',
+        goalId: blockedAllStepsDone.id,
+        fromStatus: 'blocked',
+        toStatus: 'completed',
+      }),
+    ]);
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toEqual([]);
+    expect(loadAoiArchivedGoals(root, SESSION_PATH)[0]).toMatchObject({
+      id: blockedAllStepsDone.id,
+      status: 'completed',
+    });
+  });
+
   it('marks the right Kira handoff plan step done only for reviewed validated outcomes', () => {
     const root = makeTempRoot();
     const goal = makeKiraHandoffGoal(root);

@@ -6,6 +6,7 @@ import type { LLMConfig } from '../llmModels';
 import {
   AOI_RESEARCH_LIMITS,
   dedupeAoiResearchSearchCandidates,
+  resolveAoiResearchRunTimeoutMs,
   startAoiResearchRun,
   validateAoiResearchSourceUrl,
   validateAoiResearchReport,
@@ -319,6 +320,20 @@ describe('Aoi research report validation', () => {
 });
 
 describe('Aoi research engine', () => {
+  it('uses a bounded configurable production run timeout', () => {
+    expect(resolveAoiResearchRunTimeoutMs({})).toBe(12 * 60_000);
+    expect(
+      resolveAoiResearchRunTimeoutMs({ AOI_RESEARCH_RUN_TIMEOUT_MS: String(15 * 60_000) }),
+    ).toBe(15 * 60_000);
+    expect(resolveAoiResearchRunTimeoutMs({ AOI_RESEARCH_RUN_TIMEOUT_MS: '1' })).toBe(60_000);
+    expect(resolveAoiResearchRunTimeoutMs({ AOI_RESEARCH_RUN_TIMEOUT_MS: '99999999' })).toBe(
+      30 * 60_000,
+    );
+    expect(resolveAoiResearchRunTimeoutMs({ AOI_RESEARCH_RUN_TIMEOUT_MS: 'invalid' })).toBe(
+      AOI_RESEARCH_LIMITS.defaultRunTimeoutMs,
+    );
+  });
+
   it('completes with a fallback plan, partial source failure, and real source ids', async () => {
     const { root, paths } = makeTempPaths();
     const phases: string[] = [];

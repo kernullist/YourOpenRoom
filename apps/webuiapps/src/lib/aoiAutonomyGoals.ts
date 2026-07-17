@@ -1449,7 +1449,11 @@ export function updateAoiGoalProgressFromOutcomeSignals(params: {
   const updatedOutcomeIds: string[] = [];
 
   for (const goal of activeGoals) {
-    if (goal.status !== 'active') {
+    // A canonical validated outcome can resolve an evidence-blocked goal. The
+    // observation pass runs before outcome reconciliation and may temporarily
+    // block a goal from older failure evidence; refusing blocked goals here
+    // would make a newer validated recovery outcome impossible to apply.
+    if (goal.status !== 'active' && goal.status !== 'blocked') {
       nextActive.push(goal);
       continue;
     }

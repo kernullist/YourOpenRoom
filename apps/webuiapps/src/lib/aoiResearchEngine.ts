@@ -30,7 +30,9 @@ const MAX_PLAN_QUERIES = 8;
 const MAX_FETCH_BYTES = 1_000_000;
 const MAX_REDIRECTS = 5;
 const FETCH_TIMEOUT_MS = 15_000;
-const DEFAULT_RUN_TIMEOUT_MS = 8 * 60_000;
+const DEFAULT_RUN_TIMEOUT_MS = 12 * 60_000;
+const MIN_CONFIGURED_RUN_TIMEOUT_MS = 60_000;
+const MAX_CONFIGURED_RUN_TIMEOUT_MS = 30 * 60_000;
 const LLM_PLAN_TOKENS = 1600;
 const LLM_EVIDENCE_TOKENS = 1400;
 const LLM_REPORT_TOKENS = 4200;
@@ -47,12 +49,28 @@ export const AOI_RESEARCH_LIMITS = {
   maxRedirects: MAX_REDIRECTS,
   fetchTimeoutMs: FETCH_TIMEOUT_MS,
   defaultRunTimeoutMs: DEFAULT_RUN_TIMEOUT_MS,
+  minConfiguredRunTimeoutMs: MIN_CONFIGURED_RUN_TIMEOUT_MS,
+  maxConfiguredRunTimeoutMs: MAX_CONFIGURED_RUN_TIMEOUT_MS,
   maxReportChars: MAX_REPORT_CHARS,
   maxReportArtifactBytes: MAX_REPORT_ARTIFACT_BYTES,
   maxJsonArtifactBytes: MAX_JSON_ARTIFACT_BYTES,
   maxSourceBlocksPerSource: MAX_SOURCE_BLOCKS_PER_SOURCE,
   maxReportEvidenceClaims: MAX_REPORT_EVIDENCE_CLAIMS,
 } as const;
+
+export function resolveAoiResearchRunTimeoutMs(
+  env: Record<string, string | undefined> = process.env,
+): number {
+  const raw = env.AOI_RESEARCH_RUN_TIMEOUT_MS?.trim();
+  if (!raw) {
+    return DEFAULT_RUN_TIMEOUT_MS;
+  }
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || !Number.isInteger(parsed)) {
+    return DEFAULT_RUN_TIMEOUT_MS;
+  }
+  return Math.min(MAX_CONFIGURED_RUN_TIMEOUT_MS, Math.max(MIN_CONFIGURED_RUN_TIMEOUT_MS, parsed));
+}
 
 const EMPTY_SOURCE_COUNTS: AoiResearchSourceCounts = {
   planned: 0,
@@ -2084,7 +2102,7 @@ async function ensureRunCanContinue(params: {
     dependencies: params.dependencies,
   });
 
-  const timeoutMs = params.dependencies?.runTimeoutMs ?? DEFAULT_RUN_TIMEOUT_MS;
+  const timeoutMs = params.dependencies?.runTimeoutMs ?? resolveAoiResearchRunTimeoutMs();
   if (timeoutMs > 0 && getNow(params.dependencies) - params.startedAt > timeoutMs) {
     throw new AoiResearchFailure(
       'research_run_timeout',

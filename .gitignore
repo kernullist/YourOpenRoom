@@ -5,6 +5,8 @@ packages/*/build
 apps/*/dist
 packages/*/dist
 dist
+apps/*/dist-*
+dist-*
 apps/*/dist-daemon
 dist-daemon
 apps/*/dist-field-ci-gate

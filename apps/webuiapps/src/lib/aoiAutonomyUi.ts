@@ -6497,6 +6497,9 @@ function buildAoiEnvironmentSourceGateReason(
 }
 
 function buildAoiEnvironmentSourceMetadataScopeLabel(source: AoiEnvironmentSource): string {
+  if (source.kind === 'app_activity') {
+    return 'Scope: app event kind, validated app ID, action type, and timestamp only; events expire after 24 hours.';
+  }
   if (source.kind === 'calendar_metadata') {
     return 'Scope: event title, date/time, completion count, and reminder state only.';
   }
@@ -6513,6 +6516,9 @@ function buildAoiEnvironmentSourceMetadataScopeLabel(source: AoiEnvironmentSourc
 }
 
 function buildAoiEnvironmentSourceWillNotReadOrDoLabel(source: AoiEnvironmentSource): string {
+  if (source.kind === 'app_activity') {
+    return 'Will not read window titles, content, typed text, parameters, file paths, or screenshots, and will not control apps.';
+  }
   if (source.kind === 'calendar_metadata') {
     return 'Will not read event descriptions or private notes, and will not create/update/delete events.';
   }
