@@ -117,6 +117,7 @@ docs/*
 !docs/config.example.json
 !docs/aoi-persistent-memory-design.md
 !docs/aoi-autonomous-agent-design.md
+!docs/aoi-host-access-design.md
 !docs/kira-codex-grade-worker-reviewer-plan.md
 !docs/kira-remaining-work-items.md
 .worktrees/
