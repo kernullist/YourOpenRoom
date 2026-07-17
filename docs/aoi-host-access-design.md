@@ -141,7 +141,7 @@ consent 소스 정의(기존 레지스트리에 추가):
 - **read**: 신규 소스 `filesystem-read`(scope `explicit_target`, 루트별). 디렉토리 목록/`stat`(metadata) 과 파일 내용(content) 분리 —
   content 읽기는 별도 operation.
 - **write / delete**: 기존 `aoiApprovedFileMutationRunner` 확장. 대상 경로가 허용 루트 안인지(`realpath` 후 재검증) + 승인 샌드박스 + audit.
-  **delete는 비가역** → 기본은 **휴지통 이동**(Shell recycle) 우선, 영구 삭제는 별도 명시 승인.
+  **delete는 항상 휴지통 이동 고정**(`IFileOperation` / `SHFileOperation` + `FOF_ALLOWUNDO`) — 영구 삭제는 Aoi에 노출하지 않는다(§10-5).
 - **경로 안전**: `isPathInsideRoot`는 이미 있으나, **심볼릭 링크/junction 우회**를 막으려면 `fs.realpathSync` 후 루트 재검증이 필수.
   junction/reparse point는 기본 거부(옵션).
 
@@ -219,7 +219,7 @@ desktop-activity 캡처
 **추천(단계별):**
 
 - **Phase 1**: CLI/PowerShell + WMI로 프로세스 read + spawn/kill(승인 게이트 경유). 데몬의 기존 `spawn` 재사용 → 즉시 가능.
-- **Phase 2**: **경량 네이티브 헬퍼 exe**로 포그라운드/포커스 활동 인식(`SetWinEventHook` 또는 폴링). 데몬과 프로세스 분리 —
+- **Phase 2**: **경량 네이티브 헬퍼 exe(C++, §10-4)** 로 포그라운드/포커스 활동 인식(`SetWinEventHook` 또는 폴링). 데몬과 프로세스 분리 —
   헬퍼가 죽어도 데몬은 산다. 데몬 ↔ 헬퍼는 named pipe로 metadata만 주고받는다.
 - **Phase 3(선택)**: ETW 소비자로 정확한 프로세스 수명주기/활동. 안티치트 팀 역량이 그대로 활용되는 지점.
 
@@ -273,10 +273,29 @@ flowchart LR
 
 ---
 
-## 10. 미결정 (후속 결정 필요)
+## 10. 확정된 결정 (2026-07-18)
 
-1. 로컬 인증 토큰 방식: 파일 권한 기반 shared-secret vs OS 사용자 인증(named pipe SID 검사).
-2. kill 정책: allowlist(등록된 것만 종료) vs denylist(보호 목록 외 전부) — **추천: allowlist로 시작**, 신뢰 쌓이면 확대.
-3. 활동 캡처 기본 범위: 창 제목 포함 여부(기본 제외 권장).
-4. 네이티브 헬퍼 언어: C++ vs Rust.
-5. 파일 delete 기본 동작: 휴지통 이동 고정 vs 영구 삭제 옵션 노출.
+1. **로컬 인증 토큰 = 파일 권한 기반 shared-secret.**
+   데몬이 부팅 시 랜덤 토큰을 `~/.openroom`의 사용자 전용 ACL 파일(`icacls`로 소유자만 read)에 쓰고,
+   브라우저가 읽어 요청 헤더에 실어 보낸다. 토큰 없는 요청은 거부. 기존 HTTP loopback 트랜스포트를 그대로 두고
+   T2(같은 PC의 다른 프로세스가 포트 타격)를 막는다. named pipe + peer SID 검사는 트랜스포트 교체가 필요한
+   장기 강화 옵션으로만 남긴다(같은 사용자 축에서는 두 방식의 보호 경계가 사실상 동일하므로 지금 바꿀 이유 없음).
+
+2. **kill 정책 = allowlist로 시작.**
+   사용자가 명시 등록한 대상 + Aoi가 `os_process_spawn`으로 직접 띄운 프로세스(audit의 pid+startTime으로 소유 추적)만
+   종료 가능. denylist(보호 목록 외 전부)는 LLM이 구동하는 비가역 동작에 너무 넓다. 신뢰가 쌓이면 확대.
+
+3. **활동 캡처 기본 범위 = 앱/프로세스 이름 + 포커스 + 유휴만(창 제목 기본 제외).**
+   창 제목은 취향 학습 신호값이 가장 높지만 프라이버시 위험(파일 경로/이메일 제목/URL)도 가장 크다.
+   제목 캡처는 별도 하위 opt-in 토글 + `redactAoiSensitiveContent` 마스킹으로만. 앱 이름 레벨 신호("Ghidra 하루 3시간")도
+   이미 충분히 informative하므로 그것부터 쌓는다.
+
+4. **네이티브 헬퍼 언어 = C++.**
+   Win32 훅(`SetWinEventHook`, `CreateToolhelp32Snapshot`, `OpenProcess`/`TerminateProcess`)이 C++ 네이티브 API이고,
+   유지보수자(Windows 커널/안티치트 엔지니어)의 홈그라운드이며, 안티치트 툴체인이 이미 C++다. Rust는 이 목적에
+   FFI/툴체인 마찰만 더하고 얻는 게 없다.
+
+5. **파일 delete 기본 동작 = 휴지통 이동 고정.**
+   Aoi가 개시하는 삭제는 항상 Shell 휴지통(`IFileOperation` / `SHFileOperation` + `FOF_ALLOWUNDO`) 경유.
+   영구 삭제는 Aoi에 아예 노출하지 않는다(필요하면 사용자가 직접). 이로써 "삭제는 비가역"이라는 위협이
+   "휴지통에서 복구 가능"으로 크게 완화된다.
