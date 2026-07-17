@@ -168,6 +168,40 @@ export function sanitizeAoiProcedureContent(value: string): string {
   return truncateAoiMemoryContent(stripAoiSourceInstructions(value));
 }
 
+// Near-duplicate gate for PREFERENCE memories at merge time. The exact
+// normalizedContent dedupe misses restatements ("likes" vs "loves", an added
+// parenthetical), so the same taste piles up as separate files. Token overlap
+// over the smaller token set at a high threshold collapses those restatements
+// while keeping genuinely different preferences apart: opposite polarity
+// ("like" vs "dislike") and different subjects both fall well below the bar.
+// Deliberately lexical-only (deterministic, sync, no embedding requirement);
+// cross-language restatements are handled upstream by the distiller grounding.
+export const AOI_PREFERENCE_NEAR_DUPLICATE_THRESHOLD = 0.8;
+
+function tokenizeForNearDuplicate(value: string): Set<string> {
+  const tokens = new Set<string>();
+  for (const token of value.toLowerCase().match(/[\p{L}\p{N}][\p{L}\p{N}'_-]{1,}/gu) ?? []) {
+    tokens.add(token);
+  }
+  return tokens;
+}
+
+export function isAoiPreferenceNearDuplicateContent(left: string, right: string): boolean {
+  const leftTokens = tokenizeForNearDuplicate(left);
+  const rightTokens = tokenizeForNearDuplicate(right);
+  if (leftTokens.size === 0 || rightTokens.size === 0) {
+    return false;
+  }
+  let matches = 0;
+  for (const token of leftTokens) {
+    if (rightTokens.has(token)) {
+      matches += 1;
+    }
+  }
+  const score = matches / Math.max(1, Math.min(leftTokens.size, rightTokens.size));
+  return score >= AOI_PREFERENCE_NEAR_DUPLICATE_THRESHOLD;
+}
+
 export function sanitizeAoiStoragePart(value: string): string {
   return (
     normalizeWhitespace(value)

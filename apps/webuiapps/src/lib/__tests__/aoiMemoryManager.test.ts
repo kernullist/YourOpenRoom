@@ -100,6 +100,20 @@ describe('extractHeuristicAoiMemoryCandidates()', () => {
     expect(candidates[0].tags).toEqual(expect.arrayContaining(['explicit', 'permanent']));
   });
 
+  it('emits ONE candidate for a preference statement with an explicit remember marker', () => {
+    // "...좋아해. 기억해둬" used to fan out into a preference candidate (raw
+    // message) AND an explicit fact candidate (cleaned message) -- two
+    // near-identical memories from one sentence.
+    const candidates = extractHeuristicAoiMemoryCandidates({
+      userMessage: '나는 K-POP 걸그룹 노래들을 좋아해. 기억해둬',
+    });
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].type).toBe('preference');
+    expect(candidates[0].tags).toEqual(expect.arrayContaining(['preference', 'explicit']));
+    expect(candidates[0].content).not.toContain('기억해둬');
+  });
+
   it('auto-records technical interests from questions without explicit remember requests', () => {
     const candidates = extractHeuristicAoiMemoryCandidates({
       userMessage: 'Windows 커널 드라이버 보안 연구는 어떤 테스트 하네스를 설계하면 좋을까?',
@@ -183,6 +197,68 @@ describe('mergeAoiMemoryCandidates()', () => {
     expect(merged.changedIds).toEqual([]);
     expect(merged.memories[0].hits).toBe(1);
     expect(merged.memories[0].updatedAt).toBe(10);
+  });
+
+  it('reinforces a near-duplicate preference restatement instead of creating a new file', () => {
+    const existing = [
+      makeMemory({
+        id: 'mem-kpop',
+        type: 'preference',
+        content: 'User likes K-POP girl group songs.',
+        normalizedContent: 'user likes k-pop girl group songs.',
+      }),
+    ];
+
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [
+        {
+          type: 'preference',
+          scope: 'user',
+          content: 'User loves K-POP girl group songs. (7월 걸그룹 플레이리스트 자주 청취)',
+          importance: 0.85,
+          confidence: 0.82,
+          tags: ['manual'],
+        },
+      ],
+      { sessionPath: 'aoi/default', episodeId: 'ep-2', now: 2000 },
+    );
+
+    // Reinforced in place: still one memory, content kept verbatim, hits bumped.
+    expect(merged.memories).toHaveLength(1);
+    expect(merged.memories[0].id).toBe('mem-kpop');
+    expect(merged.memories[0].content).toBe('User likes K-POP girl group songs.');
+    expect(merged.memories[0].hits).toBe(2);
+    expect(merged.memories[0].tags).toContain('manual');
+  });
+
+  it('keeps genuinely different or opposite-polarity preferences separate', () => {
+    const existing = [
+      makeMemory({
+        id: 'mem-fps',
+        type: 'preference',
+        content: 'The user likes competitive FPS games.',
+        normalizedContent: 'the user likes competitive fps games.',
+      }),
+    ];
+
+    const merged = mergeAoiMemoryCandidates(
+      existing,
+      [
+        {
+          type: 'preference',
+          scope: 'user',
+          content: 'The user dislikes puzzle games and story-driven RPG titles.',
+          importance: 0.75,
+          confidence: 0.72,
+          tags: ['preference'],
+        },
+      ],
+      { sessionPath: 'aoi/default', episodeId: 'ep-3', now: 3000 },
+    );
+
+    expect(merged.memories).toHaveLength(2);
+    expect(merged.memories.filter((memory) => memory.status === 'active')).toHaveLength(2);
   });
 
   it('supersedes stale name facts', () => {
@@ -562,6 +638,32 @@ describe('Aoi LLM memory distiller', () => {
     expect(candidates).toHaveLength(1);
     expect(candidates[0].scope).toBe('project');
     expect(candidates[0].type).toBe('decision');
+  });
+
+  it('grounds the prompt with stored preferences and this-turn captures for dedupe', async () => {
+    const captured: ChatMessage[][] = [];
+    const distillerChat = async (messages: ChatMessage[]) => {
+      captured.push(messages);
+      return { content: JSON.stringify({ memories: [] }), toolCalls: [] };
+    };
+
+    await distillAoiMemoryCandidatesWithLlm({
+      sessionPath: 'aoi/default',
+      userMessage: '나는 K-POP 걸그룹 노래들을 좋아해.',
+      assistantMessage: '기억해둘게.',
+      llmConfig: MOCK_LLM_CONFIG,
+      distillerChat,
+      knownPreferenceContents: ['User likes specific K-POP girl groups, not all K-POP.'],
+      capturedThisTurn: ['나는 K-POP 걸그룹 노래들을 좋아해.'],
+    });
+
+    expect(captured).toHaveLength(1);
+    const [system, user] = captured[0];
+    expect(system.content).toContain('Never emit a memory that merely restates');
+    expect(user.content).toContain('Already-stored user preferences:');
+    expect(user.content).toContain('User likes specific K-POP girl groups, not all K-POP.');
+    expect(user.content).toContain('Memories already captured from this turn:');
+    expect(user.content).toContain('나는 K-POP 걸그룹 노래들을 좋아해.');
   });
 
   it('does not run hidden distillation through interactive CLI/OAuth providers', async () => {

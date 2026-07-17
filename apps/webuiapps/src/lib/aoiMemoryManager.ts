@@ -9,6 +9,7 @@ import {
   buildAoiKiraAutomationMemoryCandidates,
   containsAoiSensitiveContent,
   deriveAoiMemorySources,
+  isAoiPreferenceNearDuplicateContent,
   makeAoiKiraAutomationEpisodeId,
   redactAoiSensitiveContent,
   sanitizeAoiProcedureContent,
@@ -121,6 +122,13 @@ export interface AoiMemorySyncParams {
   llmDistiller?: boolean;
   distillerChat?: AoiMemoryDistillerChat;
   embeddingProvider?: AoiEmbeddingProvider | null;
+  // Dedupe grounding for the distiller prompt: stored preferences plus the
+  // candidates other paths already captured from this turn. The distiller is
+  // told never to emit a memory that merely restates one of these -- including
+  // reworded or cross-language restatements the merge layer cannot catch.
+  // syncAoiMemoryFromTurn fills both automatically; callers may override.
+  knownPreferenceContents?: string[];
+  capturedThisTurn?: string[];
 }
 
 type AoiMemoryEpisodeInput = Omit<
@@ -574,8 +582,17 @@ export function mergeAoiMemoryCandidates(
     if (!candidate) continue;
 
     const normalizedContent = normalizeMemoryContent(candidate.content);
+    // Exact-content duplicates reinforce for every type; PREFERENCE candidates
+    // additionally reinforce a same-scope near-duplicate restatement instead of
+    // piling up as a new file (the existing memory keeps its content verbatim).
     const duplicate = next.find(
-      (memory) => memory.status === 'active' && memory.normalizedContent === normalizedContent,
+      (memory) =>
+        memory.status === 'active' &&
+        (memory.normalizedContent === normalizedContent ||
+          (candidate.type === 'preference' &&
+            memory.type === 'preference' &&
+            memory.scope === (candidate.scope ?? 'user') &&
+            isAoiPreferenceNearDuplicateContent(candidate.content, memory.content))),
     );
     if (duplicate) {
       const episodeAlreadySeen = duplicate.sourceEpisodeIds.includes(params.episodeId);
@@ -715,25 +732,30 @@ export function extractHeuristicAoiMemoryCandidates(params: {
     /(?:나는|저는|전)\s+(.{2,120}?)(?:을|를|이|가)?\s*(?:좋아해|좋아합니다|선호해|선호합니다|싫어해|싫어합니다)/u,
     /\b(?:i like|i prefer|i dislike|i hate|i always prefer)\s+(.{2,120})/i,
   ];
-  for (const pattern of preferencePatterns) {
-    if (pattern.test(user)) {
-      candidates.push({
-        type: 'preference',
-        scope: 'user',
-        content: user,
-        importance: 0.75,
-        confidence: 0.72,
-        tags: ['preference'],
-      });
-      break;
-    }
-  }
+  const preferenceMatched = preferencePatterns.some((pattern) => pattern.test(user));
 
   const explicitRemember =
     /\b(?:remember|note that|keep in memory|save this)\b/i.test(user) ||
     /(?:기억해|기억해줘|기억해 둬|기억해둬|메모해|저장해|잊지\s*마|잊으면\s*안|영구\s*기억|영구히\s*저장)/u.test(
       user,
     );
+
+  // A preference statement WITH an explicit remember-marker ("...좋아해.
+  // 기억해둬") used to emit BOTH a preference candidate (raw message) and an
+  // explicit fact candidate (cleaned message) -- two near-identical memories
+  // from one sentence. The explicit branch below covers that case as a single
+  // preference-typed candidate, so only emit here when there is no marker.
+  if (preferenceMatched && !explicitRemember) {
+    candidates.push({
+      type: 'preference',
+      scope: 'user',
+      content: user,
+      importance: 0.75,
+      confidence: 0.72,
+      tags: ['preference'],
+    });
+  }
+
   if (explicitRemember) {
     const permanent = shouldTreatAoiMemoryAsPermanent(user);
     const cleaned = user
@@ -748,13 +770,13 @@ export function extractHeuristicAoiMemoryCandidates(params: {
       .trim();
     if (cleaned.length >= 8) {
       candidates.push({
-        type: 'fact',
+        type: preferenceMatched ? 'preference' : 'fact',
         scope: 'user',
         content: cleaned,
         importance: permanent ? 0.93 : 0.85,
         confidence: permanent ? 0.88 : 0.82,
         permanent,
-        tags: ['explicit'],
+        tags: preferenceMatched ? ['preference', 'explicit'] : ['explicit'],
       });
     }
   }
@@ -891,11 +913,28 @@ function makeDistillerConfig(config: LLMConfig): LLMConfig {
 
 function buildDistillerMessages(params: AoiMemorySyncParams): ChatMessage[] {
   const toolCalls = params.toolCalls?.length ? params.toolCalls.join(', ') : 'none';
+  const knownPreferences = (params.knownPreferenceContents ?? [])
+    .map((content) => truncateContent(content).slice(0, 140))
+    .filter(Boolean)
+    .slice(0, 8);
+  const capturedThisTurn = (params.capturedThisTurn ?? [])
+    .map((content) => truncateContent(content).slice(0, 140))
+    .filter(Boolean)
+    .slice(0, 6);
   const transcript = [
     `Source: ${params.source ?? 'chat_turn'}`,
     `Tool calls: ${toolCalls}`,
     `User: ${truncateDistillerInput(params.userMessage)}`,
     `Assistant: ${truncateDistillerInput(params.assistantMessage)}`,
+    ...(knownPreferences.length > 0
+      ? ['Already-stored user preferences:', ...knownPreferences.map((content) => `- ${content}`)]
+      : []),
+    ...(capturedThisTurn.length > 0
+      ? [
+          'Memories already captured from this turn:',
+          ...capturedThisTurn.map((content) => `- ${content}`),
+        ]
+      : []),
   ].join('\n');
 
   return [
@@ -913,6 +952,7 @@ function buildDistillerMessages(params: AoiMemorySyncParams): ChatMessage[] {
         '- Also store reusable user interests, tastes, and technical topics the user asks about, even when the user did not explicitly say remember.',
         '- For inferred interests, write a concise standalone memory and tag it with "interest" and "auto".',
         '- Set permanent=true only when the user explicitly asks Aoi to remember something forever, permanently, or never forget it.',
+        '- Never emit a memory that merely restates an already-stored preference or an already-captured memory listed in the input, even reworded or translated into another language. Only emit it when the turn genuinely CHANGES it (then state the updated preference).',
         '- Keep content concise and source-grounded. Do not infer beyond the turn.',
         `- Return at most ${MAX_DISTILLER_CANDIDATES} memories.`,
       ].join('\n'),
@@ -1129,7 +1169,28 @@ export async function syncAoiMemoryFromTurn(
     shouldRunLlmDistiller(params, candidates.length)
   ) {
     try {
-      candidates.push(...(await distillAoiMemoryCandidatesWithLlm(params)));
+      // Ground the distiller against what is already stored (top preferences)
+      // and what the heuristic paths captured from THIS turn, so it never
+      // re-emits the same taste reworded or in another language.
+      let knownPreferenceContents = params.knownPreferenceContents;
+      if (!knownPreferenceContents) {
+        try {
+          knownPreferenceContents = (await loadAoiMemories())
+            .filter((memory) => memory.status === 'active' && memory.type === 'preference')
+            .sort((a, b) => b.importance - a.importance || b.updatedAt - a.updatedAt)
+            .slice(0, 8)
+            .map((memory) => memory.content);
+        } catch {
+          knownPreferenceContents = [];
+        }
+      }
+      candidates.push(
+        ...(await distillAoiMemoryCandidatesWithLlm({
+          ...params,
+          knownPreferenceContents,
+          capturedThisTurn: params.capturedThisTurn ?? candidates.map((c) => c.content),
+        })),
+      );
     } catch (error) {
       console.warn('[AoiMemory] LLM distiller failed; using heuristic candidates only', error);
     }

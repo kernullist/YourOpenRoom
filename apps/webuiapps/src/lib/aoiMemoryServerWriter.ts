@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import {
   buildAoiKiraAutomationMemoryCandidates,
+  isAoiPreferenceNearDuplicateContent,
   makeAoiKiraAutomationEpisodeId,
   makeAoiResearchRunEpisodeId,
   normalizeAoiProjectKey,
@@ -275,8 +276,17 @@ export function mergeServerAoiMemoryCandidates(
     if (!candidate) continue;
 
     const normalizedContent = normalizeMemoryContent(candidate.content);
+    // Mirrors the client merge: exact-content duplicates reinforce for every
+    // type; PREFERENCE candidates additionally reinforce a same-scope
+    // near-duplicate restatement instead of piling up as a new file.
     const duplicate = next.find(
-      (memory) => memory.status === 'active' && memory.normalizedContent === normalizedContent,
+      (memory) =>
+        memory.status === 'active' &&
+        (memory.normalizedContent === normalizedContent ||
+          (candidate.type === 'preference' &&
+            memory.type === 'preference' &&
+            memory.scope === (candidate.scope ?? 'user') &&
+            isAoiPreferenceNearDuplicateContent(candidate.content, memory.content))),
     );
     if (duplicate) {
       const episodeAlreadySeen = duplicate.sourceEpisodeIds.includes(params.episodeId);
