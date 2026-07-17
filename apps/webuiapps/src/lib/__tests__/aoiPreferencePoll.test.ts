@@ -16,6 +16,7 @@ import {
   pickNextPreferenceQuestion,
   recordPreferenceAnswer,
   recordPreferenceQuestionAsked,
+  resolvePreferencePollAnswer,
   saveAoiPreferencePollState,
   selectStaleTasteMemoryIds,
   selectTasteMemoryIdsToForget,
@@ -500,5 +501,119 @@ describe('taste memory supersede / forget selection', () => {
       'a',
       'b',
     ]);
+  });
+});
+
+describe('resolvePreferencePollAnswer', () => {
+  const seedQuestion = PREFERENCE_POLL_QUESTIONS[0];
+  const seedOption = seedQuestion.options[0];
+  const pending = {
+    questionId: seedQuestion.id,
+    options: seedQuestion.options.map((option) => ({ id: option.id, label: option.labels.en })),
+  };
+
+  it('ignores a reply that matches no chip label (implicit dismissal)', () => {
+    expect(
+      resolvePreferencePollAnswer(pending, {
+        messageText: 'unrelated chat message',
+        state: DEFAULT_AOI_PREFERENCE_POLL_STATE,
+        lang: 'en',
+      }),
+    ).toEqual({ kind: 'ignored' });
+  });
+
+  it('records a tapped chip: folds the answer and derives the memory candidate', () => {
+    const resolution = resolvePreferencePollAnswer(pending, {
+      messageText: seedOption.labels.en,
+      state: DEFAULT_AOI_PREFERENCE_POLL_STATE,
+      lang: 'en',
+    });
+
+    expect(resolution.kind).toBe('recorded');
+    if (resolution.kind !== 'recorded') {
+      return;
+    }
+    expect(resolution.chosenLabel).toBe(seedOption.labels.en);
+    expect(resolution.nextState.answers[seedQuestion.id]).toBe(seedOption.id);
+    expect(resolution.candidate.content).toBe(seedOption.learn.statement.en);
+    expect(resolution.prefKey).toBe(seedOption.learn.key);
+  });
+
+  it('resolves a generated question through extraQuestions', () => {
+    const generated = {
+      id: 'gen-q',
+      category: 'gen_cat',
+      prompts: { ko: 'q', ja: 'q', zh: 'q', en: 'q' },
+      generated: true,
+      options: [
+        {
+          id: 'o0',
+          labels: { ko: '더 깊게', ja: '深く', zh: '更深', en: 'Deeper' },
+          learn: {
+            key: 'gen.depth',
+            statement: { ko: 's', ja: 's', zh: 's', en: 'Wants to go deeper.' },
+            tags: [],
+            entities: ['topic'],
+          },
+        },
+        {
+          id: 'o1',
+          labels: { ko: '가볍게', ja: '軽く', zh: '轻', en: 'Lightly' },
+          learn: {
+            key: 'gen.depth',
+            statement: { ko: 's2', ja: 's2', zh: 's2', en: 'Only lightly.' },
+            tags: [],
+            entities: [],
+          },
+        },
+      ],
+    };
+    const resolution = resolvePreferencePollAnswer(
+      { questionId: 'gen-q', options: [{ id: 'o0', label: 'Deeper' }] },
+      { messageText: 'Deeper', state: DEFAULT_AOI_PREFERENCE_POLL_STATE, lang: 'en' },
+      [generated],
+    );
+
+    expect(resolution.kind).toBe('recorded');
+    if (resolution.kind !== 'recorded') {
+      return;
+    }
+    expect(resolution.nextState.answers['gen-q']).toBe('o0');
+    expect(resolution.prefKey).toBe('gen.depth');
+  });
+
+  it('reports a pruned question as expired instead of recording nothing silently', () => {
+    // The pending card still shows a generated question, but the bank no longer
+    // contains it (e.g. pruned by an expansion between ask and answer).
+    const resolution = resolvePreferencePollAnswer(
+      { questionId: 'gen-pruned', options: [{ id: 'o0', label: 'Deeper' }] },
+      { messageText: 'Deeper', state: DEFAULT_AOI_PREFERENCE_POLL_STATE, lang: 'en' },
+      [],
+    );
+
+    expect(resolution).toEqual({ kind: 'expired', chosenLabel: 'Deeper' });
+  });
+
+  it('preserves existing answers when folding a new one in', () => {
+    const prior: AoiPreferencePollState = {
+      version: AOI_PREFERENCE_POLL_STATE_VERSION,
+      answers: { downtime: 'gaming' },
+      lastAskedAt: 123,
+    };
+    const resolution = resolvePreferencePollAnswer(pending, {
+      messageText: seedOption.labels.en,
+      state: prior,
+      lang: 'en',
+    });
+
+    expect(resolution.kind).toBe('recorded');
+    if (resolution.kind !== 'recorded') {
+      return;
+    }
+    expect(resolution.nextState.answers).toEqual({
+      downtime: 'gaming',
+      [seedQuestion.id]: seedOption.id,
+    });
+    expect(resolution.nextState.lastAskedAt).toBe(123);
   });
 });

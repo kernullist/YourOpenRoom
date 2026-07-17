@@ -78,8 +78,13 @@ export const AoiPreferenceDashboard: React.FC<AoiPreferenceDashboardProps> = ({
 
   const handleSet = useCallback(
     async (questionId: string, optionId: string) => {
-      const alreadyChosen = state.answers[questionId] === optionId;
-      const next = recordPreferenceAnswer(state, { questionId, optionId }, extraQuestions);
+      // Rebase on the freshest stored state, not the render snapshot: the chat
+      // loop writes answers and the ask-cooldown stamp to the same store while
+      // this panel is open, and saving a stale snapshot would roll those back
+      // (losing a chat-recorded answer and re-opening the daily ask cooldown).
+      const current = loadAoiPreferencePollState();
+      const alreadyChosen = current.answers[questionId] === optionId;
+      const next = recordPreferenceAnswer(current, { questionId, optionId }, extraQuestions);
       setState(next);
       saveAoiPreferencePollState(next);
       if (alreadyChosen || !sessionPath) {
@@ -108,12 +113,13 @@ export const AoiPreferenceDashboard: React.FC<AoiPreferenceDashboardProps> = ({
         setPendingId('');
       }
     },
-    [state, sessionPath, lang, extraQuestions, onMemoriesChanged],
+    [sessionPath, lang, extraQuestions, onMemoriesChanged],
   );
 
   const handleClear = useCallback(
     async (questionId: string) => {
-      const next = clearPreferenceAnswer(state, { questionId });
+      // Same rebase as handleSet: never clobber concurrent chat-loop writes.
+      const next = clearPreferenceAnswer(loadAoiPreferencePollState(), { questionId });
       setState(next);
       saveAoiPreferencePollState(next);
       const prefKey = getPreferenceQuestionPrefKey(questionId, extraQuestions);
@@ -130,7 +136,7 @@ export const AoiPreferenceDashboard: React.FC<AoiPreferenceDashboardProps> = ({
         setPendingId('');
       }
     },
-    [state, sessionPath, extraQuestions, onMemoriesChanged],
+    [sessionPath, extraQuestions, onMemoriesChanged],
   );
 
   const handleGenerate = useCallback(async () => {

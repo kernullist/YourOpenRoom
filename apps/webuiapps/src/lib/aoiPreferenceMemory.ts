@@ -413,12 +413,17 @@ export function getAoiPreferenceDemotions(params: {
   const now = params.now ?? Date.now();
   const demotions: AoiPreferenceDemotion[] = [];
   const activeProjectKey = normalizeProjectKey(params.projectKey);
+  // Only live project CONVENTIONS may shadow a user preference. Without the
+  // preference/demotion filters, any project-scoped fact whose content happens
+  // to normalize to the same key (e.g. a fact mentioning a language) would
+  // spuriously demote the user's real preference.
   const projectKeys = new Set(
     params.memories
       .filter(
         (memory) =>
+          isPreferenceMemory(memory) &&
+          !isDemoted(memory) &&
           memory.scope === 'project' &&
-          memory.status === 'active' &&
           (!activeProjectKey || normalizeProjectKey(memory.projectKey) === activeProjectKey),
       )
       .map((memory) => keyFromMemory(memory)),

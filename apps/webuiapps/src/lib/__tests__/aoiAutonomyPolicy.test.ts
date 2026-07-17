@@ -35,6 +35,7 @@ import {
   buildAoiPreferencePromptBlock,
   buildAoiPreferenceMemoryCandidates,
   classifyAoiPreferenceEvidence,
+  getAoiPreferenceDemotions,
   resolveAoiPreferenceContext,
 } from '../aoiPreferenceMemory';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
@@ -664,6 +665,70 @@ describe('Aoi preference memory model', () => {
       kind: 'project_convention',
     });
     expect(resolution.conflicts[0].explanation).toContain('Project convention wins');
+  });
+
+  it('demotes a user preference only for live project CONVENTIONS, not project facts', () => {
+    const userPreference = makePreferenceMemory({
+      id: 'global-language',
+      content: 'The user prefers Korean by default. pref:response.language',
+    });
+    // A project-scoped plain fact whose content normalizes to the same key must
+    // not shadow the user's preference (it is not a convention)...
+    const projectFact: AoiMemoryEntry = {
+      ...makePreferenceMemory({
+        id: 'project-fact',
+        scope: 'project',
+        projectKey: 'youropenroom',
+        content: 'The docs for this repo are written in Korean. pref:response.language',
+      }),
+      type: 'fact',
+      tags: ['auto'],
+      entities: [],
+    };
+    expect(
+      getAoiPreferenceDemotions({
+        memories: [userPreference, projectFact],
+        projectKey: 'youropenroom',
+        now: 5000,
+      }).filter((demotion) => demotion.reason === 'project_convention_conflict'),
+    ).toEqual([]);
+
+    // ...and neither must a convention that was itself demoted as wrong.
+    const demotedConvention = makePreferenceMemory({
+      id: 'project-convention-demoted',
+      scope: 'project',
+      projectKey: 'youropenroom',
+      content: 'For this project, answer in English. pref:response.language',
+      tags: ['preference', 'project-convention', 'demoted', 'pref:response.language'],
+    });
+    expect(
+      getAoiPreferenceDemotions({
+        memories: [userPreference, demotedConvention],
+        projectKey: 'youropenroom',
+        now: 5000,
+      }).filter((demotion) => demotion.reason === 'project_convention_conflict'),
+    ).toEqual([]);
+
+    // A live convention still demotes as designed.
+    const liveConvention = makePreferenceMemory({
+      id: 'project-convention-live',
+      scope: 'project',
+      projectKey: 'youropenroom',
+      content: 'For this project, answer in English. pref:response.language',
+      tags: ['preference', 'project-convention', 'pref:response.language'],
+    });
+    expect(
+      getAoiPreferenceDemotions({
+        memories: [userPreference, liveConvention],
+        projectKey: 'youropenroom',
+        now: 5000,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        memoryId: 'global-language',
+        reason: 'project_convention_conflict',
+      }),
+    ]);
   });
 
   it('lets fresh session instructions override older durable preferences', () => {

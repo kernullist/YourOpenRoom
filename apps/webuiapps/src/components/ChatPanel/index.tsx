@@ -76,13 +76,11 @@ import {
 } from '@/lib/aoiMusicTaste';
 import {
   PREFERENCE_POLL_QUESTIONS,
-  buildPreferencePollMemoryCandidate,
   countUnansweredPreferenceQuestions,
-  getPreferenceQuestionPrefKey,
   loadAoiPreferencePollState,
   pickNextPreferenceQuestion,
-  recordPreferenceAnswer,
   recordPreferenceQuestionAsked,
+  resolvePreferencePollAnswer,
   saveAoiPreferencePollState,
   shouldAskPreferenceQuestion,
   type AoiPreferenceLang,
@@ -1551,6 +1549,21 @@ function buildPreferencePollAck(choiceLabel: string, lang: NudgeLang): string {
       return `好，我记住"${choiceLabel}"了，以后判断时会参考。`;
     default:
       return `Got it, I'll remember "${choiceLabel}" and use it in future judgments.`;
+  }
+}
+
+// Honest ack when a tapped poll chip's question is no longer in the bank (it was
+// pruned between ask and answer): nothing was recorded, so never claim memory.
+function buildPreferencePollExpiredAck(lang: NudgeLang): string {
+  switch (lang) {
+    case 'ko':
+      return '미안, 그 질문은 이미 만료돼서 이번 답은 저장하지 못했어. 다음에 다시 물어볼게.';
+    case 'ja':
+      return 'ごめん、その質問はもう期限切れで今回の答えは保存できなかった。また今度聞くね。';
+    case 'zh':
+      return '抱歉，那个问题已经过期，这次的回答没有保存下来。下次我再问你。';
+    default:
+      return "Sorry, that question already expired, so this answer wasn't saved. I'll ask again another time.";
   }
 }
 
@@ -5662,11 +5675,18 @@ const ChatPanel: React.FC<{
       );
       const lang = resolveNudgeLang();
       const pollState = loadAoiPreferencePollState();
+      // The question currently awaiting an answer must survive the merge cap
+      // like an answered one, or the user's tap on the still-visible card would
+      // record nothing after this expansion prunes it.
+      const pendingQuestionId = pendingPreferencePollRef.current?.questionId;
       const { state: nextGen, addedCount } = await expandAoiPreferenceQuestionBank({
         memories: activeMemories,
         existing,
         seedPrompts: PREFERENCE_POLL_QUESTIONS.map((question) => question.prompts[lang]),
-        answeredIds: Object.keys(pollState.answers),
+        answeredIds: [
+          ...Object.keys(pollState.answers),
+          ...(pendingQuestionId ? [pendingQuestionId] : []),
+        ],
         lang,
         llmConfig: config,
         now,
@@ -6058,54 +6078,42 @@ const ChatPanel: React.FC<{
       // and persisted as a structured preference memory (no LLM round-trip), so it
       // flows into the interest profile / curiosity engine / preference context
       // for later judgments. Any other message is an implicit dismissal: the
-      // cooldown was already stamped when the poll was asked.
+      // cooldown was already stamped when the poll was asked. A chip whose
+      // question was pruned from the bank between ask and answer records nothing,
+      // so it gets an honest "expired" ack instead of a false "remembered".
       const pendingPreferencePoll = pendingPreferencePollRef.current;
       if (pendingPreferencePoll) {
         pendingPreferencePollRef.current = null;
         savePendingPreferencePoll(null);
-        const chosen = pendingPreferencePoll.options.find((option) => option.label === messageText);
-        if (chosen) {
-          const lang = resolveNudgeLang();
-          const generatedQuestions = generatedQuestionsToSeedShape(
-            loadAoiGeneratedQuestionsState(),
-          );
-          saveAoiPreferencePollState(
-            recordPreferenceAnswer(
-              loadAoiPreferencePollState(),
-              {
-                questionId: pendingPreferencePoll.questionId,
-                optionId: chosen.id,
-              },
-              generatedQuestions,
-            ),
-          );
-          const candidate = buildPreferencePollMemoryCandidate(
-            {
-              questionId: pendingPreferencePoll.questionId,
-              optionId: chosen.id,
-              lang,
-            },
-            generatedQuestions,
-          );
-          if (candidate) {
-            void syncAoiMemoryFromPreferencePoll(sessionPathRef.current, {
-              questionId: pendingPreferencePoll.questionId,
-              optionLabel: chosen.label,
-              candidate,
-              prefKey:
-                getPreferenceQuestionPrefKey(
-                  pendingPreferencePoll.questionId,
-                  generatedQuestions,
-                ) ?? undefined,
-              embeddingProvider: aoiEmbeddingProviderRef.current,
-            })
-              .then(setAoiMemories)
-              .catch((error) => {
-                console.warn('[ChatPanel] Aoi preference poll memory sync failed', error);
-              });
-          }
-          const ack = buildPreferencePollAck(chosen.label, lang);
+        const lang = resolveNudgeLang();
+        const resolution = resolvePreferencePollAnswer(
+          pendingPreferencePoll,
+          { messageText, state: loadAoiPreferencePollState(), lang },
+          generatedQuestionsToSeedShape(loadAoiGeneratedQuestionsState()),
+        );
+        if (resolution.kind === 'recorded') {
+          saveAoiPreferencePollState(resolution.nextState);
+          void syncAoiMemoryFromPreferencePoll(sessionPathRef.current, {
+            questionId: pendingPreferencePoll.questionId,
+            optionLabel: resolution.chosenLabel,
+            candidate: resolution.candidate,
+            prefKey: resolution.prefKey ?? undefined,
+            embeddingProvider: aoiEmbeddingProviderRef.current,
+          })
+            .then(setAoiMemories)
+            .catch((error) => {
+              console.warn('[ChatPanel] Aoi preference poll memory sync failed', error);
+            });
+          const ack = buildPreferencePollAck(resolution.chosenLabel, lang);
           emitAssistantMessage({ id: String(Date.now()), role: 'assistant', content: ack });
+          return;
+        }
+        if (resolution.kind === 'expired') {
+          emitAssistantMessage({
+            id: String(Date.now()),
+            role: 'assistant',
+            content: buildPreferencePollExpiredAck(lang),
+          });
           return;
         }
       }

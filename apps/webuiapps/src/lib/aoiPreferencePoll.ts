@@ -1324,6 +1324,63 @@ export function buildPreferencePollMemoryCandidate(
   };
 }
 
+// --- Pending-card answer resolution --------------------------------------------
+
+export interface PendingPreferencePollLike {
+  questionId: string;
+  options: ReadonlyArray<{ id: string; label: string }>;
+}
+
+export type PreferencePollAnswerResolution =
+  | { kind: 'ignored' }
+  | { kind: 'expired'; chosenLabel: string }
+  | {
+      kind: 'recorded';
+      chosenLabel: string;
+      nextState: AoiPreferencePollState;
+      candidate: AoiMemoryCandidate;
+      prefKey: string | null;
+    };
+
+// Resolve a user reply against a pending poll card. A reply that matches no chip
+// label is an implicit dismissal ('ignored'). A tapped chip whose question is no
+// longer in the bank (e.g. a generated question pruned by a bank expansion
+// between ask and answer) resolves to 'expired' -- nothing was recorded, so the
+// caller must NOT claim the answer was remembered. Only 'recorded' carries the
+// folded-in state and the memory candidate to persist.
+export function resolvePreferencePollAnswer(
+  pending: PendingPreferencePollLike,
+  params: {
+    messageText: string;
+    state: AoiPreferencePollState | null | undefined;
+    lang: AoiPreferenceLang;
+  },
+  extraQuestions: readonly PreferencePollQuestion[] = [],
+): PreferencePollAnswerResolution {
+  const chosen = pending.options.find((option) => option.label === params.messageText);
+  if (!chosen) {
+    return { kind: 'ignored' };
+  }
+  const candidate = buildPreferencePollMemoryCandidate(
+    { questionId: pending.questionId, optionId: chosen.id, lang: params.lang },
+    extraQuestions,
+  );
+  if (!candidate) {
+    return { kind: 'expired', chosenLabel: chosen.label };
+  }
+  return {
+    kind: 'recorded',
+    chosenLabel: chosen.label,
+    nextState: recordPreferenceAnswer(
+      params.state,
+      { questionId: pending.questionId, optionId: chosen.id },
+      extraQuestions,
+    ),
+    candidate,
+    prefKey: getPreferenceQuestionPrefKey(pending.questionId, extraQuestions),
+  };
+}
+
 // --- Memory supersede / forget selection -------------------------------------
 
 function sessionMatches(memorySessionPath: string | undefined, sessionPath: string): boolean {

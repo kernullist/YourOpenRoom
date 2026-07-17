@@ -176,4 +176,58 @@ describe('AoiPreferenceDashboard', () => {
     ).toBe('false');
     warn.mockRestore();
   });
+
+  it('does not clobber answers and the ask cooldown written by the chat loop after mount', async () => {
+    renderDashboard();
+
+    // Simulate the chat loop writing to the shared store while the panel is
+    // open: an answered chat poll plus a fresh ask-cooldown stamp. The panel's
+    // render state still holds the empty snapshot from mount.
+    localStorage.setItem(
+      'aoi-preference-poll-v1',
+      JSON.stringify({ version: 1, answers: { downtime: 'gaming' }, lastAskedAt: 777 }),
+    );
+
+    const focus = screen.getByTestId('aoi-preference-q-focus_area');
+    fireEvent.click(within(focus).getByText('Anti-cheat / game security'));
+    await waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
+
+    // The saved state keeps the chat-recorded answer and cooldown stamp.
+    const saved = JSON.parse(localStorage.getItem('aoi-preference-poll-v1') ?? '{}') as {
+      answers: Record<string, string>;
+      lastAskedAt: number;
+    };
+    expect(saved.answers).toEqual({ downtime: 'gaming', focus_area: 'anti_cheat' });
+    expect(saved.lastAskedAt).toBe(777);
+  });
+
+  it('clearing one answer preserves concurrent chat-loop writes to other questions', async () => {
+    renderDashboard();
+    const focus = screen.getByTestId('aoi-preference-q-focus_area');
+    fireEvent.click(within(focus).getByText('TPM / hardware verification'));
+    await waitFor(() => expect(syncMock).toHaveBeenCalledTimes(1));
+
+    // Chat loop answers another question and stamps the cooldown afterwards.
+    const stored = JSON.parse(localStorage.getItem('aoi-preference-poll-v1') ?? '{}') as {
+      answers: Record<string, string>;
+    };
+    localStorage.setItem(
+      'aoi-preference-poll-v1',
+      JSON.stringify({
+        version: 1,
+        answers: { ...stored.answers, downtime: 'reading' },
+        lastAskedAt: 888,
+      }),
+    );
+
+    fireEvent.click(within(focus).getByText('Clear'));
+    await waitFor(() => expect(forgetMock).toHaveBeenCalled());
+
+    const saved = JSON.parse(localStorage.getItem('aoi-preference-poll-v1') ?? '{}') as {
+      answers: Record<string, string>;
+      lastAskedAt: number;
+    };
+    expect(saved.answers).toEqual({ downtime: 'reading' });
+    expect(saved.lastAskedAt).toBe(888);
+  });
 });
