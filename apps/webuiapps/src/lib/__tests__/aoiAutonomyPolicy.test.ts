@@ -1251,6 +1251,144 @@ describe('checkAoiProposalPolicy()', () => {
     expect(result.reasons).toContain('cooldown_active');
   });
 
+  it('keeps suppressing a dismissed proposal that returns re-keyed with the same anchor and action', () => {
+    // The LLM invents a fresh cooldownKey each tick, so the exact-key check
+    // alone let a dismissed proposal come straight back re-worded.
+    const dismissed: AoiProposalDecision = {
+      version: 1,
+      id: 'decision-rekeyed-001',
+      proposalId: 'proposal-old-002',
+      sessionPath: 'aoi/default',
+      cooldownKey: 'llm:open the matching research report',
+      action: 'dismiss',
+      actor: 'user',
+      createdAt: 2500,
+      previousStatus: 'active',
+      nextStatus: 'dismissed',
+      suggestedTools: ['read_research_artifact'],
+      evidenceRefs: ['memory:aoi-memory-001'],
+      memoryIds: ['aoi-memory-001'],
+    };
+
+    const rekeyed = checkAoiProposalPolicy({
+      policy,
+      proposal: makeProposal({
+        id: 'proposal-new-002',
+        cooldownKey: 'llm:revisit that research summary',
+      }),
+      recentDecisions: [dismissed],
+      now: 3000,
+    });
+    expect(rekeyed.reasons).toContain('cooldown_active');
+
+    // A different action on the same anchor is genuinely new work: not suppressed.
+    const differentAction = checkAoiProposalPolicy({
+      policy,
+      proposal: makeProposal({
+        id: 'proposal-new-003',
+        cooldownKey: 'research-refresh:aoi-memory-001',
+        suggestedTools: ['start_research'],
+      }),
+      recentDecisions: [dismissed],
+      now: 3000,
+    });
+    expect(differentAction.reasons).not.toContain('cooldown_active');
+  });
+
+  it('escalates the cooldown for repeated plain dismissals of the same proposal', () => {
+    const dismissAt = (id: string, createdAt: number): AoiProposalDecision => ({
+      version: 1,
+      id,
+      proposalId: 'proposal-old-003',
+      sessionPath: 'aoi/default',
+      cooldownKey: 'research:kernel-memory',
+      action: 'dismiss',
+      actor: 'user',
+      createdAt,
+      previousStatus: 'active',
+      nextStatus: 'dismissed',
+    });
+
+    // The first dismissal keeps the base cooldown (unchanged behavior)...
+    expect(
+      getAoiFeedbackAdjustedCooldownMs({
+        proposal: makeProposal(),
+        recentDecisions: [dismissAt('decision-repeat-001', 1000)],
+        baseCooldownMs: 100,
+      }),
+    ).toBe(100);
+    // ...and every repeat extends it, so a repeatedly dismissed proposal stops
+    // reappearing after each base window.
+    expect(
+      getAoiFeedbackAdjustedCooldownMs({
+        proposal: makeProposal(),
+        recentDecisions: [
+          dismissAt('decision-repeat-001', 1000),
+          dismissAt('decision-repeat-002', 2000),
+        ],
+        baseCooldownMs: 100,
+      }),
+    ).toBe(200);
+    expect(
+      getAoiFeedbackAdjustedCooldownMs({
+        proposal: makeProposal(),
+        recentDecisions: [
+          dismissAt('decision-repeat-001', 1000),
+          dismissAt('decision-repeat-002', 2000),
+          dismissAt('decision-repeat-003', 2500),
+          dismissAt('decision-repeat-004', 2800),
+          dismissAt('decision-repeat-005', 2900),
+        ],
+        baseCooldownMs: 100,
+      }),
+    ).toBe(400);
+  });
+
+  it('honors a snooze that outlives the cooldown window', () => {
+    const snoozeDecision: AoiProposalDecision = {
+      version: 1,
+      id: 'decision-snooze-long-001',
+      proposalId: 'proposal-old-004',
+      sessionPath: 'aoi/default',
+      cooldownKey: 'research:kernel-memory',
+      action: 'snooze',
+      actor: 'user',
+      createdAt: 1000,
+      previousStatus: 'active',
+      nextStatus: 'snoozed',
+      snoozedUntil: 1000 + 8 * 60 * 60 * 1000,
+    };
+
+    // Past the 6h cooldown window but still inside the requested snooze.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({ id: 'proposal-new-004' }),
+        recentDecisions: [snoozeDecision],
+        now: 1000 + 7 * 60 * 60 * 1000,
+      }).reasons,
+    ).toContain('cooldown_active');
+    // Once the snooze expires (and the cooldown window has passed), it may return.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({ id: 'proposal-new-005' }),
+        recentDecisions: [snoozeDecision],
+        now: 1000 + 9 * 60 * 60 * 1000,
+      }).reasons,
+    ).not.toContain('cooldown_active');
+  });
+
+  it('blocks a re-keyed duplicate of an active proposal sharing anchor and action', () => {
+    const result = checkAoiProposalPolicy({
+      policy,
+      proposal: makeProposal({ id: 'proposal-new-006', cooldownKey: 'llm:fresh-key-b' }),
+      activeProposals: [makeProposal({ id: 'proposal-existing-002', cooldownKey: 'llm:key-a' })],
+    });
+
+    expect(result.reasons).toContain('duplicate_active_proposal');
+  });
+
   it('blocks unknown suggested tools and high-risk proposals without approval', () => {
     const result = checkAoiProposalPolicy({
       policy,

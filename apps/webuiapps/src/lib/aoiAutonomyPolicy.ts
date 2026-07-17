@@ -1456,6 +1456,67 @@ export function evaluateAoiProposalExecution(
   };
 }
 
+// Concrete artifact anchors that identify "the same underlying subject" across
+// re-authored proposals: memory/research/kira/goal/workspace/proposal refs.
+// Per-tick refs (situation/activity/observation/chat) and broad source refs
+// (environment-source) are deliberately excluded -- matching on those would
+// suppress unrelated proposals.
+const STABLE_ANCHOR_REF_PATTERN = /^(?:memory|research|kira|goal|workspace|proposal):/;
+
+function stableAnchorRefs(refs: readonly string[] | undefined): string[] {
+  return (refs ?? []).filter((ref) => STABLE_ANCHOR_REF_PATTERN.test(ref));
+}
+
+function proposalAnchorRefSet(proposal: AoiProposal): Set<string> {
+  return new Set([
+    ...proposal.memoryIds.map((id) => `memory:${id}`),
+    ...stableAnchorRefs(proposal.evidenceRefs),
+    ...stableAnchorRefs(proposal.artifactRefs),
+  ]);
+}
+
+function sharesStableAnchorRef(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  const anchors = proposalAnchorRefSet(proposal);
+  if (anchors.size === 0) {
+    return false;
+  }
+  return [
+    ...(decision.memoryIds ?? []).map((id) => `memory:${id}`),
+    ...stableAnchorRefs(decision.evidenceRefs),
+  ].some((ref) => anchors.has(ref));
+}
+
+// LLM reflection invents a fresh cooldownKey (and usually a new title) every
+// tick, so an exact-key comparison lets a dismissed proposal come straight back
+// re-worded. A dismissal therefore also applies when the new proposal
+// re-proposes the SAME action against the SAME concrete anchor. Trigger-only
+// matching is deliberately NOT used: it would blanket-suppress every
+// llm_reflection proposal after one dismissal.
+function dismissalAppliesToProposal(proposal: AoiProposal, decision: AoiProposalDecision): boolean {
+  if (decision.cooldownKey === proposal.cooldownKey) {
+    return true;
+  }
+  return actionKindMatches(proposal, decision) && sharesStableAnchorRef(proposal, decision);
+}
+
+function proposalsProposeSameAction(left: AoiProposal, right: AoiProposal): boolean {
+  const leftKind = getExecutionActionKind(left);
+  const rightKind = getExecutionActionKind(right);
+  if (leftKind && leftKind === rightKind) {
+    return true;
+  }
+  const tools = new Set(left.suggestedTools);
+  return right.suggestedTools.some((tool) => tools.has(tool));
+}
+
+function proposalsShareStableAnchorRef(left: AoiProposal, right: AoiProposal): boolean {
+  const anchors = proposalAnchorRefSet(left);
+  if (anchors.size === 0) {
+    return false;
+  }
+  return [...proposalAnchorRefSet(right)].some((ref) => anchors.has(ref));
+}
+
 function hasDuplicateActiveProposal(
   proposal: AoiProposal,
   activeProposals: AoiProposal[] | undefined,
@@ -1467,7 +1528,12 @@ function hasDuplicateActiveProposal(
         (active.status === 'active' ||
           active.status === 'accepted' ||
           active.status === 'snoozed') &&
-        active.cooldownKey === proposal.cooldownKey,
+        // Exact key, or the same action against the same concrete anchor: an
+        // LLM re-narration of a live proposal carries a fresh cooldownKey and
+        // must still count as a duplicate.
+        (active.cooldownKey === proposal.cooldownKey ||
+          (proposalsProposeSameAction(proposal, active) &&
+            proposalsShareStableAnchorRef(proposal, active))),
     ),
   );
 }
@@ -1482,8 +1548,11 @@ function hasRecentCooldownDecision(params: {
     params.recentDecisions?.some(
       (decision) =>
         (decision.action === 'dismiss' || decision.action === 'snooze') &&
-        decision.cooldownKey === params.proposal.cooldownKey &&
-        decision.createdAt + params.cooldownMs > params.now,
+        dismissalAppliesToProposal(params.proposal, decision) &&
+        // A snooze longer than the cooldown window keeps suppressing until it
+        // expires; otherwise the (feedback-adjusted) cooldown window applies.
+        (decision.createdAt + params.cooldownMs > params.now ||
+          (decision.snoozedUntil ?? 0) > params.now),
     ),
   );
 }
@@ -1605,21 +1674,34 @@ export function getAoiFeedbackAdjustedCooldownMs(params: {
   recentDecisions?: AoiProposalDecision[];
   baseCooldownMs: number;
 }): number {
+  const recentDecisions = params.recentDecisions ?? [];
   const noisyTimingCategories = new Set<AoiProposalFeedbackCategory>([
     'too_frequent',
     'too_much',
     'wrong_timing',
   ]);
-  const tooFrequentCount = (params.recentDecisions ?? []).filter(
+  const isNoisyTimingDecision = (decision: AoiProposalDecision): boolean =>
+    Boolean(decision.feedbackCategory) &&
+    noisyTimingCategories.has(decision.feedbackCategory as AoiProposalFeedbackCategory);
+  const noisyCount = recentDecisions.filter(
     (decision) =>
-      Boolean(decision.feedbackCategory) &&
-      noisyTimingCategories.has(decision.feedbackCategory as AoiProposalFeedbackCategory) &&
-      decision.cooldownKey === params.proposal.cooldownKey,
+      isNoisyTimingDecision(decision) && dismissalAppliesToProposal(params.proposal, decision),
   ).length;
-  if (tooFrequentCount <= 0) {
+  // Repeated PLAIN dismissals/snoozes of the same logical proposal escalate
+  // too: the first keeps the base cooldown (unchanged behavior), each repeat
+  // extends the window, so a proposal the operator keeps dismissing stops
+  // reappearing every base-cooldown period.
+  const plainDismissalCount = recentDecisions.filter(
+    (decision) =>
+      (decision.action === 'dismiss' || decision.action === 'snooze') &&
+      !isNoisyTimingDecision(decision) &&
+      dismissalAppliesToProposal(params.proposal, decision),
+  ).length;
+  const escalation = noisyCount + Math.max(0, plainDismissalCount - 1);
+  if (escalation <= 0) {
     return params.baseCooldownMs;
   }
-  const multiplier = Math.min(TOO_FREQUENT_COOLDOWN_MULTIPLIER_LIMIT, 1 + tooFrequentCount);
+  const multiplier = Math.min(TOO_FREQUENT_COOLDOWN_MULTIPLIER_LIMIT, 1 + escalation);
   return params.baseCooldownMs * multiplier;
 }
 
