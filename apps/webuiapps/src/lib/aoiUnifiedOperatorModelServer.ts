@@ -64,7 +64,9 @@ export function loadAoiUnifiedOperatorSnapshotFromStores(
     sessionPath,
     now,
     ...(params.currentUserMessage ? { currentUserMessage: params.currentUserMessage } : {}),
-    memories: loadServerAoiMemories(sessionsDir),
+    memories: loadServerAoiMemories(sessionsDir).filter(
+      (memory) => memory.sessionPath === sessionPath,
+    ),
     interestProfile: loadAoiInterestProfile(sessionsDir, sessionPath, now),
     followThroughLearning: loadAoiFollowThroughLearningSummary(sessionsDir, sessionPath, now),
     mission: loadAoiMissionState(sessionsDir, sessionPath),

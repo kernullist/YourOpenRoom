@@ -1864,6 +1864,7 @@ async function runWakeupInternal(
           sessionsDir: input.sessionsDir,
           sessionPath,
           reason: tickReason,
+          workspaceRoot: input.workspaceRoot,
           latestUserMessage: input.latestUserMessage,
           ...(input.language ? { language: input.language } : {}),
           llmConfig: budget.allowNetwork ? (input.llmConfig ?? undefined) : undefined,

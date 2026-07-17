@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -8,13 +9,20 @@ import {
   runAoiAutonomousExecuteForWakeup,
 } from '../aoiAutonomousExecuteProductionDeps';
 import { classifyAoiAutonomousExecuteEligibility } from '../aoiAutonomousExecuteEligibility';
-import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
+import {
+  getAoiApprovedAppActionPolicyForProposal,
+  getAoiApprovedFileMutationPolicyForProposal,
+} from '../aoiAutonomyPolicy';
 import { appendAoiProposalDecision, saveAoiActiveProposals } from '../aoiAutonomyStore';
 import type { AoiProposal, AoiProposalDecision } from '../aoiAutonomyTypes';
 import type { AoiProposalExecutionResult } from '../aoiAutonomyExecution';
 
 const NOW = 1_800_000_000_000;
 const tempRoots: string[] = [];
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 afterEach(() => {
   while (tempRoots.length > 0) {
@@ -77,6 +85,51 @@ function makeAcceptDecision(
   };
 }
 
+function makeFileWriteProposal(partial: Partial<AoiProposal> = {}): AoiProposal {
+  return makeAppActionProposal({
+    id: 'prop-file-1',
+    title: 'Write the reviewed file',
+    risk: 'high',
+    requiredAutonomyLevel: 'L5',
+    requiresUserApproval: true,
+    suggestedTools: ['file_write'],
+    evidenceRefs: ['workspace:reviewed-file'],
+    acceptAction: {
+      kind: 'file_write',
+      params: {
+        path: 'controlled/result.txt',
+        content: 'approved',
+        validationPlan: {
+          version: 1,
+          expectedBeforeSha256: 'absent',
+          expectedAfterSha256: sha256('approved'),
+        },
+      },
+    },
+    ...partial,
+  });
+}
+
+function makeFileAcceptDecision(
+  proposal: AoiProposal,
+  partial: Partial<AoiProposalDecision> = {},
+): AoiProposalDecision {
+  return {
+    version: 1,
+    id: 'dec-file-1',
+    proposalId: proposal.id,
+    sessionPath: proposal.sessionPath,
+    cooldownKey: proposal.cooldownKey,
+    action: 'accept',
+    actor: 'user',
+    createdAt: NOW,
+    previousStatus: 'active',
+    nextStatus: 'active',
+    approvedFileMutation: getAoiApprovedFileMutationPolicyForProposal(proposal, NOW),
+    ...partial,
+  };
+}
+
 function ctx(partial: Record<string, unknown> = {}) {
   return {
     sessionsDir: '/tmp/aoi',
@@ -89,6 +142,87 @@ function ctx(partial: Record<string, unknown> = {}) {
 }
 
 describe('createAoiAutonomousExecuteProductionDeps.resolveEligibility (P2.3)', () => {
+  it('allows an exact user-approved file_write after checkpoint and target preflight', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'aoi-prod-file-')));
+    tempRoots.push(root);
+    const proposal = makeFileWriteProposal();
+    const decision = makeFileAcceptDecision(proposal);
+    const deps = createAoiAutonomousExecuteProductionDeps(ctx({ workspaceRoot: root }));
+    const input = deps.resolveEligibility!({
+      decision,
+      proposal,
+      sessionBudgetRemaining: 1,
+      now: NOW + 1,
+    });
+    expect(input).toMatchObject({
+      actionKind: 'file_write',
+      hasCheckpoint: true,
+      exactScope: true,
+      hasValidationPlan: true,
+      targetFingerprintMatches: true,
+    });
+    expect(classifyAoiAutonomousExecuteEligibility(input)).toEqual({
+      eligible: true,
+      blockReasons: [],
+    });
+  });
+
+  it('blocks file self-execution when the approved validation plan is missing', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'aoi-prod-file-no-plan-')));
+    tempRoots.push(root);
+    const proposal = makeFileWriteProposal({
+      acceptAction: {
+        kind: 'file_write',
+        params: { path: 'controlled/result.txt', content: 'approved' },
+      },
+    });
+    const decision = makeFileAcceptDecision(proposal);
+    const deps = createAoiAutonomousExecuteProductionDeps(ctx({ workspaceRoot: root }));
+    const input = deps.resolveEligibility!({
+      decision,
+      proposal,
+      sessionBudgetRemaining: 1,
+      now: NOW + 1,
+    });
+    expect(classifyAoiAutonomousExecuteEligibility(input).blockReasons).toContain(
+      'validation_plan_missing',
+    );
+  });
+
+  it('blocks file self-execution when the target changed after approval', () => {
+    const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'aoi-prod-file-drift-')));
+    tempRoots.push(root);
+    fs.mkdirSync(join(root, 'controlled'), { recursive: true });
+    fs.writeFileSync(join(root, 'controlled/result.txt'), 'reviewed');
+    const proposal = makeFileWriteProposal({
+      acceptAction: {
+        kind: 'file_write',
+        params: {
+          path: 'controlled/result.txt',
+          content: 'approved',
+          validationPlan: {
+            version: 1,
+            expectedBeforeSha256: sha256('reviewed'),
+            expectedAfterSha256: sha256('approved'),
+          },
+        },
+      },
+    });
+    const decision = makeFileAcceptDecision(proposal);
+    fs.writeFileSync(join(root, 'controlled/result.txt'), 'drifted');
+    const deps = createAoiAutonomousExecuteProductionDeps(ctx({ workspaceRoot: root }));
+    const input = deps.resolveEligibility!({
+      decision,
+      proposal,
+      sessionBudgetRemaining: 1,
+      now: NOW + 1,
+    });
+    expect(input.hasCheckpoint).toBe(true);
+    expect(classifyAoiAutonomousExecuteEligibility(input).blockReasons).toContain(
+      'target_fingerprint_mismatch',
+    );
+  });
+
   it('produces an ELIGIBLE input for a user-approved app_action at trusted_operator', () => {
     const proposal = makeAppActionProposal();
     const decision = makeAcceptDecision(proposal);

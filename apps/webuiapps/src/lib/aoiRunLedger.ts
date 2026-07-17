@@ -3,6 +3,9 @@ export type AoiRunStatus = 'running' | 'completed' | 'failed';
 export type AoiRunLedgerEventType =
   | 'run_started'
   | 'model_response'
+  | 'tool_result'
+  | 'tool_error'
+  | 'postcondition_failed'
   | 'assistant_delivered'
   | 'plain_text_fallback'
   | 'proposal_accepted'
@@ -121,7 +124,7 @@ export function createAoiRunGoalFromMessage(message: string, createdAt = Date.no
 }
 
 export function buildAoiRunGoalPrompt(goal: AoiRunGoal): string {
-  return `\n\nAoi Run Goal:\n- Current goal: ${JSON.stringify(goal.summary)}.\n- Maintain a compact internal run ledger for this goal: note model iterations, tool-use intent, final delivery, and failures.\n- Complete the goal before responding when the requested work is actionable, and say what remains only if blocked.`;
+  return `\n\nAoi Run Goal:\n- Current goal: ${JSON.stringify(goal.summary)}.\n- Maintain a compact internal run ledger for this goal: note model iterations, tool-use intent, final delivery, and failures.\n- Complete the goal before responding when the requested work is actionable, and say what remains only if blocked.\n- Keep the final response scoped to this goal. Do not append unrelated memories, persona lore, roleplay inventory, bounty lists, or prior-task status unless the user asked for them.`;
 }
 
 export function createAoiRunLedgerEntry(params: {
@@ -286,6 +289,8 @@ function reduceAoiRunLedgerMetrics(events: AoiRunLedgerEvent[]): AoiRunLedgerMet
     }
     if (
       event.type === 'run_failed' ||
+      event.type === 'tool_error' ||
+      event.type === 'postcondition_failed' ||
       event.type === 'proposal_execution_failed' ||
       event.type === 'proposal_execution_blocked' ||
       event.type === 'kira_handoff_policy_blocked'

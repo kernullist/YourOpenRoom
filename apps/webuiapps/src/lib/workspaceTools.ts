@@ -185,8 +185,8 @@ export function getWorkspaceToolDefinitions(): ToolDef[] {
       function: {
         name: TOOL_NAME,
         description:
-          'Recursively search workspace files by path and optional file content. ' +
-          'Use this before file_read when you do not know the exact path yet.',
+          'Recursively search Aoi session app-storage files by path and optional content. ' +
+          'This does not search the real IDE/repository workspace; use ide_search there.',
         parameters: {
           type: 'object',
           properties: {
@@ -197,7 +197,7 @@ export function getWorkspaceToolDefinitions(): ToolDef[] {
             directory: {
               type: 'string',
               description:
-                'Optional directory relative to workspace root. Defaults to "apps" for app data.',
+                'Optional directory relative to the session app-storage root. Defaults to "apps".',
             },
             mode: {
               type: 'string',

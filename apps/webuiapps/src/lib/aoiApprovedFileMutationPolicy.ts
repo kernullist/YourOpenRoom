@@ -10,6 +10,7 @@ import type {
   AoiFileMutationBlockReason,
   AoiFileMutationOperation,
   AoiFileMutationPatchOp,
+  AoiFileMutationValidationPlan,
 } from './aoiAutonomyTypes';
 
 // Policy + content-addressed approval fingerprint for approved Aoi file
@@ -26,6 +27,7 @@ export const AOI_MAX_FILE_MUTATION_PATCH_BYTES = 256 * 1024;
 
 const MAX_PURPOSE_CHARS = 180;
 const SAFE_RELATIVE_FILE_PATH = /^[A-Za-z0-9._/-]+$/;
+const SHA256_HEX = /^[a-f0-9]{64}$/;
 const PROTECTED_SEGMENTS = new Set(['.git', 'node_modules', '.ssh', '.aws']);
 
 // Browser-safe hashing. This module is reachable from the client bundle via
@@ -101,6 +103,39 @@ function normalizePatchOps(value: unknown): AoiFileMutationPatchOp[] {
     ops.push({ find: candidate.find, replace: candidate.replace, expectedCount });
   }
   return ops;
+}
+
+export function normalizeAoiFileMutationValidationPlan(
+  value: unknown,
+): AoiFileMutationValidationPlan | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Partial<AoiFileMutationValidationPlan> & {
+    expected_before_sha256?: unknown;
+    expected_after_sha256?: unknown;
+  };
+  const expectedBeforeRaw = raw.expectedBeforeSha256 ?? raw.expected_before_sha256;
+  const expectedAfterRaw = raw.expectedAfterSha256 ?? raw.expected_after_sha256;
+  const expectedBeforeSha256 =
+    expectedBeforeRaw === 'absent'
+      ? 'absent'
+      : typeof expectedBeforeRaw === 'string'
+        ? expectedBeforeRaw.trim().toLowerCase()
+        : '';
+  const expectedAfterSha256 =
+    typeof expectedAfterRaw === 'string' ? expectedAfterRaw.trim().toLowerCase() : '';
+  if (
+    (expectedBeforeSha256 !== 'absent' && !SHA256_HEX.test(expectedBeforeSha256)) ||
+    !SHA256_HEX.test(expectedAfterSha256)
+  ) {
+    return undefined;
+  }
+  return {
+    version: 1,
+    expectedBeforeSha256,
+    expectedAfterSha256,
+  };
 }
 
 function collectPathBlockReasons(pathLabel: string): AoiFileMutationBlockReason[] {
@@ -203,12 +238,14 @@ export function createAoiApprovedFileMutationRequest(params: {
   path: unknown;
   content?: unknown;
   patchOps?: unknown;
+  validationPlan?: unknown;
   purpose?: unknown;
   risk?: AoiAutonomyRisk;
   requestedAt?: number;
   evidenceRefs?: string[];
 }): AoiApprovedFileMutationRequest {
   const operation = normalizeOperation(params.operation) || 'write';
+  const validationPlan = normalizeAoiFileMutationValidationPlan(params.validationPlan);
   return {
     version: 1,
     sessionPath: params.sessionPath,
@@ -218,6 +255,7 @@ export function createAoiApprovedFileMutationRequest(params: {
     path: normalizeAoiFileMutationPath(params.path),
     ...(typeof params.content === 'string' ? { content: params.content } : {}),
     ...(Array.isArray(params.patchOps) ? { patchOps: normalizePatchOps(params.patchOps) } : {}),
+    ...(validationPlan ? { validationPlan } : {}),
     purpose: normalizePurpose(params.purpose),
     risk: params.risk ?? 'high',
     requestedAt: params.requestedAt ?? Date.now(),
@@ -233,6 +271,7 @@ export function evaluateAoiApprovedFileMutationPolicy(
   const purpose = normalizePurpose(request.purpose);
   const purposeHash = hashStable(purpose);
   const pathHash = hashStable(pathLabel || 'missing-path');
+  const resolvedOperation: AoiFileMutationOperation = operation || 'write';
 
   const reasons: AoiFileMutationBlockReason[] = [];
   if (!operation) {
@@ -241,9 +280,19 @@ export function evaluateAoiApprovedFileMutationPolicy(
   reasons.push(...collectPathBlockReasons(pathLabel));
   const contentResult = collectContentBlockReasons(request);
   reasons.push(...contentResult.reasons);
+  const validationPlan = normalizeAoiFileMutationValidationPlan(request.validationPlan);
+  if (request.validationPlan && !validationPlan) {
+    reasons.push('validation_plan_invalid');
+  }
+  if (
+    validationPlan &&
+    resolvedOperation === 'patch' &&
+    validationPlan.expectedBeforeSha256 === 'absent'
+  ) {
+    reasons.push('validation_plan_invalid');
+  }
 
   const blockReasons = [...new Set(reasons)];
-  const resolvedOperation: AoiFileMutationOperation = operation || 'write';
   const contentHash = contentResult.contentHash;
   const byteLength = contentResult.byteLength;
   const safePathLabel = pathLabel || 'missing-path';
@@ -255,14 +304,24 @@ export function evaluateAoiApprovedFileMutationPolicy(
       : resolvedOperation === 'patch'
         ? `Would apply ${contentResult.patchOps?.length ?? 0} anchored text patch op(s) to ${safePathLabel}.`
         : `Would delete ${safePathLabel}; a pre-change checkpoint is captured for rollback.`;
+  const validationSummary = validationPlan
+    ? `Require target SHA-256 ${validationPlan.expectedBeforeSha256} before mutation and ${validationPlan.expectedAfterSha256} after mutation.`
+    : 'Re-read the target and verify the exact mutation bytes before reporting success.';
 
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'workspace',
-    targetId: `${resolvedOperation}:${safePathLabel}`,
+    targetId: `${resolvedOperation}:${safePathLabel}:${validationPlan?.expectedBeforeSha256 ?? 'unbound-before'}`,
     intendedMutation: `${operationLabel} ${safePathLabel} (${byteLength} bytes, content hash ${contentHash}).`,
     dryRunSummary,
     requiredAuthorityDecisionId: `approved-file-mutation:${hashStable(
-      [resolvedOperation, pathHash, contentHash, request.risk].join('|'),
+      [
+        resolvedOperation,
+        pathHash,
+        contentHash,
+        validationPlan?.expectedBeforeSha256 ?? 'unbound-before',
+        validationPlan?.expectedAfterSha256 ?? 'unbound-after',
+        request.risk,
+      ].join('|'),
     )}`,
     expectedMutationCount: 1,
     recoveryPlan: {
@@ -279,8 +338,8 @@ export function evaluateAoiApprovedFileMutationPolicy(
     },
     postActionValidation: {
       kind: 'check',
-      label: 'Re-read the file, confirm the mutation applied, and record the file-mutation audit.',
-      check: 'File-mutation audit receipt is recorded after execution.',
+      label: validationSummary,
+      check: validationSummary,
       evidenceRefs: request.evidenceRefs,
     },
     evidenceRefs: request.evidenceRefs,
@@ -297,6 +356,7 @@ export function evaluateAoiApprovedFileMutationPolicy(
     contentHash,
     byteLength,
     ...(contentResult.patchOps ? { patchOps: contentResult.patchOps } : {}),
+    ...(validationPlan ? { validationPlan } : {}),
     purpose,
     purposeHash,
     risk: request.risk,
@@ -340,6 +400,10 @@ export function normalizeAoiApprovedFileMutationPolicy(
     return undefined;
   }
   const approvalSandbox = normalizeAoiApprovalSandboxPreview(raw.approvalSandbox);
+  const validationPlan = normalizeAoiFileMutationValidationPlan(raw.validationPlan);
+  if (raw.validationPlan && !validationPlan) {
+    return undefined;
+  }
   return {
     version: 1,
     allowed: raw.allowed,
@@ -353,6 +417,7 @@ export function normalizeAoiApprovedFileMutationPolicy(
     contentHash: raw.contentHash,
     byteLength: raw.byteLength,
     ...(Array.isArray(raw.patchOps) ? { patchOps: normalizePatchOps(raw.patchOps) } : {}),
+    ...(validationPlan ? { validationPlan } : {}),
     purpose: raw.purpose,
     purposeHash: raw.purposeHash,
     risk: raw.risk,
@@ -391,6 +456,9 @@ export function compareAoiApprovedFileMutationApproval(params: {
   }
   if (approved.purposeHash !== params.current.purposeHash) {
     reasons.push('approval_purpose_changed');
+  }
+  if (JSON.stringify(approved.validationPlan) !== JSON.stringify(params.current.validationPlan)) {
+    reasons.push('approval_validation_changed');
   }
   for (const reason of compareAoiApprovalSandboxPreviews({
     approved: approved.approvalSandbox,

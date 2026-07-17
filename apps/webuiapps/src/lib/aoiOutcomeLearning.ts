@@ -4,6 +4,7 @@ import type {
   AoiFollowThroughEvent,
   AoiFollowThroughResult,
   AoiLearningSignalKind,
+  AoiExecutionOutcomeEvidence,
   AoiOutcomeLearningAdjustment,
   AoiOutcomeLearningDirection,
   AoiOutcomeLearningSummary,
@@ -25,6 +26,7 @@ export interface AoiOutcomeSignalInput {
   id?: string;
   sessionPath: string;
   eventId?: string;
+  sourceOutcomeId?: string;
   sourceProposalId?: string;
   sourceDecisionId?: string;
   sourceWorkOrderId?: string;
@@ -36,10 +38,12 @@ export interface AoiOutcomeSignalInput {
   confidence?: number;
   explicitLabelRef?: string;
   explicitLabel?: string;
+  explicitCorrection?: string;
   topicKey?: string;
   sourceKey?: string;
   deliveryMode?: AoiFollowThroughDeliveryMode;
   validationPassed?: boolean;
+  executionEvidence?: AoiExecutionOutcomeEvidence;
   evidenceRefs?: readonly string[];
   privacyState?: AoiOutcomePrivacyState;
   createdAt?: number;
@@ -86,6 +90,7 @@ export function deriveAoiExecutedActionOutcomeSignal(params: {
   actionKind: 'file-mutation' | 'app-action' | 'connector-call';
   auditId: string;
   ok: boolean;
+  executionEvidence?: AoiExecutionOutcomeEvidence;
 }): Partial<AoiOutcomeSignalRecord> & Partial<AoiOutcomeSignalInput> {
   return {
     eventId: `executed-action:${params.actionKind}:${params.auditId}`,
@@ -96,6 +101,7 @@ export function deriveAoiExecutedActionOutcomeSignal(params: {
     sourceDecisionId: params.decisionId,
     sourceValidationRef: `aoi-${params.actionKind}-audit:${params.auditId}`,
     validationPassed: params.ok,
+    ...(params.executionEvidence ? { executionEvidence: params.executionEvidence } : {}),
   };
 }
 
@@ -204,6 +210,60 @@ function normalizePrivacyState(value: unknown): AoiOutcomePrivacyState {
   return 'metadata_only';
 }
 
+function normalizeExecutionOutcomeEvidence(
+  value: unknown,
+): AoiExecutionOutcomeEvidence | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const raw = value as Partial<AoiExecutionOutcomeEvidence>;
+  const attemptId = sanitizeText(raw.attemptId, '', 160);
+  const actionKind = raw.actionKind;
+  if (
+    !attemptId ||
+    (actionKind !== 'file_write' &&
+      actionKind !== 'file_patch' &&
+      actionKind !== 'file_delete' &&
+      actionKind !== 'run_command' &&
+      actionKind !== 'app_action' &&
+      actionKind !== 'connector_call') ||
+    (raw.validationStatus !== 'not_run' &&
+      raw.validationStatus !== 'passed' &&
+      raw.validationStatus !== 'failed') ||
+    typeof raw.rollbackAttempted !== 'boolean' ||
+    typeof raw.rollbackSucceeded !== 'boolean'
+  ) {
+    return undefined;
+  }
+  const normalizeHash = (candidate: unknown): string | undefined => {
+    if (typeof candidate !== 'string') {
+      return undefined;
+    }
+    const normalized = candidate.trim().toLowerCase();
+    return /^[a-f0-9]{8,128}$/.test(normalized) ? normalized : undefined;
+  };
+  const targetBeforeSha256 =
+    raw.targetBeforeSha256 === 'absent' ? 'absent' : normalizeHash(raw.targetBeforeSha256);
+  return {
+    version: 1,
+    attemptId,
+    actionKind,
+    ...(normalizeHash(raw.approvalFingerprint)
+      ? { approvalFingerprint: normalizeHash(raw.approvalFingerprint) }
+      : {}),
+    ...(normalizeHash(raw.checkpointFingerprint)
+      ? { checkpointFingerprint: normalizeHash(raw.checkpointFingerprint) }
+      : {}),
+    ...(targetBeforeSha256 ? { targetBeforeSha256 } : {}),
+    ...(normalizeHash(raw.targetAfterSha256)
+      ? { targetAfterSha256: normalizeHash(raw.targetAfterSha256) }
+      : {}),
+    validationStatus: raw.validationStatus,
+    rollbackAttempted: raw.rollbackAttempted,
+    rollbackSucceeded: raw.rollbackSucceeded,
+  };
+}
+
 function defaultSignalKind(input: AoiOutcomeSignalInput): AoiLearningSignalKind {
   if (input.explicitLabelRef) {
     return 'explicit_label';
@@ -268,6 +328,21 @@ function defaultPolicy(input: AoiOutcomeSignalInput): OutcomePolicy {
         magnitude: 0.28,
         reason: 'Rejected work order reduces readiness for similar preparation.',
       };
+    case 'user_feedback': {
+      const useful = input.explicitLabel === 'useful';
+      const labeled = Boolean(input.explicitLabel?.trim());
+      return {
+        confidence: labeled ? 0.72 : 0.5,
+        action: useful ? 'accepted' : labeled ? 'dismissed' : 'ignored',
+        result: useful ? 'positive' : labeled ? 'negative' : 'neutral',
+        target: 'readiness',
+        direction: useful ? 'boost' : labeled ? 'suppress' : 'neutral',
+        magnitude: labeled ? 0.24 : 0,
+        reason: labeled
+          ? 'Explicit user feedback calibrates readiness for similar results.'
+          : 'User feedback requires an explicit label before it can calibrate readiness.',
+      };
+    }
     case 'validation_run':
       return {
         confidence: input.validationPassed === false ? 0.5 : 0.38,
@@ -343,6 +418,7 @@ function normalizeOutcomeKind(value: unknown): AoiOutcomeSignalKind | null {
     value === 'direct_chat_dismissed' ||
     value === 'work_order_approved' ||
     value === 'work_order_rejected' ||
+    value === 'user_feedback' ||
     value === 'validation_run' ||
     value === 'commit_created' ||
     value === 'proposal_executed' ||
@@ -389,15 +465,19 @@ export function normalizeAoiOutcomeSignalRecord(
   const policy = defaultPolicy(policyInput);
   const fallbackSignalKind = defaultSignalKind(policyInput);
   const requestedSignalKind = normalizeSignalKind(input.signalKind, fallbackSignalKind);
-  const signalKind = explicitLabelRef
-    ? 'explicit_label'
-    : requestedSignalKind === 'explicit_label'
-      ? fallbackSignalKind === 'explicit_label'
+  const signalKind =
+    outcomeKind === 'user_correction'
+      ? 'explicit_correction'
+      : explicitLabelRef
         ? 'explicit_label'
-        : 'passive_outcome'
-      : requestedSignalKind;
+        : requestedSignalKind === 'explicit_label'
+          ? fallbackSignalKind === 'explicit_label'
+            ? 'explicit_label'
+            : 'passive_outcome'
+          : requestedSignalKind;
   const createdAt = Number.isFinite(input.createdAt) ? Number(input.createdAt) : now;
   const explicitLabel = sanitizeText(input.explicitLabel, '', 120);
+  const explicitCorrection = sanitizeText(input.explicitCorrection, '', 1000);
   const existingAdjustment = input.inferredAdjustment;
   const confidence = clamp(
     typeof input.confidence === 'number' ? input.confidence : policy.confidence,
@@ -418,6 +498,7 @@ export function normalizeAoiOutcomeSignalRecord(
   const evidenceRefs = uniqueStrings(
     [
       `outcome:${eventId}`,
+      input.sourceOutcomeId ? `outcome:${input.sourceOutcomeId}` : undefined,
       input.sourceProposalId ? `proposal:${input.sourceProposalId}` : undefined,
       input.sourceDecisionId ? `decision:${input.sourceDecisionId}` : undefined,
       input.sourceWorkOrderId ? `bounded-work-order:${input.sourceWorkOrderId}` : undefined,
@@ -429,12 +510,16 @@ export function normalizeAoiOutcomeSignalRecord(
     ],
     MAX_REFS,
   );
+  const executionEvidence = normalizeExecutionOutcomeEvidence(input.executionEvidence);
 
   return {
     version: 1,
     id,
     sessionPath,
     eventId,
+    ...(sanitizeText(input.sourceOutcomeId, '', 160)
+      ? { sourceOutcomeId: sanitizeText(input.sourceOutcomeId, '', 160) }
+      : {}),
     ...(sanitizeText(input.sourceProposalId, '', 160)
       ? { sourceProposalId: sanitizeText(input.sourceProposalId, '', 160) }
       : {}),
@@ -454,11 +539,15 @@ export function normalizeAoiOutcomeSignalRecord(
       ? { sourceChatRef: sanitizeText(input.sourceChatRef, '', 180) }
       : {}),
     outcomeKind,
+    ...(typeof input.validationPassed === 'boolean'
+      ? { validationPassed: input.validationPassed }
+      : {}),
     signalKind,
     confidence,
     inferredAdjustment,
     ...(explicitLabelRef ? { explicitLabelRef } : {}),
     ...(explicitLabel ? { explicitLabel } : {}),
+    ...(explicitCorrection ? { explicitCorrection } : {}),
     ...(normalizeAoiFollowThroughKey(input.topicKey)
       ? { topicKey: normalizeAoiFollowThroughKey(input.topicKey) }
       : {}),
@@ -467,6 +556,7 @@ export function normalizeAoiOutcomeSignalRecord(
       : {}),
     deliveryMode: normalizeDeliveryMode(input.deliveryMode),
     result: policy.result,
+    ...(executionEvidence ? { executionEvidence } : {}),
     evidenceRefs,
     privacyState: normalizePrivacyState(input.privacyState),
     createdAt,
@@ -503,7 +593,8 @@ export function buildAoiFollowThroughEventFromOutcomeSignal(
       outcomeKind: outcome.outcomeKind,
       confidence: outcome.confidence,
       learningEffect: outcome.inferredAdjustment,
-      trustIncreaseEligible: Boolean(outcome.explicitLabelRef),
+      trustIncreaseEligible:
+        outcome.signalKind === 'explicit_label' && Boolean(outcome.explicitLabelRef),
       result: outcome.result,
       timingLabel: `outcome ${outcome.outcomeKind}`,
       evidenceRefs: outcome.evidenceRefs,
@@ -514,6 +605,35 @@ export function buildAoiFollowThroughEventFromOutcomeSignal(
   )!;
 }
 
+export function getAoiOutcomeSignalSemanticKey(outcome: AoiOutcomeSignalRecord): string {
+  const sourceOutcomeId = normalizeWhitespace(outcome.sourceOutcomeId ?? '');
+  if (sourceOutcomeId && outcome.signalKind === 'explicit_label' && outcome.explicitLabel) {
+    return `explicit-label:${sourceOutcomeId}:${normalizeWhitespace(outcome.explicitLabel).toLocaleLowerCase('en-US')}`;
+  }
+  if (
+    sourceOutcomeId &&
+    outcome.signalKind === 'explicit_correction' &&
+    outcome.explicitCorrection
+  ) {
+    return `explicit-correction:${sourceOutcomeId}:${normalizeWhitespace(outcome.explicitCorrection)}`;
+  }
+  return `event:${outcome.eventId}`;
+}
+
+export function dedupeAoiOutcomeSignalRecords(
+  outcomes: readonly AoiOutcomeSignalRecord[],
+): AoiOutcomeSignalRecord[] {
+  const seen = new Set<string>();
+  return outcomes.filter((outcome) => {
+    const key = getAoiOutcomeSignalSemanticKey(outcome);
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
+}
+
 export function buildAoiOutcomeLearningSummary(params: {
   sessionPath: string;
   outcomes: readonly Partial<AoiOutcomeSignalRecord | AoiOutcomeSignalInput>[];
@@ -522,11 +642,17 @@ export function buildAoiOutcomeLearningSummary(params: {
 }): AoiOutcomeLearningSummary {
   const now = params.now ?? DEFAULT_NOW;
   const sessionPath = normalizeAoiAutonomySessionPath(params.sessionPath) ?? params.sessionPath;
-  const outcomes = params.outcomes
-    .map((item) => normalizeAoiOutcomeSignalRecord(item as RawOutcomeSignalInput, sessionPath, now))
-    .filter((item): item is AoiOutcomeSignalRecord => item !== null)
-    .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id));
-  const explicitLabelLinkedCount = outcomes.filter((item) => item.explicitLabelRef).length;
+  const outcomes = dedupeAoiOutcomeSignalRecords(
+    params.outcomes
+      .map((item) =>
+        normalizeAoiOutcomeSignalRecord(item as RawOutcomeSignalInput, sessionPath, now),
+      )
+      .filter((item): item is AoiOutcomeSignalRecord => item !== null)
+      .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id)),
+  );
+  const explicitLabelLinkedCount = outcomes.filter(
+    (item) => item.signalKind === 'explicit_label' && item.explicitLabelRef,
+  ).length;
   const explicitCorrectionCount = outcomes.filter(
     (item) => item.signalKind === 'explicit_correction',
   ).length;
@@ -579,9 +705,11 @@ export function buildAoiOutcomeLearningSummary(params: {
       outcomes.map((item) => {
         const target = item.sourceProposalId
           ? `proposal ${item.sourceProposalId}`
-          : item.sourceChatRef
-            ? `chat ${item.sourceChatRef}`
-            : item.eventId;
+          : item.sourceOutcomeId
+            ? `outcome ${item.sourceOutcomeId}`
+            : item.sourceChatRef
+              ? `chat ${item.sourceChatRef}`
+              : item.eventId;
         return `${target} -> ${item.outcomeKind} (${item.result}, confidence ${item.confidence.toFixed(
           2,
         )})`;

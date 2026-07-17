@@ -232,6 +232,10 @@ function summarizeIdeFileToolResult(result: string): string {
       source?: string;
       line_count?: number;
       char_count?: number;
+      byte_count?: number | null;
+      modified_at?: number | null;
+      sha256?: string | null;
+      hash_scope?: string | null;
       range?: unknown;
       content_truncated?: boolean;
       content?: string;
@@ -278,6 +282,10 @@ function summarizeIdeFileToolResult(result: string): string {
       source: parsed.source ?? null,
       line_count: parsed.line_count ?? null,
       char_count: parsed.char_count ?? null,
+      byte_count: parsed.byte_count ?? null,
+      modified_at: parsed.modified_at ?? null,
+      sha256: parsed.sha256 ?? null,
+      hash_scope: parsed.hash_scope ?? null,
       range: parsed.range ?? null,
       content_truncated: !!parsed.content_truncated,
       content:

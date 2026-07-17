@@ -49,9 +49,11 @@ export function buildAoiProposalOpenedSignal(
     return null;
   }
   const topicKey = trimmed(proposal.cooldownKey);
+  const key = `proposal_opened:${proposalId}`;
   return {
-    key: `proposal_opened:${proposalId}`,
+    key,
     input: {
+      eventId: key,
       outcomeKind: 'proposal_opened',
       sourceProposalId: proposalId,
       ...(topicKey ? { topicKey } : {}),
@@ -69,9 +71,11 @@ export function buildAoiProposalIgnoredSignal(
   }
   const topicKey = trimmed(proposal.cooldownKey);
   const decisionId = trimmed(opts.decisionId);
+  const key = `proposal_ignored:${proposalId}`;
   return {
-    key: `proposal_ignored:${proposalId}`,
+    key,
     input: {
+      eventId: key,
       outcomeKind: 'proposal_ignored',
       sourceProposalId: proposalId,
       ...(decisionId ? { sourceDecisionId: decisionId } : {}),
@@ -93,9 +97,11 @@ export function buildAoiDirectChatDismissedSignal(
         .filter((ref) => typeof ref === 'string' && ref.trim().length > 0)
         .slice(0, 8)
     : [];
+  const key = `direct_chat_dismissed:${cardId}`;
   return {
-    key: `direct_chat_dismissed:${cardId}`,
+    key,
     input: {
+      eventId: key,
       outcomeKind: 'direct_chat_dismissed',
       sourceChatRef: cardId,
       ...(topicKey ? { topicKey } : {}),

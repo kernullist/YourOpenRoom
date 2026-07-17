@@ -1,18 +1,25 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeAoiProposal } from '../aoiAutonomyExecution';
+import { applyAoiApprovedFileMutation } from '../aoiApprovedFileMutationRunner';
 import {
   applyAoiProposalDecision,
   loadAoiActiveProposals,
   loadAoiFileMutationAuditRecords,
+  loadAoiOutcomeSignalRecords,
   saveAoiActiveProposals,
   saveAoiAutonomyPolicy,
 } from '../aoiAutonomyStore';
 import type { AoiProposal } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 function makeTempRoot(): string {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-file-mutation-exec-test-'));
@@ -269,5 +276,72 @@ describe('executeAoiProposal() file mutations', () => {
     expect(audits).toHaveLength(1);
     expect(audits[0].operation).toBe('delete');
     expect(audits[0].applied).toBe(true);
+  });
+
+  it('records a failed canonical outcome and blocks the proposal after validation rollback', async () => {
+    const root = makeTempRoot();
+    const target = join(root, 'apps/sample/data/seed.json');
+    fs.mkdirSync(join(root, 'apps/sample/data'), { recursive: true });
+    fs.writeFileSync(target, 'before');
+    const proposal = makeFileWriteProposal({
+      acceptAction: {
+        kind: 'file_write',
+        params: {
+          path: 'apps/sample/data/seed.json',
+          content: 'approved',
+          purpose: 'Persist reviewed seed data',
+          validationPlan: {
+            version: 1,
+            expectedBeforeSha256: sha256('before'),
+            expectedAfterSha256: sha256('approved'),
+          },
+        },
+      },
+    });
+    saveAoiAutonomyPolicy(root, 'aoi/default', { enabled: true, previewMode: true, level: 'L5' });
+    saveAoiActiveProposals(root, 'aoi/default', [proposal]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: proposal.id,
+      action: 'accept',
+      now: 2500,
+    });
+    const result = await executeAoiProposal({
+      sessionsDir: root,
+      configFile: join(root, 'config.json'),
+      serverOrigin: 'http://127.0.0.1:3000',
+      workspaceRoot: root,
+      sessionPath: 'aoi/default',
+      proposalId: proposal.id,
+      decisionId: accepted.decision.id,
+      now: 3000,
+      dependencies: {
+        runApprovedFileMutation: ({ request, approvedPolicy, workspaceRoot, now }) =>
+          applyAoiApprovedFileMutation(request, {
+            workspaceRoot,
+            approvedPolicy,
+            now,
+            afterMutationBeforeValidation: (path) => {
+              fs.writeFileSync(path, 'tampered');
+            },
+          }),
+      },
+    });
+    expect(result.executed).toBe(false);
+    expect(result.outcome).toBe('failed');
+    expect(result.proposal.status).toBe('blocked');
+    expect(result.reasons).toContain('file_mutation_verification_failed');
+    expect(fs.readFileSync(target, 'utf8')).toBe('before');
+    const outcomes = loadAoiOutcomeSignalRecords(root, 'aoi/default', 3000);
+    expect(outcomes).toHaveLength(1);
+    expect(outcomes[0]).toMatchObject({
+      outcomeKind: 'proposal_executed',
+      result: 'failed',
+      sourceDecisionId: accepted.decision.id,
+      executionEvidence: {
+        validationStatus: 'failed',
+        rollbackAttempted: true,
+        rollbackSucceeded: true,
+      },
+    });
   });
 });

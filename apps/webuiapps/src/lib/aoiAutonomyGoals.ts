@@ -15,6 +15,7 @@ import type {
   AoiGoalStatus,
   AoiKiraOutcomeEvent,
   AoiObservation,
+  AoiOutcomeSignalRecord,
   AoiPlan,
   AoiPlanStep,
   AoiPlanStepKind,
@@ -66,6 +67,10 @@ export interface AoiGoalProgressUpdateResult {
 }
 
 export interface AoiKiraOutcomeGoalProgressResult extends AoiGoalProgressUpdateResult {
+  updatedOutcomeIds: string[];
+}
+
+export interface AoiOutcomeSignalGoalProgressResult extends AoiGoalProgressUpdateResult {
   updatedOutcomeIds: string[];
 }
 
@@ -1175,14 +1180,6 @@ function observationNeedsUserInput(observation: AoiObservation): boolean {
   );
 }
 
-function observationLooksCompleted(observation: AoiObservation): boolean {
-  return (
-    observation.riskSignals.includes('goal-completed') ||
-    /\b(?:completed|done|finished|resolved)\b/i.test(observation.summary) ||
-    /(?:완료|마무리|끝났|해결|달성)/u.test(observation.summary)
-  );
-}
-
 export function firstOpenStep(goal: AoiGoal): AoiPlanStep | null {
   return (
     goal.plan.steps.find((step) => step.status === 'pending' || step.status === 'blocked') ?? null
@@ -1270,7 +1267,6 @@ export function updateAoiGoalProgressFromObservations(params: {
     );
     const failedCount = matching.filter(observationLooksFailed).length;
     const needsInput = matching.some(observationNeedsUserInput);
-    const completed = matching.some(observationLooksCompleted);
 
     let nextGoal = {
       ...goal,
@@ -1292,29 +1288,6 @@ export function updateAoiGoalProgressFromObservations(params: {
           planStepId: step?.id,
         }),
       );
-    }
-
-    if (completed && evidenceRefs.length > 0) {
-      nextGoal = transitionGoal({
-        goal: nextGoal,
-        status: 'completed',
-        now,
-        evidenceRefs,
-      });
-      events.push(
-        makeProgressEvent({
-          goal: nextGoal,
-          kind: 'completed',
-          summary: `Goal "${goal.title}" has completion evidence.`,
-          now,
-          evidenceRefs,
-          observationIds,
-          fromStatus: goal.status,
-          toStatus: 'completed',
-        }),
-      );
-      nextArchived.unshift(nextGoal);
-      continue;
     }
 
     if ((needsInput || failedCount >= 2 || blockedByPolicy) && evidenceRefs.length > 0) {
@@ -1375,6 +1348,238 @@ export function updateAoiGoalProgressFromObservations(params: {
     activeGoals: nextActive,
     archivedGoals: nextArchived.slice(0, MAX_ARCHIVED_GOALS),
     events,
+  };
+}
+
+function outcomeSignalIsValidatedCompletion(outcome: AoiOutcomeSignalRecord): boolean {
+  if (outcome.privacyState === 'synthetic' || outcome.validationPassed !== true) {
+    return false;
+  }
+  if (
+    outcome.outcomeKind !== 'validation_run' &&
+    outcome.outcomeKind !== 'proposal_executed' &&
+    outcome.outcomeKind !== 'commit_created'
+  ) {
+    return false;
+  }
+  if (outcome.outcomeKind === 'commit_created') {
+    return Boolean(outcome.sourceCommitRef && outcome.sourceValidationRef);
+  }
+  return Boolean(outcome.sourceValidationRef);
+}
+
+function outcomeSignalRefs(outcome: AoiOutcomeSignalRecord): string[] {
+  return [
+    `outcome:${outcome.id}`,
+    `outcome:${outcome.eventId}`,
+    ...(outcome.sourceProposalId ? [`proposal:${outcome.sourceProposalId}`] : []),
+    ...(outcome.sourceDecisionId ? [`decision:${outcome.sourceDecisionId}`] : []),
+    ...(outcome.sourceValidationRef ? [outcome.sourceValidationRef] : []),
+    ...(outcome.sourceCommitRef ? [outcome.sourceCommitRef] : []),
+    ...outcome.evidenceRefs,
+  ];
+}
+
+function proposalMatchesGoal(proposal: AoiProposal, goal: AoiGoal): boolean {
+  return [...proposal.evidenceRefs, ...proposal.artifactRefs].some(
+    (ref) => ref === `goal:${goal.id}` || ref.startsWith(`goal:${goal.id}/step:`),
+  );
+}
+
+function outcomeSignalMatchesGoal(params: {
+  outcome: AoiOutcomeSignalRecord;
+  goal: AoiGoal;
+  proposals: readonly AoiProposal[];
+}): boolean {
+  if (
+    outcomeSignalRefs(params.outcome).some(
+      (ref) => ref === `goal:${params.goal.id}` || ref.startsWith(`goal:${params.goal.id}/step:`),
+    )
+  ) {
+    return true;
+  }
+  const sourceProposal = params.outcome.sourceProposalId
+    ? params.proposals.find((proposal) => proposal.id === params.outcome.sourceProposalId)
+    : undefined;
+  return sourceProposal ? proposalMatchesGoal(sourceProposal, params.goal) : false;
+}
+
+function findOutcomeSignalGoalStep(params: {
+  goal: AoiGoal;
+  outcome: AoiOutcomeSignalRecord;
+  proposals: readonly AoiProposal[];
+}): AoiPlanStep | null {
+  const sourceProposal = params.outcome.sourceProposalId
+    ? params.proposals.find((proposal) => proposal.id === params.outcome.sourceProposalId)
+    : undefined;
+  const refs = [
+    ...outcomeSignalRefs(params.outcome),
+    ...(sourceProposal?.evidenceRefs ?? []),
+    ...(sourceProposal?.artifactRefs ?? []),
+  ];
+  const stepPrefix = `goal:${params.goal.id}/step:`;
+  const directStepId = refs.find((ref) => ref.startsWith(stepPrefix))?.slice(stepPrefix.length);
+  if (directStepId) {
+    const direct = params.goal.plan.steps.find((step) => step.id === directStepId);
+    if (direct) {
+      return direct;
+    }
+  }
+  return params.goal.plan.steps.length === 1 ? firstOpenStep(params.goal) : null;
+}
+
+export function updateAoiGoalProgressFromOutcomeSignals(params: {
+  sessionsDir: string;
+  sessionPath: string;
+  outcomes: readonly AoiOutcomeSignalRecord[];
+  proposals?: readonly AoiProposal[];
+  now?: number;
+}): AoiOutcomeSignalGoalProgressResult {
+  const sessionPath = normalizeSessionPath(params.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const now = params.now ?? Date.now();
+  const proposals = params.proposals ?? [];
+  const activeGoals = loadAoiActiveGoals(params.sessionsDir, sessionPath);
+  const archivedGoals = loadAoiArchivedGoals(params.sessionsDir, sessionPath);
+  const nextActive: AoiGoal[] = [];
+  const nextArchived = [...archivedGoals];
+  const events: AoiGoalProgressEvent[] = [];
+  const updatedOutcomeIds: string[] = [];
+
+  for (const goal of activeGoals) {
+    if (goal.status !== 'active') {
+      nextActive.push(goal);
+      continue;
+    }
+    let nextGoal = goal;
+    let completed = false;
+    for (const outcome of params.outcomes) {
+      if (
+        !outcomeSignalIsValidatedCompletion(outcome) ||
+        !outcomeSignalMatchesGoal({ outcome, goal: nextGoal, proposals })
+      ) {
+        continue;
+      }
+      const evidenceRefs = [...new Set(outcomeSignalRefs(outcome))].slice(0, 16);
+      if (
+        nextGoal.plan.steps.length > 0 &&
+        nextGoal.plan.steps.every((item) => item.status === 'done')
+      ) {
+        nextGoal = transitionGoal({
+          goal: {
+            ...nextGoal,
+            updatedAt: now,
+            lastCheckedAt: now,
+            sourceRefs: [...new Set([...nextGoal.sourceRefs, ...evidenceRefs])].slice(0, 16),
+          },
+          status: 'completed',
+          now,
+          evidenceRefs,
+        });
+        updatedOutcomeIds.push(outcome.id);
+        events.push(
+          makeProgressEvent({
+            goal: nextGoal,
+            kind: 'completed',
+            summary: `Goal "${goal.title}" completed from validated outcome evidence.`,
+            now,
+            evidenceRefs,
+            proposalIds: outcome.sourceProposalId ? [outcome.sourceProposalId] : [],
+            fromStatus: goal.status,
+            toStatus: 'completed',
+          }),
+        );
+        completed = true;
+        break;
+      }
+      const step = findOutcomeSignalGoalStep({ goal: nextGoal, outcome, proposals });
+      if (!step || step.status === 'done') {
+        continue;
+      }
+      nextGoal = {
+        ...nextGoal,
+        updatedAt: now,
+        lastCheckedAt: now,
+        sourceRefs: [...new Set([...nextGoal.sourceRefs, ...evidenceRefs])].slice(0, 16),
+        plan: {
+          ...nextGoal.plan,
+          updatedAt: now,
+          steps: nextGoal.plan.steps.map((item) =>
+            item.id === step.id
+              ? {
+                  ...item,
+                  status: 'done' as const,
+                  evidenceRefs: [...new Set([...item.evidenceRefs, ...evidenceRefs])].slice(0, 12),
+                }
+              : item,
+          ),
+        },
+      };
+      updatedOutcomeIds.push(outcome.id);
+      if (nextGoal.plan.steps.every((item) => item.status === 'done')) {
+        nextGoal = transitionGoal({
+          goal: nextGoal,
+          status: 'completed',
+          now,
+          evidenceRefs,
+        });
+        events.push(
+          makeProgressEvent({
+            goal: nextGoal,
+            kind: 'completed',
+            summary: `Goal "${goal.title}" completed from validated outcome evidence.`,
+            now,
+            evidenceRefs,
+            proposalIds: outcome.sourceProposalId ? [outcome.sourceProposalId] : [],
+            planStepId: step.id,
+            fromStatus: goal.status,
+            toStatus: 'completed',
+          }),
+        );
+        completed = true;
+        break;
+      }
+      events.push(
+        makeProgressEvent({
+          goal: nextGoal,
+          kind: 'progress',
+          summary: `Validated outcome completed plan step "${step.title}".`,
+          now,
+          evidenceRefs,
+          proposalIds: outcome.sourceProposalId ? [outcome.sourceProposalId] : [],
+          planStepId: step.id,
+        }),
+      );
+    }
+    if (completed) {
+      nextArchived.unshift(nextGoal);
+    } else {
+      nextActive.push(nextGoal);
+    }
+  }
+
+  saveAoiActiveGoals(params.sessionsDir, sessionPath, nextActive);
+  saveAoiArchivedGoals(params.sessionsDir, sessionPath, nextArchived);
+  for (const event of events) {
+    appendAoiGoalProgressEvent(params.sessionsDir, event);
+    const goal = [...nextActive, ...nextArchived].find((item) => item.id === event.goalId);
+    if (goal) {
+      recordGoalRelations({
+        sessionsDir: params.sessionsDir,
+        goal,
+        evidenceRefs: event.evidenceRefs,
+        proposalIds: event.proposalIds,
+        now,
+      });
+    }
+  }
+  return {
+    activeGoals: nextActive,
+    archivedGoals: nextArchived.slice(0, MAX_ARCHIVED_GOALS),
+    events,
+    updatedOutcomeIds: [...new Set(updatedOutcomeIds)],
   };
 }
 

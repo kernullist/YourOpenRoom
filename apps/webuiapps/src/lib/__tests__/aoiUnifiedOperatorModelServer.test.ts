@@ -6,6 +6,7 @@ import {
   loadAoiUnifiedOperatorSnapshotFromStores,
   loadAoiUnifiedOperatorSummaryFromStores,
 } from '../aoiUnifiedOperatorModelServer';
+import { saveAoiInterestProfile } from '../aoiProactiveBriefStore';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 
 const SESSION_PATH = 'aoi/default';
@@ -26,6 +27,7 @@ function memory(partial: Partial<AoiMemoryEntry>): AoiMemoryEntry {
     createdAt: 1,
     updatedAt: 1,
     sourceEpisodeIds: ['ep-1'],
+    sessionPath: SESSION_PATH,
     tags: [],
     entities: [],
     ...partial,
@@ -93,6 +95,56 @@ describe('loadAoiUnifiedOperatorSnapshotFromStores (P5.3)', () => {
     expect(snapshot.actionAuthority.actionAuthority).toBe('display_only');
     expect(snapshot.actionAuthority.mutationCount).toBe(0);
     expect(Array.isArray(snapshot.interests)).toBe(true);
+  });
+
+  it('does not load memories owned by another session', () => {
+    seedMemories([
+      memory({
+        id: 'mem-session-b',
+        sessionPath: 'aoi/session-b',
+        updatedAt: NOW,
+      }),
+    ]);
+    saveAoiInterestProfile(
+      sessionsDir,
+      SESSION_PATH,
+      {
+        version: 1,
+        sessionPath: SESSION_PATH,
+        topics: [
+          {
+            version: 1,
+            id: 'topic-session-a',
+            sessionPath: SESSION_PATH,
+            label: 'Session A Topic',
+            normalizedLabel: 'session a topic',
+            aliases: [],
+            source: 'memory',
+            memoryIds: ['mem-session-b'],
+            evidenceRefs: ['memory:mem-session-b'],
+            confidence: 0.9,
+            importance: 0.8,
+            noveltyPreference: 0.7,
+            currentInfoPreference: 0.7,
+            muted: false,
+            pinned: false,
+            cooldownKey: 'interest:session-a-topic',
+            createdAt: 1,
+            updatedAt: 1,
+          },
+        ],
+        generatedAt: 1,
+        sourceMemoryCount: 1,
+        warnings: [],
+      },
+      NOW,
+    );
+    const snapshot = loadAoiUnifiedOperatorSnapshotFromStores(sessionsDir, {
+      sessionPath: SESSION_PATH,
+      now: NOW,
+    });
+    expect(snapshot.interests[0]?.freshness).toBe('expired');
+    expect(snapshot.interests[0]?.confidence).toBeLessThan(0.5);
   });
 
   it('summarizes into a display_only operator summary', () => {

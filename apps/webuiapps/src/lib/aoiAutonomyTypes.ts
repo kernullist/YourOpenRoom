@@ -151,6 +151,10 @@ export type AoiOutcomeSignalKind =
   | 'direct_chat_dismissed'
   | 'work_order_approved'
   | 'work_order_rejected'
+  // Explicit user evaluation of a concrete proposal result. This is distinct
+  // from a correction: useful/not-useful labels calibrate the result, while a
+  // user_correction carries a bounded negative source/safety adjustment.
+  | 'user_feedback'
   | 'validation_run'
   | 'commit_created'
   // P5.2: a proposal's real executed action (file mutation / app action / connector
@@ -178,11 +182,31 @@ export interface AoiOutcomeLearningAdjustment {
   reason: string;
 }
 
+export interface AoiExecutionOutcomeEvidence {
+  version: 1;
+  attemptId: string;
+  actionKind:
+    | 'file_write'
+    | 'file_patch'
+    | 'file_delete'
+    | 'run_command'
+    | 'app_action'
+    | 'connector_call';
+  approvalFingerprint?: string;
+  checkpointFingerprint?: string;
+  targetBeforeSha256?: string | 'absent';
+  targetAfterSha256?: string;
+  validationStatus: 'not_run' | 'passed' | 'failed';
+  rollbackAttempted: boolean;
+  rollbackSucceeded: boolean;
+}
+
 export interface AoiOutcomeSignalRecord {
   version: 1;
   id: string;
   sessionPath: string;
   eventId: string;
+  sourceOutcomeId?: string;
   sourceProposalId?: string;
   sourceDecisionId?: string;
   sourceWorkOrderId?: string;
@@ -190,15 +214,18 @@ export interface AoiOutcomeSignalRecord {
   sourceCommitRef?: string;
   sourceChatRef?: string;
   outcomeKind: AoiOutcomeSignalKind;
+  validationPassed?: boolean;
   signalKind: AoiLearningSignalKind;
   confidence: number;
   inferredAdjustment: AoiOutcomeLearningAdjustment;
   explicitLabelRef?: string;
   explicitLabel?: string;
+  explicitCorrection?: string;
   topicKey?: string;
   sourceKey?: string;
   deliveryMode?: AoiFollowThroughDeliveryMode;
   result: AoiFollowThroughResult;
+  executionEvidence?: AoiExecutionOutcomeEvidence;
   evidenceRefs: string[];
   privacyState: AoiOutcomePrivacyState;
   createdAt: number;
@@ -2041,11 +2068,13 @@ export type AoiPreparedActionPlanStatus = 'ready' | 'blocked';
 export type AoiCheckpointPlanKind =
   | 'existing_git_state'
   | 'kira_isolated_worktree'
+  | 'approved_runner_checkpoint'
   | 'manual_checkpoint_required'
   | 'not_applicable';
 
 export type AoiRollbackPlanKind =
   | 'kira_review_reject_or_revert'
+  | 'approved_runner_checkpoint_restore'
   | 'research_cancel_or_ignore'
   | 'validation_only_no_mutation'
   | 'manual_revert_required'
@@ -2369,6 +2398,16 @@ export interface AoiFileMutationPatchOp {
   expectedCount?: number;
 }
 
+export interface AoiFileMutationValidationPlan {
+  version: 1;
+  // The exact target state reviewed by the user. `absent` is valid only when
+  // the approved operation is expected to create a new file.
+  expectedBeforeSha256: string | 'absent';
+  // The exact bytes that must exist after the mutation. A mismatch triggers
+  // checkpoint rollback before the attempt can be reported as successful.
+  expectedAfterSha256: string;
+}
+
 export type AoiFileMutationBlockReason =
   | 'missing_path'
   | 'path_not_relative'
@@ -2398,13 +2437,17 @@ export type AoiFileMutationBlockReason =
   | 'approval_fingerprint_changed'
   | 'approval_sandbox_missing'
   | 'rollback_recovery_evidence_missing'
+  | 'validation_plan_missing'
+  | 'validation_plan_invalid'
+  | 'target_fingerprint_mismatch'
   | 'workspace_root_missing'
   | 'checkpoint_failed'
   | 'patch_target_missing'
   | 'patch_anchor_mismatch'
   | 'delete_target_missing'
   | 'execution_failed'
-  | 'verification_failed';
+  | 'verification_failed'
+  | 'rollback_failed';
 
 export interface AoiApprovedFileMutationRequest {
   version: 1;
@@ -2415,6 +2458,7 @@ export interface AoiApprovedFileMutationRequest {
   path: string;
   content?: string;
   patchOps?: AoiFileMutationPatchOp[];
+  validationPlan?: AoiFileMutationValidationPlan;
   purpose: string;
   risk: AoiAutonomyRisk;
   requestedAt: number;
@@ -2434,6 +2478,7 @@ export interface AoiApprovedFileMutationPolicy {
   contentHash: string;
   byteLength: number;
   patchOps?: AoiFileMutationPatchOp[];
+  validationPlan?: AoiFileMutationValidationPlan;
   purpose: string;
   purposeHash: string;
   risk: AoiAutonomyRisk;
@@ -2466,6 +2511,12 @@ export interface AoiFileMutationAuditRecord {
   bytesAfter: number | null;
   contentHash: string;
   checkpointId?: string;
+  checkpointFingerprint?: string;
+  targetBeforeSha256?: string | 'absent';
+  targetAfterSha256?: string;
+  validationStatus?: 'not_run' | 'passed' | 'failed';
+  rollbackAttempted?: boolean;
+  rollbackSucceeded?: boolean;
   evidenceRefs: string[];
   approvalFingerprint: string;
   approvalSandboxPreviewHash?: string;
@@ -2483,6 +2534,12 @@ export interface AoiApprovedFileMutationResult {
   bytesAfter: number | null;
   checkpointId?: string;
   checkpoint?: AoiActionCheckpoint;
+  checkpointFingerprint?: string;
+  targetBeforeSha256?: string | 'absent';
+  targetAfterSha256?: string;
+  validationStatus: 'not_run' | 'passed' | 'failed';
+  rollbackAttempted: boolean;
+  rollbackSucceeded: boolean;
   blockReasons: AoiFileMutationBlockReason[];
   auditRecord: AoiFileMutationAuditRecord;
   evidenceRefs: string[];

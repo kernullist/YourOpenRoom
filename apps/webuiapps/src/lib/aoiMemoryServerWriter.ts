@@ -1,4 +1,5 @@
 import * as fs from 'fs';
+import { createHash, randomUUID } from 'crypto';
 import { dirname, join } from 'path';
 import {
   buildAoiKiraAutomationMemoryCandidates,
@@ -16,6 +17,7 @@ import {
 } from './aoiMemoryShared';
 import type { AoiResearchManifest } from './aoiResearchTypes';
 import { attachAoiMemoryEmbeddings, type AoiEmbeddingProvider } from './aoiMemoryEmbedding';
+import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
 import { consolidateAoiMemories } from './aoiMemoryConsolidation';
 import {
   applyAoiMemoryDecay,
@@ -35,6 +37,23 @@ type AoiMemoryEpisodeInput = Omit<
   id?: string;
   createdAt?: number;
 };
+
+export interface AoiServerMemoryCorrectionInput {
+  sessionPath: string;
+  memoryId: string;
+  expectedContentSha256: string;
+  correctedContent: string;
+  episodeId: string;
+  now?: number;
+}
+
+export interface AoiServerMemoryCorrectionResult {
+  changed: boolean;
+  memory: AoiMemoryEntry;
+  previousContentSha256: string;
+  correctedContentSha256: string;
+  episodeId: string;
+}
 
 function clampScore(value: number, fallback: number): number {
   if (!Number.isFinite(value)) return fallback;
@@ -375,6 +394,34 @@ function writeJsonFile(filePath: string, value: unknown): void {
   fs.writeFileSync(filePath, JSON.stringify(value), 'utf-8');
 }
 
+function writeJsonFileAtomic(filePath: string, value: unknown): void {
+  fs.mkdirSync(dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${randomUUID().slice(0, 8)}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, JSON.stringify(value), 'utf-8');
+    fs.renameSync(tempPath, filePath);
+  } catch (error) {
+    try {
+      fs.rmSync(tempPath, { force: true });
+    } catch {
+      // Preserve the original write error.
+    }
+    throw error;
+  }
+}
+
+function sha256Text(value: string): string {
+  return createHash('sha256').update(Buffer.from(value, 'utf-8')).digest('hex');
+}
+
+function isSafeServerMemoryId(value: string): boolean {
+  return (
+    /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(value) &&
+    !value.includes('..') &&
+    !value.endsWith('.')
+  );
+}
+
 function listJsonFiles(dirPath: string): string[] {
   try {
     if (!fs.existsSync(dirPath) || !fs.statSync(dirPath).isDirectory()) return [];
@@ -429,6 +476,80 @@ export function loadServerAoiMemoriesByIds(
     }
   }
   return out;
+}
+
+export function updateServerAoiMemoryFromExplicitCorrection(
+  sessionsDir: string,
+  input: AoiServerMemoryCorrectionInput,
+): AoiServerMemoryCorrectionResult {
+  const sessionPath = normalizeAoiAutonomySessionPath(input.sessionPath);
+  if (!sessionPath) {
+    throw new Error('Invalid or missing sessionPath.');
+  }
+  const memoryId = input.memoryId.trim();
+  const episodeId = input.episodeId.trim();
+  if (!isSafeServerMemoryId(memoryId) || !isSafeServerMemoryId(episodeId)) {
+    throw new Error('Invalid memoryId or episodeId.');
+  }
+  const expectedContentSha256 = input.expectedContentSha256.trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/u.test(expectedContentSha256)) {
+    throw new Error('expectedContentSha256 must be a SHA-256 hex digest.');
+  }
+  const memory = loadServerAoiMemories(sessionsDir).find((item) => item.id === memoryId);
+  if (!memory || memory.sessionPath !== sessionPath || memory.status !== 'active') {
+    throw new Error('Active session-bound Aoi memory not found.');
+  }
+  const correctedContent =
+    memory.type === 'procedure'
+      ? sanitizeAoiProcedureContent(input.correctedContent)
+      : truncateAoiMemoryContent(input.correctedContent);
+  if (correctedContent.length < 8) {
+    throw new Error('Corrected memory content is too short.');
+  }
+  const currentContentSha256 = sha256Text(memory.content);
+  const correctedContentSha256 = sha256Text(correctedContent);
+  if (
+    currentContentSha256 === correctedContentSha256 &&
+    memory.sourceEpisodeIds.includes(episodeId)
+  ) {
+    return {
+      changed: false,
+      memory,
+      previousContentSha256: expectedContentSha256,
+      correctedContentSha256,
+      episodeId,
+    };
+  }
+  if (currentContentSha256 !== expectedContentSha256) {
+    throw new Error('Memory content fingerprint changed before correction.');
+  }
+  if (currentContentSha256 === correctedContentSha256) {
+    throw new Error('Corrected memory content must differ from the current content.');
+  }
+  const requestedNow = input.now ?? Date.now();
+  if (!Number.isFinite(requestedNow) || requestedNow <= memory.updatedAt) {
+    throw new Error('Memory correction timestamp must be newer than the current memory.');
+  }
+  const withoutEmbedding: AoiMemoryEntry = { ...memory };
+  delete withoutEmbedding.embedding;
+  delete withoutEmbedding.embeddingModel;
+  const updated: AoiMemoryEntry = {
+    ...withoutEmbedding,
+    content: correctedContent,
+    normalizedContent: normalizeMemoryContent(correctedContent),
+    hits: memory.hits + 1,
+    updatedAt: requestedNow,
+    sourceEpisodeIds: [...new Set([...memory.sourceEpisodeIds, episodeId])],
+    tags: [...new Set(['user-correction', ...memory.tags])].slice(0, 8),
+  };
+  writeJsonFileAtomic(memoryFilePath(sessionsDir, memoryId), updated);
+  return {
+    changed: true,
+    memory: updated,
+    previousContentSha256: currentContentSha256,
+    correctedContentSha256,
+    episodeId,
+  };
 }
 
 const MAX_SERVER_EMBED_BATCH = 32;

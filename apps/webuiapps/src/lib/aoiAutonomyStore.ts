@@ -201,6 +201,7 @@ export interface AoiProposalFeedbackInput {
   decisionId: string;
   feedbackCategory: unknown;
   feedbackNote?: unknown;
+  now?: number;
 }
 
 export interface AoiEnvironmentSourceUpdateInput {
@@ -1013,6 +1014,7 @@ function makeAoiProposalDecisionRecord(params: {
             path: actionParams.path,
             content: actionParams.content,
             patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+            validationPlan: actionParams.validationPlan ?? actionParams.validation_plan,
             purpose: actionParams.purpose ?? params.proposal.title,
             risk: params.proposal.risk,
             requestedAt: params.now,
@@ -2032,7 +2034,8 @@ export function loadAoiFollowThroughEvents(
     throw new Error('Invalid or missing sessionPath.');
   }
   const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
-  return readJsonLines(paths.followThroughEvents)
+  const uniqueById = new Map<string, AoiFollowThroughEvent>();
+  for (const item of readJsonLines(paths.followThroughEvents)
     .map((item) =>
       normalizeAoiFollowThroughEvent(
         item as Partial<AoiFollowThroughEvent>,
@@ -2040,8 +2043,13 @@ export function loadAoiFollowThroughEvents(
         now,
       ),
     )
-    .filter((item): item is AoiFollowThroughEvent => item !== null)
-    .sort((left, right) => right.createdAt - left.createdAt)
+    .filter((item): item is AoiFollowThroughEvent => item !== null)) {
+    if (!uniqueById.has(item.id)) {
+      uniqueById.set(item.id, item);
+    }
+  }
+  return [...uniqueById.values()]
+    .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
     .slice(0, Math.max(1, Math.min(MAX_FOLLOW_THROUGH_EVENTS, Math.trunc(limit))));
 }
 
@@ -2130,6 +2138,18 @@ export function appendAoiFollowThroughEvent(
     throw new Error('Invalid Aoi follow-through event.');
   }
   const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const existing = readJsonLines(paths.followThroughEvents)
+    .map((item) =>
+      normalizeAoiFollowThroughEvent(
+        item as Partial<AoiFollowThroughEvent>,
+        normalizedSessionPath,
+        now,
+      ),
+    )
+    .find((item): item is AoiFollowThroughEvent => item !== null && item.id === normalized.id);
+  if (existing) {
+    return existing;
+  }
   appendJsonLine(paths.followThroughEvents, normalized);
   const summary = buildAoiFollowThroughLearningSummary({
     sessionPath: normalizedSessionPath,
@@ -2160,7 +2180,8 @@ export function loadAoiOutcomeSignalRecords(
     throw new Error('Invalid or missing sessionPath.');
   }
   const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
-  return readJsonLines(paths.outcomeSignals)
+  const uniqueByEventId = new Map<string, AoiOutcomeSignalRecord>();
+  for (const item of readJsonLines(paths.outcomeSignals)
     .map((item) =>
       normalizeAoiOutcomeSignalRecord(
         item as Partial<AoiOutcomeSignalRecord>,
@@ -2168,7 +2189,12 @@ export function loadAoiOutcomeSignalRecords(
         now,
       ),
     )
-    .filter((item): item is AoiOutcomeSignalRecord => item !== null)
+    .filter((item): item is AoiOutcomeSignalRecord => item !== null)) {
+    if (!uniqueByEventId.has(item.eventId)) {
+      uniqueByEventId.set(item.eventId, item);
+    }
+  }
+  return [...uniqueByEventId.values()]
     .sort((left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id))
     .slice(0, Math.max(1, Math.min(MAX_OUTCOME_SIGNAL_RECORDS, Math.trunc(limit))));
 }
@@ -2210,6 +2236,21 @@ export function appendAoiOutcomeSignalRecord(
     throw new Error('Invalid Aoi outcome signal record.');
   }
   const paths = resolveAoiAutonomyPaths(sessionsDir, normalizedSessionPath);
+  const existing = readJsonLines(paths.outcomeSignals)
+    .map((item) =>
+      normalizeAoiOutcomeSignalRecord(
+        item as Partial<AoiOutcomeSignalRecord>,
+        normalizedSessionPath,
+        now,
+      ),
+    )
+    .find(
+      (item): item is AoiOutcomeSignalRecord =>
+        item !== null && item.eventId === normalized.eventId,
+    );
+  if (existing) {
+    return existing;
+  }
   appendJsonLine(paths.outcomeSignals, normalized);
   appendAoiFollowThroughEvent(
     sessionsDir,
@@ -2660,6 +2701,10 @@ export function recordAoiOperatorFeedbackLabelAction(
     paths.fieldShadowFeedbackLabels,
     normalizedSessionPath,
   );
+  const duplicate = existing.find((item) => item.id === action.id);
+  if (duplicate) {
+    return duplicate;
+  }
   writeJsonAtomic(paths.fieldShadowFeedbackLabels, [...existing, action]);
   // P1.1: a correction label is an organic user_correction outcome -- emit it into
   // the unified outcome-signal ledger so the outcome -> trust calibration learns
@@ -2850,6 +2895,74 @@ function recordAoiProposalFollowThroughEvent(params: {
   }
 }
 
+const AOI_PROPOSAL_CORRECTION_FEEDBACK = new Set<AoiProposalFeedbackCategory>([
+  'wrong_memory',
+  'wrong_evidence',
+  'wrong_source',
+  'stale',
+  'unsafe',
+]);
+
+export function deriveAoiProposalFeedbackOutcome(
+  decision: AoiProposalDecision,
+  now = Date.now(),
+): Partial<AoiOutcomeSignalRecord> | null {
+  const category = decision.feedbackCategory;
+  if (!category) {
+    return null;
+  }
+
+  const correction = AOI_PROPOSAL_CORRECTION_FEEDBACK.has(category);
+  const positive = category === 'useful';
+  const timingFeedback =
+    category === 'too_frequent' ||
+    category === 'too_much' ||
+    category === 'wrong_timing' ||
+    category === 'already_done';
+  const target =
+    category === 'unsafe'
+      ? 'safety'
+      : correction
+        ? 'source'
+        : timingFeedback
+          ? 'timing'
+          : 'readiness';
+  const direction = correction ? 'risk_up' : positive ? 'boost' : 'suppress';
+  const result = positive ? 'positive' : timingFeedback ? 'soft_negative' : 'negative';
+  const feedbackRef = `proposal-feedback:${decision.id}`;
+
+  return {
+    eventId: feedbackRef,
+    sessionPath: decision.sessionPath,
+    outcomeKind: correction ? 'user_correction' : 'user_feedback',
+    sourceProposalId: decision.proposalId,
+    sourceDecisionId: decision.id,
+    ...(correction ? {} : { explicitLabelRef: feedbackRef }),
+    explicitLabel: category,
+    topicKey: decision.cooldownKey,
+    sourceKey: decision.actionKind ?? decision.proposalTrigger,
+    result,
+    confidence: correction ? 0.62 : 0.72,
+    inferredAdjustment: {
+      version: 1,
+      target,
+      direction,
+      magnitude: correction ? 0.36 : positive ? 0.28 : 0.24,
+      reason: correction
+        ? `User correction '${category}' raises bounded risk for similar results.`
+        : `User feedback '${category}' calibrates similar proposal results.`,
+    },
+    privacyState: 'metadata_only',
+    evidenceRefs: [
+      feedbackRef,
+      `proposal:${decision.proposalId}`,
+      `decision:${decision.id}`,
+      ...(decision.evidenceRefs ?? []),
+    ],
+    createdAt: now,
+  };
+}
+
 export function applyAoiProposalFeedback(
   sessionsDir: string,
   sessionPath: string,
@@ -2875,6 +2988,12 @@ export function applyAoiProposalFeedback(
     return current;
   }
 
+  if (current.feedbackCategory && current.feedbackCategory !== feedbackCategory) {
+    throw new Error(
+      'Aoi proposal feedback is immutable; record a separate explicit correction instead.',
+    );
+  }
+
   const feedbackNote = normalizeOptionalText(input.feedbackNote, 240);
   const currentWithoutNote = { ...current };
   delete currentWithoutNote.feedbackNote;
@@ -2889,7 +3008,13 @@ export function applyAoiProposalFeedback(
         feedbackCategory,
       };
   writeJsonAtomic(join(paths.decisionsDir, `${next.id}.json`), next);
-  return normalizeLoadedAoiProposalDecision(next) ?? next;
+  const normalized = normalizeLoadedAoiProposalDecision(next) ?? next;
+  const now = input.now ?? Date.now();
+  const outcome = deriveAoiProposalFeedbackOutcome(normalized, now);
+  if (outcome) {
+    appendAoiOutcomeSignalRecord(sessionsDir, outcome, now);
+  }
+  return normalized;
 }
 
 export function applyAoiProposalDecision(

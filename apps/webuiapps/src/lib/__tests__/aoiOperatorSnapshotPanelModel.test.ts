@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAoiOperatorSnapshotRoute,
   parseAoiOperatorSnapshotResponse,
   summarizeAoiOperatorSnapshotHeadline,
 } from '../aoiOperatorSnapshotPanelModel';
 import type { AoiUnifiedOperatorSnapshotSummary } from '../aoiUnifiedOperatorModel';
+
+const SESSION_PATH = 'aoi/session-a';
 
 function summary(
   over: Partial<AoiUnifiedOperatorSnapshotSummary> = {},
@@ -11,7 +14,7 @@ function summary(
   return {
     version: 1,
     id: 'op-1',
-    sessionPath: 'aoi/default',
+    sessionPath: SESSION_PATH,
     generatedAt: 1,
     topInterestLabels: [],
     readiness: 'unknown',
@@ -30,15 +33,57 @@ function summary(
 describe('parseAoiOperatorSnapshotResponse (P5.3)', () => {
   it('returns the summary for a well-formed ok payload', () => {
     const s = summary({ readiness: 'ready' });
-    expect(parseAoiOperatorSnapshotResponse({ ok: true, summary: s })).toEqual(s);
+    expect(
+      parseAoiOperatorSnapshotResponse(
+        { ok: true, sessionPath: SESSION_PATH, summary: s },
+        SESSION_PATH,
+      ),
+    ).toEqual(s);
   });
 
   it('returns null when not ok, missing summary, or malformed', () => {
-    expect(parseAoiOperatorSnapshotResponse({ ok: false, summary: summary() })).toBeNull();
-    expect(parseAoiOperatorSnapshotResponse({ ok: true })).toBeNull();
-    expect(parseAoiOperatorSnapshotResponse({ ok: true, summary: 'nope' })).toBeNull();
-    expect(parseAoiOperatorSnapshotResponse(null)).toBeNull();
-    expect(parseAoiOperatorSnapshotResponse('not-an-object')).toBeNull();
+    expect(
+      parseAoiOperatorSnapshotResponse(
+        { ok: false, sessionPath: SESSION_PATH, summary: summary() },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+    expect(
+      parseAoiOperatorSnapshotResponse({ ok: true, sessionPath: SESSION_PATH }, SESSION_PATH),
+    ).toBeNull();
+    expect(
+      parseAoiOperatorSnapshotResponse(
+        { ok: true, sessionPath: SESSION_PATH, summary: 'nope' },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+    expect(parseAoiOperatorSnapshotResponse(null, SESSION_PATH)).toBeNull();
+    expect(parseAoiOperatorSnapshotResponse('not-an-object', SESSION_PATH)).toBeNull();
+  });
+
+  it('fails closed when either response session differs from the request', () => {
+    expect(
+      parseAoiOperatorSnapshotResponse(
+        { ok: true, sessionPath: 'aoi/session-b', summary: summary() },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+    expect(
+      parseAoiOperatorSnapshotResponse(
+        {
+          ok: true,
+          sessionPath: SESSION_PATH,
+          summary: summary({ sessionPath: 'aoi/session-b' }),
+        },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+  });
+
+  it('encodes the requested session in the route', () => {
+    expect(buildAoiOperatorSnapshotRoute('aoi/session one')).toBe(
+      '/api/aoi-autonomy/operator/unified-snapshot?sessionPath=aoi%2Fsession+one',
+    );
   });
 });
 

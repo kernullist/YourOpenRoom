@@ -94,10 +94,9 @@ export async function runAoiAutonomousExecuteLoop(params: {
   const resolveEligibility = params.deps?.resolveEligibility ?? conservativeResolve;
   const executeProposal = params.deps?.executeProposal;
   const proposalsById = new Map(
-    loadAoiActiveProposals(params.sessionsDir, params.sessionPath).map((proposal) => [
-      proposal.id,
-      proposal,
-    ]),
+    loadAoiActiveProposals(params.sessionsDir, params.sessionPath)
+      .filter((proposal) => proposal.status === 'active' || proposal.status === 'accepted')
+      .map((proposal) => [proposal.id, proposal]),
   );
   // CONSUME, never AUTHOR: only human-accepted decisions.
   const decisions = loadAoiProposalDecisions(params.sessionsDir, params.sessionPath).filter(
@@ -107,12 +106,17 @@ export async function runAoiAutonomousExecuteLoop(params: {
   let budgetRemaining = params.sessionBudget ?? DEFAULT_SESSION_BUDGET;
   const executed: string[] = [];
   const skipped: AoiAutonomousExecuteLoopSkipped[] = [];
+  const processedProposalIds = new Set<string>();
 
   for (const decision of decisions) {
+    if (processedProposalIds.has(decision.proposalId)) {
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['duplicate_attempt'] });
+      continue;
+    }
+    processedProposalIds.add(decision.proposalId);
     const proposal = proposalsById.get(decision.proposalId);
     if (!proposal) {
-      // The decision points at a proposal that is no longer active -- nothing to execute.
-      skipped.push({ proposalId: decision.proposalId, blockReasons: ['not_reversible_class'] });
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['proposal_not_executable'] });
       continue;
     }
     const input = resolveEligibility({
@@ -127,16 +131,28 @@ export async function runAoiAutonomousExecuteLoop(params: {
       continue;
     }
     // Eligible: self-invoke the executor (which independently re-checks the approval).
-    const result = executeProposal
-      ? await executeProposal({
-          proposalId: decision.proposalId,
-          decisionId: decision.id,
-          now: params.now,
-        })
-      : { executed: false };
+    if (!executeProposal) {
+      continue;
+    }
+    let result: { executed: boolean };
+    try {
+      result = await executeProposal({
+        proposalId: decision.proposalId,
+        decisionId: decision.id,
+        now: params.now,
+      });
+    } catch {
+      budgetRemaining -= 1;
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['execution_failed'] });
+      continue;
+    }
+    // Eligibility was consumed and an executor attempt occurred. Failed attempts
+    // spend budget too, preventing a retry storm from bypassing the session cap.
+    budgetRemaining -= 1;
     if (result.executed) {
       executed.push(decision.proposalId);
-      budgetRemaining -= 1;
+    } else {
+      skipped.push({ proposalId: decision.proposalId, blockReasons: ['execution_failed'] });
     }
   }
 

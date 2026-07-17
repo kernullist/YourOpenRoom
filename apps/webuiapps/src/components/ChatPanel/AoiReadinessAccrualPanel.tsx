@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 
 import {
-  AOI_READINESS_ACCRUAL_ROUTE,
+  buildAoiReadinessAccrualRoute,
   parseAoiReadinessAccrualResponse,
   summarizeAoiReadinessAccrual,
 } from '@/lib/aoiReadinessAccrualPanelModel';
@@ -11,35 +11,55 @@ import styles from './index.module.scss';
 
 // P5.4: surface the trust on-ramp readiness accrual (sample count -> directChatReady +
 // blockers) so the operator can see the trust ladder progress. Read-only display.
-export const AoiReadinessAccrualPanel: React.FC = () => {
+export const AoiReadinessAccrualPanel: React.FC<{ sessionPath: string }> = ({ sessionPath }) => {
   const [readiness, setReadiness] = useState<AoiProactiveTrendAdvisorReadiness | null>(null);
+  const [readinessSessionPath, setReadinessSessionPath] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError('');
-    try {
-      const response = await fetch(AOI_READINESS_ACCRUAL_ROUTE);
-      if (!response.ok) {
-        throw new Error(`status ${response.status}`);
+  const load = useCallback(
+    async (signal: AbortSignal) => {
+      setLoading(true);
+      setError('');
+      setReadiness(null);
+      setReadinessSessionPath('');
+      try {
+        const response = await fetch(buildAoiReadinessAccrualRoute(sessionPath), { signal });
+        if (!response.ok) {
+          throw new Error(`status ${response.status}`);
+        }
+        const parsed = parseAoiReadinessAccrualResponse(await response.json(), sessionPath);
+        if (signal.aborted) {
+          return;
+        }
+        if (parsed) {
+          setReadiness(parsed);
+          setReadinessSessionPath(sessionPath);
+        } else {
+          setError('No session-matched readiness accrual available.');
+        }
+      } catch (err) {
+        if (!signal.aborted) {
+          setError(`Failed to load readiness accrual: ${String(err)}`);
+        }
+      } finally {
+        if (!signal.aborted) {
+          setLoading(false);
+        }
       }
-      const parsed = parseAoiReadinessAccrualResponse(await response.json());
-      if (parsed) {
-        setReadiness(parsed);
-      } else {
-        setError('No readiness accrual available.');
-      }
-    } catch (err) {
-      setError(`Failed to load readiness accrual: ${String(err)}`);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+    },
+    [sessionPath],
+  );
 
   useEffect(() => {
-    void load();
+    const controller = new AbortController();
+    void load(controller.signal);
+    return () => {
+      controller.abort();
+    };
   }, [load]);
+
+  const currentReadiness = readinessSessionPath === sessionPath ? readiness : null;
 
   return (
     <div className={styles.settingsSectionCard} data-testid="aoi-readiness-accrual-panel">
@@ -49,16 +69,19 @@ export const AoiReadinessAccrualPanel: React.FC = () => {
       </div>
       {loading ? <div className={styles.modelHint}>Loading readiness...</div> : null}
       {error ? <div className={styles.aoiAutonomyError}>{error}</div> : null}
-      {readiness ? (
+      {currentReadiness ? (
         <div data-testid="aoi-readiness-accrual-body">
-          <div className={styles.modelHint}>{summarizeAoiReadinessAccrual(readiness)}</div>
-          <div>Status: {readiness.status}</div>
-          <div>Field samples: {readiness.sampleCount}</div>
-          <div>Direct-chat ready: {readiness.directChatReady ? 'yes' : 'no'}</div>
-          {readiness.directChatBlockedReasons.length > 0 ? (
-            <div>Blockers: {readiness.directChatBlockedReasons.join(', ')}</div>
+          <div className={styles.modelHint}>{summarizeAoiReadinessAccrual(currentReadiness)}</div>
+          <div>Session: {sessionPath}</div>
+          <div>Status: {currentReadiness.status}</div>
+          <div>Field samples: {currentReadiness.sampleCount}</div>
+          <div>Direct-chat ready: {currentReadiness.directChatReady ? 'yes' : 'no'}</div>
+          {currentReadiness.directChatBlockedReasons.length > 0 ? (
+            <div>Blockers: {currentReadiness.directChatBlockedReasons.join(', ')}</div>
           ) : null}
-          {readiness.summary ? <div className={styles.modelHint}>{readiness.summary}</div> : null}
+          {currentReadiness.summary ? (
+            <div className={styles.modelHint}>{currentReadiness.summary}</div>
+          ) : null}
         </div>
       ) : null}
     </div>

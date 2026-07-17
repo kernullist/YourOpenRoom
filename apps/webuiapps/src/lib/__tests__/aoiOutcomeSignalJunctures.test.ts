@@ -13,6 +13,7 @@ describe('buildAoiProposalOpenedSignal', () => {
     expect(signal).toEqual({
       key: 'proposal_opened:prop-1',
       input: {
+        eventId: 'proposal_opened:prop-1',
         outcomeKind: 'proposal_opened',
         sourceProposalId: 'prop-1',
         topicKey: 'topic-a',
@@ -22,7 +23,11 @@ describe('buildAoiProposalOpenedSignal', () => {
 
   it('omits topicKey when the proposal has no cooldownKey', () => {
     const signal = buildAoiProposalOpenedSignal({ id: 'prop-2' });
-    expect(signal?.input).toEqual({ outcomeKind: 'proposal_opened', sourceProposalId: 'prop-2' });
+    expect(signal?.input).toEqual({
+      eventId: 'proposal_opened:prop-2',
+      outcomeKind: 'proposal_opened',
+      sourceProposalId: 'prop-2',
+    });
   });
 
   it('returns null when the proposal id is missing or blank', () => {
@@ -40,6 +45,7 @@ describe('buildAoiProposalIgnoredSignal', () => {
     expect(signal).toEqual({
       key: 'proposal_ignored:prop-3',
       input: {
+        eventId: 'proposal_ignored:prop-3',
         outcomeKind: 'proposal_ignored',
         sourceProposalId: 'prop-3',
         sourceDecisionId: 'dec-9',
@@ -51,6 +57,7 @@ describe('buildAoiProposalIgnoredSignal', () => {
   it('omits the decision ref when not provided', () => {
     const signal = buildAoiProposalIgnoredSignal({ id: 'prop-4' });
     expect(signal?.input).toEqual({
+      eventId: 'proposal_ignored:prop-4',
       outcomeKind: 'proposal_ignored',
       sourceProposalId: 'prop-4',
     });
@@ -71,6 +78,7 @@ describe('buildAoiDirectChatDismissedSignal', () => {
     expect(signal).toEqual({
       key: 'direct_chat_dismissed:card-1',
       input: {
+        eventId: 'direct_chat_dismissed:card-1',
         outcomeKind: 'direct_chat_dismissed',
         sourceChatRef: 'card-1',
         topicKey: 'ue5-nanite',
@@ -92,6 +100,7 @@ describe('buildAoiDirectChatDismissedSignal', () => {
   it('omits evidenceRefs entirely when none survive', () => {
     const signal = buildAoiDirectChatDismissedSignal({ id: 'card-3', evidenceRefs: ['', '  '] });
     expect(signal?.input).toEqual({
+      eventId: 'direct_chat_dismissed:card-3',
       outcomeKind: 'direct_chat_dismissed',
       sourceChatRef: 'card-3',
     });

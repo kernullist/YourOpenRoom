@@ -689,7 +689,7 @@ function exactNextApproval(params: {
     return 'Approve the exact validation command preview with unchanged command, cwd, purpose, and risk.';
   }
   if (params.mutationCapable) {
-    return 'Approve this exact file/module scope, checkpoint, validation, and rollback boundary.';
+    return 'Approve this exact scope, checkpoint, post-action validation, and rollback boundary.';
   }
   return 'Preview only; no execution approval is required.';
 }
@@ -892,11 +892,23 @@ export function evaluateAoiBoundedWorkOrderPolicy(
   if (order.scope.unsafeScopeDetected) {
     blockedReasons.push('unsafe_file_or_module_scope');
   }
-  if (order.risk.mutationCapable && !order.scope.explicitScope) {
+  if (
+    order.risk.mutationCapable &&
+    order.allowedOperations.includes('edit_file') &&
+    !order.scope.explicitScope
+  ) {
     blockedReasons.push('missing_file_or_module_scope');
   }
-  if (order.risk.mutationCapable && order.commands.length <= 0) {
+  if (
+    order.commands.length <= 0 &&
+    (order.risk.commandCapable ||
+      (order.allowedOperations.includes('edit_file') &&
+        order.checkpoint.kind !== 'approved_runner_checkpoint'))
+  ) {
     blockedReasons.push('missing_validation_command_preview');
+  }
+  if (order.risk.mutationCapable && !order.validation.required) {
+    blockedReasons.push('missing_post_action_validation');
   }
   for (const command of order.commands) {
     for (const reason of command.blockReasons) {
@@ -1312,6 +1324,9 @@ function operationForProposalKind(kind: string | undefined): AoiBoundedWorkOrder
   if (kind === 'save_memory') {
     return ['save_memory'];
   }
+  if (kind === 'file_write' || kind === 'file_patch' || kind === 'file_delete') {
+    return ['edit_file'];
+  }
   if (kind === 'open_research_artifact' || kind === 'read_research_artifact') {
     return ['read', 'summarize'];
   }
@@ -1351,9 +1366,12 @@ export function buildAoiBoundedWorkOrderFromProposal(
     'affectedFiles',
     'affected_files',
     'likelyFilesOrModules',
+    'path',
   ]);
   const modules = getStringListParam(params, ['module', 'modules', 'scope', 'surfaces']);
-  const generated = options.generated ?? proposal.trigger !== 'manual';
+  const generated =
+    options.generated ??
+    (proposal.trigger !== 'manual' && !proposal.trigger.startsWith('user_authorized_'));
   return createAoiBoundedWorkOrder(
     {
       sessionPath: proposal.sessionPath,

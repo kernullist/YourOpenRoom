@@ -51,6 +51,9 @@ interface IdeFileContent {
   sourceContentTruncated?: boolean;
   lineCount?: number;
   charCount?: number;
+  byteCount?: number;
+  modifiedAt?: number;
+  sha256?: string;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -212,11 +215,23 @@ async function readIdeFileFromDisk(path: string): Promise<IdeFileContent | strin
     return `error: ${await res.text()}`;
   }
 
-  const data = (await res.json()) as { path?: string; content?: string };
+  const data = (await res.json()) as {
+    path?: string;
+    content?: string;
+    size?: number;
+    modifiedAt?: number;
+    sha256?: string;
+  };
   return {
     path: data.path || path,
     content: normalizeEditorContent(typeof data.content === 'string' ? data.content : ''),
     source: 'disk',
+    byteCount: typeof data.size === 'number' ? data.size : undefined,
+    modifiedAt: typeof data.modifiedAt === 'number' ? data.modifiedAt : undefined,
+    sha256:
+      typeof data.sha256 === 'string' && /^[a-f0-9]{64}$/i.test(data.sha256)
+        ? data.sha256.toLowerCase()
+        : undefined,
   };
 }
 
@@ -387,6 +402,10 @@ async function executeReadFileTool(params: Record<string, unknown>): Promise<str
     source: file.source,
     line_count: lineCount,
     char_count: charCount,
+    byte_count: file.byteCount ?? null,
+    modified_at: file.modifiedAt ?? null,
+    sha256: file.sha256 ?? null,
+    hash_scope: file.sha256 ? 'full_disk_file_bytes' : null,
     range: ranged.range,
     content_truncated: truncated.truncated || file.sourceContentTruncated === true,
     content: truncated.content,
@@ -525,7 +544,8 @@ export function getIdeToolDefinitions(): ToolDef[] {
         name: READ_FILE_TOOL_NAME,
         description:
           "Read a file from Aoi's IDE workspace. If path is omitted, reads the current active IDE file. " +
-          'For the active file, unsaved editor buffer content is used when available.',
+          'For disk files, returns the exact full-file byte size, modified time, and SHA-256. ' +
+          'For the active file, unsaved editor buffer content is used when available and no disk hash is claimed.',
         parameters: {
           type: 'object',
           properties: {

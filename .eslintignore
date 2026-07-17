@@ -1,4 +1,5 @@
 dist
+dist-*
 dist-daemon
 dist-field-ci-gate
 dist-real-field-acceptance

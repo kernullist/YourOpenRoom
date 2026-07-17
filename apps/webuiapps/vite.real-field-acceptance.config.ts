@@ -1,14 +1,10 @@
 import { defineConfig } from 'vite';
 
-// Standalone build for the real-ledger field-operations acceptance CLI (P5.1).
-//
-// Like the daemon and field-CI-gate builds, Node cannot execute .ts directly, so the CLI
-// entry is bundled to a single Node-runnable ESM file via the toolchain already in the
-// tree (no new dependency). Server-only imports (fs/path via the pack) are safe here
-// because this is a SEPARATE build target from the client bundle.
+// Standalone build for the read-only field-evidence manifest CLI.
 //
 //   pnpm real-field:build  ->  dist-real-field-acceptance/aoiRealFieldAcceptance.js
-//   pnpm real-field -- --sessions-dir /path/to/.openroom/sessions
+//   pnpm real-field -- --sessions-dir /path/to/.openroom/sessions \
+//     --session-path aoi/default --evidence-class live_field
 export default defineConfig({
   build: {
     ssr: 'src/lib/aoiRealFieldAcceptanceCliEntry.ts',

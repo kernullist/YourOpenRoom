@@ -6,6 +6,8 @@ import {
   type AoiDecayCandidateView,
 } from '../aoiMemoryDecayPanelModel';
 
+const SESSION_PATH = 'aoi/session-a';
+
 function candidate(over: Partial<AoiDecayCandidateView> = {}): AoiDecayCandidateView {
   return {
     id: 'm1',
@@ -49,24 +51,35 @@ describe('parseAoiDecayPreviewResponse (P4.1)', () => {
 describe('buildAoiDecayApplyBody (P4.1)', () => {
   it('sends the exact reviewed id set paired with its fingerprint', () => {
     expect(
-      buildAoiDecayApplyBody({
-        candidates: [candidate({ id: 'a' }), candidate({ id: 'b' })],
-        fingerprint: 'fp',
-        totalActive: 2,
-      }),
-    ).toEqual({ ids: ['a', 'b'], approvalFingerprint: 'fp' });
+      buildAoiDecayApplyBody(
+        {
+          candidates: [candidate({ id: 'a' }), candidate({ id: 'b' })],
+          fingerprint: 'fp',
+          totalActive: 2,
+        },
+        SESSION_PATH,
+      ),
+    ).toEqual({ sessionPath: SESSION_PATH, ids: ['a', 'b'], approvalFingerprint: 'fp' });
   });
 });
 
 describe('parseAoiDecayApplyResponse (P4.1)', () => {
   it('parses a successful archive', () => {
     expect(
-      parseAoiDecayApplyResponse({ ok: true, archivedCount: 2, changedIds: ['a', 'b'] }),
+      parseAoiDecayApplyResponse(
+        { ok: true, sessionPath: SESSION_PATH, archivedCount: 2, changedIds: ['a', 'b'] },
+        SESSION_PATH,
+      ),
     ).toEqual({ rejected: false, archivedCount: 2, changedIds: ['a', 'b'] });
   });
 
   it('flags a fingerprint-drift 409 rejection', () => {
-    expect(parseAoiDecayApplyResponse({ ok: false, rejected: true })).toEqual({
+    expect(
+      parseAoiDecayApplyResponse(
+        { ok: false, sessionPath: SESSION_PATH, rejected: true },
+        SESSION_PATH,
+      ),
+    ).toEqual({
       rejected: true,
       archivedCount: 0,
       changedIds: [],
@@ -74,6 +87,15 @@ describe('parseAoiDecayApplyResponse (P4.1)', () => {
   });
 
   it('returns null on a malformed payload', () => {
-    expect(parseAoiDecayApplyResponse(null)).toBeNull();
+    expect(parseAoiDecayApplyResponse(null, SESSION_PATH)).toBeNull();
+  });
+
+  it('rejects a response attributed to another session', () => {
+    expect(
+      parseAoiDecayApplyResponse(
+        { ok: true, sessionPath: 'aoi/session-b', archivedCount: 1, changedIds: ['a'] },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
   });
 });

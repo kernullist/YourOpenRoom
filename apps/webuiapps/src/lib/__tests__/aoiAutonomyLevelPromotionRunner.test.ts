@@ -10,6 +10,7 @@ import {
   appendAoiProposalDecision,
   loadAoiAutonomyLevelPromotionGateState,
   loadAoiAutonomyPolicy,
+  loadAoiEnvironmentSourceRegistry,
   loadAoiFieldShadowRecordReport,
   loadAoiOperatorFeedbackLabelActions,
   recordAoiFieldShadowDecisions,
@@ -17,7 +18,11 @@ import {
   resolveAoiAutonomyPaths,
   saveAoiAutonomyLevelPromotionGateState,
   saveAoiAutonomyPolicy,
+  updateAoiEnvironmentSource,
 } from '../aoiAutonomyStore';
+import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from '../aoiActivityStream';
+import { buildAoiCurrentSituation, saveAoiCurrentSituation } from '../aoiCurrentSituationModel';
+import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
 import {
   buildAoiAutonomyLevelPromotionScorecard,
   maybeRunAoiAutonomyLevelPromotion,
@@ -109,6 +114,61 @@ function config(
 
 function seedPolicyLevel(root: string, level: AoiAutonomyLevel): void {
   saveAoiAutonomyPolicy(root, SESSION, { ...DEFAULT_AOI_AUTONOMY_POLICY, level });
+}
+
+function seedGroundedCognition(root: string, now: number): void {
+  updateAoiEnvironmentSource(root, SESSION, {
+    sourceId: 'research-runs',
+    patch: { enabled: false },
+    now,
+  });
+  updateAoiEnvironmentSource(root, SESSION, {
+    sourceId: 'app-activity',
+    patch: {
+      enabled: true,
+      consentReason: 'Operator approved metadata-only activity for the promotion fixture.',
+      lastReviewedAt: now,
+    },
+    now,
+  });
+  recordAoiActivityEvent(
+    root,
+    SESSION,
+    { kind: 'app_opened', appId: 'notesapp', observedAt: now - 2_000 },
+    now,
+  );
+  recordAoiActivityEvent(
+    root,
+    SESSION,
+    {
+      kind: 'app_action',
+      appId: 'notesapp',
+      actionType: 'EDIT_NOTE',
+      observedAt: now - 1_000,
+    },
+    now,
+  );
+  const activitySummary = loadAoiActivityStreamSummary(root, SESSION, now);
+  const registry = loadAoiEnvironmentSourceRegistry(root, SESSION, now);
+  const intentState = buildAoiIntentState({
+    sessionPath: SESSION,
+    now,
+    registry,
+    activitySummary,
+  });
+  saveAoiIntentState(root, intentState);
+  for (const generatedAt of [now - 2, now - 1, now]) {
+    saveAoiCurrentSituation(
+      root,
+      buildAoiCurrentSituation({
+        sessionPath: SESSION,
+        now: generatedAt,
+        intentState,
+        activitySummary,
+        lastUserMessageAt: now - 60_000,
+      }),
+    );
+  }
 }
 
 function makeFieldShadowDecision(partial: Partial<AoiShadowDecision> = {}): AoiShadowDecision {
@@ -671,6 +731,7 @@ describe('maybeRunAoiAutonomyLevelPromotion operator-unlocked escalation', () =>
       },
     });
     promoteAllOperatorCandidates(root, 5000);
+    seedGroundedCognition(root, 5000);
 
     const card = buildAoiAutonomyLevelPromotionScorecard(root, SESSION, 5000);
     expect(card.level).toBe('trusted_operator');

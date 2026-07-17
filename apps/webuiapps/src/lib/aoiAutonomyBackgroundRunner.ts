@@ -7,6 +7,13 @@ import { runAoiAutonomyWakeup, type AoiAutonomyWakeupInput } from './aoiAutonomy
 const MIN_BACKGROUND_INTERVAL_MS = 30_000;
 const DEFAULT_BACKGROUND_INTERVAL_MS = 5 * 60_000;
 const DEFAULT_MAX_SESSIONS_PER_CYCLE = 16;
+// The canonical non-voice runtime scorecard requires the complete daemon cycle
+// to finish within 60 seconds. Keep the background wakeup below that boundary
+// and reserve explicit headroom for source persistence, scout bookkeeping, and
+// cycle accounting after the model-facing tick returns.
+const DEFAULT_MAX_CYCLE_RUNTIME_MS = 55_000;
+const DEFAULT_MAX_BACKGROUND_TICK_RUNTIME_MS = 45_000;
+const MIN_SCHEDULER_HEADROOM_MS = 10_000;
 
 export interface AoiAutonomyBackgroundCycleOptions {
   sessionsDir: string;
@@ -37,6 +44,8 @@ export interface AoiAutonomyBackgroundCycleOptions {
   loadLlmConfig?: () => LLMConfig | null;
   now?: number;
   maxSessionsPerCycle?: number;
+  maxCycleRuntimeMs?: number;
+  maxBackgroundTickRuntimeMs?: number;
   // Injectable seams for tests.
   listSessions?: (sessionsDir: string) => string[];
   loadPolicy?: (sessionsDir: string, sessionPath: string) => AoiAutonomyPolicy;
@@ -56,6 +65,13 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+function wakeupFailureMessage(result: AoiAutonomyWakeupResult): string {
+  const warning = result.record?.warnings.find((value) => value.trim().length > 0);
+  return warning
+    ? `wakeup_failed:${warning}`
+    : `wakeup_failed:${result.record?.status ?? 'failed'}`;
+}
+
 // Run one full background sweep: discover sessions with an initialized autonomy
 // store and, for each enabled session, fire a self-initiated
 // 'scheduled_background' wakeup. Per-session failures are isolated so one bad
@@ -66,10 +82,16 @@ export async function runAoiAutonomyBackgroundCycle(
   options: AoiAutonomyBackgroundCycleOptions,
 ): Promise<AoiAutonomyBackgroundCycleResult> {
   const startedAt = options.now ?? Date.now();
+  const currentTime = (): number => options.now ?? Date.now();
   const listSessions = options.listSessions ?? listAoiAutonomySessionPaths;
   const loadPolicy = options.loadPolicy ?? loadAoiAutonomyPolicy;
   const runWakeup = options.runWakeup ?? runAoiAutonomyWakeup;
   const maxSessions = Math.max(1, options.maxSessionsPerCycle ?? DEFAULT_MAX_SESSIONS_PER_CYCLE);
+  const maxCycleRuntimeMs = Math.max(1, options.maxCycleRuntimeMs ?? DEFAULT_MAX_CYCLE_RUNTIME_MS);
+  const maxBackgroundTickRuntimeMs = Math.max(
+    0,
+    options.maxBackgroundTickRuntimeMs ?? DEFAULT_MAX_BACKGROUND_TICK_RUNTIME_MS,
+  );
   // The env ceiling only CAPS network access; the per-session policy.allowNetwork is
   // the actual switch. undefined/true ceiling -> policy decides; false -> hard off.
   const ceilingPermitsNetwork = options.allowNetworkCeiling !== false;
@@ -93,15 +115,20 @@ export async function runAoiAutonomyBackgroundCycle(
     sessionPaths = listSessions(options.sessionsDir);
   } catch (error) {
     result.errors.push({ sessionPath: '*', error: errorMessage(error) });
-    result.durationMs = Math.max(0, (options.now ?? Date.now()) - startedAt);
+    result.durationMs = Math.max(0, currentTime() - startedAt);
     return result;
   }
   result.sessionsConsidered = sessionPaths.length;
 
-  let ran = 0;
+  let attempted = 0;
   for (const sessionPath of sessionPaths) {
-    if (ran >= maxSessions) {
+    if (attempted >= maxSessions) {
       result.sessionsSkipped.push({ sessionPath, reason: 'max_sessions_per_cycle' });
+      continue;
+    }
+    const remainingCycleMs = maxCycleRuntimeMs - Math.max(0, currentTime() - startedAt);
+    if (remainingCycleMs <= MIN_SCHEDULER_HEADROOM_MS) {
+      result.sessionsSkipped.push({ sessionPath, reason: 'cycle_runtime_budget_exhausted' });
       continue;
     }
     let policy: AoiAutonomyPolicy;
@@ -115,8 +142,14 @@ export async function runAoiAutonomyBackgroundCycle(
       result.sessionsSkipped.push({ sessionPath, reason: 'policy_disabled' });
       continue;
     }
+    attempted += 1;
+    const schedulerRuntimeMs = Math.max(1, Math.min(maxCycleRuntimeMs, remainingCycleMs));
+    const tickRuntimeMs = Math.max(
+      0,
+      Math.min(maxBackgroundTickRuntimeMs, schedulerRuntimeMs - MIN_SCHEDULER_HEADROOM_MS),
+    );
     try {
-      await runWakeup({
+      const wakeupResult = await runWakeup({
         sessionsDir: options.sessionsDir,
         sessionPath,
         reason: 'scheduled_background',
@@ -126,6 +159,8 @@ export async function runAoiAutonomyBackgroundCycle(
         // resolution above); otherwise the wakeup runs the deterministic loop.
         llmConfig,
         budget: {
+          maxSchedulerRuntimeMs: schedulerRuntimeMs,
+          maxBackgroundTickRuntimeMs: tickRuntimeMs,
           // Effective network = the deployment ceiling AND the per-session policy
           // switch (operator-controlled via the settings UI).
           allowNetwork: ceilingPermitsNetwork && policy.allowNetwork === true,
@@ -145,16 +180,22 @@ export async function runAoiAutonomyBackgroundCycle(
             ? { idleConfidenceSurgeEnabled: options.idleConfidenceSurgeEnabled }
             : {}),
         },
-        now: startedAt,
+        // A fixed clock is only a test seam. Passing the real cycle start as a
+        // fixed `now` made production wakeups report durationMs=0 regardless of
+        // actual latency and hid slow scheduler work from the operator ledger.
+        ...(typeof options.now === 'number' ? { now: options.now } : {}),
       });
+      if (!wakeupResult.ok) {
+        result.errors.push({ sessionPath, error: wakeupFailureMessage(wakeupResult) });
+        continue;
+      }
       result.sessionsRun.push(sessionPath);
-      ran += 1;
     } catch (error) {
       result.errors.push({ sessionPath, error: errorMessage(error) });
     }
   }
 
-  result.durationMs = Math.max(0, (options.now ?? Date.now()) - startedAt);
+  result.durationMs = Math.max(0, currentTime() - startedAt);
   return result;
 }
 
@@ -214,6 +255,8 @@ export function startAoiAutonomyBackgroundRunner(
 export interface AoiAutonomyBackgroundEnvConfig {
   enabled: boolean;
   intervalMs: number;
+  maxCycleRuntimeMs: number;
+  maxBackgroundTickRuntimeMs: number;
   // Tri-state deployment ceiling for network "thinking": undefined when the env var
   // is unset (no ceiling -> the settings UI / policy.allowNetwork decides), false =
   // hard-disabled, true = permitted. The actual switch is per-session policy.allowNetwork.
@@ -275,6 +318,14 @@ export function resolveAoiAutonomyBackgroundConfigFromEnv(
     intervalMs: parseIntEnv(
       env.AOI_AUTONOMY_BACKGROUND_INTERVAL_MS,
       DEFAULT_BACKGROUND_INTERVAL_MS,
+    ),
+    maxCycleRuntimeMs: parseIntEnv(
+      env.AOI_AUTONOMY_BACKGROUND_MAX_CYCLE_RUNTIME_MS,
+      DEFAULT_MAX_CYCLE_RUNTIME_MS,
+    ),
+    maxBackgroundTickRuntimeMs: parseIntEnv(
+      env.AOI_AUTONOMY_BACKGROUND_MAX_TICK_RUNTIME_MS,
+      DEFAULT_MAX_BACKGROUND_TICK_RUNTIME_MS,
     ),
     allowNetworkCeiling: parseBoolEnvTristate(env.AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK),
     maxSessionsPerCycle: parseIntEnv(

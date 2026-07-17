@@ -309,6 +309,37 @@ import {
   type AoiRunLedgerEntry,
 } from '@/lib/aoiRunLedger';
 import {
+  buildAoiFileTaskContractPrompt,
+  buildAoiFileTaskCorrectionPrompt,
+  buildAoiFileTaskFailureMessage,
+  createAoiFileTaskEvidence,
+  getAoiFileReadBack,
+  observeAoiFileTaskToolResult,
+  resolveAoiFileTaskContract,
+  verifyAoiFileTaskContract,
+  type AoiFileTaskVerification,
+} from '@/lib/aoiFileTaskContract';
+import {
+  buildAoiOutcomeFeedbackContractPrompt,
+  buildAoiOutcomeFeedbackCorrectionPrompt,
+  buildAoiOutcomeFeedbackFailureMessage,
+  buildAoiOutcomeFeedbackSuccessMessage,
+  getAoiOutcomeFeedbackToolDefinition,
+  parseAoiOutcomeFeedbackContract,
+  toAoiOutcomeFeedbackEvidence,
+  verifyAoiOutcomeFeedbackCompletion,
+  type AoiOutcomeFeedbackEvidence,
+} from '@/lib/aoiOutcomeFeedback';
+import { classifyAoiToolResult } from '@/lib/aoiToolResultOutcome';
+import {
+  buildAoiLiveFieldTruthPrompt,
+  buildAoiLiveFieldTruthUnavailablePrompt,
+  loadAoiLiveFieldTruth,
+  shouldLoadAoiLiveFieldTruth,
+  verifyAoiLiveFieldArtifactFacts,
+} from '@/lib/aoiLiveFieldTruthPrompt';
+import type { AoiNonVoiceJarvisScorecard } from '@/lib/aoiNonVoiceJarvisScorecard';
+import {
   decideAoiGoal,
   decideAoiMission,
   decideAoiProposal,
@@ -324,6 +355,7 @@ import {
   recordAoiContextSourceFeedback,
   recordAoiFieldFeedback,
   recordAoiOperatorFlightDecision,
+  recordAoiOperatorOutcomeFeedback,
   recordAoiOperatorVoiceDecision,
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
@@ -609,10 +641,12 @@ import {
   getActiveModEntry,
 } from '@/lib/modManager';
 import type { AoiMcpConnectorsConfig } from '@/lib/aoiMcpConnectorRegistry';
+import { buildAoiUndeliveredConversationFailureMessage } from '@/lib/aoiConversationFailure';
 import CharacterPanel from './CharacterPanel';
 import ModPanel from './ModPanel';
 import { AoiMcpConnectorsSettings } from './AoiMcpConnectorsSettings';
 import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
+import { AoiNonVoiceScorecardPanel } from './AoiNonVoiceScorecardPanel';
 import { AoiOperatorSnapshotPanel } from './AoiOperatorSnapshotPanel';
 import { AoiSituationPanel } from './AoiSituationPanel';
 import { AoiReadinessAccrualPanel } from './AoiReadinessAccrualPanel';
@@ -645,6 +679,10 @@ interface ConversationRunOptions {
 }
 
 const MAX_PROMPT_BUDGET_ENTRIES = 10;
+const DEFAULT_CONVERSATION_ITERATION_LIMIT = 10;
+const CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS = 6;
+const CONFIRMED_FILE_TASK_MAX_ITERATIONS = 20;
+const FILE_TASK_POST_MUTATION_COMPLETION_ITERATIONS = 2;
 
 type ChatDockSide = 'left' | 'right';
 
@@ -2167,17 +2205,18 @@ When the user wants to interact with an app, first identify the target app from 
 1b. get_app_intents(app_name="{appName}", intent="{requested operation}", include_surfaces=true) — map the user's natural request to an exact app_action, schema file mutation, state mutation, or inspect-only execution contract, and inspect per-surface covered/partial/gap status.
 2. file_read("apps/{appName}/meta.yaml") — learn the target app's exact available actions and parameters
 2a. get_app_schema — if available, use the machine-readable schema for the target app's data files.
-3. If you do not know the exact file path yet, use workspace_search to find candidate paths before file_read.
-3a. If the user is asking about the real IDE workspace or source code, use ide_search instead.
-3a-1. If the user says current file, active file, opened file, currently visible file, selected text, selection, 현재 파일, 활성 파일, 열린 파일, 선택 영역, or 선택한 텍스트 in Aoi's IDE, first use ide_current_file or get_app_state(app_name="openvscode"). Do not guess the file path.
-3b. If the user asks for a specific symbol or definition, use open_symbol.
+3. If you do not know the exact session app-storage path yet, use workspace_search to find candidate paths before file_read.
+3a. file_read/file_write/file_patch/file_list/file_delete and workspace_search operate only on Aoi session app storage, normally under apps/{appName}/. They do not access the real IDE or repository workspace.
+3b. If the user names a repository/worktree path outside apps/{appName}/ or asks about real files, documents, source code, or configuration, use ide_search/ide_read_file/ide_patch_file/ide_write_file instead.
+3b-1. If the user says current file, active file, opened file, currently visible file, selected text, selection, 현재 파일, 활성 파일, 열린 파일, 선택 영역, or 선택한 텍스트 in Aoi's IDE, first use ide_current_file or get_app_state(app_name="openvscode"). Do not guess the file path.
+3c. If the user asks for a specific symbol or definition, use open_symbol.
 4. Decide whether the action is:
    - an operation action (open, search, play, navigate, switch mode, etc.), or
    - a data mutation action (create, update, delete, save)
 5. For operation actions:
    - call app_action directly after reading meta.yaml
    - read guide.md only if you need extra state or schema context
-6. For data mutation actions:
+6. For session app-storage data mutation actions:
    - file_read("apps/{appName}/guide.md")
    - workspace_search/file_list/file_read — explore existing data in "apps/{appName}/data/"
    - file_patch/file_write/file_delete — create/modify/delete data following the JSON schema from guide.md
@@ -2192,13 +2231,13 @@ Rules:
 - Before saying you cannot control an in-app surface, call get_app_intents for that app with include_surfaces=true. If a matching schema_file_write, schema_file_delete, state_file_write, window_action, app_action, or covered/partial control surface exists, use that contract or explain only the specific remaining gap.
 - For data mutation requests, prefer a get_app_intents schema-backed contract over a bare app_action that only refreshes the UI after files are changed.
 - When talking to the user about an app, use the app's displayName or appName from list_apps/event context. Do not call known apps by raw numeric app_id such as "app 22"; app_id is only a tool parameter.
-- Data mutations MUST go through file_patch/file_write/file_delete unless the target app's meta.yaml declares an app-owned operation or settings action that explicitly persists state through that app's validation path. app_action normally notifies the app to reload, but declared operation/settings actions may write when the user explicitly asks for that app operation. Exception examples: Kira APPLY_PROJECT_SETTINGS persists project settings through Kira's settings API; Aoi's IDE workspace actions such as CREATE_FILE and CREATE_FOLDER write inside the configured IDE workspace, active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested, and SWITCH_WORKSPACE_ROOT persists the IDE workspace setting when the user explicitly asks to change roots.
+- Session app-storage mutations MUST go through file_patch/file_write/file_delete unless the target app's meta.yaml declares an app-owned operation or settings action that explicitly persists state through that app's validation path. Real IDE/repository workspace mutations MUST use ide_patch_file/ide_write_file or an explicit Aoi IDE app action. app_action normally notifies the app to reload, but declared operation/settings actions may write when the user explicitly asks for that app operation. Exception examples: Kira APPLY_PROJECT_SETTINGS persists project settings through Kira's settings API; Aoi's IDE workspace actions such as CREATE_FILE and CREATE_FOLDER write inside the configured IDE workspace, active-editor actions such as PREVIEW_APPEND_ACTIVE_FILE, PREVIEW_PATCH_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_FILE, PREVIEW_REPLACE_ACTIVE_SELECTION, APPLY_ACTIVE_FILE_PREVIEW, APPEND_ACTIVE_FILE, PATCH_ACTIVE_FILE, REPLACE_ACTIVE_FILE, REPLACE_ACTIVE_SELECTION, and UNDO_MODEL_ACTION intentionally operate on the current editor buffer and save it when requested, and SWITCH_WORKSPACE_ROOT persists the IDE workspace setting when the user explicitly asks to change roots.
 - Operation actions do NOT require file_write when the app action itself performs the interaction.
-- After file_patch/file_write, ALWAYS call app_action with the corresponding REFRESH action.
-- Do NOT skip step 6. If the user asked to save/create/add something, you must persist the data with file_patch/file_write/file_delete. file_list alone does not save anything.
-- Do NOT skip step 2 before app actions, and do NOT skip step 6 before ANY file_patch or file_write. The guide defines the ONLY valid directory structure and file schemas. Writing to paths not defined in guide.md will cause data loss — the app will not see the files.
+- After a session app-storage file_patch/file_write, ALWAYS call app_action with the corresponding REFRESH action.
+- Do NOT skip step 6 for session app-storage requests. If the user asked to save/create/add app data, persist it with file_patch/file_write/file_delete. file_list alone does not save anything.
+- Do NOT skip step 2 before app actions, and do NOT skip step 6 before ANY session app-storage file_patch or file_write. The guide defines the ONLY valid app-storage directory structure and file schemas. Writing app data to paths not defined in guide.md will cause data loss — the app will not see the files.
 - Prefer get_app_schema over guessing field names whenever it is available for the target app.
-- Use workspace_search before file_read/file_patch/file_write whenever the exact file path is unknown.
+- Use workspace_search before file_read/file_patch/file_write only for session app storage. Use ide_search for real IDE/repository workspace paths.
 - workspace_search is for app storage under apps/{appName}/data. ide_search is for the real OpenVSCode workspace on disk.
 - workspace_search is read-only. Never treat it as a write or refresh action.
 - For reviewing the current IDE file, use ide_current_file. For reading a known workspace file, use ide_read_file.
@@ -2207,9 +2246,9 @@ Rules:
 - If an Aoi's IDE active-editor action went wrong, use UNDO_MODEL_ACTION on Aoi's IDE to restore the latest reversible model edit instead of file_patch/file_write.
 - For editing a known IDE workspace file that is not the active editor buffer, use ide_patch_file or ide_write_file with an explicit relative path.
 - To change Aoi's IDE workspace root when the user explicitly asks, use SWITCH_WORKSPACE_ROOT with an absolute local folder path.
-- Prefer file_patch over file_write when you only need a small exact text replacement in an existing file.
-- Use preview_changes before risky file mutations when you want to inspect the exact impact first.
-- If a mutation went wrong, use undo_last_action to revert the latest reversible file change in this session.
+- In session app storage, prefer file_patch over file_write when you only need a small exact text replacement in an existing file. In the real IDE workspace, prefer ide_patch_file over ide_write_file for the same case.
+- preview_changes previews session app-storage mutations. For a known non-active IDE workspace file, use ide_read_file, construct and show the proposed content, create workspace_checkpoint with scope="ide", and wait for approval before ide_write_file/ide_patch_file when the user requests preview or approval.
+- If a session app-storage mutation went wrong, use undo_last_action to revert the latest reversible file change. For IDE workspace changes, use the matching IDE checkpoint or Aoi IDE undo action.
 - Use read_url when the user gives you a specific URL and wants the page contents or a clean article-style extract.
 - Use get_app_state when you need to know which app window is open, focused, or what an app state.json currently contains.
 - Use run_command only for safe, read-only workspace verification in Aoi's IDE context, such as git status/diff or pnpm/npm test/lint/build.
@@ -3845,6 +3884,7 @@ const ChatPanel: React.FC<{
   aoiMcpPluginsRef.current = aoiMcpPlugins;
   const toolCacheRef = useRef(createToolResultCache());
   const conversationAbortRef = useRef<AbortController | null>(null);
+  const manualConversationTurnInFlightRef = useRef(false);
   const loadingRunIdRef = useRef(0);
 
   const clearToolCache = useCallback(() => {
@@ -5637,7 +5677,7 @@ const ChatPanel: React.FC<{
     [resolveNudgeLang, config],
   );
 
-  const handleSend = useCallback(
+  const executeSend = useCallback(
     async (overrideText?: string) => {
       const text = (overrideText ?? input).trim();
       const outgoingAttachments = overrideText ? [] : pendingImageAttachmentsRef.current;
@@ -6340,6 +6380,22 @@ const ChatPanel: React.FC<{
     ],
   );
 
+  const handleSend = useCallback(
+    async (overrideText?: string) => {
+      if (manualConversationTurnInFlightRef.current) {
+        logger.warn('ChatPanel', 'Ignored a duplicate send while a manual turn is in flight.');
+        return;
+      }
+      manualConversationTurnInFlightRef.current = true;
+      try {
+        await executeSend(overrideText);
+      } finally {
+        manualConversationTurnInFlightRef.current = false;
+      }
+    },
+    [executeSend],
+  );
+
   const handleAoiTrendFollowUpPrompt = useCallback(
     (card: AoiProactiveTrendOpinionCard, prompt: string) => {
       rememberAoiTrendFollowUpContext(card, prompt);
@@ -6394,13 +6450,27 @@ const ChatPanel: React.FC<{
           latestUserTurn.attachments,
         )}]`
       : latestUserMessage;
-    const { config: activeCfg, useDialogModel } = selectConversationModel(history, cfg, dialogCfg);
+    const outcomeFeedbackContract = parseAoiOutcomeFeedbackContract(latestUserMessage);
+    const selectedConversationModel = selectConversationModel(history, cfg, dialogCfg);
+    const useDialogModel =
+      selectedConversationModel.useDialogModel && outcomeFeedbackContract === null;
+    const activeCfg = useDialogModel ? selectedConversationModel.config : cfg;
     if (!hasUsableLLMConfig(activeCfg)) {
       throw new Error('No usable LLM config was found for this conversation turn.');
     }
     const toolCallRuntimeAvailable = supportsStructuredConversationTools(activeCfg);
     const activeModelRoute: PromptBudgetEntry['modelRoute'] = useDialogModel ? 'dialog' : 'main';
     const confirmedActionRequest = resolveAoiActionConfirmationRequest(latestUserMessage, history);
+    const fileTaskContract = resolveAoiFileTaskContract({
+      latestUserMessage,
+      history,
+      confirmedActionRequest,
+    });
+    const liveFieldTruthRequested = shouldLoadAoiLiveFieldTruth(
+      [latestUserMessage, confirmedActionRequest ?? '', fileTaskContract?.sourceMessage ?? ''].join(
+        '\n',
+      ),
+    );
     const includeAppTools =
       toolCallRuntimeAvailable &&
       !useDialogModel &&
@@ -6426,6 +6496,7 @@ const ChatPanel: React.FC<{
             getRespondToUserToolDef(),
             getFinishTargetToolDef(),
             ...getMemoryToolDefinitions(),
+            ...(outcomeFeedbackContract ? [getAoiOutcomeFeedbackToolDefinition()] : []),
             ...(hasTavily ? getTavilyToolDefinitions() : []),
             ...(hasResearchTools ? getAoiResearchToolDefinitions() : []),
             ...(hasImageGen ? getImageGenToolDefinitions() : []),
@@ -6457,7 +6528,9 @@ const ChatPanel: React.FC<{
     const capabilityPrompt = toolCallRuntimeAvailable
       ? buildAoiCapabilityPrompt(selectedToolNames)
       : '';
-    const runGoal = createAoiRunGoalFromMessage(latestUserMessage);
+    const runGoal = createAoiRunGoalFromMessage(
+      fileTaskContract?.sourceMessage ?? confirmedActionRequest ?? latestUserMessage,
+    );
     const runGoalPrompt = buildAoiRunGoalPrompt(runGoal);
     const activeSkillMatches = resolveAoiActiveSkills(latestUserMessage, aoiSkillsRef.current);
     // P5.8: append the read-only tools registered by trusted skills as advisory capability
@@ -6537,6 +6610,26 @@ const ChatPanel: React.FC<{
       }
       console.warn('[ChatPanel] Failed to refresh Aoi context router before prompt build', error);
     }
+    let currentAoiLiveFieldTruthPrompt = '';
+    let currentAoiLiveFieldScorecard: AoiNonVoiceJarvisScorecard | null = null;
+    if (liveFieldTruthRequested) {
+      try {
+        updateStatus('Loading canonical live-field scorecard');
+        const liveFieldTruth = await loadAoiLiveFieldTruth(sessionPathRef.current, {
+          signal: options.signal,
+        });
+        throwIfConversationAborted(options.signal);
+        currentAoiLiveFieldScorecard = liveFieldTruth.scorecard;
+        currentAoiLiveFieldTruthPrompt = buildAoiLiveFieldTruthPrompt(liveFieldTruth.scorecard);
+      } catch (error) {
+        if (isChatAbortError(error)) {
+          throw error;
+        }
+        const reason = error instanceof Error ? error.message : String(error);
+        console.warn('[ChatPanel] Failed to load canonical live-field scorecard', error);
+        currentAoiLiveFieldTruthPrompt = buildAoiLiveFieldTruthUnavailablePrompt(reason);
+      }
+    }
     const currentAoiGovernorPrompt = buildAoiJarvisAutonomyGovernorPromptBlock({
       decision: aoiJarvisAutonomyGovernor,
       trail: aoiAutonomyPanelSettingsRef.current.jarvisAutonomyGovernorAuditTrail,
@@ -6613,6 +6706,23 @@ const ChatPanel: React.FC<{
         : []),
       ...(condensedHistory.summaryMessage ? [condensedHistory.summaryMessage] : []),
       ...condensedHistory.recentHistory,
+      ...(fileTaskContract || outcomeFeedbackContract || currentAoiLiveFieldTruthPrompt
+        ? [
+            {
+              role: 'system' as const,
+              content: [
+                'Final execution guard: this instruction is newer than the recalled conversation and any historical file content.',
+                fileTaskContract ? buildAoiFileTaskContractPrompt(fileTaskContract) : '',
+                outcomeFeedbackContract
+                  ? buildAoiOutcomeFeedbackContractPrompt(outcomeFeedbackContract)
+                  : '',
+                currentAoiLiveFieldTruthPrompt,
+              ]
+                .filter(Boolean)
+                .join('\n'),
+            },
+          ]
+        : []),
     ];
     const seedBudgetSnapshot = buildPromptBudgetSnapshot({
       systemPrompt,
@@ -6657,9 +6767,24 @@ const ChatPanel: React.FC<{
       publishAoiRunLedgerEntry(runSessionPath, runLedgerEntry, true);
     };
 
+    if (outcomeFeedbackContract && !toolCallRuntimeAvailable) {
+      const failureMessage =
+        'Aoi outcome feedback requires a structured-tool-capable main model; canonical feedback was not written.';
+      finalizeRunLedger('failed', failureMessage);
+      throw new Error(failureMessage);
+    }
+
     let currentMessages: ChatMessage[] = fullMessages;
+    const fileTaskExecutionConfirmed = Boolean(
+      fileTaskContract &&
+      (confirmedActionRequest ||
+        (!fileTaskContract.previewRequired &&
+          !toolSafetyPolicyRef.current.requirePreviewBeforeMutation)),
+    );
     let iterations = 0;
-    const maxIterations = 10;
+    let iterationLimit =
+      DEFAULT_CONVERSATION_ITERATION_LIMIT +
+      (fileTaskExecutionConfirmed ? CONFIRMED_FILE_TASK_RECOVERY_ITERATIONS : 0);
     pendingToolCallsRef.current = [];
     let latestDiagnosticsParams: Record<string, unknown> | null = null;
     let latestDiagnosticsHadIssues = false;
@@ -6667,6 +6792,8 @@ const ChatPanel: React.FC<{
     let deliveredAssistantContent = '';
     let deliveredToolCalls: string[] = [];
     let pendingResearchStartAck: string | null = null;
+    let fileTaskEvidence = createAoiFileTaskEvidence();
+    let outcomeFeedbackEvidence: AoiOutcomeFeedbackEvidence | null = null;
     const researchAckLanguage = detectPreferredLanguage(
       latestUserMessage,
       normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
@@ -6676,6 +6803,104 @@ const ChatPanel: React.FC<{
       if (ack) {
         pendingResearchStartAck = ack;
       }
+    };
+    const summarizeAndRecordToolResult = (
+      toolName: string,
+      params: Record<string, unknown>,
+      result: string,
+    ): string => {
+      const outcome = classifyAoiToolResult(result);
+      if (
+        fileTaskExecutionConfirmed &&
+        !outcome.failed &&
+        (toolName === 'ide_write_file' || toolName === 'ide_patch_file')
+      ) {
+        const extendedLimit = Math.min(
+          CONFIRMED_FILE_TASK_MAX_ITERATIONS,
+          Math.max(iterationLimit, iterations + FILE_TASK_POST_MUTATION_COMPLETION_ITERATIONS),
+        );
+        if (extendedLimit > iterationLimit) {
+          console.info('[ChatPanel] Extended file-task recovery budget after mutation', {
+            iteration: iterations,
+            previousLimit: iterationLimit,
+            extendedLimit,
+          });
+          iterationLimit = extendedLimit;
+        }
+      }
+      recordRunLedgerEvent({
+        type: outcome.failed ? 'tool_error' : 'tool_result',
+        iteration: iterations,
+        message: outcome.message,
+        toolNames: [toolName],
+      });
+      fileTaskEvidence = observeAoiFileTaskToolResult(fileTaskEvidence, toolName, params, result);
+      return summarizeToolResultForModel(toolName, result);
+    };
+    const evaluateFileTaskCompletion = (assistantContent: string): AoiFileTaskVerification => {
+      const additionalArtifactIssues: string[] = [];
+      if (liveFieldTruthRequested && fileTaskContract) {
+        if (!currentAoiLiveFieldScorecard) {
+          additionalArtifactIssues.push(
+            'canonical live-field scorecard was unavailable, so current-status claims cannot be verified',
+          );
+        } else {
+          fileTaskEvidence.mutatedFiles.forEach((path) => {
+            const readBack = getAoiFileReadBack(fileTaskEvidence, path);
+            if (readBack && !readBack.contentTruncated) {
+              additionalArtifactIssues.push(
+                ...verifyAoiLiveFieldArtifactFacts(
+                  readBack.content,
+                  currentAoiLiveFieldScorecard as AoiNonVoiceJarvisScorecard,
+                ).map((issue) => `${path}: ${issue}`),
+              );
+            }
+          });
+        }
+      }
+      return verifyAoiFileTaskContract({
+        contract: fileTaskContract,
+        evidence: fileTaskEvidence,
+        assistantContent,
+        executionConfirmed: fileTaskExecutionConfirmed,
+        additionalArtifactIssues,
+      });
+    };
+    const evaluateConversationCompletion = (assistantContent: string) => {
+      const fileTask = evaluateFileTaskCompletion(assistantContent);
+      const outcomeFeedback = verifyAoiOutcomeFeedbackCompletion({
+        contract: outcomeFeedbackContract,
+        evidence: outcomeFeedbackEvidence,
+        assistantContent,
+      });
+      const issues = [...fileTask.issues, ...outcomeFeedback.issues];
+      const correctionPrompt = [
+        !fileTask.passed ? buildAoiFileTaskCorrectionPrompt(fileTask, fileTaskEvidence) : '',
+        !outcomeFeedback.passed
+          ? buildAoiOutcomeFeedbackCorrectionPrompt(outcomeFeedback, outcomeFeedbackEvidence)
+          : '',
+      ]
+        .filter(Boolean)
+        .join('\n');
+      return {
+        passed: fileTask.passed && outcomeFeedback.passed,
+        enforced: fileTask.enforced || outcomeFeedback.enforced,
+        issues,
+        correctionPrompt,
+        fileTask,
+        outcomeFeedback,
+      };
+    };
+    const buildConversationFailureMessage = (
+      verification: ReturnType<typeof evaluateConversationCompletion>,
+    ): string => {
+      const failures = [
+        !verification.fileTask.passed ? buildAoiFileTaskFailureMessage(verification.fileTask) : '',
+        !verification.outcomeFeedback.passed
+          ? buildAoiOutcomeFeedbackFailureMessage(verification.outcomeFeedback)
+          : '',
+      ].filter(Boolean);
+      return failures.join(' | ');
     };
 
     if (shouldPreSearchWeb) {
@@ -6740,7 +6965,7 @@ const ChatPanel: React.FC<{
       }
     };
 
-    while (iterations < maxIterations) {
+    while (iterations < iterationLimit) {
       throwIfConversationAborted(options.signal);
       iterations++;
       updateStatus(
@@ -6808,6 +7033,21 @@ const ChatPanel: React.FC<{
           console.info('[ChatPanel] Assistant plain-text fallback response', {
             contentPreview: fallbackContent.slice(0, 200),
           });
+          const verification = evaluateConversationCompletion(fallbackContent);
+          if (!verification.passed) {
+            currentMessages = [
+              ...currentMessages,
+              { role: 'assistant', content: fallbackContent },
+              { role: 'system', content: verification.correctionPrompt },
+            ];
+            recordRunLedgerEvent({
+              type: 'postcondition_failed',
+              iteration: iterations,
+              message: verification.issues.join('; ').slice(0, 400),
+              toolNames: ['plain_text_fallback'],
+            });
+            continue;
+          }
           emitAssistantMessage({
             id: String(Date.now()),
             role: 'assistant',
@@ -6918,7 +7158,7 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: getIdeToolPendingSummary(tc.function.name, params),
-                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+                summarizedResult: summarizeAndRecordToolResult(tc.function.name, params, result),
               };
             }
 
@@ -6976,7 +7216,7 @@ const ChatPanel: React.FC<{
               return {
                 toolCallId: tc.id,
                 pendingSummary: `run_command(${String(params.command || '').slice(0, 48)})`,
-                summarizedResult: summarizeToolResultForModel(tc.function.name, result),
+                summarizedResult: summarizeAndRecordToolResult(tc.function.name, params, result),
               };
             }
 
@@ -7047,6 +7287,14 @@ const ChatPanel: React.FC<{
                   pendingSummary: toolCall.function.name,
                   summarizedResult: `error: ${settled.reason instanceof Error ? settled.reason.message : String(settled.reason)}`,
                 };
+
+          if (settled.status === 'rejected') {
+            item.summarizedResult = summarizeAndRecordToolResult(
+              toolCall.function.name,
+              {},
+              item.summarizedResult,
+            );
+          }
 
           pendingToolCallsRef.current.push(item.pendingSummary);
           currentMessages = [
@@ -7146,6 +7394,27 @@ const ChatPanel: React.FC<{
               type: 'model_response',
               iteration: iterations,
               message: 'respond_to_user returned placeholder content',
+              toolNames: ['respond_to_user'],
+            });
+            continue;
+          }
+          const completionVerification = evaluateConversationCompletion(content);
+          if (!completionVerification.passed) {
+            console.warn('[ChatPanel] respond_to_user blocked by deterministic postconditions', {
+              issues: completionVerification.issues,
+            });
+            currentMessages = [
+              ...currentMessages,
+              {
+                role: 'tool',
+                content: completionVerification.correctionPrompt,
+                tool_call_id: tc.id,
+              },
+            ];
+            recordRunLedgerEvent({
+              type: 'postcondition_failed',
+              iteration: iterations,
+              message: completionVerification.issues.join('; ').slice(0, 400),
               toolNames: ['respond_to_user'],
             });
             continue;
@@ -7269,7 +7538,7 @@ const ChatPanel: React.FC<{
                 fileMutatedSinceDiagnostics = true;
               }
             }
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
@@ -7433,18 +7702,20 @@ const ChatPanel: React.FC<{
                 fileMutatedSinceDiagnostics = true;
               }
             }
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
             ];
           } catch (err) {
             console.error('[ChatPanel] IDE tool failed', err);
+            const errorResult = `error: ${err instanceof Error ? err.message : String(err)}`;
+            summarizeAndRecordToolResult(tc.function.name, params, errorResult);
             currentMessages = [
               ...currentMessages,
               {
                 role: 'tool',
-                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                content: errorResult,
                 tool_call_id: tc.id,
               },
             ];
@@ -7484,7 +7755,7 @@ const ChatPanel: React.FC<{
                 fileMutatedSinceDiagnostics = true;
               }
             }
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
@@ -7656,18 +7927,20 @@ const ChatPanel: React.FC<{
             console.info('[ChatPanel] Command tool result', {
               resultPreview: result.slice(0, 200),
             });
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
             ];
           } catch (err) {
             console.error('[ChatPanel] Command tool failed', err);
+            const errorResult = `error: ${err instanceof Error ? err.message : String(err)}`;
+            summarizeAndRecordToolResult(tc.function.name, params, errorResult);
             currentMessages = [
               ...currentMessages,
               {
                 role: 'tool',
-                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                content: errorResult,
                 tool_call_id: tc.id,
               },
             ];
@@ -7693,7 +7966,7 @@ const ChatPanel: React.FC<{
             latestDiagnosticsParams = { ...params };
             latestDiagnosticsHadIssues = diagnosticsResultHasIssues(result);
             fileMutatedSinceDiagnostics = false;
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
@@ -7725,18 +7998,20 @@ const ChatPanel: React.FC<{
             if (!/^error:/i.test(result) && String(params.mode || '').trim() === 'restore') {
               clearToolCache();
             }
-            const summarizedResult = summarizeToolResultForModel(tc.function.name, result);
+            const summarizedResult = summarizeAndRecordToolResult(tc.function.name, params, result);
             currentMessages = [
               ...currentMessages,
               { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
             ];
           } catch (err) {
             console.error('[ChatPanel] Checkpoint tool failed', err);
+            const errorResult = `error: ${err instanceof Error ? err.message : String(err)}`;
+            summarizeAndRecordToolResult(tc.function.name, params, errorResult);
             currentMessages = [
               ...currentMessages,
               {
                 role: 'tool',
-                content: `error: ${err instanceof Error ? err.message : String(err)}`,
+                content: errorResult,
                 tool_call_id: tc.id,
               },
             ];
@@ -7935,6 +8210,20 @@ const ChatPanel: React.FC<{
 
         // ---- Memory tools ----
         if (isMemoryTool(tc.function.name)) {
+          if (outcomeFeedbackContract) {
+            const blockedResult =
+              'error: save_memory cannot satisfy an explicit outcome-feedback contract; call record_outcome_feedback instead.';
+            const summarizedResult = summarizeAndRecordToolResult(
+              tc.function.name,
+              params,
+              blockedResult,
+            );
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+            continue;
+          }
           pendingToolCallsRef.current.push(`save_memory`);
           try {
             const result = await executeMemoryTool(
@@ -7982,6 +8271,75 @@ const ChatPanel: React.FC<{
                 tool_call_id: tc.id,
               },
             ];
+          }
+          continue;
+        }
+
+        // ---- Canonical operator outcome feedback ----
+        if (tc.function.name === 'record_outcome_feedback') {
+          let feedbackDelivered = false;
+          try {
+            const result = await recordAoiOperatorOutcomeFeedback(sessionPathRef.current, {
+              userMessage: latestUserMessage,
+              sourceChatRef: `aoi-run:${runLedgerEntry.id}`,
+            });
+            outcomeFeedbackEvidence = toAoiOutcomeFeedbackEvidence(result);
+            pendingToolCallsRef.current.push(`record_outcome_feedback(${result.targetOutcome.id})`);
+            const resultForModel = JSON.stringify({
+              ok: true,
+              linked_outcome_id: result.targetOutcome.id,
+              feedback_label: result.feedbackLabel,
+              learned_correction: result.correction,
+              feedback_outcome_id: result.feedbackOutcome.id,
+              correction_outcome_id: result.correctionOutcome.id,
+            });
+            const summarizedResult = summarizeAndRecordToolResult(
+              tc.function.name,
+              params,
+              resultForModel,
+            );
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+            const deterministicContent = buildAoiOutcomeFeedbackSuccessMessage(result);
+            const deterministicVerification = evaluateConversationCompletion(deterministicContent);
+            if (!deterministicVerification.passed) {
+              throw new Error(buildConversationFailureMessage(deterministicVerification));
+            }
+            const deliveredPendingToolCalls = [...pendingToolCallsRef.current];
+            emitAssistantMessage({
+              id: String(Date.now()),
+              role: 'assistant',
+              content: deterministicContent,
+              toolCalls: deliveredPendingToolCalls,
+            });
+            deliveredAssistantContent = deterministicContent;
+            deliveredToolCalls = deliveredPendingToolCalls;
+            pendingToolCallsRef.current = [];
+            pendingResearchStartAck = null;
+            recordRunLedgerEvent({
+              type: 'assistant_delivered',
+              iteration: iterations,
+              message: deterministicContent.slice(0, 200),
+              toolNames: deliveredToolCalls,
+            });
+            shouldStopAfterToolBatch = true;
+            feedbackDelivered = true;
+          } catch (error) {
+            const failedResult = `error: ${error instanceof Error ? error.message : String(error)}`;
+            const summarizedResult = summarizeAndRecordToolResult(
+              tc.function.name,
+              params,
+              failedResult,
+            );
+            currentMessages = [
+              ...currentMessages,
+              { role: 'tool', content: summarizedResult, tool_call_id: tc.id },
+            ];
+          }
+          if (feedbackDelivered) {
+            break;
           }
           continue;
         }
@@ -8099,6 +8457,23 @@ const ChatPanel: React.FC<{
           latestUserMessage,
           fallbackContent,
         });
+        const verification = evaluateConversationCompletion(fallbackContent);
+        if (!verification.passed) {
+          currentMessages = [
+            ...currentMessages,
+            {
+              role: 'system',
+              content: verification.correctionPrompt,
+            },
+          ];
+          recordRunLedgerEvent({
+            type: 'postcondition_failed',
+            iteration: iterations,
+            message: verification.issues.join('; ').slice(0, 400),
+            toolNames: ['memory_ack_fallback'],
+          });
+          continue;
+        }
         emitAssistantMessage({
           id: String(Date.now()),
           role: 'assistant',
@@ -8127,25 +8502,36 @@ const ChatPanel: React.FC<{
       }
     }
     if (!deliveredAssistantContent.trim() && pendingResearchStartAck) {
-      const deliveredPendingToolCalls =
-        pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
-      emitAssistantMessage({
-        id: String(Date.now()),
-        role: 'assistant',
-        content: pendingResearchStartAck,
-        toolCalls:
-          pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
-      });
-      deliveredAssistantContent = pendingResearchStartAck;
-      deliveredToolCalls = deliveredPendingToolCalls;
-      pendingToolCallsRef.current = [];
-      pendingResearchStartAck = null;
-      recordRunLedgerEvent({
-        type: 'assistant_delivered',
-        iteration: iterations,
-        message: deliveredAssistantContent.slice(0, 200),
-        toolNames: deliveredToolCalls,
-      });
+      const verification = evaluateConversationCompletion(pendingResearchStartAck);
+      if (!verification.passed) {
+        recordRunLedgerEvent({
+          type: 'postcondition_failed',
+          iteration: iterations,
+          message: verification.issues.join('; ').slice(0, 400),
+          toolNames: ['research_ack_fallback'],
+        });
+        pendingResearchStartAck = null;
+      } else {
+        const deliveredPendingToolCalls =
+          pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : [];
+        emitAssistantMessage({
+          id: String(Date.now()),
+          role: 'assistant',
+          content: pendingResearchStartAck,
+          toolCalls:
+            pendingToolCallsRef.current.length > 0 ? [...pendingToolCallsRef.current] : undefined,
+        });
+        deliveredAssistantContent = pendingResearchStartAck;
+        deliveredToolCalls = deliveredPendingToolCalls;
+        pendingToolCallsRef.current = [];
+        pendingResearchStartAck = null;
+        recordRunLedgerEvent({
+          type: 'assistant_delivered',
+          iteration: iterations,
+          message: deliveredAssistantContent.slice(0, 200),
+          toolNames: deliveredToolCalls,
+        });
+      }
     }
     if (deliveredAssistantContent.trim()) {
       recordAoiMemoryTurn({
@@ -8157,7 +8543,17 @@ const ChatPanel: React.FC<{
       });
       finalizeRunLedger('completed', deliveredAssistantContent);
     } else {
-      finalizeRunLedger('failed', 'No assistant response was delivered before the run ended.');
+      const finalCompletionVerification = evaluateConversationCompletion('');
+      const failureMessage =
+        finalCompletionVerification.enforced && !finalCompletionVerification.passed
+          ? buildConversationFailureMessage(finalCompletionVerification)
+          : buildAoiUndeliveredConversationFailureMessage({
+              userMessage: latestUserMessage,
+              iterations,
+              pendingToolCalls: pendingToolCallsRef.current,
+            });
+      finalizeRunLedger('failed', failureMessage);
+      throw new Error(failureMessage);
     }
 
     console.info('[ChatPanel] runConversation end', {
@@ -16187,13 +16583,15 @@ const SettingsModal: React.FC<{
 
               <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
 
-              <AoiOperatorSnapshotPanel />
+              <AoiOperatorSnapshotPanel sessionPath={aoiReplaySessionPath} />
+
+              <AoiNonVoiceScorecardPanel sessionPath={aoiReplaySessionPath} />
 
               <AoiSituationPanel sessionPath={aoiReplaySessionPath} />
 
-              <AoiReadinessAccrualPanel />
+              <AoiReadinessAccrualPanel sessionPath={aoiReplaySessionPath} />
 
-              <AoiMemoryDecayPanel />
+              <AoiMemoryDecayPanel sessionPath={aoiReplaySessionPath} />
 
               <AoiPreferenceDashboard
                 sessionPath={aoiReplaySessionPath}

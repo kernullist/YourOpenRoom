@@ -21,6 +21,7 @@ import {
   saveAoiActiveGoals,
   updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
+  updateAoiGoalProgressFromOutcomeSignals,
 } from '../aoiAutonomyGoals';
 import { buildAoiBoundedWorkOrderFromGoalStep } from '../aoiBoundedWorkOrder';
 import {
@@ -37,6 +38,7 @@ import {
 } from '../aoiAutonomyStore';
 import { prepareAoiPlaybook } from '../aoiPlaybookOrchestrator';
 import { loadServerAoiRunLedger } from '../aoiRunLedgerServer';
+import { normalizeAoiOutcomeSignalRecord } from '../aoiOutcomeLearning';
 import type {
   AoiGoal,
   AoiKiraOutcomeEvent,
@@ -441,6 +443,185 @@ describe('Aoi autonomy goals', () => {
 
     expect(result.events.some((event) => event.kind === 'progress')).toBe(true);
     expect(loadAoiActiveGoals(root, SESSION_PATH)[0].plan.steps[0].status).toBe('done');
+  });
+
+  it('does not close a goal from completion wording without a canonical validated outcome', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+
+    updateAoiGoalProgressFromObservations({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      observations: [
+        makeObservation({
+          summary: 'The tracked goal is completed and resolved.',
+          artifactRefs: [`goal:${goal.id}`],
+          riskSignals: ['goal-completed'],
+        }),
+      ],
+      now: NOW + 2000,
+    });
+
+    expect(loadAoiActiveGoals(root, SESSION_PATH)[0].status).toBe('active');
+    expect(loadAoiArchivedGoals(root, SESSION_PATH)).toEqual([]);
+  });
+
+  it('persists a goal across wakeups and closes it only from a canonical validated outcome', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+    const oneStepGoal: AoiGoal = {
+      ...goal,
+      plan: {
+        ...goal.plan,
+        steps: [goal.plan.steps[0]],
+      },
+    };
+    saveAoiActiveGoals(root, SESSION_PATH, [oneStepGoal]);
+    const proposal = makeWaitingProposal(oneStepGoal);
+    const firstMission = deriveAoiMissionState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW + 1000,
+    });
+    const secondMission = deriveAoiMissionState({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW + 2000,
+    });
+    expect(secondMission.activeGoalId).toBe(firstMission.activeGoalId);
+
+    const outcome = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'validated-goal-outcome-001',
+        sourceProposalId: proposal.id,
+        sourceDecisionId: 'decision-goal-outcome-001',
+        sourceValidationRef: 'validation:goal-outcome-001',
+        outcomeKind: 'proposal_executed',
+        validationPassed: true,
+        privacyState: 'metadata_only',
+        evidenceRefs: [
+          `goal:${oneStepGoal.id}`,
+          `goal:${oneStepGoal.id}/step:${oneStepGoal.plan.steps[0].id}`,
+        ],
+        createdAt: NOW + 3000,
+      },
+      SESSION_PATH,
+      NOW + 3000,
+    );
+    if (!outcome) {
+      throw new Error('Expected normalized outcome.');
+    }
+    const result = updateAoiGoalProgressFromOutcomeSignals({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [outcome],
+      proposals: [proposal],
+      now: NOW + 4000,
+    });
+
+    expect(result.updatedOutcomeIds).toEqual([outcome.id]);
+    expect(result.events[0]).toMatchObject({
+      kind: 'completed',
+      goalId: oneStepGoal.id,
+    });
+    expect(result.events[0].evidenceRefs).toContain(`outcome:${outcome.eventId}`);
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toEqual([]);
+    expect(loadAoiArchivedGoals(root, SESSION_PATH)[0]).toMatchObject({
+      id: oneStepGoal.id,
+      status: 'completed',
+    });
+  });
+
+  it('does not apply a goal-level outcome to an arbitrary step in a multi-step plan', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+    const proposal = makeWaitingProposal(goal);
+    const outcome = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'unbound-goal-outcome-001',
+        sourceProposalId: proposal.id,
+        sourceDecisionId: 'decision-unbound-goal-outcome-001',
+        sourceValidationRef: 'validation:unbound-goal-outcome-001',
+        outcomeKind: 'proposal_executed',
+        validationPassed: true,
+        privacyState: 'metadata_only',
+        evidenceRefs: [`goal:${goal.id}`],
+        createdAt: NOW + 1000,
+      },
+      SESSION_PATH,
+      NOW + 1000,
+    );
+    if (!outcome) {
+      throw new Error('Expected normalized outcome.');
+    }
+
+    const result = updateAoiGoalProgressFromOutcomeSignals({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [outcome],
+      proposals: [proposal],
+      now: NOW + 2000,
+    });
+
+    expect(result.events).toEqual([]);
+    expect(
+      loadAoiActiveGoals(root, SESSION_PATH)[0].plan.steps.every(
+        (step) => step.status === 'pending',
+      ),
+    ).toBe(true);
+  });
+
+  it('closes an all-steps-done goal only after a matching canonical validated outcome arrives', () => {
+    const root = makeTempRoot();
+    const goal = makeGoal(root);
+    const allStepsDone: AoiGoal = {
+      ...goal,
+      plan: {
+        ...goal.plan,
+        steps: goal.plan.steps.map((step) => ({ ...step, status: 'done' as const })),
+      },
+    };
+    saveAoiActiveGoals(root, SESSION_PATH, [allStepsDone]);
+    const proposal = makeWaitingProposal(allStepsDone);
+    const outcome = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'validated-all-steps-done-outcome-001',
+        sourceProposalId: proposal.id,
+        sourceDecisionId: 'decision-all-steps-done-001',
+        sourceValidationRef: 'validation:all-steps-done-001',
+        outcomeKind: 'validation_run',
+        validationPassed: true,
+        privacyState: 'metadata_only',
+        evidenceRefs: [`goal:${allStepsDone.id}`],
+        createdAt: NOW + 3000,
+      },
+      SESSION_PATH,
+      NOW + 3000,
+    );
+    if (!outcome) {
+      throw new Error('Expected normalized outcome.');
+    }
+
+    const result = updateAoiGoalProgressFromOutcomeSignals({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      outcomes: [outcome],
+      proposals: [proposal],
+      now: NOW + 4000,
+    });
+
+    expect(result.updatedOutcomeIds).toEqual([outcome.id]);
+    expect(result.events).toEqual([
+      expect.objectContaining({ kind: 'completed', goalId: allStepsDone.id }),
+    ]);
+    expect(loadAoiActiveGoals(root, SESSION_PATH)).toEqual([]);
+    expect(loadAoiArchivedGoals(root, SESSION_PATH)[0]).toMatchObject({
+      id: allStepsDone.id,
+      status: 'completed',
+    });
   });
 
   it('marks the right Kira handoff plan step done only for reviewed validated outcomes', () => {

@@ -13,6 +13,9 @@ describe('Aoi autonomy plugin routes', () => {
       '/workspace/validation',
     );
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/outcomes')).toBe('/outcomes');
+    expect(getAoiAutonomyRoute('/api/aoi-autonomy/outcomes/operator-feedback')).toBe(
+      '/outcomes/operator-feedback',
+    );
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/decision')).toBe('/goal/decision');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/goal/check')).toBe('/goal/check');
     expect(getAoiAutonomyRoute('/api/aoi-autonomy/proposal/feedback')).toBe('/proposal/feedback');

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'http';
+import { createHash } from 'crypto';
 import { resolve } from 'path';
 import type { Plugin } from 'vite';
 import { executeAoiProposal, previewAoiProposal } from './aoiAutonomyExecution';
@@ -14,12 +15,15 @@ import { acquireAoiAutonomyLoopLock } from './aoiAutonomyLoopLock';
 import {
   archiveServerAoiMemories,
   computeServerAoiMemoryDecayDryRun,
+  saveServerAoiMemoryEpisode,
   unarchiveServerAoiMemories,
+  updateServerAoiMemoryFromExplicitCorrection,
 } from './aoiMemoryServerWriter';
 import { loadAoiMemoryEmbeddingStatus } from './aoiMemoryEmbeddingStatus';
 import { loadAoiUnifiedOperatorSummaryFromStores } from './aoiUnifiedOperatorModelServer';
 import { loadAoiProactiveTrendReadinessFromStores } from './aoiProactiveTrendReadinessServer';
 import { recordServerAoiRunLedgerEvent } from './aoiRunLedgerServer';
+import { recordAoiOutcomeFeedbackFromUserMessage } from './aoiOutcomeFeedbackServer';
 import {
   resolveAoiMemoryEmbedSweepConfigFromEnv,
   startAoiMemoryEmbedSweep,
@@ -91,6 +95,9 @@ import { loadAoiActivityStreamSummary, recordAoiActivityEvent } from './aoiActiv
 import { loadAoiIntentState } from './aoiIntentInference';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { buildAoiServerCognitionReadinessScorecard } from './aoiCognitionReadinessServer';
+import { loadAoiNonVoiceJarvisScorecardFromStores } from './aoiNonVoiceJarvisScorecardServer';
+import type { AoiDaemonHealthSnapshot } from './aoiDaemonHealth';
+import { resolveAoiWorkspaceCodeFingerprint } from './aoiWorkspaceCodeFingerprint';
 import { embedAoiQuery } from './aoiMemoryEmbedding';
 import { createServerAoiEmbeddingProvider } from './aoiMemoryEmbeddingServer';
 import {
@@ -181,6 +188,7 @@ export interface AoiAutonomyPluginOptions {
   sessionsDir: string;
   configFile: string;
   workspaceRoot?: string;
+  getDaemonHealthSnapshot?: (now: number) => AoiDaemonHealthSnapshot | null;
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -343,6 +351,7 @@ function isAoiOutcomeSignalKind(value: unknown): value is AoiOutcomeSignalKind {
     value === 'direct_chat_dismissed' ||
     value === 'work_order_approved' ||
     value === 'work_order_rejected' ||
+    value === 'user_feedback' ||
     value === 'validation_run' ||
     value === 'commit_created' ||
     value === 'user_correction'
@@ -640,6 +649,7 @@ export async function handleAoiAutonomyRequest(
   sessionsDir: string,
   configFile: string,
   workspaceRoot: string,
+  getDaemonHealthSnapshot?: (now: number) => AoiDaemonHealthSnapshot | null,
 ): Promise<boolean> {
   const route = getAoiAutonomyRoute(url.pathname);
   if (route === null) {
@@ -1345,6 +1355,44 @@ export async function handleAoiAutonomyRequest(
       return true;
     }
 
+    if (req.method === 'POST' && route === '/outcomes/operator-feedback') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      const userMessage = getOptionalBodyString(body.userMessage);
+      const sourceChatRef = getOptionalBodyString(body.sourceChatRef);
+      if (!sessionPath || !userMessage || !sourceChatRef) {
+        writeJson(res, 400, {
+          error: 'A sessionPath, latest userMessage, and sourceChatRef are required.',
+          code: 'invalid_outcome_feedback',
+        });
+        return true;
+      }
+      try {
+        const result = recordAoiOutcomeFeedbackFromUserMessage({
+          sessionsDir,
+          sessionPath,
+          userMessage,
+          sourceChatRef,
+          now: typeof body.now === 'number' ? body.now : undefined,
+        });
+        result.createdOutcomes.forEach((outcome) => {
+          recordAoiTimelineBestEffort(() => {
+            recordAoiOutcomeSignalTimelineEvent({ sessionsDir, outcome });
+          });
+        });
+        writeJson(res, 200, {
+          ok: true,
+          record: result.record,
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'invalid_outcome_feedback',
+        });
+      }
+      return true;
+    }
+
     if (req.method === 'POST' && route === '/outcomes') {
       const body = await readJsonBody(req);
       const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
@@ -1370,6 +1418,7 @@ export async function handleAoiAutonomyRequest(
             sessionPath,
             id: getOptionalBodyString(body.id),
             eventId: getOptionalBodyString(body.eventId),
+            sourceOutcomeId: getOptionalBodyString(body.sourceOutcomeId),
             sourceProposalId: getOptionalBodyString(body.sourceProposalId),
             sourceDecisionId: getOptionalBodyString(body.sourceDecisionId),
             sourceWorkOrderId: getOptionalBodyString(body.sourceWorkOrderId),
@@ -1381,6 +1430,7 @@ export async function handleAoiAutonomyRequest(
             confidence: typeof body.confidence === 'number' ? body.confidence : undefined,
             explicitLabelRef: getOptionalBodyString(body.explicitLabelRef),
             explicitLabel: getOptionalBodyString(body.explicitLabel),
+            explicitCorrection: getOptionalBodyString(body.explicitCorrection),
             topicKey: getOptionalBodyString(body.topicKey),
             sourceKey: getOptionalBodyString(body.sourceKey),
             deliveryMode: isAoiFollowThroughDeliveryMode(body.deliveryMode)
@@ -2059,28 +2109,186 @@ export async function handleAoiAutonomyRequest(
       writeJson(res, 200, { ok: true, ...status });
       return true;
     }
+    if (req.method === 'POST' && route === '/memory/explicit-correction') {
+      const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      const memoryId = getOptionalBodyString(body.memoryId)?.slice(0, 128) ?? '';
+      const expectedContentSha256 =
+        getOptionalBodyString(body.expectedContentSha256)?.toLowerCase() ?? '';
+      const correctedContent = getOptionalBodyString(body.correctedContent) ?? '';
+      const sourceChatRef = getOptionalBodyString(body.sourceChatRef)?.slice(0, 180) ?? '';
+      const correctionId = getOptionalBodyString(body.correctionId)?.slice(0, 128) ?? '';
+      if (
+        !sessionPath ||
+        !memoryId ||
+        !correctedContent ||
+        !sourceChatRef.startsWith('chat:') ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u.test(correctionId) ||
+        correctionId.includes('..') ||
+        !/^[a-f0-9]{64}$/u.test(expectedContentSha256) ||
+        body.userConfirmed !== true
+      ) {
+        writeJson(res, 400, {
+          error:
+            'A session-bound memoryId, expected SHA-256, correctedContent, sourceChatRef, correctionId, and userConfirmed=true are required.',
+          code: 'invalid_memory_correction',
+        });
+        return true;
+      }
+      try {
+        const now = Date.now();
+        const episodeId = `aoi_ep_correction_${createHash('sha256')
+          .update(correctionId, 'utf-8')
+          .digest('hex')
+          .slice(0, 24)}`;
+        saveServerAoiMemoryEpisode(sessionsDir, sessionPath, {
+          id: episodeId,
+          source: 'manual_memory',
+          userMessage: 'User supplied an explicit memory correction.',
+          assistantMessage: `Applied explicit correction ${correctionId} to memory ${memoryId}.`,
+          toolCalls: ['save_memory'],
+          createdAt: now,
+          outcome: 'memory_corrected',
+        });
+        const correction = updateServerAoiMemoryFromExplicitCorrection(sessionsDir, {
+          sessionPath,
+          memoryId,
+          expectedContentSha256,
+          correctedContent,
+          episodeId,
+          now,
+        });
+        const correctionRef = `memory-correction:${correctionId}`;
+        const outcome = appendAoiOutcomeSignalRecord(
+          sessionsDir,
+          {
+            eventId: correctionRef,
+            sessionPath,
+            outcomeKind: 'user_correction',
+            signalKind: 'explicit_correction',
+            sourceChatRef,
+            explicitLabel: 'user_memory_correction',
+            topicKey: 'memory_personalization',
+            sourceKey: `memory:${memoryId}`,
+            result: 'negative',
+            privacyState: 'metadata_only',
+            evidenceRefs: [
+              correctionRef,
+              `memory:${memoryId}`,
+              `memory-episode:${episodeId}`,
+              `memory-before-sha256:${correction.previousContentSha256}`,
+              `memory-after-sha256:${correction.correctedContentSha256}`,
+              sourceChatRef,
+            ],
+            createdAt: now,
+          },
+          now,
+        );
+        recordAoiTimelineBestEffort(() => {
+          recordAoiOutcomeSignalTimelineEvent({ sessionsDir, outcome });
+        });
+        writeJson(res, 200, {
+          ok: true,
+          sessionPath,
+          correction: {
+            id: correctionId,
+            memoryId,
+            changed: correction.changed,
+            previousContentSha256: correction.previousContentSha256,
+            correctedContentSha256: correction.correctedContentSha256,
+            episodeId,
+            updatedAt: correction.memory.updatedAt,
+            outcomeId: outcome.id,
+          },
+        });
+      } catch (error) {
+        writeJson(res, 400, {
+          error: error instanceof Error ? error.message : String(error),
+          code: 'memory_correction_blocked',
+        });
+      }
+      return true;
+    }
     // P5.3: surface the (previously dark) unified operator model, built from the real
     // server stores. Serves the display_only summary; strictly read-only.
     if (req.method === 'GET' && route === '/operator/unified-snapshot') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
       const summary = loadAoiUnifiedOperatorSummaryFromStores(sessionsDir, {
-        sessionPath: 'aoi/default',
+        sessionPath,
         now: Date.now(),
       });
-      writeJson(res, 200, { ok: true, summary });
+      writeJson(res, 200, { ok: true, sessionPath, summary });
       return true;
     }
     // P5.4: read-only trust on-ramp readiness accrual (sample count -> directChatReady +
     // blockers) so the operator can see the trust ladder progress.
     if (req.method === 'GET' && route === '/operator/readiness-accrual') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
       const readiness = loadAoiProactiveTrendReadinessFromStores(sessionsDir, {
-        sessionPath: 'aoi/default',
+        sessionPath,
         now: Date.now(),
       });
-      writeJson(res, 200, { ok: true, readiness });
+      writeJson(res, 200, { ok: true, sessionPath, readiness });
+      return true;
+    }
+    if (req.method === 'GET' && route === '/operator/non-voice-scorecard') {
+      const sessionPath = getSessionPathFromUrl(url);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
+      const evidenceClass = url.searchParams.get('evidenceClass');
+      if (
+        evidenceClass !== 'synthetic' &&
+        evidenceClass !== 'controlled_real' &&
+        evidenceClass !== 'live_field'
+      ) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing evidenceClass.',
+          code: 'invalid_evidence_class',
+        });
+        return true;
+      }
+      const now = Date.now();
+      const scorecard = loadAoiNonVoiceJarvisScorecardFromStores({
+        sessionsDir,
+        sessionPath,
+        evidenceClass,
+        configFile,
+        now,
+        daemonHealth: getDaemonHealthSnapshot?.(now) ?? null,
+        currentCodeFingerprint: resolveAoiWorkspaceCodeFingerprint(workspaceRoot),
+      });
+      writeJson(res, 200, { ok: true, sessionPath, evidenceClass, scorecard });
       return true;
     }
     if (req.method === 'POST' && route === '/memory/decay-apply') {
       const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
       const ids = (Array.isArray(body.ids) ? body.ids : []).filter(
         (id): id is string => typeof id === 'string',
       );
@@ -2089,7 +2297,12 @@ export async function handleAoiAutonomyRequest(
       const result = archiveServerAoiMemories(sessionsDir, ids, { approvalFingerprint });
       if (result.rejected) {
         // The reviewed set drifted (fingerprint mismatch) -- nothing was written.
-        writeJson(res, 409, { ok: false, rejected: true, code: 'decay_approval_mismatch' });
+        writeJson(res, 409, {
+          ok: false,
+          sessionPath,
+          rejected: true,
+          code: 'decay_approval_mismatch',
+        });
         return true;
       }
       // Audit trail for the destructive-adjacent op (best-effort; never blocks it).
@@ -2097,7 +2310,7 @@ export async function handleAoiAutonomyRequest(
         try {
           recordServerAoiRunLedgerEvent({
             sessionsDir,
-            sessionPath: 'aoi/default',
+            sessionPath,
             type: 'memory_archived',
             message: `Archived ${result.archivedCount} memory(ies) via operator-approved decay.`,
             goalSummary: 'Aoi memory decay (archive)',
@@ -2110,6 +2323,7 @@ export async function handleAoiAutonomyRequest(
       }
       writeJson(res, 200, {
         ok: true,
+        sessionPath,
         archivedCount: result.archivedCount,
         changedIds: result.changedIds,
       });
@@ -2117,6 +2331,14 @@ export async function handleAoiAutonomyRequest(
     }
     if (req.method === 'POST' && route === '/memory/decay-restore') {
       const body = await readJsonBody(req);
+      const sessionPath = normalizeAoiAutonomySessionPath(body.sessionPath);
+      if (!sessionPath) {
+        writeJson(res, 400, {
+          error: 'Invalid or missing sessionPath.',
+          code: 'invalid_session_path',
+        });
+        return true;
+      }
       const ids = (Array.isArray(body.ids) ? body.ids : []).filter(
         (id): id is string => typeof id === 'string',
       );
@@ -2125,7 +2347,7 @@ export async function handleAoiAutonomyRequest(
         try {
           recordServerAoiRunLedgerEvent({
             sessionsDir,
-            sessionPath: 'aoi/default',
+            sessionPath,
             type: 'memory_restored',
             message: `Restored ${result.unarchivedCount} archived memory(ies).`,
             goalSummary: 'Aoi memory decay (restore)',
@@ -2138,6 +2360,7 @@ export async function handleAoiAutonomyRequest(
       }
       writeJson(res, 200, {
         ok: true,
+        sessionPath,
         unarchivedCount: result.unarchivedCount,
         changedIds: result.changedIds,
       });
@@ -2851,7 +3074,15 @@ export function createAoiAutonomyMiddleware(
   const workspaceRoot = resolve(options.workspaceRoot || process.cwd());
   return (req, res, next) => {
     const url = new URL(req.url || '/', 'http://localhost');
-    void handleAoiAutonomyRequest(req, res, url, sessionsDir, configFile, workspaceRoot)
+    void handleAoiAutonomyRequest(
+      req,
+      res,
+      url,
+      sessionsDir,
+      configFile,
+      workspaceRoot,
+      options.getDaemonHealthSnapshot,
+    )
       .then((handled) => {
         if (!handled) {
           next();
@@ -2874,10 +3105,12 @@ export function startAoiAutonomyBackgroundFromEnv(
   env: Record<string, string | undefined> = process.env,
   {
     defaultStart = false,
+    runImmediately = false,
     onCycle,
     onError,
   }: {
     defaultStart?: boolean;
+    runImmediately?: boolean;
     // Observability hooks (used by the daemon health tracker). Optional so the
     // Vite plugin path is unchanged.
     onCycle?: (result: AoiAutonomyBackgroundCycleResult) => void;
@@ -2915,8 +3148,11 @@ export function startAoiAutonomyBackgroundFromEnv(
     configFile,
     workspaceRoot,
     intervalMs: backgroundConfig.intervalMs,
+    runImmediately,
     allowNetworkCeiling: backgroundConfig.allowNetworkCeiling,
     maxSessionsPerCycle: backgroundConfig.maxSessionsPerCycle,
+    maxCycleRuntimeMs: backgroundConfig.maxCycleRuntimeMs,
+    maxBackgroundTickRuntimeMs: backgroundConfig.maxBackgroundTickRuntimeMs,
     llmDailyTokenBudget: backgroundConfig.llmDailyTokenBudget,
     goalSynthesisEnabled: backgroundConfig.goalSynthesisEnabled,
     scoutNetworkDailyBudget: backgroundConfig.scoutNetworkDailyBudget,

@@ -191,6 +191,20 @@ describe('Aoi outcome learning storage', () => {
       },
       2000,
     );
+    const replay = appendAoiOutcomeSignalRecord(
+      root,
+      {
+        sessionPath: 'aoi/default',
+        eventId: 'outcome-work-order-approved',
+        sourceProposalId: 'proposal-outcome-store',
+        sourceWorkOrderId: 'work-order-outcome-store',
+        outcomeKind: 'work_order_approved',
+        topicKey: 'topic:reverse-engineering',
+        sourceKey: 'source:work-order',
+        evidenceRefs: ['proposal:proposal-outcome-store'],
+      },
+      2500,
+    );
     const paths = resolveAoiAutonomyPaths(root, 'aoi/default');
     const outcomes = loadAoiOutcomeSignalRecords(root, 'aoi/default', 3000);
     const outcomeSummary = loadAoiOutcomeLearningSummary(root, 'aoi/default', 3000);
@@ -198,6 +212,7 @@ describe('Aoi outcome learning storage', () => {
     const followThroughSummary = loadAoiFollowThroughLearningSummary(root, 'aoi/default', 3000);
 
     expect(fs.existsSync(paths.outcomeSignals)).toBe(true);
+    expect(replay.id).toBe(outcome.id);
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0]).toMatchObject({
       id: outcome.id,
@@ -216,6 +231,7 @@ describe('Aoi outcome learning storage', () => {
       outcomeSignalId: outcome.id,
       confidence: 0.42,
     });
+    expect(followThroughEvents).toHaveLength(1);
     expect(followThroughSummary.recentEvents[0]?.outcomeKind).toBe('work_order_approved');
   });
 });
@@ -706,6 +722,7 @@ describe('Aoi autonomy proposal storage and decisions', () => {
     const updated = applyAoiProposalFeedback(root, 'aoi/default', {
       decisionId: dismissed.decision.id,
       feedbackCategory: 'too_frequent',
+      now: 3500,
     });
 
     expect(updated).toMatchObject({
@@ -713,6 +730,49 @@ describe('Aoi autonomy proposal storage and decisions', () => {
       feedbackCategory: 'too_frequent',
     });
     expect(loadAoiProposalDecisions(root, 'aoi/default')).toHaveLength(1);
+    expect(loadAoiOutcomeSignalRecords(root, 'aoi/default', 3500)).toEqual([
+      expect.objectContaining({
+        eventId: `proposal-feedback:${dismissed.decision.id}`,
+        outcomeKind: 'user_feedback',
+        signalKind: 'explicit_label',
+        explicitLabel: 'too_frequent',
+        sourceProposalId: dismissed.proposal.id,
+        sourceDecisionId: dismissed.decision.id,
+      }),
+    ]);
+  });
+
+  it('records correction feedback as an explicit correction and rejects label rewrites', () => {
+    const root = makeTempRoot();
+    saveAoiActiveProposals(root, 'aoi/default', [makeProposal()]);
+    const accepted = applyAoiProposalDecision(root, 'aoi/default', {
+      proposalId: 'proposal-test-001',
+      action: 'accept',
+      now: 3600,
+    });
+
+    applyAoiProposalFeedback(root, 'aoi/default', {
+      decisionId: accepted.decision.id,
+      feedbackCategory: 'wrong_source',
+      feedbackNote: 'The selected source was not authoritative.',
+      now: 3700,
+    });
+
+    expect(loadAoiOutcomeSignalRecords(root, 'aoi/default', 3700)[0]).toMatchObject({
+      outcomeKind: 'user_correction',
+      signalKind: 'explicit_correction',
+      explicitLabel: 'wrong_source',
+      inferredAdjustment: {
+        direction: 'risk_up',
+      },
+    });
+    expect(() =>
+      applyAoiProposalFeedback(root, 'aoi/default', {
+        decisionId: accepted.decision.id,
+        feedbackCategory: 'useful',
+        now: 3800,
+      }),
+    ).toThrow(/immutable/i);
   });
 
   it('rejects invalid proposal transitions', () => {
@@ -936,9 +996,12 @@ describe('recordAoiOperatorFeedbackLabelAction user_correction emission (P1.1)',
   it('emits a user_correction outcome for a correction label (wrong_source / unsafe)', () => {
     const root = makeTempRoot();
     recordLabel(root, 'unsafe');
+    recordLabel(root, 'unsafe');
 
     const outcomes = loadAoiOutcomeSignalRecords(root, SESSION, 2000);
+    const labels = loadAoiOperatorFeedbackLabelActions(root, SESSION);
     expect(outcomes).toHaveLength(1);
+    expect(labels).toHaveLength(1);
     expect(outcomes[0].outcomeKind).toBe('user_correction');
     expect(outcomes[0].sourceDecisionId).toBe('dec-uc-1');
     expect(outcomes[0].explicitLabel).toBe('unsafe');

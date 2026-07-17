@@ -71,20 +71,28 @@ export function parseAoiDecayPreviewResponse(payload: unknown): AoiDecayPreview 
 // Build the decay-apply body: the EXACT reviewed id set + the content-addressed fingerprint
 // the operator is approving. The server re-derives the fingerprint and rejects (409) on any
 // drift, so this must send the fingerprint that pairs with these ids.
-export function buildAoiDecayApplyBody(preview: AoiDecayPreview): {
+export function buildAoiDecayApplyBody(
+  preview: AoiDecayPreview,
+  sessionPath: string,
+): {
+  sessionPath: string;
   ids: string[];
   approvalFingerprint: string;
 } {
   return {
+    sessionPath,
     ids: preview.candidates.map((candidate) => candidate.id),
     approvalFingerprint: preview.fingerprint,
   };
 }
 
 // Parse the decay-apply response. A 409 drift comes back as { ok:false, rejected:true }.
-export function parseAoiDecayApplyResponse(payload: unknown): AoiDecayApplyResult | null {
+export function parseAoiDecayApplyResponse(
+  payload: unknown,
+  requestedSessionPath: string,
+): AoiDecayApplyResult | null {
   const body = asRecord(payload);
-  if (!body) {
+  if (!body || body.sessionPath !== requestedSessionPath) {
     return null;
   }
   if (body.ok !== true) {

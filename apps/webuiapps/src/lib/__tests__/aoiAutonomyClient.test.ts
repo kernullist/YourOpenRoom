@@ -10,6 +10,7 @@ import {
   prepareAoiPlaybookPreview,
   recordAoiFieldFeedback,
   recordAoiActivityEvent,
+  recordAoiOperatorOutcomeFeedback,
   recordAoiOutcomeSignal,
   recordAoiProactiveBriefFeedback,
   resetAoiProactiveBriefCooldown,
@@ -850,6 +851,65 @@ describe('Aoi autonomy client dashboard', () => {
         deliveryMode: 'dashboard',
         evidenceRefs: ['validation:pnpm-test'],
         createdAt: 2000,
+      },
+    ]);
+  });
+
+  it('records operator-authored outcome feedback through the dedicated endpoint', async () => {
+    const requestBodies: Record<string, unknown>[] = [];
+    const targetOutcome = {
+      ...makeOutcomeLearningPayload().outcomes[0],
+      id: 'chat-file-task:aoi-run-file',
+      eventId: 'chat-file-task:aoi-run-file',
+      outcomeKind: 'proposal_executed',
+    };
+    const fetchMock = vi.fn(async (input: unknown, init?: RequestInit) => {
+      expect(String(input)).toBe('/api/aoi-autonomy/outcomes/operator-feedback');
+      requestBodies.push(JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>);
+      return jsonResponse({
+        ok: true,
+        record: {
+          version: 1,
+          sessionPath: 'aoi/default',
+          targetRunId: 'aoi-run-file',
+          feedbackLabel: 'useful',
+          correction: 'Keep precision and remove repeated completion attempts.',
+          targetOutcome,
+          feedbackOutcome: {
+            ...targetOutcome,
+            id: 'user-feedback:1',
+            eventId: 'user-feedback:1',
+            sourceOutcomeId: targetOutcome.id,
+            outcomeKind: 'user_feedback',
+            signalKind: 'explicit_label',
+            explicitLabel: 'useful',
+          },
+          correctionOutcome: {
+            ...targetOutcome,
+            id: 'user-correction:1',
+            eventId: 'user-correction:1',
+            sourceOutcomeId: targetOutcome.id,
+            outcomeKind: 'user_correction',
+            signalKind: 'explicit_correction',
+            explicitCorrection: 'Keep precision and remove repeated completion attempts.',
+          },
+        },
+      });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await recordAoiOperatorOutcomeFeedback('aoi/default', {
+      userMessage: 'Feedback label: useful\nCorrection: Keep precision.',
+      sourceChatRef: 'aoi-run:feedback-run',
+    });
+
+    expect(result.targetOutcome.id).toBe('chat-file-task:aoi-run-file');
+    expect(result.feedbackOutcome.sourceOutcomeId).toBe(result.targetOutcome.id);
+    expect(requestBodies).toEqual([
+      {
+        sessionPath: 'aoi/default',
+        userMessage: 'Feedback label: useful\nCorrection: Keep precision.',
+        sourceChatRef: 'aoi-run:feedback-run',
       },
     ]);
   });

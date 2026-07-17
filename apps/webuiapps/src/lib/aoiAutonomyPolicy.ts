@@ -1016,7 +1016,7 @@ function findCommandApprovalDecision(params: {
   });
 }
 
-function getAoiApprovedFileMutationPolicyForProposal(proposal: AoiProposal, now: number) {
+export function getAoiApprovedFileMutationPolicyForProposal(proposal: AoiProposal, now: number) {
   const params = proposal.acceptAction?.params ?? {};
   return evaluateAoiApprovedFileMutationPolicy(
     createAoiApprovedFileMutationRequest({
@@ -1026,6 +1026,7 @@ function getAoiApprovedFileMutationPolicyForProposal(proposal: AoiProposal, now:
       path: params.path,
       content: params.content,
       patchOps: params.patchOps ?? params.patch_ops,
+      validationPlan: params.validationPlan ?? params.validation_plan,
       purpose: params.purpose ?? proposal.title,
       risk: proposal.risk,
       requestedAt: now,

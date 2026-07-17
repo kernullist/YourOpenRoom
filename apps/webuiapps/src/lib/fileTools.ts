@@ -1,6 +1,6 @@
 /**
- * File Tools - Allow Agent to directly read/write disk-based file storage
- * Simulates chat-agent's nas_file_read / nas_file_write capabilities
+ * File Tools - Allow Agent to read/write Aoi session app storage.
+ * These tools do not access the real IDE or repository workspace.
  */
 
 import * as idb from './diskStorage';
@@ -111,13 +111,13 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_read',
         description:
-          'Read a file from storage. Returns the file content. Path is relative to workspace root, e.g. "apps/{appName}/data/state.json"',
+          'Read a file from Aoi session app storage, not the real IDE/repository workspace. Paths normally start with "apps/...". Use ide_read_file for real workspace files.',
         parameters: {
           type: 'object',
           properties: {
             file_path: {
               type: 'string',
-              description: 'File path relative to workspace root',
+              description: 'File path relative to the session app-storage root',
             },
             start_line: {
               type: 'number',
@@ -137,13 +137,13 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_write',
         description:
-          'Write content to a file in storage. Creates parent directories automatically. Path is relative to workspace root, e.g. "apps/{appName}/data/state.json"',
+          'Write content to Aoi session app storage. Creates parent directories automatically. Use ide_write_file for real IDE/repository workspace files.',
         parameters: {
           type: 'object',
           properties: {
             file_path: {
               type: 'string',
-              description: 'File path relative to workspace root',
+              description: 'File path relative to the session app-storage root',
             },
             content: {
               type: 'string',
@@ -159,13 +159,13 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_patch',
         description:
-          'Patch a small section of an existing file by replacing exact text. Prefer this over file_write when only a targeted edit is needed.',
+          'Patch a small section of an existing session app-storage file by replacing exact text. Use ide_patch_file for real IDE/repository workspace files.',
         parameters: {
           type: 'object',
           properties: {
             file_path: {
               type: 'string',
-              description: 'File path relative to workspace root',
+              description: 'File path relative to the session app-storage root',
             },
             old_text: {
               type: 'string',
@@ -194,13 +194,13 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_list',
         description:
-          'List files and directories at a given path. Returns file names and types. Path is relative to workspace root, e.g. "apps/{appName}/data"',
+          'List files and directories in Aoi session app storage. This does not list the real IDE/repository workspace; use ide_search there.',
         parameters: {
           type: 'object',
           properties: {
             directory: {
               type: 'string',
-              description: 'Directory path relative to workspace root. Use "/" or "" for root.',
+              description: 'Directory path relative to the session app-storage root',
             },
           },
           required: ['directory'],
@@ -212,13 +212,13 @@ export function getFileToolDefinitions(): Array<{
       function: {
         name: 'file_delete',
         description:
-          'Delete a file from storage. Path is relative to workspace root, e.g. "apps/{appName}/data/articles/article-001.json"',
+          'Delete a file from Aoi session app storage. This does not delete real IDE/repository workspace files.',
         parameters: {
           type: 'object',
           properties: {
             file_path: {
               type: 'string',
-              description: 'File path relative to workspace root',
+              description: 'File path relative to the session app-storage root',
             },
           },
           required: ['file_path'],
@@ -331,7 +331,7 @@ export async function executeFileTool(
       try {
         const content = await idb.getFile(filePath);
         if (content === null || content === undefined) {
-          return 'error: file not found';
+          return `error: session app-storage file not found: ${filePath}. If this is a real IDE/repository workspace path, use ide_read_file.`;
         }
         const textContent =
           typeof content === 'string' ? content : JSON.stringify(content, null, 2);
@@ -487,7 +487,9 @@ export async function executeFileTool(
           const name = f.path.split('/').pop() || f.path;
           return f.type === 1 ? `[dir]  ${name}` : `[file] ${name}`;
         });
-        if (items.length === 0) return 'empty directory';
+        if (items.length === 0) {
+          return 'empty session app-storage directory. For real IDE/repository files, use ide_search.';
+        }
         return items.join('\n');
       } catch (e) {
         return `error: ${String(e)}`;

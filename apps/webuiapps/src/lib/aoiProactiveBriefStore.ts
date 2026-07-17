@@ -49,7 +49,8 @@ import type {
 
 const MAX_PROACTIVE_BRIEF_INDEX_ITEMS = 200;
 const MAX_PROACTIVE_BRIEF_FEEDBACK_ITEMS = 500;
-const MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS = 500;
+export const AOI_PROACTIVE_FIELD_EVENT_AUDIT_TAIL_LIMIT = 500;
+const MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS = AOI_PROACTIVE_FIELD_EVENT_AUDIT_TAIL_LIMIT;
 const MAX_PROACTIVE_BRIEF_CALIBRATION_LABEL_INDEX_ITEMS = 1000;
 const MAX_PROACTIVE_BRIEF_CALIBRATION_INBOX_ITEMS = 80;
 const DEFAULT_BRIEF_TTL_MS = 14 * 24 * 60 * 60 * 1000;
@@ -57,6 +58,7 @@ const DEFAULT_PROFILE_LABEL = 'Interest Topic';
 const TOO_FREQUENT_CALIBRATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 const STALE_CALIBRATION_COOLDOWN_MS = 12 * 60 * 60 * 1000;
 const UNSAFE_CALIBRATION_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+export const AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS = 15 * 60 * 1000;
 
 export interface AoiProactiveBriefPaths {
   root: string;
@@ -69,6 +71,7 @@ export interface AoiProactiveBriefPaths {
   fieldEventsDir: string;
   fieldEventIndex: string;
   fieldEventRecordsDir: string;
+  fieldEventCompaction: string;
   fieldMetrics: string;
   calibrationLabelsDir: string;
   calibrationLabelIndex: string;
@@ -144,6 +147,17 @@ function isPathInsideRoot(root: string, target: string): boolean {
   const resolvedTarget = resolve(target);
   const diff = relative(resolvedRoot, resolvedTarget);
   return diff === '' || (!diff.startsWith('..') && !isAbsolute(diff));
+}
+
+function isRealPathInsideRoot(root: string, target: string): boolean {
+  try {
+    if (!fs.existsSync(root) || !fs.existsSync(target)) {
+      return false;
+    }
+    return isPathInsideRoot(fs.realpathSync(root), fs.realpathSync(target));
+  } catch {
+    return false;
+  }
 }
 
 function ensureDirectory(fileOrDirectory: string, isFile = false): void {
@@ -356,6 +370,7 @@ export function resolveAoiProactiveBriefPaths(
     fieldEventsDir: autonomyPaths.proactiveBriefFieldEventsDir,
     fieldEventIndex: autonomyPaths.proactiveBriefFieldEventIndex,
     fieldEventRecordsDir: autonomyPaths.proactiveBriefFieldEventRecordsDir,
+    fieldEventCompaction: join(autonomyPaths.proactiveBriefFieldEventsDir, 'compaction.json'),
     fieldMetrics: autonomyPaths.proactiveBriefFieldMetrics,
     calibrationLabelsDir: autonomyPaths.proactiveBriefCalibrationLabelsDir,
     calibrationLabelIndex: autonomyPaths.proactiveBriefCalibrationLabelIndex,
@@ -373,6 +388,7 @@ export function resolveAoiProactiveBriefPaths(
     paths.fieldEventsDir,
     paths.fieldEventIndex,
     paths.fieldEventRecordsDir,
+    paths.fieldEventCompaction,
     paths.fieldMetrics,
     paths.calibrationLabelsDir,
     paths.calibrationLabelIndex,
@@ -858,13 +874,191 @@ function loadAoiProactiveBriefFieldEventIndex(
             (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
           )
           .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS)
-      : [];
+      : listJsonFiles<unknown>(paths.fieldEventRecordsDir)
+          .map((event) => normalizeAoiProactiveBriefFieldEvent(event, normalizedSessionPath, now))
+          .filter((event): event is AoiProactiveBriefFieldEvent => event !== null)
+          .map(fieldEventIndexEntry)
+          .sort(
+            (left, right) => right.createdAt - left.createdAt || left.id.localeCompare(right.id),
+          )
+          .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS);
   return {
     version: 1,
     sessionPath: normalizedSessionPath,
     updatedAt: normalizeTimestamp(parsed?.updatedAt, 0),
     entries,
   };
+}
+
+interface AoiProactiveFieldEventCompactionState {
+  version: 1;
+  sessionPath: string;
+  updatedAt: number;
+  compactedEventCount: number;
+  compactedRecordFingerprints: string[];
+  kindCounts: Record<string, number>;
+  deliveryModeCounts: Record<string, number>;
+  redactedEventCount: number;
+  privateLeakCount: number;
+  unauthorizedMutationCount: number;
+  actionAuthority: 'display_only';
+  mutationCount: 0;
+}
+
+function normalizePositiveCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : 0;
+}
+
+function normalizeAggregateCounts(value: unknown): Record<string, number> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return {};
+  }
+  const output: Record<string, number> = {};
+  for (const [key, count] of Object.entries(value)) {
+    if (/^[a-z0-9_]{1,80}$/i.test(key)) {
+      output[key] = normalizePositiveCount(count);
+    }
+  }
+  return output;
+}
+
+function loadProactiveFieldEventCompaction(
+  paths: AoiProactiveBriefPaths,
+  sessionPath: string,
+  now: number,
+): AoiProactiveFieldEventCompactionState {
+  const raw = readJson<Partial<AoiProactiveFieldEventCompactionState>>(paths.fieldEventCompaction);
+  if (raw?.version !== 1 || raw.sessionPath !== sessionPath) {
+    return {
+      version: 1,
+      sessionPath,
+      updatedAt: now,
+      compactedEventCount: 0,
+      compactedRecordFingerprints: [],
+      kindCounts: {},
+      deliveryModeCounts: {},
+      redactedEventCount: 0,
+      privateLeakCount: 0,
+      unauthorizedMutationCount: 0,
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    };
+  }
+  return {
+    version: 1,
+    sessionPath,
+    updatedAt: normalizeTimestamp(raw.updatedAt, now),
+    compactedEventCount: normalizePositiveCount(raw.compactedEventCount),
+    compactedRecordFingerprints: Array.isArray(raw.compactedRecordFingerprints)
+      ? raw.compactedRecordFingerprints
+          .filter(
+            (fingerprint): fingerprint is string =>
+              typeof fingerprint === 'string' && /^[a-f0-9]{64}$/.test(fingerprint),
+          )
+          .slice(-20_000)
+      : [],
+    kindCounts: normalizeAggregateCounts(raw.kindCounts),
+    deliveryModeCounts: normalizeAggregateCounts(raw.deliveryModeCounts),
+    redactedEventCount: normalizePositiveCount(raw.redactedEventCount),
+    privateLeakCount: normalizePositiveCount(raw.privateLeakCount),
+    unauthorizedMutationCount: normalizePositiveCount(raw.unauthorizedMutationCount),
+    actionAuthority: 'display_only',
+    mutationCount: 0,
+  };
+}
+
+function compactUnindexedProactiveFieldEvents(params: {
+  paths: AoiProactiveBriefPaths;
+  sessionPath: string;
+  retainedIds: ReadonlySet<string>;
+  now: number;
+}): void {
+  if (!fs.existsSync(params.paths.fieldEventRecordsDir)) {
+    return;
+  }
+  if (!isRealPathInsideRoot(params.paths.root, params.paths.fieldEventRecordsDir)) {
+    throw new Error('Proactive field event records escaped through a symbolic link.');
+  }
+  const state = loadProactiveFieldEventCompaction(params.paths, params.sessionPath, params.now);
+  let compactedEventCount = 0;
+  let redactedEventCount = 0;
+  let privateLeakCount = 0;
+  let unauthorizedMutationCount = 0;
+  const kindCounts = { ...state.kindCounts };
+  const deliveryModeCounts = { ...state.deliveryModeCounts };
+  const alreadyCounted = new Set(state.compactedRecordFingerprints);
+  const newlyCompactedFingerprints: string[] = [];
+  const recordsToDelete: string[] = [];
+
+  for (const entry of fs.readdirSync(params.paths.fieldEventRecordsDir, {
+    withFileTypes: true,
+  })) {
+    if (!entry.isFile() || !entry.name.endsWith('.json')) {
+      continue;
+    }
+    const id = entry.name.slice(0, -'.json'.length);
+    if (!isValidAoiAutonomyId(id) || params.retainedIds.has(id)) {
+      continue;
+    }
+    const filePath = join(params.paths.fieldEventRecordsDir, entry.name);
+    if (!isPathInsideRoot(params.paths.root, filePath)) {
+      continue;
+    }
+    if (!isRealPathInsideRoot(params.paths.fieldEventRecordsDir, filePath)) {
+      continue;
+    }
+    const event = normalizeAoiProactiveBriefFieldEvent(
+      readJson<unknown>(filePath),
+      params.sessionPath,
+      params.now,
+    );
+    if (!event) {
+      continue;
+    }
+    recordsToDelete.push(filePath);
+    const recordFingerprint = createHash('sha256').update(id).digest('hex');
+    if (alreadyCounted.has(recordFingerprint)) {
+      continue;
+    }
+    newlyCompactedFingerprints.push(recordFingerprint);
+    compactedEventCount += 1;
+    kindCounts[event.kind] = (kindCounts[event.kind] ?? 0) + 1;
+    const deliveryMode = event.deliveryMode ?? 'none';
+    deliveryModeCounts[deliveryMode] = (deliveryModeCounts[deliveryMode] ?? 0) + 1;
+    if (event.privacy.redacted) {
+      redactedEventCount += 1;
+    }
+    if (event.privacy.privateLeakDetected) {
+      privateLeakCount += 1;
+    }
+    if (event.privacy.unauthorizedMutationDetected) {
+      unauthorizedMutationCount += 1;
+    }
+  }
+
+  if (compactedEventCount > 0) {
+    writeJsonAtomic(params.paths.root, params.paths.fieldEventCompaction, {
+      ...state,
+      updatedAt: params.now,
+      compactedEventCount: state.compactedEventCount + compactedEventCount,
+      compactedRecordFingerprints: [
+        ...state.compactedRecordFingerprints,
+        ...newlyCompactedFingerprints,
+      ].slice(-20_000),
+      kindCounts,
+      deliveryModeCounts,
+      redactedEventCount: state.redactedEventCount + redactedEventCount,
+      privateLeakCount: state.privateLeakCount + privateLeakCount,
+      unauthorizedMutationCount: state.unauthorizedMutationCount + unauthorizedMutationCount,
+    } satisfies AoiProactiveFieldEventCompactionState);
+  }
+  for (const filePath of recordsToDelete) {
+    try {
+      fs.unlinkSync(filePath);
+    } catch {
+      // The aggregate was checkpointed first. A later retention pass retries deletion.
+    }
+  }
 }
 
 function saveAoiProactiveBriefFieldEventIndex(
@@ -885,6 +1079,14 @@ function saveAoiProactiveBriefFieldEventIndex(
       .slice(0, MAX_PROACTIVE_BRIEF_FIELD_EVENT_INDEX_ITEMS),
   };
   writeJsonAtomic(paths.root, paths.fieldEventIndex, normalized);
+  if (index.entries.length > normalized.entries.length) {
+    compactUnindexedProactiveFieldEvents({
+      paths,
+      sessionPath: normalizedSessionPath,
+      retainedIds: new Set(normalized.entries.map((entry) => entry.id)),
+      now: normalized.updatedAt,
+    });
+  }
   return normalized;
 }
 
@@ -2016,6 +2218,21 @@ function createFieldEventId(params: {
   );
 }
 
+function proactiveFieldEventDedupeFingerprint(event: AoiProactiveBriefFieldEvent): string {
+  return hashText(
+    JSON.stringify([
+      event.kind,
+      event.briefId ?? '',
+      event.topicId ?? '',
+      event.feedbackId ?? '',
+      event.deliveryMode ?? '',
+      event.dedupeKey ?? '',
+      [...event.sourceRefs].sort(),
+      [...event.evidenceRefs].sort(),
+    ]),
+  );
+}
+
 export function recordAoiProactiveBriefFieldEvent(
   sessionsDir: string,
   input: AoiProactiveBriefFieldEventInput,
@@ -2025,15 +2242,6 @@ export function recordAoiProactiveBriefFieldEvent(
   const paths = resolveAoiProactiveBriefPaths(sessionsDir, sessionPath);
   const index = loadAoiProactiveBriefFieldEventIndex(sessionsDir, sessionPath, now);
   const dedupeKey = normalizeText(input.dedupeKey, 260);
-  const existingEntry = dedupeKey
-    ? index.entries.find((entry) => entry.dedupeKey === dedupeKey)
-    : undefined;
-  const existingEvent = existingEntry
-    ? loadFieldEventById(sessionsDir, sessionPath, existingEntry.id, now)
-    : null;
-  if (existingEvent) {
-    return existingEvent;
-  }
   const eventId = createFieldEventId({
     prefix: 'aoi-brief-field',
     now,
@@ -2061,6 +2269,26 @@ export function recordAoiProactiveBriefFieldEvent(
   );
   if (!event) {
     throw new Error('Invalid proactive brief field event.');
+  }
+  const eventFingerprint = proactiveFieldEventDedupeFingerprint(event);
+  const existingEvent = dedupeKey
+    ? index.entries
+        .filter(
+          (entry) =>
+            entry.dedupeKey === dedupeKey &&
+            entry.kind === event.kind &&
+            Math.abs(entry.createdAt - event.createdAt) <=
+              AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS,
+        )
+        .map((entry) => loadFieldEventById(sessionsDir, sessionPath, entry.id, now))
+        .find(
+          (candidate): candidate is AoiProactiveBriefFieldEvent =>
+            candidate !== null &&
+            proactiveFieldEventDedupeFingerprint(candidate) === eventFingerprint,
+        )
+    : undefined;
+  if (existingEvent) {
+    return existingEvent;
   }
   writeJsonAtomic(paths.root, join(paths.fieldEventRecordsDir, `${event.id}.json`), event);
   const nextIndex = saveAoiProactiveBriefFieldEventIndex(sessionsDir, sessionPath, {

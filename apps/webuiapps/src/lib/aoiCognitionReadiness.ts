@@ -14,7 +14,11 @@
 // - Pure + display-only: no I/O; display_only + mutationCount 0 on the record.
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomyStore';
 import type { AoiProposal } from './aoiAutonomyTypes';
-import type { AoiCurrentSituation } from './aoiCurrentSituationModel';
+import type {
+  AoiCurrentSituation,
+  AoiCurrentSituationSegment,
+  AoiCurrentSituationSegmentKind,
+} from './aoiCurrentSituationModel';
 import type { AoiIntentState } from './aoiIntentInference';
 
 export const AOI_COGNITION_PROPOSAL_CITATION_TARGET = 0.8;
@@ -51,6 +55,36 @@ export interface AoiCognitionReadinessGate {
   detail: string;
 }
 
+export type AoiCognitionSourceDiagnosticStatus =
+  | 'disabled'
+  | 'consent_missing'
+  | 'missing'
+  | 'stale'
+  | 'fresh';
+
+export interface AoiCognitionSourceCoverageInput {
+  sourceId: string;
+  label?: string;
+  enabled: boolean;
+  consented: boolean;
+  policyReasons?: string[];
+}
+
+export interface AoiCognitionSourceDiagnostic {
+  version: 1;
+  sourceId: string;
+  label: string;
+  segmentKind: AoiCurrentSituationSegmentKind;
+  enabled: boolean;
+  consented: boolean;
+  represented: boolean;
+  fresh: boolean;
+  status: AoiCognitionSourceDiagnosticStatus;
+  policyReasons: string[];
+  evidenceRefs: string[];
+  detail: string;
+}
+
 export interface AoiCognitionReadinessScorecard {
   version: 1;
   sessionPath: string;
@@ -63,6 +97,7 @@ export interface AoiCognitionReadinessScorecard {
   canSupportPromotion: boolean;
   metrics: AoiCognitionReadinessMetric[];
   gates: AoiCognitionReadinessGate[];
+  sourceDiagnostics: AoiCognitionSourceDiagnostic[];
   recommendations: string[];
   evidenceRefs: string[];
   cannotKnow: string[];
@@ -83,16 +118,118 @@ export interface AoiCognitionReadinessInput {
   // segments (the coverage denominator). Supplied by the caller from the
   // registry so this module stays pure.
   consentedSituationSourceIds?: string[];
+  // Authoritative per-source policy checks from the server. This is preferred
+  // over consentedSituationSourceIds because enabled and consented are distinct
+  // states for private or explicit-target sources.
+  sourceCoverage?: AoiCognitionSourceCoverageInput[];
 }
 
 // Which consented sources are expected to appear as which segment kinds.
-const SOURCE_ID_TO_SEGMENT_KIND: Record<string, string> = {
+export const AOI_COGNITION_SOURCE_SEGMENT_KIND: Readonly<
+  Record<string, AoiCurrentSituationSegmentKind>
+> = {
   'workspace-git': 'workspace',
   'workspace-build': 'workspace',
   'app-activity': 'activity',
   'calendar-metadata': 'calendar',
   'research-runs': 'research',
 };
+
+function findRepresentingSegment(params: {
+  situation: AoiCurrentSituation | null;
+  sourceId: string;
+  segmentKind: AoiCurrentSituationSegmentKind;
+  legacyKindFallback: boolean;
+}): AoiCurrentSituationSegment | null {
+  const candidates = (params.situation?.segments ?? []).filter(
+    (segment) => segment.kind === params.segmentKind,
+  );
+  const sourceRef = `environment-source:${params.sourceId}`;
+  const exact = candidates.find((segment) => segment.evidenceRefs.includes(sourceRef));
+  if (exact) {
+    return exact;
+  }
+  // Research has one canonical source and older persisted situation briefs did
+  // not carry an environment-source ref. Keep those readable without letting
+  // ambiguous workspace sources impersonate each other.
+  if (params.sourceId === 'research-runs') {
+    return candidates[0] ?? null;
+  }
+  return params.legacyKindFallback ? (candidates[0] ?? null) : null;
+}
+
+function buildSourceDiagnostics(params: {
+  input: AoiCognitionReadinessInput;
+  situation: AoiCurrentSituation | null;
+}): AoiCognitionSourceDiagnostic[] {
+  const hasAuthoritativeCoverage = Array.isArray(params.input.sourceCoverage);
+  const rawSources: AoiCognitionSourceCoverageInput[] = hasAuthoritativeCoverage
+    ? (params.input.sourceCoverage ?? [])
+    : dedupeStrings(params.input.consentedSituationSourceIds ?? [], 16).map((sourceId) => ({
+        sourceId,
+        enabled: true,
+        consented: true,
+        policyReasons: [] as string[],
+      }));
+  const seen = new Set<string>();
+  const diagnostics: AoiCognitionSourceDiagnostic[] = [];
+  for (const source of rawSources) {
+    const sourceId = typeof source.sourceId === 'string' ? source.sourceId.trim() : '';
+    const segmentKind = AOI_COGNITION_SOURCE_SEGMENT_KIND[sourceId];
+    if (!sourceId || !segmentKind || seen.has(sourceId)) {
+      continue;
+    }
+    seen.add(sourceId);
+    const segment = findRepresentingSegment({
+      situation: params.situation,
+      sourceId,
+      segmentKind,
+      legacyKindFallback: !hasAuthoritativeCoverage,
+    });
+    const enabled = source.enabled === true;
+    const consented = source.consented === true;
+    const represented = segment !== null;
+    const fresh = represented && segment.freshness === 'fresh';
+    const status: AoiCognitionSourceDiagnosticStatus = !enabled
+      ? 'disabled'
+      : !consented
+        ? 'consent_missing'
+        : !represented
+          ? 'missing'
+          : !fresh
+            ? 'stale'
+            : 'fresh';
+    const detail =
+      status === 'disabled'
+        ? 'Source is disabled.'
+        : status === 'consent_missing'
+          ? 'Source is enabled but its policy consent gate is not satisfied.'
+          : status === 'missing'
+            ? 'Source is consented but no matching situation segment is represented.'
+            : status === 'stale'
+              ? 'Source is represented, but the matching situation segment is not fresh.'
+              : 'Source is consented and represented by a fresh situation segment.';
+    diagnostics.push({
+      version: 1,
+      sourceId,
+      label:
+        typeof source.label === 'string' && source.label.trim() ? source.label.trim() : sourceId,
+      segmentKind,
+      enabled,
+      consented,
+      represented,
+      fresh,
+      status,
+      policyReasons: dedupeStrings(source.policyReasons ?? [], 6),
+      evidenceRefs: segment?.evidenceRefs.slice(0, 8) ?? [],
+      detail,
+    });
+    if (diagnostics.length >= 16) {
+      break;
+    }
+  }
+  return diagnostics;
+}
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
@@ -205,14 +342,13 @@ export function buildAoiCognitionReadinessScorecard(
   });
 
   // --- 4. Source coverage: consented sources actually represented in the fusion.
-  const consentedIds = dedupeStrings(input.consentedSituationSourceIds ?? [], 16).filter(
-    (id) => SOURCE_ID_TO_SEGMENT_KIND[id] !== undefined,
-  );
-  const representedKinds = new Set((situation?.segments ?? []).map((segment) => segment.kind));
-  const coveredIds = consentedIds.filter((id) =>
-    representedKinds.has(SOURCE_ID_TO_SEGMENT_KIND[id] as never),
-  );
-  const coverageRate = consentedIds.length > 0 ? coveredIds.length / consentedIds.length : null;
+  const sourceDiagnostics = buildSourceDiagnostics({ input, situation });
+  const consentedDiagnostics = sourceDiagnostics.filter((source) => source.consented);
+  const coveredDiagnostics = consentedDiagnostics.filter((source) => source.fresh);
+  const coverageRate =
+    consentedDiagnostics.length > 0
+      ? coveredDiagnostics.length / consentedDiagnostics.length
+      : null;
   metrics.push({
     key: 'source_coverage_rate',
     label: 'Consented sources represented in the fusion',
@@ -228,12 +364,20 @@ export function buildAoiCognitionReadinessScorecard(
     detail:
       coverageRate === null
         ? 'No consented situation-capable sources.'
-        : `${coveredIds.length}/${consentedIds.length} consented sources appear as segments.`,
+        : `${coveredDiagnostics.length}/${consentedDiagnostics.length} consented sources appear as fresh segments.`,
   });
   if (coverageRate !== null && coverageRate < AOI_COGNITION_SOURCE_COVERAGE_TARGET) {
     recommendations.push(
       'Some consented sources produced no situation segment; check that their signals are flowing.',
     );
+  }
+  if (sourceDiagnostics.some((source) => source.status === 'consent_missing')) {
+    recommendations.push(
+      'One or more enabled sources still require explicit operator consent before they can ground cognition.',
+    );
+  }
+  if (sourceDiagnostics.some((source) => source.status === 'stale')) {
+    recommendations.push('Refresh stale consented sources before relying on the situation brief.');
   }
 
   // --- 5. Situation practice: how many briefs have ever been fused.
@@ -252,9 +396,15 @@ export function buildAoiCognitionReadinessScorecard(
   }
 
   // --- 6. Proactive live-citation rate (null sample gates nothing).
-  const recentProposals = (input.proposals ?? []).filter(
-    (proposal) => now - proposal.createdAt <= RECENT_PROPOSAL_WINDOW_MS,
-  );
+  const recentProposals = (input.proposals ?? []).filter((proposal) => {
+    const trigger = typeof proposal.trigger === 'string' ? proposal.trigger : '';
+    return (
+      now - proposal.createdAt <= RECENT_PROPOSAL_WINDOW_MS &&
+      trigger !== 'manual' &&
+      trigger !== 'goal_candidate' &&
+      !trigger.startsWith('user_authorized_')
+    );
+  });
   const citedProposals = recentProposals.filter((proposal) =>
     proposal.evidenceRefs.some(
       (ref) => ref.startsWith('situation:') || ref.startsWith('activity:'),
@@ -278,8 +428,8 @@ export function buildAoiCognitionReadinessScorecard(
             : 'blocked',
     detail:
       proposalCitationRate === null
-        ? 'No proposals were authored in the last 24h.'
-        : `${citedProposals.length}/${recentProposals.length} recent proposals cite live context.`,
+        ? 'No proactive proposals were authored in the last 24h.'
+        : `${citedProposals.length}/${recentProposals.length} recent proactive proposals cite live context.`,
   });
   gates.push({
     key: 'proposal_live_citation_floor',
@@ -306,10 +456,10 @@ export function buildAoiCognitionReadinessScorecard(
   const scoreParts: number[] = [];
   scoreParts.push(citationRate === null ? 0 : citationRate * 30);
   scoreParts.push(segmentCount === 0 ? 0 : staleClaims === 0 ? 15 : 0);
-  scoreParts.push(intent ? (intentCited ? 15 : 0) : 5);
-  scoreParts.push(coverageRate === null ? 5 : coverageRate * 15);
+  scoreParts.push(intent ? (intentCited ? 15 : 0) : 0);
+  scoreParts.push(coverageRate === null ? 0 : coverageRate * 15);
   scoreParts.push(clamp(sampleCount / AOI_COGNITION_SAMPLE_TARGET, 0, 1) * 10);
-  scoreParts.push(proposalCitationRate === null ? 7 : proposalCitationRate * 15);
+  scoreParts.push(proposalCitationRate === null ? 0 : proposalCitationRate * 15);
   const score = anyBlocked
     ? Math.min(30, Math.round(scoreParts.reduce((sum, part) => sum + part, 0)))
     : Math.round(scoreParts.reduce((sum, part) => sum + part, 0));
@@ -327,13 +477,17 @@ export function buildAoiCognitionReadinessScorecard(
     if (
       level === 'grounded' &&
       score >= AOI_COGNITION_LIVE_GROUNDED_SCORE &&
-      representedKinds.has('activity' as never) &&
+      situation.segments.some(
+        (segment) => segment.kind === 'activity' && segment.freshness === 'fresh',
+      ) &&
       (proposalCitationRate === null ||
         proposalCitationRate >= AOI_COGNITION_PROPOSAL_CITATION_TARGET)
     ) {
       level = 'live_grounded';
     }
   }
+
+  const canSupportPromotion = level === 'grounded' || level === 'live_grounded';
 
   return {
     version: 1,
@@ -342,9 +496,10 @@ export function buildAoiCognitionReadinessScorecard(
     score: clamp(score, 0, 100),
     level,
     gateStatus: anyBlocked ? 'blocked' : anyWarning ? 'warning' : 'pass',
-    canSupportPromotion: !anyBlocked,
+    canSupportPromotion,
     metrics,
     gates,
+    sourceDiagnostics,
     recommendations: dedupeStrings(recommendations, 6),
     evidenceRefs: dedupeStrings(
       [

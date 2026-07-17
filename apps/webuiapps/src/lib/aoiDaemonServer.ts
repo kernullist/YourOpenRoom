@@ -19,6 +19,7 @@ import {
 } from './aoiAutonomyPlugin';
 import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundRunner';
 import type { AoiMemoryEmbedSweepHandle } from './aoiMemoryEmbedSweep';
+import { createAoiResearchMiddleware, type AoiResearchMiddleware } from './aoiResearchPlugin';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
 import {
   createAoiDaemonHealthHooks,
@@ -130,13 +131,16 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     ...(options.workspaceRoot ? { workspaceRoot: options.workspaceRoot } : {}),
   };
 
-  const autonomyMiddleware: AoiAutonomyMiddleware = createAoiAutonomyMiddleware(pluginOptions);
   // Durable session-data store (browser memory / chat / disk writes). Mounting it
   // here lets a daemon-hosted deployment persist browser captures without the
   // Vite-only middleware. Same on-disk root as the autonomy loop and the dev
   // server -- no data migration. Idle until a browser is pointed at the daemon.
   const sessionDataMiddleware: SessionDataMiddleware = createSessionDataMiddleware({
     sessionsDir: pluginOptions.sessionsDir,
+  });
+  const researchMiddleware: AoiResearchMiddleware = createAoiResearchMiddleware({
+    sessionsDir: pluginOptions.sessionsDir,
+    configFile: pluginOptions.configFile,
   });
 
   // Observability: the health tracker reads loop-running via a thunk so it can be
@@ -147,6 +151,8 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     startedAt: bootAt,
     loopRunning: () => backgroundHandle !== null,
   });
+  pluginOptions.getDaemonHealthSnapshot = (now) => health.snapshot(now);
+  const autonomyMiddleware: AoiAutonomyMiddleware = createAoiAutonomyMiddleware(pluginOptions);
   // Forward reference: assigned once close() is defined below, so the /shutdown
   // handler can trigger a graceful stop. A no-op until then (no request can arrive
   // before listen() resolves and the sync boot block finishes assigning it).
@@ -170,10 +176,12 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
       return;
     }
     // Native http has no next(); chain the shared middlewares (autonomy first,
-    // then session-data) and turn anything neither owns into a 404.
+    // then research and session-data) and turn anything none owns into a 404.
     autonomyMiddleware(req, res, () => {
-      sessionDataMiddleware(req, res, () => {
-        writeNotFound(res);
+      researchMiddleware(req, res, () => {
+        sessionDataMiddleware(req, res, () => {
+          writeNotFound(res);
+        });
       });
     });
   });
@@ -205,6 +213,7 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
   });
   backgroundHandle = startAoiAutonomyBackgroundFromEnv(pluginOptions, env, {
     defaultStart: true,
+    runImmediately: true,
     onCycle: (result) => {
       healthHooks.onCycle(result);
       // P2.4: mirror each self-initiated background wakeup into the operator flight

@@ -8,7 +8,7 @@ vi.mock('../diskStorage', () => ({
 }));
 
 import * as diskStorage from '../diskStorage';
-import { executeFileTool } from '../fileTools';
+import { executeFileTool, getFileToolDefinitions } from '../fileTools';
 
 const mockedGetFile = vi.mocked(diskStorage.getFile);
 const mockedPutTextFilesByJSON = vi.mocked(diskStorage.putTextFilesByJSON);
@@ -66,5 +66,30 @@ describe('executeFileTool(file_patch)', () => {
 
     expect(result).toContain('error: patched JSON became invalid');
     expect(mockedPutTextFilesByJSON).not.toHaveBeenCalled();
+  });
+
+  it('directs missing real workspace paths to the IDE reader', async () => {
+    mockedGetFile.mockResolvedValue(null);
+
+    const result = await executeFileTool('file_read', {
+      file_path: 'docs/status.md',
+    });
+
+    expect(result).toContain('session app-storage file not found');
+    expect(result).toContain('ide_read_file');
+  });
+
+  it('describes file tools as session app storage rather than the IDE workspace', () => {
+    const definitions = getFileToolDefinitions();
+    const readDescription = definitions.find(
+      (definition) => definition.function.name === 'file_read',
+    )?.function.description;
+    const writeDescription = definitions.find(
+      (definition) => definition.function.name === 'file_write',
+    )?.function.description;
+
+    expect(readDescription).toContain('session app storage');
+    expect(readDescription).toContain('ide_read_file');
+    expect(writeDescription).toContain('ide_write_file');
   });
 });

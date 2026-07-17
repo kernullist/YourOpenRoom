@@ -9,6 +9,7 @@ import autoprefixer from 'autoprefixer';
 import { sentryVitePlugin } from '@sentry/vite-plugin';
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'node:crypto';
 import { basename, dirname, join } from 'path';
 import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
 import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
@@ -1688,7 +1689,8 @@ function openVscodeManagerPlugin(): Plugin {
               return;
             }
 
-            const content = fs.readFileSync(absolutePath, 'utf-8');
+            const fileBytes = fs.readFileSync(absolutePath);
+            const content = fileBytes.toString('utf-8');
             if (content.includes('\u0000')) {
               res.writeHead(415);
               res.end(
@@ -1698,7 +1700,15 @@ function openVscodeManagerPlugin(): Plugin {
             }
 
             res.writeHead(200);
-            res.end(JSON.stringify({ path: relativePath, content }));
+            res.end(
+              JSON.stringify({
+                path: relativePath,
+                content,
+                size: stat.size,
+                modifiedAt: stat.mtimeMs,
+                sha256: createHash('sha256').update(fileBytes).digest('hex'),
+              }),
+            );
           } catch (error) {
             res.writeHead(500);
             res.end(

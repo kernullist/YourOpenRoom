@@ -11,6 +11,7 @@ import {
   createAoiActionCheckpoint,
   rollbackAoiActionCheckpoint,
   type AoiActionCheckpoint,
+  type AoiActionCheckpointRollbackResult,
 } from './aoiActionCheckpoint';
 import type {
   AoiApprovedFileMutationPolicy,
@@ -30,10 +31,33 @@ export interface AoiApprovedFileMutationRunnerOptions {
   workspaceRoot: string;
   approvedPolicy?: AoiApprovedFileMutationPolicy | null;
   now?: number;
+  // Controlled-real harness injection. Production callers leave this unset.
+  afterMutationBeforeValidation?: (targetPath: string) => void;
+  // Failure-path injection for deterministic rollback tests. Production callers
+  // always use rollbackAoiActionCheckpoint.
+  rollbackCheckpoint?: (
+    checkpoint: AoiActionCheckpoint,
+    options: { workspaceRoot: string; now?: number },
+  ) => AoiActionCheckpointRollbackResult;
 }
 
 function sha256Hex(value: Buffer | string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+export function fingerprintAoiActionCheckpoint(checkpoint: AoiActionCheckpoint): string {
+  return sha256Hex(
+    JSON.stringify({
+      version: checkpoint.version,
+      workspaceRootHash: checkpoint.workspaceRootHash,
+      entries: checkpoint.entries.map((entry) => ({
+        pathHash: entry.pathHash,
+        existedBefore: entry.existedBefore,
+        byteLength: entry.byteLength ?? 0,
+        sha256: entry.sha256 ?? 'absent',
+      })),
+    }),
+  );
 }
 
 function makeAuditId(request: AoiApprovedFileMutationRequest, startedAt: number): string {
@@ -71,6 +95,12 @@ interface FileMutationOutcome {
   bytesAfter: number | null;
   blockReasons: AoiFileMutationBlockReason[];
   checkpoint?: AoiActionCheckpoint;
+  checkpointFingerprint?: string;
+  targetBeforeSha256?: string | 'absent';
+  targetAfterSha256?: string;
+  validationStatus?: 'not_run' | 'passed' | 'failed';
+  rollbackAttempted?: boolean;
+  rollbackSucceeded?: boolean;
 }
 
 function buildResult(params: {
@@ -82,9 +112,13 @@ function buildResult(params: {
 }): AoiApprovedFileMutationResult {
   const { request, policy, outcome } = params;
   const ok = outcome.applied && outcome.blockReasons.length === 0;
+  const auditId = makeAuditId(request, params.startedAt);
+  const validationStatus = outcome.validationStatus ?? 'not_run';
+  const rollbackAttempted = outcome.rollbackAttempted === true;
+  const rollbackSucceeded = outcome.rollbackSucceeded === true;
   const auditRecord: AoiFileMutationAuditRecord = {
     version: 1,
-    id: makeAuditId(request, params.startedAt),
+    id: auditId,
     sessionPath: request.sessionPath,
     ...(request.proposalId ? { proposalId: request.proposalId } : {}),
     ...(request.decisionId ? { decisionId: request.decisionId } : {}),
@@ -104,12 +138,26 @@ function buildResult(params: {
     bytesAfter: outcome.bytesAfter,
     contentHash: policy.contentHash,
     ...(outcome.checkpoint ? { checkpointId: outcome.checkpoint.id } : {}),
+    ...(outcome.checkpointFingerprint
+      ? { checkpointFingerprint: outcome.checkpointFingerprint }
+      : {}),
+    ...(outcome.targetBeforeSha256 ? { targetBeforeSha256: outcome.targetBeforeSha256 } : {}),
+    ...(outcome.targetAfterSha256 ? { targetAfterSha256: outcome.targetAfterSha256 } : {}),
+    validationStatus,
+    rollbackAttempted,
+    rollbackSucceeded,
     evidenceRefs: [
       ...new Set([
-        `aoi-file-mutation-audit:${makeAuditId(request, params.startedAt)}`,
+        `aoi-file-mutation-audit:${auditId}`,
         ...(request.proposalId ? [`proposal:${request.proposalId}`] : []),
         ...(request.decisionId ? [`decision:${request.decisionId}`] : []),
         ...(outcome.checkpoint ? [`aoi-action-checkpoint:${outcome.checkpoint.id}`] : []),
+        ...(outcome.checkpointFingerprint
+          ? [`aoi-action-checkpoint-fingerprint:${outcome.checkpointFingerprint}`]
+          : []),
+        ...(validationStatus !== 'not_run'
+          ? [`aoi-file-validation:${auditId}:${validationStatus}`]
+          : []),
         ...request.evidenceRefs,
       ]),
     ].slice(0, 24),
@@ -130,6 +178,14 @@ function buildResult(params: {
     bytesAfter: outcome.bytesAfter,
     ...(outcome.checkpoint ? { checkpointId: outcome.checkpoint.id } : {}),
     ...(outcome.checkpoint ? { checkpoint: outcome.checkpoint } : {}),
+    ...(outcome.checkpointFingerprint
+      ? { checkpointFingerprint: outcome.checkpointFingerprint }
+      : {}),
+    ...(outcome.targetBeforeSha256 ? { targetBeforeSha256: outcome.targetBeforeSha256 } : {}),
+    ...(outcome.targetAfterSha256 ? { targetAfterSha256: outcome.targetAfterSha256 } : {}),
+    validationStatus,
+    rollbackAttempted,
+    rollbackSucceeded,
     blockReasons: auditRecord.blockReasons,
     auditRecord,
     evidenceRefs: auditRecord.evidenceRefs,
@@ -230,8 +286,41 @@ export function applyAoiApprovedFileMutation(
 
   const entry = checkpoint.entries[0];
   const bytesBefore = entry && entry.existedBefore ? (entry.byteLength ?? null) : null;
-  const failWithRollback = (reason: AoiFileMutationBlockReason): AoiApprovedFileMutationResult => {
-    const rollback = rollbackAoiActionCheckpoint(checkpoint, {
+  const checkpointFingerprint = fingerprintAoiActionCheckpoint(checkpoint);
+  const targetBeforeSha256 = entry?.existedBefore ? entry.sha256 : 'absent';
+  const blockAfterCheckpoint = (
+    reason: AoiFileMutationBlockReason,
+    validationStatus: 'not_run' | 'failed' = 'not_run',
+  ): AoiApprovedFileMutationResult =>
+    buildResult({
+      request,
+      policy,
+      startedAt,
+      completedAt: options.now ?? startedAt,
+      outcome: {
+        applied: false,
+        rolledBack: false,
+        bytesBefore,
+        bytesAfter: null,
+        blockReasons: [reason],
+        checkpoint,
+        checkpointFingerprint,
+        ...(targetBeforeSha256 ? { targetBeforeSha256 } : {}),
+        validationStatus,
+        rollbackAttempted: false,
+        rollbackSucceeded: false,
+      },
+    });
+
+  if (policy.validationPlan && targetBeforeSha256 !== policy.validationPlan.expectedBeforeSha256) {
+    return blockAfterCheckpoint('target_fingerprint_mismatch', 'failed');
+  }
+
+  const failWithRollback = (
+    reason: AoiFileMutationBlockReason,
+    targetAfterSha256?: string,
+  ): AoiApprovedFileMutationResult => {
+    const rollback = (options.rollbackCheckpoint ?? rollbackAoiActionCheckpoint)(checkpoint, {
       workspaceRoot: realRoot,
       now: options.now ?? startedAt,
     });
@@ -245,55 +334,63 @@ export function applyAoiApprovedFileMutation(
         rolledBack: rollback.ok,
         bytesBefore,
         bytesAfter: null,
-        blockReasons: rollback.ok ? [reason] : [reason, 'execution_failed'],
+        blockReasons: rollback.ok ? [reason] : [reason, 'rollback_failed'],
         checkpoint,
+        checkpointFingerprint,
+        ...(targetBeforeSha256 ? { targetBeforeSha256 } : {}),
+        ...(targetAfterSha256 ? { targetAfterSha256 } : {}),
+        validationStatus: 'failed',
+        rollbackAttempted: true,
+        rollbackSucceeded: rollback.ok,
       },
     });
   };
 
+  let targetAfterSha256: string | undefined;
   try {
     if (policy.operation === 'write') {
       const content = typeof request.content === 'string' ? request.content : '';
       fs.mkdirSync(dirname(target), { recursive: true });
       fs.writeFileSync(target, content, 'utf8');
-      const after = fs.readFileSync(target, 'utf8');
-      if (hashAoiFileMutationContent(after) !== policy.contentHash) {
-        return failWithRollback('verification_failed');
+      options.afterMutationBeforeValidation?.(target);
+      const after = fs.readFileSync(target);
+      targetAfterSha256 = sha256Hex(after);
+      const expectedAfterSha256 =
+        policy.validationPlan?.expectedAfterSha256 ?? sha256Hex(Buffer.from(content, 'utf8'));
+      if (
+        hashAoiFileMutationContent(after.toString('utf8')) !== policy.contentHash ||
+        targetAfterSha256 !== expectedAfterSha256
+      ) {
+        return failWithRollback('verification_failed', targetAfterSha256);
       }
     } else if (policy.operation === 'patch') {
       if (!entry || !entry.existedBefore) {
-        return failWithRollback('patch_target_missing');
+        return blockAfterCheckpoint('patch_target_missing', 'failed');
       }
       let text = fs.readFileSync(target, 'utf8');
       for (const op of policy.patchOps ?? []) {
         const expected = op.expectedCount ?? 1;
         if (countOccurrences(text, op.find) !== expected) {
-          return failWithRollback('patch_anchor_mismatch');
+          return blockAfterCheckpoint('patch_anchor_mismatch', 'failed');
         }
         text = text.split(op.find).join(op.replace);
       }
+      const expectedAfterSha256 =
+        policy.validationPlan?.expectedAfterSha256 ?? sha256Hex(Buffer.from(text, 'utf8'));
       fs.writeFileSync(target, text, 'utf8');
+      options.afterMutationBeforeValidation?.(target);
+      const after = fs.readFileSync(target);
+      targetAfterSha256 = sha256Hex(after);
+      if (targetAfterSha256 !== expectedAfterSha256) {
+        return failWithRollback('verification_failed', targetAfterSha256);
+      }
     } else {
       // delete
       if (!entry || !entry.existedBefore) {
-        // Nothing to delete; the checkpoint captured an absent file so no state
-        // changed. Report blocked without framing it as a rollback.
-        return buildResult({
-          request,
-          policy,
-          startedAt,
-          completedAt: options.now ?? startedAt,
-          outcome: {
-            applied: false,
-            rolledBack: false,
-            bytesBefore,
-            bytesAfter: null,
-            blockReasons: ['delete_target_missing'],
-            checkpoint,
-          },
-        });
+        return blockAfterCheckpoint('delete_target_missing', 'failed');
       }
       fs.unlinkSync(target);
+      options.afterMutationBeforeValidation?.(target);
       if (fs.existsSync(target)) {
         return failWithRollback('verification_failed');
       }
@@ -321,6 +418,12 @@ export function applyAoiApprovedFileMutation(
       bytesAfter,
       blockReasons: [],
       checkpoint,
+      checkpointFingerprint,
+      ...(targetBeforeSha256 ? { targetBeforeSha256 } : {}),
+      ...(targetAfterSha256 ? { targetAfterSha256 } : {}),
+      validationStatus: 'passed',
+      rollbackAttempted: false,
+      rollbackSucceeded: false,
     },
   });
 }

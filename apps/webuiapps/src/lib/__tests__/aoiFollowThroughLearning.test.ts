@@ -406,6 +406,18 @@ describe('Aoi Follow-through Learning', () => {
       mutationCount: 0,
     });
   });
+
+  it('stores one canonical follow-through record per stable event id', () => {
+    const root = makeTempRoot();
+    const event = makeEvent({ id: 'canonical-follow-through-event' });
+
+    const first = appendAoiFollowThroughEvent(root, event, NOW);
+    const replay = appendAoiFollowThroughEvent(root, event, NOW + 1_000);
+
+    expect(replay.id).toBe(first.id);
+    expect(loadAoiFollowThroughEvents(root, SESSION_PATH, NOW + 2_000)).toHaveLength(1);
+    expect(loadAoiFollowThroughLearningSummary(root, SESSION_PATH, NOW + 2_000).eventCount).toBe(1);
+  });
 });
 
 describe('getAoiFollowThroughProposalBoost', () => {

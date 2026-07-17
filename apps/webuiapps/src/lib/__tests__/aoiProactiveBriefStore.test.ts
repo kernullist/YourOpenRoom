@@ -5,6 +5,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { AoiMemoryEntry } from '../aoiMemoryShared';
 import type { AoiProactiveBriefCandidate } from '../aoiAutonomyTypes';
 import {
+  AOI_PROACTIVE_FIELD_EVENT_AUDIT_TAIL_LIMIT,
+  AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS,
   expireStaleAoiProactiveBriefCandidates,
   buildAoiProactiveBriefFieldMetrics,
   loadAoiProactiveBriefCalibrationInbox,
@@ -320,6 +322,108 @@ describe('Aoi proactive brief candidate storage', () => {
       privateLeakCount: 0,
       unauthorizedMutationCount: 0,
     });
+  });
+
+  it('deduplicates field decisions only within the bounded evidence window', () => {
+    const root = makeTempRoot();
+    const base = {
+      kind: 'shown_dashboard' as const,
+      sessionPath: 'aoi/default',
+      briefId: 'aoi-brief-bounded-dedupe',
+      topicId: 'aoi-interest-reverse',
+      sourceRefs: ['https://example.com/re/writeup'],
+      sourceHosts: ['example.com'],
+      evidenceRefs: ['source:example.com'],
+      dedupeKey: 'decision:evidence-v1',
+    };
+    const first = recordAoiProactiveBriefFieldEvent(root, { ...base, createdAt: 10_000 });
+    const duplicate = recordAoiProactiveBriefFieldEvent(root, {
+      ...base,
+      createdAt: 10_000 + AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS - 1,
+    });
+    const later = recordAoiProactiveBriefFieldEvent(root, {
+      ...base,
+      createdAt: 10_000 + AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS + 1,
+    });
+
+    expect(duplicate.id).toBe(first.id);
+    expect(later.id).not.toBe(first.id);
+    expect(
+      loadAoiProactiveBriefFieldEvents(
+        root,
+        'aoi/default',
+        10_000 + AOI_PROACTIVE_FIELD_EVENT_DEDUPE_WINDOW_MS + 1,
+      ),
+    ).toHaveLength(2);
+  });
+
+  it('retains 500 proactive audit records and compacts older records without raw text', () => {
+    const root = makeTempRoot();
+    const privateBait = 'PRIVATE_BAIT_PROACTIVE_COMPACTION';
+    const template = recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'shown_dashboard',
+      sessionPath: 'aoi/default',
+      briefId: 'aoi-brief-template',
+      topicId: 'aoi-interest-template',
+      evidenceRefs: ['source:template'],
+      dedupeKey: 'template',
+      createdAt: 1000,
+    });
+    const paths = resolveAoiProactiveBriefPaths(root, 'aoi/default');
+    const seedEvents = Array.from({ length: 501 }, (_, index) => ({
+      ...template,
+      id: `aoi-brief-field-retention-${index.toString().padStart(3, '0')}`,
+      briefId: `aoi-brief-retention-${index}`,
+      title: index === 0 ? privateBait : `Retention event ${index}`,
+      summary: index === 0 ? privateBait : `Retention summary ${index}`,
+      dedupeKey: `retention:${index}`,
+      createdAt: 10_000 + index,
+    }));
+    for (const event of seedEvents) {
+      fs.writeFileSync(
+        join(paths.fieldEventRecordsDir, `${event.id}.json`),
+        `${JSON.stringify(event)}\n`,
+      );
+    }
+    fs.writeFileSync(
+      paths.fieldEventIndex,
+      `${JSON.stringify({
+        version: 1,
+        sessionPath: 'aoi/default',
+        updatedAt: 20_000,
+        entries: seedEvents.map((event) => ({
+          id: event.id,
+          kind: event.kind,
+          createdAt: event.createdAt,
+          briefId: event.briefId,
+          topicId: event.topicId,
+          dedupeKey: event.dedupeKey,
+        })),
+      })}\n`,
+    );
+
+    recordAoiProactiveBriefFieldEvent(root, {
+      kind: 'shown_dashboard',
+      sessionPath: 'aoi/default',
+      briefId: 'aoi-brief-newest',
+      topicId: 'aoi-interest-newest',
+      evidenceRefs: ['source:newest'],
+      dedupeKey: 'retention:newest',
+      createdAt: 100_000,
+    });
+
+    const recordFiles = fs
+      .readdirSync(paths.fieldEventRecordsDir)
+      .filter((name) => name.endsWith('.json'));
+    const compactionText = fs.readFileSync(paths.fieldEventCompaction, 'utf-8');
+    expect(recordFiles).toHaveLength(AOI_PROACTIVE_FIELD_EVENT_AUDIT_TAIL_LIMIT);
+    expect(compactionText).not.toContain(privateBait);
+    expect(JSON.parse(compactionText)).toMatchObject({
+      sessionPath: 'aoi/default',
+      actionAuthority: 'display_only',
+      mutationCount: 0,
+    });
+    expect(JSON.parse(compactionText).compactedEventCount).toBeGreaterThanOrEqual(2);
   });
 
   it('aggregates delivery suppression and feedback metrics by reason', () => {

@@ -57,6 +57,7 @@ function makeProposal(partial: {
   id: string;
   createdAt: number;
   evidenceRefs: string[];
+  trigger?: string;
 }): AoiProposal {
   return partial as never;
 }
@@ -104,7 +105,8 @@ describe('buildAoiCognitionReadinessScorecard', () => {
     expect(scorecard.metrics.find((m) => m.key === 'grounded_citation_rate')?.status).toBe(
       'no_sample',
     );
-    expect(scorecard.canSupportPromotion).toBe(true);
+    expect(scorecard.canSupportPromotion).toBe(false);
+    expect(scorecard.score).toBe(0);
   });
 
   it('blocks hard on an uncited segment (grounding invariant)', () => {
@@ -210,6 +212,44 @@ describe('buildAoiCognitionReadinessScorecard', () => {
     expect(scorecard.gateStatus).toBe('blocked');
   });
 
+  it('does not dilute proactive grounding with direct operator-authorized proposals', () => {
+    const { situation, intentState } = makeLiveSituationAndIntent();
+    const scorecard = buildAoiCognitionReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      situation,
+      situationSampleCount: 3,
+      intentState,
+      consentedSituationSourceIds: ['app-activity'],
+      proposals: [
+        makeProposal({
+          id: 'proactive-grounded',
+          trigger: 'goal_continuation',
+          createdAt: NOW - 1000,
+          evidenceRefs: [`situation:${situation.id}`],
+        }),
+        makeProposal({
+          id: 'operator-file',
+          trigger: 'user_authorized_file_write',
+          createdAt: NOW - 1000,
+          evidenceRefs: ['observation:user-authorization'],
+        }),
+        makeProposal({
+          id: 'operator-goal',
+          trigger: 'goal_candidate',
+          createdAt: NOW - 1000,
+          evidenceRefs: ['observation:explicit-user-goal'],
+        }),
+      ],
+    });
+
+    const metric = scorecard.metrics.find((item) => item.key === 'proposal_live_citation_rate');
+    expect(metric).toMatchObject({ value: 1, status: 'pass' });
+    expect(
+      scorecard.gates.find((gate) => gate.key === 'proposal_live_citation_floor'),
+    ).toMatchObject({ blocked: false });
+  });
+
   it('warns on partial source coverage with a recommendation', () => {
     const { situation, intentState } = makeLiveSituationAndIntent();
     const scorecard = buildAoiCognitionReadinessScorecard({
@@ -226,6 +266,60 @@ describe('buildAoiCognitionReadinessScorecard', () => {
     expect(metric?.value).toBeCloseTo(1 / 3, 2);
     expect(scorecard.recommendations.join(' ')).toContain('produced no situation segment');
     expect(scorecard.gateStatus).toBe('warning');
+  });
+
+  it('reports disabled, missing-consent, missing, stale, and fresh source states separately', () => {
+    const { situation, intentState } = makeLiveSituationAndIntent();
+    const staleWorkspace: AoiCurrentSituation = {
+      ...situation,
+      segments: [
+        ...situation.segments,
+        {
+          version: 1,
+          kind: 'workspace',
+          label: 'Workspace',
+          summary: 'Workspace snapshot',
+          freshness: 'stale',
+          salienceScore: 0.4,
+          evidenceRefs: ['environment-source:workspace-git'],
+          cannotKnow: [],
+        },
+      ],
+    };
+    const scorecard = buildAoiCognitionReadinessScorecard({
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      situation: staleWorkspace,
+      situationSampleCount: 3,
+      intentState,
+      sourceCoverage: [
+        { sourceId: 'app-activity', enabled: true, consented: true },
+        { sourceId: 'workspace-git', enabled: true, consented: true },
+        {
+          sourceId: 'calendar-metadata',
+          enabled: true,
+          consented: false,
+          policyReasons: ['source_consent_review_required'],
+        },
+        { sourceId: 'research-runs', enabled: true, consented: true },
+        { sourceId: 'workspace-build', enabled: false, consented: false },
+      ],
+    });
+
+    expect(
+      Object.fromEntries(
+        scorecard.sourceDiagnostics.map((source) => [source.sourceId, source.status]),
+      ),
+    ).toEqual({
+      'app-activity': 'fresh',
+      'workspace-git': 'stale',
+      'calendar-metadata': 'consent_missing',
+      'research-runs': 'missing',
+      'workspace-build': 'disabled',
+    });
+    expect(
+      scorecard.metrics.find((metric) => metric.key === 'source_coverage_rate')?.value,
+    ).toBeCloseTo(1 / 3, 5);
   });
 
   it('never claims live grounding from a stale situation', () => {

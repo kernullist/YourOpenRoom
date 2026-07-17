@@ -219,10 +219,63 @@ function normalizeChangedFileSignal(
   });
 }
 
+function decodeGitStatusPath(value: string): string {
+  const trimmed = value.trim();
+  if (trimmed.startsWith('"') && trimmed.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(trimmed) as unknown;
+      if (typeof decoded === 'string' && decoded.trim()) {
+        return decoded;
+      }
+    } catch {
+      // Fall through to the raw path when Git's quoting is not JSON-compatible.
+    }
+  }
+  return trimmed;
+}
+
+function resolveChangedFileTimestamp(params: {
+  rawPath: string;
+  workspaceRoot: string;
+  now: number;
+  previous?: AoiChangedFileSignal;
+  status: string;
+  staged: boolean;
+  unstaged: boolean;
+  untracked: boolean;
+}): number {
+  try {
+    const candidate = isAbsolute(params.rawPath)
+      ? resolve(params.rawPath)
+      : resolve(params.workspaceRoot, params.rawPath);
+    if (isPathInsideRoot(params.workspaceRoot, candidate) && fs.existsSync(candidate)) {
+      const mtimeMs = fs.statSync(candidate).mtimeMs;
+      if (Number.isFinite(mtimeMs) && mtimeMs > 0) {
+        return Math.min(params.now, Math.trunc(mtimeMs));
+      }
+    }
+  } catch {
+    // Deleted or transient paths fall back to the stable previous observation.
+  }
+  const previous = params.previous;
+  if (
+    previous &&
+    previous.status === params.status &&
+    previous.staged === params.staged &&
+    previous.unstaged === params.unstaged &&
+    previous.untracked === params.untracked &&
+    typeof previous.changedAt === 'number'
+  ) {
+    return previous.changedAt;
+  }
+  return params.now;
+}
+
 function parsePorcelainStatusLine(
   line: string,
   workspaceRoot: string,
   now: number,
+  previousFilesByPath: ReadonlyMap<string, AoiChangedFileSignal>,
 ): AoiChangedFileSignal | null {
   if (line.length < 4) {
     return null;
@@ -230,17 +283,30 @@ function parsePorcelainStatusLine(
   const indexStatus = line[0] || ' ';
   const worktreeStatus = line[1] || ' ';
   const rawPath = line.slice(3).trim();
-  const displayPath = rawPath.includes(' -> ') ? rawPath.split(' -> ').pop() || rawPath : rawPath;
+  const displayPath = decodeGitStatusPath(
+    rawPath.includes(' -> ') ? rawPath.split(' -> ').pop() || rawPath : rawPath,
+  );
   const untracked = indexStatus === '?' || worktreeStatus === '?';
   const staged = !untracked && indexStatus !== ' ';
   const unstaged = untracked || worktreeStatus !== ' ';
+  const status = `${indexStatus}${worktreeStatus}`.trim() || 'changed';
+  const pathLabel = sanitizeAoiWorkspacePathLabel(displayPath, workspaceRoot);
   return makeChangedFileSignal(displayPath, {
     workspaceRoot,
-    status: `${indexStatus}${worktreeStatus}`.trim() || 'changed',
+    status,
     staged,
     unstaged,
     untracked,
-    changedAt: now,
+    changedAt: resolveChangedFileTimestamp({
+      rawPath: displayPath,
+      workspaceRoot,
+      now,
+      previous: previousFilesByPath.get(pathLabel),
+      status,
+      staged,
+      unstaged,
+      untracked,
+    }),
   });
 }
 
@@ -251,7 +317,7 @@ function defaultRunGitCommand(args: string[], cwd: string): string {
     timeout: GIT_TIMEOUT_MS,
     maxBuffer: GIT_MAX_BUFFER,
     windowsHide: true,
-  }).trim();
+  }).trimEnd();
 }
 
 function parseRecentCommit(raw: string): { hash?: string; message?: string } {
@@ -283,9 +349,14 @@ function collectGitSignal(params: {
   const recentCommit = parseRecentCommit(
     params.runGitCommand(['log', '-1', '--pretty=%H%x00%s'], params.workspaceRoot),
   );
+  const previousFilesByPath = new Map(
+    (params.previousSnapshot?.git?.changedFiles ?? []).map((file) => [file.pathLabel, file]),
+  );
   const changedFiles = statusRaw
     .split(/\r?\n/)
-    .map((line) => parsePorcelainStatusLine(line, params.workspaceRoot, params.now))
+    .map((line) =>
+      parsePorcelainStatusLine(line, params.workspaceRoot, params.now, previousFilesByPath),
+    )
     .filter((file): file is AoiChangedFileSignal => file !== null)
     .slice(0, MAX_CHANGED_FILES);
   const stagedFileCount = changedFiles.filter((file) => file.staged).length;

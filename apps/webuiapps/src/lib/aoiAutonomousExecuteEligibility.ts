@@ -30,17 +30,28 @@ export const AOI_AUTONOMOUS_EXECUTE_REVERSIBLE_CLASS: ReadonlySet<AoiProposalAcc
 export type AoiAutonomousExecuteBlockReason =
   | 'not_reversible_class'
   | 'checkpoint_missing'
+  | 'exact_scope_missing'
+  | 'validation_plan_missing'
+  | 'target_fingerprint_mismatch'
   | 'approval_missing'
   | 'approval_fingerprint_mismatch'
   | 'approval_expired'
   | 'readiness_below_trusted_operator'
   | 'session_budget_exhausted'
-  | 'accept_decision_not_user_authored';
+  | 'accept_decision_not_user_authored'
+  | 'proposal_not_executable'
+  | 'duplicate_attempt'
+  | 'execution_failed';
 
 export interface AoiAutonomousExecuteEligibilityInput {
   actionKind: AoiProposalAcceptActionKind;
   // Whether a rollback checkpoint (touched-scope snapshot / backup) exists for this effect.
   hasCheckpoint: boolean;
+  // File self-execution additionally requires one exact target, an approved
+  // before/after validation plan, and a current target fingerprint match.
+  exactScope?: boolean;
+  hasValidationPlan?: boolean;
+  targetFingerprintMatches?: boolean;
   // The standing content-addressed approval fingerprint (null when none is on file).
   approvalFingerprint: string | null;
   // The proposal's current content-addressed fingerprint (recomputed at execute time).
@@ -72,6 +83,17 @@ export function classifyAoiAutonomousExecuteEligibility(
   }
   if (!input.hasCheckpoint) {
     blockReasons.push('checkpoint_missing');
+  }
+  if (input.actionKind === 'file_write' || input.actionKind === 'file_patch') {
+    if (input.exactScope !== true) {
+      blockReasons.push('exact_scope_missing');
+    }
+    if (input.hasValidationPlan !== true) {
+      blockReasons.push('validation_plan_missing');
+    }
+    if (input.targetFingerprintMatches !== true) {
+      blockReasons.push('target_fingerprint_mismatch');
+    }
   }
   if (typeof input.approvalFingerprint !== 'string' || input.approvalFingerprint.length === 0) {
     blockReasons.push('approval_missing');

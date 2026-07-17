@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { maliciousProcedureSourceFixture } from '../__fixtures__/aoiAutonomyEvaluationFixtures';
@@ -15,6 +16,7 @@ import {
   syncAoiMemoryFromResearchRunServer,
   syncAoiMemoryFromResearchRunServerWithEmbedding,
   unarchiveServerAoiMemories,
+  updateServerAoiMemoryFromExplicitCorrection,
 } from '../aoiMemoryServerWriter';
 import type { AoiMemoryEntry, AoiMemoryEpisode } from '../aoiMemoryShared';
 import type { AoiEmbeddingProvider } from '../aoiMemoryEmbedding';
@@ -78,6 +80,52 @@ afterEach(() => {
 });
 
 describe('Aoi server memory writer', () => {
+  it('applies an exact session-bound user correction atomically and idempotently', () => {
+    const sessionsDir = makeTempSessionsDir();
+    const originalContent = 'The user prefers concise implementation summaries.';
+    const [original] = saveServerAoiMemoryCandidates(
+      sessionsDir,
+      'aoi/default',
+      [{ type: 'preference', content: originalContent, tags: ['response-style'] }],
+      'aoi_ep_original',
+    );
+    const expectedContentSha256 = createHash('sha256')
+      .update(originalContent, 'utf-8')
+      .digest('hex');
+    const input = {
+      sessionPath: 'aoi/default',
+      memoryId: original.id,
+      expectedContentSha256,
+      correctedContent: 'The user prefers detailed implementation summaries with evidence.',
+      episodeId: 'aoi_ep_correction_test',
+      now: original.updatedAt + 1,
+    };
+
+    const first = updateServerAoiMemoryFromExplicitCorrection(sessionsDir, input);
+    const second = updateServerAoiMemoryFromExplicitCorrection(sessionsDir, {
+      ...input,
+      now: original.updatedAt + 2,
+    });
+    const stored = loadServerAoiMemories(sessionsDir).find((item) => item.id === original.id);
+
+    expect(first.changed).toBe(true);
+    expect(second.changed).toBe(false);
+    expect(stored).toMatchObject({
+      id: original.id,
+      content: input.correctedContent,
+      updatedAt: original.updatedAt + 1,
+      sourceEpisodeIds: ['aoi_ep_original', 'aoi_ep_correction_test'],
+    });
+    expect(stored?.tags).toContain('user-correction');
+    expect(stored?.embedding).toBeUndefined();
+    expect(() =>
+      updateServerAoiMemoryFromExplicitCorrection(sessionsDir, {
+        ...input,
+        sessionPath: 'aoi/other',
+      }),
+    ).toThrow(/session-bound/i);
+  });
+
   it('stores reviewed completed Kira events without a browser session-data round trip', () => {
     const sessionsDir = makeTempSessionsDir();
 

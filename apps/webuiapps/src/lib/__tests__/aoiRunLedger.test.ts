@@ -18,6 +18,7 @@ describe('aoiRunLedger', () => {
     expect(goal.summary).toBe('Implement capability registry and verify it.');
     expect(prompt).toContain('Aoi Run Goal');
     expect(prompt).toContain('Implement capability registry');
+    expect(prompt).toContain('Do not append unrelated memories');
   });
 
   it('tracks model iterations and tool calls', () => {
@@ -94,5 +95,32 @@ describe('aoiRunLedger', () => {
     expect(entries).toHaveLength(1);
     expect(entries[0].updatedAt).toBe(400);
     expect(entries[0].metrics.errorCount).toBe(1);
+  });
+
+  it('counts tool errors and rejected postconditions as run errors', () => {
+    const goal = createAoiRunGoalFromMessage('Write and verify a file.', 500);
+    let entry = createAoiRunLedgerEntry({
+      goal,
+      modelRoute: 'main',
+      includeAppTools: true,
+      exposedToolNames: ['ide_write_file', 'ide_read_file', 'respond_to_user'],
+      createdAt: 500,
+    });
+    entry = appendAoiRunLedgerEvent(entry, {
+      type: 'tool_error',
+      iteration: 2,
+      toolNames: ['run_command'],
+      message: 'command is not allowed',
+      createdAt: 510,
+    });
+    entry = appendAoiRunLedgerEvent(entry, {
+      type: 'postcondition_failed',
+      iteration: 3,
+      toolNames: ['respond_to_user'],
+      message: 'line limit exceeded',
+      createdAt: 520,
+    });
+
+    expect(entry.metrics.errorCount).toBe(2);
   });
 });

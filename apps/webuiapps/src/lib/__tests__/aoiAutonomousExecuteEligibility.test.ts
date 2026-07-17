@@ -15,6 +15,9 @@ function eligibleInput(
   return {
     actionKind: 'file_write',
     hasCheckpoint: true,
+    exactScope: true,
+    hasValidationPlan: true,
+    targetFingerprintMatches: true,
     approvalFingerprint: 'fp-abc',
     currentFingerprint: 'fp-abc',
     approvalExpiresAt: NOW + 60_000,
@@ -56,6 +59,21 @@ describe('classifyAoiAutonomousExecuteEligibility (P2.3)', () => {
     expect(
       classifyAoiAutonomousExecuteEligibility(eligibleInput({ hasCheckpoint: false })).blockReasons,
     ).toContain('checkpoint_missing');
+  });
+
+  it('blocks file execution without exact scope, validation, or current target match', () => {
+    const result = classifyAoiAutonomousExecuteEligibility(
+      eligibleInput({
+        exactScope: false,
+        hasValidationPlan: false,
+        targetFingerprintMatches: false,
+      }),
+    );
+    expect(result.blockReasons).toEqual([
+      'exact_scope_missing',
+      'validation_plan_missing',
+      'target_fingerprint_mismatch',
+    ]);
   });
 
   it('blocks a missing approval and a fingerprint drift between approve and execute', () => {

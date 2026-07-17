@@ -1,15 +1,20 @@
 import * as fs from 'fs';
 import * as os from 'os';
-import { join } from 'path';
+import { createHash } from 'crypto';
+import { dirname, join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  AOI_FIELD_EVENT_DEDUPE_WINDOW_MS,
   appendAoiFieldEvent,
   appendAoiFieldEvents,
   buildAoiFieldEventFromSignal,
   buildAoiFieldLedgerSummary,
+  compactAoiFieldEventLedger,
   listAoiFieldEvents,
+  loadAoiFieldEventCompactionState,
   loadAoiFieldEvents,
   loadAoiFieldLedgerSummary,
+  normalizeAoiFieldEvent,
   pruneAoiFieldEvents,
   resolveAoiFieldEventLedgerPaths,
   saveAoiFieldEvents,
@@ -251,5 +256,212 @@ describe('Aoi Field Event Ledger', () => {
       category: 'readiness_gate_changed',
       mutationCount: 0,
     });
+    expect(summary.readinessCreditEventCount).toBe(0);
+  });
+
+  it('deduplicates the same decision and evidence only inside the bounded window', () => {
+    const root = makeTempRoot();
+    const input = {
+      sessionPath: SESSION_PATH,
+      category: 'delivery_dashboard',
+      summary: 'The same evidence-backed dashboard decision was shown.',
+      sourceRefs: ['workspace:decision-1'],
+      evidenceRefs: ['workspace:evidence-1'],
+      privacyState: 'metadata_only',
+      dedupeKey: 'decision-1',
+    };
+    const first = appendAoiFieldEvent(root, { ...input, createdAt: NOW }, NOW);
+    const duplicate = appendAoiFieldEvent(
+      root,
+      { ...input, createdAt: NOW + AOI_FIELD_EVENT_DEDUPE_WINDOW_MS - 1 },
+      NOW + AOI_FIELD_EVENT_DEDUPE_WINDOW_MS - 1,
+    );
+    const later = appendAoiFieldEvent(
+      root,
+      { ...input, createdAt: NOW + AOI_FIELD_EVENT_DEDUPE_WINDOW_MS + 1 },
+      NOW + AOI_FIELD_EVENT_DEDUPE_WINDOW_MS + 1,
+    );
+
+    expect(duplicate.id).toBe(first.id);
+    expect(later.id).not.toBe(first.id);
+    expect(loadAoiFieldEvents(root, SESSION_PATH, later.createdAt)).toHaveLength(2);
+    expect(loadAoiFieldEventCompactionState(root, SESSION_PATH, later.createdAt)).toMatchObject({
+      duplicateSuppressionCount: 1,
+      compactedEventCount: 0,
+    });
+  });
+
+  it('compacts expired private-bait events into aggregate-only metadata', () => {
+    const root = makeTempRoot();
+    const privateBait = 'PRIVATE_BAIT_NEVER_PERSIST_IN_COMPACTION';
+    appendAoiFieldEvent(
+      root,
+      {
+        sessionPath: SESSION_PATH,
+        category: 'delivery_hidden',
+        summary: `Expired ${privateBait}`,
+        sourceRefs: [`manual:${privateBait}`],
+        evidenceRefs: [`manual:${privateBait}`],
+        privacyState: 'metadata_only',
+        dedupeKey: privateBait,
+        createdAt: NOW - DAY_MS,
+        expiresAt: NOW - 1,
+      },
+      NOW,
+    );
+
+    const compacted = compactAoiFieldEventLedger(root, SESSION_PATH, NOW);
+    const paths = resolveAoiFieldEventLedgerPaths(root, SESSION_PATH);
+    const compactedText = fs.readFileSync(paths.compaction, 'utf-8');
+
+    expect(compacted.retainedEvents).toHaveLength(0);
+    expect(compacted.compaction).toMatchObject({
+      compactedEventCount: 1,
+      expiredEventCount: 1,
+      duplicateSuppressionCount: 0,
+    });
+    expect(compactedText).not.toContain(privateBait);
+    expect(fs.readFileSync(paths.events, 'utf-8')).not.toContain(privateBait);
+  });
+
+  it('compacts a large ledger to a bounded 1000-event audit tail', () => {
+    const root = makeTempRoot();
+    const paths = resolveAoiFieldEventLedgerPaths(root, SESSION_PATH);
+    const events = Array.from({ length: 5000 }, (_, index) => {
+      const event = normalizeAoiFieldEvent(
+        {
+          sessionPath: SESSION_PATH,
+          category: 'signal_observed',
+          summary: `Large ledger event ${index}.`,
+          sourceRefs: [`workspace:item-${index}`],
+          evidenceRefs: [`workspace:evidence-${index}`],
+          privacyState: 'metadata_only',
+          dedupeKey: `large-ledger-${index}`,
+          createdAt: NOW - index,
+          expiresAt: NOW + DAY_MS,
+        },
+        SESSION_PATH,
+        NOW,
+      );
+      if (!event) {
+        throw new Error('Failed to build large-ledger event fixture.');
+      }
+      return event;
+    });
+    fs.mkdirSync(paths.root, { recursive: true });
+    fs.writeFileSync(paths.events, `${events.map((event) => JSON.stringify(event)).join('\n')}\n`);
+
+    const startedAt = performance.now();
+    const compacted = compactAoiFieldEventLedger(root, SESSION_PATH, NOW);
+    const durationMs = performance.now() - startedAt;
+
+    expect(compacted.retainedEvents).toHaveLength(1000);
+    expect(compacted.compaction.overflowEventCount).toBe(4000);
+    expect(loadAoiFieldEvents(root, SESSION_PATH, NOW, 5000)).toHaveLength(1000);
+    expect(durationMs).toBeLessThan(5000);
+  });
+
+  it('recovers an interrupted aggregate-first compaction without losing or double-counting events', () => {
+    const sourceRoot = makeTempRoot();
+    const recoveryRoot = makeTempRoot();
+    const privateBait = 'PRIVATE_INTERRUPTED_COMPACTION_BAIT';
+    const expired = normalizeAoiFieldEvent(
+      {
+        sessionPath: SESSION_PATH,
+        category: 'delivery_hidden',
+        summary: `Expired ${privateBait}`,
+        sourceRefs: [`manual:${privateBait}`],
+        evidenceRefs: [`manual:${privateBait}`],
+        createdAt: NOW - DAY_MS,
+        expiresAt: NOW - 1,
+        dedupeKey: 'interrupted-expired',
+      },
+      SESSION_PATH,
+      NOW,
+    );
+    const active = normalizeAoiFieldEvent(
+      {
+        sessionPath: SESSION_PATH,
+        category: 'delivery_dashboard',
+        summary: 'Active event survives interrupted compaction recovery.',
+        sourceRefs: ['workspace:active'],
+        evidenceRefs: ['workspace:active'],
+        createdAt: NOW,
+        expiresAt: NOW + DAY_MS,
+        dedupeKey: 'interrupted-active',
+      },
+      SESSION_PATH,
+      NOW,
+    );
+    if (!expired || !active) {
+      throw new Error('Failed to build interrupted-compaction fixtures.');
+    }
+
+    const sourcePaths = resolveAoiFieldEventLedgerPaths(sourceRoot, SESSION_PATH);
+    fs.mkdirSync(sourcePaths.root, { recursive: true });
+    fs.writeFileSync(sourcePaths.events, `${JSON.stringify(expired)}\n${JSON.stringify(active)}\n`);
+    const targetCompaction = compactAoiFieldEventLedger(sourceRoot, SESSION_PATH, NOW).compaction;
+    if (!targetCompaction.lastTransactionId) {
+      throw new Error('Compaction transaction id was not persisted.');
+    }
+
+    const recoveryPaths = resolveAoiFieldEventLedgerPaths(recoveryRoot, SESSION_PATH);
+    fs.mkdirSync(recoveryPaths.root, { recursive: true });
+    fs.writeFileSync(
+      recoveryPaths.events,
+      `${JSON.stringify(expired)}\n${JSON.stringify(active)}\n`,
+    );
+    fs.writeFileSync(
+      recoveryPaths.compactionJournal,
+      `${JSON.stringify({
+        version: 1,
+        sessionPath: SESSION_PATH,
+        transactionId: targetCompaction.lastTransactionId,
+        createdAt: NOW,
+        targetCompaction,
+        removedRecordFingerprints: [
+          createHash('sha256').update(JSON.stringify(expired)).digest('hex'),
+        ],
+      })}\n`,
+    );
+
+    expect(fs.readFileSync(recoveryPaths.compactionJournal, 'utf-8')).not.toContain(privateBait);
+    expect(loadAoiFieldEvents(recoveryRoot, SESSION_PATH, NOW).map((event) => event.id)).toEqual([
+      active.id,
+    ]);
+    expect(fs.existsSync(recoveryPaths.compactionJournal)).toBe(false);
+    expect(loadAoiFieldEventCompactionState(recoveryRoot, SESSION_PATH, NOW)).toMatchObject({
+      compactedEventCount: 1,
+      expiredEventCount: 1,
+      lastTransactionId: targetCompaction.lastTransactionId,
+    });
+    expect(compactAoiFieldEventLedger(recoveryRoot, SESSION_PATH, NOW).compaction).toMatchObject({
+      compactedEventCount: 1,
+      expiredEventCount: 1,
+    });
+  });
+
+  it('fails closed when the field ledger directory is redirected through a symlink or junction', () => {
+    const root = makeTempRoot();
+    const outside = makeTempRoot();
+    const paths = resolveAoiFieldEventLedgerPaths(root, SESSION_PATH);
+    fs.mkdirSync(dirname(paths.root), { recursive: true });
+    fs.symlinkSync(outside, paths.root, process.platform === 'win32' ? 'junction' : 'dir');
+
+    expect(() =>
+      appendAoiFieldEvent(
+        root,
+        {
+          sessionPath: SESSION_PATH,
+          category: 'delivery_dashboard',
+          summary: 'This event must not escape the trusted sessions root.',
+          sourceRefs: ['workspace:symlink-test'],
+          evidenceRefs: ['workspace:symlink-test'],
+          createdAt: NOW,
+        },
+        NOW,
+      ),
+    ).toThrow(/trusted sessions root/i);
+    expect(fs.readdirSync(outside)).toEqual([]);
   });
 });

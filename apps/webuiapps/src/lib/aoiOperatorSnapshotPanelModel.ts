@@ -11,18 +11,30 @@ export const AOI_OPERATOR_SNAPSHOT_ROUTE = '/api/aoi-autonomy/operator/unified-s
 
 export interface AoiOperatorSnapshotResponse {
   ok?: boolean;
+  sessionPath?: string;
   summary?: AoiUnifiedOperatorSnapshotSummary;
 }
 
-// Return the display summary, or null when the payload is missing / not ok / malformed.
+export function buildAoiOperatorSnapshotRoute(sessionPath: string): string {
+  return `${AOI_OPERATOR_SNAPSHOT_ROUTE}?${new URLSearchParams({ sessionPath }).toString()}`;
+}
+
+// Return the display summary only when both response layers match the requested session.
 export function parseAoiOperatorSnapshotResponse(
   payload: unknown,
+  requestedSessionPath: string,
 ): AoiUnifiedOperatorSnapshotSummary | null {
   if (!payload || typeof payload !== 'object') {
     return null;
   }
   const body = payload as AoiOperatorSnapshotResponse;
-  if (body.ok !== true || !body.summary || typeof body.summary !== 'object') {
+  if (
+    body.ok !== true ||
+    body.sessionPath !== requestedSessionPath ||
+    !body.summary ||
+    typeof body.summary !== 'object' ||
+    body.summary.sessionPath !== requestedSessionPath
+  ) {
     return null;
   }
   return body.summary;

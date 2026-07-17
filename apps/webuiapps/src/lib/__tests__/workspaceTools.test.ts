@@ -10,7 +10,7 @@ vi.mock('../sessionPath', () => ({
 }));
 
 import * as diskStorage from '../diskStorage';
-import { executeWorkspaceTool } from '../workspaceTools';
+import { executeWorkspaceTool, getWorkspaceToolDefinitions } from '../workspaceTools';
 
 const mockedListFiles = vi.mocked(diskStorage.listFiles);
 const mockedGetFile = vi.mocked(diskStorage.getFile);
@@ -142,5 +142,12 @@ describe('executeWorkspaceTool()', () => {
 
   it('returns an error when query is missing', async () => {
     await expect(executeWorkspaceTool({ mode: 'auto' })).resolves.toBe('error: missing query');
+  });
+
+  it('describes workspace_search as session storage and points real files to ide_search', () => {
+    const [definition] = getWorkspaceToolDefinitions();
+
+    expect(definition.function.description).toContain('session app-storage');
+    expect(definition.function.description).toContain('ide_search');
   });
 });

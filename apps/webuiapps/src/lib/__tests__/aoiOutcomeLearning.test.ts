@@ -3,6 +3,7 @@ import type { AoiOutcomeSignalKind } from '../aoiAutonomyTypes';
 import {
   buildAoiFollowThroughEventFromOutcomeSignal,
   buildAoiOutcomeLearningSummary,
+  dedupeAoiOutcomeSignalRecords,
   normalizeAoiOutcomeSignalRecord,
 } from '../aoiOutcomeLearning';
 import { buildAoiOutcomeSignalTimelineEventInput } from '../aoiOperatorTimeline';
@@ -48,6 +49,12 @@ const EXPECTED_POLICY: Record<
     target: 'readiness',
     direction: 'suppress',
     result: 'negative',
+  },
+  user_feedback: {
+    confidence: 0.5,
+    target: 'readiness',
+    direction: 'neutral',
+    result: 'neutral',
   },
   validation_run: {
     confidence: 0.38,
@@ -135,6 +142,139 @@ describe('Aoi outcome learning', () => {
         target: 'readiness',
         direction: 'suppress',
       },
+    });
+  });
+
+  it('keeps user corrections explicit even when a label reference is supplied', () => {
+    const record = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'outcome-user-correction-explicit',
+        outcomeKind: 'user_correction',
+        explicitLabelRef: 'feedback:correction-1',
+        explicitLabel: 'wrong_source',
+      },
+      SESSION_PATH,
+      NOW,
+    );
+
+    expect(record?.signalKind).toBe('explicit_correction');
+    expect(buildAoiFollowThroughEventFromOutcomeSignal(record!, NOW)).toMatchObject({
+      trustIncreaseEligible: false,
+      learningSignalKind: 'explicit_correction',
+    });
+    expect(
+      buildAoiOutcomeLearningSummary({
+        sessionPath: SESSION_PATH,
+        outcomes: [record!],
+        now: NOW,
+      }),
+    ).toMatchObject({
+      explicitLabelLinkedCount: 0,
+      trustIncreaseAllowed: false,
+    });
+  });
+
+  it('preserves first-class outcome linkage and the exact sanitized correction text', () => {
+    const record = normalizeAoiOutcomeSignalRecord(
+      {
+        sessionPath: SESSION_PATH,
+        eventId: 'outcome-linked-correction',
+        sourceOutcomeId: 'outcome-file-task-1',
+        sourceChatRef: 'aoi-run:feedback-run-1',
+        outcomeKind: 'user_correction',
+        signalKind: 'explicit_correction',
+        explicitLabelRef: 'operator-feedback:1',
+        explicitCorrection: 'Keep precision, but remove repeated completion attempts.',
+      },
+      SESSION_PATH,
+      NOW,
+    );
+
+    expect(record).toMatchObject({
+      sourceOutcomeId: 'outcome-file-task-1',
+      explicitCorrection: 'Keep precision, but remove repeated completion attempts.',
+      signalKind: 'explicit_correction',
+    });
+    expect(record?.evidenceRefs).toContain('outcome:outcome-file-task-1');
+    expect(
+      buildAoiOutcomeLearningSummary({
+        sessionPath: SESSION_PATH,
+        outcomes: [record!],
+        now: NOW,
+      }).previousSuggestionOutcomeLabels,
+    ).toContain('outcome outcome-file-task-1 -> user_correction (negative, confidence 0.62)');
+  });
+
+  it('semantically deduplicates identical labels and corrections from concurrent retries', () => {
+    const records = [
+      normalizeAoiOutcomeSignalRecord(
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'feedback-run-1',
+          sourceOutcomeId: 'outcome-file-task-1',
+          sourceChatRef: 'aoi-run:retry-1',
+          outcomeKind: 'user_feedback',
+          signalKind: 'explicit_label',
+          explicitLabelRef: 'operator-feedback:retry-1',
+          explicitLabel: 'useful',
+        },
+        SESSION_PATH,
+        NOW,
+      )!,
+      normalizeAoiOutcomeSignalRecord(
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'feedback-run-2',
+          sourceOutcomeId: 'outcome-file-task-1',
+          sourceChatRef: 'aoi-run:retry-2',
+          outcomeKind: 'user_feedback',
+          signalKind: 'explicit_label',
+          explicitLabelRef: 'operator-feedback:retry-2',
+          explicitLabel: 'useful',
+        },
+        SESSION_PATH,
+        NOW + 1,
+      )!,
+      normalizeAoiOutcomeSignalRecord(
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'correction-run-1',
+          sourceOutcomeId: 'outcome-file-task-1',
+          sourceChatRef: 'aoi-run:retry-1',
+          outcomeKind: 'user_correction',
+          signalKind: 'explicit_correction',
+          explicitCorrection: 'Keep precision and remove duplicate retries.',
+        },
+        SESSION_PATH,
+        NOW + 2,
+      )!,
+      normalizeAoiOutcomeSignalRecord(
+        {
+          sessionPath: SESSION_PATH,
+          eventId: 'correction-run-2',
+          sourceOutcomeId: 'outcome-file-task-1',
+          sourceChatRef: 'aoi-run:retry-2',
+          outcomeKind: 'user_correction',
+          signalKind: 'explicit_correction',
+          explicitCorrection: 'Keep precision and remove duplicate retries.',
+        },
+        SESSION_PATH,
+        NOW + 3,
+      )!,
+    ];
+
+    expect(dedupeAoiOutcomeSignalRecords(records)).toHaveLength(2);
+    expect(
+      buildAoiOutcomeLearningSummary({
+        sessionPath: SESSION_PATH,
+        outcomes: records,
+        now: NOW + 3,
+      }),
+    ).toMatchObject({
+      outcomeCount: 2,
+      explicitLabelLinkedCount: 1,
+      explicitCorrectionCount: 1,
     });
   });
 

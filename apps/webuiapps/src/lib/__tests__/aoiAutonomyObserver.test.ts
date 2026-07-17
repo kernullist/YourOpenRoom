@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { execFileSync } from 'child_process';
 import { join } from 'path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ingestAoiObservation } from '../aoiAutonomyObserver';
@@ -351,6 +352,87 @@ describe('Aoi autonomy observer', () => {
     expect(JSON.stringify(paths)).not.toContain('C:\\');
     expect(observations.some((observation) => observation.source === 'workspace')).toBe(true);
     expect(JSON.stringify(observations)).not.toContain('F:\\');
+  });
+
+  it('preserves the leading porcelain status column for the first unstaged file', () => {
+    const workspaceRoot = makeTempRoot();
+    execFileSync('git', ['init'], { cwd: workspaceRoot, stdio: 'ignore' });
+    execFileSync('git', ['config', 'user.name', 'Aoi Test'], {
+      cwd: workspaceRoot,
+      stdio: 'ignore',
+    });
+    execFileSync('git', ['config', 'user.email', 'aoi-test@example.invalid'], {
+      cwd: workspaceRoot,
+      stdio: 'ignore',
+    });
+    fs.writeFileSync(join(workspaceRoot, 'tracked.txt'), 'before\n', 'utf-8');
+    execFileSync('git', ['add', 'tracked.txt'], { cwd: workspaceRoot, stdio: 'ignore' });
+    execFileSync('git', ['commit', '-m', 'test fixture'], {
+      cwd: workspaceRoot,
+      stdio: 'ignore',
+    });
+    fs.appendFileSync(join(workspaceRoot, 'tracked.txt'), 'after\n', 'utf-8');
+
+    const snapshot = collectAoiWorkspaceSnapshot({
+      sessionPath: SESSION_PATH,
+      workspaceRoot,
+      registry: makeWorkspaceRegistry(),
+      now: NOW,
+    });
+
+    expect(snapshot?.git?.changedFiles).toHaveLength(1);
+    expect(snapshot?.git?.changedFiles[0]).toMatchObject({
+      pathLabel: 'tracked.txt',
+      staged: false,
+      unstaged: true,
+    });
+  });
+
+  it('keeps validation fresh across repeated observations when dirty file contents did not change', () => {
+    const workspaceRoot = makeTempRoot();
+    const filePath = join(workspaceRoot, 'apps', 'stable.ts');
+    fs.mkdirSync(join(workspaceRoot, 'apps'), { recursive: true });
+    fs.writeFileSync(filePath, 'export const stable = true;\n', 'utf-8');
+    fs.utimesSync(filePath, new Date(NOW - 5_000), new Date(NOW - 5_000));
+    const gitRunner = vi.fn((args: string[]) => {
+      const command = args.join(' ');
+      if (command === 'rev-parse --abbrev-ref HEAD') {
+        return 'main';
+      }
+      if (command === 'status --porcelain=v1') {
+        return ' M apps/stable.ts';
+      }
+      if (command === 'log -1 --pretty=%H%x00%s') {
+        return 'abcdef0123456789abcdef0123456789abcdef01\u0000stable fixture';
+      }
+      throw new Error(`unexpected git command: ${command}`);
+    });
+    const first = collectAoiWorkspaceSnapshot({
+      sessionPath: SESSION_PATH,
+      workspaceRoot,
+      registry: makeWorkspaceRegistry(),
+      validation: {
+        result: 'passed',
+        completedAt: NOW - 1_000,
+        touchedFileScopes: [],
+      },
+      now: NOW,
+      runGitCommand: gitRunner,
+    });
+    const second = collectAoiWorkspaceSnapshot({
+      sessionPath: SESSION_PATH,
+      workspaceRoot,
+      registry: makeWorkspaceRegistry(),
+      previousSnapshot: first,
+      now: NOW + 10_000,
+      runGitCommand: gitRunner,
+    });
+
+    expect(first?.git?.changedFiles[0].changedAt).toBe(NOW - 5_000);
+    expect(second?.git?.changedFiles[0].changedAt).toBe(NOW - 5_000);
+    expect(first?.validation.freshness).toBe('fresh');
+    expect(second?.validation.freshness).toBe('fresh');
+    expect(second?.freshness).toBe('fresh');
   });
 
   it('does not execute approved command proposals from a background tick', async () => {

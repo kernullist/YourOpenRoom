@@ -17,7 +17,7 @@ import styles from './index.module.scss';
 // approve-to-archive (content-addressed: the server re-derives the fingerprint and rejects
 // on any drift, so a wrong id-set can only 409) -> restore. Soft-delete only; every write
 // goes through the fingerprint-gated routes.
-export const AoiMemoryDecayPanel: React.FC = () => {
+export const AoiMemoryDecayPanel: React.FC<{ sessionPath: string }> = ({ sessionPath }) => {
   const [preview, setPreview] = useState<AoiDecayPreview | null>(null);
   const [applyResult, setApplyResult] = useState<AoiDecayApplyResult | null>(null);
   const [busy, setBusy] = useState(false);
@@ -59,9 +59,9 @@ export const AoiMemoryDecayPanel: React.FC = () => {
       const response = await fetch(AOI_DECAY_APPLY_ROUTE, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(buildAoiDecayApplyBody(preview)),
+        body: JSON.stringify(buildAoiDecayApplyBody(preview, sessionPath)),
       });
-      const parsed = parseAoiDecayApplyResponse(await response.json());
+      const parsed = parseAoiDecayApplyResponse(await response.json(), sessionPath);
       if (!parsed) {
         setError('Archive failed: unexpected response.');
       } else if (parsed.rejected) {
@@ -75,7 +75,7 @@ export const AoiMemoryDecayPanel: React.FC = () => {
     } finally {
       setBusy(false);
     }
-  }, [preview]);
+  }, [preview, sessionPath]);
 
   const restore = useCallback(async () => {
     if (!applyResult || applyResult.changedIds.length === 0) {
@@ -87,7 +87,7 @@ export const AoiMemoryDecayPanel: React.FC = () => {
       const response = await fetch(AOI_DECAY_RESTORE_ROUTE, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ids: applyResult.changedIds }),
+        body: JSON.stringify({ sessionPath, ids: applyResult.changedIds }),
       });
       if (!response.ok) {
         throw new Error(`status ${response.status}`);
@@ -99,7 +99,7 @@ export const AoiMemoryDecayPanel: React.FC = () => {
     } finally {
       setBusy(false);
     }
-  }, [applyResult, loadPreview]);
+  }, [applyResult, loadPreview, sessionPath]);
 
   return (
     <div className={styles.settingsSectionCard} data-testid="aoi-memory-decay-panel">
@@ -107,6 +107,7 @@ export const AoiMemoryDecayPanel: React.FC = () => {
         <div className={styles.settingsSectionTitle}>Aoi Memory Decay</div>
         <span className={styles.modelHint}>soft-delete, operator-approved</span>
       </div>
+      <div className={styles.modelHint}>Audit session: {sessionPath}</div>
       {error ? <div className={styles.aoiAutonomyError}>{error}</div> : null}
       {preview ? (
         <div data-testid="aoi-memory-decay-preview">

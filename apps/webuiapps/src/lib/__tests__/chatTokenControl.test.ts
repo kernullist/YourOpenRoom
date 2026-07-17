@@ -163,6 +163,31 @@ describe('summarizeToolResultForModel()', () => {
     expect(parsed.matches[0].snippets[0].text.length).toBeLessThan(170);
   });
 
+  it('preserves disk SHA-256 evidence in compact IDE read summaries', () => {
+    const hash = 'a'.repeat(64);
+    const summarized = JSON.parse(
+      summarizeToolResultForModel(
+        'ide_read_file',
+        JSON.stringify({
+          path: 'written-by-me/output/status.md',
+          source: 'disk',
+          line_count: 18,
+          char_count: 700,
+          byte_count: 712,
+          modified_at: 1234,
+          sha256: hash,
+          hash_scope: 'full_disk_file_bytes',
+          content_truncated: false,
+          content: 'verified',
+        }),
+      ),
+    ) as { sha256: string; hash_scope: string; byte_count: number };
+
+    expect(summarized.sha256).toBe(hash);
+    expect(summarized.hash_scope).toBe('full_disk_file_bytes');
+    expect(summarized.byte_count).toBe(712);
+  });
+
   it('compacts read_url and run_command payloads', () => {
     const urlSummary = JSON.parse(
       summarizeToolResultForModel(

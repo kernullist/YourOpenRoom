@@ -25,10 +25,10 @@ afterEach(() => {
   }
 });
 
-describe('Aoi real-field operations acceptance pack', () => {
-  it('passes 16 replay-safe scenarios without private leaks, unauthorized mutation, stale claims, or live operations', async () => {
+describe('Aoi synthetic operations invariant pack', () => {
+  it('passes 16 replay-safe synthetic scenarios without claiming field evidence', async () => {
     const fetchMock = vi.fn(() => {
-      throw new Error('Real-field operations acceptance must not call live fetch.');
+      throw new Error('Synthetic operations invariant pack must not call live fetch.');
     });
     vi.stubGlobal('fetch', fetchMock);
 
@@ -42,6 +42,8 @@ describe('Aoi real-field operations acceptance pack', () => {
 
     expect(fetchMock).not.toHaveBeenCalled();
     expect(report.passed).toBe(true);
+    expect(report.evidenceClass).toBe('synthetic');
+    expect(report.fieldEvidenceClaimEligible).toBe(false);
     expect(report.scenarioCount).toBe(16);
     expect(report.passedScenarioCount).toBe(16);
     expect(report.failedScenarioCount).toBe(0);
@@ -57,7 +59,8 @@ describe('Aoi real-field operations acceptance pack', () => {
       calendar: 0,
       kiraMutation: 0,
     });
-    expect(report.readinessLevel).toBe('real_field_ready');
+    expect(report.readinessLevel).toBe('synthetic_ready');
+    expect(report.privacyState).toBe('synthetic');
     expect(report.fieldCaptureCount).toBeGreaterThan(0);
     expect(report.shadowDecisionCount).toBeGreaterThan(0);
     expect(report.feedbackAdjustmentCount).toBeGreaterThan(0);
@@ -94,12 +97,14 @@ describe('Aoi real-field operations acceptance pack', () => {
     expect(report.acceptanceTierSummaries.map((tier) => tier.tier)).toEqual([
       'synthetic',
       'field_grounded',
-      'real_field_operations',
+      'synthetic_integration',
     ]);
     expect(report.readinessSummary.tierDifferenceLabels.join(' ')).toContain(
-      'Real-field operations acceptance stitches capture',
+      'Synthetic integration checks capture',
     );
-    expect(report.readinessSummary.directChatBoundaryLabel).toContain('dashboard-first');
+    expect(report.readinessSummary.directChatBoundaryLabel).toContain(
+      'not field readiness or autonomous interruption',
+    );
     expect(
       report.scenarios.find((scenario) => scenario.id === 'rfo-15-field-ci-required-tests'),
     ).toMatchObject({
@@ -109,7 +114,8 @@ describe('Aoi real-field operations acceptance pack', () => {
     expect(serialized).not.toContain('honey@example.com');
     expect(serialized).not.toContain('C:\\Users\\secret');
     expect(serialized).not.toContain('secret123456789012');
-    expect(formatted).toContain('Aoi real-field operations acceptance: pass');
+    expect(formatted).toContain('Aoi synthetic operations invariant pack: pass');
+    expect(formatted).toContain('field_evidence_claim_eligible false');
     expect(formatted).toContain('operator_snapshot blindSpots=');
     expect(formatted).toContain('hard_fail_counts private=0 unauthorized=0 stale=0 mutation=0');
     expect(formatted).toContain('live_ops shell=0 network=0 gmail=0 calendar=0 kiraMutation=0');

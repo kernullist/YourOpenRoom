@@ -178,15 +178,30 @@ describe('executeIdeTool()', () => {
         Promise.resolve({
           path: 'src/index.ts',
           content: 'const answer = 42;\n',
+          size: 19,
+          modifiedAt: 1234,
+          sha256: 'a'.repeat(64),
         }),
     } as unknown as Response);
 
     const result = await executeIdeTool('ide_read_file', { path: 'src/index.ts' });
-    const parsed = JSON.parse(result) as { path: string; content: string; source: string };
+    const parsed = JSON.parse(result) as {
+      path: string;
+      content: string;
+      source: string;
+      byte_count: number;
+      modified_at: number;
+      sha256: string;
+      hash_scope: string;
+    };
 
     expect(parsed.path).toBe('src/index.ts');
     expect(parsed.content).toBe('const answer = 42;\n');
     expect(parsed.source).toBe('disk');
+    expect(parsed.byte_count).toBe(19);
+    expect(parsed.modified_at).toBe(1234);
+    expect(parsed.sha256).toBe('a'.repeat(64));
+    expect(parsed.hash_scope).toBe('full_disk_file_bytes');
     expect(vi.mocked(globalThis.fetch).mock.calls[0][0]).toContain('/api/openvscode/file?');
   });
 

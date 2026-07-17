@@ -4467,7 +4467,7 @@ describe('Aoi autonomy UI helpers', () => {
     expect(JSON.stringify(dashboard).toLowerCase()).not.toContain('fully autonomous');
   });
 
-  it('surfaces real-field operations readiness and acceptance tier differences', async () => {
+  it('surfaces synthetic integration invariants without presenting them as field evidence', async () => {
     const realFieldOperationsAcceptanceReport = await runAoiRealFieldOperationsAcceptancePack({
       sessionsDir: makeTempRoot(),
       sessionPath: 'aoi/default',
@@ -4482,14 +4482,17 @@ describe('Aoi autonomy UI helpers', () => {
     expect(dashboard.replayHealth.visible).toBe(true);
     expect(dashboard.replayHealth.realFieldOperationsAcceptanceLabel).toContain('16/16');
     expect(dashboard.replayHealth.realFieldOperationsAcceptanceLabel).toContain(
-      'real-field operations',
+      'synthetic integration',
+    );
+    expect(dashboard.replayHealth.realFieldOperationsAcceptanceLabel).toContain(
+      'field evidence eligible=false',
     );
     expect(dashboard.replayHealth.realFieldOperationsTierLabels).toHaveLength(3);
     expect(dashboard.replayHealth.realFieldOperationsTierLabels.join(' ')).toContain(
       'Synthetic acceptance checks isolated replay fixtures',
     );
     expect(dashboard.replayHealth.realFieldOperationsTierLabels.join(' ')).toContain(
-      'Real-field operations acceptance stitches capture',
+      'Synthetic integration checks capture',
     );
     expect(dashboard.replayHealth.realFieldOperationsHardFailLabels).toEqual([
       'private leaks 0',

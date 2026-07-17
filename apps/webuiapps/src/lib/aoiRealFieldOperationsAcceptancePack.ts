@@ -88,12 +88,12 @@ export type AoiRealFieldOperationsAcceptancePrivacyState =
 export type AoiRealFieldOperationsAcceptanceReadinessLevel =
   | 'blocked'
   | 'dashboard_ready'
-  | 'real_field_ready';
+  | 'synthetic_ready';
 
 export type AoiRealFieldOperationsAcceptanceTier =
   | 'synthetic'
   | 'field_grounded'
-  | 'real_field_operations';
+  | 'synthetic_integration';
 
 export interface AoiRealFieldOperationsAcceptanceTierSummary {
   version: 1;
@@ -144,6 +144,8 @@ export interface AoiRealFieldOperationsAcceptanceReport {
   id: string;
   sessionPath: string;
   generatedAt: number;
+  evidenceClass: 'synthetic';
+  fieldEvidenceClaimEligible: false;
   passed: boolean;
   scenarioCount: number;
   passedScenarioCount: number;
@@ -549,7 +551,7 @@ function makeContextRouterResult(sessionPath: string, now: number): AoiContextRo
       },
     ],
     candidateSources: [],
-    promptBlock: 'Redacted context router fixture for real-field operations acceptance.',
+    promptBlock: 'Redacted context router fixture for synthetic integration acceptance.',
   };
 }
 
@@ -997,7 +999,7 @@ function makeBoundedWorkOrder(sessionPath: string, now: number): AoiBoundedWorkO
         command:
           'pnpm exec vitest run src/lib/__tests__/aoiRealFieldOperationsAcceptancePack.test.ts',
         cwd: 'apps/webuiapps',
-        purpose: 'Preview the real-field operations acceptance test only.',
+        purpose: 'Preview the synthetic integration acceptance test only.',
       },
     ],
     risk: {
@@ -1173,7 +1175,7 @@ function makeTracePromotion(params: { sessionPath: string; now: number }): AoiTr
         candidate,
         action: 'promote',
         acceptanceDimension: 'useful',
-        reason: 'Useful redacted trace for real-field operations acceptance.',
+        reason: 'Useful redacted trace for synthetic integration acceptance.',
         evidenceRefs: ['operator-review:real-field-trace-promote'],
         now: params.now + 1,
       })
@@ -1390,13 +1392,13 @@ function makeScenario(params: {
     outcomeSignalCount: params.outcomeSignalCount ?? 0,
     workOrderCount: params.workOrderCount ?? 0,
     ciGateCommandCount: params.ciGateCommandCount ?? 0,
-    readinessLevel: passed ? 'real_field_ready' : 'blocked',
+    readinessLevel: passed ? 'synthetic_ready' : 'blocked',
     mutationCount,
     privateLeakCount,
     unauthorizedMutationCount,
     staleCurrentClaimCount,
     liveOperationCounts,
-    privacyState: params.privacyState ?? 'redacted',
+    privacyState: 'synthetic',
     nextGoalCandidates: uniqueStrings(params.nextGoalCandidates ?? [], 6),
   };
 }
@@ -1675,10 +1677,10 @@ function buildAcceptanceTierSummaries(
     },
     {
       version: 1,
-      tier: 'real_field_operations',
-      label: '16/16 real-field operations scenario(s) required',
+      tier: 'synthetic_integration',
+      label: '16/16 synthetic integration scenario(s) required',
       boundary:
-        'Real-field operations acceptance stitches capture, feedback, proactive scouting, capability broker, work orders, outcome learning, trace promotion, and field CI into one deterministic replay-safe proof.',
+        'Synthetic integration checks capture, feedback, proactive scouting, capability broker, work orders, outcome learning, trace promotion, and field CI as deterministic replay invariants. It is not field evidence.',
       evidenceRefs: [
         artifacts.realFieldCapture.id,
         artifacts.feedbackCompression.id,
@@ -1703,7 +1705,7 @@ function buildReadinessSummary(params: {
   return {
     version: 1,
     level: params.level,
-    label: `${passedScenarioCount}/${params.scenarios.length} real-field operations scenario(s); private=${params.privateLeakCount} unauthorized=${params.unauthorizedMutationCount} stale=${params.staleCurrentClaimCount} mutation=${params.mutationCount} live=${totalLiveOperationCount(
+    label: `${passedScenarioCount}/${params.scenarios.length} synthetic integration scenario(s); private=${params.privateLeakCount} unauthorized=${params.unauthorizedMutationCount} stale=${params.staleCurrentClaimCount} mutation=${params.mutationCount} live=${totalLiveOperationCount(
       params.liveOperationCounts,
     )}`,
     hardFailLabels: [
@@ -1720,7 +1722,7 @@ function buildReadinessSummary(params: {
       (tier) => `${tier.tier}: ${tier.boundary}`,
     ),
     directChatBoundaryLabel:
-      'Direct chat remains opt-in/readiness-gated; real-field operations readiness proves dashboard-first preparation, not autonomous interruption.',
+      'Direct chat remains opt-in/readiness-gated; synthetic integration readiness proves replay invariants only, not field readiness or autonomous interruption.',
     evidenceRefs: uniqueStrings([
       params.artifacts.realFieldCapture.id,
       params.artifacts.feedbackCompression.id,
@@ -1735,7 +1737,7 @@ export async function runAoiRealFieldOperationsAcceptancePack(
 ): Promise<AoiRealFieldOperationsAcceptanceReport> {
   const sessionsDir = String(options.sessionsDir ?? '').trim();
   if (!sessionsDir) {
-    throw new Error('Real-field operations acceptance requires a replay sessionsDir.');
+    throw new Error('Synthetic operations invariant pack requires a replay sessionsDir.');
   }
   const normalizedOptions: Required<AoiRealFieldOperationsAcceptancePackOptions> = {
     sessionsDir,
@@ -1759,7 +1761,7 @@ export async function runAoiRealFieldOperationsAcceptancePack(
     mutationCount === 0 &&
     totalLiveOperationCount(liveOperationCounts) === 0;
   const readinessLevel: AoiRealFieldOperationsAcceptanceReadinessLevel = passed
-    ? 'real_field_ready'
+    ? 'synthetic_ready'
     : artifacts.fieldCiGate.passed
       ? 'dashboard_ready'
       : 'blocked';
@@ -1770,11 +1772,13 @@ export async function runAoiRealFieldOperationsAcceptancePack(
 
   return {
     version: 1,
-    id: `aoi-real-field-operations-acceptance-${stableHash(
+    id: `aoi-synthetic-operations-invariant-${stableHash(
       `${normalizedOptions.sessionPath}:${normalizedOptions.now}:${passedScenarioCount}:${failedScenarios.length}`,
     )}`,
     sessionPath: normalizedOptions.sessionPath,
     generatedAt: normalizedOptions.now,
+    evidenceClass: 'synthetic',
+    fieldEvidenceClaimEligible: false,
     passed,
     scenarioCount: scenarios.length,
     passedScenarioCount,
@@ -1829,7 +1833,7 @@ export async function runAoiRealFieldOperationsAcceptancePack(
       staleCurrentClaimCount,
       mutationCount,
     }),
-    privacyState: 'redacted',
+    privacyState: 'synthetic',
     acceptanceTierSummaries: buildAcceptanceTierSummaries(artifacts),
     nextGoalCandidates,
     evidenceRefs: uniqueStrings([
@@ -1855,7 +1859,8 @@ export function formatAoiRealFieldOperationsAcceptanceReport(
   const maxFailedScenarios = options.maxFailedScenarios ?? 6;
   const failed = report.failedScenarios.slice(0, maxFailedScenarios);
   const lines = [
-    `Aoi real-field operations acceptance: ${report.passed ? 'pass' : 'fail'}`,
+    `Aoi synthetic operations invariant pack: ${report.passed ? 'pass' : 'fail'}`,
+    `field_evidence_claim_eligible ${report.fieldEvidenceClaimEligible}`,
     `scenarios ${report.passedScenarioCount}/${report.scenarioCount}`,
     `readiness ${report.readinessLevel}`,
     `operator_snapshot blindSpots=${report.operatorSnapshotSummary.blindSpotCount} interruption=${report.operatorSnapshotSummary.interruption} authority=${report.operatorSnapshotSummary.actionAuthority}`,

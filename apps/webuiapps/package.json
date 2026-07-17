@@ -22,7 +22,19 @@
     "field-ci:build": "vite build --config vite.field-ci-gate.config.ts",
     "field-ci": "node dist-field-ci-gate/aoiFieldCiGate.js",
     "real-field:build": "vite build --config vite.real-field-acceptance.config.ts",
-    "real-field": "node dist-real-field-acceptance/aoiRealFieldAcceptance.js"
+    "real-field": "node dist-real-field-acceptance/aoiRealFieldAcceptance.js",
+    "nonvoice-claim:build": "vite build --config vite.non-voice-claim.config.ts",
+    "nonvoice-claim": "npm run nonvoice-claim:build && node dist-non-voice-claim/aoiNonVoiceClaim.js",
+    "nonvoice-validation:build": "vite build --config vite.non-voice-validation.config.ts",
+    "nonvoice-validation": "npm run nonvoice-validation:build && node dist-non-voice-validation/aoiNonVoiceValidation.js",
+    "controlled-real-file:build": "vite build --config vite.controlled-real-file.config.ts",
+    "controlled-real-file": "node dist-controlled-real-file/aoiControlledRealFileEvidence.js",
+    "controlled-real-cognition:build": "vite build --config vite.controlled-real-cognition.config.ts",
+    "controlled-real-cognition": "node dist-controlled-real-cognition/aoiControlledRealCognitionEvidence.js",
+    "user-authorized-plan:build": "vite build --config vite.user-authorized-plan.config.ts",
+    "user-authorized-plan": "node dist-user-authorized-plan/aoiUserAuthorizedPlan.js",
+    "measured-memory-recall:build": "vite build --config vite.measured-memory-recall.config.ts",
+    "measured-memory-recall": "node dist-measured-memory-recall/aoiMeasuredMemoryRecall.js"
   },
   "dependencies": {
     "framer-motion": "^12.34.0",

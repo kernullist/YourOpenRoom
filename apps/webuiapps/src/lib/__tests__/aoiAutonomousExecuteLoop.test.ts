@@ -78,6 +78,9 @@ function seed(root: string, proposal: AoiProposal, decision: AoiProposalDecision
 const eligibleInput: AoiAutonomousExecuteEligibilityInput = {
   actionKind: 'file_write',
   hasCheckpoint: true,
+  exactScope: true,
+  hasValidationPlan: true,
+  targetFingerprintMatches: true,
   approvalFingerprint: 'fp',
   currentFingerprint: 'fp',
   approvalExpiresAt: NOW + 60_000,
@@ -214,7 +217,7 @@ describe('runAoiAutonomousExecuteLoop (P2.3)', () => {
     });
     expect(result.executed).toEqual([]);
     expect(result.skipped).toEqual([
-      { proposalId: 'proposal-x', blockReasons: ['not_reversible_class'] },
+      { proposalId: 'proposal-x', blockReasons: ['proposal_not_executable'] },
     ]);
     expect(executeProposal).not.toHaveBeenCalled();
   });
@@ -245,5 +248,66 @@ describe('runAoiAutonomousExecuteLoop (P2.3)', () => {
     // Budget 1 -> the second op sees sessionBudgetRemaining 0 and the gate blocks it.
     expect(result.executed).toHaveLength(1);
     expect(executeProposal).toHaveBeenCalledTimes(1);
+  });
+
+  it('consumes budget for a failed executor attempt and prevents a retry storm', async () => {
+    const root = makeRoot();
+    saveAoiActiveProposals(root, SESSION_PATH, [
+      makeProposal({ id: 'proposal-1' }),
+      makeProposal({ id: 'proposal-2' }),
+    ]);
+    appendAoiProposalDecision(
+      root,
+      makeDecision({ id: 'decision-1', proposalId: 'proposal-1', createdAt: NOW }),
+    );
+    appendAoiProposalDecision(
+      root,
+      makeDecision({ id: 'decision-2', proposalId: 'proposal-2', createdAt: NOW - 1 }),
+    );
+    const executeProposal = vi.fn(async () => ({ executed: false }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      sessionBudget: 1,
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      deps: {
+        resolveEligibility: ({ sessionBudgetRemaining }) => ({
+          ...eligibleInput,
+          sessionBudgetRemaining,
+        }),
+        executeProposal,
+      },
+    });
+    expect(executeProposal).toHaveBeenCalledTimes(1);
+    expect(result.skipped).toEqual(
+      expect.arrayContaining([
+        { proposalId: 'proposal-1', blockReasons: ['execution_failed'] },
+        { proposalId: 'proposal-2', blockReasons: ['session_budget_exhausted'] },
+      ]),
+    );
+  });
+
+  it('consumes only the newest acceptance for a proposal and rejects duplicates', async () => {
+    const root = makeRoot();
+    saveAoiActiveProposals(root, SESSION_PATH, [makeProposal()]);
+    appendAoiProposalDecision(root, makeDecision({ id: 'decision-old', createdAt: NOW - 2 }));
+    appendAoiProposalDecision(root, makeDecision({ id: 'decision-new', createdAt: NOW - 1 }));
+    const executeProposal = vi.fn(async () => ({ executed: true }));
+    const result = await runAoiAutonomousExecuteLoop({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      now: NOW,
+      env: { AOI_AUTONOMY_SELF_EXECUTE: '1' },
+      deps: { resolveEligibility: () => eligibleInput, executeProposal },
+    });
+    expect(executeProposal).toHaveBeenCalledTimes(1);
+    expect(executeProposal).toHaveBeenCalledWith(
+      expect.objectContaining({ decisionId: 'decision-new' }),
+    );
+    expect(result.skipped).toContainEqual({
+      proposalId: 'proposal-x',
+      blockReasons: ['duplicate_attempt'],
+    });
   });
 });

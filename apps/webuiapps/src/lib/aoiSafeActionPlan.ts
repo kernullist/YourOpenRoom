@@ -5,6 +5,7 @@ import {
 } from './aoiApprovalSandbox';
 import type {
   AoiActionRisk,
+  AoiApprovedFileMutationPolicy,
   AoiApprovalRequirement,
   AoiAutonomyLevel,
   AoiAutonomyRisk,
@@ -14,6 +15,10 @@ import type {
   AoiRollbackPlan,
   AoiValidationPlan,
 } from './aoiAutonomyTypes';
+import {
+  createAoiApprovedFileMutationRequest,
+  evaluateAoiApprovedFileMutationPolicy,
+} from './aoiApprovedFileMutationPolicy';
 import type { AoiApprovalSandboxTargetKind } from './aoiApprovalSandbox';
 
 const DEFAULT_VALIDATION_COMMANDS = [
@@ -301,6 +306,7 @@ function finalizePlan(
   plan: Omit<AoiPreparedActionPlan, 'status' | 'blockers'> & {
     blockers?: string[];
   },
+  options: { approvedMutationRunner?: boolean } = {},
 ): AoiPreparedActionPlan {
   const blockers = [...(plan.blockers ?? [])];
   const approvalSandbox = buildPreparedActionSandbox(plan);
@@ -310,7 +316,11 @@ function finalizePlan(
   if (plan.risk.level === 'high' && plan.checkpoint.required && !plan.checkpoint.available) {
     blockers.push('missing_checkpoint_for_risky_mutation');
   }
-  if (plan.risk.mutationCapable && plan.actionKind !== 'create_kira_work') {
+  if (
+    plan.risk.mutationCapable &&
+    plan.actionKind !== 'create_kira_work' &&
+    options.approvedMutationRunner !== true
+  ) {
     blockers.push('mutation_requires_kira_or_approved_runner');
   }
   const uniqueBlockers = [...new Set(blockers)];
@@ -320,6 +330,151 @@ function finalizePlan(
     approvalSandbox,
     blockers: uniqueBlockers,
   };
+}
+
+export function buildAoiApprovedFileMutationPreparedActionPlan(
+  proposal: AoiProposal,
+  policy?: AoiApprovedFileMutationPolicy,
+): AoiPreparedActionPlan {
+  const params = actionParams(proposal);
+  const actionKind = proposal.acceptAction?.kind;
+  const operation =
+    actionKind === 'file_patch' ? 'patch' : actionKind === 'file_delete' ? 'delete' : 'write';
+  const resolvedPolicy =
+    policy ??
+    evaluateAoiApprovedFileMutationPolicy(
+      createAoiApprovedFileMutationRequest({
+        sessionPath: proposal.sessionPath,
+        proposalId: proposal.id,
+        operation,
+        path: params.path,
+        content: params.content,
+        patchOps: params.patchOps ?? params.patch_ops,
+        validationPlan: params.validationPlan ?? params.validation_plan,
+        purpose: params.purpose ?? proposal.title,
+        risk: proposal.risk,
+        requestedAt: proposal.updatedAt,
+        evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],
+      }),
+    );
+  const evidenceRefs = dedupeStrings(
+    [...proposal.evidenceRefs, ...proposal.artifactRefs],
+    [`proposal:${proposal.id}`],
+  );
+  const validationSummary = resolvedPolicy.validationPlan
+    ? `Require target SHA-256 ${resolvedPolicy.validationPlan.expectedBeforeSha256} before mutation and ${resolvedPolicy.validationPlan.expectedAfterSha256} after mutation.`
+    : 'Re-read the target and verify the exact approved bytes before reporting success.';
+  const plan = finalizePlan(
+    {
+      version: 1,
+      actionKind: actionKind ?? 'file_write',
+      objective: normalizeText(proposal.title, 'Apply an approved file mutation.'),
+      expectedChanges: [
+        resolvedPolicy.approvalSandbox?.dryRunSummary ?? resolvedPolicy.rationale[0],
+      ],
+      affectedSurfaces: [resolvedPolicy.pathLabel],
+      evidenceRefs,
+      risk: makeRisk({
+        level: proposal.risk,
+        mutationCapable: true,
+        reasons: [
+          'The exact path and mutation bytes are bound to a content-addressed L5 approval.',
+          'The approved runner captures a target checkpoint before applying the mutation.',
+        ],
+      }),
+      approval: makeApproval({
+        required: true,
+        requiredLevel: 'L5',
+        freshAcceptanceRequired: true,
+        reason: 'The exact file mutation requires a fresh operator acceptance at L5.',
+      }),
+      checkpoint: {
+        kind: 'approved_runner_checkpoint',
+        required: true,
+        available: resolvedPolicy.allowed,
+        summary:
+          'The approved runner will capture the target pre-state immediately before mutation.',
+        instructions: [
+          'Re-evaluate the content-addressed approval before checkpoint creation.',
+          'Persist the checkpoint id and fingerprint with the execution audit.',
+        ],
+        evidenceRefs,
+        ...(resolvedPolicy.allowed ? {} : { missingReason: resolvedPolicy.blockReasons.join(',') }),
+      },
+      rollback: makeRollback({
+        kind: 'approved_runner_checkpoint_restore',
+        available: resolvedPolicy.allowed,
+        guarantee: 'mechanism_backed',
+        summary: 'Restore the captured pre-state automatically if exact validation fails.',
+        instructions: [
+          'Verify the target after mutation before reporting success.',
+          'Restore the captured checkpoint when mutation or validation fails.',
+        ],
+        evidenceRefs,
+      }),
+      validation: makeValidation({
+        required: true,
+        approvalRequiredBeforeRun: true,
+        summary: validationSummary,
+        commands: [],
+        expectedEvidenceRefs: ['aoi-file-validation:passed', ...evidenceRefs.slice(0, 4)],
+      }),
+      blockers: resolvedPolicy.allowed
+        ? []
+        : resolvedPolicy.blockReasons.map((reason) => `approved_file_mutation_blocked:${reason}`),
+      nonGoals: [
+        'Do not mutate any path other than the content-addressed approved target.',
+        'Do not report success without checkpoint and post-write validation evidence.',
+      ],
+    },
+    { approvedMutationRunner: true },
+  );
+  return {
+    ...plan,
+    ...(resolvedPolicy.approvalSandbox ? { approvalSandbox: resolvedPolicy.approvalSandbox } : {}),
+  };
+}
+
+function buildAoiGoalActivationPreparedActionPlan(proposal: AoiProposal): AoiPreparedActionPlan {
+  return finalizePlan({
+    version: 1,
+    actionKind: 'activate_goal',
+    objective: normalizeText(proposal.title, 'Activate the approved Aoi goal.'),
+    expectedChanges: ['Create one active goal and its bounded plan after operator acceptance.'],
+    affectedSurfaces: ['Aoi goal store'],
+    evidenceRefs: dedupeStrings(
+      [...proposal.evidenceRefs, ...proposal.artifactRefs],
+      [`proposal:${proposal.id}`],
+    ),
+    risk: makeRisk({
+      level: proposal.risk,
+      mutationCapable: false,
+      reasons: ['Goal activation changes Aoi planning state but does not mutate workspace files.'],
+    }),
+    approval: makeApproval({
+      required: true,
+      requiredLevel: proposal.requiredAutonomyLevel,
+      freshAcceptanceRequired: true,
+      reason: 'Only the operator acceptance route may activate this goal.',
+    }),
+    checkpoint: notApplicableCheckpoint('Workspace checkpoint is not applicable to goal state.'),
+    rollback: makeRollback({
+      kind: 'not_applicable',
+      available: true,
+      guarantee: 'none',
+      summary: 'The operator may pause, abandon, or complete the goal through goal governance.',
+      instructions: ['Use the explicit goal decision route to change the activated goal state.'],
+      evidenceRefs: proposal.evidenceRefs,
+    }),
+    validation: makeValidation({
+      required: true,
+      approvalRequiredBeforeRun: true,
+      summary: 'Verify one active goal is linked to this accepted proposal.',
+      commands: [],
+      expectedEvidenceRefs: [`proposal:${proposal.id}`, ...proposal.evidenceRefs],
+    }),
+    nonGoals: ['Do not execute workspace actions while activating the goal.'],
+  });
 }
 
 export function buildAoiKiraHandoffPreparedActionPlan(
@@ -644,6 +799,9 @@ export function buildAoiPreparedActionPlan(
   if (kind === 'start_research') {
     return buildAoiResearchStartPreparedActionPlan(proposal);
   }
+  if (kind === 'activate_goal') {
+    return buildAoiGoalActivationPreparedActionPlan(proposal);
+  }
   if (
     kind === 'get_research_status' ||
     kind === 'open_research_artifact' ||
@@ -719,7 +877,10 @@ export function buildAoiPreparedActionPlan(
       risk: proposal.risk,
     });
   }
-  if (kind === 'preview_changes' || kind === 'file_patch' || kind === 'file_write') {
+  if (kind === 'file_patch' || kind === 'file_write' || kind === 'file_delete') {
+    return buildAoiApprovedFileMutationPreparedActionPlan(proposal);
+  }
+  if (kind === 'preview_changes') {
     return buildAoiPreviewOnlyFileWorkPreparedActionPlan({
       objective: proposal.title,
       evidenceRefs: [...proposal.evidenceRefs, ...proposal.artifactRefs],

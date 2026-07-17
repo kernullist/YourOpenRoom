@@ -1,5 +1,6 @@
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
@@ -13,6 +14,10 @@ import { applyAoiApprovedFileMutation } from '../aoiApprovedFileMutationRunner';
 import type { AoiApprovedFileMutationRequest } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
+
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
 
 function makeTempRoot(): string {
   const root = fs.mkdtempSync(join(os.tmpdir(), 'aoi-file-mutation-test-'));
@@ -73,6 +78,24 @@ describe('evaluateAoiApprovedFileMutationPolicy', () => {
     expect(policy.patchOps?.[0].expectedCount).toBe(1);
   });
 
+  it('rejects a patch validation plan that claims the target is absent', () => {
+    const request = createAoiApprovedFileMutationRequest({
+      sessionPath: 'aoi/default',
+      operation: 'patch',
+      path: 'apps/x/data/a.json',
+      patchOps: [{ find: 'a', replace: 'b' }],
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: 'absent',
+        expectedAfterSha256: sha256('b'),
+      },
+      requestedAt: 1000,
+    });
+    expect(evaluateAoiApprovedFileMutationPolicy(request).blockReasons).toContain(
+      'validation_plan_invalid',
+    );
+  });
+
   it('blocks an absolute path', () => {
     const policy = evaluateAoiApprovedFileMutationPolicy(writeRequest('/etc/passwd', 'x'));
     expect(policy.allowed).toBe(false);
@@ -130,6 +153,26 @@ describe('evaluateAoiApprovedFileMutationPolicy', () => {
     const b = evaluateAoiApprovedFileMutationPolicy(writeRequest('apps/x/data/a.json', 'two'));
     expect(a.contentHash).not.toBe(b.contentHash);
     expect(a.approvalFingerprint).not.toBe(b.approvalFingerprint);
+  });
+
+  it('binds an exact before/after SHA-256 validation plan into the approval', () => {
+    const base = writeRequest('apps/x/data/a.json', 'approved');
+    const withPlan = createAoiApprovedFileMutationRequest({
+      ...base,
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: 'absent',
+        expectedAfterSha256: sha256('approved'),
+      },
+    });
+    const withoutPolicy = evaluateAoiApprovedFileMutationPolicy(base);
+    const withPolicy = evaluateAoiApprovedFileMutationPolicy(withPlan);
+    expect(withPolicy.validationPlan).toEqual({
+      version: 1,
+      expectedBeforeSha256: 'absent',
+      expectedAfterSha256: sha256('approved'),
+    });
+    expect(withPolicy.approvalFingerprint).not.toBe(withoutPolicy.approvalFingerprint);
   });
 });
 
@@ -190,6 +233,126 @@ describe('normalizeAoiApprovedFileMutationPolicy', () => {
 });
 
 describe('applyAoiApprovedFileMutation', () => {
+  it('validates an exact absent-to-content SHA-256 plan and records checkpoint evidence', () => {
+    const root = makeTempRoot();
+    const request = writeRequest('apps/x/data/a.json', 'approved', 1000, {
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: 'absent',
+        expectedAfterSha256: sha256('approved'),
+      },
+    });
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+    });
+    expect(result).toMatchObject({
+      ok: true,
+      validationStatus: 'passed',
+      rollbackAttempted: false,
+      targetBeforeSha256: 'absent',
+      targetAfterSha256: sha256('approved'),
+    });
+    expect(result.checkpointFingerprint).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('blocks target drift before mutation and leaves the drifted bytes untouched', () => {
+    const root = makeTempRoot();
+    const target = join(root, 'apps/x/data/a.json');
+    fs.mkdirSync(join(root, 'apps/x/data'), { recursive: true });
+    fs.writeFileSync(target, 'reviewed');
+    const request = writeRequest('apps/x/data/a.json', 'approved', 1000, {
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: sha256('reviewed'),
+        expectedAfterSha256: sha256('approved'),
+      },
+    });
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    fs.writeFileSync(target, 'drifted');
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+    });
+    expect(result.ok).toBe(false);
+    expect(result.blockReasons).toContain('target_fingerprint_mismatch');
+    expect(result.rollbackAttempted).toBe(false);
+    expect(fs.readFileSync(target, 'utf8')).toBe('drifted');
+  });
+
+  it('rolls back when post-mutation SHA-256 validation fails', () => {
+    const root = makeTempRoot();
+    const target = join(root, 'apps/x/data/a.json');
+    fs.mkdirSync(join(root, 'apps/x/data'), { recursive: true });
+    fs.writeFileSync(target, 'before');
+    const request = writeRequest('apps/x/data/a.json', 'approved', 1000, {
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: sha256('before'),
+        expectedAfterSha256: sha256('approved'),
+      },
+    });
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+      afterMutationBeforeValidation: (path) => {
+        fs.writeFileSync(path, 'tampered');
+      },
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      rolledBack: true,
+      validationStatus: 'failed',
+      rollbackAttempted: true,
+      rollbackSucceeded: true,
+    });
+    expect(result.blockReasons).toContain('verification_failed');
+    expect(fs.readFileSync(target, 'utf8')).toBe('before');
+  });
+
+  it('reports rollback failure without claiming recovery', () => {
+    const root = makeTempRoot();
+    const target = join(root, 'apps/x/data/a.json');
+    fs.mkdirSync(join(root, 'apps/x/data'), { recursive: true });
+    fs.writeFileSync(target, 'before');
+    const request = writeRequest('apps/x/data/a.json', 'approved', 1000, {
+      validationPlan: {
+        version: 1,
+        expectedBeforeSha256: sha256('before'),
+        expectedAfterSha256: sha256('approved'),
+      },
+    });
+    const approved = evaluateAoiApprovedFileMutationPolicy(request);
+    const result = applyAoiApprovedFileMutation(request, {
+      workspaceRoot: root,
+      approvedPolicy: approved,
+      now: 2000,
+      afterMutationBeforeValidation: (path) => {
+        fs.writeFileSync(path, 'tampered');
+      },
+      rollbackCheckpoint: (checkpoint) => ({
+        version: 1,
+        ok: false,
+        checkpointId: checkpoint.id,
+        restoredAt: 2000,
+        restoredCount: 0,
+        deletedCount: 0,
+        failedCount: 1,
+        entries: [{ pathLabel: 'apps/x/data/a.json', outcome: 'failed' }],
+        blockedReasons: ['injected_rollback_failure'],
+        evidenceRefs: [],
+      }),
+    });
+    expect(result.rollbackAttempted).toBe(true);
+    expect(result.rollbackSucceeded).toBe(false);
+    expect(result.rolledBack).toBe(false);
+    expect(result.blockReasons).toContain('rollback_failed');
+  });
   it('writes a new file with approved content behind a checkpoint', () => {
     const root = makeTempRoot();
     const request = writeRequest('apps/x/data/a.json', '{"v":1}', 1000);
@@ -291,7 +454,8 @@ describe('applyAoiApprovedFileMutation', () => {
       now: 2000,
     });
     expect(result.ok).toBe(false);
-    expect(result.rolledBack).toBe(true);
+    expect(result.rolledBack).toBe(false);
+    expect(result.rollbackAttempted).toBe(false);
     expect(result.blockReasons).toContain('patch_anchor_mismatch');
     expect(fs.readFileSync(join(root, 'apps/x/data/a.json'), 'utf8')).toBe('hello hello');
   });

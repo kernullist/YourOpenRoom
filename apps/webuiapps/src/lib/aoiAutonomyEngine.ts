@@ -23,6 +23,7 @@ import {
   recordAoiGoalRecoverySignal,
   updateAoiGoalProgressFromKiraOutcomes,
   updateAoiGoalProgressFromObservations,
+  updateAoiGoalProgressFromOutcomeSignals,
 } from './aoiAutonomyGoals';
 import {
   buildAoiBoundedWorkOrderFromGoalStep,
@@ -3380,6 +3381,16 @@ export async function runAoiAutonomyTick(
     activeProposals: bundle.activeProposals,
     now,
   });
+  const outcomeGoalProgress = updateAoiGoalProgressFromOutcomeSignals({
+    sessionsDir: params.sessionsDir,
+    sessionPath,
+    outcomes: loadAoiOutcomeSignalRecords(params.sessionsDir, sessionPath, now),
+    proposals: [
+      ...bundle.activeProposals,
+      ...loadAoiArchivedProposals(params.sessionsDir, sessionPath),
+    ],
+    now,
+  });
   const kiraGoalProgress = updateAoiGoalProgressFromKiraOutcomes({
     sessionsDir: params.sessionsDir,
     sessionPath,
@@ -3390,7 +3401,8 @@ export async function runAoiAutonomyTick(
   const attentionMission =
     attentionResult.updateMission ||
     kiraOutcomeResult.shouldRefreshMission ||
-    kiraGoalProgress.events.length > 0
+    kiraGoalProgress.events.length > 0 ||
+    outcomeGoalProgress.events.length > 0
       ? deriveAoiMissionState({
           sessionsDir: params.sessionsDir,
           sessionPath,

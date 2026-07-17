@@ -33,6 +33,12 @@ export interface AoiResearchPluginOptions {
   sessionsDir: string;
 }
 
+export type AoiResearchMiddleware = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  next: () => void,
+) => void;
+
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
   res.writeHead(statusCode, {
     'Content-Type': 'application/json; charset=utf-8',
@@ -716,27 +722,35 @@ async function handleAoiResearchRequest(
   }
 }
 
-export function aoiResearchPlugin(options: AoiResearchPluginOptions): Plugin {
+export function createAoiResearchMiddleware(
+  options: AoiResearchPluginOptions,
+): AoiResearchMiddleware {
   const sessionsDir = resolve(options.sessionsDir);
   const configFile = resolve(options.configFile);
+
+  return (req, res, next) => {
+    const url = new URL(req.url || '/', 'http://localhost');
+    void handleAoiResearchRequest(req, res, url, sessionsDir, configFile)
+      .then((handled) => {
+        if (!handled) {
+          next();
+        }
+      })
+      .catch((error) => {
+        writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
+      });
+  };
+}
+
+export function aoiResearchPlugin(options: AoiResearchPluginOptions): Plugin {
+  const middleware = createAoiResearchMiddleware(options);
 
   const mount = (middlewares: {
     use: (
       middleware: (req: IncomingMessage, res: ServerResponse, next: () => void) => void,
     ) => void;
   }): void => {
-    middlewares.use((req, res, next) => {
-      const url = new URL(req.url || '/', 'http://localhost');
-      void handleAoiResearchRequest(req, res, url, sessionsDir, configFile)
-        .then((handled) => {
-          if (!handled) {
-            next();
-          }
-        })
-        .catch((error) => {
-          writeJson(res, 500, { error: error instanceof Error ? error.message : String(error) });
-        });
-    });
+    middlewares.use(middleware);
   };
 
   return {

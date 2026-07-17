@@ -11,18 +11,29 @@ export const AOI_READINESS_ACCRUAL_ROUTE = '/api/aoi-autonomy/operator/readiness
 
 export interface AoiReadinessAccrualResponse {
   ok?: boolean;
+  sessionPath?: string;
   readiness?: AoiProactiveTrendAdvisorReadiness;
 }
 
-// Return the readiness, or null when the payload is missing / not ok / malformed.
+export function buildAoiReadinessAccrualRoute(sessionPath: string): string {
+  return `${AOI_READINESS_ACCRUAL_ROUTE}?${new URLSearchParams({ sessionPath }).toString()}`;
+}
+
+// Return readiness only when the server confirms the requested session.
 export function parseAoiReadinessAccrualResponse(
   payload: unknown,
+  requestedSessionPath: string,
 ): AoiProactiveTrendAdvisorReadiness | null {
   if (!payload || typeof payload !== 'object') {
     return null;
   }
   const body = payload as AoiReadinessAccrualResponse;
-  if (body.ok !== true || !body.readiness || typeof body.readiness !== 'object') {
+  if (
+    body.ok !== true ||
+    body.sessionPath !== requestedSessionPath ||
+    !body.readiness ||
+    typeof body.readiness !== 'object'
+  ) {
     return null;
   }
   return body.readiness;

@@ -776,6 +776,399 @@
   gap: 12px;
 }
 
+.aoiClaimConsole {
+  --aoi-claim-ink: rgba(238, 247, 250, 0.92);
+  --aoi-claim-muted: rgba(203, 213, 225, 0.62);
+  --aoi-claim-cyan: #7dd3fc;
+  --aoi-claim-yellow: #faea5f;
+  --aoi-claim-green: #86efac;
+  --aoi-claim-red: #fb7185;
+  background:
+    linear-gradient(115deg, rgba(125, 211, 252, 0.035), transparent 38%), rgba(12, 17, 20, 0.78);
+  border-color: rgba(125, 211, 252, 0.14);
+  color: var(--aoi-claim-ink);
+}
+
+.aoiClaimToolbar {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.5fr) minmax(170px, 1fr);
+  align-items: center;
+  gap: 10px;
+
+  label {
+    color: var(--aoi-claim-muted);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  .select {
+    padding-block: 7px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 11px;
+  }
+}
+
+.aoiEvidenceClassBanner {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  padding: 8px 10px;
+  border-left: 3px solid currentColor;
+  background: rgba(255, 255, 255, 0.025);
+  color: var(--aoi-claim-cyan);
+
+  strong {
+    flex: 0 0 auto;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 10px;
+    letter-spacing: 0.08em;
+  }
+
+  span {
+    color: var(--aoi-claim-muted);
+    font-size: 11px;
+    line-height: 1.35;
+  }
+}
+
+.aoiEvidenceClassLive {
+  color: var(--aoi-claim-cyan);
+}
+
+.aoiEvidenceClassLimited {
+  color: var(--aoi-claim-yellow);
+}
+
+.aoiClaimLoading {
+  padding: 10px;
+  border: 1px dashed rgba(125, 211, 252, 0.2);
+  color: var(--aoi-claim-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 11px;
+}
+
+.aoiClaimBody {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.aoiClaimPlate {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-left-width: 4px;
+  background: rgba(4, 9, 12, 0.56);
+}
+
+.aoiClaimPlateReady {
+  border-left-color: var(--aoi-claim-green);
+  box-shadow: inset 0 0 0 1px rgba(134, 239, 172, 0.035);
+}
+
+.aoiClaimPlateBlocked {
+  border-left-color: var(--aoi-claim-red);
+  box-shadow: inset 0 0 0 1px rgba(251, 113, 133, 0.035);
+}
+
+.aoiClaimEyebrow {
+  color: var(--aoi-claim-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.aoiClaimVerdict {
+  margin-top: 4px;
+  color: var(--aoi-claim-ink);
+  font-size: 15px;
+  font-weight: 800;
+  letter-spacing: 0.015em;
+}
+
+.aoiClaimLevel {
+  margin-top: 4px;
+  color: var(--aoi-claim-muted);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.aoiClaimScore {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: baseline;
+  justify-content: end;
+  min-width: 92px;
+  color: var(--aoi-claim-yellow);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+
+  strong {
+    font-size: 30px;
+    line-height: 0.95;
+  }
+
+  span {
+    color: rgba(250, 234, 95, 0.55);
+    font-size: 11px;
+  }
+
+  small {
+    grid-column: 1 / -1;
+    justify-self: end;
+    margin-top: 4px;
+    color: var(--aoi-claim-muted);
+    font-size: 9px;
+  }
+}
+
+.aoiAttestationRail {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  margin: 0;
+  border-block: 1px solid rgba(125, 211, 252, 0.11);
+
+  > div {
+    position: relative;
+    min-width: 0;
+    padding: 10px 10px 10px 15px;
+    border-left: 1px solid rgba(125, 211, 252, 0.12);
+
+    &::before {
+      position: absolute;
+      top: 14px;
+      left: -3px;
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--aoi-claim-cyan);
+      content: '';
+      box-shadow: 0 0 0 3px rgba(125, 211, 252, 0.08);
+    }
+  }
+
+  dt {
+    color: var(--aoi-claim-muted);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+  }
+
+  dd {
+    margin: 4px 0 0;
+    overflow-wrap: anywhere;
+    color: var(--aoi-claim-ink);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 10px;
+    line-height: 1.4;
+  }
+}
+
+.aoiAttestationFingerprint {
+  grid-column: 1 / -1;
+  border-top: 1px solid rgba(125, 211, 252, 0.08);
+
+  code {
+    color: rgba(186, 230, 253, 0.82);
+    font: inherit;
+  }
+}
+
+.aoiClaimTimes {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 6px 14px;
+  color: var(--aoi-claim-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.aoiClaimNextAction {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid rgba(250, 234, 95, 0.15);
+  background: rgba(250, 234, 95, 0.035);
+
+  span {
+    color: rgba(250, 234, 95, 0.68);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  strong {
+    color: var(--aoi-claim-ink);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+}
+
+.aoiClaimSection {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.aoiClaimSectionHeader {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+
+  strong {
+    font-size: 11px;
+    letter-spacing: 0.03em;
+  }
+
+  span {
+    color: var(--aoi-claim-muted);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 9px;
+  }
+}
+
+.aoiClaimAxisList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 12px;
+}
+
+.aoiClaimAxis {
+  min-width: 0;
+  padding: 8px;
+  border: 1px solid rgba(255, 255, 255, 0.055);
+  background: rgba(255, 255, 255, 0.018);
+}
+
+.aoiClaimAxisHeading {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--aoi-claim-ink);
+  font-size: 10px;
+
+  span {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  strong {
+    flex: 0 0 auto;
+    color: var(--aoi-claim-cyan);
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+.aoiClaimAxisTrack {
+  height: 3px;
+  margin-top: 7px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.07);
+
+  span {
+    display: block;
+    height: 100%;
+    background: linear-gradient(90deg, rgba(125, 211, 252, 0.5), var(--aoi-claim-cyan));
+  }
+}
+
+.aoiClaimAxisMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  margin-top: 6px;
+  color: var(--aoi-claim-muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 9px;
+}
+
+.aoiClaimGateList {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.aoiClaimGate {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 7px;
+  padding: 7px 8px;
+  border: 1px solid rgba(255, 255, 255, 0.05);
+
+  > span {
+    align-self: start;
+    font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+    font-size: 9px;
+    font-weight: 800;
+  }
+
+  > div {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 2px;
+
+    strong {
+      color: var(--aoi-claim-ink);
+      font-size: 10px;
+    }
+
+    span {
+      overflow-wrap: anywhere;
+      color: var(--aoi-claim-muted);
+      font-size: 9px;
+      line-height: 1.35;
+    }
+  }
+}
+
+.aoiGatePass {
+  color: var(--aoi-claim-green) !important;
+}
+
+.aoiGateFail {
+  color: var(--aoi-claim-red) !important;
+}
+
+@media (max-width: 620px) {
+  .aoiClaimAxisList,
+  .aoiClaimGateList {
+    grid-template-columns: 1fr;
+  }
+
+  .aoiAttestationRail {
+    grid-template-columns: 1fr;
+  }
+
+  .aoiAttestationFingerprint {
+    grid-column: auto;
+  }
+
+  .aoiClaimNextAction {
+    grid-template-columns: 1fr;
+  }
+}
+
 .field {
   margin-bottom: 12px;
 }

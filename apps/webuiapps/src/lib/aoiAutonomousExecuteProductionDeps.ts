@@ -8,14 +8,19 @@
 //     the approval's recovery evidence, and stamps the once-per-run readiness level.
 //   * executeProposal -- wraps executeAoiProposal (which independently re-checks the approval).
 //
-// EVERYTHING fails closed: only `app_action` is sourced here (it is the one reversible-class kind
-// with a proposal->fingerprint recompute path today); every other kind, a missing/invalid standing
-// approval, or a recompute error yields inputs that make the gate BLOCK. So imperfect sourcing can
-// only ever over-block, never over-permit. The loop itself stays OFF unless AOI_AUTONOMY_SELF_EXECUTE
-// is set, so wiring this changes nothing in production until it is explicitly enabled.
+// EVERYTHING fails closed: app_action plus exact-scope file_write/file_patch are sourced here.
+// File self-execution additionally requires an approved before/after SHA-256 plan and a successful
+// read-only checkpoint preflight whose captured target fingerprint still matches that plan. Every
+// other kind, a missing/invalid standing approval, or a recompute/preflight error BLOCKS. The loop
+// itself stays OFF unless AOI_AUTONOMY_SELF_EXECUTE is set.
+import { createAoiActionCheckpoint } from './aoiActionCheckpoint';
 import { hasAoiApprovalSandboxRecoveryEvidence } from './aoiApprovalSandbox';
 import { normalizeAoiApprovedAppActionPolicy } from './aoiApprovedAppActionPolicy';
-import { getAoiApprovedAppActionPolicyForProposal } from './aoiAutonomyPolicy';
+import { normalizeAoiApprovedFileMutationPolicy } from './aoiApprovedFileMutationPolicy';
+import {
+  getAoiApprovedAppActionPolicyForProposal,
+  getAoiApprovedFileMutationPolicyForProposal,
+} from './aoiAutonomyPolicy';
 import { executeAoiProposal } from './aoiAutonomyExecution';
 import {
   runAoiAutonomousExecuteLoop,
@@ -89,8 +94,60 @@ export function createAoiAutonomousExecuteProductionDeps(
         acceptDecisionActor: actorOf(params.decision),
         now: params.now,
       };
-      // Only app_action is sourced today; every other kind fails closed (the gate also blocks
-      // non-reversible kinds outright via not_reversible_class).
+      if (actionKind === 'file_write' || actionKind === 'file_patch') {
+        const standing = normalizeAoiApprovedFileMutationPolicy(
+          params.decision.approvedFileMutation,
+        );
+        if (!standing) {
+          return blockedInput(base);
+        }
+        let current;
+        try {
+          current = getAoiApprovedFileMutationPolicyForProposal(params.proposal, params.now);
+        } catch {
+          return blockedInput(base, standing.approvalFingerprint, standing.expiresAt);
+        }
+        let hasCheckpoint = false;
+        let targetFingerprintMatches = false;
+        const exactScope =
+          current.allowed &&
+          current.pathLabel.length > 0 &&
+          current.operation === (actionKind === 'file_patch' ? 'patch' : 'write');
+        const hasValidationPlan = Boolean(current.validationPlan && standing.validationPlan);
+        if (exactScope && hasValidationPlan && context.workspaceRoot) {
+          try {
+            const checkpoint = createAoiActionCheckpoint({
+              workspaceRoot: context.workspaceRoot,
+              paths: [current.pathLabel],
+              now: params.now,
+              evidenceRefs: [
+                `proposal:${params.proposal.id}`,
+                `decision:${params.decision.id}`,
+                ...params.proposal.evidenceRefs,
+                ...params.proposal.artifactRefs,
+              ],
+            });
+            const entry = checkpoint.entries[0];
+            const capturedFingerprint = entry?.existedBefore ? entry.sha256 : 'absent';
+            hasCheckpoint = checkpoint.entries.length === 1 && Boolean(capturedFingerprint);
+            targetFingerprintMatches =
+              capturedFingerprint === current.validationPlan?.expectedBeforeSha256;
+          } catch {
+            hasCheckpoint = false;
+            targetFingerprintMatches = false;
+          }
+        }
+        return {
+          ...base,
+          hasCheckpoint,
+          exactScope,
+          hasValidationPlan,
+          targetFingerprintMatches,
+          approvalFingerprint: standing.approvalFingerprint,
+          currentFingerprint: current.approvalFingerprint,
+          approvalExpiresAt: standing.expiresAt,
+        };
+      }
       if (actionKind !== 'app_action') {
         return blockedInput(base);
       }

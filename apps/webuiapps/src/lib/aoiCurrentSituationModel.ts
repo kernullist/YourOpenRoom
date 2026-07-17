@@ -300,7 +300,12 @@ export function buildAoiCurrentSituation(input: AoiCurrentSituationInput): AoiCu
         salienceKind: 'workspace_git',
         observedAt: workspace.collectedAt,
         baseWeight: workspace.git.isDirty ? 0.65 : 0.4,
-        evidenceRefs: workspace.evidenceRefs,
+        evidenceRefs: [
+          ...workspace.evidenceRefs,
+          ...(workspace.evidenceRefs.length > 0
+            ? workspace.sourceIds.map((sourceId) => `environment-source:${sourceId}`)
+            : []),
+        ],
         now,
       }),
       'Aoi cannot ground the workspace segment: the snapshot cites no evidence.',
@@ -325,7 +330,10 @@ export function buildAoiCurrentSituation(input: AoiCurrentSituationInput): AoiCu
         salienceKind: 'calendar_metadata',
         observedAt: summary.updatedAt,
         baseWeight: clamp(summary.confidence, 0, 1),
-        evidenceRefs: summary.evidenceRefs,
+        evidenceRefs: [
+          ...summary.evidenceRefs,
+          ...(summary.evidenceRefs.length > 0 ? [`environment-source:${summary.sourceId}`] : []),
+        ],
         now,
       }),
       'Aoi cannot ground the calendar segment: the metadata summary cites no evidence.',
@@ -379,7 +387,7 @@ export function buildAoiCurrentSituation(input: AoiCurrentSituationInput): AoiCu
         salienceKind: 'research_runs',
         observedAt: latestRun.completedAt ?? latestRun.updatedAt,
         baseWeight: latestRun.status === 'completed' ? 0.5 : 0.65,
-        evidenceRefs: [`research:${latestRun.id}`],
+        evidenceRefs: [`research:${latestRun.id}`, 'environment-source:research-runs'],
         now,
       }),
       null,

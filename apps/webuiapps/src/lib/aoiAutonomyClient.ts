@@ -61,6 +61,7 @@ import type {
   AoiWorkspaceSnapshot,
 } from './aoiAutonomyTypes';
 import type { AoiCardLang } from './aoiAutonomyCardI18n';
+import type { AoiRecordedOutcomeFeedback } from './aoiOutcomeFeedback';
 import type { AoiAutonomyEvaluationResult } from './aoiAutonomyEvaluation';
 import type { AoiFieldEvent } from './aoiFieldEventLedger';
 import type { AoiFieldFeedbackLearningSummary } from './aoiFieldFeedbackLearning';
@@ -268,6 +269,7 @@ export interface AoiFieldFeedbackRecordResponse extends AoiFieldFeedbackResponse
 export interface AoiOutcomeSignalInput {
   id?: string;
   eventId?: string;
+  sourceOutcomeId?: string;
   sourceProposalId?: string;
   sourceDecisionId?: string;
   sourceWorkOrderId?: string;
@@ -279,6 +281,7 @@ export interface AoiOutcomeSignalInput {
   confidence?: number;
   explicitLabelRef?: string;
   explicitLabel?: string;
+  explicitCorrection?: string;
   topicKey?: string;
   sourceKey?: string;
   deliveryMode?: AoiFollowThroughDeliveryMode;
@@ -540,6 +543,7 @@ export async function recordAoiOutcomeSignal(
       sessionPath,
       id: input.id,
       eventId: input.eventId,
+      sourceOutcomeId: input.sourceOutcomeId,
       sourceProposalId: input.sourceProposalId,
       sourceDecisionId: input.sourceDecisionId,
       sourceWorkOrderId: input.sourceWorkOrderId,
@@ -551,6 +555,7 @@ export async function recordAoiOutcomeSignal(
       confidence: input.confidence,
       explicitLabelRef: input.explicitLabelRef,
       explicitLabel: input.explicitLabel,
+      explicitCorrection: input.explicitCorrection,
       topicKey: input.topicKey,
       sourceKey: input.sourceKey,
       deliveryMode: input.deliveryMode,
@@ -581,6 +586,27 @@ export async function recordAoiOutcomeSignal(
       ? { evaluation: payload.evaluation as unknown as AoiAutonomyEvaluationResult }
       : {}),
   };
+}
+
+export async function recordAoiOperatorOutcomeFeedback(
+  sessionPath: string,
+  input: { userMessage: string; sourceChatRef: string },
+): Promise<AoiRecordedOutcomeFeedback> {
+  const response = await fetch(`${API_PREFIX}/outcomes/operator-feedback`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      sessionPath,
+      userMessage: input.userMessage,
+      sourceChatRef: input.sourceChatRef,
+    }),
+  });
+  const payload = await readJsonRecord(response, 'Failed to record Aoi operator outcome feedback.');
+  return requireRecordField<AoiRecordedOutcomeFeedback>(
+    payload,
+    'record',
+    'Aoi operator outcome feedback response was malformed.',
+  );
 }
 
 export interface AoiAutonomyProposalDecisionResult {

@@ -171,6 +171,12 @@ export interface AoiProposalExecutionDependencies {
     workspaceRoot: string;
     now: number;
   }) => Promise<AoiApprovedCommandResult>;
+  runApprovedFileMutation?: (params: {
+    request: AoiApprovedFileMutationRequest;
+    approvedPolicy?: AoiApprovedFileMutationPolicy;
+    workspaceRoot: string;
+    now: number;
+  }) => AoiApprovedFileMutationResult;
   runApprovedConnectorCall?: (params: {
     request: AoiApprovedConnectorCallRequest;
     approvedPolicy?: AoiApprovedConnectorCallPolicy;
@@ -210,6 +216,7 @@ export interface AoiProposalPreviewResult {
   reasons: string[];
   preparedActionPlan?: AoiPreparedActionPlan;
   approvedCommandPolicy?: AoiApprovedCommandPolicy;
+  approvedFileMutationPolicy?: AoiApprovedFileMutationPolicy;
   boundedWorkOrder?: AoiBoundedWorkOrder;
   result?: Record<string, unknown>;
 }
@@ -360,6 +367,7 @@ function buildApprovedFileMutationRequestFromProposal(params: {
     path: actionParams.path,
     content: actionParams.content,
     patchOps: actionParams.patchOps ?? actionParams.patch_ops,
+    validationPlan: actionParams.validationPlan ?? actionParams.validation_plan,
     purpose: actionParams.purpose ?? params.proposal.title,
     risk: params.proposal.risk,
     requestedAt: params.now,
@@ -961,11 +969,25 @@ async function executeAllowedProposalAction(params: {
     if (!policy.allowed) {
       throw new Error(`file_mutation_blocked:${policy.blockReasons.join(',')}`);
     }
-    const result = applyAoiApprovedFileMutation(request, {
-      workspaceRoot: params.workspaceRoot,
+    const result = (
+      params.dependencies.runApprovedFileMutation ??
+      ((runnerParams: {
+        request: AoiApprovedFileMutationRequest;
+        approvedPolicy?: AoiApprovedFileMutationPolicy;
+        workspaceRoot: string;
+        now: number;
+      }) =>
+        applyAoiApprovedFileMutation(runnerParams.request, {
+          workspaceRoot: runnerParams.workspaceRoot,
+          ...(runnerParams.approvedPolicy ? { approvedPolicy: runnerParams.approvedPolicy } : {}),
+          now: runnerParams.now,
+        }))
+    )({
+      request,
       ...(params.approvedFileMutationPolicy
         ? { approvedPolicy: params.approvedFileMutationPolicy }
         : {}),
+      workspaceRoot: params.workspaceRoot,
       now: params.now,
     });
     return {
@@ -1097,16 +1119,31 @@ export function previewAoiProposal(params: {
           }),
         )
       : undefined;
+  const approvedFileMutationPolicy =
+    proposal.acceptAction?.kind === 'file_write' ||
+    proposal.acceptAction?.kind === 'file_patch' ||
+    proposal.acceptAction?.kind === 'file_delete'
+      ? evaluateAoiApprovedFileMutationPolicy(
+          buildApprovedFileMutationRequestFromProposal({
+            proposal,
+            sessionPath,
+            now,
+          }),
+        )
+      : undefined;
   const boundedWorkOrder = buildAoiBoundedWorkOrderFromProposal(proposal, {
     now,
-    generated: true,
   });
   const evaluation = evaluateAoiProposalExecution(proposal, policy, {
     now,
     decisions,
     executionMode: 'preview',
   });
-  if (!evaluation.allowed || preparedActionPlan.status === 'blocked') {
+  const acceptanceTransitionPreview = proposal.acceptAction?.kind === 'activate_goal';
+  if (
+    (!evaluation.allowed && !acceptanceTransitionPreview) ||
+    preparedActionPlan.status === 'blocked'
+  ) {
     const reasons = [
       ...evaluation.reasons,
       ...preparedActionPlan.blockers.map((blocker) => `prepared_plan_blocked:${blocker}`),
@@ -1156,10 +1193,12 @@ export function previewAoiProposal(params: {
       reasons: [...new Set(reasons)],
       preparedActionPlan,
       ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+      ...(approvedFileMutationPolicy ? { approvedFileMutationPolicy } : {}),
       boundedWorkOrder,
       result: {
         preparedActionPlan,
         ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+        ...(approvedFileMutationPolicy ? { approvedFileMutationPolicy } : {}),
         boundedWorkOrder,
         safeAlternative:
           evaluation.safeAlternative ??
@@ -1202,10 +1241,12 @@ export function previewAoiProposal(params: {
       reasons: [],
       preparedActionPlan,
       ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+      ...(approvedFileMutationPolicy ? { approvedFileMutationPolicy } : {}),
       boundedWorkOrder,
       result: {
         preparedActionPlan,
         ...(approvedCommandPolicy ? { approvedCommandPolicy } : {}),
+        ...(approvedFileMutationPolicy ? { approvedFileMutationPolicy } : {}),
         boundedWorkOrder,
       },
     };
@@ -1449,11 +1490,30 @@ export async function executeAoiProposal(params: {
       dependencies: params.dependencies ?? {},
       now,
     });
+    let executionFailureReasons: string[] = [];
+    if (
+      proposal.acceptAction?.kind === 'file_write' ||
+      proposal.acceptAction?.kind === 'file_patch' ||
+      proposal.acceptAction?.kind === 'file_delete'
+    ) {
+      const mutationResult = result.mutationResult;
+      if (!isAoiApprovedFileMutationResult(mutationResult)) {
+        throw new Error('File mutation result was missing from execution output.');
+      }
+      if (!mutationResult.ok) {
+        executionFailureReasons = mutationResult.blockReasons.map(
+          (reason) => `file_mutation_${reason}`,
+        );
+      }
+    }
+    const executionSucceeded = executionFailureReasons.length === 0;
     const transition = applyAoiProposalExecutionTransition(params.sessionsDir, sessionPath, {
       proposalId: proposal.id,
-      nextStatus: 'executed',
+      nextStatus: executionSucceeded ? 'executed' : 'blocked',
       actor: 'system',
-      reason: `Executed ${proposal.acceptAction?.kind ?? 'proposal action'}.`,
+      reason: executionSucceeded
+        ? `Executed ${proposal.acceptAction?.kind ?? 'proposal action'}.`
+        : executionFailureReasons.join(', '),
       now,
     });
     recordAoiExecutionTimelineBestEffort(() => {
@@ -1688,10 +1748,28 @@ export async function executeAoiProposal(params: {
           deriveAoiExecutedActionOutcomeSignal({
             sessionPath,
             proposalId: proposal.id,
-            decisionId: transition.decision.id,
+            decisionId: params.decisionId ?? transition.decision.id,
             actionKind: 'file-mutation',
             auditId: audit.id,
             ok: mutationResult.ok,
+            executionEvidence: {
+              version: 1,
+              attemptId: audit.id,
+              actionKind: proposal.acceptAction.kind,
+              approvalFingerprint: audit.approvalFingerprint,
+              ...(mutationResult.checkpointFingerprint
+                ? { checkpointFingerprint: mutationResult.checkpointFingerprint }
+                : {}),
+              ...(mutationResult.targetBeforeSha256
+                ? { targetBeforeSha256: mutationResult.targetBeforeSha256 }
+                : {}),
+              ...(mutationResult.targetAfterSha256
+                ? { targetAfterSha256: mutationResult.targetAfterSha256 }
+                : {}),
+              validationStatus: mutationResult.validationStatus,
+              rollbackAttempted: mutationResult.rollbackAttempted,
+              rollbackSucceeded: mutationResult.rollbackSucceeded,
+            },
           }),
           now,
         );
@@ -2027,9 +2105,9 @@ export async function executeAoiProposal(params: {
       proposal: transition.proposal,
       decision: transition.decision,
       status: buildAoiAutonomyStatus(params.sessionsDir, sessionPath, now),
-      executed: true,
-      outcome: 'executed',
-      reasons: [],
+      executed: executionSucceeded,
+      outcome: executionSucceeded ? 'executed' : 'failed',
+      reasons: executionFailureReasons,
       result,
     };
   } catch (error) {

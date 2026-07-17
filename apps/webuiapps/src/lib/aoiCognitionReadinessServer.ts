@@ -16,6 +16,7 @@ import {
   loadAoiCurrentSituation,
 } from './aoiCurrentSituationModel';
 import { loadAoiIntentState } from './aoiIntentInference';
+import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
 
 export function buildAoiServerCognitionReadinessScorecard(params: {
   sessionsDir: string;
@@ -34,8 +35,19 @@ export function buildAoiServerCognitionReadinessScorecard(params: {
       ...loadAoiActiveProposals(sessionsDir, sessionPath),
       ...loadAoiArchivedProposals(sessionsDir, sessionPath),
     ],
-    consentedSituationSourceIds: registry.sources
-      .filter((source) => source.enabled)
-      .map((source) => source.id),
+    sourceCoverage: registry.sources.map((source) => {
+      const policyCheck = checkAoiEnvironmentSourceOperation({
+        registry,
+        sourceId: source.id,
+        operation: 'read_metadata',
+      });
+      return {
+        sourceId: source.id,
+        label: source.label,
+        enabled: source.enabled,
+        consented: policyCheck.allowed,
+        policyReasons: policyCheck.reasons,
+      };
+    }),
   });
 }

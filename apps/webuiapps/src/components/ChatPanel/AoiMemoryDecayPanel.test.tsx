@@ -3,6 +3,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 
 import { AoiMemoryDecayPanel } from './AoiMemoryDecayPanel';
 
+const SESSION_PATH = 'aoi/session-a';
+
 function jsonResponse(body: unknown, ok = true): Response {
   return { ok, status: ok ? 200 : 500, json: async () => body } as unknown as Response;
 }
@@ -44,7 +46,7 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
 
   it('renders the archive candidates from the decay preview', async () => {
     stubFetch({ 'GET /api/aoi-autonomy/memory/decay-preview': () => jsonResponse(PREVIEW_BODY) });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-preview')).toBeTruthy());
     expect(screen.getByText(/1 archive candidate\(s\) of 5 active/)).toBeTruthy();
     expect(screen.getByText(/an old low-confidence fact/)).toBeTruthy();
@@ -55,23 +57,38 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
     stubFetch({
       'GET /api/aoi-autonomy/memory/decay-preview': () => jsonResponse(PREVIEW_BODY),
       'POST /api/aoi-autonomy/memory/decay-apply': () =>
-        jsonResponse({ ok: true, archivedCount: 1, changedIds: ['m1'] }),
+        jsonResponse({
+          ok: true,
+          sessionPath: SESSION_PATH,
+          archivedCount: 1,
+          changedIds: ['m1'],
+        }),
     });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-archive-btn')).toBeTruthy());
     fireEvent.click(screen.getByTestId('aoi-memory-decay-archive-btn'));
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-applied')).toBeTruthy());
     expect(screen.getByText(/Archived 1 memory\(ies\)/)).toBeTruthy();
     expect(screen.getByTestId('aoi-memory-decay-restore-btn')).toBeTruthy();
+    const applyCall = vi.mocked(fetch).mock.calls.find(([, init]) => init?.method === 'POST');
+    expect(JSON.parse(String(applyCall?.[1]?.body))).toMatchObject({ sessionPath: SESSION_PATH });
   });
 
   it('surfaces a content-addressed drift rejection without archiving', async () => {
     stubFetch({
       'GET /api/aoi-autonomy/memory/decay-preview': () => jsonResponse(PREVIEW_BODY),
       'POST /api/aoi-autonomy/memory/decay-apply': () =>
-        jsonResponse({ ok: false, rejected: true, code: 'decay_approval_mismatch' }, false),
+        jsonResponse(
+          {
+            ok: false,
+            sessionPath: SESSION_PATH,
+            rejected: true,
+            code: 'decay_approval_mismatch',
+          },
+          false,
+        ),
     });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-archive-btn')).toBeTruthy());
     fireEvent.click(screen.getByTestId('aoi-memory-decay-archive-btn'));
     await waitFor(() => expect(screen.getByText(/reviewed set drifted/)).toBeTruthy());
@@ -81,7 +98,7 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
 
   it('shows an error when the preview fetch fails', async () => {
     stubFetch({});
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByText(/Failed to load decay preview/)).toBeTruthy());
   });
 
@@ -97,10 +114,15 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
         );
       },
       'POST /api/aoi-autonomy/memory/decay-apply': () =>
-        jsonResponse({ ok: true, archivedCount: 1, changedIds: ['m1'] }),
+        jsonResponse({
+          ok: true,
+          sessionPath: SESSION_PATH,
+          archivedCount: 1,
+          changedIds: ['m1'],
+        }),
       'POST /api/aoi-autonomy/memory/decay-restore': () => jsonResponse({ ok: true }),
     });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-archive-btn')).toBeTruthy());
     fireEvent.click(screen.getByTestId('aoi-memory-decay-archive-btn'));
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-restore-btn')).toBeTruthy());
@@ -108,6 +130,10 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
     // After restore the applied block is gone and the preview was reloaded.
     await waitFor(() => expect(screen.queryByTestId('aoi-memory-decay-applied')).toBeNull());
     expect(previewCalls).toBe(2);
+    const restoreCall = vi
+      .mocked(fetch)
+      .mock.calls.find(([input]) => String(input).includes('decay-restore'));
+    expect(JSON.parse(String(restoreCall?.[1]?.body))).toMatchObject({ sessionPath: SESSION_PATH });
   });
 
   it('reports an unexpected (unparseable) archive response without archiving', async () => {
@@ -115,7 +141,7 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
       'GET /api/aoi-autonomy/memory/decay-preview': () => jsonResponse(PREVIEW_BODY),
       'POST /api/aoi-autonomy/memory/decay-apply': () => jsonResponse(null),
     });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-archive-btn')).toBeTruthy());
     fireEvent.click(screen.getByTestId('aoi-memory-decay-archive-btn'));
     await waitFor(() => expect(screen.getByText(/unexpected response/)).toBeTruthy());
@@ -126,10 +152,15 @@ describe('AoiMemoryDecayPanel (P4.1)', () => {
     stubFetch({
       'GET /api/aoi-autonomy/memory/decay-preview': () => jsonResponse(PREVIEW_BODY),
       'POST /api/aoi-autonomy/memory/decay-apply': () =>
-        jsonResponse({ ok: true, archivedCount: 1, changedIds: ['m1'] }),
+        jsonResponse({
+          ok: true,
+          sessionPath: SESSION_PATH,
+          archivedCount: 1,
+          changedIds: ['m1'],
+        }),
       'POST /api/aoi-autonomy/memory/decay-restore': () => jsonResponse({}, false),
     });
-    render(<AoiMemoryDecayPanel />);
+    render(<AoiMemoryDecayPanel sessionPath={SESSION_PATH} />);
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-archive-btn')).toBeTruthy());
     fireEvent.click(screen.getByTestId('aoi-memory-decay-archive-btn'));
     await waitFor(() => expect(screen.getByTestId('aoi-memory-decay-restore-btn')).toBeTruthy());

@@ -92,6 +92,28 @@ describe('checkpoint/autofix tools', () => {
   });
 
   it('creates an autofix checkpoint and returns diagnostics together', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        const parsedUrl = new URL(url);
+        if (parsedUrl.pathname === '/api/openvscode/list') {
+          return {
+            ok: false,
+            json: async () => ({ error: 'Directory not found' }),
+          } as Response;
+        }
+        if (parsedUrl.pathname === '/api/openvscode/file') {
+          return {
+            ok: true,
+            json: async () => ({ content: 'checkpoint fixture\n' }),
+          } as Response;
+        }
+        return {
+          ok: false,
+          json: async () => ({ error: 'unexpected endpoint' }),
+        } as Response;
+      }),
+    );
     mockedExecuteDiagnosticsTool.mockResolvedValue(
       JSON.stringify({
         command: 'pnpm exec tsc --noEmit',

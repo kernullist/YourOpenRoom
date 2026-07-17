@@ -12,7 +12,11 @@ import type { AoiAutonomyPolicy, AoiAutonomyWakeupResult } from '../aoiAutonomyT
 
 const policy = (enabled: boolean, allowNetwork = false): AoiAutonomyPolicy =>
   ({ enabled, allowNetwork }) as unknown as AoiAutonomyPolicy;
-const wakeupOk = (): AoiAutonomyWakeupResult => ({}) as unknown as AoiAutonomyWakeupResult;
+const wakeupOk = (): AoiAutonomyWakeupResult =>
+  ({
+    ok: true,
+    record: { status: 'completed', warnings: [] },
+  }) as unknown as AoiAutonomyWakeupResult;
 
 const baseOpts = { sessionsDir: '/sessions', configFile: '/config.json', now: 1000 };
 
@@ -46,7 +50,11 @@ describe('runAoiAutonomyBackgroundCycle', () => {
       expect.objectContaining({
         sessionPath: 's/a',
         reason: 'scheduled_background',
-        budget: { allowNetwork: true },
+        budget: expect.objectContaining({
+          allowNetwork: true,
+          maxSchedulerRuntimeMs: 55_000,
+          maxBackgroundTickRuntimeMs: 45_000,
+        }),
       }),
     );
   });
@@ -62,7 +70,10 @@ describe('runAoiAutonomyBackgroundCycle', () => {
       runWakeup,
     });
     expect(runWakeup).toHaveBeenCalledWith(
-      expect.objectContaining({ llmConfig: null, budget: { allowNetwork: false } }),
+      expect.objectContaining({
+        llmConfig: null,
+        budget: expect.objectContaining({ allowNetwork: false }),
+      }),
     );
   });
 
@@ -78,7 +89,10 @@ describe('runAoiAutonomyBackgroundCycle', () => {
       runWakeup,
     });
     expect(runWakeup).toHaveBeenCalledWith(
-      expect.objectContaining({ llmConfig: llm, budget: { allowNetwork: true } }),
+      expect.objectContaining({
+        llmConfig: llm,
+        budget: expect.objectContaining({ allowNetwork: true }),
+      }),
     );
   });
 
@@ -96,17 +110,46 @@ describe('runAoiAutonomyBackgroundCycle', () => {
     // No env ceiling (unset) -> the policy switch decides.
     await run(undefined, true);
     expect(runWakeup).toHaveBeenLastCalledWith(
-      expect.objectContaining({ budget: { allowNetwork: true } }),
+      expect.objectContaining({ budget: expect.objectContaining({ allowNetwork: true }) }),
     );
     await run(undefined, false);
     expect(runWakeup).toHaveBeenLastCalledWith(
-      expect.objectContaining({ budget: { allowNetwork: false } }),
+      expect.objectContaining({ budget: expect.objectContaining({ allowNetwork: false }) }),
     );
     // Explicit ceiling=false hard-disables even when the policy wants network.
     await run(false, true);
     expect(runWakeup).toHaveBeenLastCalledWith(
-      expect.objectContaining({ budget: { allowNetwork: false } }),
+      expect.objectContaining({ budget: expect.objectContaining({ allowNetwork: false }) }),
     );
+  });
+
+  it('records an explicit failed wakeup as a cycle error instead of successful cognition', async () => {
+    const runWakeup = vi.fn().mockResolvedValue({
+      ok: false,
+      record: { status: 'failed', warnings: ['deadline exceeded'] },
+    });
+    const result = await runAoiAutonomyBackgroundCycle({
+      ...baseOpts,
+      listSessions: () => ['s/a'],
+      loadPolicy: () => policy(true),
+      runWakeup,
+    });
+    expect(result.sessionsRun).toEqual([]);
+    expect(result.errors).toEqual([
+      { sessionPath: 's/a', error: 'wakeup_failed:deadline exceeded' },
+    ]);
+  });
+
+  it('does not freeze the production wakeup clock at the cycle start', async () => {
+    const runWakeup = vi.fn().mockResolvedValue(wakeupOk());
+    await runAoiAutonomyBackgroundCycle({
+      sessionsDir: '/sessions',
+      configFile: '/config.json',
+      listSessions: () => ['s/a'],
+      loadPolicy: () => policy(true),
+      runWakeup,
+    });
+    expect(runWakeup.mock.calls[0]?.[0]).not.toHaveProperty('now');
   });
 
   it('isolates per-session wakeup failures', async () => {
@@ -205,6 +248,8 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
         AOI_AUTONOMY_BACKGROUND: '1',
         AOI_AUTONOMY_BACKGROUND_ALLOW_NETWORK: 'true',
         AOI_AUTONOMY_BACKGROUND_INTERVAL_MS: '120000',
+        AOI_AUTONOMY_BACKGROUND_MAX_CYCLE_RUNTIME_MS: '50000',
+        AOI_AUTONOMY_BACKGROUND_MAX_TICK_RUNTIME_MS: '40000',
         AOI_AUTONOMY_BACKGROUND_MAX_SESSIONS: '3',
         AOI_AUTONOMY_LLM_DAILY_TOKEN_BUDGET: '50000',
         AOI_AUTONOMY_GOAL_SYNTHESIS: '1',
@@ -216,6 +261,8 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
       enabled: true,
       allowNetworkCeiling: true,
       intervalMs: 120000,
+      maxCycleRuntimeMs: 50000,
+      maxBackgroundTickRuntimeMs: 40000,
       maxSessionsPerCycle: 3,
       llmDailyTokenBudget: 50000,
       goalSynthesisEnabled: true,
@@ -227,6 +274,8 @@ describe('resolveAoiAutonomyBackgroundConfigFromEnv', () => {
 
   it('defaults the goal-synthesis opt-in to false and leaves the token budget unset', () => {
     const config = resolveAoiAutonomyBackgroundConfigFromEnv({ AOI_AUTONOMY_BACKGROUND: '1' });
+    expect(config.maxCycleRuntimeMs).toBe(55_000);
+    expect(config.maxBackgroundTickRuntimeMs).toBe(45_000);
     expect(config.goalSynthesisEnabled).toBe(false);
     expect(config.llmDailyTokenBudget).toBeUndefined();
     expect(config.scoutNetworkDailyBudget).toBeUndefined();

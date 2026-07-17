@@ -3133,7 +3133,11 @@ describe('runAoiAutonomyBackgroundTick()', () => {
 describe('runAoiAutonomyWakeup()', () => {
   it('runs a session-open wakeup within the configured source count budget', async () => {
     const root = makeTempRoot();
-    const tickCalls: Array<{ maxGeneratedProposals?: number; llmConfigPresent: boolean }> = [];
+    const tickCalls: Array<{
+      maxGeneratedProposals?: number;
+      llmConfigPresent: boolean;
+      workspaceRoot?: string;
+    }> = [];
     enablePolicy(root, 'L4');
     updateAoiEnvironmentSource(root, SESSION_PATH, {
       sourceId: 'workspace-git',
@@ -3171,6 +3175,7 @@ describe('runAoiAutonomyWakeup()', () => {
           tickCalls.push({
             maxGeneratedProposals: params.maxGeneratedProposals,
             llmConfigPresent: Boolean(params.llmConfig),
+            workspaceRoot: params.workspaceRoot,
           });
           return makeSchedulerTickResult(root, {
             reason: params.reason,
@@ -3190,7 +3195,13 @@ describe('runAoiAutonomyWakeup()', () => {
         }),
       ]),
     );
-    expect(tickCalls).toEqual([{ maxGeneratedProposals: 0, llmConfigPresent: false }]);
+    expect(tickCalls).toEqual([
+      {
+        maxGeneratedProposals: 0,
+        llmConfigPresent: false,
+        workspaceRoot: root,
+      },
+    ]);
     expect(
       result.state.sourceSchedules.find((item) => item.sourceId === 'workspace-git'),
     ).toMatchObject({

@@ -5618,8 +5618,8 @@ function buildAoiReplayHealthPanel(
     : 'No field-grounded acceptance report';
   const realFieldOperations = input.realFieldOperationsAcceptanceReport;
   const realFieldOperationsLabel = realFieldOperations
-    ? `${realFieldOperations.passedScenarioCount}/${realFieldOperations.scenarioCount} real-field operations scenario(s); ${realFieldOperations.readinessSummary.label}`
-    : 'No real-field operations acceptance report';
+    ? `${realFieldOperations.passedScenarioCount}/${realFieldOperations.scenarioCount} synthetic integration scenario(s); ${realFieldOperations.readinessSummary.label}; field evidence eligible=${realFieldOperations.fieldEvidenceClaimEligible}`
+    : 'No synthetic integration invariant report';
   const realFieldOperationsTierLabels = uniqueDashboardLabels(
     realFieldOperations?.acceptanceTierSummaries.map((tier) => `${tier.tier}: ${tier.boundary}`) ??
       [],

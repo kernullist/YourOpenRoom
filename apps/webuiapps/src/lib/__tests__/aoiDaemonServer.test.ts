@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
+import { createHash } from 'crypto';
 import { join } from 'path';
 import {
   resolveAoiDaemonOptionsFromEnv,
@@ -21,6 +22,8 @@ import {
 import { getAoiApprovedAppActionPolicyForProposal } from '../aoiAutonomyPolicy';
 import { buildAoiIntentState, saveAoiIntentState } from '../aoiIntentInference';
 import { buildAoiCurrentSituation, saveAoiCurrentSituation } from '../aoiCurrentSituationModel';
+import { saveAoiInterestProfile } from '../aoiProactiveBriefStore';
+import { parseAoiNonVoiceScorecardResponse } from '../aoiNonVoiceScorecardPanelModel';
 import type { AoiAppOperationDispatch, AoiProposal, AoiStrategicBrief } from '../aoiAutonomyTypes';
 
 const tempRoots: string[] = [];
@@ -96,6 +99,20 @@ describe('startAoiDaemon', () => {
     expect(body.code).toBe('route_not_found');
   });
 
+  it('serves research status routes from the same headless daemon', async () => {
+    const handle = await bootTestDaemon();
+    const res = await fetch(
+      `http://127.0.0.1:${handle.port}/api/aoi-research/list?sessionPath=aoi/default`,
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      ok?: boolean;
+      sessionPath?: string;
+      runs?: unknown[];
+    };
+    expect(body).toMatchObject({ ok: true, sessionPath: 'aoi/default', runs: [] });
+  });
+
   it('runs the loop by default and hard-disables only on AOI_AUTONOMY_BACKGROUND=0', async () => {
     // Daemon default: the runner is RUNNING (per-session policy.enabled gates the
     // actual autonomy; default false -> a safe idle no-op).
@@ -115,6 +132,115 @@ describe('startAoiDaemon', () => {
     const handle = await bootTestDaemon();
     await handle.close();
     await expect(handle.close()).resolves.toBeUndefined();
+  });
+
+  it('records explicit operator feedback against the latest verified file-task outcome', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const sessionPath = 'aoi/outcome-feedback-route';
+    const runId = 'aoi-run-file-route-test';
+    const runLedgerPath = join(sessionsDir, sessionPath, 'aoi-run-ledger', 'runs.json');
+    fs.mkdirSync(join(sessionsDir, sessionPath, 'aoi-run-ledger'), { recursive: true });
+    fs.writeFileSync(
+      runLedgerPath,
+      JSON.stringify({
+        version: 1,
+        savedAt: 2000,
+        runs: [
+          {
+            version: 1,
+            id: runId,
+            createdAt: 1000,
+            updatedAt: 1500,
+            status: 'completed',
+            goal: {
+              summary: 'Write status file',
+              sourceMessage: 'Write status file',
+              createdAt: 1000,
+            },
+            modelRoute: 'main',
+            includeAppTools: true,
+            exposedToolNames: ['ide_write_file', 'ide_read_file'],
+            events: [
+              {
+                id: `${runId}-1`,
+                type: 'tool_result',
+                createdAt: 1200,
+                toolNames: ['ide_write_file'],
+                message: JSON.stringify({ ok: true, path: 'written-by-me/output/status.md' }),
+              },
+              {
+                id: `${runId}-2`,
+                type: 'tool_result',
+                createdAt: 1400,
+                toolNames: ['ide_read_file'],
+                message: JSON.stringify({
+                  path: 'written-by-me/output/status.md',
+                  sha256: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+                }),
+              },
+            ],
+            metrics: {
+              iterations: 2,
+              toolCallCount: 2,
+              deliveredToolCallCount: 2,
+              errorCount: 0,
+              lastToolNames: ['ide_write_file', 'ide_read_file'],
+            },
+            finalMessage: 'File task completed.',
+          },
+        ],
+      }),
+      'utf-8',
+    );
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy`;
+    const userMessage = [
+      '방금 파일 작업 결과는 useful이다.',
+      'Correction:',
+      '- 정확성은 유지하고 반복 완료 시도를 줄여라.',
+      '이 피드백과 correction을 직전 파일 작업 outcome에 연결해 저장해.',
+    ].join('\n');
+
+    const response = await fetch(`${base}/outcomes/operator-feedback`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        sessionPath,
+        userMessage,
+        sourceChatRef: 'aoi-run:feedback-route-test',
+      }),
+    });
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      record?: {
+        targetOutcome?: { id?: string };
+        feedbackOutcome?: { sourceOutcomeId?: string; explicitLabel?: string };
+        correctionOutcome?: { sourceOutcomeId?: string; explicitCorrection?: string };
+      };
+    };
+    expect(body.record).toMatchObject({
+      targetOutcome: { id: `chat-file-task:${runId}` },
+      feedbackOutcome: {
+        sourceOutcomeId: `chat-file-task:${runId}`,
+        explicitLabel: 'useful',
+      },
+      correctionOutcome: {
+        sourceOutcomeId: `chat-file-task:${runId}`,
+        explicitCorrection: '정확성은 유지하고 반복 완료 시도를 줄여라.',
+      },
+    });
+
+    const stored = await fetch(`${base}/outcomes?sessionPath=${encodeURIComponent(sessionPath)}`);
+    const storedBody = (await stored.json()) as { outcomes?: unknown[] };
+    expect(storedBody.outcomes).toHaveLength(3);
   });
 });
 
@@ -373,6 +499,9 @@ describe('cognition-readiness route (SA5.2)', () => {
 describe('daemon health endpoint (GET /healthz)', () => {
   it('serves a metadata-only readiness snapshot with the loop running by default', async () => {
     const handle = await bootTestDaemon();
+    await new Promise<void>((resolveWait) => {
+      setTimeout(resolveWait, 25);
+    });
     const res = await fetch(`http://127.0.0.1:${handle.port}/healthz`);
     expect(res.status).toBe(200);
     expect(res.headers.get('cache-control')).toBe('no-store');
@@ -387,11 +516,11 @@ describe('daemon health endpoint (GET /healthz)', () => {
     };
     expect(body.status).toBe('ok');
     expect(body.loopRunning).toBe(true);
-    // No cycle fires within the test window (5-min interval, not run-immediately),
-    // so cognition is not yet active and no cycle summary exists.
+    // The daemon runs one bounded cycle immediately. The empty test sessions root
+    // has no enabled session, so the cycle is healthy but cognition stays inactive.
     expect(body.cognitionActive).toBe(false);
-    expect(body.cyclesCompleted).toBe(0);
-    expect(body.lastCycle).toBeNull();
+    expect(body.cyclesCompleted).toBe(1);
+    expect(body.lastCycle).toMatchObject({ sessionsConsidered: 0, sessionsRun: 0, errorCount: 0 });
     expect(typeof body.uptimeMs).toBe('number');
     expect(body.uptimeMs).toBeGreaterThanOrEqual(0);
     expect(body.errorsTotal).toBe(0);
@@ -443,6 +572,7 @@ describe('daemon graceful shutdown (POST /shutdown)', () => {
 
 describe('daemon memory decay routes (P4.1)', () => {
   const MEM_PATH = 'aoi/memory-v2/memories/decay-cand-1.json';
+  const MEMORY_SESSION_PATH = 'aoi/memory-ops';
 
   function oldCandidateMemory(): Record<string, unknown> {
     return {
@@ -473,6 +603,78 @@ describe('daemon memory decay routes (P4.1)', () => {
     expect(res.status).toBe(200);
   }
 
+  it('applies a confirmed exact memory correction and emits one explicit correction outcome', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    const content = 'The user prefers concise implementation summaries.';
+    const correctedContent = 'The user prefers detailed implementation summaries with evidence.';
+    const seed = await fetch(
+      `${base}/api/session-data?path=${encodeURIComponent('aoi/memory-v2/memories/memory-correction-1.json')}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          ...oldCandidateMemory(),
+          id: 'memory-correction-1',
+          sessionPath: MEMORY_SESSION_PATH,
+          content,
+          normalizedContent: content.toLowerCase(),
+          updatedAt: Date.now() - 10_000,
+        }),
+      },
+    );
+    expect(seed.status).toBe(200);
+    const request = {
+      sessionPath: MEMORY_SESSION_PATH,
+      memoryId: 'memory-correction-1',
+      expectedContentSha256: createHash('sha256').update(content, 'utf-8').digest('hex'),
+      correctedContent,
+      sourceChatRef: 'chat:user-correction-1',
+      correctionId: 'user-correction-1',
+      userConfirmed: true,
+    };
+
+    const first = await fetch(`${base}/api/aoi-autonomy/memory/explicit-correction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    expect(first.status).toBe(200);
+    expect((await first.json()) as { correction?: { changed?: boolean } }).toMatchObject({
+      correction: { changed: true },
+    });
+    const second = await fetch(`${base}/api/aoi-autonomy/memory/explicit-correction`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(request),
+    });
+    expect(second.status).toBe(200);
+    expect((await second.json()) as { correction?: { changed?: boolean } }).toMatchObject({
+      correction: { changed: false },
+    });
+
+    const stored = await fetch(
+      `${base}/api/session-data?path=${encodeURIComponent('aoi/memory-v2/memories/memory-correction-1.json')}`,
+    );
+    expect((await stored.json()) as Record<string, unknown>).toMatchObject({
+      content: correctedContent,
+      sourceEpisodeIds: ['ep-1', expect.stringMatching(/^aoi_ep_correction_/u)],
+    });
+    const outcomes = await fetch(
+      `${base}/api/aoi-autonomy/outcomes?sessionPath=${encodeURIComponent(MEMORY_SESSION_PATH)}`,
+    );
+    const outcomeBody = (await outcomes.json()) as {
+      outcomes: Array<{ outcomeKind: string; signalKind: string; eventId: string }>;
+    };
+    expect(outcomeBody.outcomes).toEqual([
+      expect.objectContaining({
+        eventId: 'memory-correction:user-correction-1',
+        outcomeKind: 'user_correction',
+        signalKind: 'explicit_correction',
+      }),
+    ]);
+  });
+
   it('previews -> archives an approved candidate -> restores it (soft-delete lifecycle)', async () => {
     const handle = await bootTestDaemon();
     const base = `http://127.0.0.1:${handle.port}`;
@@ -494,7 +696,11 @@ describe('daemon memory decay routes (P4.1)', () => {
     const apply = await fetch(`${api}/memory/decay-apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: previewBody.fingerprint }),
+      body: JSON.stringify({
+        sessionPath: MEMORY_SESSION_PATH,
+        ids: ['decay-cand-1'],
+        approvalFingerprint: previewBody.fingerprint,
+      }),
     });
     expect(apply.status).toBe(200);
     expect((await apply.json()) as { archivedCount?: number }).toMatchObject({ archivedCount: 1 });
@@ -507,7 +713,7 @@ describe('daemon memory decay routes (P4.1)', () => {
     const restore = await fetch(`${api}/memory/decay-restore`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['decay-cand-1'] }),
+      body: JSON.stringify({ sessionPath: MEMORY_SESSION_PATH, ids: ['decay-cand-1'] }),
     });
     expect(restore.status).toBe(200);
     expect((await restore.json()) as { unarchivedCount?: number }).toMatchObject({
@@ -525,12 +731,41 @@ describe('daemon memory decay routes (P4.1)', () => {
     const res = await fetch(`${base}/api/aoi-autonomy/memory/decay-apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: 'stale-or-tampered' }),
+      body: JSON.stringify({
+        sessionPath: MEMORY_SESSION_PATH,
+        ids: ['decay-cand-1'],
+        approvalFingerprint: 'stale-or-tampered',
+      }),
     });
     expect(res.status).toBe(409);
     expect(((await res.json()) as { code?: string }).code).toBe('decay_approval_mismatch');
 
     // Fail-closed: the memory is still active (never archived on a mismatch).
+    const still = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
+    expect(((await still.json()) as { status?: string }).status).toBe('active');
+  });
+
+  it('rejects missing or invalid audit sessions before mutation', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}`;
+    const api = `${base}/api/aoi-autonomy`;
+    await seedMemory(base, oldCandidateMemory());
+    const preview = (await (await fetch(`${api}/memory/decay-preview`)).json()) as {
+      fingerprint: string;
+    };
+    for (const sessionPath of [undefined, '../session-b']) {
+      const res = await fetch(`${api}/memory/decay-apply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sessionPath,
+          ids: ['decay-cand-1'],
+          approvalFingerprint: preview.fingerprint,
+        }),
+      });
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code?: string }).code).toBe('invalid_session_path');
+    }
     const still = await fetch(`${base}/api/session-data?path=${encodeURIComponent(MEM_PATH)}`);
     expect(((await still.json()) as { status?: string }).status).toBe('active');
   });
@@ -559,19 +794,26 @@ describe('daemon memory decay routes (P4.1)', () => {
     await fetch(`${api}/memory/decay-apply`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['decay-cand-1'], approvalFingerprint: preview.fingerprint }),
+      body: JSON.stringify({
+        sessionPath: MEMORY_SESSION_PATH,
+        ids: ['decay-cand-1'],
+        approvalFingerprint: preview.fingerprint,
+      }),
     });
     // The archive left an audit trail (soft-delete is destructive-adjacent).
-    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, 'aoi/default'))).toContain(
+    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, MEMORY_SESSION_PATH))).toContain(
+      'memory_archived',
+    );
+    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, 'aoi/default'))).not.toContain(
       'memory_archived',
     );
 
     await fetch(`${api}/memory/decay-restore`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ids: ['decay-cand-1'] }),
+      body: JSON.stringify({ sessionPath: MEMORY_SESSION_PATH, ids: ['decay-cand-1'] }),
     });
-    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, 'aoi/default'))).toContain(
+    expect(JSON.stringify(loadServerAoiRunLedger(sessionsDir, MEMORY_SESSION_PATH))).toContain(
       'memory_restored',
     );
   });
@@ -1107,17 +1349,98 @@ describe('daemon unified operator snapshot route (P5.3)', () => {
   it('serves the display_only unified operator summary built from real stores', async () => {
     const handle = await bootTestDaemon();
     const res = await fetch(
-      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/unified-snapshot`,
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/unified-snapshot?sessionPath=aoi/session-a`,
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
+      sessionPath: string;
       summary: { actionAuthority: string; sessionPath: string };
     };
     expect(body.ok).toBe(true);
+    expect(body.sessionPath).toBe('aoi/session-a');
     // The previously-dark model is now surfaced -- display_only by construction.
     expect(body.summary.actionAuthority).toBe('display_only');
-    expect(body.summary.sessionPath).toBe('aoi/default');
+    expect(body.summary.sessionPath).toBe('aoi/session-a');
+  });
+
+  it('rejects missing, traversal, and malformed session paths', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/unified-snapshot`;
+    for (const suffix of ['', '?sessionPath=aoi%2F..%2Fsession-b', '?sessionPath=%E0%A4%A']) {
+      const res = await fetch(`${base}${suffix}`);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code?: string }).code).toBe('invalid_session_path');
+    }
+  });
+
+  it('isolates operator evidence across simultaneous sessions', async () => {
+    const sessionsDir = makeTempSessionsDir();
+    const sessionA = 'aoi/session-a';
+    const sessionB = 'aoi/session-b';
+    const now = Date.now();
+    saveAoiInterestProfile(
+      sessionsDir,
+      sessionB,
+      {
+        version: 1,
+        sessionPath: sessionB,
+        topics: [
+          {
+            version: 1,
+            id: 'session-b-only-topic',
+            sessionPath: sessionB,
+            label: 'Session B Secret Topic',
+            normalizedLabel: 'session b secret topic',
+            aliases: [],
+            source: 'manual',
+            memoryIds: [],
+            evidenceRefs: ['manual:session-b-only-topic'],
+            confidence: 0.9,
+            importance: 0.9,
+            noveltyPreference: 0.7,
+            currentInfoPreference: 0.7,
+            muted: false,
+            pinned: true,
+            cooldownKey: 'interest:session-b-only-topic',
+            createdAt: now,
+            updatedAt: now,
+          },
+        ],
+        generatedAt: now,
+        sourceMemoryCount: 0,
+        warnings: [],
+      },
+      now,
+    );
+    const handle = await startAoiDaemon({
+      sessionsDir,
+      configFile: join(sessionsDir, 'config.json'),
+      workspaceRoot: sessionsDir,
+      host: '127.0.0.1',
+      port: 0,
+      env: { AOI_AUTONOMY_BACKGROUND: '0' },
+    });
+    liveDaemons.push(handle);
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/unified-snapshot`;
+    const [resA, resB] = await Promise.all([
+      fetch(`${base}?sessionPath=${encodeURIComponent(sessionA)}`),
+      fetch(`${base}?sessionPath=${encodeURIComponent(sessionB)}`),
+    ]);
+    const bodyA = (await resA.json()) as {
+      sessionPath: string;
+      summary: { sessionPath: string; topInterestLabels: string[] };
+    };
+    const bodyB = (await resB.json()) as {
+      sessionPath: string;
+      summary: { sessionPath: string; topInterestLabels: string[] };
+    };
+    expect(bodyA.sessionPath).toBe(sessionA);
+    expect(bodyA.summary.sessionPath).toBe(sessionA);
+    expect(bodyA.summary.topInterestLabels).not.toContain('Session B Secret Topic');
+    expect(bodyB.sessionPath).toBe(sessionB);
+    expect(bodyB.summary.sessionPath).toBe(sessionB);
+    expect(bodyB.summary.topInterestLabels).toContain('Session B Secret Topic');
   });
 });
 
@@ -1125,17 +1448,106 @@ describe('daemon readiness-accrual route (P5.4)', () => {
   it('serves the trust on-ramp readiness accrual (sample count -> directChatReady)', async () => {
     const handle = await bootTestDaemon();
     const res = await fetch(
-      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/readiness-accrual`,
+      `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/readiness-accrual?sessionPath=aoi/session-a`,
     );
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       ok: boolean;
+      sessionPath: string;
       readiness: { status: string; sampleCount: number; directChatReady: boolean };
     };
     expect(body.ok).toBe(true);
+    expect(body.sessionPath).toBe('aoi/session-a');
     // A fresh session is measuring / not ready, with a numeric sample count and a boolean gate.
     expect(typeof body.readiness.sampleCount).toBe('number');
     expect(typeof body.readiness.directChatReady).toBe('boolean');
     expect(body.readiness.directChatReady).toBe(false);
+  });
+
+  it('rejects missing, traversal, and malformed session paths', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/readiness-accrual`;
+    for (const suffix of ['', '?sessionPath=aoi%2F..%2Fsession-b', '?sessionPath=%E0%A4%A']) {
+      const res = await fetch(`${base}${suffix}`);
+      expect(res.status).toBe(400);
+      expect(((await res.json()) as { code?: string }).code).toBe('invalid_session_path');
+    }
+  });
+});
+
+describe('daemon non-voice Jarvis scorecard route', () => {
+  it('serves a session-correct read-only scorecard with explicit evidence class', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/non-voice-scorecard`;
+    const res = await fetch(`${base}?sessionPath=aoi/session-a&evidenceClass=live_field`);
+    expect(res.status).toBe(200);
+    const payload = await res.json();
+    const body = payload as {
+      ok: boolean;
+      sessionPath: string;
+      evidenceClass: string;
+      scorecard: {
+        sessionPath: string;
+        evidenceClass: string;
+        voiceExcluded: boolean;
+        claimEligible: boolean;
+        score: number;
+        generatedAt: number;
+        lastValidatedAt: number | null;
+        manifestFingerprint: string;
+        axes: Array<{ id: string }>;
+      };
+    };
+
+    expect(body.ok).toBe(true);
+    expect(body.sessionPath).toBe('aoi/session-a');
+    expect(body.evidenceClass).toBe('live_field');
+    expect(body.scorecard).toMatchObject({
+      sessionPath: 'aoi/session-a',
+      evidenceClass: 'live_field',
+      voiceExcluded: true,
+      claimEligible: false,
+    });
+    expect(body.scorecard.axes).toHaveLength(8);
+    expect(body.scorecard.score).toBeLessThan(90);
+    expect(body.scorecard.generatedAt).toBeGreaterThan(0);
+    expect(body.scorecard.lastValidatedAt === null || body.scorecard.lastValidatedAt > 0).toBe(
+      true,
+    );
+    expect(body.scorecard.manifestFingerprint).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      parseAoiNonVoiceScorecardResponse(payload, 'aoi/session-a', 'live_field'),
+    ).not.toBeNull();
+  });
+
+  it('caps an explicitly synthetic scorecard and never promotes it', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/non-voice-scorecard`;
+    const res = await fetch(`${base}?sessionPath=aoi/session-a&evidenceClass=synthetic`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      scorecard: { evidenceClass: string; score: number; scoreCap: number; claimEligible: boolean };
+    };
+
+    expect(body.scorecard.evidenceClass).toBe('synthetic');
+    expect(body.scorecard.scoreCap).toBeLessThanOrEqual(59);
+    expect(body.scorecard.claimEligible).toBe(false);
+  });
+
+  it('rejects missing, malformed, and traversal provenance before loading stores', async () => {
+    const handle = await bootTestDaemon();
+    const base = `http://127.0.0.1:${handle.port}/api/aoi-autonomy/operator/non-voice-scorecard`;
+    for (const suffix of [
+      '',
+      '?sessionPath=aoi/session-a',
+      '?sessionPath=aoi/session-a&evidenceClass=field-ish',
+      '?sessionPath=aoi%2F..%2Fsession-b&evidenceClass=live_field',
+    ]) {
+      const res = await fetch(`${base}${suffix}`);
+      expect(res.status).toBe(400);
+      expect(['invalid_session_path', 'invalid_evidence_class']).toContain(
+        ((await res.json()) as { code?: string }).code,
+      );
+    }
   });
 });

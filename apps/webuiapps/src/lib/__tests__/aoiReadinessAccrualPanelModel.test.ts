@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  buildAoiReadinessAccrualRoute,
   parseAoiReadinessAccrualResponse,
   summarizeAoiReadinessAccrual,
 } from '../aoiReadinessAccrualPanelModel';
 import type { AoiProactiveTrendAdvisorReadiness } from '../aoiAutonomyTypes';
+
+const SESSION_PATH = 'aoi/session-a';
 
 function readiness(
   over: Partial<AoiProactiveTrendAdvisorReadiness> = {},
@@ -23,14 +26,46 @@ function readiness(
 describe('parseAoiReadinessAccrualResponse (P5.4)', () => {
   it('returns the readiness for a well-formed ok payload', () => {
     const r = readiness({ status: 'ready' });
-    expect(parseAoiReadinessAccrualResponse({ ok: true, readiness: r })).toEqual(r);
+    expect(
+      parseAoiReadinessAccrualResponse(
+        { ok: true, sessionPath: SESSION_PATH, readiness: r },
+        SESSION_PATH,
+      ),
+    ).toEqual(r);
   });
 
   it('returns null when not ok, missing, or malformed', () => {
-    expect(parseAoiReadinessAccrualResponse({ ok: false, readiness: readiness() })).toBeNull();
-    expect(parseAoiReadinessAccrualResponse({ ok: true })).toBeNull();
-    expect(parseAoiReadinessAccrualResponse({ ok: true, readiness: 'nope' })).toBeNull();
-    expect(parseAoiReadinessAccrualResponse(null)).toBeNull();
+    expect(
+      parseAoiReadinessAccrualResponse(
+        { ok: false, sessionPath: SESSION_PATH, readiness: readiness() },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+    expect(
+      parseAoiReadinessAccrualResponse({ ok: true, sessionPath: SESSION_PATH }, SESSION_PATH),
+    ).toBeNull();
+    expect(
+      parseAoiReadinessAccrualResponse(
+        { ok: true, sessionPath: SESSION_PATH, readiness: 'nope' },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+    expect(parseAoiReadinessAccrualResponse(null, SESSION_PATH)).toBeNull();
+  });
+
+  it('fails closed when the returned session differs from the request', () => {
+    expect(
+      parseAoiReadinessAccrualResponse(
+        { ok: true, sessionPath: 'aoi/session-b', readiness: readiness() },
+        SESSION_PATH,
+      ),
+    ).toBeNull();
+  });
+
+  it('encodes the requested session in the route', () => {
+    expect(buildAoiReadinessAccrualRoute('aoi/session one')).toBe(
+      '/api/aoi-autonomy/operator/readiness-accrual?sessionPath=aoi%2Fsession+one',
+    );
   });
 });
 
