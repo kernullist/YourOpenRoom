@@ -1142,6 +1142,7 @@ describe('Aoi autonomy client dashboard', () => {
       latestUserMessage: 'check this session',
       reason: 'manual',
       maxRuntimeMs: 5000,
+      language: 'ko',
     });
 
     expect(result.status.sessionPath).toBe('aoi/default');
@@ -1150,6 +1151,7 @@ describe('Aoi autonomy client dashboard', () => {
       latestUserMessage: 'check this session',
       reason: 'manual',
       maxRuntimeMs: 5000,
+      language: 'ko',
     });
   });
 
@@ -1184,6 +1186,7 @@ describe('Aoi autonomy client dashboard', () => {
       latestUserMessage: 'check this session',
       sourceIds: ['app-state'],
       quietMode: true,
+      language: 'ko',
     });
 
     expect(result.sessionPath).toBe('aoi/default');
@@ -1193,6 +1196,7 @@ describe('Aoi autonomy client dashboard', () => {
       sourceIds: ['app-state'],
       reason: 'manual_refresh',
       quietMode: true,
+      language: 'ko',
     });
     expect(requestBody.budget).toMatchObject({
       maxSchedulerRuntimeMs: 150000,

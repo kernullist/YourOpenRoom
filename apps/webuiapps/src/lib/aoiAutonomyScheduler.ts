@@ -1539,6 +1539,9 @@ async function runProactiveScoutForWakeup(params: {
       now: params.now,
       directChatBudgetExhausted,
       directChatConfidenceFloorRelief,
+      // Fresher than the persisted fallback when the wakeup carried the
+      // operator's card language explicitly (session-open / manual paths).
+      ...(params.input.language ? { language: params.input.language } : {}),
       ...(trendJarvisGovernor ? { jarvisGovernor: trendJarvisGovernor } : {}),
     });
     trendSnapshotCount = trendAdvisor.snapshots.length;

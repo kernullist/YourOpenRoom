@@ -2764,6 +2764,9 @@ export async function handleAoiAutonomyRequest(
         maxRuntimeMs: typeof body.maxRuntimeMs === 'number' ? body.maxRuntimeMs : undefined,
         quietMode: typeof body.quietMode === 'boolean' ? body.quietMode : undefined,
         userIdleMs: typeof body.userIdleMs === 'number' ? body.userIdleMs : undefined,
+        ...(typeof body.language === 'string'
+          ? { language: normalizeAoiCardLang(body.language) }
+          : {}),
         workspaceRoot,
       });
       writeJson(res, 200, result);

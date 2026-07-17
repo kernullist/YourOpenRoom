@@ -12,20 +12,20 @@
 This app is a YouTube search launcher with in-app playlists. It does not maintain separate song or
 playlist files. Everything it needs is stored in `state.json`.
 
-| Field                  | Type          | Default            | Description                                                                                |
-| ---------------------- | ------------- | ------------------ | ------------------------------------------------------------------------------------------ |
-| searchQuery            | string        | `""`               | Current search keyword                                                                     |
-| recentSearches         | SearchEntry[] | `[]`               | Recent YouTube searches                                                                    |
-| favoriteTopics         | string[]      | pre-seeded list    | Saved one-click topics                                                                     |
-| playlists              | Playlist[]    | one empty playlist | In-app playlists holding saved videos                                                      |
-| activePlaylistId       | string\|null  | default playlist   | The playlist currently selected for editing/adding                                         |
-| lastPlayedPlaylistId   | string\|null  | `null`             | The playlist most recently played as a queue                                               |
-| lastPlayedPlaylistMode | string\|null  | `null`             | Last used queue mode: `"sequential"` or `"shuffle"`                                        |
-| sidebarOpen            | boolean       | `false`            | Whether the left saved-topics sidebar is expanded                                          |
-| resultsAutoHide        | boolean       | `false`            | Whether the in-app search results list should automatically collapse after picking a video |
-| loopPlayback           | boolean       | `false`            | Whether the in-app player should loop the current video or queue                           |
-| playerZoom             | number        | `1`                | The current in-app player zoom factor, where `1` means 100%                                |
-| nowPlaying             | NowPlaying\|null | `null`          | Snapshot of the video currently loaded in the in-app player; `null` when nothing plays     |
+| Field                  | Type             | Default            | Description                                                                                |
+| ---------------------- | ---------------- | ------------------ | ------------------------------------------------------------------------------------------ |
+| searchQuery            | string           | `""`               | Current search keyword                                                                     |
+| recentSearches         | SearchEntry[]    | `[]`               | Recent YouTube searches                                                                    |
+| favoriteTopics         | string[]         | pre-seeded list    | Saved one-click topics                                                                     |
+| playlists              | Playlist[]       | one empty playlist | In-app playlists holding saved videos                                                      |
+| activePlaylistId       | string\|null     | default playlist   | The playlist currently selected for editing/adding                                         |
+| lastPlayedPlaylistId   | string\|null     | `null`             | The playlist most recently played as a queue                                               |
+| lastPlayedPlaylistMode | string\|null     | `null`             | Last used queue mode: `"sequential"` or `"shuffle"`                                        |
+| sidebarOpen            | boolean          | `false`            | Whether the left saved-topics sidebar is expanded                                          |
+| resultsAutoHide        | boolean          | `false`            | Whether the in-app search results list should automatically collapse after picking a video |
+| loopPlayback           | boolean          | `false`            | Whether the in-app player should loop the current video or queue                           |
+| playerZoom             | number           | `1`                | The current in-app player zoom factor, where `1` means 100%                                |
+| nowPlaying             | NowPlaying\|null | `null`             | Snapshot of the video currently loaded in the in-app player; `null` when nothing plays     |
 
 ### SearchEntry
 
@@ -53,9 +53,9 @@ A saved YouTube search result. Fields: `id` (YouTube video id), `title`, `channe
 ### NowPlaying
 
 The video currently loaded in the in-app player. The app rewrites this field on every playback
-change — including queue auto-advance — and clears it to `null` when the viewer closes. The app
-owns this field: values written by the Agent are overwritten by the live player state, so treat it
-as read-only. Use `updatedAt` as the freshness signal; a stale timestamp means the app went away
+change — including queue auto-advance — and clears it to `null` when the viewer closes. The app owns
+this field: values written by the Agent are overwritten by the live player state, so treat it as
+read-only. Use `updatedAt` as the freshness signal; a stale timestamp means the app went away
 mid-playback and the claim must not be treated as live.
 
 | Field     | Type         | Description                                                    |

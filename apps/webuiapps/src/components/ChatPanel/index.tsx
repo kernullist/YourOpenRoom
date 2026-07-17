@@ -4396,6 +4396,14 @@ const ChatPanel: React.FC<{
         latestUserMessage,
         llmConfig: configRef.current ?? undefined,
         quietMode: aoiAutonomyPanelSettings.quietMode,
+        // Same derivation as the session-open wakeup: without it, a manual check
+        // whose last user message is English (or absent) authors English cards
+        // even though the operator converses in Korean.
+        language: deriveAoiCardLangFromMessages(
+          chatHistoryRef.current,
+          normalizeResponseLanguageMode(conversationPreferencesRef.current?.responseLanguageMode),
+          getVibeInfo().systemSettings?.language?.current,
+        ),
       });
       setAoiAutonomyStatus(result.status);
       setAoiAutonomyScheduler(result.state);

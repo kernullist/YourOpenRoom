@@ -54,6 +54,34 @@ export function detectAoiCardLangFromText(text: string | null | undefined): AoiC
   return 'en';
 }
 
+// Resolve the language autonomy proposals are authored in. Precedence:
+//   1. explicit  -- the operator's card language forwarded by the client
+//      (derived from the conversation + response-language preference + app
+//      language); the strongest signal.
+//   2. detected  -- the script of a NON-EMPTY latest user message (mirrors the
+//      chat reply language for that turn).
+//   3. persisted -- the last explicit language stored for the session, so idle
+//      background/daemon ticks (no message context) keep the operator's
+//      language instead of silently dropping to English.
+//   4. English.
+// An EMPTY message deliberately does not resolve as English: "no signal" and
+// "English text" are different cases, and conflating them was exactly the bug
+// that made idle ticks author English proposals for Korean operators.
+export function resolveAoiCardLanguage(params: {
+  explicit?: AoiCardLang | null;
+  latestUserMessage?: string | null;
+  persisted?: AoiCardLang | null;
+}): AoiCardLang {
+  if (params.explicit) {
+    return params.explicit;
+  }
+  const message = (params.latestUserMessage ?? '').trim();
+  if (message) {
+    return detectAoiCardLangFromText(message);
+  }
+  return params.persisted ?? 'en';
+}
+
 export type AoiCardConfidenceKey =
   | 'low_evidence'
   | 'moderate_confidence'

@@ -3,9 +3,10 @@ import type { LLMConfig } from './llmModels';
 import {
   aoiCardProposalText,
   aoiReflectionLanguageInstruction,
-  detectAoiCardLangFromText,
+  resolveAoiCardLanguage,
   type AoiCardLang,
 } from './aoiAutonomyCardI18n';
+import { loadAoiCardLanguage, saveAoiCardLanguage } from './aoiCardLanguageStore';
 import {
   applyAoiFeedbackCalibrationToProposal,
   checkAoiProposalPolicy,
@@ -3189,12 +3190,23 @@ export async function runAoiAutonomyTick(
   const now = params.now ?? Date.now();
   const policy = loadAoiAutonomyPolicy(params.sessionsDir, sessionPath);
   const latestUserMessage = normalizeWhitespace(params.latestUserMessage || '');
-  // Author proposals in the operator's language. Prefer an explicit language, but
-  // when none is supplied (the common path) fall back to the language of the
-  // latest user message -- the same signal the chat uses for reply language --
-  // so a Korean conversation yields Korean proposal text. No signal -> English.
-  const effectiveAoiCardLanguage: AoiCardLang =
-    params.language ?? detectAoiCardLangFromText(latestUserMessage);
+  // Author proposals in the operator's language: explicit language -> language
+  // detected from a NON-EMPTY latest user message -> the last explicit language
+  // persisted for this session -> English. The persisted fallback keeps idle
+  // background/daemon ticks (which carry neither an explicit language nor a
+  // message) from silently authoring English proposals for a Korean operator.
+  const effectiveAoiCardLanguage: AoiCardLang = resolveAoiCardLanguage({
+    explicit: params.language ?? null,
+    latestUserMessage,
+    persisted: loadAoiCardLanguage(params.sessionsDir, sessionPath),
+  });
+  if (params.language) {
+    try {
+      saveAoiCardLanguage(params.sessionsDir, sessionPath, params.language, now);
+    } catch {
+      // Best-effort: a language persistence failure must never fail the tick.
+    }
+  }
   // P1a continuous reasoning: the brief persisted at the end of the PREVIOUS tick.
   // Folded into the recall focus query below so an idle background tick recalls
   // memory about what Aoi was working on. Null on the first tick / older sessions

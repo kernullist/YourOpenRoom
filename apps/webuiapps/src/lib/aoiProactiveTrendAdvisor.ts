@@ -10,6 +10,8 @@ import {
   resolveAoiAutonomyPaths,
 } from './aoiAutonomyStore';
 import { buildAoiFollowThroughEventFromTrendDelivery } from './aoiFollowThroughLearning';
+import type { AoiCardLang } from './aoiAutonomyCardI18n';
+import { loadAoiCardLanguage } from './aoiCardLanguageStore';
 import { loadAoiCurrentSituation } from './aoiCurrentSituationModel';
 import { decideAoiInterruptionDelivery } from './aoiInterruptionGovernor';
 import type { AoiJarvisAutonomyGovernorDecision } from './aoiJarvisAutonomyGovernor';
@@ -82,6 +84,11 @@ export interface AoiProactiveTrendPaths {
 export interface BuildAoiProactiveTrendAdvisorStateInput {
   sessionsDir?: string;
   sessionPath: string;
+  // Language the deterministic card copy (chat hook, opinion take, follow-up
+  // prompts) is authored in. Absent -> the persisted per-session card language
+  // (when sessionsDir is available) -> English. Scout-authored content fields
+  // pass through verbatim; only the surrounding templates are localized.
+  language?: AoiCardLang;
   // P5.5: the server-computed governor -- when supplied, trend-card delivery is capped by the
   // canonical interruption governor (downgrade-only). Absent -> the advisor's own decision.
   jarvisGovernor?: AoiJarvisAutonomyGovernorDecision | null;
@@ -1502,13 +1509,25 @@ function deliverySummary(params: {
   return `Dashboard only: ${params.blockReasons.slice(0, 3).join(', ') || params.novelty.reason}.`;
 }
 
+// Resolve a { ko, en } pair for the card language. Japanese/Chinese fall back to
+// English until their strings are authored, mirroring aoiAutonomyCardI18n.
+function pickTrendCopy(lang: AoiCardLang, table: { ko: string; en: string }): string {
+  return lang === 'ko' ? table.ko : table.en;
+}
+
 function buildChatHookText(params: {
   topicLabel: string;
   title: string;
   myTake: string;
   sourceHosts: string[];
+  lang: AoiCardLang;
 }): string {
-  const hosts = params.sourceHosts.slice(0, 3).join(', ') || 'public sources';
+  const hosts =
+    params.sourceHosts.slice(0, 3).join(', ') ||
+    pickTrendCopy(params.lang, { ko: '공개 출처', en: 'public sources' });
+  if (params.lang === 'ko') {
+    return `${params.topicLabel} 관련 Aoi 트렌드 신호: ${params.title}. 내 생각: ${params.myTake} 출처: ${hosts}.`;
+  }
   return `Aoi trend signal for ${params.topicLabel}: ${params.title}. My take: ${params.myTake} Sources: ${hosts}.`;
 }
 
@@ -1517,18 +1536,32 @@ export function buildAoiProactiveTrendFollowUpPrompts(
     AoiProactiveTrendOpinionCard,
     'title' | 'topicLabel' | 'sourceHosts' | 'suggestedNextAction'
   >,
+  lang: AoiCardLang = 'en',
 ): string[] {
-  const title = sanitizeText(card.title, 120) || 'this trend';
-  const topicLabel = sanitizeText(card.topicLabel, 80) || 'this topic';
-  const sourceHint = card.sourceHosts.slice(0, 2).join(', ') || 'the source evidence';
+  const title =
+    sanitizeText(card.title, 120) || pickTrendCopy(lang, { ko: '이 트렌드', en: 'this trend' });
+  const topicLabel =
+    sanitizeText(card.topicLabel, 80) || pickTrendCopy(lang, { ko: '이 주제', en: 'this topic' });
+  const sourceHint =
+    card.sourceHosts.slice(0, 2).join(', ') ||
+    pickTrendCopy(lang, { ko: '출처 근거', en: 'the source evidence' });
+  const nextAction = sanitizeText(card.suggestedNextAction, 160);
+  if (lang === 'ko') {
+    return unique(
+      [
+        `Aoi, "${title}" 더 깊게 파고 가장 강한 근거끼리 비교해줘.`,
+        `Aoi, ${sourceHint}에서 "${title}" 출처 근거를 열어줘.`,
+        `Aoi, 이 ${topicLabel} 트렌드를 짧은 리서치 계획으로 만들어줘.`,
+        nextAction ? `Aoi, 이거 실행하게 도와줘: ${nextAction}` : '',
+      ].filter(Boolean),
+    ).slice(0, 4);
+  }
   return unique(
     [
       `Aoi, dig deeper into "${title}" and compare the strongest evidence.`,
       `Aoi, open the source evidence for "${title}" from ${sourceHint}.`,
       `Aoi, turn this ${topicLabel} trend into a short research plan.`,
-      sanitizeText(card.suggestedNextAction, 160)
-        ? `Aoi, help me act on this: ${sanitizeText(card.suggestedNextAction, 160)}`
-        : '',
+      nextAction ? `Aoi, help me act on this: ${nextAction}` : '',
     ].filter(Boolean),
   ).slice(0, 4);
 }
@@ -1549,37 +1582,65 @@ function snapshotOpinionFields(params: {
   candidate: AoiProactiveBriefCandidate;
   freshness: AoiProactiveTrendSnapshotFreshness;
   sourceStrong: boolean;
+  lang: AoiCardLang;
 }): Pick<
   AoiProactiveTrendSnapshot,
   'whatChanged' | 'whyItMatters' | 'myTake' | 'suggestedNextAction'
 > {
   const candidate = params.candidate;
-  const topic = sanitizeText(candidate.topicLabel, 80) || 'this interest';
+  const lang = params.lang;
+  const topic =
+    sanitizeText(candidate.topicLabel, 80) ||
+    pickTrendCopy(lang, { ko: '이 관심사', en: 'this interest' });
   const novelty = sanitizeText(candidate.noveltyReason, 260);
   const summary = sanitizeText(candidate.summary || candidate.hook, 360);
   const whyForOperator = sanitizeText(candidate.whyForOperator, 260);
   const whatChanged =
-    novelty || summary || `A source-backed scout surfaced a new item related to ${topic}.`;
+    novelty ||
+    summary ||
+    (lang === 'ko'
+      ? `${topic} 관련 새 항목을 출처 기반 스카우트가 발견했습니다.`
+      : `A source-backed scout surfaced a new item related to ${topic}.`);
   const whyItMatters =
     whyForOperator ||
-    `This maps to an interest Aoi already tracks for ${topic}, so it is worth keeping on the dashboard.`;
-  let myTake =
-    'This is worth parking as a watch item first: useful signal, but not enough to interrupt by itself.';
-  let suggestedNextAction =
-    'Open the listed sources when convenient and mark the card useful or noisy.';
+    (lang === 'ko'
+      ? `Aoi가 이미 추적 중인 ${topic} 관심사와 연결되므로 대시보드에 남겨둘 가치가 있습니다.`
+      : `This maps to an interest Aoi already tracks for ${topic}, so it is worth keeping on the dashboard.`);
+  let myTake = pickTrendCopy(lang, {
+    ko: '일단 관찰 항목으로 두는 게 좋겠습니다. 유용한 신호지만 그 자체로 대화를 끊을 정도는 아닙니다.',
+    en: 'This is worth parking as a watch item first: useful signal, but not enough to interrupt by itself.',
+  });
+  let suggestedNextAction = pickTrendCopy(lang, {
+    ko: '편할 때 나열된 출처를 열어 보고 카드에 유용/노이즈 표시를 해주세요.',
+    en: 'Open the listed sources when convenient and mark the card useful or noisy.',
+  });
   if (params.freshness === 'stale') {
-    myTake =
-      'I would not act on this as current information until the scout refreshes the source evidence.';
-    suggestedNextAction =
-      'Run the scout again or wait for the next budgeted refresh before acting.';
+    myTake = pickTrendCopy(lang, {
+      ko: '스카우트가 출처 근거를 새로고침하기 전에는 이걸 최신 정보로 취급하지 않겠습니다.',
+      en: 'I would not act on this as current information until the scout refreshes the source evidence.',
+    });
+    suggestedNextAction = pickTrendCopy(lang, {
+      ko: '행동하기 전에 스카우트를 다시 돌리거나 다음 예산 내 새로고침을 기다려 주세요.',
+      en: 'Run the scout again or wait for the next budgeted refresh before acting.',
+    });
   } else if (!params.sourceStrong) {
-    myTake =
-      'This is a weak signal until a second independent source or stronger evidence appears.';
-    suggestedNextAction = 'Keep it visible on the dashboard, but avoid direct chat escalation.';
+    myTake = pickTrendCopy(lang, {
+      ko: '독립적인 두 번째 출처나 더 강한 근거가 나오기 전까지는 약한 신호입니다.',
+      en: 'This is a weak signal until a second independent source or stronger evidence appears.',
+    });
+    suggestedNextAction = pickTrendCopy(lang, {
+      ko: '대시보드에는 남겨두되 직접 대화로 격상하지는 마세요.',
+      en: 'Keep it visible on the dashboard, but avoid direct chat escalation.',
+    });
   } else if (candidate.confidence >= 0.8 && candidate.score >= 0.75) {
-    myTake =
-      'This looks like a good short-review candidate: it has source support and matches the saved interest profile.';
-    suggestedNextAction = 'Skim the sources and mark useful if the angle is actually relevant.';
+    myTake = pickTrendCopy(lang, {
+      ko: '짧게 리뷰해볼 만한 후보로 보입니다. 출처 근거가 있고 저장된 관심 프로필과도 맞습니다.',
+      en: 'This looks like a good short-review candidate: it has source support and matches the saved interest profile.',
+    });
+    suggestedNextAction = pickTrendCopy(lang, {
+      ko: '출처를 훑어보고 관점이 실제로 유효하면 유용으로 표시해 주세요.',
+      en: 'Skim the sources and mark useful if the angle is actually relevant.',
+    });
   }
   return {
     whatChanged: sanitizeText(whatChanged, 320),
@@ -1789,9 +1850,12 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   // SA4.3: the fresh current-situation ref (situation:<id>). When present, the
   // card cites the live context it was authored under. Additive evidence only.
   situationRef?: string | null;
+  // Language for the deterministic template copy (opinion take + chat hook).
+  language?: AoiCardLang;
 }): AoiProactiveTrendSnapshot | null {
   const now = params.now ?? Date.now();
   const candidate = params.candidate;
+  const language: AoiCardLang = params.language ?? 'en';
   const sources = normalizeSources(candidate.sources, now);
   const evidenceRefs = unique([
     `brief:${candidate.id}`,
@@ -1858,7 +1922,7 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
     directChatConfidenceFloorRelief: params.directChatConfidenceFloorRelief,
     now,
   });
-  const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong });
+  const opinion = snapshotOpinionFields({ candidate, freshness, sourceStrong, lang: language });
   const confidence = clampScore(
     candidate.confidence +
       (sourceStrong ? 0.04 : sourceQuality.status === 'acceptable' ? -0.05 : -0.15) +
@@ -1900,10 +1964,12 @@ export function buildAoiProactiveTrendSnapshotFromCandidate(params: {
   const chatHookText =
     deliveryMode === 'direct_chat'
       ? buildChatHookText({
-          topicLabel: topicLabel || 'Interest topic',
+          topicLabel:
+            topicLabel || pickTrendCopy(language, { ko: '관심 주제', en: 'Interest topic' }),
           title: cardTitle,
           myTake: opinion.myTake,
           sourceHosts,
+          lang: language,
         })
       : undefined;
   return {
@@ -2471,7 +2537,10 @@ export function buildAoiProactiveTrendDeliveryAuditSummary(
   };
 }
 
-function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTrendOpinionCard {
+function cardFromSnapshot(
+  snapshot: AoiProactiveTrendSnapshot,
+  lang: AoiCardLang = 'en',
+): AoiProactiveTrendOpinionCard {
   const sourceHosts = unique(snapshot.sources.map((source) => source.host)).slice(0, 6);
   const card: AoiProactiveTrendOpinionCard = {
     version: 1,
@@ -2510,7 +2579,7 @@ function cardFromSnapshot(snapshot: AoiProactiveTrendSnapshot): AoiProactiveTren
   };
   return {
     ...card,
-    followUpPrompts: buildAoiProactiveTrendFollowUpPrompts(card),
+    followUpPrompts: buildAoiProactiveTrendFollowUpPrompts(card, lang),
   };
 }
 
@@ -2528,6 +2597,11 @@ export function buildAoiProactiveTrendAdvisorState(
   const now = input.now ?? Date.now();
   const sessionPath = resolveSessionPath(input.sessionPath);
   const persist = input.persist !== false && Boolean(input.sessionsDir);
+  // Deterministic card copy language: explicit input wins, else the persisted
+  // per-session operator language, else English (byte-identical legacy copy).
+  const language: AoiCardLang =
+    input.language ??
+    (input.sessionsDir ? (loadAoiCardLanguage(input.sessionsDir, sessionPath) ?? 'en') : 'en');
   const watchProfile = buildAoiProactiveTrendWatchProfile({
     sessionPath,
     profile: input.profile,
@@ -2592,6 +2666,7 @@ export function buildAoiProactiveTrendAdvisorState(
         situationRef,
         directChatBudgetExhausted: input.directChatBudgetExhausted,
         directChatConfidenceFloorRelief: input.directChatConfidenceFloorRelief,
+        language,
         ...(input.jarvisGovernor ? { jarvisGovernor: input.jarvisGovernor } : {}),
       }),
     )
@@ -2618,7 +2693,7 @@ export function buildAoiProactiveTrendAdvisorState(
     .slice(0, MAX_TREND_STATE_SNAPSHOTS);
   const opinionCards = snapshots
     .filter((snapshot) => snapshot.sources.length > 0 && snapshot.evidenceRefs.length > 0)
-    .map(cardFromSnapshot)
+    .map((snapshot) => cardFromSnapshot(snapshot, language))
     .slice(0, MAX_TREND_OPINION_CARDS);
   const inlineCard =
     opinionCards.find((card) => card.deliveryMode === 'inline_card') ??

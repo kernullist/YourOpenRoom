@@ -20,6 +20,7 @@ import {
   aoiReflectionLanguageInstruction,
   detectAoiCardLangFromText,
   normalizeAoiCardLang,
+  resolveAoiCardLanguage,
 } from '../aoiAutonomyCardI18n';
 
 describe('normalizeAoiCardLang()', () => {
@@ -47,6 +48,41 @@ describe('normalizeAoiCardLang()', () => {
     expect(normalizeAoiCardLang(null)).toBe('en');
     expect(normalizeAoiCardLang(undefined)).toBe('en');
     expect(normalizeAoiCardLang('fr')).toBe('en');
+  });
+});
+
+describe('resolveAoiCardLanguage()', () => {
+  it('prefers the explicit operator language over every other signal', () => {
+    expect(
+      resolveAoiCardLanguage({
+        explicit: 'ko',
+        latestUserMessage: 'show me the latest research',
+        persisted: 'ja',
+      }),
+    ).toBe('ko');
+  });
+
+  it('detects the language from a non-empty latest user message', () => {
+    expect(resolveAoiCardLanguage({ latestUserMessage: '이걸 목표로 관리하자' })).toBe('ko');
+    // A Latin-script message still resolves to English for that turn, matching
+    // the chat's own reply-language behavior.
+    expect(
+      resolveAoiCardLanguage({ latestUserMessage: 'show me the research', persisted: 'ko' }),
+    ).toBe('en');
+  });
+
+  it('falls back to the persisted language when there is no message signal', () => {
+    // The idle background/daemon tick case: no explicit language, no message.
+    expect(resolveAoiCardLanguage({ persisted: 'ko' })).toBe('ko');
+    expect(resolveAoiCardLanguage({ latestUserMessage: '   ', persisted: 'ko' })).toBe('ko');
+    expect(resolveAoiCardLanguage({ latestUserMessage: null, persisted: 'zh' })).toBe('zh');
+  });
+
+  it('resolves English only when no signal exists at all', () => {
+    expect(resolveAoiCardLanguage({})).toBe('en');
+    expect(resolveAoiCardLanguage({ explicit: null, latestUserMessage: '', persisted: null })).toBe(
+      'en',
+    );
   });
 });
 

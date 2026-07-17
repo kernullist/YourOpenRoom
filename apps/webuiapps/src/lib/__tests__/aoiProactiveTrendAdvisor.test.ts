@@ -404,6 +404,33 @@ describe('Aoi proactive trend advisor', () => {
     expect(state.directChatHookCount).toBe(1);
   });
 
+  it('authors the direct-chat hook, opinion take, and follow-up prompts in the operator language', () => {
+    const state = buildAoiProactiveTrendAdvisorState({
+      sessionPath: SESSION_PATH,
+      policy: makePolicy(true),
+      profile: makeProfile(),
+      candidates: [makeCandidate()],
+      fieldMetrics: makeFieldMetrics(),
+      now: NOW,
+      persist: false,
+      language: 'ko',
+    });
+
+    expect(state.opinionCards[0].deliveryMode).toBe('direct_chat');
+    // The deterministic templates are Korean; scout-authored fields (title,
+    // summary) pass through verbatim.
+    expect(state.chatHook).toContain('Aoi 트렌드 신호');
+    expect(state.chatHook).toContain('내 생각:');
+    expect(state.opinionCards[0].myTake).toMatch(/[가-힣]/);
+    expect(state.opinionCards[0].suggestedNextAction).toMatch(/[가-힣]/);
+    expect(state.directChatCard?.followUpPrompts.some((prompt) => /[가-힣]/.test(prompt))).toBe(
+      true,
+    );
+    expect(
+      state.directChatCard?.followUpPrompts.some((prompt) => prompt.includes('짧은 리서치 계획')),
+    ).toBe(true);
+  });
+
   it('caps trend delivery through the server governor when one is supplied (P5.5 trend half)', () => {
     // The SAME card that is direct_chat without a governor (previous test) is downgraded when a
     // real server governor is supplied. Over EMPTY stores the governor blocks direct_chat (no

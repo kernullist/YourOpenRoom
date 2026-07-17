@@ -47,6 +47,7 @@ import { recordAoiActivityEvent } from '../aoiActivityStream';
 import { buildAoiIntentState, loadAoiIntentState } from '../aoiIntentInference';
 import { buildAoiCurrentSituation, loadAoiCurrentSituation } from '../aoiCurrentSituationModel';
 import { loadAoiStrategicBrief } from '../aoiStrategicBrief';
+import { loadAoiCardLanguage, saveAoiCardLanguage } from '../aoiCardLanguageStore';
 import { loadAoiLlmBudgetState } from '../aoiAutonomyLlmBudget';
 import {
   DEFAULT_SCOUT_NETWORK_BUDGET_WINDOW_MS,
@@ -1527,6 +1528,53 @@ describe('runAoiAutonomyTick()', () => {
     expect(proposals[0].trigger).toBe('failure_recovery');
     expect(proposals[0].title).toBe('리서치 좁혀서 재시도');
     expect(proposals[0].body).toContain('실패했습니다');
+  });
+
+  it('persists an explicit operator language and reuses it for signal-less idle ticks', async () => {
+    const root = makeTempRoot();
+    enablePolicy(root, 'L4');
+    writeResearchManifest(
+      root,
+      makeManifest({
+        id: 'aoi-research-fail-ko-002',
+        status: 'failed',
+        phase: 'failed',
+        completedAt: undefined,
+        artifactAvailability: { manifest: true, report: false, sources: false, evidence: false },
+        error: {
+          code: 'research_run_timeout',
+          message: 'Timed out while reading sources.',
+          phase: 'reading_sources',
+          createdAt: NOW - 4_000,
+        },
+      }),
+    );
+
+    // The background/daemon case: the tick carries neither an explicit language
+    // nor a latest user message. With a persisted operator language it must NOT
+    // drop to English proposals.
+    saveAoiCardLanguage(root, SESSION_PATH, 'ko', NOW - 60_000);
+    const result = await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'periodic',
+      now: NOW,
+    });
+
+    const proposals = loadAoiActiveProposals(root, SESSION_PATH);
+    expect(result.newActiveProposalCount).toBe(1);
+    expect(proposals[0].trigger).toBe('failure_recovery');
+    expect(proposals[0].title).toBe('리서치 좁혀서 재시도');
+
+    // And an explicit language on a later tick refreshes the persisted value.
+    await runAoiAutonomyTick({
+      sessionsDir: root,
+      sessionPath: SESSION_PATH,
+      reason: 'turn',
+      language: 'ja',
+      now: NOW + 1_000,
+    });
+    expect(loadAoiCardLanguage(root, SESSION_PATH)).toBe('ja');
   });
 
   it('purges a stale already-active meta proposal that re-narrates an active recovery proposal', async () => {

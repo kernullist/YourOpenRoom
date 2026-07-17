@@ -1589,6 +1589,7 @@ export function runAoiAutonomyManualWakeup(params: {
   sourceIds?: string[];
   budget?: Partial<AoiAutonomyWakeupBudget>;
   quietMode?: boolean;
+  language?: AoiCardLang;
 }): Promise<AoiAutonomyWakeupResult> {
   return runAoiAutonomyWakeup({
     ...params,
@@ -1840,6 +1841,7 @@ export async function runAoiAutonomyManualTick(params: {
   maxRuntimeMs?: number;
   quietMode?: boolean;
   userIdleMs?: number;
+  language?: AoiCardLang;
 }): Promise<AoiAutonomyTickResult> {
   const response = await fetch(`${API_PREFIX}/tick`, {
     method: 'POST',
@@ -1852,6 +1854,7 @@ export async function runAoiAutonomyManualTick(params: {
       maxRuntimeMs: params.maxRuntimeMs,
       quietMode: params.quietMode,
       userIdleMs: params.userIdleMs,
+      language: params.language,
     }),
   });
   const payload = await readJsonRecord(response, 'Failed to run Aoi autonomy check.');
