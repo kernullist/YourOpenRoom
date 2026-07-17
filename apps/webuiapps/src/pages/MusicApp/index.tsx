@@ -65,7 +65,13 @@ import {
   MIN_PLAYER_ZOOM,
   PLAYER_ZOOM_STEP,
 } from './playerUtils';
-import { APP_ID, APP_NAME, STATE_FILE } from './actions/constants';
+import {
+  buildNowPlaying,
+  buildPlayVideoParams,
+  normalizeNowPlaying,
+  type NowPlayingState,
+} from './nowPlayingUtils';
+import { APP_ID, APP_NAME, ReportedEvents, STATE_FILE } from './actions/constants';
 import styles from './index.module.scss';
 
 const MAX_RECENT_SEARCHES = 12;
@@ -123,6 +129,7 @@ interface AppState {
   resultsAutoHide: boolean;
   loopPlayback: boolean;
   playerZoom: number;
+  nowPlaying: NowPlayingState | null;
 }
 
 const youtubeFileApi = createAppFileApi(APP_NAME);
@@ -148,6 +155,7 @@ const DEFAULT_STATE: AppState = {
   resultsAutoHide: false,
   loopPlayback: false,
   playerZoom: 1,
+  nowPlaying: null,
 };
 
 function buildSearchUrl(query: string): string {
@@ -215,6 +223,7 @@ function normalizeState(raw: unknown): AppState {
       typeof obj.playerZoom === 'number'
         ? clampPlayerZoom(obj.playerZoom)
         : DEFAULT_STATE.playerZoom,
+    nowPlaying: normalizeNowPlaying(obj.nowPlaying),
   };
 }
 
@@ -251,6 +260,9 @@ const YouTubeApp: React.FC = () => {
   const [resultsAutoHide, setResultsAutoHide] = useState(false);
   const [loopPlayback, setLoopPlayback] = useState(false);
   const [playerZoom, setPlayerZoom] = useState(DEFAULT_STATE.playerZoom);
+  // Live-derived from the player state (see the sync effect below); persisted
+  // so the agent surface can read the current video title from state.json.
+  const [nowPlaying, setNowPlaying] = useState<NowPlayingState | null>(null);
   const [resultListHidden, setResultListHidden] = useState(false);
   const resultListAutoHiddenRef = useRef(false);
   const previousResultsAutoHideRef = useRef(false);
@@ -297,6 +309,10 @@ const YouTubeApp: React.FC = () => {
     setResultsAutoHide(normalized.resultsAutoHide);
     setLoopPlayback(normalized.loopPlayback);
     setPlayerZoom(clampPlayerZoom(normalized.playerZoom));
+    // nowPlaying is intentionally NOT restored: the live player is its only
+    // source of truth. The sync effect below rewrites it right away, so a
+    // stale persisted claim (app closed mid-playback) self-heals on reload
+    // and an agent-written value can never fake an active playback.
     return true;
   }, []);
 
@@ -314,6 +330,7 @@ const YouTubeApp: React.FC = () => {
         resultsAutoHide,
         loopPlayback,
         playerZoom,
+        nowPlaying,
       };
       const nextState = updater(currentState);
       setSearchQuery(nextState.searchQuery);
@@ -335,6 +352,7 @@ const YouTubeApp: React.FC = () => {
       lastPlayedPlaylistId,
       lastPlayedPlaylistMode,
       loopPlayback,
+      nowPlaying,
       playlists,
       playerZoom,
       recentSearches,
@@ -633,6 +651,8 @@ const YouTubeApp: React.FC = () => {
       const selectedItem = targetPlaylist?.items.find((item) => item.id === itemId) || null;
       if (!targetPlaylist || !selectedItem) return;
       selectPlaylist(targetPlaylist.id);
+      // A playlist-item preview is a user click that starts that exact video.
+      reportAction(APP_ID, ReportedEvents.PLAY_VIDEO, buildPlayVideoParams(selectedItem, null));
       openResultsViewer({
         title: targetPlaylist.name,
         results: playlistItemsToResults(targetPlaylist.items),
@@ -671,6 +691,15 @@ const YouTubeApp: React.FC = () => {
         playback,
         hideResults: resultsAutoHide,
       });
+      // Queue playback starts on a user click (this function has no agent
+      // caller); report the first video with its title and queue name.
+      if (orderedResults[0]) {
+        reportAction(
+          APP_ID,
+          ReportedEvents.PLAY_VIDEO,
+          buildPlayVideoParams(orderedResults[0], targetPlaylist.name),
+        );
+      }
     },
     [openResultsViewer, persistState, playlists, resultsAutoHide],
   );
@@ -819,6 +848,20 @@ const YouTubeApp: React.FC = () => {
     (result: YoutubeSearchResult) => {
       const player = youtubePlayerRef.current;
 
+      // An explicit user pick is the playback signal the agent cares about:
+      // report it with the video title so the agent knows what is playing.
+      // Agent-triggered playback paths never call this handler, so the
+      // sendResult/reportAction duplicate rule is not violated.
+      const inQueue = Boolean(activePlayback && activePlayback.order.includes(result.id));
+      reportAction(
+        APP_ID,
+        ReportedEvents.PLAY_VIDEO,
+        buildPlayVideoParams(
+          result,
+          inQueue ? playbackPlaylist?.name || DEFAULT_PLAYLIST_NAME : null,
+        ),
+      );
+
       if (activePlayback && activePlayback.order.includes(result.id)) {
         // Jump inside the running queue without rebuilding it, so the visible
         // order stays stable and the player iframe is not remounted.
@@ -852,7 +895,13 @@ const YouTubeApp: React.FC = () => {
       setCurrentPlayingVideoId(result.id);
       hideListAfterExplicitSelect();
     },
-    [activePlayback, currentPlayingVideoId, hideListAfterExplicitSelect, selectedResult],
+    [
+      activePlayback,
+      currentPlayingVideoId,
+      hideListAfterExplicitSelect,
+      playbackPlaylist,
+      selectedResult,
+    ],
   );
 
   const quickTopics = useMemo(
@@ -988,11 +1037,13 @@ const YouTubeApp: React.FC = () => {
       resultsAutoHide,
       loopPlayback,
       playerZoom,
+      nowPlaying,
     });
   }, [
     favoriteTopics,
     isLoading,
     loopPlayback,
+    nowPlaying,
     playlists,
     activePlaylistId,
     recentSearches,
@@ -1074,6 +1125,25 @@ const YouTubeApp: React.FC = () => {
     if (!activePlayback) return;
     setResultQuery(playbackPlaylist?.name || DEFAULT_PLAYLIST_NAME);
   }, [activePlayback, playbackPlaylist]);
+
+  // Mirror the video currently loaded in the viewer into the persisted
+  // now-playing snapshot. This also tracks queue auto-advance (which is not a
+  // user action and therefore never reported), so state.json always answers
+  // "which video is on screen right now" for the agent surface.
+  useEffect(() => {
+    if (isLoading) return;
+    const playingItem = resultsOpen ? currentPlaybackItem : null;
+    setNowPlaying((prev) => {
+      if (!playingItem) {
+        return prev === null ? prev : null;
+      }
+      const queueName = activePlayback ? playbackPlaylist?.name || DEFAULT_PLAYLIST_NAME : null;
+      if (prev && prev.videoId === playingItem.id && prev.queueName === queueName) {
+        return prev;
+      }
+      return buildNowPlaying(playingItem, queueName, Date.now(), prev);
+    });
+  }, [activePlayback, currentPlaybackItem, isLoading, playbackPlaylist, resultsOpen]);
 
   useEffect(() => {
     loopPlaybackRef.current = loopPlayback;
@@ -1500,6 +1570,7 @@ const YouTubeApp: React.FC = () => {
                       >
                         <button
                           className={styles.playlistItemMain}
+                          data-testid={`yt-playlist-item-${item.id}`}
                           onClick={() => previewPlaylistItem(activePlaylist.id, item.id)}
                         >
                           <div className={styles.playlistThumbWrap}>

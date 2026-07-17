@@ -157,7 +157,16 @@ async function buildStateSummary(
             : null,
       };
     }
-    case 'youtube':
+    case 'youtube': {
+      // nowPlaying is written by the app on every playback change (including
+      // queue auto-advance). updated_at is the freshness signal: a stale value
+      // means the app went away mid-playback and the claim is not live.
+      const rawNowPlaying =
+        normalizedState?.nowPlaying &&
+        typeof normalizedState.nowPlaying === 'object' &&
+        !Array.isArray(normalizedState.nowPlaying)
+          ? (normalizedState.nowPlaying as Record<string, unknown>)
+          : null;
       return {
         search_query: normalizedState?.searchQuery ?? '',
         recent_search_count: Array.isArray(normalizedState?.recentSearches)
@@ -169,7 +178,18 @@ async function buildStateSummary(
         sidebar_open: normalizedState?.sidebarOpen ?? null,
         loop_playback: normalizedState?.loopPlayback ?? null,
         player_zoom: normalizedState?.playerZoom ?? null,
+        now_playing: rawNowPlaying
+          ? {
+              video_id: rawNowPlaying.videoId ?? null,
+              title: rawNowPlaying.title ?? null,
+              channel: rawNowPlaying.channel ?? null,
+              queue_name: rawNowPlaying.queueName ?? null,
+              started_at: rawNowPlaying.startedAt ?? null,
+              updated_at: rawNowPlaying.updatedAt ?? null,
+            }
+          : null,
       };
+    }
     case 'diary':
       return {
         selected_date: normalizedState?.selectedDate ?? null,

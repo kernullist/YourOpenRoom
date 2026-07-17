@@ -61,3 +61,26 @@ actions:
       After the Agent has written state.json to NAS, notify the app to re-read the state file
       and apply every field (searches, topics, playlists, player preferences) to the UI.
     params: []
+
+# App → Agent notifications. These are reported by the app when the USER acts;
+# they are NOT callable actions and must not be dispatched by the Agent.
+reported_events:
+  - type: PLAY_VIDEO
+    name: Play Video
+    description: >
+      Fired when the user starts playback of a specific video (clicking a search result,
+      starting queue playback, or previewing a playlist item). Queue auto-advance is not
+      reported; read state.json nowPlaying for the live "what is on screen" answer.
+    params:
+      - name: video_id
+        type: string
+        description: YouTube video id that started playing
+      - name: title
+        type: string
+        description: Title of the video
+      - name: channel
+        type: string
+        description: Channel name of the video
+      - name: queue
+        type: string
+        description: Playlist name when playing as a queue; empty string for single plays

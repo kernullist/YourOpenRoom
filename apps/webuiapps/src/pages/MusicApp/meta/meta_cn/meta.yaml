@@ -59,3 +59,24 @@ actions:
       Agent 将 state.json 写入 NAS 后，通知应用重新读取状态文件，
       并把每个字段（搜索、主题、播放列表、播放器偏好）应用到界面。
     params: []
+
+# App → Agent 通知事件。由用户操作触发、应用上报；不是可调用指令，Agent 不得主动派发。
+reported_events:
+  - type: PLAY_VIDEO
+    name: 播放视频
+    description: >
+      用户开始播放某个具体视频时上报（点击搜索结果、启动队列播放或预览播放列表条目）。
+      队列自动切歌不会上报；实时"当前在放什么"请读取 state.json 的 nowPlaying 字段。
+    params:
+      - name: video_id
+        type: string
+        description: 开始播放的 YouTube 视频 id
+      - name: title
+        type: string
+        description: 视频标题
+      - name: channel
+        type: string
+        description: 视频频道名
+      - name: queue
+        type: string
+        description: 队列播放时的播放列表名称；单曲播放为空字符串

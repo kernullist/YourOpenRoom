@@ -555,6 +555,20 @@ const APP_SCHEMAS: AppSchemaDocument[] = [
       resultsAutoHide: primitive('boolean', { required: true }),
       loopPlayback: primitive('boolean', { required: true }),
       playerZoom: primitive('number', { required: true }),
+      // App-owned snapshot of the video currently loaded in the in-app player
+      // (null/absent when nothing is playing). The live player overwrites any
+      // agent-written value, so treat it as read-only.
+      nowPlaying: object(
+        {
+          videoId: primitive('string', { required: true }),
+          title: primitive('string', { required: true }),
+          channel: primitive('string', { required: true }),
+          queueName: primitive('nullable-string'),
+          startedAt: primitive('integer', { required: true }),
+          updatedAt: primitive('integer', { required: true }),
+        },
+        { description: 'Video currently loaded in the in-app player; null when idle.' },
+      ),
     },
   },
   {

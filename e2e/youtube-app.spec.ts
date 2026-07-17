@@ -124,6 +124,48 @@ test.describe('YouTube app – in-app viewer UX flows', () => {
     await expect(iframe).toHaveAttribute('src', srcBefore as string);
   });
 
+  test('playing a video persists a now-playing snapshot and closing clears it', async ({
+    page,
+  }) => {
+    await openYoutubeApp(page);
+    await searchFixtures(page);
+
+    // Clicking a result must persist state.json with the current video title
+    // so the agent surface (get_app_state) can answer "what is playing now".
+    const isYoutubeStateWrite = (url: string, method: string): boolean =>
+      method === 'POST' &&
+      url.includes('/api/session-data') &&
+      decodeURIComponent(url).includes('apps/youtube/data/state.json');
+
+    const playingWrite = page.waitForRequest(
+      (request) =>
+        isYoutubeStateWrite(request.url(), request.method()) &&
+        (request.postData() ?? '').includes('"nowPlaying"') &&
+        (request.postData() ?? '').includes('First Fixture Video'),
+    );
+    await page.getByTestId('yt-result-card-vid-aaa').click();
+    await expect(page.getByTestId('yt-player-title')).toHaveText('First Fixture Video');
+    const playingPayload = JSON.parse((await playingWrite).postData() ?? '{}') as {
+      nowPlaying: { videoId: string; title: string; channel: string; queueName: string | null };
+    };
+    expect(playingPayload.nowPlaying).toMatchObject({
+      videoId: 'vid-aaa',
+      title: 'First Fixture Video',
+      queueName: null,
+    });
+
+    // Closing the viewer clears the snapshot back to null.
+    // State is serialized with a compact JSON.stringify, so match without spaces.
+    const clearedWrite = page.waitForRequest(
+      (request) =>
+        isYoutubeStateWrite(request.url(), request.method()) &&
+        (request.postData() ?? '').includes('"nowPlaying":null'),
+    );
+    await page.keyboard.press('Escape');
+    await expect(page.getByTestId('yt-results-popup')).toHaveCount(0);
+    await clearedWrite;
+  });
+
   test('saved videos play as a queue and clicking a queue entry jumps to it', async ({ page }) => {
     await openYoutubeApp(page);
 

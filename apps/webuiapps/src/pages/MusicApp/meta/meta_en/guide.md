@@ -25,6 +25,7 @@ playlist files. Everything it needs is stored in `state.json`.
 | resultsAutoHide        | boolean       | `false`            | Whether the in-app search results list should automatically collapse after picking a video |
 | loopPlayback           | boolean       | `false`            | Whether the in-app player should loop the current video or queue                           |
 | playerZoom             | number        | `1`                | The current in-app player zoom factor, where `1` means 100%                                |
+| nowPlaying             | NowPlaying\|null | `null`          | Snapshot of the video currently loaded in the in-app player; `null` when nothing plays     |
 
 ### SearchEntry
 
@@ -48,6 +49,23 @@ playlist files. Everything it needs is stored in `state.json`.
 
 A saved YouTube search result. Fields: `id` (YouTube video id), `title`, `channel`, `duration`,
 `views`, `published`, `thumbnail`, `url`, plus `addedAt` (timestamp in milliseconds).
+
+### NowPlaying
+
+The video currently loaded in the in-app player. The app rewrites this field on every playback
+change — including queue auto-advance — and clears it to `null` when the viewer closes. The app
+owns this field: values written by the Agent are overwritten by the live player state, so treat it
+as read-only. Use `updatedAt` as the freshness signal; a stale timestamp means the app went away
+mid-playback and the claim must not be treated as live.
+
+| Field     | Type         | Description                                                    |
+| --------- | ------------ | -------------------------------------------------------------- |
+| videoId   | string       | YouTube video id currently in the player                       |
+| title     | string       | Video title as shown in the player header                      |
+| channel   | string       | Channel name of the current video                              |
+| queueName | string\|null | Playlist name when playing as a queue, `null` for single plays |
+| startedAt | number       | Timestamp (ms) when this video started playing                 |
+| updatedAt | number       | Timestamp (ms) of the last playback-state refresh              |
 
 Example:
 

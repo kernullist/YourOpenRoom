@@ -10,6 +10,9 @@ import type { YoutubeSearchResult } from './searchUtils';
 // ---------------------------------------------------------------------------
 
 const reportActionMock = vi.fn();
+// Captures every state.json write so tests can assert on the persisted
+// nowPlaying snapshot.
+const writeFileMock = vi.fn(async () => {});
 let capturedAgentHandler: ((action: unknown) => Promise<string>) | null = null;
 // Controls what the mocked NAS returns for /state.json. Empty => the app falls
 // back to DEFAULT_STATE (one empty "My Playlist"); a test can set a JSON string
@@ -19,7 +22,7 @@ let mockStateContent = '';
 vi.mock('@/lib', () => ({
   createAppFileApi: () => ({
     readFile: vi.fn(async () => ({ content: mockStateContent })),
-    writeFile: vi.fn(async () => {}),
+    writeFile: (...args: unknown[]) => writeFileMock(...(args as [])),
     listFiles: vi.fn(async () => []),
     deleteFile: vi.fn(async () => {}),
   }),
@@ -150,6 +153,7 @@ function playerIframe(): HTMLIFrameElement | null {
 
 beforeEach(() => {
   reportActionMock.mockClear();
+  writeFileMock.mockClear();
   playerCtorSpy.mockClear();
   setLoopSpy.mockClear();
   capturedAgentHandler = null;
@@ -372,5 +376,158 @@ describe('YouTubeApp – in-app viewer UX', () => {
       result = await capturedAgentHandler!({ action_type: 'NOPE', params: {} });
     });
     expect(result).toContain('error');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Now-playing visibility for the agent: user playback is reported with the
+// video title (PLAY_VIDEO), and state.json mirrors the current video so the
+// agent surface can read it back on demand.
+// ---------------------------------------------------------------------------
+
+function lastPersistedState(): Record<string, unknown> | null {
+  const lastCall = writeFileMock.mock.calls.at(-1) as unknown[] | undefined;
+  return lastCall && lastCall.length > 1 ? (lastCall[1] as Record<string, unknown>) : null;
+}
+
+describe('YouTubeApp – now-playing agent visibility', () => {
+  it('clicking a search result reports PLAY_VIDEO with the video title', async () => {
+    await renderApp();
+    await runSearch();
+
+    fireEvent.click(screen.getByTestId('yt-result-card-vid-bbb'));
+
+    await waitFor(() =>
+      expect(reportActionMock).toHaveBeenCalledWith(3, 'PLAY_VIDEO', {
+        video_id: 'vid-bbb',
+        title: 'Second Fixture Video',
+        channel: 'OpenRoom',
+        queue: '',
+      }),
+    );
+  });
+
+  it('starting queue playback reports PLAY_VIDEO with the queue name', async () => {
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST);
+    await renderApp();
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-playlist-summary').textContent).toContain('2'),
+    );
+
+    fireEvent.click(screen.getByTestId('yt-playlist-play-seq'));
+
+    await waitFor(() =>
+      expect(reportActionMock).toHaveBeenCalledWith(3, 'PLAY_VIDEO', {
+        video_id: 'vid-aaa',
+        title: 'First Fixture Video',
+        channel: 'OpenRoom',
+        queue: 'Queue Mix',
+      }),
+    );
+  });
+
+  it('jumping to another queue entry reports PLAY_VIDEO with the queue name', async () => {
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST);
+    await renderApp();
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-playlist-summary').textContent).toContain('2'),
+    );
+    fireEvent.click(screen.getByTestId('yt-playlist-play-seq'));
+    await waitFor(() => expect(screen.getByTestId('yt-results-popup')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('yt-result-card-vid-bbb'));
+
+    await waitFor(() =>
+      expect(reportActionMock).toHaveBeenCalledWith(3, 'PLAY_VIDEO', {
+        video_id: 'vid-bbb',
+        title: 'Second Fixture Video',
+        channel: 'OpenRoom',
+        queue: 'Queue Mix',
+      }),
+    );
+  });
+
+  it('previewing a playlist item reports PLAY_VIDEO without a queue name', async () => {
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST);
+    await renderApp();
+    await waitFor(() =>
+      expect(screen.getByTestId('yt-playlist-summary').textContent).toContain('2'),
+    );
+
+    fireEvent.click(screen.getByTestId('yt-playlist-item-vid-bbb'));
+
+    await waitFor(() =>
+      expect(reportActionMock).toHaveBeenCalledWith(3, 'PLAY_VIDEO', {
+        video_id: 'vid-bbb',
+        title: 'Second Fixture Video',
+        channel: 'OpenRoom',
+        queue: '',
+      }),
+    );
+  });
+
+  it('agent-triggered OPEN_VIDEO does not emit a duplicate PLAY_VIDEO report', async () => {
+    await renderApp();
+
+    await act(async () => {
+      await capturedAgentHandler!({
+        action_type: 'OPEN_VIDEO',
+        params: { url: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' },
+      });
+    });
+    await waitFor(() => expect(playerIframe()).not.toBeNull());
+
+    expect(reportActionMock).not.toHaveBeenCalledWith(3, 'PLAY_VIDEO', expect.anything());
+  });
+
+  it('persists nowPlaying in state.json while playing and clears it on close', async () => {
+    await renderApp();
+    await runSearch();
+
+    fireEvent.click(screen.getByTestId('yt-result-card-vid-aaa'));
+    await waitFor(() => expect(playerIframe()).not.toBeNull());
+
+    await waitFor(() => {
+      const persisted = lastPersistedState();
+      expect(persisted).not.toBeNull();
+      expect(persisted!.nowPlaying).toMatchObject({
+        videoId: 'vid-aaa',
+        title: 'First Fixture Video',
+        channel: 'OpenRoom',
+        queueName: null,
+      });
+    });
+
+    fireEvent.keyDown(document.body, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByTestId('yt-results-popup')).toBeNull());
+
+    await waitFor(() => {
+      const persisted = lastPersistedState();
+      expect(persisted).not.toBeNull();
+      expect(persisted!.nowPlaying).toBeNull();
+    });
+  });
+
+  it('a persisted nowPlaying claim self-heals to null after reload', async () => {
+    mockStateContent = stateWithPlaylist(QUEUE_PLAYLIST, {
+      nowPlaying: {
+        videoId: 'vid-aaa',
+        title: 'First Fixture Video',
+        channel: 'OpenRoom',
+        queueName: null,
+        startedAt: 1,
+        updatedAt: 1,
+      },
+    });
+    await renderApp();
+
+    // Nothing is playing after a fresh load, so the stale persisted claim is
+    // rewritten to null by the live-derive effect.
+    await waitFor(() => {
+      const persisted = lastPersistedState();
+      expect(persisted).not.toBeNull();
+      expect(persisted!.nowPlaying).toBeNull();
+    });
+    expect(screen.queryByTestId('yt-results-popup')).toBeNull();
   });
 });

@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../appRegistry', () => {
   const apps = [
+    { appId: 3, appName: 'youtube', displayName: 'YouTube', route: '/youtube', actions: [] },
     { appId: 16, appName: 'notes', displayName: 'Notes', route: '/notes', actions: [] },
     { appId: 18, appName: 'kira', displayName: 'Kira', route: '/kira', actions: [] },
     {
@@ -269,7 +270,7 @@ describe('executeAppStateTool()', () => {
       };
     };
 
-    expect(parsed.app_control_summary.app_count).toBe(9);
+    expect(parsed.app_control_summary.app_count).toBe(10);
     expect(parsed.app_control_summary.apps_with_bespoke_state_summary).toBeGreaterThan(0);
   });
 
@@ -417,6 +418,66 @@ describe('executeAppStateTool()', () => {
       query: 'kira',
       memory_count: 1,
     });
+  });
+
+  it('summarizes the YouTube now-playing snapshot from state.json', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile.mockResolvedValue({
+      searchQuery: 'lofi beats',
+      recentSearches: [{ id: 'search_1', query: 'lofi beats', createdAt: 1 }],
+      favoriteTopics: ['lofi hip hop'],
+      sidebarOpen: false,
+      loopPlayback: true,
+      playerZoom: 1,
+      nowPlaying: {
+        videoId: 'vid-aaa',
+        title: 'First Fixture Video',
+        channel: 'OpenRoom',
+        queueName: 'Queue Mix',
+        startedAt: 1_000,
+        updatedAt: 2_000,
+      },
+    });
+
+    const result = await executeAppStateTool({ app_name: 'youtube' });
+    const parsed = JSON.parse(result) as {
+      state_summary: {
+        search_query: string;
+        now_playing: {
+          video_id: string;
+          title: string;
+          channel: string;
+          queue_name: string;
+          started_at: number;
+          updated_at: number;
+        } | null;
+      };
+    };
+
+    expect(parsed.state_summary.search_query).toBe('lofi beats');
+    expect(parsed.state_summary.now_playing).toEqual({
+      video_id: 'vid-aaa',
+      title: 'First Fixture Video',
+      channel: 'OpenRoom',
+      queue_name: 'Queue Mix',
+      started_at: 1_000,
+      updated_at: 2_000,
+    });
+  });
+
+  it('reports now_playing as null when the YouTube app is not playing anything', async () => {
+    mockedGetWindows.mockReturnValue([]);
+    mockedGetFile.mockResolvedValue({
+      searchQuery: '',
+      nowPlaying: null,
+    });
+
+    const result = await executeAppStateTool({ app_name: 'youtube' });
+    const parsed = JSON.parse(result) as {
+      state_summary: { now_playing: unknown };
+    };
+
+    expect(parsed.state_summary.now_playing).toBeNull();
   });
 
   it('returns sanitized Kira model settings in the app state summary', async () => {

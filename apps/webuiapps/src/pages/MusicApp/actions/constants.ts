@@ -26,6 +26,14 @@ export const SystemActions = {
   SYNC_STATE: 'SYNC_STATE',
 } as const;
 
+// Reported Events — App → Agent notifications only (NOT agent-callable, so
+// they are intentionally excluded from ActionTypes and the action handler).
+// PLAY_VIDEO fires when the user starts playback of a specific video, carrying
+// { video_id, title, channel, queue } so the agent knows what is playing.
+export const ReportedEvents = {
+  PLAY_VIDEO: 'PLAY_VIDEO',
+} as const;
+
 // All Action Types
 export const ActionTypes = {
   ...OperationActions,

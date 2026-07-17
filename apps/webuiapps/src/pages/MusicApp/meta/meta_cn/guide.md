@@ -25,6 +25,7 @@
 | resultsAutoHide        | boolean       | `false`        | 选中视频后是否自动收起应用内搜索结果列表      |
 | loopPlayback           | boolean       | `false`        | 应用内播放器是否循环当前视频或队列            |
 | playerZoom             | number        | `1`            | 应用内播放器缩放系数，`1` 表示 100%           |
+| nowPlaying             | NowPlaying\|null | `null`      | 应用内播放器当前加载视频的快照；无播放时为 `null` |
 
 ### SearchEntry
 
@@ -48,6 +49,21 @@
 
 一条已保存的 YouTube 搜索结果。字段：`id`（YouTube 视频 id）、`title`、`channel`、`duration`、
 `views`、`published`、`thumbnail`、`url`，以及 `addedAt`（毫秒级时间戳）。
+
+### NowPlaying
+
+应用内播放器当前加载的视频。应用在每次播放变化（包括队列自动切歌）时重写该字段，
+关闭播放弹窗时清空为 `null`。该字段由应用独占维护：Agent 写入的值会被实时播放状态覆盖，
+应视为只读。用 `updatedAt` 判断新鲜度；时间戳过旧说明应用在播放中途退出，该声明不可当作实时状态。
+
+| 字段      | 类型         | 说明                                        |
+| --------- | ------------ | ------------------------------------------- |
+| videoId   | string       | 播放器中当前视频的 YouTube 视频 id          |
+| title     | string       | 播放器标题栏显示的视频标题                  |
+| channel   | string       | 当前视频的频道名                            |
+| queueName | string\|null | 队列播放时的播放列表名称，单曲播放为 `null` |
+| startedAt | number       | 该视频开始播放的毫秒级时间戳                |
+| updatedAt | number       | 播放状态最后一次刷新的毫秒级时间戳          |
 
 ## Agent 工作流
 
