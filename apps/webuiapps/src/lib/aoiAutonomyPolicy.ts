@@ -425,6 +425,7 @@ export const AOI_PROPOSAL_FEEDBACK_CATEGORIES: readonly AoiProposalFeedbackCateg
   'unsafe',
   'already_done',
   'needs_more_detail',
+  'never_again',
 ];
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -1549,9 +1550,11 @@ function hasRecentCooldownDecision(params: {
       (decision) =>
         (decision.action === 'dismiss' || decision.action === 'snooze') &&
         dismissalAppliesToProposal(params.proposal, decision) &&
-        // A snooze longer than the cooldown window keeps suppressing until it
-        // expires; otherwise the (feedback-adjusted) cooldown window applies.
-        (decision.createdAt + params.cooldownMs > params.now ||
+        // 'never_again' is a standing dismissal with no expiry. Otherwise a
+        // snooze longer than the cooldown window keeps suppressing until it
+        // expires, and the (feedback-adjusted) cooldown window applies.
+        (decision.feedbackCategory === 'never_again' ||
+          decision.createdAt + params.cooldownMs > params.now ||
           (decision.snoozedUntil ?? 0) > params.now),
     ),
   );

@@ -1379,6 +1379,61 @@ describe('checkAoiProposalPolicy()', () => {
     ).not.toContain('cooldown_active');
   });
 
+  it('suppresses a never_again dismissal permanently, including re-keyed copies', () => {
+    const neverAgain: AoiProposalDecision = {
+      version: 1,
+      id: 'decision-never-again-001',
+      proposalId: 'proposal-old-006',
+      sessionPath: 'aoi/default',
+      cooldownKey: 'research:kernel-memory',
+      action: 'dismiss',
+      actor: 'user',
+      createdAt: 1000,
+      previousStatus: 'active',
+      nextStatus: 'dismissed',
+      feedbackCategory: 'never_again',
+      suggestedTools: ['read_research_artifact'],
+      evidenceRefs: ['memory:aoi-memory-001'],
+      memoryIds: ['aoi-memory-001'],
+    };
+    const farFuture = 1000 + 365 * 24 * 60 * 60 * 1000;
+
+    // Same key, one year later: still suppressed (no expiry).
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({ id: 'proposal-new-007' }),
+        recentDecisions: [neverAgain],
+        now: farFuture,
+      }).reasons,
+    ).toContain('cooldown_active');
+    // A re-keyed copy (same anchor + same action) is also suppressed forever.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({
+          id: 'proposal-new-008',
+          cooldownKey: 'llm:reopen that research report',
+        }),
+        recentDecisions: [neverAgain],
+        now: farFuture,
+      }).reasons,
+    ).toContain('cooldown_active');
+    // A different action on the same anchor stays proposable.
+    expect(
+      checkAoiProposalPolicy({
+        policy,
+        proposal: makeProposal({
+          id: 'proposal-new-009',
+          cooldownKey: 'research-refresh:aoi-memory-001',
+          suggestedTools: ['start_research'],
+        }),
+        recentDecisions: [neverAgain],
+        now: farFuture,
+      }).reasons,
+    ).not.toContain('cooldown_active');
+  });
+
   it('blocks a re-keyed duplicate of an active proposal sharing anchor and action', () => {
     const result = checkAoiProposalPolicy({
       policy,

@@ -320,6 +320,7 @@ export function aoiCardFeedbackLabel(
     wrong_evidence: { ko: '근거가 틀림', en: 'Wrong evidence' },
     wrong_source: { ko: '출처 선택이 틀림', en: 'Wrong source' },
     unsafe: { ko: '안전하지 않음', en: 'Unsafe' },
+    never_again: { ko: '다시 보지 않기', en: 'Never again' },
   };
   const entry = table[category];
   return entry ? pick(lang, entry) : (fallback ?? category);
@@ -354,6 +355,10 @@ export function aoiCardFeedbackTitle(
     unsafe: {
       ko: '향후 보정을 위해 안전하지 않은 제안으로 무시',
       en: 'Dismiss this suggestion as unsafe for future calibration',
+    },
+    never_again: {
+      ko: '이 제안을 영구적으로 무시하고 다시 제안하지 않음',
+      en: 'Dismiss this suggestion permanently so it is never proposed again',
     },
   };
   const entry = table[category];

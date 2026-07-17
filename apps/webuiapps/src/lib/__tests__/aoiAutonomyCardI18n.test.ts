@@ -87,6 +87,13 @@ describe('resolveAoiCardLanguage()', () => {
 });
 
 describe('aoi card string tables', () => {
+  it('localizes the never_again feedback control', () => {
+    expect(aoiCardFeedbackLabel('ko', 'never_again')).toBe('다시 보지 않기');
+    expect(aoiCardFeedbackLabel('en', 'never_again')).toBe('Never again');
+    expect(aoiCardFeedbackTitle('ko', 'never_again')).toContain('영구적으로 무시');
+    expect(aoiCardFeedbackTitle('en', 'never_again')).toContain('permanently');
+  });
+
   it('returns Korean for ko and English for en', () => {
     expect(aoiCardConfidenceLabel('ko', 'good_confidence')).toBe('높은 확신');
     expect(aoiCardConfidenceLabel('en', 'good_confidence')).toBe('good confidence');

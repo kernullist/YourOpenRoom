@@ -613,7 +613,10 @@ export type AoiProposalFeedbackCategory =
   | 'wrong_timing'
   | 'unsafe'
   | 'already_done'
-  | 'needs_more_detail';
+  | 'needs_more_detail'
+  // Standing dismissal: the proposal (and re-keyed copies of it) must never be
+  // proposed again. Unlike the other categories this one has no time window.
+  | 'never_again';
 
 export type AoiInterestTopicSource =
   | 'memory'

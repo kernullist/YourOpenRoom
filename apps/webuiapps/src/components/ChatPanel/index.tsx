@@ -1166,6 +1166,12 @@ const AOI_PROPOSAL_FEEDBACK_CONTROLS: Array<{
     action: 'dismiss',
     category: 'unsafe',
   },
+  {
+    label: 'Never again',
+    title: 'Dismiss this suggestion permanently so it is never proposed again',
+    action: 'dismiss',
+    category: 'never_again',
+  },
 ];
 
 function summarizeAoiExecutionResult(result: AoiAutonomyProposalExecutionResult): string {
