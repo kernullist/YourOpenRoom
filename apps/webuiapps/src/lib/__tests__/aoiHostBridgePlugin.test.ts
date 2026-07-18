@@ -660,3 +660,292 @@ describe('filesystem write preview -> approve -> execute', () => {
     expect(fs.readFileSync(target, 'utf-8')).toBe('approved content');
   });
 });
+
+describe('kill preview -> approve -> execute (injected impls)', () => {
+  it('kills only after approval; protected images are refused; TOCTOU is enforced', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_kill', true, 1500),
+    );
+    const killBody = {
+      pid: 4321,
+      expectedImageName: 'notepad.exe',
+      expectedStartTime: '2026-07-18T10:00:00',
+      killAllowlistImages: ['notepad.exe'],
+    };
+
+    // A protected image is refused at preview (never even offered).
+    const protectedPreview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/preview',
+      body: { ...killBody, expectedImageName: 'lsass.exe', killAllowlistImages: ['lsass.exe'] },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(
+      (protectedPreview.payload as { preview: { blockReasons: string[] } }).preview.blockReasons,
+    ).toContain('protected_process');
+
+    // Normal target: preview records an approval.
+    const preview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/preview',
+      body: killBody,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+
+    // Execute before approve -> blocked, kill never called.
+    let killCalls = 0;
+    const early = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/execute',
+      body: killBody,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+      readProcessImpl: () => ({ imageName: 'notepad.exe', startTime: '2026-07-18T10:00:00' }),
+      killImpl: () => {
+        killCalls += 1;
+        return true;
+      },
+    });
+    expect(early.status).toBe(403);
+    expect(killCalls).toBe(0);
+
+    // Approve.
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/approvals/approve',
+      body: { approvalFingerprint: fingerprint },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2200,
+    });
+
+    // Execute with a TOCTOU MISMATCH (pid now hosts a different image) -> blocked.
+    const toctou = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/execute',
+      body: killBody,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2300,
+      readProcessImpl: () => ({ imageName: 'chrome.exe' }),
+      killImpl: () => {
+        killCalls += 1;
+        return true;
+      },
+    });
+    expect((toctou.payload as { blockReasons?: string[] }).blockReasons).toContain(
+      'toctou_mismatch',
+    );
+    expect(killCalls).toBe(0);
+  });
+
+  it('kills once when approved and the live process still matches', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_kill', true, 1500),
+    );
+    const killBody = {
+      pid: 4321,
+      expectedImageName: 'notepad.exe',
+      killAllowlistImages: ['notepad.exe'],
+    };
+    const preview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/preview',
+      body: killBody,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/approvals/approve',
+      body: { approvalFingerprint: fingerprint },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+    });
+    let killedPid: number | null = null;
+    const exec = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/kill/execute',
+      body: killBody,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2200,
+      readProcessImpl: () => ({ imageName: 'notepad.exe' }),
+      killImpl: (pid) => {
+        killedPid = pid;
+        return true;
+      },
+    });
+    expect(exec.status).toBe(200);
+    expect(killedPid).toBe(4321);
+  });
+});
+
+describe('delete preview -> approve -> execute (injected recycle)', () => {
+  it('recycles a file only after approval; outside-root is refused', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const dir = fs.realpathSync.native(fs.mkdtempSync(join(os.tmpdir(), 'aoi-fsdel-')));
+    tempRoots.push(dir);
+    fs.writeFileSync(join(dir, 'trash.txt'), 'bye', 'utf-8');
+    saveAoiHostWriteRootsHelper(home, dir);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_file_delete', true, 1500),
+    );
+    const target = join(dir, 'trash.txt');
+
+    const preview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/delete/preview',
+      body: { path: target },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+
+    // Execute before approve -> blocked, recycle not called.
+    let recycled: string | null = null;
+    const early = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/delete/execute',
+      body: { path: target },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+      recycleImpl: (p) => {
+        recycled = p;
+        return true;
+      },
+    });
+    expect(early.status).toBe(403);
+    expect(recycled).toBeNull();
+
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/approvals/approve',
+      body: { approvalFingerprint: fingerprint },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2200,
+    });
+    const exec = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/delete/execute',
+      body: { path: target },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2300,
+      recycleImpl: (p) => {
+        recycled = p;
+        return true;
+      },
+    });
+    expect(exec.status).toBe(200);
+    expect(recycled).toBe(target);
+  });
+});
+
+describe('desktop-activity ingest + summary', () => {
+  function enableDesktopConsent(sessionsDir: string, home: string): void {
+    const registry = getDefaultAoiEnvironmentSourceRegistry('aoi/default', 1000);
+    saveAoiEnvironmentSourceRegistry(sessionsDir, 'aoi/default', registry);
+    updateAoiEnvironmentSource(sessionsDir, 'aoi/default', {
+      sourceId: 'desktop-activity',
+      patch: { enabled: true, consentReason: 'User enabled desktop activity for this test.' },
+      now: 1500,
+    });
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'desktop_activity', true, 1500),
+    );
+  }
+
+  it('is blocked without consent, then ingests samples and summarizes the taste signal', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const post = (appName: string, now: number) =>
+      resolveAoiHostBridgeRoute({
+        method: 'POST',
+        route: '/desktop-activity',
+        body: { sessionPath: 'aoi/default', sample: { appName, focused: true, observedAt: now } },
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now,
+      });
+
+    const blocked = await post('ghidra.exe', 2000);
+    expect(blocked.status).toBe(403);
+
+    enableDesktopConsent(sessionsDir, home);
+    expect((await post('ghidra.exe', 2100)).status).toBe(200);
+    expect((await post('ghidra.exe', 2200)).status).toBe(200);
+    expect((await post('chrome.exe', 2300)).status).toBe(200);
+
+    const summary = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/desktop-activity/summary',
+      body: { sessionPath: 'aoi/default' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2400,
+    });
+    expect(summary.status).toBe(200);
+    const payload = summary.payload as {
+      summary: { totalSamples: number; topApps: Array<{ appName: string; focusedCount: number }> };
+    };
+    expect(payload.summary.totalSamples).toBe(3);
+    expect(payload.summary.topApps[0]).toMatchObject({ appName: 'ghidra.exe', focusedCount: 2 });
+  });
+
+  it('drops the window title unless the sub-toggle is set', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    enableDesktopConsent(sessionsDir, home);
+    const res = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/desktop-activity',
+      body: {
+        sessionPath: 'aoi/default',
+        sample: { appName: 'code.exe', windowTitle: 'secret.md', focused: true, observedAt: 2100 },
+        captureWindowTitles: false,
+      },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+    });
+    expect(res.status).toBe(200);
+    // The persisted store must not contain the title.
+    const stored = fs.readFileSync(join(home, 'host-bridge', 'desktop-activity.json'), 'utf-8');
+    expect(stored).not.toContain('secret.md');
+  });
+});

@@ -60,6 +60,27 @@ import {
 } from './aoiHostFileWrite';
 import { runAoiHostSpawn } from './aoiHostProcessSpawn';
 import {
+  AOI_HOST_KILL_CAPABILITY,
+  evaluateAoiHostKillPolicy,
+  runAoiHostKill,
+} from './aoiHostProcessKill';
+import {
+  AOI_HOST_FILE_DELETE_CAPABILITY,
+  evaluateAoiHostFileDeletePolicy,
+  runAoiHostFileDelete,
+} from './aoiHostFileDelete';
+import { normalizeAoiDesktopActivitySample } from './aoiHostDesktopActivity';
+import type { AoiHostLiveProcess } from './aoiHostProcessKill';
+import {
+  appendAoiHostDesktopActivitySample,
+  loadAoiHostDesktopActivitySummary,
+} from './aoiHostDesktopActivityStore';
+import {
+  readAoiHostProcessByPid,
+  killAoiHostProcess,
+  recycleAoiHostFile,
+} from './aoiHostBridgeOsImpl';
+import {
   approveAoiHostBridgeApproval,
   consumeAoiHostBridgeApproval,
   loadAoiHostBridgeApprovalStore,
@@ -97,8 +118,12 @@ export interface ResolveAoiHostBridgeRouteParams {
   openroomHome: string;
   sessionsDir: string;
   now: number;
-  // Injected for tests so a route never spawns tasklist.
+  // Injected for tests so a route never spawns tasklist / kills a real process
+  // / recycles a real file. Production uses the real OS impls by default.
   listProcessesImpl?: (options: { now: number }) => Promise<AoiHostProcessListing>;
+  readProcessImpl?: (pid: number) => AoiHostLiveProcess | null;
+  killImpl?: (pid: number) => boolean;
+  recycleImpl?: (path: string) => boolean;
 }
 
 function summarizeKillSwitch(state: AoiHostBridgeKillSwitchState): {
@@ -646,7 +671,366 @@ export async function resolveAoiHostBridgeRoute(
     };
   }
 
+  // --- POST /kill/preview (final): records a pending approval like spawn. Body
+  // pins { pid, expectedImageName, expectedStartTime? }. The policy enforces the
+  // protected-process list + allowlist/spawned-pid killability.
+  if (params.method === 'POST' && params.route === '/kill/preview') {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_KILL_CAPABILITY,
+      irreversible: false,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const pid = typeof params.body.pid === 'number' ? params.body.pid : Number(params.body.pid);
+    const expectedImageName =
+      typeof params.body.expectedImageName === 'string' ? params.body.expectedImageName : '';
+    const expectedStartTime =
+      typeof params.body.expectedStartTime === 'string' ||
+      typeof params.body.expectedStartTime === 'number'
+        ? params.body.expectedStartTime
+        : undefined;
+    const killAllowlistImages = Array.isArray(params.body.killAllowlistImages)
+      ? params.body.killAllowlistImages.filter((v): v is string => typeof v === 'string')
+      : [];
+    const aoiSpawnedPids = collectAoiSpawnedPids(params.openroomHome);
+    const policy = evaluateAoiHostKillPolicy({
+      request: {
+        pid: Number.isFinite(pid) ? pid : -1,
+        expectedImageName,
+        ...(expectedStartTime !== undefined ? { expectedStartTime } : {}),
+        requestedAt: params.now,
+      },
+      context: { killAllowlistImages, aoiSpawnedPids },
+      now: params.now,
+    });
+    if (policy.allowed) {
+      const recorded = recordAoiHostBridgePendingApproval(
+        loadAoiHostBridgeApprovalStore(params.openroomHome),
+        {
+          capability: AOI_HOST_KILL_CAPABILITY,
+          approvalFingerprint: policy.approvalFingerprint,
+          targetSummary: `kill ${policy.imageName} (pid ${policy.pid})`,
+          expiresAt: policy.expiresAt,
+          now: params.now,
+        },
+      );
+      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+    }
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        preview: {
+          allowed: policy.allowed,
+          blockReasons: policy.blockReasons,
+          pid: policy.pid,
+          imageName: policy.imageName,
+          approvalSandbox: policy.approvalSandbox,
+          approvalFingerprint: policy.approvalFingerprint,
+          expiresAt: policy.expiresAt,
+        },
+      },
+    };
+  }
+
+  // --- POST /kill/execute (final): terminate ONLY after consuming an approved
+  // entry. The runner re-checks the protected list + TOCTOU before killing.
+  if (params.method === 'POST' && params.route === '/kill/execute') {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_KILL_CAPABILITY,
+      irreversible: true,
+      approvalSatisfied: true,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const pid = typeof params.body.pid === 'number' ? params.body.pid : Number(params.body.pid);
+    const expectedImageName =
+      typeof params.body.expectedImageName === 'string' ? params.body.expectedImageName : '';
+    const expectedStartTime =
+      typeof params.body.expectedStartTime === 'string' ||
+      typeof params.body.expectedStartTime === 'number'
+        ? params.body.expectedStartTime
+        : undefined;
+    const killAllowlistImages = Array.isArray(params.body.killAllowlistImages)
+      ? params.body.killAllowlistImages.filter((v): v is string => typeof v === 'string')
+      : [];
+    const context = {
+      killAllowlistImages,
+      aoiSpawnedPids: collectAoiSpawnedPids(params.openroomHome),
+    };
+    const request = {
+      pid: Number.isFinite(pid) ? pid : -1,
+      expectedImageName,
+      ...(expectedStartTime !== undefined ? { expectedStartTime } : {}),
+      requestedAt: params.now,
+    };
+    const policy = evaluateAoiHostKillPolicy({ request, context, now: params.now });
+    const consumed = consumeAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(params.openroomHome),
+      {
+        capability: AOI_HOST_KILL_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        now: params.now,
+      },
+    );
+    if (!consumed.ok) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: [consumed.reason ?? 'approval_missing'],
+        },
+      };
+    }
+    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
+    const result = runAoiHostKill({
+      request,
+      context,
+      approvedSandbox: policy.approvalSandbox,
+      approvedExpiresAt: policy.expiresAt,
+      now: params.now,
+      readProcessImpl: params.readProcessImpl ?? readAoiHostProcessByPid,
+      killImpl: params.killImpl ?? killAoiHostProcess,
+    });
+    return { status: result.ok ? 200 : 400, payload: { ...result } };
+  }
+
+  // --- POST /fs/delete/preview (final): records a pending approval. Delete
+  // routes through the Recycle Bin only.
+  if (params.method === 'POST' && params.route === '/fs/delete/preview') {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_FILE_DELETE_CAPABILITY,
+      irreversible: false,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const requestedPath = typeof params.body.path === 'string' ? params.body.path : '';
+    const policy = evaluateAoiHostFileDeletePolicy({
+      request: { requestedPath, requestedAt: params.now },
+      roots: loadAoiHostWriteRoots(params.openroomHome).roots,
+    });
+    if (policy.allowed) {
+      const recorded = recordAoiHostBridgePendingApproval(
+        loadAoiHostBridgeApprovalStore(params.openroomHome),
+        {
+          capability: AOI_HOST_FILE_DELETE_CAPABILITY,
+          approvalFingerprint: policy.approvalFingerprint,
+          targetSummary: `recycle ${policy.resolvedPath}`,
+          expiresAt: policy.expiresAt,
+          now: params.now,
+        },
+      );
+      saveAoiHostBridgeApprovalStore(params.openroomHome, recorded.store);
+    }
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        preview: {
+          allowed: policy.allowed,
+          blockReasons: policy.blockReasons,
+          resolvedPath: policy.resolvedPath,
+          approvalSandbox: policy.approvalSandbox,
+          approvalFingerprint: policy.approvalFingerprint,
+          expiresAt: policy.expiresAt,
+        },
+      },
+    };
+  }
+
+  // --- POST /fs/delete/execute (final): recycle ONLY after consuming approval.
+  if (params.method === 'POST' && params.route === '/fs/delete/execute') {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_FILE_DELETE_CAPABILITY,
+      irreversible: true,
+      approvalSatisfied: true,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const requestedPath = typeof params.body.path === 'string' ? params.body.path : '';
+    const roots = loadAoiHostWriteRoots(params.openroomHome).roots;
+    const policy = evaluateAoiHostFileDeletePolicy({
+      request: { requestedPath, requestedAt: params.now },
+      roots,
+    });
+    const consumed = consumeAoiHostBridgeApproval(
+      loadAoiHostBridgeApprovalStore(params.openroomHome),
+      {
+        capability: AOI_HOST_FILE_DELETE_CAPABILITY,
+        approvalFingerprint: policy.approvalFingerprint,
+        now: params.now,
+      },
+    );
+    if (!consumed.ok) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: [consumed.reason ?? 'approval_missing'],
+        },
+      };
+    }
+    saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
+    const result = runAoiHostFileDelete({
+      request: { requestedPath, requestedAt: params.now },
+      roots,
+      approvedSandbox: policy.approvalSandbox,
+      approvedExpiresAt: policy.expiresAt,
+      now: params.now,
+      recycleImpl: params.recycleImpl ?? recycleAoiHostFile,
+    });
+    return { status: result.ok ? 200 : 400, payload: { ...result } };
+  }
+
+  // --- POST /desktop-activity (HP4 ingest): the capture helper posts one
+  // metadata-only foreground sample. Gate auth + kill-switch capability
+  // desktop_activity + the desktop-activity env-source consent for the session.
+  if (params.method === 'POST' && params.route === '/desktop-activity') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: 'desktop-activity',
+      operation: 'read_metadata',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: 'desktop_activity',
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const captureWindowTitles = params.body.captureWindowTitles === true;
+    const rawSample =
+      params.body.sample && typeof params.body.sample === 'object' ? params.body.sample : {};
+    const sample = normalizeAoiDesktopActivitySample(rawSample as Record<string, unknown>, {
+      captureWindowTitles,
+      now: params.now,
+    });
+    if (!sample) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sample has no usable app name', code: 'bad_sample' },
+      };
+    }
+    const count = appendAoiHostDesktopActivitySample(params.openroomHome, sample, params.now);
+    return { status: 200, payload: { ok: true, storedSampleCount: count } };
+  }
+
+  // --- GET /desktop-activity/summary?sessionPath: the taste signal read.
+  if (params.method === 'GET' && params.route === '/desktop-activity/summary') {
+    const sessionPath = normalizeAoiAutonomySessionPath(
+      typeof params.body.sessionPath === 'string' ? params.body.sessionPath : '',
+    );
+    if (!sessionPath) {
+      return {
+        status: 400,
+        payload: { ok: false, error: 'sessionPath is required', code: 'invalid_session_path' },
+      };
+    }
+    const registry = loadAoiEnvironmentSourceRegistry(params.sessionsDir, sessionPath, params.now);
+    const consent = checkAoiEnvironmentSourceOperation({
+      registry,
+      sourceId: 'desktop-activity',
+      operation: 'summarize_counts',
+    });
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: 'desktop_activity',
+      irreversible: false,
+      consent: { allowed: consent.allowed, reasons: consent.reasons },
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const summary = loadAoiHostDesktopActivitySummary(params.openroomHome, params.now);
+    return { status: 200, payload: { ok: true, summary } };
+  }
+
   return { status: 404, payload: { ok: false, error: 'not found', code: 'route_not_found' } };
+}
+
+// Pids Aoi itself spawned (from the successful spawn audit records) are
+// implicitly killable. For slice 4 the spawn audits are not yet persisted to a
+// queryable store, so this returns an empty set: a target is killable only via
+// the operator's kill allowlist until spawn-audit persistence lands. The hook is
+// here so kill-of-own-spawn works the moment that store exists.
+function collectAoiSpawnedPids(_openroomHome: string): number[] {
+  return [];
 }
 
 // --- HTTP middleware (thin adapter) ------------------------------------------
