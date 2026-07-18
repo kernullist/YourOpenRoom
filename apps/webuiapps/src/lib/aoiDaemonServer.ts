@@ -20,6 +20,8 @@ import {
 import type { AoiAutonomyBackgroundRunnerHandle } from './aoiAutonomyBackgroundRunner';
 import type { AoiMemoryEmbedSweepHandle } from './aoiMemoryEmbedSweep';
 import { createAoiResearchMiddleware, type AoiResearchMiddleware } from './aoiResearchPlugin';
+import { createAoiHostBridgeMiddleware, type AoiHostBridgeMiddleware } from './aoiHostBridgePlugin';
+import { ensureAoiHostBridgeToken } from './aoiHostBridgeAuth';
 import { createSessionDataMiddleware, type SessionDataMiddleware } from './sessionDataServer';
 import {
   createAoiDaemonHealthHooks,
@@ -143,6 +145,25 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
     configFile: pluginOptions.configFile,
   });
 
+  // Real-PC host-bridge control surface (/api/aoi-host/*). It shares the same
+  // ~/.openroom root as the session store; the auth token + kill switch live
+  // under ~/.openroom/host-bridge/. Mint the token at boot so a client can
+  // authenticate; a failure here is non-fatal (the routes reject unauthenticated
+  // callers regardless).
+  const openroomHome = resolve(pluginOptions.sessionsDir, '..');
+  try {
+    const tokenResult = ensureAoiHostBridgeToken(openroomHome);
+    if (!tokenResult.aclApplied && tokenResult.aclReason) {
+      logInfo(`host-bridge token ACL not applied (${tokenResult.aclReason}); relying on file mode`);
+    }
+  } catch (error) {
+    logError('failed to ensure the host-bridge auth token', error);
+  }
+  const hostBridgeMiddleware: AoiHostBridgeMiddleware = createAoiHostBridgeMiddleware({
+    sessionsDir: pluginOptions.sessionsDir,
+    openroomHome,
+  });
+
   // Observability: the health tracker reads loop-running via a thunk so it can be
   // created here (before the post-listen loop start) without a boot-ordering dance.
   const bootAt = Date.now();
@@ -176,11 +197,14 @@ export async function startAoiDaemon(options: AoiDaemonOptions): Promise<AoiDaem
       return;
     }
     // Native http has no next(); chain the shared middlewares (autonomy first,
-    // then research and session-data) and turn anything none owns into a 404.
+    // then host-bridge, research, and session-data) and turn anything none owns
+    // into a 404. The host-bridge routes are token-authenticated internally.
     autonomyMiddleware(req, res, () => {
-      researchMiddleware(req, res, () => {
-        sessionDataMiddleware(req, res, () => {
-          writeNotFound(res);
+      hostBridgeMiddleware(req, res, () => {
+        researchMiddleware(req, res, () => {
+          sessionDataMiddleware(req, res, () => {
+            writeNotFound(res);
+          });
         });
       });
     });
