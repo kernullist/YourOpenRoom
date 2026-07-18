@@ -249,6 +249,7 @@ describe('Aoi environment source policy', () => {
       'app_activity',
       'browser_context',
       'process_activity',
+      'desktop_activity',
       'manual_note',
       'calendar_metadata',
       'gmail_metadata',
@@ -256,6 +257,7 @@ describe('Aoi environment source policy', () => {
     ]);
     expect(isAoiEnvironmentSourceEnabled(registry, 'research-runs')).toBe(true);
     expect(isAoiEnvironmentSourceEnabled(registry, 'process-activity')).toBe(false);
+    expect(isAoiEnvironmentSourceEnabled(registry, 'desktop-activity')).toBe(false);
     expect(isAoiEnvironmentSourceEnabled(registry, 'workspace-git')).toBe(false);
     expect(
       checkAoiEnvironmentSourceOperation({

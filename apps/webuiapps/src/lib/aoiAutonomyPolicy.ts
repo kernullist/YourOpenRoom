@@ -199,6 +199,20 @@ const DEFAULT_AOI_ENVIRONMENT_SOURCES: readonly Omit<
     quietModeBehavior: 'suppress',
   },
   {
+    // HP4: real-PC foreground/focus activity (metadata-only: app name + focus +
+    // idle; window titles only behind a separate sub-toggle, redacted). The
+    // taste signal for learning interests from real work. Default OFF, private.
+    id: 'desktop-activity',
+    kind: 'desktop_activity',
+    label: 'Desktop foreground activity (metadata only)',
+    enabled: false,
+    scope: 'explicit_target',
+    risk: 'high',
+    allowedOperations: ['read_metadata', 'summarize_counts'],
+    privateByDefault: true,
+    quietModeBehavior: 'suppress',
+  },
+  {
     id: 'manual-note',
     kind: 'manual_note',
     label: 'Manual user notes',
