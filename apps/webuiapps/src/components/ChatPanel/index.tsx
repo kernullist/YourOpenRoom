@@ -650,6 +650,7 @@ import { AoiSituationPanel } from './AoiSituationPanel';
 import { AoiReadinessAccrualPanel } from './AoiReadinessAccrualPanel';
 import { AoiPreferenceDashboard } from './AoiPreferenceDashboard';
 import { AoiReplayPromotionPanel } from './AoiReplayPromotionPanel';
+import { AoiHostBridgeSettingsPanel } from './AoiHostBridgeSettingsPanel';
 import styles from './index.module.scss';
 
 // ---------------------------------------------------------------------------
@@ -16602,6 +16603,8 @@ const SettingsModal: React.FC<{
                   </>
                 )}
               </div>
+
+              <AoiHostBridgeSettingsPanel />
 
               <AoiReplayPromotionPanel sessionPath={aoiReplaySessionPath} />
 
