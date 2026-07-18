@@ -1,0 +1,5 @@
+# Build artifacts (produced by build.ps1)
+aoi_desktop_capture.exe
+*.obj
+*.pdb
+*.ilk
