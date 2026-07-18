@@ -1055,6 +1055,21 @@ export interface AoiHostBridgePluginOptions {
   // ~/.openroom -- where host-bridge/ (token + kill switch) lives. Defaults to
   // the parent of sessionsDir (~/.openroom/sessions -> ~/.openroom).
   openroomHome?: string;
+  // Dev-server convenience: when a request arrives over loopback WITHOUT the
+  // auth-token header, use the daemon's own token instead of rejecting it. The
+  // browser never sees the secret; a loopback caller is already the same OS user
+  // on the same machine, which is exactly what the token proves. Off by default
+  // -- the standalone daemon still requires the header. Only the same-origin
+  // Vite dev mount turns this on.
+  trustLoopbackToken?: boolean;
+}
+
+// A request is loopback when its peer address is the local host. Used only to
+// gate the dev-server token convenience above; a bound-to-0.0.0.0 dev server
+// reached from another host is NOT loopback and still needs the header.
+function isAoiHostBridgeLoopbackRequest(req: IncomingMessage): boolean {
+  const address = req.socket?.remoteAddress ?? '';
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 function writeJson(res: ServerResponse, statusCode: number, payload: unknown): void {
@@ -1109,7 +1124,10 @@ export function createAoiHostBridgeMiddleware(
     }
     const method = req.method ?? 'GET';
     const tokenHeader = req.headers[AOI_HOST_BRIDGE_AUTH_HEADER];
-    const token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
+    let token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
+    if (!token && options.trustLoopbackToken && isAoiHostBridgeLoopbackRequest(req)) {
+      token = loadAoiHostBridgeToken(openroomHome);
+    }
 
     void (async () => {
       // GET/DELETE read their params from the query string; POST from the body.

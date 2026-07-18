@@ -15,6 +15,7 @@ import { cyberNewsProxyPlugin } from './src/lib/cyberNewsProxyPlugin';
 import { dewdropCanvasPlugin } from './src/lib/dewdropCanvasPlugin';
 import { writtenByMePlugin } from './src/lib/writtenByMePlugin';
 import { aoiAutonomyPlugin } from './src/lib/aoiAutonomyPlugin';
+import { createAoiHostBridgeMiddleware } from './src/lib/aoiHostBridgePlugin';
 import { createSessionDataMiddleware } from './src/lib/sessionDataServer';
 import { aoiResearchPlugin } from './src/lib/aoiResearchPlugin';
 import { generateLogFileName, createLogMiddleware } from './src/lib/logPlugin';
@@ -3956,6 +3957,22 @@ const config = ({ mode }: ConfigEnv): UserConfigExport => {
       sessionsDir: SESSIONS_DIR,
       workspaceRoot: OPENROOM_ROOT,
     }),
+    // Mount the host-bridge middleware on the dev server so the browser can reach
+    // /api/aoi-host/* same-origin. trustLoopbackToken lets a loopback browser
+    // call it without holding the secret token (the standalone daemon still
+    // requires the header). Dev-only: configureServer runs on serve, not build.
+    {
+      name: 'aoi-host-bridge',
+      configureServer(server) {
+        const middleware = createAoiHostBridgeMiddleware({
+          sessionsDir: SESSIONS_DIR,
+          trustLoopbackToken: true,
+        });
+        server.middlewares.use((req, res, next) => {
+          middleware(req, res, next);
+        });
+      },
+    },
     youtubeSearchPlugin(),
     tavilyProxyPlugin(),
     openVscodeManagerPlugin(),

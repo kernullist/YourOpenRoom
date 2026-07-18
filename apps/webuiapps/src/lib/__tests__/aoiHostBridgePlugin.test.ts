@@ -3,7 +3,11 @@ import * as os from 'os';
 import { join } from 'path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import { getAoiHostBridgeRoute, resolveAoiHostBridgeRoute } from '../aoiHostBridgePlugin';
+import {
+  createAoiHostBridgeMiddleware,
+  getAoiHostBridgeRoute,
+  resolveAoiHostBridgeRoute,
+} from '../aoiHostBridgePlugin';
 import { ensureAoiHostBridgeToken } from '../aoiHostBridgeAuth';
 import {
   loadAoiHostBridgeKillSwitchState,
@@ -947,5 +951,76 @@ describe('desktop-activity ingest + summary', () => {
     // The persisted store must not contain the title.
     const stored = fs.readFileSync(join(home, 'host-bridge', 'desktop-activity.json'), 'utf-8');
     expect(stored).not.toContain('secret.md');
+  });
+});
+
+describe('createAoiHostBridgeMiddleware loopback token trust', () => {
+  interface MockRes {
+    status: number;
+    body: string;
+  }
+
+  function runMiddleware(
+    middleware: ReturnType<typeof createAoiHostBridgeMiddleware>,
+    req: {
+      url?: string;
+      method?: string;
+      headers?: Record<string, string>;
+      remoteAddress?: string;
+    },
+  ): Promise<MockRes> {
+    const result: MockRes = { status: 0, body: '' };
+    return new Promise((resolvePromise) => {
+      const mockReq = {
+        url: req.url ?? '/api/aoi-host/status',
+        method: req.method ?? 'GET',
+        headers: req.headers ?? {},
+        socket: { remoteAddress: req.remoteAddress ?? '127.0.0.1' },
+        on: () => undefined,
+      } as unknown as Parameters<typeof middleware>[0];
+      const mockRes = {
+        writeHead(status: number) {
+          result.status = status;
+          return this;
+        },
+        end(body?: string) {
+          result.body = body ?? '';
+          resolvePromise(result);
+        },
+      } as unknown as Parameters<typeof middleware>[1];
+      middleware(mockReq, mockRes, () => resolvePromise(result));
+    });
+  }
+
+  it('authenticates a loopback GET with no token header when trust is on', async () => {
+    const { sessionsDir } = makeDaemonHome();
+    const middleware = createAoiHostBridgeMiddleware({ sessionsDir, trustLoopbackToken: true });
+    const res = await runMiddleware(middleware, { remoteAddress: '127.0.0.1' });
+    expect(res.status).toBe(200);
+    expect(res.body).toContain('"ok":true');
+  });
+
+  it('rejects a non-loopback caller with no token even when trust is on', async () => {
+    const { sessionsDir } = makeDaemonHome();
+    const middleware = createAoiHostBridgeMiddleware({ sessionsDir, trustLoopbackToken: true });
+    const res = await runMiddleware(middleware, { remoteAddress: '10.1.2.3' });
+    expect(res.status).toBe(401);
+  });
+
+  it('rejects a loopback caller with no token when trust is off (daemon default)', async () => {
+    const { sessionsDir } = makeDaemonHome();
+    const middleware = createAoiHostBridgeMiddleware({ sessionsDir });
+    const res = await runMiddleware(middleware, { remoteAddress: '127.0.0.1' });
+    expect(res.status).toBe(401);
+  });
+
+  it('still accepts an explicit valid token header from any address', async () => {
+    const { sessionsDir, token } = makeDaemonHome();
+    const middleware = createAoiHostBridgeMiddleware({ sessionsDir });
+    const res = await runMiddleware(middleware, {
+      remoteAddress: '10.1.2.3',
+      headers: { 'x-aoi-host-bridge-token': token },
+    });
+    expect(res.status).toBe(200);
   });
 });
