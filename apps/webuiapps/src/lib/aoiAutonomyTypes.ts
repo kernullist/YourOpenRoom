@@ -22,6 +22,10 @@ export type AoiEnvironmentSourceKind =
   | 'app_activity'
   | 'browser_context'
   | 'manual_note'
+  // Real-PC host-bridge sources (docs/aoi-host-access-design.md). Metadata-only,
+  // machine-scoped, default OFF, gated by the host-bridge kill switch.
+  | 'process_activity'
+  | 'desktop_activity'
   | AoiPersonalSignalSourceKind;
 
 export type AoiEnvironmentSourceOperation =

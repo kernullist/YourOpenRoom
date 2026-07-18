@@ -20,6 +20,9 @@ const DAY_MS = 24 * HOUR_MS;
 // Per-kind half-lives. These are the "how fast does NOW stop caring" knobs.
 export const AOI_SALIENCE_HALF_LIVES_MS: Record<AoiSalienceKind, number> = {
   app_activity: 30 * MINUTE_MS,
+  // Real-PC live signals decay on a minutes scale like in-app activity.
+  process_activity: 30 * MINUTE_MS,
+  desktop_activity: 30 * MINUTE_MS,
   chat: 2 * HOUR_MS,
   browser_context: 2 * HOUR_MS,
   workspace_git: 4 * HOUR_MS,

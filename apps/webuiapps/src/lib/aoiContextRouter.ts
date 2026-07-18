@@ -75,6 +75,8 @@ const SOURCE_ID_BY_KIND: Record<AoiEnvironmentSourceKind, string> = {
   app_activity: 'app-activity',
   browser_context: 'browser-context',
   manual_note: 'manual-note',
+  process_activity: 'process-activity',
+  desktop_activity: 'desktop-activity',
   calendar_metadata: 'calendar-metadata',
   gmail_metadata: 'gmail-metadata',
   notes_metadata: 'notes-metadata',

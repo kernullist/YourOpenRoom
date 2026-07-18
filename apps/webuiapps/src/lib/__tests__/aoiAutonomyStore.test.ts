@@ -418,6 +418,7 @@ describe('Aoi environment source registry storage', () => {
       'app-state',
       'app-activity',
       'browser-context',
+      'process-activity',
       'manual-note',
       'calendar-metadata',
       'gmail-metadata',
@@ -481,10 +482,12 @@ describe('Aoi environment source registry storage', () => {
 
     const status = buildAoiAutonomyStatus(root, 'aoi/default', 4000);
     expect(status).toMatchObject({
-      environmentSourceCount: 11,
+      // +1 source vs the prior default set: the HP1 process-activity source,
+      // which is high-risk and private-by-default (both counts +1), default off.
+      environmentSourceCount: 12,
       enabledEnvironmentSourceCount: 5,
-      highRiskEnvironmentSourceCount: 4,
-      privateEnvironmentSourceCount: 4,
+      highRiskEnvironmentSourceCount: 5,
+      privateEnvironmentSourceCount: 5,
       lastEnvironmentSourceObservedAt: 1500,
     });
   });

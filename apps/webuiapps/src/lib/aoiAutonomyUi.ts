@@ -4917,9 +4917,14 @@ function buildAoiBlindSpotsPanel(input: AoiOperatorAcceptanceDashboardInput): Ao
   const blindSpotSources =
     input.sourceRegistry?.sources.filter(
       (source) =>
-        !source.enabled ||
-        (isAoiPersonalSignalSourceKind(source.kind) &&
-          !source.allowedOperations.includes('summarize')),
+        // Host-bridge sources (process/desktop activity) are machine-scoped and
+        // surfaced through their own kill-switch-gated host-bridge panel, so they
+        // do not double-report as environment-source blind spots here.
+        source.kind !== 'process_activity' &&
+        source.kind !== 'desktop_activity' &&
+        (!source.enabled ||
+          (isAoiPersonalSignalSourceKind(source.kind) &&
+            !source.allowedOperations.includes('summarize'))),
     ) ?? [];
   const issueLabels =
     input.health?.issues
