@@ -202,6 +202,29 @@ function Get-AoiDaemonProcesses
     return $daemonProcesses
 }
 
+function Get-AoiCaptureProcesses
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $captureProcesses = @()
+    $matched = @(Get-CimInstance Win32_Process -Filter "Name = 'aoi_desktop_capture.exe'" -ErrorAction SilentlyContinue)
+
+    foreach ($process in $matched)
+    {
+        $commandLine = Get-ProcessCommandLine -Process $process
+        if ($commandLine -like "*$RepoRoot*" -or $commandLine -like "*aoi-desktop-capture*")
+        {
+            $captureProcesses += $process
+        }
+    }
+
+    return $captureProcesses
+}
+
 function Find-RemainingOpenRoomDevProcesses
 {
     param
@@ -374,6 +397,59 @@ do
                 else
                 {
                     Write-Step "Aoi daemon stopped."
+                }
+            }
+        }
+
+        # Aoi desktop capture: stop the logon task (if registered) and any running
+        # capture process. Mirrors the daemon stop above.
+        $captureTaskName = 'AoiDesktopCapture'
+        if (-not $DryRun -and $null -ne (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue))
+        {
+            $captureTask = Get-ScheduledTask -TaskName $captureTaskName -ErrorAction SilentlyContinue
+            if ($null -ne $captureTask)
+            {
+                try
+                {
+                    Stop-ScheduledTask -TaskName $captureTaskName -ErrorAction SilentlyContinue
+                }
+                catch
+                {
+                    Write-Step "Could not stop the capture task; will still force-stop the process."
+                }
+            }
+        }
+
+        $captureProcesses = @(Get-AoiCaptureProcesses -RepoRoot $repoRoot)
+        if ($captureProcesses.Count -eq 0)
+        {
+            Write-Step "No Aoi desktop capture is running."
+        }
+        else
+        {
+            foreach ($captureProcess in $captureProcesses)
+            {
+                Write-Step ("Aoi desktop capture: aoi_desktop_capture.exe:{0}" -f $captureProcess.ProcessId)
+            }
+
+            if ($DryRun)
+            {
+                Write-Step "Dry run only. The Aoi desktop capture was not stopped."
+            }
+            else
+            {
+                Stop-Process -Id (@($captureProcesses | ForEach-Object { [int]$_.ProcessId })) -Force -ErrorAction SilentlyContinue
+                Start-Sleep -Milliseconds 300
+
+                $captureRemaining = @(Get-AoiCaptureProcesses -RepoRoot $repoRoot)
+                if ($captureRemaining.Count -gt 0)
+                {
+                    Write-Step "The Aoi desktop capture did not stop cleanly."
+                    $script:ExitCode = 1
+                }
+                else
+                {
+                    Write-Step "Aoi desktop capture stopped."
                 }
             }
         }

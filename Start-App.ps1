@@ -9,7 +9,13 @@ param
     # self-healing in-process supervised daemon for this session.
     [switch]$InstallService,
     # Force the in-process supervised daemon even if the boot service task exists.
-    [switch]$NoService
+    [switch]$NoService,
+    # Skip starting the Aoi desktop-activity capture helper.
+    [switch]$NoCapture,
+    # Also build + register the boot-persistent desktop capture task (needs MSVC
+    # for the build, elevation for the task). Without it, Start-App runs the built
+    # capture exe directly for this session when it is present.
+    [switch]$InstallCaptureService
 )
 
 Set-StrictMode -Version Latest
@@ -578,6 +584,112 @@ function Start-AoiDaemonBootService
     return $false
 }
 
+# Running instances of the native desktop-activity capture helper for this repo
+# (matched by image name plus the repo/tool path so a stray same-named binary
+# elsewhere is not touched).
+function Get-AoiCaptureProcesses
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot
+    )
+
+    $captureProcesses = @()
+    $matched = @(Get-CimInstance Win32_Process -Filter "Name = 'aoi_desktop_capture.exe'" -ErrorAction SilentlyContinue)
+
+    foreach ($process in $matched)
+    {
+        $commandLine = Get-ProcessCommandLine -Process $process
+        if ($commandLine -like "*$RepoRoot*" -or $commandLine -like "*aoi-desktop-capture*")
+        {
+            $captureProcesses += $process
+        }
+    }
+
+    return $captureProcesses
+}
+
+# Bring up the native desktop-activity capture helper alongside the daemon. It is
+# server-side gated (auth token + desktop_activity capability + desktop-activity
+# consent), so starting it observes nothing until the operator opts in. Prefers a
+# registered logon Scheduled Task; otherwise runs the built exe directly (hidden)
+# for this session. -AllowInstall (from -InstallCaptureService) builds + registers
+# the boot task. Best-effort: a missing exe or toolchain is a warning, not a stop.
+function Start-AoiCaptureHelper
+{
+    param
+    (
+        [Parameter(Mandatory = $true)]
+        [string]$RepoRoot,
+
+        [switch]$AllowInstall
+    )
+
+    $captureDir = Join-Path $RepoRoot "tools\aoi-desktop-capture"
+    $captureExe = Join-Path $captureDir "aoi_desktop_capture.exe"
+    $taskName = 'AoiDesktopCapture'
+
+    $running = @(Get-AoiCaptureProcesses -RepoRoot $RepoRoot)
+    if ($running.Count -gt 0)
+    {
+        $capturePids = ($running | ForEach-Object { $_.ProcessId }) -join ", "
+        Write-Step ("Aoi desktop capture already running (PID {0})." -f $capturePids)
+        return
+    }
+
+    if ($AllowInstall)
+    {
+        $installer = Join-Path $captureDir "Install-AoiDesktopCapture.ps1"
+        if (Test-Path -LiteralPath $installer -PathType Leaf)
+        {
+            Write-Step "Building + registering the Aoi desktop capture service (Scheduled Task '$taskName')."
+            try
+            {
+                & $installer
+            }
+            catch
+            {
+                Write-Warning ("Capture service registration failed: {0}" -f $_.Exception.Message)
+            }
+        }
+    }
+
+    $captureTask = $null
+    if ($null -ne (Get-Command Get-ScheduledTask -ErrorAction SilentlyContinue))
+    {
+        $captureTask = Get-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+    }
+
+    if ($null -ne $captureTask)
+    {
+        try
+        {
+            Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+            Write-Step ("Aoi desktop capture service started (Scheduled Task '{0}')." -f $taskName)
+            return
+        }
+        catch
+        {
+            Write-Warning ("Starting the capture task failed: {0}" -f $_.Exception.Message)
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath $captureExe -PathType Leaf))
+    {
+        Write-Step "Aoi desktop capture is not built; skipping (build: tools\aoi-desktop-capture\build.ps1, or run Start-App.ps1 -InstallCaptureService)."
+        return
+    }
+
+    Write-Step "Starting Aoi desktop capture (hidden, session aoi/default)."
+    [void](Start-Process -FilePath $captureExe `
+        -ArgumentList @('--hide-console', '--session', 'aoi/default') `
+        -WorkingDirectory $captureDir `
+        -WindowStyle Hidden `
+        -PassThru)
+    Write-Step "Aoi desktop capture running. It stays gated until you enable the desktop_activity capability + desktop-activity consent."
+}
+
 do
 {
     try
@@ -659,6 +771,20 @@ do
                     Write-Warning ("Aoi daemon start failed: {0}" -f $_.Exception.Message)
                     Write-Step "Continuing with the dev server only."
                 }
+            }
+        }
+
+        # Aoi desktop capture: bring up the foreground-activity producer next to the
+        # daemon (server-side gated; -NoCapture skips it).
+        if (-not $NoCapture)
+        {
+            try
+            {
+                Start-AoiCaptureHelper -RepoRoot $repoRoot -AllowInstall:$InstallCaptureService
+            }
+            catch
+            {
+                Write-Warning ("Aoi desktop capture start failed: {0}" -f $_.Exception.Message)
             }
         }
 

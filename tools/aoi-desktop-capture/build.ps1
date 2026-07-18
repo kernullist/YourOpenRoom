@@ -33,8 +33,13 @@ if (-not (Test-Path $src))
 
 # cl flags. winhttp.lib/user32.lib are pulled in via #pragma comment(lib,...).
 $optFlags = if ($DebugBuild) { '/Od /Zi' } else { '/O2' }
+# /Fo pins the intermediate .obj into the tool dir (where .gitignore covers it)
+# regardless of the caller's working directory; without it cl drops the .obj in
+# the cwd, which can be the repo root. Name the file explicitly (no trailing
+# backslash, which would escape the closing quote).
+$objFile = Join-Path $PSScriptRoot 'aoi_desktop_capture.obj'
 $clFlags = "/nologo /W4 /EHsc /std:c++17 $optFlags"
-$clLine = "cl $clFlags `"$src`" /Fe:`"$out`""
+$clLine = "cl $clFlags `"$src`" /Fo:`"$objFile`" /Fe:`"$out`""
 
 function Invoke-Build
 {
