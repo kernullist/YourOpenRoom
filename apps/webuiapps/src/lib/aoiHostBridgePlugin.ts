@@ -31,6 +31,30 @@ import {
 } from './aoiHostBridgeKillSwitch';
 import { evaluateAoiHostBridgeGate } from './aoiHostBridgeGate';
 import { listHostProcesses, type AoiHostProcessListing } from './aoiHostProcessInspect';
+import {
+  AOI_HOST_SPAWN_CAPABILITY,
+  addAoiHostSpawnAllowlistEntry,
+  evaluateAoiHostSpawnPolicy,
+  loadAoiHostSpawnAllowlist,
+  removeAoiHostSpawnAllowlistEntry,
+  saveAoiHostSpawnAllowlist,
+} from './aoiHostProcessSpawn';
+import {
+  AOI_HOST_FILE_READ_CAPABILITY,
+  addAoiHostReadRoot,
+  listAoiHostDirectory,
+  loadAoiHostReadRoots,
+  readAoiHostFileContent,
+  removeAoiHostReadRoot,
+  saveAoiHostReadRoots,
+  statAoiHostPath,
+} from './aoiHostFileRead';
+import {
+  addAoiHostWriteRoot,
+  loadAoiHostWriteRoots,
+  removeAoiHostWriteRoot,
+  saveAoiHostWriteRoots,
+} from './aoiHostFileWrite';
 import { loadAoiEnvironmentSourceRegistry } from './aoiAutonomyStore';
 import { checkAoiEnvironmentSourceOperation } from './aoiAutonomyPolicy';
 import { normalizeAoiAutonomySessionPath } from './aoiAutonomySessionPath';
@@ -191,6 +215,195 @@ export async function resolveAoiHostBridgeRoute(
     }
   }
 
+  // --- Registration CRUD (auth-only: configuring one's own consent) ----------
+  // The spawn allowlist and the read/write roots are consent configuration, not
+  // capability execution, so they need only the auth token (already verified).
+
+  if (params.route === '/spawn-allowlist') {
+    const current = loadAoiHostSpawnAllowlist(params.openroomHome);
+    if (params.method === 'GET') {
+      return { status: 200, payload: { ok: true, entries: current.entries } };
+    }
+    if (params.method === 'POST') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const path = typeof params.body.path === 'string' ? params.body.path : '';
+      const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const fixedArgs = Array.isArray(params.body.fixedArgs)
+        ? params.body.fixedArgs.filter((arg): arg is string => typeof arg === 'string')
+        : undefined;
+      const result = addAoiHostSpawnAllowlistEntry(
+        current,
+        { id, path, ...(label ? { label } : {}), ...(fixedArgs ? { fixedArgs } : {}) },
+        params.now,
+      );
+      if (!result.added) {
+        return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
+      }
+      const saved = saveAoiHostSpawnAllowlist(params.openroomHome, result.allowlist);
+      return { status: 200, payload: { ok: true, entries: saved.entries } };
+    }
+    if (params.method === 'DELETE') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const saved = saveAoiHostSpawnAllowlist(
+        params.openroomHome,
+        removeAoiHostSpawnAllowlistEntry(current, id, params.now),
+      );
+      return { status: 200, payload: { ok: true, entries: saved.entries } };
+    }
+  }
+
+  if (params.route === '/read-roots') {
+    const current = loadAoiHostReadRoots(params.openroomHome);
+    if (params.method === 'GET') {
+      return { status: 200, payload: { ok: true, roots: current.roots } };
+    }
+    if (params.method === 'POST') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const path = typeof params.body.path === 'string' ? params.body.path : '';
+      const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const result = addAoiHostReadRoot(
+        current,
+        { id, path, ...(label ? { label } : {}) },
+        params.now,
+      );
+      if (!result.added) {
+        return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
+      }
+      const saved = saveAoiHostReadRoots(params.openroomHome, result.config);
+      return { status: 200, payload: { ok: true, roots: saved.roots } };
+    }
+    if (params.method === 'DELETE') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const saved = saveAoiHostReadRoots(
+        params.openroomHome,
+        removeAoiHostReadRoot(current, id, params.now),
+      );
+      return { status: 200, payload: { ok: true, roots: saved.roots } };
+    }
+  }
+
+  if (params.route === '/write-roots') {
+    const current = loadAoiHostWriteRoots(params.openroomHome);
+    if (params.method === 'GET') {
+      return { status: 200, payload: { ok: true, roots: current.roots } };
+    }
+    if (params.method === 'POST') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const path = typeof params.body.path === 'string' ? params.body.path : '';
+      const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const result = addAoiHostWriteRoot(
+        current,
+        { id, path, ...(label ? { label } : {}) },
+        params.now,
+      );
+      if (!result.added) {
+        return { status: 400, payload: { ok: false, error: result.reason, code: 'bad_request' } };
+      }
+      const saved = saveAoiHostWriteRoots(params.openroomHome, result.config);
+      return { status: 200, payload: { ok: true, roots: saved.roots } };
+    }
+    if (params.method === 'DELETE') {
+      const id = typeof params.body.id === 'string' ? params.body.id : '';
+      const saved = saveAoiHostWriteRoots(
+        params.openroomHome,
+        removeAoiHostWriteRoot(current, id, params.now),
+      );
+      return { status: 200, payload: { ok: true, roots: saved.roots } };
+    }
+  }
+
+  // --- Filesystem read (HP3a): gate auth + kill-switch capability os_file_read.
+  // The read roots ARE the fine-grained consent (enforced inside the resolver).
+  if (
+    params.method === 'GET' &&
+    (params.route === '/fs/list' || params.route === '/fs/stat' || params.route === '/fs/read')
+  ) {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_FILE_READ_CAPABILITY,
+      irreversible: false,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const requestedPath = typeof params.body.path === 'string' ? params.body.path : '';
+    const roots = loadAoiHostReadRoots(params.openroomHome).roots;
+    if (params.route === '/fs/list') {
+      const listing = listAoiHostDirectory({ roots, requestedPath });
+      return { status: listing.ok ? 200 : 400, payload: { ...listing } };
+    }
+    if (params.route === '/fs/stat') {
+      const stat = statAoiHostPath({ roots, requestedPath });
+      return { status: stat.ok ? 200 : 400, payload: { ...stat } };
+    }
+    const parsedMax =
+      typeof params.body.maxBytes === 'string' ? Number.parseInt(params.body.maxBytes, 10) : NaN;
+    const content = readAoiHostFileContent({
+      roots,
+      requestedPath,
+      ...(Number.isFinite(parsedMax) ? { maxBytes: parsedMax } : {}),
+    });
+    return { status: content.ok ? 200 : 400, payload: { ...content } };
+  }
+
+  // --- Spawn preview (HP2a, display-only): return the content-addressed policy
+  // + approval preview WITHOUT executing. The execute half (with an approved
+  // preview) lands in the next slice. Gated on the kill-switch capability.
+  if (params.method === 'POST' && params.route === '/spawn/preview') {
+    const gate = evaluateAoiHostBridgeGate({
+      authenticated: true,
+      killSwitchState: loadAoiHostBridgeKillSwitchState(params.openroomHome),
+      capabilityKey: AOI_HOST_SPAWN_CAPABILITY,
+      irreversible: false,
+    });
+    if (!gate.allowed) {
+      return {
+        status: 403,
+        payload: {
+          ok: false,
+          error: 'blocked',
+          denyReasons: gate.denyReasons,
+          detail: gate.detail,
+        },
+      };
+    }
+    const allowlistId = typeof params.body.allowlistId === 'string' ? params.body.allowlistId : '';
+    const args = Array.isArray(params.body.args)
+      ? params.body.args.filter((arg): arg is string => typeof arg === 'string')
+      : undefined;
+    const policy = evaluateAoiHostSpawnPolicy({
+      request: { allowlistId, ...(args ? { args } : {}), requestedAt: params.now },
+      allowlist: loadAoiHostSpawnAllowlist(params.openroomHome),
+      now: params.now,
+    });
+    return {
+      status: 200,
+      payload: {
+        ok: true,
+        preview: {
+          allowed: policy.allowed,
+          blockReasons: policy.blockReasons,
+          allowlistId: policy.allowlistId,
+          label: policy.label,
+          program: policy.program,
+          args: policy.args,
+          approvalSandbox: policy.approvalSandbox,
+          approvalFingerprint: policy.approvalFingerprint,
+          expiresAt: policy.expiresAt,
+        },
+      },
+    };
+  }
+
   return { status: 404, payload: { ok: false, error: 'not found', code: 'route_not_found' } };
 }
 
@@ -264,9 +477,9 @@ export function createAoiHostBridgeMiddleware(
     const token = Array.isArray(tokenHeader) ? (tokenHeader[0] ?? null) : (tokenHeader ?? null);
 
     void (async () => {
-      // GET routes read their params from the query string; POST from the body.
+      // GET/DELETE read their params from the query string; POST from the body.
       const body: Record<string, unknown> =
-        method === 'GET'
+        method === 'GET' || method === 'DELETE'
           ? Object.fromEntries(url.searchParams.entries())
           : await readJsonBody(req).catch(() => ({}));
       const result = await resolveAoiHostBridgeRoute({

@@ -12,6 +12,19 @@ import {
 } from '../aoiHostBridgeKillSwitch';
 import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { saveAoiEnvironmentSourceRegistry, updateAoiEnvironmentSource } from '../aoiAutonomyStore';
+import { addAoiHostReadRoot, saveAoiHostReadRoots } from '../aoiHostFileRead';
+import { addAoiHostSpawnAllowlistEntry, saveAoiHostSpawnAllowlist } from '../aoiHostProcessSpawn';
+
+function saveAoiHostSpawnAllowlistEntryHelper(home: string): void {
+  saveAoiHostSpawnAllowlist(
+    home,
+    addAoiHostSpawnAllowlistEntry(
+      null,
+      { id: 'notepad', label: 'Notepad', path: 'C:\\Windows\\System32\\notepad.exe' },
+      1000,
+    ).allowlist,
+  );
+}
 
 const tempRoots: string[] = [];
 
@@ -239,5 +252,192 @@ describe('resolveAoiHostBridgeRoute /processes (HP1 gate)', () => {
       listProcessesImpl: async () => FAKE_LISTING,
     });
     expect(result.status).toBe(400);
+  });
+});
+
+describe('registration CRUD (auth-only)', () => {
+  it('adds, lists, and removes a spawn-allowlist entry; rejects a relative path', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const exe = 'C:\\Windows\\System32\\notepad.exe';
+    const add = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/spawn-allowlist',
+      body: { id: 'notepad', label: 'Notepad', path: exe },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(add.status).toBe(200);
+    expect((add.payload as { entries: Array<{ id: string }> }).entries.map((e) => e.id)).toEqual([
+      'notepad',
+    ]);
+
+    const bad = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/spawn-allowlist',
+      body: { id: 'rel', path: 'notepad.exe' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(bad.status).toBe(400);
+
+    const del = await resolveAoiHostBridgeRoute({
+      method: 'DELETE',
+      route: '/spawn-allowlist',
+      body: { id: 'notepad' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect((del.payload as { entries: unknown[] }).entries).toEqual([]);
+  });
+
+  it('manages read-roots and write-roots', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const dir = fs.realpathSync.native(fs.mkdtempSync(join(os.tmpdir(), 'aoi-root-')));
+    tempRoots.push(dir);
+    for (const route of ['/read-roots', '/write-roots'] as const) {
+      const add = await resolveAoiHostBridgeRoute({
+        method: 'POST',
+        route,
+        body: { id: 'work', path: dir },
+        token,
+        openroomHome: home,
+        sessionsDir,
+        now: 1000,
+      });
+      expect(add.status).toBe(200);
+      expect((add.payload as { roots: Array<{ id: string }> }).roots.map((r) => r.id)).toEqual([
+        'work',
+      ]);
+    }
+  });
+});
+
+describe('filesystem read routes (gate os_file_read)', () => {
+  function seedReadableFile(home: string): { dir: string } {
+    const dir = fs.realpathSync.native(fs.mkdtempSync(join(os.tmpdir(), 'aoi-fsread-')));
+    tempRoots.push(dir);
+    fs.writeFileSync(join(dir, 'note.txt'), 'hello fs', 'utf-8');
+    saveAoiHostReadRoots(home, addAoiHostReadRoot(null, { id: 'r', path: dir }, 1).config);
+    return { dir };
+  }
+
+  it('blocks with 403 until the os_file_read capability is enabled', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const { dir } = seedReadableFile(home);
+    const blocked = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/fs/read',
+      body: { path: join(dir, 'note.txt') },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(blocked.status).toBe(403);
+    expect((blocked.payload as { denyReasons: string[] }).denyReasons).toContain(
+      'capability_disabled',
+    );
+  });
+
+  it('lists, stats, and reads a file inside a read root once enabled', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const { dir } = seedReadableFile(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_file_read', true, 1500),
+    );
+
+    const listing = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/fs/list',
+      body: { path: dir },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(listing.status).toBe(200);
+    expect(
+      (listing.payload as { entries: Array<{ name: string }> }).entries.some(
+        (e) => e.name === 'note.txt',
+      ),
+    ).toBe(true);
+
+    const read = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/fs/read',
+      body: { path: join(dir, 'note.txt') },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(read.status).toBe(200);
+    expect((read.payload as { content: { content: string } }).content.content).toBe('hello fs');
+  });
+
+  it('refuses a path outside the read roots with a 400 body', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    seedReadableFile(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_file_read', true, 1500),
+    );
+    const outside = await resolveAoiHostBridgeRoute({
+      method: 'GET',
+      route: '/fs/read',
+      body: { path: 'C:\\Windows\\System32\\drivers\\etc\\hosts' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(outside.status).toBe(400);
+    expect((outside.payload as { reason?: string }).reason).toBe('outside_consent_roots');
+  });
+});
+
+describe('spawn preview route', () => {
+  it('is blocked until os_process_spawn is enabled, then returns an approval preview', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostSpawnAllowlistEntryHelper(home);
+
+    const blocked = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/spawn/preview',
+      body: { allowlistId: 'notepad' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 1000,
+    });
+    expect(blocked.status).toBe(403);
+
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_spawn', true, 1500),
+    );
+    const preview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/spawn/preview',
+      body: { allowlistId: 'notepad' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    expect(preview.status).toBe(200);
+    const payload = preview.payload as {
+      preview: { allowed: boolean; approvalFingerprint: string; program: string };
+    };
+    expect(payload.preview.allowed).toBe(true);
+    expect(payload.preview.approvalFingerprint).toBeTruthy();
+    expect(payload.preview.program).toContain('notepad.exe');
   });
 });
