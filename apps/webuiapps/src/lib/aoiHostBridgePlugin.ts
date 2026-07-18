@@ -59,6 +59,7 @@ import {
   saveAoiHostWriteRoots,
 } from './aoiHostFileWrite';
 import { runAoiHostSpawn } from './aoiHostProcessSpawn';
+import { recordAoiHostSpawnedProcess, loadAoiHostSpawnedPids } from './aoiHostSpawnAudit';
 import {
   AOI_HOST_KILL_CAPABILITY,
   evaluateAoiHostKillPolicy,
@@ -512,6 +513,14 @@ export async function resolveAoiHostBridgeRoute(
       approvedExpiresAt: policy.expiresAt,
       now: params.now,
     });
+    // Record the ownership so a later kill can reclaim this Aoi-spawned pid.
+    if (result.ok && typeof result.spawnedPid === 'number' && result.spawnedPid > 0) {
+      recordAoiHostSpawnedProcess(
+        params.openroomHome,
+        { pid: result.spawnedPid, imageName: result.program },
+        params.now,
+      );
+    }
     return { status: result.ok ? 200 : 400, payload: { ...result } };
   }
 
@@ -703,7 +712,7 @@ export async function resolveAoiHostBridgeRoute(
     const killAllowlistImages = Array.isArray(params.body.killAllowlistImages)
       ? params.body.killAllowlistImages.filter((v): v is string => typeof v === 'string')
       : [];
-    const aoiSpawnedPids = collectAoiSpawnedPids(params.openroomHome);
+    const aoiSpawnedPids = collectAoiSpawnedPids(params.openroomHome, params.now);
     const policy = evaluateAoiHostKillPolicy({
       request: {
         pid: Number.isFinite(pid) ? pid : -1,
@@ -778,7 +787,7 @@ export async function resolveAoiHostBridgeRoute(
       : [];
     const context = {
       killAllowlistImages,
-      aoiSpawnedPids: collectAoiSpawnedPids(params.openroomHome),
+      aoiSpawnedPids: collectAoiSpawnedPids(params.openroomHome, params.now),
     };
     const request = {
       pid: Number.isFinite(pid) ? pid : -1,
@@ -1024,13 +1033,13 @@ export async function resolveAoiHostBridgeRoute(
   return { status: 404, payload: { ok: false, error: 'not found', code: 'route_not_found' } };
 }
 
-// Pids Aoi itself spawned (from the successful spawn audit records) are
-// implicitly killable. For slice 4 the spawn audits are not yet persisted to a
-// queryable store, so this returns an empty set: a target is killable only via
-// the operator's kill allowlist until spawn-audit persistence lands. The hook is
-// here so kill-of-own-spawn works the moment that store exists.
-function collectAoiSpawnedPids(_openroomHome: string): number[] {
-  return [];
+// Pids Aoi itself spawned (from the persisted spawn audit) are implicitly
+// killable. The audit is written by /spawn/execute and pruned on read (TTL +
+// cap); the kill runner still re-verifies pid + image + start time (TOCTOU)
+// before terminating, so a reused pid whose identity no longer matches is
+// refused regardless of this set.
+function collectAoiSpawnedPids(openroomHome: string, now: number): number[] {
+  return loadAoiHostSpawnedPids(openroomHome, now);
 }
 
 // --- HTTP middleware (thin adapter) ------------------------------------------
