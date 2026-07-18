@@ -14,6 +14,7 @@ import { getDefaultAoiEnvironmentSourceRegistry } from '../aoiAutonomyPolicy';
 import { saveAoiEnvironmentSourceRegistry, updateAoiEnvironmentSource } from '../aoiAutonomyStore';
 import { addAoiHostReadRoot, saveAoiHostReadRoots } from '../aoiHostFileRead';
 import { addAoiHostSpawnAllowlistEntry, saveAoiHostSpawnAllowlist } from '../aoiHostProcessSpawn';
+import { addAoiHostWriteRoot, saveAoiHostWriteRoots } from '../aoiHostFileWrite';
 
 function saveAoiHostSpawnAllowlistEntryHelper(home: string): void {
   saveAoiHostSpawnAllowlist(
@@ -21,6 +22,24 @@ function saveAoiHostSpawnAllowlistEntryHelper(home: string): void {
     addAoiHostSpawnAllowlistEntry(
       null,
       { id: 'notepad', label: 'Notepad', path: 'C:\\Windows\\System32\\notepad.exe' },
+      1000,
+    ).allowlist,
+  );
+}
+
+function saveAoiHostWriteRootsHelper(home: string, dir: string): void {
+  saveAoiHostWriteRoots(home, addAoiHostWriteRoot(null, { id: 'work', path: dir }, 1000).config);
+}
+
+// A valid-shaped but non-existent exe: spawn passes the policy/approval gate but
+// fails to launch (spawn_failed), so the execute flow is exercised WITHOUT
+// launching a real GUI app during tests.
+function saveAoiHostFakeSpawnEntry(home: string): void {
+  saveAoiHostSpawnAllowlist(
+    home,
+    addAoiHostSpawnAllowlistEntry(
+      null,
+      { id: 'fake', label: 'Fake', path: 'C:\\aoi-test-nonexistent\\fake-app.exe' },
       1000,
     ).allowlist,
   );
@@ -439,5 +458,205 @@ describe('spawn preview route', () => {
     expect(payload.preview.allowed).toBe(true);
     expect(payload.preview.approvalFingerprint).toBeTruthy();
     expect(payload.preview.program).toContain('notepad.exe');
+  });
+});
+
+describe('spawn preview -> approve -> execute (server-side approval binding)', () => {
+  async function call(
+    home: string,
+    sessionsDir: string,
+    token: string,
+    method: string,
+    route: string,
+    body: Record<string, unknown>,
+    now: number,
+  ) {
+    return resolveAoiHostBridgeRoute({
+      method,
+      route,
+      body,
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now,
+      // A fake spawn so the runner never launches a real process.
+      listProcessesImpl: async () => FAKE_LISTING,
+    });
+  }
+
+  it('execute is blocked until the operator approves, then runs once (single-use)', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    // A non-existent exe so execute exercises the approval path without
+    // launching a real GUI app (it fails at spawn, not at the gate).
+    saveAoiHostFakeSpawnEntry(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_spawn', true, 1500),
+    );
+
+    // 1. Preview records a pending approval.
+    const preview = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/preview',
+      {
+        allowlistId: 'fake',
+      },
+      2000,
+    );
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+
+    // 2. Execute BEFORE approve -> blocked (self-approve is impossible).
+    const early = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/execute',
+      {
+        allowlistId: 'fake',
+      },
+      2100,
+    );
+    expect(early.status).toBe(403);
+    expect((early.payload as { denyReasons: string[] }).denyReasons).toContain(
+      'approval_not_granted',
+    );
+
+    // 3. Operator approves the fingerprint.
+    const approve = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/approvals/approve',
+      {
+        approvalFingerprint: fingerprint,
+      },
+      2200,
+    );
+    expect(approve.status).toBe(200);
+
+    // 4. Execute now passes the approval gate and reaches the runner (which
+    // returns spawn_failed for the non-existent exe) -- NOT approval-blocked.
+    const exec = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/execute',
+      {
+        allowlistId: 'fake',
+      },
+      2300,
+    );
+    const execReasons = (exec.payload as { blockReasons?: string[] }).blockReasons ?? [];
+    expect(execReasons).not.toContain('approval_missing');
+    expect(execReasons).not.toContain('approval_not_granted');
+    expect(execReasons).toContain('spawn_failed');
+
+    // 5. A SECOND execute is blocked -- the approval was single-use (consumed).
+    const again = await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/execute',
+      {
+        allowlistId: 'fake',
+      },
+      2400,
+    );
+    expect(again.status).toBe(403);
+    expect((again.payload as { denyReasons: string[] }).denyReasons).toContain('approval_missing');
+  });
+
+  it('lists pending approvals for the operator UI', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    saveAoiHostSpawnAllowlistEntryHelper(home);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_process_spawn', true, 1500),
+    );
+    await call(
+      home,
+      sessionsDir,
+      token,
+      'POST',
+      '/spawn/preview',
+      { allowlistId: 'notepad' },
+      2000,
+    );
+    const list = await call(home, sessionsDir, token, 'GET', '/approvals', {}, 2100);
+    expect(list.status).toBe(200);
+    const approvals = (list.payload as { approvals: Array<{ state: string; capability: string }> })
+      .approvals;
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({ state: 'pending', capability: 'os_process_spawn' });
+  });
+});
+
+describe('filesystem write preview -> approve -> execute', () => {
+  it('writes a file only after the operator approves the exact { path, content }', async () => {
+    const { home, sessionsDir, token } = makeDaemonHome();
+    const dir = fs.realpathSync.native(fs.mkdtempSync(join(os.tmpdir(), 'aoi-fswrite-')));
+    tempRoots.push(dir);
+    saveAoiHostWriteRootsHelper(home, dir);
+    saveAoiHostBridgeKillSwitchState(
+      home,
+      setAoiHostBridgeCapability(null, 'os_file_write', true, 1500),
+    );
+    const target = join(dir, 'out.txt');
+
+    // Preview records the approval for this exact content.
+    const preview = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/write/preview',
+      body: { path: target, content: 'approved content' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2000,
+    });
+    const fingerprint = (preview.payload as { preview: { approvalFingerprint: string } }).preview
+      .approvalFingerprint;
+
+    // Execute with DIFFERENT content -> different fingerprint -> no approval.
+    const swap = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/write/execute',
+      body: { path: target, content: 'DIFFERENT content' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2100,
+    });
+    expect(swap.status).toBe(403);
+    expect(fs.existsSync(target)).toBe(false);
+
+    // Approve, then execute with the SAME content -> writes.
+    await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/approvals/approve',
+      body: { approvalFingerprint: fingerprint },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2200,
+    });
+    const exec = await resolveAoiHostBridgeRoute({
+      method: 'POST',
+      route: '/fs/write/execute',
+      body: { path: target, content: 'approved content' },
+      token,
+      openroomHome: home,
+      sessionsDir,
+      now: 2300,
+    });
+    expect(exec.status).toBe(200);
+    expect(fs.readFileSync(target, 'utf-8')).toBe('approved content');
   });
 });

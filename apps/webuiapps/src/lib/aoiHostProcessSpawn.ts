@@ -497,6 +497,11 @@ export function runAoiHostSpawn(options: RunAoiHostSpawnOptions): AoiHostSpawnRe
       detached: true,
       stdio: 'ignore',
     });
+    // A detached child that fails to launch (e.g. a bad allowlist path -> async
+    // ENOENT) emits 'error' later; without a listener that becomes an unhandled
+    // error that could crash the daemon. Swallow it -- the pid==null check below
+    // already reports spawn_failed.
+    child.on?.('error', () => undefined);
     const spawnedPid = typeof child.pid === 'number' ? child.pid : null;
     // Detach so the launched process outlives this daemon request.
     child.unref?.();
