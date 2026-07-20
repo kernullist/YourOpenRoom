@@ -53,6 +53,8 @@ const ENTRY_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 export type AoiHostSpawnBlockReason =
   | 'missing_allowlist_id'
   | 'unknown_allowlist_entry'
+  | 'program_not_allowed'
+  | 'invalid_program_path'
   | 'too_many_arguments'
   | 'argument_too_long'
   | 'shell_metacharacters'
@@ -64,11 +66,17 @@ export type AoiHostSpawnBlockReason =
   | 'rate_limited'
   | 'spawn_failed';
 
+// 'file' = exact executable path. 'directory' = any executable under that folder
+// (non-recursive beyond the registered directory itself). Directory entries are
+// the ergonomic escape hatch so operators do not register every .exe one-by-one.
+export type AoiHostSpawnMatch = 'file' | 'directory';
+
 export interface AoiHostSpawnAllowlistEntry {
   id: string;
   label: string;
-  // Absolute executable path. Validated on add and again at spawn time.
+  // Absolute executable path (file) or absolute directory path (directory).
   path: string;
+  match?: AoiHostSpawnMatch;
   // Fixed arguments always passed. When present, request args are appended
   // after these; when the entry pins the full arg vector, requests pass none.
   fixedArgs?: string[];
@@ -87,7 +95,10 @@ export const DEFAULT_AOI_HOST_SPAWN_ALLOWLIST: AoiHostSpawnAllowlist = {
 };
 
 export interface AoiHostSpawnRequest {
-  allowlistId: string;
+  // Prefer allowlistId for fixed file entries. For directory entries (or path
+  // resolution), pass programPath as the absolute executable to launch.
+  allowlistId?: string;
+  programPath?: string;
   args?: string[];
   purpose?: string;
   requestedAt: number;
@@ -142,7 +153,7 @@ function isSafeArg(value: string): boolean {
   return value.length > 0 && value.length <= MAX_ARG_CHARS && !SHELL_METACHAR_REGEX.test(value);
 }
 
-function isSafeExecutablePath(value: string): boolean {
+function isSafeHostPath(value: string): boolean {
   return (
     typeof value === 'string' &&
     value.length > 0 &&
@@ -151,6 +162,100 @@ function isSafeExecutablePath(value: string): boolean {
     !SHELL_METACHAR_REGEX.test(value) &&
     !value.includes('..')
   );
+}
+
+export function suggestAoiHostSpawnEntryId(
+  path: string,
+  match: AoiHostSpawnMatch = 'file',
+): string {
+  const base = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .slice(-2)
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  const prefix = match === 'directory' ? 'dir' : 'exe';
+  const slug = base || 'entry';
+  const candidate = `${prefix}-${slug}`.slice(0, 64);
+  return ENTRY_ID_PATTERN.test(candidate) ? candidate : `${prefix}-${randomUUID().slice(0, 8)}`;
+}
+
+function normalizePathKey(value: string): string {
+  return resolve(value).replace(/\\/g, '/').toLowerCase();
+}
+
+function isExecutableProgramPath(value: string): boolean {
+  if (!isSafeHostPath(value)) {
+    return false;
+  }
+  // Windows executables; on other platforms any absolute file path is accepted
+  // (the OS will reject a non-executable at spawn time).
+  if (process.platform === 'win32') {
+    return /\.(exe|com|bat|cmd)$/i.test(value);
+  }
+  return true;
+}
+
+export function isAoiHostProgramInsideSpawnEntry(
+  entry: AoiHostSpawnAllowlistEntry,
+  programPath: string,
+): boolean {
+  if (!isSafeHostPath(programPath)) {
+    return false;
+  }
+  const match = entry.match === 'directory' ? 'directory' : 'file';
+  const entryKey = normalizePathKey(entry.path);
+  const programKey = normalizePathKey(programPath);
+  if (match === 'file') {
+    return entryKey === programKey;
+  }
+  // Directory: any nested executable under the registered folder is allowed.
+  // Containment is path-prefix after normalize; ".." was already rejected.
+  if (programKey !== entryKey && !programKey.startsWith(`${entryKey}/`)) {
+    return false;
+  }
+  if (programKey === entryKey) {
+    return false;
+  }
+  return isExecutableProgramPath(programPath);
+}
+
+export function resolveAoiHostSpawnAllowlistHit(params: {
+  allowlist: AoiHostSpawnAllowlist | null | undefined;
+  allowlistId?: string;
+  programPath?: string;
+}): { entry: AoiHostSpawnAllowlistEntry; program: string } | null {
+  const list = normalizeAoiHostSpawnAllowlist(params.allowlist);
+  const allowlistId = typeof params.allowlistId === 'string' ? params.allowlistId.trim() : '';
+  const programPath = typeof params.programPath === 'string' ? params.programPath.trim() : '';
+
+  if (allowlistId) {
+    const entry = list.entries.find((item) => item.id === allowlistId) ?? null;
+    if (!entry) {
+      return null;
+    }
+    const match = entry.match === 'directory' ? 'directory' : 'file';
+    if (match === 'file') {
+      return { entry, program: entry.path };
+    }
+    if (!programPath || !isAoiHostProgramInsideSpawnEntry(entry, programPath)) {
+      return null;
+    }
+    return { entry, program: programPath };
+  }
+
+  if (programPath) {
+    for (const entry of list.entries) {
+      if (isAoiHostProgramInsideSpawnEntry(entry, programPath)) {
+        return { entry, program: programPath };
+      }
+    }
+  }
+  return null;
 }
 
 // --- Allowlist (pure + fs) ---------------------------------------------------
@@ -172,7 +277,8 @@ export function normalizeAoiHostSpawnAllowlist(raw: unknown): AoiHostSpawnAllowl
     const entry = candidate as Partial<AoiHostSpawnAllowlistEntry>;
     const id = typeof entry.id === 'string' ? entry.id : '';
     const path = typeof entry.path === 'string' ? entry.path : '';
-    if (!ENTRY_ID_PATTERN.test(id) || seen.has(id) || !isSafeExecutablePath(path)) {
+    const match: AoiHostSpawnMatch = entry.match === 'directory' ? 'directory' : 'file';
+    if (!ENTRY_ID_PATTERN.test(id) || seen.has(id) || !isSafeHostPath(path)) {
       continue;
     }
     const fixedArgs = Array.isArray(entry.fixedArgs)
@@ -183,6 +289,7 @@ export function normalizeAoiHostSpawnAllowlist(raw: unknown): AoiHostSpawnAllowl
       label:
         normalizeWhitespace(typeof entry.label === 'string' ? entry.label : id).slice(0, 80) || id,
       path,
+      match,
       ...(fixedArgs && fixedArgs.length > 0 ? { fixedArgs: fixedArgs.slice(0, MAX_ARGS) } : {}),
     });
     seen.add(id);
@@ -200,30 +307,42 @@ export function normalizeAoiHostSpawnAllowlist(raw: unknown): AoiHostSpawnAllowl
 
 export function addAoiHostSpawnAllowlistEntry(
   allowlist: AoiHostSpawnAllowlist | null | undefined,
-  entry: { id: string; label?: string; path: string; fixedArgs?: string[] },
+  entry: {
+    id?: string;
+    label?: string;
+    path: string;
+    match?: AoiHostSpawnMatch;
+    fixedArgs?: string[];
+  },
   now: number,
 ): { allowlist: AoiHostSpawnAllowlist; added: boolean; reason?: string } {
   const base = normalizeAoiHostSpawnAllowlist(allowlist);
-  if (!ENTRY_ID_PATTERN.test(entry.id)) {
-    return { allowlist: base, added: false, reason: 'invalid_id' };
-  }
-  if (!isSafeExecutablePath(entry.path)) {
+  const match: AoiHostSpawnMatch = entry.match === 'directory' ? 'directory' : 'file';
+  if (!isSafeHostPath(entry.path)) {
     return { allowlist: base, added: false, reason: 'invalid_path' };
   }
+  const id =
+    typeof entry.id === 'string' && entry.id.trim()
+      ? entry.id.trim()
+      : suggestAoiHostSpawnEntryId(entry.path, match);
+  if (!ENTRY_ID_PATTERN.test(id)) {
+    return { allowlist: base, added: false, reason: 'invalid_id' };
+  }
   if (
-    base.entries.every((existing) => existing.id !== entry.id) &&
+    base.entries.every((existing) => existing.id !== id) &&
     base.entries.length >= MAX_ALLOWLIST_ENTRIES
   ) {
     return { allowlist: base, added: false, reason: 'allowlist_full' };
   }
   const fixedArgs = (entry.fixedArgs ?? []).filter(isSafeArg).slice(0, MAX_ARGS);
   const nextEntry: AoiHostSpawnAllowlistEntry = {
-    id: entry.id,
-    label: normalizeWhitespace(entry.label ?? entry.id).slice(0, 80) || entry.id,
+    id,
+    label: normalizeWhitespace(entry.label ?? id).slice(0, 80) || id,
     path: entry.path,
+    match,
     ...(fixedArgs.length > 0 ? { fixedArgs } : {}),
   };
-  const entries = [...base.entries.filter((existing) => existing.id !== entry.id), nextEntry];
+  const entries = [...base.entries.filter((existing) => existing.id !== id), nextEntry];
   return { allowlist: { version: 1, entries, updatedAt: now }, added: true };
 }
 
@@ -330,29 +449,42 @@ export function evaluateAoiHostSpawnPolicy(params: {
   const purpose =
     normalizeWhitespace(request.purpose ?? '').slice(0, 180) || 'Launch an allowlisted process.';
   const evidenceRefs = [...new Set(request.evidenceRefs ?? [])].slice(0, 16);
-  const allowlistId = typeof request.allowlistId === 'string' ? request.allowlistId : '';
+  const allowlistId = typeof request.allowlistId === 'string' ? request.allowlistId.trim() : '';
+  const programPath = typeof request.programPath === 'string' ? request.programPath.trim() : '';
   const reasons: AoiHostSpawnBlockReason[] = [];
-  const entry = findAoiHostSpawnAllowlistEntry(params.allowlist, allowlistId);
-  if (!allowlistId) {
+  const hit = resolveAoiHostSpawnAllowlistHit({
+    allowlist: params.allowlist,
+    allowlistId: allowlistId || undefined,
+    programPath: programPath || undefined,
+  });
+  if (!allowlistId && !programPath) {
     reasons.push('missing_allowlist_id');
-  } else if (!entry) {
-    reasons.push('unknown_allowlist_entry');
+  } else if (!hit) {
+    if (allowlistId && !findAoiHostSpawnAllowlistEntry(params.allowlist, allowlistId)) {
+      reasons.push('unknown_allowlist_entry');
+    } else if (programPath && !isSafeHostPath(programPath)) {
+      reasons.push('invalid_program_path');
+    } else {
+      reasons.push('program_not_allowed');
+    }
   }
+  const entry = hit?.entry ?? null;
   const resolved = entry
     ? resolveSpawnArgs(entry, request.args)
     : { args: [], reasons: [] as AoiHostSpawnBlockReason[] };
   reasons.push(...resolved.reasons);
 
-  const program = entry?.path ?? '';
+  const program = hit?.program ?? '';
   const args = resolved.args;
-  const label = entry?.label ?? (allowlistId || 'unknown');
+  const resolvedAllowlistId = entry?.id ?? allowlistId;
+  const label = entry?.label ?? (resolvedAllowlistId || 'unknown');
   const argsSummary = args.join(' ').slice(0, 240);
   const approvalSandbox = createAoiApprovalSandboxPreview({
     targetKind: 'command',
-    targetId: `host-spawn:${allowlistId}`,
+    targetId: `host-spawn:${resolvedAllowlistId}:${normalizePathKey(program || 'unknown')}`,
     intendedMutation: `Spawn allowlisted process "${label}".`,
-    dryRunSummary: `Would spawn "${program}" ${argsSummary} (allowlist entry ${allowlistId}) with shell disabled.`,
-    requiredAuthorityDecisionId: `host-spawn:${allowlistId}`,
+    dryRunSummary: `Would spawn "${program}" ${argsSummary} (allowlist entry ${resolvedAllowlistId}) with shell disabled.`,
+    requiredAuthorityDecisionId: `host-spawn:${resolvedAllowlistId}`,
     // Spawning starts a real process -> a mutation recoverable only by killing
     // the spawned pid.
     expectedMutationCount: 1,
@@ -381,7 +513,7 @@ export function evaluateAoiHostSpawnPolicy(params: {
     version: 1,
     allowed: blockReasons.length === 0,
     blockReasons,
-    allowlistId,
+    allowlistId: resolvedAllowlistId,
     label,
     program,
     args,

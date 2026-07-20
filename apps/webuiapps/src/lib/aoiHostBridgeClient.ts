@@ -104,6 +104,7 @@ export interface AoiHostSpawnAllowlistEntryView {
   id: string;
   path: string;
   label?: string;
+  match?: 'file' | 'directory';
   fixedArgs?: string[];
 }
 
@@ -119,6 +120,9 @@ function parseSpawnEntries(value: unknown): AoiHostSpawnAllowlistEntryView[] {
     if (typeof record.label === 'string') {
       entry.label = record.label;
     }
+    if (record.match === 'directory' || record.match === 'file') {
+      entry.match = record.match;
+    }
     if (Array.isArray(record.fixedArgs)) {
       entry.fixedArgs = asStringArray(record.fixedArgs);
     }
@@ -131,9 +135,10 @@ export async function fetchAoiHostSpawnAllowlist(): Promise<AoiHostSpawnAllowlis
 }
 
 export async function addAoiHostSpawnAllowlistEntry(entry: {
-  id: string;
+  id?: string;
   path: string;
   label?: string;
+  match?: 'file' | 'directory';
   fixedArgs?: string[];
 }): Promise<AoiHostSpawnAllowlistEntryView[]> {
   return parseSpawnEntries((await sendJson('/spawn-allowlist', 'POST', { ...entry })).entries);
@@ -180,7 +185,7 @@ export async function fetchAoiHostRoots(kind: AoiHostRootKind): Promise<AoiHostR
 
 export async function addAoiHostRoot(
   kind: AoiHostRootKind,
-  root: { id: string; path: string; label?: string },
+  root: { id?: string; path: string; label?: string },
 ): Promise<AoiHostRootView[]> {
   return parseRoots((await sendJson(rootsRoute(kind), 'POST', { ...root })).roots);
 }

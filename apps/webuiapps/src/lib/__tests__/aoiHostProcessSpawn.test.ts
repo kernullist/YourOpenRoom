@@ -7,16 +7,20 @@ import {
   addAoiHostSpawnAllowlistEntry,
   compareAoiHostSpawnApproval,
   evaluateAoiHostSpawnPolicy,
+  isAoiHostProgramInsideSpawnEntry,
   isAoiHostSpawnRateLimited,
   loadAoiHostSpawnAllowlist,
   normalizeAoiHostSpawnAllowlist,
   removeAoiHostSpawnAllowlistEntry,
+  resolveAoiHostSpawnAllowlistHit,
   runAoiHostSpawn,
   saveAoiHostSpawnAllowlist,
+  suggestAoiHostSpawnEntryId,
   type AoiHostSpawnAllowlist,
 } from '../aoiHostProcessSpawn';
 
 const WIN_EXE = 'C:\\Windows\\System32\\notepad.exe';
+const WIN_DIR = 'C:\\Windows\\System32';
 const tempRoots: string[] = [];
 
 function makeTempHome(): string {
@@ -61,6 +65,45 @@ describe('allowlist management', () => {
     expect(addAoiHostSpawnAllowlistEntry(null, { id: 'Bad Id', path: WIN_EXE }, 1).reason).toBe(
       'invalid_id',
     );
+  });
+
+  it('auto-generates an id and accepts directory match entries', () => {
+    const result = addAoiHostSpawnAllowlistEntry(
+      null,
+      { path: WIN_DIR, match: 'directory', label: 'System32' },
+      1,
+    );
+    expect(result.added).toBe(true);
+    expect(result.allowlist.entries[0].match).toBe('directory');
+    expect(result.allowlist.entries[0].id.startsWith('dir-')).toBe(true);
+    expect(suggestAoiHostSpawnEntryId(WIN_EXE, 'file').startsWith('exe-')).toBe(true);
+  });
+
+  it('resolves a program under a directory allowlist entry (nested children ok)', () => {
+    const list = addAoiHostSpawnAllowlistEntry(
+      null,
+      { id: 'sys32', path: WIN_DIR, match: 'directory' },
+      1,
+    ).allowlist;
+    expect(isAoiHostProgramInsideSpawnEntry(list.entries[0], WIN_EXE)).toBe(true);
+    expect(
+      isAoiHostProgramInsideSpawnEntry(list.entries[0], 'C:\\Windows\\System32\\Drivers\\a.exe'),
+    ).toBe(true);
+    expect(isAoiHostProgramInsideSpawnEntry(list.entries[0], 'C:\\Windows\\explorer.exe')).toBe(
+      false,
+    );
+    const hit = resolveAoiHostSpawnAllowlistHit({
+      allowlist: list,
+      programPath: WIN_EXE,
+    });
+    expect(hit?.entry.id).toBe('sys32');
+    expect(hit?.program).toBe(WIN_EXE);
+    const policy = evaluateAoiHostSpawnPolicy({
+      request: { programPath: WIN_EXE, requestedAt: 1000 },
+      allowlist: list,
+    });
+    expect(policy.allowed).toBe(true);
+    expect(policy.program).toBe(WIN_EXE);
   });
 
   it('replaces an entry with the same id (no duplicates) and removes by id', () => {

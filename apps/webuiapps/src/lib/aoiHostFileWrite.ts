@@ -26,7 +26,11 @@
 import * as fs from 'fs';
 import { basename, dirname, isAbsolute, resolve } from 'path';
 import { createHash, randomUUID } from 'crypto';
-import { isAoiPathInsideRoot, type AoiHostRealpathImpl } from './aoiHostFileRead';
+import {
+  isAoiPathInsideRoot,
+  suggestAoiHostRootId,
+  type AoiHostRealpathImpl,
+} from './aoiHostFileRead';
 import {
   compareAoiApprovalSandboxPreviews,
   createAoiApprovalSandboxPreview,
@@ -189,25 +193,29 @@ export function normalizeAoiHostWriteRoots(raw: unknown): AoiHostWriteRootsConfi
 
 export function addAoiHostWriteRoot(
   config: AoiHostWriteRootsConfig | null | undefined,
-  root: { id: string; label?: string; path: string },
+  root: { id?: string; label?: string; path: string },
   now: number,
 ): { config: AoiHostWriteRootsConfig; added: boolean; reason?: string } {
   const base = normalizeAoiHostWriteRoots(config);
-  if (!ROOT_ID_PATTERN.test(root.id)) {
-    return { config: base, added: false, reason: 'invalid_id' };
-  }
   if (!isSafeAbsolutePath(root.path)) {
     return { config: base, added: false, reason: 'invalid_path' };
   }
-  if (base.roots.every((existing) => existing.id !== root.id) && base.roots.length >= MAX_ROOTS) {
+  const id =
+    typeof root.id === 'string' && root.id.trim()
+      ? root.id.trim()
+      : suggestAoiHostRootId(root.path);
+  if (!ROOT_ID_PATTERN.test(id)) {
+    return { config: base, added: false, reason: 'invalid_id' };
+  }
+  if (base.roots.every((existing) => existing.id !== id) && base.roots.length >= MAX_ROOTS) {
     return { config: base, added: false, reason: 'roots_full' };
   }
   const nextRoot: AoiHostWriteRoot = {
-    id: root.id,
-    label: normalizeWhitespace(root.label ?? root.id).slice(0, 120) || root.id,
+    id,
+    label: normalizeWhitespace(root.label ?? id).slice(0, 120) || id,
     path: root.path,
   };
-  const roots = [...base.roots.filter((existing) => existing.id !== root.id), nextRoot];
+  const roots = [...base.roots.filter((existing) => existing.id !== id), nextRoot];
   return { config: { version: 1, roots, updatedAt: now }, added: true };
 }
 

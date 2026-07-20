@@ -265,12 +265,19 @@ export async function resolveAoiHostBridgeRoute(
       const id = typeof params.body.id === 'string' ? params.body.id : '';
       const path = typeof params.body.path === 'string' ? params.body.path : '';
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
+      const match = params.body.match === 'directory' ? 'directory' : 'file';
       const fixedArgs = Array.isArray(params.body.fixedArgs)
         ? params.body.fixedArgs.filter((arg): arg is string => typeof arg === 'string')
         : undefined;
       const result = addAoiHostSpawnAllowlistEntry(
         current,
-        { id, path, ...(label ? { label } : {}), ...(fixedArgs ? { fixedArgs } : {}) },
+        {
+          ...(id ? { id } : {}),
+          path,
+          match,
+          ...(label ? { label } : {}),
+          ...(fixedArgs ? { fixedArgs } : {}),
+        },
         params.now,
       );
       if (!result.added) {
@@ -300,7 +307,7 @@ export async function resolveAoiHostBridgeRoute(
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
       const result = addAoiHostReadRoot(
         current,
-        { id, path, ...(label ? { label } : {}) },
+        { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
         params.now,
       );
       if (!result.added) {
@@ -330,7 +337,7 @@ export async function resolveAoiHostBridgeRoute(
       const label = typeof params.body.label === 'string' ? params.body.label : undefined;
       const result = addAoiHostWriteRoot(
         current,
-        { id, path, ...(label ? { label } : {}) },
+        { ...(id ? { id } : {}), path, ...(label ? { label } : {}) },
         params.now,
       );
       if (!result.added) {
@@ -414,11 +421,17 @@ export async function resolveAoiHostBridgeRoute(
       };
     }
     const allowlistId = typeof params.body.allowlistId === 'string' ? params.body.allowlistId : '';
+    const programPath = typeof params.body.programPath === 'string' ? params.body.programPath : '';
     const args = Array.isArray(params.body.args)
       ? params.body.args.filter((arg): arg is string => typeof arg === 'string')
       : undefined;
     const policy = evaluateAoiHostSpawnPolicy({
-      request: { allowlistId, ...(args ? { args } : {}), requestedAt: params.now },
+      request: {
+        ...(allowlistId ? { allowlistId } : {}),
+        ...(programPath ? { programPath } : {}),
+        ...(args ? { args } : {}),
+        requestedAt: params.now,
+      },
       allowlist: loadAoiHostSpawnAllowlist(params.openroomHome),
       now: params.now,
     });
@@ -478,12 +491,19 @@ export async function resolveAoiHostBridgeRoute(
       };
     }
     const allowlistId = typeof params.body.allowlistId === 'string' ? params.body.allowlistId : '';
+    const programPath = typeof params.body.programPath === 'string' ? params.body.programPath : '';
     const args = Array.isArray(params.body.args)
       ? params.body.args.filter((arg): arg is string => typeof arg === 'string')
       : undefined;
     const allowlist = loadAoiHostSpawnAllowlist(params.openroomHome);
+    const spawnRequest = {
+      ...(allowlistId ? { allowlistId } : {}),
+      ...(programPath ? { programPath } : {}),
+      ...(args ? { args } : {}),
+      requestedAt: params.now,
+    };
     const policy = evaluateAoiHostSpawnPolicy({
-      request: { allowlistId, ...(args ? { args } : {}), requestedAt: params.now },
+      request: spawnRequest,
       allowlist,
       now: params.now,
     });
@@ -507,7 +527,7 @@ export async function resolveAoiHostBridgeRoute(
     }
     saveAoiHostBridgeApprovalStore(params.openroomHome, consumed.store);
     const result = runAoiHostSpawn({
-      request: { allowlistId, ...(args ? { args } : {}), requestedAt: params.now },
+      request: spawnRequest,
       allowlist,
       approvedSandbox: policy.approvalSandbox,
       approvedExpiresAt: policy.expiresAt,

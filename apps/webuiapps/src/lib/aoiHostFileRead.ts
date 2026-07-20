@@ -139,27 +139,46 @@ export function normalizeAoiHostReadRoots(raw: unknown): AoiHostReadRootsConfig 
   };
 }
 
+export function suggestAoiHostRootId(path: string): string {
+  const base = path
+    .replace(/\\/g, '/')
+    .split('/')
+    .filter(Boolean)
+    .slice(-2)
+    .join('-')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 48);
+  const candidate = `root-${base || 'path'}`.slice(0, 64);
+  return ROOT_ID_PATTERN.test(candidate) ? candidate : `root-${randomUUID().slice(0, 8)}`;
+}
+
 export function addAoiHostReadRoot(
   config: AoiHostReadRootsConfig | null | undefined,
-  root: { id: string; label?: string; path: string },
+  root: { id?: string; label?: string; path: string },
   now: number,
 ): { config: AoiHostReadRootsConfig; added: boolean; reason?: string } {
   const base = normalizeAoiHostReadRoots(config);
-  if (!ROOT_ID_PATTERN.test(root.id)) {
-    return { config: base, added: false, reason: 'invalid_id' };
-  }
   if (!isSafeAbsolutePath(root.path)) {
     return { config: base, added: false, reason: 'invalid_path' };
   }
-  if (base.roots.every((existing) => existing.id !== root.id) && base.roots.length >= MAX_ROOTS) {
+  const id =
+    typeof root.id === 'string' && root.id.trim()
+      ? root.id.trim()
+      : suggestAoiHostRootId(root.path);
+  if (!ROOT_ID_PATTERN.test(id)) {
+    return { config: base, added: false, reason: 'invalid_id' };
+  }
+  if (base.roots.every((existing) => existing.id !== id) && base.roots.length >= MAX_ROOTS) {
     return { config: base, added: false, reason: 'roots_full' };
   }
   const nextRoot: AoiHostReadRoot = {
-    id: root.id,
-    label: normalizeWhitespace(root.label ?? root.id).slice(0, 120) || root.id,
+    id,
+    label: normalizeWhitespace(root.label ?? id).slice(0, 120) || id,
     path: root.path,
   };
-  const roots = [...base.roots.filter((existing) => existing.id !== root.id), nextRoot];
+  const roots = [...base.roots.filter((existing) => existing.id !== id), nextRoot];
   return { config: { version: 1, roots, updatedAt: now }, added: true };
 }
 
